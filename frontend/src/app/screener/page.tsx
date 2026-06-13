@@ -5,6 +5,7 @@ import { fetchTopMovers, Market } from "@/utils/api";
 import { TrendingUp, TrendingDown } from "lucide-react";
 import Link from "next/link";
 import clsx from "clsx";
+import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 
 export default function ScreenerPage() {
   const [market, setMarket] = useState<Market>("US");
@@ -17,6 +18,7 @@ export default function ScreenerPage() {
 
   return (
     <div className="space-y-6">
+      <MarketDisclaimer market={market} />
       <div>
         <h1 className="text-2xl font-bold">Stock Screener</h1>
         <p className="text-gray-400 text-sm mt-1">Top movers across US and Indian markets</p>

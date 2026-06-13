@@ -9,6 +9,7 @@ import { ConfidenceMeter } from "@/components/ConfidenceMeter";
 import { NewsCard } from "@/components/NewsCard";
 import clsx from "clsx";
 import { ArrowUpRight, ArrowDownRight, FlaskConical, CheckCircle, XCircle } from "lucide-react";
+import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 
 type Tab = Horizon | "backtest";
 
@@ -85,6 +86,7 @@ export default function StockPage() {
 
   return (
     <div className="space-y-6">
+      <MarketDisclaimer market={market} />
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
