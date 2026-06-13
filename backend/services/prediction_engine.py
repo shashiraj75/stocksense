@@ -7,6 +7,91 @@ from services.news_sentiment import NewsSentimentService
 MARKET_SUFFIX = {"US": "", "IN": ".NS"}
 _news_svc = NewsSentimentService()
 
+# Market regime index tickers
+REGIME_TICKER = {"US": "^GSPC", "IN": "^NSEI"}
+
+
+def _market_regime(market: str) -> dict:
+    """
+    Checks whether the broad market is in an uptrend or downtrend.
+    Uses S&P 500 for US, NIFTY 50 for India.
+    Returns: {"trend": "BULL"/"BEAR"/"SIDEWAYS", "score_adj": int}
+    score_adj is applied to the composite score (+8 in bull, -8 in bear).
+    """
+    try:
+        ticker = yf.Ticker(REGIME_TICKER.get(market, "^GSPC"))
+        df = ticker.history(period="6mo")
+        if len(df) < 50:
+            return {"trend": "SIDEWAYS", "score_adj": 0, "reason": "Insufficient regime data"}
+
+        close = df["Close"]
+        ema50 = close.ewm(span=50).mean().iloc[-1]
+        ema200 = close.ewm(span=200).mean().iloc[-1] if len(df) >= 200 else close.ewm(span=len(df)).mean().iloc[-1]
+        current = close.iloc[-1]
+
+        # 3-month momentum
+        ret_3m = (current - close.iloc[-63]) / close.iloc[-63] if len(df) >= 63 else 0
+
+        if current > ema50 and ret_3m > 0.03:
+            trend = "BULL"
+            adj = 8
+            reason = f"Market in uptrend — {ret_3m*100:.1f}% gain over 3 months"
+        elif current < ema50 and ret_3m < -0.03:
+            trend = "BEAR"
+            adj = -8
+            reason = f"Market in downtrend — {ret_3m*100:.1f}% over 3 months"
+        else:
+            trend = "SIDEWAYS"
+            adj = 0
+            reason = "Market moving sideways"
+
+        return {"trend": trend, "score_adj": adj, "reason": reason}
+    except Exception:
+        return {"trend": "SIDEWAYS", "score_adj": 0, "reason": "Could not fetch market data"}
+
+
+def _dynamic_weights(df: pd.DataFrame, horizon: str) -> dict:
+    """
+    Adjusts horizon weights based on current volatility.
+    High volatility → trust fundamentals more (less noise from technicals).
+    Low volatility → technicals are more reliable.
+    """
+    base_weights = {
+        "short":  {"tech": 0.60, "fund": 0.10, "sentiment": 0.30},
+        "medium": {"tech": 0.35, "fund": 0.40, "sentiment": 0.25},
+        "long":   {"tech": 0.15, "fund": 0.70, "sentiment": 0.15},
+    }[horizon]
+
+    try:
+        # 20-day historical volatility (annualised)
+        returns = df["Close"].pct_change().dropna()
+        vol_20d = returns.iloc[-20:].std() * np.sqrt(252)
+
+        if vol_20d > 0.35:  # high volatility (>35% annualised)
+            # Shift weight from tech → fundamentals
+            shift = 0.10
+            return {
+                "tech": max(0.10, base_weights["tech"] - shift),
+                "fund": min(0.80, base_weights["fund"] + shift),
+                "sentiment": base_weights["sentiment"],
+                "vol_regime": "HIGH",
+                "vol_20d": round(vol_20d * 100, 1),
+            }
+        elif vol_20d < 0.15:  # low volatility (<15% annualised)
+            # Technicals are more reliable in calm markets
+            shift = 0.08
+            return {
+                "tech": min(0.75, base_weights["tech"] + shift),
+                "fund": max(0.05, base_weights["fund"] - shift),
+                "sentiment": base_weights["sentiment"],
+                "vol_regime": "LOW",
+                "vol_20d": round(vol_20d * 100, 1),
+            }
+    except Exception:
+        pass
+
+    return {**base_weights, "vol_regime": "NORMAL", "vol_20d": 0}
+
 
 class PredictionEngine:
     async def predict(self, symbol: str, market: str, horizon: str) -> dict:
@@ -28,8 +113,14 @@ class PredictionEngine:
         news_data = await _news_svc.get_news_with_sentiment(symbol, market, 10)
         sentiment_score = self._aggregate_sentiment(news_data["articles"])
 
+        # Market regime check
+        regime = _market_regime(market)
+
+        # Dynamic weights based on volatility
+        weights = _dynamic_weights(df, horizon)
+
         signal, confidence, reasoning = self._composite_signal(
-            tech_signal, fund_score, sentiment_score, horizon
+            tech_signal, fund_score, sentiment_score, horizon, weights, regime
         )
 
         current_price = df["Close"].iloc[-1]
@@ -49,6 +140,8 @@ class PredictionEngine:
             "technical": tech_signal,
             "fundamental_score": fund_score,
             "sentiment_score": sentiment_score,
+            "market_regime": regime,
+            "weights_used": {k: v for k, v in weights.items() if k in ("tech", "fund", "sentiment", "vol_regime")},
         }
 
     def _fundamental_score(self, info: dict, horizon: str) -> dict:
@@ -77,7 +170,7 @@ class PredictionEngine:
                 reasons.append(f"Decent ROE ({roe*100:.1f}%)")
             elif roe < 0:
                 score -= 10
-                reasons.append(f"Negative ROE — unprofitable")
+                reasons.append("Negative ROE — unprofitable")
 
         rev_growth = info.get("revenueGrowth")
         if rev_growth:
@@ -110,7 +203,17 @@ class PredictionEngine:
                 reasons.append(f"High profit margins ({profit_margin*100:.1f}%)")
             elif profit_margin < 0:
                 score -= 8
-                reasons.append(f"Negative profit margins")
+                reasons.append("Negative profit margins")
+
+        # Earnings per share growth
+        eps_growth = info.get("earningsGrowth")
+        if eps_growth:
+            if eps_growth > 0.20:
+                score += 8
+                reasons.append(f"Strong EPS growth ({eps_growth*100:.1f}%)")
+            elif eps_growth < -0.10:
+                score -= 8
+                reasons.append(f"EPS declining ({eps_growth*100:.1f}%)")
 
         return {"score": max(0, min(100, score)), "reasons": reasons}
 
@@ -124,72 +227,64 @@ class PredictionEngine:
         label = "BULLISH" if score > 60 else "BEARISH" if score < 40 else "NEUTRAL"
         return {"score": score, "label": label, "bullish": bullish, "bearish": bearish}
 
-    def _composite_signal(self, tech, fund, sentiment, horizon):
-        # Different weightings per horizon — short term is technical-heavy,
-        # long term is fundamentals-heavy
-        weights = {
-            "short":  {"tech": 0.60, "fund": 0.10, "sentiment": 0.30},
-            "medium": {"tech": 0.35, "fund": 0.40, "sentiment": 0.25},
-            "long":   {"tech": 0.15, "fund": 0.70, "sentiment": 0.15},
-        }[horizon]
-
-        tech_score = 75 if tech["overall"] == "BUY" else 25 if tech["overall"] == "SELL" else 50
+    def _composite_signal(self, tech, fund, sentiment, horizon, weights, regime):
+        tech_score = tech.get("score", 50)  # now a full 0-100 score, not just 75/50/25
         composite = (
             tech_score * weights["tech"]
             + fund["score"] * weights["fund"]
             + sentiment["score"] * weights["sentiment"]
         )
 
-        # Tighter thresholds so we produce clearer signals
-        if composite >= 60:
+        # Apply market regime bias
+        composite += regime["score_adj"]
+        composite = max(0, min(100, composite))
+
+        # Reduced HOLD band — score 55+ is BUY, 45- is SELL
+        if composite >= 55:
             signal = "BUY"
-        elif composite <= 40:
+        elif composite <= 45:
             signal = "SELL"
         else:
             signal = "HOLD"
 
-        # Confidence = how far from neutral (50), scaled to 0-100
-        confidence = min(100, int(abs(composite - 50) * 2.5))
+        # Confidence = how far from neutral
+        confidence = min(100, int(abs(composite - 50) * 3.0))
 
         reasoning = []
-        reasoning.extend(tech["breakdown"][:2])
+        reasoning.extend(tech["breakdown"][:3])
         for r in fund["reasons"][:2]:
             reasoning.append({"indicator": "Fundamental", "signal": "INFO", "reason": r})
+        reasoning.append({"indicator": "Market Regime", "signal": regime["trend"], "reason": regime["reason"]})
         if sentiment["label"] != "NEUTRAL":
             reasoning.append({
                 "indicator": "Sentiment",
                 "signal": sentiment["label"],
                 "reason": f"{sentiment['bullish']} bullish vs {sentiment['bearish']} bearish in recent news"
             })
+        if tech.get("candlestick", {}).get("patterns"):
+            reasoning.append({
+                "indicator": "Candlestick",
+                "signal": tech["candlestick"]["signal"],
+                "reason": ", ".join(tech["candlestick"]["patterns"]),
+            })
 
         return signal, confidence, reasoning
 
     def _estimate_target(self, price, signal, confidence, horizon, df, info):
-        """
-        Target price uses different methods per horizon:
-        - Short:  ATR-based (volatility × multiplier)
-        - Medium: Analyst targets or earnings growth projection
-        - Long:   Fundamental fair value estimate (P/E based)
-        """
         conf_factor = max(0.5, confidence / 100)
 
         if horizon == "short":
-            # ATR over last 14 days
             atr = (df["High"] - df["Low"]).rolling(14).mean().iloc[-1]
             move = atr * 2.5 * conf_factor
             if signal == "BUY":
                 return round(price + move, 2)
             elif signal == "SELL":
                 return round(price - move, 2)
-            else:
-                # HOLD: small range around current price
-                return round(price * (1 + 0.02 * conf_factor), 2)
+            return round(price * (1 + 0.02 * conf_factor), 2)
 
         elif horizon == "medium":
-            # Use analyst target price if available, else project 3-month earnings growth
             analyst_target = info.get("targetMeanPrice")
             if analyst_target and analyst_target > 0:
-                # Blend analyst target with signal direction
                 blend = (analyst_target * 0.7 + price * 0.3)
                 if signal == "BUY":
                     return round(max(blend, price * 1.05), 2)
@@ -197,7 +292,6 @@ class PredictionEngine:
                     return round(min(blend, price * 0.95), 2)
                 return round(blend, 2)
 
-            # Fallback: use 3-month historical volatility projection
             monthly_ret = df["Close"].pct_change(21).dropna()
             avg_monthly = monthly_ret.mean()
             projected = price * (1 + avg_monthly * 3 * conf_factor)
@@ -208,21 +302,17 @@ class PredictionEngine:
             return round(projected, 2)
 
         else:  # long
-            # P/E based fair value: use sector median P/E if own P/E unavailable
             pe = info.get("trailingPE") or info.get("forwardPE")
             eps_growth = info.get("earningsGrowth") or info.get("revenueGrowth") or 0.08
             analyst_target = info.get("targetMeanPrice")
 
             if analyst_target and analyst_target > 0:
-                # Extrapolate analyst target over 2 years using growth rate
                 long_target = analyst_target * ((1 + max(eps_growth, 0.05)) ** 2)
             elif pe and pe > 0:
-                # PEG-style: assume EPS grows, apply same P/E
                 eps_est = price / pe
                 eps_future = eps_est * ((1 + max(eps_growth, 0.05)) ** 3)
                 long_target = eps_future * pe
             else:
-                # Fallback: compound at estimated growth rate over 3 years
                 long_target = price * ((1 + max(eps_growth, 0.05)) ** 3)
 
             if signal == "BUY":
