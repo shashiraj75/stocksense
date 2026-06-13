@@ -1,4 +1,6 @@
+import traceback
 from fastapi import APIRouter, Query
+from fastapi.responses import JSONResponse
 from services.backtester import run_backtest
 from typing import Literal
 
@@ -11,8 +13,8 @@ async def backtest(
     market: Literal["US", "IN"] = Query("US"),
     horizon: Literal["short", "medium", "long"] = Query("short"),
 ):
-    """
-    Runs a walk-forward backtest on the prediction engine.
-    Tests signals at regular intervals in history and measures accuracy.
-    """
-    return run_backtest(symbol.upper(), market, horizon)
+    try:
+        return run_backtest(symbol.upper(), market, horizon)
+    except Exception as e:
+        tb = traceback.format_exc()
+        return JSONResponse(status_code=500, content={"error": str(e), "trace": tb})

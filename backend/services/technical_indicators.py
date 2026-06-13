@@ -149,6 +149,16 @@ def get_volume_signal(df: pd.DataFrame) -> dict:
     }
 
 
+def _safe(val, default=0):
+    """Return default if val is NaN or None."""
+    try:
+        if val is None or (isinstance(val, float) and np.isnan(val)):
+            return default
+        return val
+    except Exception:
+        return default
+
+
 def get_signal_summary(df: pd.DataFrame) -> dict:
     """Derives a scored technical signal from the last row of indicators."""
     last = df.iloc[-1]
@@ -156,7 +166,7 @@ def get_signal_summary(df: pd.DataFrame) -> dict:
     score = 50  # start neutral
 
     # --- RSI ---
-    rsi = last["rsi_14"]
+    rsi = _safe(last["rsi_14"], 50)
     if rsi < 30:
         signals.append({"indicator": "RSI", "signal": "BUY", "reason": f"Oversold (RSI {rsi:.0f})"})
         score += 15
@@ -197,9 +207,9 @@ def get_signal_summary(df: pd.DataFrame) -> dict:
         score -= 8
 
     # --- ADX — only count trend signals when trend is strong ---
-    adx = last.get("adx", 0) or 0
-    adx_pos = last.get("adx_pos", 0) or 0
-    adx_neg = last.get("adx_neg", 0) or 0
+    adx = _safe(last.get("adx"), 0)
+    adx_pos = _safe(last.get("adx_pos"), 0)
+    adx_neg = _safe(last.get("adx_neg"), 0)
     if adx > 25:
         if adx_pos > adx_neg:
             signals.append({"indicator": "ADX", "signal": "BUY", "reason": f"Strong uptrend (ADX {adx:.0f})"})
@@ -211,7 +221,7 @@ def get_signal_summary(df: pd.DataFrame) -> dict:
         signals.append({"indicator": "ADX", "signal": "HOLD", "reason": f"Weak trend / sideways (ADX {adx:.0f})"})
 
     # --- Bollinger Bands ---
-    bb_pct = last.get("bb_pct", 0.5) or 0.5
+    bb_pct = _safe(last.get("bb_pct"), 0.5)
     if bb_pct < 0.1:
         signals.append({"indicator": "Bollinger", "signal": "BUY", "reason": "Price near lower band — oversold"})
         score += 8
@@ -220,7 +230,7 @@ def get_signal_summary(df: pd.DataFrame) -> dict:
         score -= 8
 
     # --- Stochastic RSI ---
-    stoch_rsi = last.get("stoch_rsi", 0.5) or 0.5
+    stoch_rsi = _safe(last.get("stoch_rsi"), 0.5)
     if stoch_rsi < 0.2:
         signals.append({"indicator": "StochRSI", "signal": "BUY", "reason": f"StochRSI oversold ({stoch_rsi:.2f})"})
         score += 7
@@ -229,7 +239,7 @@ def get_signal_summary(df: pd.DataFrame) -> dict:
         score -= 7
 
     # --- Williams %R ---
-    wr = last.get("williams_r", -50) or -50
+    wr = _safe(last.get("williams_r"), -50)
     if wr < -80:
         signals.append({"indicator": "Williams %R", "signal": "BUY", "reason": f"Oversold (W%R {wr:.0f})"})
         score += 6
@@ -238,7 +248,7 @@ def get_signal_summary(df: pd.DataFrame) -> dict:
         score -= 6
 
     # --- CCI ---
-    cci = last.get("cci", 0) or 0
+    cci = _safe(last.get("cci"), 0)
     if cci < -100:
         signals.append({"indicator": "CCI", "signal": "BUY", "reason": f"CCI oversold ({cci:.0f})"})
         score += 6
@@ -283,7 +293,7 @@ def get_signal_summary(df: pd.DataFrame) -> dict:
         "score": round(score, 1),
         "breakdown": signals,
         "rsi": round(rsi, 2),
-        "macd_diff": round(last["macd_diff"], 4),
+        "macd_diff": round(_safe(last.get("macd_diff"), 0), 4),
         "adx": round(adx, 1),
         "candlestick": candle,
         "volume": vol_sig,
