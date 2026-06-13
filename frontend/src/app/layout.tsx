@@ -26,6 +26,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 <Link href="/" className="hover:text-white transition-colors">Dashboard</Link>
                 <Link href="/screener" className="hover:text-white transition-colors">Screener</Link>
                 <Link href="/watchlist" className="hover:text-white transition-colors">Watchlist</Link>
+                <Link href="/backtest" className="hover:text-white transition-colors">Backtest</Link>
               </div>
             </div>
           </nav>

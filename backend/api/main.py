@@ -1,7 +1,7 @@
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api.routers import stocks, predictions, news, screener, watchlist
+from api.routers import stocks, predictions, news, screener, watchlist, backtest
 
 app = FastAPI(
     title="StockSense API",
@@ -32,6 +32,7 @@ app.include_router(predictions.router, prefix="/api/predictions", tags=["Predict
 app.include_router(news.router, prefix="/api/news", tags=["News & Sentiment"])
 app.include_router(screener.router, prefix="/api/screener", tags=["Screener"])
 app.include_router(watchlist.router, prefix="/api/watchlist", tags=["Watchlist"])
+app.include_router(backtest.router, prefix="/api/backtest", tags=["Backtest"])
 
 
 @app.get("/health")
