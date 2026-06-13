@@ -2,13 +2,42 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useSearchParams } from "next/navigation";
-import { fetchQuote, fetchPrediction, fetchNews, Market, Horizon } from "@/utils/api";
+import { api, fetchQuote, fetchPrediction, fetchNews, Market, Horizon } from "@/utils/api";
 import { TradingViewWidget } from "@/components/TradingViewWidget";
 import { SignalBadge } from "@/components/SignalBadge";
 import { ConfidenceMeter } from "@/components/ConfidenceMeter";
 import { NewsCard } from "@/components/NewsCard";
 import clsx from "clsx";
-import { ArrowUpRight, ArrowDownRight } from "lucide-react";
+import { ArrowUpRight, ArrowDownRight, FlaskConical, CheckCircle, XCircle } from "lucide-react";
+
+type Tab = Horizon | "backtest";
+
+const HORIZON_TABS: { key: Tab; label: string }[] = [
+  { key: "short", label: "Short Term" },
+  { key: "medium", label: "Medium Term" },
+  { key: "long", label: "Long Term" },
+  { key: "backtest", label: "Backtest" },
+];
+
+const HORIZON_LABEL: Record<string, string> = {
+  short: "7 trading days",
+  medium: "3 months",
+  long: "12 months",
+};
+
+interface BacktestResult {
+  symbol: string; market: Market; horizon: Horizon;
+  total_tests: number; correct_predictions: number; accuracy_pct: number;
+  buy_signals_tested: number; sell_signals_tested: number; hold_signals_tested: number;
+  avg_return_on_buy_pct: number; avg_return_on_sell_pct: number;
+  profitable_buy_calls: number; profitable_sell_calls: number;
+  forward_window_days: number;
+  results: {
+    date: string; entry_price: number; exit_price: number;
+    actual_return_pct: number; predicted_signal: string;
+    actual_signal: string; correct: boolean;
+  }[];
+}
 
 export default function StockPage() {
   const { symbol } = useParams<{ symbol: string }>();
@@ -16,7 +45,13 @@ export default function StockPage() {
   const market = (searchParams.get("market") as Market) || "US";
   const currency = market === "US" ? "$" : "₹";
 
-  const [horizon, setHorizon] = useState<Horizon>("short");
+  const [tab, setTab] = useState<Tab>("short");
+  const [btHorizon, setBtHorizon] = useState<Horizon>("short");
+  const [btRunning, setBtRunning] = useState(false);
+  const [btData, setBtData] = useState<BacktestResult | null>(null);
+  const [btError, setBtError] = useState("");
+
+  const horizon = tab === "backtest" ? "short" : (tab as Horizon);
 
   const { data: quote } = useQuery({
     queryKey: ["quote", symbol, market],
@@ -26,12 +61,27 @@ export default function StockPage() {
   const { data: prediction, isLoading: predLoading } = useQuery({
     queryKey: ["prediction", symbol, market, horizon],
     queryFn: () => fetchPrediction(symbol, market, horizon),
+    enabled: tab !== "backtest",
   });
 
   const { data: news } = useQuery({
     queryKey: ["news", symbol, market],
     queryFn: () => fetchNews(symbol, market),
   });
+
+  const runBacktest = async () => {
+    setBtRunning(true); setBtError(""); setBtData(null);
+    try {
+      const res = await api.get<BacktestResult>(`/api/backtest/${symbol}`, {
+        params: { market, horizon: btHorizon },
+      });
+      setBtData(res.data);
+    } catch {
+      setBtError("Backtest failed. Render may still be deploying — try again in a moment.");
+    } finally {
+      setBtRunning(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -57,119 +107,261 @@ export default function StockPage() {
             </div>
           )}
         </div>
-        {prediction && !predLoading && (
+        {tab !== "backtest" && prediction && !predLoading && (
           <SignalBadge signal={prediction.signal} size="lg" />
         )}
       </div>
 
-      {/* Horizon Tabs */}
-      <div className="flex gap-2">
-        {(["short", "medium", "long"] as Horizon[]).map((h) => (
+      {/* Tabs: Short / Medium / Long / Backtest */}
+      <div className="flex gap-2 flex-wrap">
+        {HORIZON_TABS.map(({ key, label }) => (
           <button
-            key={h}
-            onClick={() => setHorizon(h)}
+            key={key}
+            onClick={() => setTab(key)}
             className={clsx(
-              "px-4 py-2 rounded-lg text-sm font-medium capitalize transition-colors",
-              horizon === h
+              "flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
+              tab === key
                 ? "bg-brand-500 text-white"
                 : "bg-dark-card border border-dark-border text-gray-400 hover:text-white"
             )}
           >
-            {h} Term
+            {key === "backtest" && <FlaskConical size={14} />}
+            {label}
           </button>
         ))}
       </div>
 
-      {/* TradingView Chart — free embed */}
+      {/* TradingView Chart */}
       <div className="rounded-2xl overflow-hidden border border-dark-border">
         <TradingViewWidget symbol={symbol} market={market} height={480} />
       </div>
 
-      {/* Prediction + Stats */}
-      <div className="grid md:grid-cols-2 gap-6">
-        <div className="bg-dark-card border border-dark-border rounded-2xl p-6 space-y-5">
-          <h2 className="font-bold text-lg">AI Prediction — {horizon} term</h2>
-          {predLoading ? (
-            <div className="space-y-3">
-              {[1, 2, 3].map((i) => (
-                <div key={i} className="h-5 bg-dark-border rounded animate-pulse" />
-              ))}
-            </div>
-          ) : prediction ? (
-            <>
-              <div className="flex items-center justify-between">
-                <span className="text-gray-400 text-sm">Signal</span>
-                <SignalBadge signal={prediction.signal} />
-              </div>
-              <ConfidenceMeter value={prediction.confidence} label="Confidence" />
-              <div className="flex items-center justify-between">
-                <span className="text-gray-400 text-sm">Target Price</span>
-                <span className="font-mono font-bold">
-                  {currency}{prediction.target_price.toLocaleString()}
-                </span>
-              </div>
-              <div>
-                <p className="text-gray-400 text-sm mb-2">Key Reasons</p>
-                <ul className="space-y-1.5">
-                  {prediction.reasoning.slice(0, 4).map((r, i) => (
-                    <li key={i} className="flex items-start gap-2 text-sm">
-                      <span className={clsx(
-                        "shrink-0 mt-1 w-2 h-2 rounded-full",
-                        r.signal === "BUY" || r.signal === "BULLISH" ? "bg-bull" :
-                        r.signal === "SELL" || r.signal === "BEARISH" ? "bg-bear" : "bg-neutral"
-                      )} />
-                      <span className="text-gray-300">{r.reason}</span>
-                    </li>
+      {/* ── PREDICTION VIEW ── */}
+      {tab !== "backtest" && (
+        <>
+          <div className="grid md:grid-cols-2 gap-6">
+            <div className="bg-dark-card border border-dark-border rounded-2xl p-6 space-y-5">
+              <h2 className="font-bold text-lg">AI Prediction — {tab} term</h2>
+              {predLoading ? (
+                <div className="space-y-3">
+                  {[1, 2, 3].map((i) => (
+                    <div key={i} className="h-5 bg-dark-border rounded animate-pulse" />
                   ))}
-                </ul>
-              </div>
-            </>
-          ) : null}
-        </div>
-
-        <div className="bg-dark-card border border-dark-border rounded-2xl p-6 space-y-4">
-          <h2 className="font-bold text-lg">Key Stats</h2>
-          {quote && (
-            <dl className="space-y-3">
-              {[
-                ["52W High", `${currency}${quote.fifty_two_week_high?.toLocaleString()}`],
-                ["52W Low", `${currency}${quote.fifty_two_week_low?.toLocaleString()}`],
-                ["Market Cap", quote.market_cap ? `${currency}${(quote.market_cap / 1e9).toFixed(2)}B` : "—"],
-                ["Avg Volume", quote.volume?.toLocaleString() ?? "—"],
-              ].map(([label, value]) => (
-                <div key={label} className="flex items-center justify-between text-sm">
-                  <dt className="text-gray-400">{label}</dt>
-                  <dd className="font-mono font-bold">{value}</dd>
                 </div>
+              ) : prediction ? (
+                <>
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400 text-sm">Signal</span>
+                    <SignalBadge signal={prediction.signal} />
+                  </div>
+                  <ConfidenceMeter value={prediction.confidence} label="Confidence" />
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400 text-sm">Target Price</span>
+                    <span className="font-mono font-bold">
+                      {currency}{prediction.target_price.toLocaleString()}
+                    </span>
+                  </div>
+                  <div>
+                    <p className="text-gray-400 text-sm mb-2">Key Reasons</p>
+                    <ul className="space-y-1.5">
+                      {prediction.reasoning.slice(0, 4).map((r: any, i: number) => (
+                        <li key={i} className="flex items-start gap-2 text-sm">
+                          <span className={clsx(
+                            "shrink-0 mt-1 w-2 h-2 rounded-full",
+                            r.signal === "BUY" || r.signal === "BULLISH" ? "bg-bull" :
+                            r.signal === "SELL" || r.signal === "BEARISH" ? "bg-bear" : "bg-neutral"
+                          )} />
+                          <span className="text-gray-300">{r.reason}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </>
+              ) : null}
+            </div>
+
+            <div className="bg-dark-card border border-dark-border rounded-2xl p-6 space-y-4">
+              <h2 className="font-bold text-lg">Key Stats</h2>
+              {quote && (
+                <dl className="space-y-3">
+                  {[
+                    ["52W High", `${currency}${quote.fifty_two_week_high?.toLocaleString()}`],
+                    ["52W Low", `${currency}${quote.fifty_two_week_low?.toLocaleString()}`],
+                    ["Market Cap", quote.market_cap ? `${currency}${(quote.market_cap / 1e9).toFixed(2)}B` : "—"],
+                    ["Avg Volume", quote.volume?.toLocaleString() ?? "—"],
+                  ].map(([label, value]) => (
+                    <div key={label} className="flex items-center justify-between text-sm">
+                      <dt className="text-gray-400">{label}</dt>
+                      <dd className="font-mono font-bold">{value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
+              {prediction && (
+                <div className="border-t border-dark-border pt-4 space-y-2">
+                  <p className="text-gray-400 text-sm mb-2">Score Breakdown</p>
+                  <ConfidenceMeter value={prediction.fundamental_score.score} label="Fundamental Score" />
+                  <ConfidenceMeter value={prediction.sentiment_score.score} label="News Sentiment Score" />
+                  <ConfidenceMeter
+                    value={prediction.technical?.rsi ? Math.min(100, Math.round(prediction.technical.rsi)) : 50}
+                    label="RSI"
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+
+          <section>
+            <h2 className="text-lg font-semibold mb-3">News & Sentiment</h2>
+            <div className="grid md:grid-cols-2 gap-3">
+              {news?.articles.slice(0, 8).map((a: any, i: number) => (
+                <NewsCard key={i} article={a} />
               ))}
-            </dl>
+              {!news?.articles.length && (
+                <p className="text-gray-500 text-sm col-span-2">Loading news from free RSS feeds…</p>
+              )}
+            </div>
+          </section>
+        </>
+      )}
+
+      {/* ── BACKTEST VIEW ── */}
+      {tab === "backtest" && (
+        <div className="space-y-6">
+          {/* Controls */}
+          <div className="bg-dark-card border border-dark-border rounded-2xl p-5 flex flex-wrap gap-4 items-end">
+            <div>
+              <p className="text-xs text-gray-400 mb-1.5">Testing symbol</p>
+              <p className="font-mono font-bold text-white text-sm">{symbol} · {market === "US" ? "🇺🇸 US" : "🇮🇳 India"}</p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-400 mb-1.5">Horizon</p>
+              <div className="flex gap-2">
+                {(["short", "medium", "long"] as Horizon[]).map(h => (
+                  <button key={h} onClick={() => setBtHorizon(h)}
+                    className={clsx("px-3 py-2 rounded-lg text-xs font-medium capitalize border transition-colors",
+                      btHorizon === h ? "bg-brand-500 text-white border-brand-500" : "bg-dark-bg border-dark-border text-gray-400 hover:text-white")}>
+                    {h}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <button onClick={runBacktest} disabled={btRunning}
+              className="ml-auto px-5 py-2 rounded-lg bg-brand-500 text-white text-sm font-medium hover:bg-brand-600 disabled:opacity-50 transition-colors flex items-center gap-2">
+              <FlaskConical size={14} />
+              {btRunning ? "Running…" : "Run Backtest"}
+            </button>
+          </div>
+
+          {btRunning && (
+            <div className="bg-dark-card border border-dark-border rounded-2xl p-8 text-center text-gray-400 text-sm animate-pulse">
+              Analysing historical data for {symbol}… this takes 20–40 seconds
+            </div>
           )}
-          {prediction && (
-            <div className="border-t border-dark-border pt-4 space-y-2">
-              <p className="text-gray-400 text-sm mb-2">Score Breakdown</p>
-              <ConfidenceMeter value={prediction.fundamental_score.score} label="Fundamental Score" />
-              <ConfidenceMeter value={prediction.sentiment_score.score} label="News Sentiment Score" />
-              <ConfidenceMeter
-                value={prediction.technical?.rsi ? Math.min(100, Math.round(prediction.technical.rsi)) : 50}
-                label="RSI"
-              />
+
+          {btError && <p className="text-bear text-sm">{btError}</p>}
+
+          {btData && (
+            <div className="space-y-5">
+              {/* Summary cards */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {[
+                  { label: "Overall Accuracy", value: `${btData.accuracy_pct}%`,
+                    color: btData.accuracy_pct >= 60 ? "text-bull" : btData.accuracy_pct >= 45 ? "text-neutral" : "text-bear" },
+                  { label: "Tests Run", value: btData.total_tests, color: "text-white" },
+                  { label: "Correct Calls", value: btData.correct_predictions, color: "text-bull" },
+                  { label: "Forward Window", value: HORIZON_LABEL[btData.horizon], color: "text-white" },
+                ].map(c => (
+                  <div key={c.label} className="bg-dark-card border border-dark-border rounded-2xl p-5">
+                    <p className="text-xs text-gray-400 mb-1">{c.label}</p>
+                    <p className={clsx("text-2xl font-bold", c.color)}>{c.value}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Signal breakdown */}
+              <div className="grid md:grid-cols-3 gap-4">
+                <div className="bg-dark-card border border-dark-border rounded-2xl p-5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <SignalBadge signal="BUY" size="sm" />
+                    <span className="text-sm text-gray-400">{btData.buy_signals_tested} signals</span>
+                  </div>
+                  <p className="text-sm text-gray-300">
+                    Avg return when BUY predicted:
+                    <span className={clsx("ml-2 font-bold", btData.avg_return_on_buy_pct >= 0 ? "text-bull" : "text-bear")}>
+                      {btData.avg_return_on_buy_pct >= 0 ? "+" : ""}{btData.avg_return_on_buy_pct}%
+                    </span>
+                  </p>
+                  <p className="text-xs text-gray-500">{btData.profitable_buy_calls} of {btData.buy_signals_tested} were profitable</p>
+                </div>
+                <div className="bg-dark-card border border-dark-border rounded-2xl p-5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <SignalBadge signal="SELL" size="sm" />
+                    <span className="text-sm text-gray-400">{btData.sell_signals_tested} signals</span>
+                  </div>
+                  <p className="text-sm text-gray-300">
+                    Avg return when SELL predicted:
+                    <span className={clsx("ml-2 font-bold", btData.avg_return_on_sell_pct <= 0 ? "text-bull" : "text-bear")}>
+                      {btData.avg_return_on_sell_pct >= 0 ? "+" : ""}{btData.avg_return_on_sell_pct}%
+                    </span>
+                  </p>
+                  <p className="text-xs text-gray-500">{btData.profitable_sell_calls} of {btData.sell_signals_tested} declined as predicted</p>
+                </div>
+                <div className="bg-dark-card border border-dark-border rounded-2xl p-5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <SignalBadge signal="HOLD" size="sm" />
+                    <span className="text-sm text-gray-400">{btData.hold_signals_tested} signals</span>
+                  </div>
+                  <ConfidenceMeter value={btData.accuracy_pct} label="Overall signal accuracy" />
+                </div>
+              </div>
+
+              {/* Results table */}
+              <div className="bg-dark-card border border-dark-border rounded-2xl overflow-hidden">
+                <div className="px-6 py-4 border-b border-dark-border">
+                  <h2 className="font-semibold">Recent Test Windows (last 30)</h2>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-dark-border text-gray-400 text-left">
+                        <th className="px-4 py-3 font-medium">Date</th>
+                        <th className="px-4 py-3 font-medium text-right">Entry</th>
+                        <th className="px-4 py-3 font-medium text-right">Exit</th>
+                        <th className="px-4 py-3 font-medium text-right">Return</th>
+                        <th className="px-4 py-3 font-medium">Predicted</th>
+                        <th className="px-4 py-3 font-medium">Actual</th>
+                        <th className="px-4 py-3 font-medium text-center">Result</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...btData.results].reverse().map((r, i) => (
+                        <tr key={i} className={clsx("border-b border-dark-border",
+                          r.correct ? "bg-bull/5" : "bg-bear/5")}>
+                          <td className="px-4 py-3 text-gray-400 font-mono text-xs">{r.date}</td>
+                          <td className="px-4 py-3 text-right font-mono">{currency}{r.entry_price}</td>
+                          <td className="px-4 py-3 text-right font-mono">{currency}{r.exit_price}</td>
+                          <td className={clsx("px-4 py-3 text-right font-mono font-bold",
+                            r.actual_return_pct >= 0 ? "text-bull" : "text-bear")}>
+                            {r.actual_return_pct >= 0 ? "+" : ""}{r.actual_return_pct}%
+                          </td>
+                          <td className="px-4 py-3"><SignalBadge signal={r.predicted_signal as any} size="sm" /></td>
+                          <td className="px-4 py-3"><SignalBadge signal={r.actual_signal as any} size="sm" /></td>
+                          <td className="px-4 py-3 text-center">
+                            {r.correct
+                              ? <CheckCircle size={16} className="text-bull inline" />
+                              : <XCircle size={16} className="text-bear inline" />}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </div>
           )}
         </div>
-      </div>
-
-      {/* News */}
-      <section>
-        <h2 className="text-lg font-semibold mb-3">News & Sentiment</h2>
-        <div className="grid md:grid-cols-2 gap-3">
-          {news?.articles.slice(0, 8).map((a, i) => (
-            <NewsCard key={i} article={a} />
-          ))}
-          {!news?.articles.length && (
-            <p className="text-gray-500 text-sm col-span-2">Loading news from free RSS feeds…</p>
-          )}
-        </div>
-      </section>
+      )}
     </div>
   );
 }
