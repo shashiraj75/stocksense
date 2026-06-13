@@ -7,14 +7,29 @@ interface Props {
   height?: number;
 }
 
+// Stocks listed on NYSE rather than NASDAQ
+const NYSE_SYMBOLS = new Set([
+  "JPM","BAC","WFC","GS","MS","C","BRK.A","BRK.B","V","MA","AXP",
+  "WMT","TGT","HD","LOW","KO","PEP","PG","JNJ","PFE","MRK","ABT",
+  "UNH","CVX","XOM","BP","COP","SLB","BA","GE","CAT","DE","MMM",
+  "UPS","FDX","DAL","UAL","AAL","LUV","T","VZ","BT","IBM","GM",
+  "F","TM","MCD","NKE","DIS","MO","PM","CL","KMB","GIS","K","HSY",
+  "BK","USB","PNC","MTB","RF","KEY","CFG","FITB","STI","ZION",
+  "SPY","DIA","IWM","GLD","SLV","USO","XLE","XLF","XLK","XLV",
+]);
+
+function getTVSymbol(symbol: string, market: "US" | "IN"): string {
+  if (market === "IN") return `NSE:${symbol}`;
+  if (NYSE_SYMBOLS.has(symbol.toUpperCase())) return `NYSE:${symbol}`;
+  // Default to NASDAQ for tech stocks; TradingView will show error if wrong
+  return `NASDAQ:${symbol}`;
+}
+
 // Free TradingView widget — no account or API key needed
 export function TradingViewWidget({ symbol, market, height = 450 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const tvSymbol =
-    market === "IN"
-      ? `NSE:${symbol}`
-      : `NASDAQ:${symbol}`;
+  const tvSymbol = getTVSymbol(symbol, market);
 
   useEffect(() => {
     if (!containerRef.current) return;
