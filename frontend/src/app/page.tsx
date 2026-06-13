@@ -18,20 +18,15 @@ export default function Dashboard() {
   });
 
   return (
-    <div className="space-y-8">
-      {/* Hero */}
-      <div className="rounded-2xl bg-gradient-to-br from-brand-900 via-dark-card to-dark-bg border border-dark-border p-8">
-        <div className="flex items-center gap-3 mb-3">
-          <Globe size={28} className="text-brand-500" />
-          <h1 className="text-3xl font-bold">StockSense</h1>
+    <div className="space-y-6">
+      {/* Compact header + market toggle in one row */}
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-2">
+          <Globe size={20} className="text-brand-500" />
+          <h1 className="text-xl font-bold">StockSense</h1>
+          <span className="text-gray-500 text-sm hidden sm:inline">— AI predictions for US & Indian markets</span>
         </div>
-        <p className="text-gray-400 text-lg max-w-xl">
-          AI-powered predictions for US & Indian markets — short, medium, and long term signals backed by technicals, fundamentals & sentiment.
-        </p>
-      </div>
-
-      {/* Market toggle */}
-      <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3">
         <span className="text-gray-400 text-sm">Market:</span>
         {(["US", "IN"] as const).map((m) => (
           <button
@@ -47,11 +42,12 @@ export default function Dashboard() {
             {m === "US" ? "🇺🇸 USA" : "🇮🇳 India"}
           </button>
         ))}
+        </div>
       </div>
 
       {/* Quick access */}
       <section>
-        <h2 className="text-lg font-semibold mb-3 text-gray-300">Quick Access</h2>
+        <h2 className="text-base font-semibold mb-3 text-gray-300">Quick Access</h2>
         <div className="flex flex-wrap gap-2">
           {(market === "US" ? POPULAR_US : POPULAR_IN).map((sym) => (
             <Link
@@ -67,7 +63,7 @@ export default function Dashboard() {
 
       {/* Top movers */}
       <section>
-        <h2 className="text-lg font-semibold mb-3 text-gray-300">Top Movers Today</h2>
+        <h2 className="text-base font-semibold mb-3 text-gray-300">Top Movers Today</h2>
         {isLoading ? (
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             {Array.from({ length: 10 }).map((_, i) => (
