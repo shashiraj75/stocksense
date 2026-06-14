@@ -81,10 +81,11 @@ export default function StockPage() {
     retry: false,
   });
 
-  const { data: prediction, isLoading: predLoading } = useQuery({
+  const { data: prediction, isLoading: predLoading, refetch: refetchPrediction, isError: predError } = useQuery({
     queryKey: ["prediction", symbol, isCrypto ? "CRYPTO" : market, horizon],
     queryFn: () => fetchPrediction(symbol, isCrypto ? "CRYPTO" as any : market, horizon),
     enabled: tab !== "backtest",
+    retry: 2,
   });
 
   const { data: news } = useQuery({
@@ -218,7 +219,18 @@ export default function StockPage() {
                   </div>
                 </>
               ) : (
-                <p className="text-gray-500 text-sm">Prediction unavailable — backend may be starting up, try again in 30 seconds.</p>
+                <div className="space-y-3">
+                  <p className="text-gray-500 text-sm">
+                    {predError ? "Failed to load prediction." : "Prediction unavailable."}{" "}
+                    The backend may be waking up (free tier sleeps after inactivity).
+                  </p>
+                  <button
+                    onClick={() => refetchPrediction()}
+                    className="px-4 py-2 rounded-lg bg-brand-500 text-white text-sm font-medium hover:bg-brand-600 transition-colors"
+                  >
+                    Retry
+                  </button>
+                </div>
               )}
             </div>
 
