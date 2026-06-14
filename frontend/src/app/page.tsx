@@ -167,20 +167,6 @@ export default function Dashboard() {
         )}
       </section>
 
-      {/* Horizons explainer */}
-      <section className="grid md:grid-cols-3 gap-4">
-        {[
-          { label: "Short Term",  range: "1–10 Days",    color: "border-bull/40",      desc: "Technicals, momentum, volume, news sentiment" },
-          { label: "Medium Term", range: "1–3 Months",   color: "border-neutral/40",   desc: "Earnings, sector rotation, macro trends" },
-          { label: "Long Term",   range: "6M – 3 Years", color: "border-brand-500/40", desc: "Fundamentals, management quality, government policy" },
-        ].map((h) => (
-          <div key={h.label} className={clsx("p-4 rounded-xl bg-dark-card border", h.color)}>
-            <h3 className="font-bold text-white text-sm">{h.label}</h3>
-            <p className="text-xs text-gray-400 mt-0.5">{h.range}</p>
-            <p className="text-sm text-gray-300 mt-1.5">{h.desc}</p>
-          </div>
-        ))}
-      </section>
     </div>
   );
 }
