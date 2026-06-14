@@ -241,7 +241,7 @@ export default function StockPage() {
                   <p className="text-gray-400 text-sm mb-2">Score Breakdown</p>
                   {isCrypto ? (
                     <>
-                      <ConfidenceMeter value={prediction.technical?.score ?? 50} label="Technical Score" />
+                      <ConfidenceMeter value={(prediction.technical as any)?.score ?? 50} label="Technical Score" />
                       <ConfidenceMeter value={(prediction as any).fear_greed?.score ?? 50} label="Market Sentiment (Fear/Greed)" />
                       <ConfidenceMeter value={prediction.sentiment_score?.score ?? 50} label="News Sentiment" />
                       <ConfidenceMeter value={(prediction as any).on_chain_proxy?.score ?? 50} label="Volume Analysis" />
