@@ -59,18 +59,26 @@ function getTVSymbol(symbol: string, market: "US" | "IN" | "CRYPTO" | "EU"): str
   return `NASDAQ:${up}`;
 }
 
-const INTERVALS = [
-  { label: "1m",  value: "1"  },
-  { label: "5m",  value: "5"  },
-  { label: "15m", value: "15" },
-  { label: "1h",  value: "60" },
-  { label: "4h",  value: "240"},
-  { label: "1D",  value: "D"  },
-  { label: "1W",  value: "W"  },
-  { label: "1M",  value: "M"  },
+const INTERVALS_ALL = [
+  { label: "1m",  value: "1"   },
+  { label: "5m",  value: "5"   },
+  { label: "15m", value: "15"  },
+  { label: "1h",  value: "60"  },
+  { label: "4h",  value: "240" },
+  { label: "1D",  value: "D"   },
+  { label: "1W",  value: "W"   },
+  { label: "1M",  value: "M"   },
+];
+
+// Indian stocks on TradingView free tier only support D/W/M
+const INTERVALS_IN = [
+  { label: "1D", value: "D" },
+  { label: "1W", value: "W" },
+  { label: "1M", value: "M" },
 ];
 
 export function TradingViewWidget({ symbol, market, height = 420 }: Props) {
+  const intervals = market === "IN" ? INTERVALS_IN : INTERVALS_ALL;
   const [interval, setInterval] = useState("D");
   const tvSymbol = getTVSymbol(symbol, market);
 
@@ -94,7 +102,7 @@ export function TradingViewWidget({ symbol, market, height = 420 }: Props) {
     <div className="w-full bg-[#131722] rounded-xl overflow-hidden">
       {/* Custom interval bar */}
       <div className="flex items-center gap-1 px-3 pt-3 pb-2">
-        {INTERVALS.map((iv) => (
+        {intervals.map((iv) => (
           <button
             key={iv.value}
             onClick={() => setInterval(iv.value)}
