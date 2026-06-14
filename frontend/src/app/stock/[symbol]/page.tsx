@@ -70,16 +70,18 @@ export default function StockPage() {
     enabled: !isCrypto,
   });
 
-  // For crypto, fetch price via /api/stocks/quote using BTC-USD format
-  const { data: cryptoQuote } = useQuery({
-    queryKey: ["crypto-quote", symbol],
-    queryFn: () => api.get<{ price: number; change: number; change_pct: number }>(
-      `/api/stocks/quote/${symbol}-USD`, { params: { market: "US" } }
+  // For crypto, fetch price via screener/crypto-movers (already returns live prices)
+  const { data: cryptoMovers } = useQuery({
+    queryKey: ["crypto-movers"],
+    queryFn: () => api.get<{ movers: { symbol: string; name: string; price: number | null; change_pct: number }[] }>(
+      "/api/screener/crypto-movers"
     ).then(r => r.data),
     enabled: isCrypto,
     staleTime: 60_000,
-    retry: false,
   });
+  const cryptoQuote = isCrypto
+    ? cryptoMovers?.movers.find(m => m.symbol === symbol) ?? null
+    : null;
 
   const { data: prediction, isLoading: predLoading, refetch: refetchPrediction, isError: predError } = useQuery({
     queryKey: ["prediction", symbol, isCrypto ? "CRYPTO" : market, horizon],
@@ -119,16 +121,23 @@ export default function StockPage() {
               {isCrypto ? `CRYPTO · ${CRYPTO_NAMES[symbol] ?? symbol}` : market === "US" ? "🇺🇸 NYSE / NASDAQ" : "🇮🇳 NSE India"}
             </span>
           </div>
-          {(quote || cryptoQuote) && (
+          {(quote || cryptoQuote || (isCrypto && prediction?.current_price)) && (
             <div className="flex items-center gap-3 mt-2">
               <span className="text-4xl font-bold">
-                ${isCrypto
-                  ? cryptoQuote?.price.toLocaleString(undefined, { maximumFractionDigits: 2 })
-                  : `${currency === "$" ? "" : currency}${quote?.price.toLocaleString()}`}
+                {isCrypto
+                  ? `$${(cryptoQuote?.price ?? prediction?.current_price ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+                  : `${currency}${quote?.price.toLocaleString()}`}
               </span>
-              {(() => {
-                const chg = isCrypto ? cryptoQuote?.change : quote?.change;
-                const pct = isCrypto ? cryptoQuote?.change_pct : quote?.change_pct;
+              {isCrypto && cryptoQuote?.change_pct != null && (
+                <span className={clsx("flex items-center gap-1 text-lg font-semibold",
+                  cryptoQuote.change_pct >= 0 ? "text-bull" : "text-bear")}>
+                  {cryptoQuote.change_pct >= 0 ? <ArrowUpRight /> : <ArrowDownRight />}
+                  {cryptoQuote.change_pct >= 0 ? "+" : ""}{cryptoQuote.change_pct}%
+                </span>
+              )}
+              {!isCrypto && (() => {
+                const chg = quote?.change;
+                const pct = quote?.change_pct;
                 if (chg == null || pct == null) return null;
                 return (
                   <span className={clsx("flex items-center gap-1 text-lg font-semibold",
