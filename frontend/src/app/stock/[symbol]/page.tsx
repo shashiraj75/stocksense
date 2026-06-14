@@ -87,7 +87,8 @@ export default function StockPage() {
     queryKey: ["prediction", symbol, isCrypto ? "CRYPTO" : market, horizon],
     queryFn: () => fetchPrediction(symbol, isCrypto ? "CRYPTO" as any : market, horizon),
     enabled: tab !== "backtest",
-    retry: 2,
+    retry: 3,
+    retryDelay: (attempt) => attempt * 5000,
   });
 
   const { data: news } = useQuery({
