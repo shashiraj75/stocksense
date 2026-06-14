@@ -22,40 +22,41 @@ const NYSE_SYMBOLS = new Set([
 ]);
 
 // NSE India symbols that TradingView maps differently
+// BSE prefix is more reliably resolved by TradingView's free widget for Indian stocks
 const NSE_OVERRIDE: Record<string, string> = {
-  "BAJFINANCE": "NSE:BAJFINANCE",
-  "HDFCBANK":   "NSE:HDFCBANK",
-  "ICICIBANK":  "NSE:ICICIBANK",
-  "KOTAKBANK":  "NSE:KOTAKBANK",
-  "AXISBANK":   "NSE:AXISBANK",
-  "SBIBANK":    "NSE:SBIN",
-  "SBIN":       "NSE:SBIN",
-  "RELIANCE":   "NSE:RELIANCE",
-  "TCS":        "NSE:TCS",
-  "INFY":       "NSE:INFY",
-  "WIPRO":      "NSE:WIPRO",
-  "HCLTECH":    "NSE:HCLTECH",
-  "TECHM":      "NSE:TECHM",
-  "LTIM":       "NSE:LTIM",
-  "SUNPHARMA":  "NSE:SUNPHARMA",
-  "DRREDDY":    "NSE:DRREDDY",
-  "CIPLA":      "NSE:CIPLA",
-  "DIVISLAB":   "NSE:DIVISLAB",
-  "HINDUNILVR": "NSE:HINDUNILVR",
-  "NESTLEIND":  "NSE:NESTLEIND",
-  "TITAN":      "NSE:TITAN",
-  "ASIANPAINT": "NSE:ASIANPAINT",
-  "MARUTI":     "NSE:MARUTI",
-  "TATAMOTORS": "NSE:TATAMOTORS",
-  "M&M":        "NSE:M_M",
+  "BAJFINANCE": "BSE:BAJFINANCE",
+  "HDFCBANK":   "BSE:HDFCBANK",
+  "ICICIBANK":  "BSE:ICICIBANK",
+  "KOTAKBANK":  "BSE:KOTAKBANK",
+  "AXISBANK":   "BSE:AXISBANK",
+  "SBIBANK":    "BSE:SBIN",
+  "SBIN":       "BSE:SBIN",
+  "RELIANCE":   "BSE:RELIANCE",
+  "TCS":        "BSE:TCS",
+  "INFY":       "BSE:INFY",
+  "WIPRO":      "BSE:WIPRO",
+  "HCLTECH":    "BSE:HCLTECH",
+  "TECHM":      "BSE:TECHM",
+  "LTIM":       "BSE:LTIM",
+  "SUNPHARMA":  "BSE:SUNPHARMA",
+  "DRREDDY":    "BSE:DRREDDY",
+  "CIPLA":      "BSE:CIPLA",
+  "DIVISLAB":   "BSE:DIVISLAB",
+  "HINDUNILVR": "BSE:HINDUNILVR",
+  "NESTLEIND":  "BSE:NESTLEIND",
+  "TITAN":      "BSE:TITAN",
+  "ASIANPAINT": "BSE:ASIANPAINT",
+  "MARUTI":     "BSE:MARUTI",
+  "TATAMOTORS": "BSE:TATAMOTORS",
+  "M&M":        "BSE:500520",
   "ADANIENT":   "BSE:ADANIENT",
   "ADANIPORTS": "BSE:ADANIPORTS",
-  "POWERGRID":  "NSE:POWERGRID",
-  "NTPC":       "NSE:NTPC",
-  "ONGC":       "NSE:ONGC",
-  "COALINDIA":  "NSE:COALINDIA",
-  "BAJAJFINSV": "NSE:BAJAJFINSV",
-  "LTTS":       "NSE:LTTS",
+  "POWERGRID":  "BSE:POWERGRID",
+  "NTPC":       "BSE:NTPC",
+  "ONGC":       "BSE:ONGC",
+  "COALINDIA":  "BSE:COALINDIA",
+  "BAJAJFINSV": "BSE:BAJAJFINSV",
+  "LTTS":       "BSE:LTTS",
   "NIFTY50":    "NSE:NIFTY",
   "SENSEX":     "BSE:SENSEX",
 };
@@ -93,7 +94,7 @@ function getTVSymbol(symbol: string, market: "US" | "IN" | "CRYPTO" | "EU"): str
   const up = symbol.toUpperCase();
   if (market === "CRYPTO") return CRYPTO_MAP[up] || `BINANCE:${up}USDT`;
   if (market === "EU")     return EU_MAP[up]     || `XETR:${up}`;
-  if (market === "IN")     return NSE_OVERRIDE[up] || `NSE:${up}`;
+  if (market === "IN")     return NSE_OVERRIDE[up] || `BSE:${up}`;
   if (NYSE_SYMBOLS.has(up)) return `NYSE:${up}`;
   return `NASDAQ:${up}`;
 }
