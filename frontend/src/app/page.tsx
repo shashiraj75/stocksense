@@ -27,13 +27,13 @@ const CRYPTO_CARDS = [
 type DashMarket = "US" | "IN" | "CRYPTO";
 
 const MARKET_TABS: { key: DashMarket; label: string }[] = [
-  { key: "US",     label: "🇺🇸 USA" },
   { key: "IN",     label: "🇮🇳 India" },
+  { key: "US",     label: "🇺🇸 USA" },
   { key: "CRYPTO", label: "₿ Crypto" },
 ];
 
 export default function Dashboard() {
-  const [market, setMarket] = useState<DashMarket>("US");
+  const [market, setMarket] = useState<DashMarket>("IN");
 
   const { data: movers, isLoading: moversLoading } = useQuery({
     queryKey: ["movers", market],
