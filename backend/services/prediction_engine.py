@@ -181,8 +181,7 @@ class PredictionEngine:
             entry_low   = round(price - atr * 0.3, 2)
             entry_high  = round(price + atr * 0.1, 2)
             stop_loss   = round(price - sl_distance, 2)
-            # extend TP if AI target is too close
-            take_profit = round(max(target, price + min_tp_distance), 2)
+            take_profit = round(target, 2)
             risk        = round(price - stop_loss, 2)
             reward      = round(take_profit - price, 2)
 
@@ -190,8 +189,7 @@ class PredictionEngine:
             entry_low   = round(price - atr * 0.1, 2)
             entry_high  = round(price + atr * 0.3, 2)
             stop_loss   = round(price + sl_distance, 2)
-            # extend TP downward if AI target is too close
-            take_profit = round(min(target, price - min_tp_distance), 2)
+            take_profit = round(target, 2)
             risk        = round(stop_loss - price, 2)
             reward      = round(price - take_profit, 2)
 
