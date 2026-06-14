@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api.routers import stocks, predictions, news, screener, watchlist, backtest
+from api.routers import stocks, predictions, news, screener, watchlist, backtest, picks
 
 REFRESH_INTERVAL_SECONDS = 7 * 24 * 3600  # weekly
 
@@ -93,6 +93,7 @@ app.include_router(news.router,        prefix="/api/news",        tags=["News & 
 app.include_router(screener.router,    prefix="/api/screener",    tags=["Screener"])
 app.include_router(watchlist.router,   prefix="/api/watchlist",   tags=["Watchlist"])
 app.include_router(backtest.router,    prefix="/api/backtest",    tags=["Backtest"])
+app.include_router(picks.router,       prefix="/api/picks",       tags=["Daily Picks"])
 
 
 @app.get("/health")

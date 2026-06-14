@@ -1,0 +1,21 @@
+name: Daily Stock Picks (9 AM IST)
+
+on:
+  schedule:
+    # 3:30 UTC = 9:00 AM IST (UTC+5:30)
+    - cron: "30 3 * * 1-5"   # Monday–Friday only (market days)
+  workflow_dispatch:           # allow manual trigger from GitHub UI
+
+jobs:
+  generate-picks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake up Render & trigger pick generation
+        run: |
+          echo "Triggering daily picks generation at $(date -u)..."
+          curl -s -o /dev/null -w "HTTP %{http_code}" \
+            -X POST \
+            -H "x-secret: ${{ secrets.PICKS_SECRET }}" \
+            https://stocksense-api-12ii.onrender.com/api/picks/generate
+          echo ""
+          echo "Generation started. Picks will be ready in ~10 minutes."

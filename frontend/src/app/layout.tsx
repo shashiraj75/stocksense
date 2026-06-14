@@ -24,6 +24,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <SearchBar />
               <div className="flex items-center gap-4 ml-auto text-sm text-gray-400">
                 <Link href="/" className="hover:text-white transition-colors">Dashboard</Link>
+                <Link href="/picks" className="hover:text-white transition-colors font-medium text-green-400 hover:text-green-300">Daily Picks</Link>
                 <Link href="/screener" className="hover:text-white transition-colors">Screener</Link>
                 <Link href="/portfolio" className="hover:text-white transition-colors">Portfolio</Link>
                 <Link href="/alerts" className="hover:text-white transition-colors">Alerts</Link>
