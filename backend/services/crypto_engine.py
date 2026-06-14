@@ -110,24 +110,31 @@ async def predict_crypto(symbol: str, horizon: str) -> dict:
     atr = float((df["High"] - df["Low"]).rolling(14).mean().iloc[-1])
     target = _estimate_target(current_price, signal, confidence, horizon, df)
 
-    # Trade levels (ATR-based, wider for crypto volatility)
-    atr_mult = {"short": 2.0, "medium": 3.0, "long": 5.0}[horizon]
+    # Trade levels — short: ATR-based; medium/long: proportional to target
+    profit_distance = abs(target - current_price)
+    if horizon == "short":
+        sl_distance = atr * 2.0   # wider for crypto volatility
+    elif horizon == "medium":
+        sl_distance = max(profit_distance * 0.5, atr * 2.0)
+    else:
+        sl_distance = max(profit_distance * 0.4, atr * 3.0)
+
     if signal == "BUY":
         entry_low  = round(current_price - atr * 0.3, 2)
         entry_high = round(current_price + atr * 0.1, 2)
-        stop_loss  = round(current_price - atr * atr_mult, 2)
+        stop_loss  = round(current_price - sl_distance, 2)
         risk = round(current_price - stop_loss, 2)
         reward = round(target - current_price, 2)
     elif signal == "SELL":
         entry_low  = round(current_price - atr * 0.1, 2)
         entry_high = round(current_price + atr * 0.3, 2)
-        stop_loss  = round(current_price + atr * atr_mult, 2)
+        stop_loss  = round(current_price + sl_distance, 2)
         risk = round(stop_loss - current_price, 2)
         reward = round(current_price - target, 2)
     else:
         entry_low  = round(current_price - atr * 0.5, 2)
         entry_high = round(current_price + atr * 0.5, 2)
-        stop_loss  = round(current_price - atr * atr_mult, 2)
+        stop_loss  = round(current_price - sl_distance, 2)
         risk = round(current_price - stop_loss, 2)
         reward = round(abs(target - current_price), 2)
 

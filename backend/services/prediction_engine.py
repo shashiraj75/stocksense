@@ -150,32 +150,44 @@ class PredictionEngine:
 
     def _trade_levels(self, price: float, signal: str, target: float, atr: float, horizon: str) -> dict:
         """
-        Returns actionable entry, stop-loss, and take-profit levels.
-        ATR multipliers scale with horizon: longer horizon = wider stops.
+        Stop loss strategy:
+        - Short term: ATR-based (tight, precise for swing trades)
+        - Medium/Long: proportional to profit target so R:R stays meaningful.
+          Stop = price - (target_distance * stop_ratio), targeting ~1:2 R:R.
         """
-        atr_mult = {"short": 1.5, "medium": 2.5, "long": 4.0}[horizon]
+        profit_distance = abs(target - price)
+
+        if horizon == "short":
+            # ATR-based stop — appropriate for short-term swing trades
+            sl_distance = atr * 1.5
+        elif horizon == "medium":
+            # Stop at 50% of profit target distance → 1:2 R:R
+            sl_distance = max(profit_distance * 0.5, atr * 1.5)
+        else:  # long
+            # Stop at 40% of profit target distance → 1:2.5 R:R
+            sl_distance = max(profit_distance * 0.4, atr * 2.0)
 
         if signal == "BUY":
-            entry_low  = round(price - atr * 0.3, 2)   # slight dip entry
-            entry_high = round(price + atr * 0.1, 2)   # don't chase above this
-            stop_loss  = round(price - atr * atr_mult, 2)
+            entry_low   = round(price - atr * 0.3, 2)
+            entry_high  = round(price + atr * 0.1, 2)
+            stop_loss   = round(price - sl_distance, 2)
             take_profit = target
-            risk   = round(price - stop_loss, 2)
-            reward = round(take_profit - price, 2)
+            risk        = round(price - stop_loss, 2)
+            reward      = round(take_profit - price, 2)
         elif signal == "SELL":
-            entry_low  = round(price - atr * 0.1, 2)
-            entry_high = round(price + atr * 0.3, 2)   # short entry zone
-            stop_loss  = round(price + atr * atr_mult, 2)
+            entry_low   = round(price - atr * 0.1, 2)
+            entry_high  = round(price + atr * 0.3, 2)
+            stop_loss   = round(price + sl_distance, 2)
             take_profit = target
-            risk   = round(stop_loss - price, 2)
-            reward = round(price - take_profit, 2)
+            risk        = round(stop_loss - price, 2)
+            reward      = round(price - take_profit, 2)
         else:  # HOLD
-            entry_low  = round(price - atr * 0.5, 2)
-            entry_high = round(price + atr * 0.5, 2)
-            stop_loss  = round(price - atr * atr_mult, 2)
+            entry_low   = round(price - atr * 0.5, 2)
+            entry_high  = round(price + atr * 0.5, 2)
+            stop_loss   = round(price - sl_distance, 2)
             take_profit = target
-            risk   = round(price - stop_loss, 2)
-            reward = round(abs(take_profit - price), 2)
+            risk        = round(price - stop_loss, 2)
+            reward      = round(abs(take_profit - price), 2)
 
         rr_ratio = round(reward / risk, 2) if risk > 0 else 0
 
