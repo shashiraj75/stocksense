@@ -7,14 +7,18 @@ import { TrendingUp, TrendingDown, Globe } from "lucide-react";
 import Link from "next/link";
 import clsx from "clsx";
 
-const POPULAR_US = ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL"];
-const POPULAR_IN = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "WIPRO"];
+const POPULAR_US = ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "JPM", "META", "AMZN"];
+const POPULAR_IN = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "WIPRO", "BAJFINANCE", "ICICIBANK", "ADANIENT"];
+const POPULAR_CRYPTO = ["BTC", "ETH", "BNB", "SOL", "XRP", "DOGE"];
+
+type DashMarket = "US" | "IN" | "CRYPTO";
 
 export default function Dashboard() {
-  const [market, setMarket] = useState<"US" | "IN">("US");
+  const [market, setMarket] = useState<DashMarket>("US");
   const { data: movers, isLoading } = useQuery({
     queryKey: ["movers", market],
-    queryFn: () => fetchTopMovers(market),
+    queryFn: () => fetchTopMovers(market as any),
+    enabled: market !== "CRYPTO",
   });
 
   return (
@@ -28,10 +32,10 @@ export default function Dashboard() {
         </div>
         <div className="flex items-center gap-3">
         <span className="text-gray-400 text-sm">Market:</span>
-        {(["US", "IN"] as const).map((m) => (
+        {([["US","🇺🇸 USA"], ["IN","🇮🇳 India"], ["CRYPTO","₿ Crypto"]] as const).map(([m, label]) => (
           <button
             key={m}
-            onClick={() => setMarket(m)}
+            onClick={() => setMarket(m as DashMarket)}
             className={clsx(
               "px-4 py-1.5 rounded-lg text-sm font-medium transition-colors",
               market === m
@@ -39,7 +43,7 @@ export default function Dashboard() {
                 : "bg-dark-card border border-dark-border text-gray-400 hover:text-white"
             )}
           >
-            {m === "US" ? "🇺🇸 USA" : "🇮🇳 India"}
+            {label}
           </button>
         ))}
         </div>
@@ -49,7 +53,7 @@ export default function Dashboard() {
       <section>
         <h2 className="text-base font-semibold mb-3 text-gray-300">Quick Access</h2>
         <div className="flex flex-wrap gap-2">
-          {(market === "US" ? POPULAR_US : POPULAR_IN).map((sym) => (
+          {(market === "CRYPTO" ? POPULAR_CRYPTO : market === "IN" ? POPULAR_IN : POPULAR_US).map((sym) => (
             <Link
               key={sym}
               href={`/stock/${sym}?market=${market}`}
