@@ -70,6 +70,17 @@ export default function StockPage() {
     enabled: !isCrypto,
   });
 
+  // For crypto, fetch price via /api/stocks/quote using BTC-USD format
+  const { data: cryptoQuote } = useQuery({
+    queryKey: ["crypto-quote", symbol],
+    queryFn: () => api.get<{ price: number; change: number; change_pct: number }>(
+      `/api/stocks/quote/${symbol}-USD`, { params: { market: "US" } }
+    ).then(r => r.data),
+    enabled: isCrypto,
+    staleTime: 60_000,
+    retry: false,
+  });
+
   const { data: prediction, isLoading: predLoading } = useQuery({
     queryKey: ["prediction", symbol, market, horizon],
     queryFn: () => fetchPrediction(symbol, market, horizon),
@@ -108,16 +119,25 @@ export default function StockPage() {
               {isCrypto ? `₿ ${CRYPTO_NAMES[symbol] ?? "Crypto"}` : market === "US" ? "🇺🇸 NYSE / NASDAQ" : "🇮🇳 NSE India"}
             </span>
           </div>
-          {quote && (
+          {(quote || cryptoQuote) && (
             <div className="flex items-center gap-3 mt-2">
               <span className="text-4xl font-bold">
-                {currency}{quote.price.toLocaleString()}
+                ${isCrypto
+                  ? cryptoQuote?.price.toLocaleString(undefined, { maximumFractionDigits: 2 })
+                  : `${currency === "$" ? "" : currency}${quote?.price.toLocaleString()}`}
               </span>
-              <span className={clsx("flex items-center gap-1 text-lg font-semibold",
-                quote.change >= 0 ? "text-bull" : "text-bear")}>
-                {quote.change >= 0 ? <ArrowUpRight /> : <ArrowDownRight />}
-                {quote.change >= 0 ? "+" : ""}{quote.change} ({quote.change_pct}%)
-              </span>
+              {(() => {
+                const chg = isCrypto ? cryptoQuote?.change : quote?.change;
+                const pct = isCrypto ? cryptoQuote?.change_pct : quote?.change_pct;
+                if (chg == null || pct == null) return null;
+                return (
+                  <span className={clsx("flex items-center gap-1 text-lg font-semibold",
+                    chg >= 0 ? "text-bull" : "text-bear")}>
+                    {chg >= 0 ? <ArrowUpRight /> : <ArrowDownRight />}
+                    {chg >= 0 ? "+" : ""}{chg} ({pct}%)
+                  </span>
+                );
+              })()}
             </div>
           )}
         </div>
@@ -145,16 +165,16 @@ export default function StockPage() {
         ))}
       </div>}
 
-      {/* TradingView Chart */}
+      {/* TradingView Chart — taller for crypto since it's the only content */}
       <div className="rounded-2xl overflow-hidden border border-dark-border">
-        <TradingViewWidget symbol={symbol} market={isCrypto ? "CRYPTO" : market} height={480} />
+        <TradingViewWidget symbol={symbol} market={isCrypto ? "CRYPTO" : market} height={isCrypto ? 620 : 480} />
       </div>
 
-      {/* Crypto notice — no AI prediction available yet */}
+      {/* Crypto notice */}
       {isCrypto && (
-        <div className="bg-dark-card border border-dark-border rounded-2xl p-5 text-center text-gray-400 text-sm space-y-1">
-          <p className="font-semibold text-white">Chart powered by TradingView (Binance)</p>
-          <p>AI predictions for crypto are coming soon. For now, use the chart above for price analysis.</p>
+        <div className="flex items-center justify-between bg-dark-card border border-dark-border rounded-xl px-5 py-3 text-sm text-gray-400">
+          <span>Chart powered by <span className="text-white font-medium">TradingView</span> · Binance USDT pair</span>
+          <span className="text-xs text-brand-500">AI predictions for crypto — coming soon</span>
         </div>
       )}
 
