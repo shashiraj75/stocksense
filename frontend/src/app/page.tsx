@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { fetchTopMovers } from "@/utils/api";
+import { fetchTopMovers, api } from "@/utils/api";
 import { TrendingUp, TrendingDown, Globe } from "lucide-react";
 import Link from "next/link";
 import clsx from "clsx";
@@ -40,6 +40,13 @@ export default function Dashboard() {
     queryFn: () => fetchTopMovers(market as any),
     enabled: market !== "CRYPTO",
     staleTime: 5 * 60_000,
+  });
+
+  const { data: cryptoMovers, isLoading: cryptoLoading } = useQuery({
+    queryKey: ["crypto-movers"],
+    queryFn: () => api.get<{ movers: { symbol: string; name: string; price: number | null; change_pct: number }[] }>("/api/screener/crypto-movers").then(r => r.data),
+    enabled: market === "CRYPTO",
+    staleTime: 2 * 60_000,
   });
 
   const currency = market === "IN" ? "₹" : "$";
@@ -90,16 +97,37 @@ export default function Dashboard() {
         </h2>
 
         {market === "CRYPTO" ? (
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            {CRYPTO_CARDS.map((c) => (
-              <Link key={c.symbol} href={`/stock/${c.symbol}?market=CRYPTO`}
-                className="p-4 rounded-xl bg-dark-card border border-dark-border hover:border-brand-500/50 transition-colors">
-                <p className="font-mono font-bold text-white">{c.symbol}</p>
-                <p className="text-xs text-gray-400 mt-0.5">{c.name}</p>
-                <p className="text-xs text-brand-500 mt-2">View Chart →</p>
-              </Link>
-            ))}
-          </div>
+          cryptoLoading ? (
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              {Array.from({ length: 10 }).map((_, i) => (
+                <div key={i} className="h-24 rounded-xl bg-dark-card animate-pulse" />
+              ))}
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              {(cryptoMovers?.movers ?? CRYPTO_CARDS).map((c) => (
+                <Link key={c.symbol} href={`/stock/${c.symbol}?market=CRYPTO`}
+                  className="p-4 rounded-xl bg-dark-card border border-dark-border hover:border-brand-500/50 transition-colors">
+                  <p className="font-mono font-bold text-white">{c.symbol}</p>
+                  <p className="text-xs text-gray-400 mt-0.5">{"name" in c ? (c as any).name : ""}</p>
+                  {"price" in c && (c as any).price ? (
+                    <>
+                      <p className="text-base font-bold mt-1">
+                        ${Number((c as any).price).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                      </p>
+                      <div className={clsx("flex items-center gap-1 text-xs font-medium mt-0.5",
+                        (c as any).change_pct >= 0 ? "text-bull" : "text-bear")}>
+                        {(c as any).change_pct >= 0 ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
+                        {(c as any).change_pct >= 0 ? "+" : ""}{(c as any).change_pct}%
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-xs text-gray-500 mt-2">Loading…</p>
+                  )}
+                </Link>
+              ))}
+            </div>
+          )
         ) : moversLoading ? (
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             {Array.from({ length: 10 }).map((_, i) => (
