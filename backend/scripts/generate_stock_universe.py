@@ -256,17 +256,29 @@ def write_universe(us: list, india: list, crypto: list):
     print(f"    US: {len(us)}  |  IN: {len(india)}  |  CRYPTO: {len(crypto)}")
 
 
+def run() -> bool:
+    """Fetch all sources and write stock_universe.py. Returns True on success."""
+    try:
+        print("[universe] Fetching US stocks …")
+        us = fetch_us_stocks()
+        print("[universe] Fetching Indian stocks …")
+        india = fetch_in_stocks()
+        if len(us) < 100 and len(india) < 100:
+            print("[universe] Too few stocks fetched — skipping write to avoid overwriting good data.")
+            return False
+        write_universe(us, india, CRYPTO_COINS)
+        return True
+    except Exception as e:
+        print(f"[universe] Error during refresh: {e}")
+        return False
+
+
 if __name__ == "__main__":
     print("=" * 55)
     print("StockSense — stock universe generator")
     print("=" * 55)
-
-    print("\n[1/3] Fetching US stocks …")
-    us = fetch_us_stocks()
-
-    print("\n[2/3] Fetching Indian stocks …")
-    india = fetch_in_stocks()
-
-    print("\n[3/3] Writing stock_universe.py …")
-    write_universe(us, india, CRYPTO_COINS)
-    print("\nDone! Restart the backend to pick up the new list.")
+    success = run()
+    if success:
+        print("\nDone! Restart the backend to pick up the new list.")
+    else:
+        print("\nFailed — existing stock_universe.py unchanged.")
