@@ -1,10 +1,10 @@
 "use client";
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { Search } from "lucide-react";
-import { searchStocks } from "@/utils/api";
 import { useRouter } from "next/navigation";
 
-type SearchResult = { symbol: string; name: string; market?: string };
+type Stock = { symbol: string; name: string; market: string };
+type Universe = { US: Stock[]; IN: Stock[]; CRYPTO: Stock[] };
 
 const MARKET_BADGE: Record<string, string> = {
   US: "🇺🇸",
@@ -12,30 +12,84 @@ const MARKET_BADGE: Record<string, string> = {
   CRYPTO: "₿",
 };
 
+// Loaded once at module level, shared across all instances
+let universeCache: Universe | null = null;
+let loadPromise: Promise<Universe> | null = null;
+
+function loadUniverse(): Promise<Universe> {
+  if (universeCache) return Promise.resolve(universeCache);
+  if (loadPromise) return loadPromise;
+  loadPromise = fetch("/stock_universe.json")
+    .then((r) => r.json())
+    .then((data) => { universeCache = data; return data; });
+  return loadPromise;
+}
+
+function searchLocal(universe: Universe, query: string, limit = 8): Stock[] {
+  const q = query.toLowerCase().trim();
+  if (!q) return [];
+
+  const all = [...universe.US, ...universe.IN, ...universe.CRYPTO];
+  const exact: Stock[] = [], symStart: Stock[] = [], symContain: Stock[] = [],
+        nameStart: Stock[] = [], nameContain: Stock[] = [];
+  const seen = new Set<string>();
+
+  for (const s of all) {
+    const key = `${s.symbol}:${s.market}`;
+    if (seen.has(key)) continue;
+    const sl = s.symbol.toLowerCase().replace(/-/g, ".");
+    const nl = s.name.toLowerCase();
+    const ql = q.replace(/-/g, ".");
+
+    if (sl === ql)            exact.push(s);
+    else if (sl.startsWith(ql)) symStart.push(s);
+    else if (sl.includes(ql))   symContain.push(s);
+    else if (nl.startsWith(q))  nameStart.push(s);
+    else if (nl.includes(q))    nameContain.push(s);
+    else continue;
+    seen.add(key);
+  }
+
+  return [...exact, ...symStart, ...symContain, ...nameStart, ...nameContain].slice(0, limit);
+}
+
 export function SearchBar() {
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<SearchResult[]>([]);
+  const [results, setResults] = useState<Stock[]>([]);
   const [open, setOpen] = useState(false);
+  const [universe, setUniverse] = useState<Universe | null>(universeCache);
   const timer = useRef<ReturnType<typeof setTimeout>>();
   const router = useRouter();
+
+  // Load universe on mount (instant if already cached)
+  useEffect(() => {
+    if (!universe) loadUniverse().then(setUniverse);
+  }, []);
 
   const handleChange = useCallback((v: string) => {
     setQuery(v);
     clearTimeout(timer.current);
     if (v.length < 1) { setResults([]); setOpen(false); return; }
-    timer.current = setTimeout(async () => {
-      const r = await searchStocks(v, "ALL");
-      setResults(r.slice(0, 8));
+    timer.current = setTimeout(() => {
+      if (!universe) return;
+      const r = searchLocal(universe, v);
+      setResults(r);
       setOpen(true);
-    }, 150);
-  }, []);
+    }, 100);
+  }, [universe]);
 
-  const pick = (result: SearchResult) => {
-    const mkt = result.market ?? (
-      result.symbol.endsWith(".NS") || result.symbol.endsWith(".BO") ? "IN" : "US"
-    );
+  // Re-run search once universe loads (if user already typed something)
+  useEffect(() => {
+    if (universe && query.length > 0) {
+      const r = searchLocal(universe, query);
+      setResults(r);
+      setOpen(r.length > 0);
+    }
+  }, [universe]);
+
+  const pick = (result: Stock) => {
     const clean = result.symbol.replace(/\.(NS|BO)$/, "");
-    router.push(`/stock/${clean}?market=${mkt}`);
+    router.push(`/stock/${clean}?market=${result.market}`);
     setQuery(""); setOpen(false); setResults([]);
   };
 
@@ -61,7 +115,7 @@ export function SearchBar() {
                 className="w-full text-left px-4 py-3 hover:bg-dark-border transition-colors flex items-center gap-3"
               >
                 <span className="text-base w-5 text-center flex-shrink-0">
-                  {MARKET_BADGE[r.market ?? "US"] ?? "🌐"}
+                  {MARKET_BADGE[r.market] ?? "🌐"}
                 </span>
                 <span className="text-white font-mono font-bold text-sm flex-shrink-0">
                   {r.symbol.replace(/\.(NS|BO)$/, "")}
