@@ -15,7 +15,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className="dark">
       <body className="bg-dark-bg text-white min-h-screen font-sans antialiased">
         <Providers>
-          <nav className="sticky top-0 z-40 border-b border-dark-border bg-dark-bg/80 backdrop-blur-md">
+          <nav className="sticky top-0 z-10 border-b border-dark-border bg-dark-bg/80 backdrop-blur-md">
             <div className="max-w-7xl mx-auto px-4 py-3 flex items-center gap-6">
               <Link href="/" className="flex items-center gap-2 text-brand-500 font-bold text-lg shrink-0">
                 <TrendingUp size={22} />

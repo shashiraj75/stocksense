@@ -1,4 +1,5 @@
 "use client";
+import { useEffect, useRef } from "react";
 
 interface Props {
   symbol: string;
@@ -55,7 +56,6 @@ const NSE_OVERRIDE: Record<string, string> = {
   "LTTS":       "BSE:LTTS",
   "NIFTY50":    "NSE:NIFTY",
   "SENSEX":     "BSE:SENSEX",
-  "JSLL":       "BSE:JSLL",
 };
 
 const CRYPTO_MAP: Record<string, string> = {
@@ -78,46 +78,56 @@ const CRYPTO_MAP: Record<string, string> = {
 function getTVSymbol(symbol: string, market: "US" | "IN" | "CRYPTO" | "EU"): string {
   const up = symbol.toUpperCase();
   if (market === "CRYPTO") return CRYPTO_MAP[up] || `BINANCE:${up}USDT`;
-  if (market === "IN")     return NSE_OVERRIDE[up] || `NSE:${up}`;
+  if (market === "IN")     return NSE_OVERRIDE[up] || `BSE:${up}`;
   if (NYSE_SYMBOLS.has(up)) return `NYSE:${up}`;
   return `NASDAQ:${up}`;
 }
 
 export function TradingViewWidget({ symbol, market, height = 450 }: Props) {
+  const containerRef = useRef<HTMLDivElement>(null);
   const tvSymbol = getTVSymbol(symbol, market);
 
-  // Build the iframe src using TradingView's chart embed URL
-  // This approach avoids all JS widget z-index / stacking context issues
-  const params = new URLSearchParams({
-    symbol: tvSymbol,
-    interval: "D",
-    timezone: "Etc/UTC",
-    theme: "dark",
-    style: "1",        // 1 = Candles
-    locale: "en",
-    toolbar_bg: "#1a1d2e",
-    enable_publishing: "false",
-    allow_symbol_change: "false",
-    hide_top_toolbar: "false",
-    hide_legend: "false",
-    save_image: "false",
-    withdateranges: "true",
-    container_id: "tv_chart",
-  });
+  useEffect(() => {
+    if (!containerRef.current) return;
+    containerRef.current.innerHTML = "";
 
-  const src = `https://s.tradingview.com/widgetsync/embed-widget-advanced-chart.html?${params.toString()}`;
+    const wrapper = document.createElement("div");
+    wrapper.className = "tradingview-widget-container__widget";
+    wrapper.style.height = "100%";
+    wrapper.style.width = "100%";
+
+    const script = document.createElement("script");
+    script.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
+    script.async = true;
+    script.innerHTML = JSON.stringify({
+      autosize: true,
+      symbol: tvSymbol,
+      interval: "D",
+      timezone: "Etc/UTC",
+      theme: "dark",
+      style: "1",
+      locale: "en",
+      enable_publishing: false,
+      allow_symbol_change: false,
+      hide_top_toolbar: false,
+      hide_legend: false,
+      withdateranges: true,
+      save_image: false,
+      calendar: false,
+      support_host: "https://www.tradingview.com",
+    });
+
+    containerRef.current.appendChild(wrapper);
+    containerRef.current.appendChild(script);
+
+    return () => { if (containerRef.current) containerRef.current.innerHTML = ""; };
+  }, [tvSymbol]);
 
   return (
-    <iframe
-      key={tvSymbol}
-      src={src}
-      width="100%"
-      height={height}
-      frameBorder="0"
-      allowTransparency={true}
-      scrolling="no"
-      allow="clipboard-read; clipboard-write"
-      style={{ display: "block", border: "none" }}
+    <div
+      className="tradingview-widget-container w-full"
+      style={{ height, position: "relative", zIndex: 1 }}
+      ref={containerRef}
     />
   );
 }
