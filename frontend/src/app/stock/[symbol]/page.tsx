@@ -97,7 +97,7 @@ export default function StockPage() {
     setBtRunning(true); setBtError(""); setBtData(null);
     try {
       const res = await api.get<BacktestResult>(`/api/backtest/${symbol}`, {
-        params: { market, horizon: btHorizon },
+        params: { market: isCrypto ? "CRYPTO" : market, horizon: btHorizon },
       });
       setBtData(res.data);
     } catch {
@@ -146,12 +146,9 @@ export default function StockPage() {
         )}
       </div>
 
-      {/* Tabs — Short / Medium / Long for all markets, + Backtest for stocks only */}
+      {/* Tabs — Short / Medium / Long / Backtest for all markets */}
       <div className="flex gap-2 flex-wrap">
-        {(isCrypto
-          ? HORIZON_TABS.filter(t => t.key !== "backtest")
-          : HORIZON_TABS
-        ).map(({ key, label }) => (
+        {HORIZON_TABS.map(({ key, label }) => (
           <button key={key} onClick={() => setTab(key)}
             className={clsx(
               "flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
@@ -294,13 +291,20 @@ export default function StockPage() {
       )}
 
       {/* ── BACKTEST VIEW ── */}
-      {!isCrypto && tab === "backtest" && (
+      {tab === "backtest" && (
         <div className="space-y-6">
+          {isCrypto && (
+            <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl px-4 py-3 text-xs text-yellow-300">
+              Crypto backtests reflect <strong>technical signal accuracy only</strong> — macro events, regulatory news, and market sentiment are not captured in historical simulation. Results may be lower than for stocks.
+            </div>
+          )}
           {/* Controls */}
           <div className="bg-dark-card border border-dark-border rounded-2xl p-5 flex flex-wrap gap-4 items-end">
             <div>
               <p className="text-xs text-gray-400 mb-1.5">Testing symbol</p>
-              <p className="font-mono font-bold text-white text-sm">{symbol} · {market === "US" ? "🇺🇸 US" : "🇮🇳 India"}</p>
+              <p className="font-mono font-bold text-white text-sm">
+                {symbol} · {isCrypto ? "₿ Crypto" : market === "US" ? "🇺🇸 US" : "🇮🇳 India"}
+              </p>
             </div>
             <div>
               <p className="text-xs text-gray-400 mb-1.5">Horizon</p>

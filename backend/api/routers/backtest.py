@@ -10,7 +10,7 @@ router = APIRouter()
 @router.get("/{symbol}")
 async def backtest(
     symbol: str,
-    market: Literal["US", "IN"] = Query("US"),
+    market: Literal["US", "IN", "CRYPTO"] = Query("US"),
     horizon: Literal["short", "medium", "long"] = Query("short"),
 ):
     try:

@@ -144,8 +144,14 @@ def _build_vol_series(close: pd.Series) -> pd.Series:
 
 
 def run_backtest(symbol: str, market: str, horizon: str) -> dict:
-    suffix = MARKET_SUFFIX.get(market, "")
-    ticker = yf.Ticker(symbol + suffix)
+    is_crypto = market == "CRYPTO"
+    if is_crypto:
+        yf_symbol = f"{symbol}-USD"
+    else:
+        suffix = MARKET_SUFFIX.get(market, "")
+        yf_symbol = symbol + suffix
+
+    ticker = yf.Ticker(yf_symbol)
     df = ticker.history(period=HORIZON_LOOKBACK[horizon])
 
     if len(df) < 60:
@@ -157,16 +163,19 @@ def run_backtest(symbol: str, market: str, horizon: str) -> dict:
     info = ticker.info
     fwd_days = HORIZON_DAYS[horizon]
     step = HORIZON_STEP[horizon]
-    fund_score = _fundamental_score(info)
+    # Crypto has no fundamentals — use neutral score
+    fund_score = 50.0 if is_crypto else _fundamental_score(info)
 
     # Precompute volatility & regime series
     vol_series = _build_vol_series(df["Close"])
 
+    # Crypto: no regime index (no S&P500 equivalent), use flat series
     regime_df = None
-    try:
-        regime_df = yf.Ticker(REGIME_TICKER.get(market, "^GSPC")).history(period=HORIZON_LOOKBACK[horizon])
-    except Exception:
-        pass
+    if not is_crypto:
+        try:
+            regime_df = yf.Ticker(REGIME_TICKER.get(market, "^GSPC")).history(period=HORIZON_LOOKBACK[horizon])
+        except Exception:
+            pass
     regime_series = _build_regime_series(regime_df, df.index)
 
     # ── Walk-forward loop — O(n) now instead of O(n²) ───────────────────────
