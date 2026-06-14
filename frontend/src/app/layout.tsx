@@ -4,6 +4,7 @@ import { Providers } from "./providers";
 import { SearchBar } from "@/components/SearchBar";
 import Link from "next/link";
 import { TrendingUp } from "lucide-react";
+import { LiveClock } from "@/components/LiveClock";
 
 export const metadata: Metadata = {
   title: "StockSense — AI Stock Predictor",
@@ -22,6 +23,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 StockSense
               </Link>
               <SearchBar />
+              <LiveClock />
               <div className="flex items-center gap-4 ml-auto text-sm text-gray-400">
                 <Link href="/picks" className="hover:text-white transition-colors font-medium text-green-400 hover:text-green-300">Daily Picks</Link>
                 <Link href="/" className="hover:text-white transition-colors">Dashboard</Link>
