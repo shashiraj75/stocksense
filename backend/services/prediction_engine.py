@@ -107,7 +107,10 @@ class PredictionEngine:
         df = compute_indicators(df)
         tech_signal = get_signal_summary(df)
 
-        info = ticker.info
+        try:
+            info = ticker.info
+        except Exception:
+            info = {}
         fund_score = self._fundamental_score(info, horizon)
 
         news_data = await _news_svc.get_news_with_sentiment(symbol, market, 10)
