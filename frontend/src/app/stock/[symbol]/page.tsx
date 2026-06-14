@@ -91,6 +91,7 @@ export default function StockPage() {
     retryDelay: (attempt) => Math.min(attempt * 8000, 30000),
     placeholderData: (prev) => prev,
     refetchOnMount: true,
+    staleTime: 0,   // always refetch when switching horizons
   });
 
   const { data: news } = useQuery({
