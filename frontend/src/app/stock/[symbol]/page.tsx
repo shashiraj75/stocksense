@@ -186,7 +186,9 @@ export default function StockPage() {
                     <div key={i} className="h-5 bg-dark-border rounded animate-pulse" />
                   ))}
                 </div>
-              ) : prediction ? (
+              ) : (prediction as any)?.error ? (
+                <p className="text-red-400 text-sm">{(prediction as any).error}</p>
+              ) : prediction?.signal ? (
                 <>
                   <div className="flex items-center justify-between">
                     <span className="text-gray-400 text-sm">Signal</span>
@@ -215,7 +217,9 @@ export default function StockPage() {
                     </ul>
                   </div>
                 </>
-              ) : null}
+              ) : (
+                <p className="text-gray-500 text-sm">Prediction unavailable — backend may be starting up, try again in 30 seconds.</p>
+              )}
             </div>
 
             <div className="bg-dark-card border border-dark-border rounded-2xl p-6 space-y-4">
