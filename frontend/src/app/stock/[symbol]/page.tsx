@@ -200,11 +200,6 @@ export default function StockPage() {
         ))}
       </div>
 
-      {/* TradingView Chart */}
-      <div className="rounded-2xl border border-dark-border">
-        <TradingViewWidget symbol={symbol} market={isCrypto ? "CRYPTO" : market} height={480} />
-      </div>
-
       {isCrypto && (
         <div className="flex items-center justify-between bg-dark-card border border-dark-border rounded-xl px-4 py-2.5 text-xs text-gray-500">
           <span>Chart: <span className="text-white">TradingView</span> · Binance USDT · Predictions: technicals + volume + sentiment</span>
@@ -375,6 +370,11 @@ export default function StockPage() {
                 </div>
               )}
             </div>
+          </div>
+
+          {/* TradingView Chart */}
+          <div className="rounded-2xl border border-dark-border">
+            <TradingViewWidget symbol={symbol} market={isCrypto ? "CRYPTO" : market} height={480} />
           </div>
 
           <section>
