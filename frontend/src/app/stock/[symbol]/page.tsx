@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useParams, useSearchParams } from "next/navigation";
 import { api, fetchQuote, fetchPrediction, fetchNews, Market, Horizon } from "@/utils/api";
 import { TradingViewWidget } from "@/components/TradingViewWidget";
+import { LiveClock } from "@/components/LiveClock";
 import { SignalBadge } from "@/components/SignalBadge";
 import { ConfidenceMeter } from "@/components/ConfidenceMeter";
 import { NewsCard } from "@/components/NewsCard";
@@ -180,9 +181,12 @@ export default function StockPage() {
             </div>
           )}
         </div>
-        {tab !== "backtest" && prediction && !predLoading && (
-          <SignalBadge signal={prediction.signal} size="lg" />
-        )}
+        <div className="flex flex-col items-end gap-2">
+          <LiveClock />
+          {tab !== "backtest" && prediction && !predLoading && (
+            <SignalBadge signal={prediction.signal} size="lg" />
+          )}
+        </div>
       </div>
 
       {/* Tabs — Short / Medium / Long / Backtest for all markets */}
