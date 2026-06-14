@@ -159,7 +159,7 @@ export default function StockPage() {
       )}
 
       {/* ── PREDICTION VIEW ── */}
-      {tab !== "backtest" && (
+      {!isCrypto && tab !== "backtest" && (
         <>
           <div className="grid md:grid-cols-2 gap-6">
             <div className="bg-dark-card border border-dark-border rounded-2xl p-6 space-y-5">
@@ -248,7 +248,7 @@ export default function StockPage() {
       )}
 
       {/* ── BACKTEST VIEW ── */}
-      {tab === "backtest" && (
+      {!isCrypto && tab === "backtest" && (
         <div className="space-y-6">
           {/* Controls */}
           <div className="bg-dark-card border border-dark-border rounded-2xl p-5 flex flex-wrap gap-4 items-end">
