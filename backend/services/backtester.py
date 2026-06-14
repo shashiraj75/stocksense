@@ -8,6 +8,7 @@ REGIME_TICKER = {"US": "^GSPC", "IN": "^NSEI"}
 
 HORIZON_DAYS = {"short": 7, "medium": 63, "long": 252}
 HORIZON_LOOKBACK = {"short": "2y", "medium": "5y", "long": "10y"}
+HORIZON_LOOKBACK_CRYPTO = {"short": "2y", "medium": "3y", "long": "5y"}
 HORIZON_STEP = {"short": 5, "medium": 21, "long": 63}
 
 
@@ -152,7 +153,8 @@ def run_backtest(symbol: str, market: str, horizon: str) -> dict:
         yf_symbol = symbol + suffix
 
     ticker = yf.Ticker(yf_symbol)
-    df = ticker.history(period=HORIZON_LOOKBACK[horizon])
+    lookback = HORIZON_LOOKBACK_CRYPTO[horizon] if is_crypto else HORIZON_LOOKBACK[horizon]
+    df = ticker.history(period=lookback)
 
     if len(df) < 60:
         return {"error": "Not enough historical data"}
@@ -160,11 +162,16 @@ def run_backtest(symbol: str, market: str, horizon: str) -> dict:
     # ── Precompute ALL indicators once ──────────────────────────────────────
     df = compute_indicators(df)
 
-    info = ticker.info
     fwd_days = HORIZON_DAYS[horizon]
     step = HORIZON_STEP[horizon]
-    # Crypto has no fundamentals — use neutral score
-    fund_score = 50.0 if is_crypto else _fundamental_score(info)
+    # Crypto: skip ticker.info (slow network call, no fundamentals anyway)
+    if is_crypto:
+        fund_score = 50.0
+    else:
+        try:
+            fund_score = _fundamental_score(ticker.info)
+        except Exception:
+            fund_score = 50.0
 
     # Precompute volatility & regime series
     vol_series = _build_vol_series(df["Close"])

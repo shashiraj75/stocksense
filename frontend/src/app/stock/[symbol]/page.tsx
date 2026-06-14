@@ -116,7 +116,7 @@ export default function StockPage() {
           <div className="flex items-center gap-3">
             <h1 className="text-3xl font-bold font-mono">{symbol}</h1>
             <span className="text-xs bg-dark-card border border-dark-border px-2 py-0.5 rounded text-gray-400">
-              {isCrypto ? `₿ ${CRYPTO_NAMES[symbol] ?? "Crypto"}` : market === "US" ? "🇺🇸 NYSE / NASDAQ" : "🇮🇳 NSE India"}
+              {isCrypto ? `CRYPTO · ${CRYPTO_NAMES[symbol] ?? symbol}` : market === "US" ? "🇺🇸 NYSE / NASDAQ" : "🇮🇳 NSE India"}
             </span>
           </div>
           {(quote || cryptoQuote) && (
