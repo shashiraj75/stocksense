@@ -40,12 +40,21 @@ interface BacktestResult {
   }[];
 }
 
+const CRYPTO_NAMES: Record<string, string> = {
+  BTC: "Bitcoin", ETH: "Ethereum", BNB: "BNB", SOL: "Solana",
+  XRP: "XRP", DOGE: "Dogecoin", ADA: "Cardano", AVAX: "Avalanche",
+  LINK: "Chainlink", DOT: "Polkadot", MATIC: "Polygon", UNI: "Uniswap",
+  LTC: "Litecoin", ATOM: "Cosmos",
+};
+
 export default function StockPage() {
   const params = useParams<{ symbol: string }>();
   const symbol = params?.symbol ?? "";
   const searchParams = useSearchParams();
-  const market = (searchParams?.get("market") as Market) || "US";
-  const currency = market === "US" ? "$" : "₹";
+  const rawMarket = searchParams?.get("market") || "US";
+  const isCrypto = rawMarket === "CRYPTO";
+  const market = isCrypto ? "US" : (rawMarket as Market); // backend only knows US/IN
+  const currency = market === "IN" ? "₹" : "$";
 
   const [tab, setTab] = useState<Tab>("short");
   const [btHorizon, setBtHorizon] = useState<Horizon>("short");
@@ -58,17 +67,19 @@ export default function StockPage() {
   const { data: quote } = useQuery({
     queryKey: ["quote", symbol, market],
     queryFn: () => fetchQuote(symbol, market),
+    enabled: !isCrypto,
   });
 
   const { data: prediction, isLoading: predLoading } = useQuery({
     queryKey: ["prediction", symbol, market, horizon],
     queryFn: () => fetchPrediction(symbol, market, horizon),
-    enabled: tab !== "backtest",
+    enabled: tab !== "backtest" && !isCrypto,
   });
 
   const { data: news } = useQuery({
     queryKey: ["news", symbol, market],
     queryFn: () => fetchNews(symbol, market),
+    enabled: !isCrypto,
   });
 
   const runBacktest = async () => {
@@ -87,14 +98,14 @@ export default function StockPage() {
 
   return (
     <div className="space-y-6">
-      <MarketDisclaimer market={market} />
+      {!isCrypto && <MarketDisclaimer market={market} />}
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
             <h1 className="text-3xl font-bold font-mono">{symbol}</h1>
             <span className="text-xs bg-dark-card border border-dark-border px-2 py-0.5 rounded text-gray-400">
-              {market === "US" ? "🇺🇸 NYSE / NASDAQ" : "🇮🇳 NSE India"}
+              {isCrypto ? `₿ ${CRYPTO_NAMES[symbol] ?? "Crypto"}` : market === "US" ? "🇺🇸 NYSE / NASDAQ" : "🇮🇳 NSE India"}
             </span>
           </div>
           {quote && (
@@ -115,8 +126,8 @@ export default function StockPage() {
         )}
       </div>
 
-      {/* Tabs: Short / Medium / Long / Backtest */}
-      <div className="flex gap-2 flex-wrap">
+      {/* Tabs: Short / Medium / Long / Backtest — hidden for crypto */}
+      {!isCrypto && <div className="flex gap-2 flex-wrap">
         {HORIZON_TABS.map(({ key, label }) => (
           <button
             key={key}
@@ -132,12 +143,20 @@ export default function StockPage() {
             {label}
           </button>
         ))}
-      </div>
+      </div>}
 
       {/* TradingView Chart */}
       <div className="rounded-2xl overflow-hidden border border-dark-border">
-        <TradingViewWidget symbol={symbol} market={market} height={480} />
+        <TradingViewWidget symbol={symbol} market={isCrypto ? "CRYPTO" : market} height={480} />
       </div>
+
+      {/* Crypto notice — no AI prediction available yet */}
+      {isCrypto && (
+        <div className="bg-dark-card border border-dark-border rounded-2xl p-5 text-center text-gray-400 text-sm space-y-1">
+          <p className="font-semibold text-white">Chart powered by TradingView (Binance)</p>
+          <p>AI predictions for crypto are coming soon. For now, use the chart above for price analysis.</p>
+        </div>
+      )}
 
       {/* ── PREDICTION VIEW ── */}
       {tab !== "backtest" && (
