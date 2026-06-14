@@ -67,18 +67,5 @@ class MarketDataService:
         }
 
     async def search(self, query: str, market: str) -> list:
-        results = []
-        candidates = (
-            [query.upper(), f"{query.upper()}.NS", f"{query.upper()}.BO"]
-            if market in ("IN", "ALL")
-            else [query.upper()]
-        )
-        for sym in candidates:
-            try:
-                info = yf.Ticker(sym).info
-                name = info.get("shortName", "")
-                if name:
-                    results.append({"symbol": sym, "name": name})
-            except Exception:
-                pass
-        return results
+        from services.stock_universe import search_universe
+        return search_universe(query, market, limit=8)

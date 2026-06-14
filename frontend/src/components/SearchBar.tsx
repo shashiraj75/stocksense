@@ -4,9 +4,17 @@ import { Search } from "lucide-react";
 import { searchStocks } from "@/utils/api";
 import { useRouter } from "next/navigation";
 
+type SearchResult = { symbol: string; name: string; market?: string };
+
+const MARKET_BADGE: Record<string, string> = {
+  US: "🇺🇸",
+  IN: "🇮🇳",
+  CRYPTO: "₿",
+};
+
 export function SearchBar() {
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<{ symbol: string; name: string }[]>([]);
+  const [results, setResults] = useState<SearchResult[]>([]);
   const [open, setOpen] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout>>();
   const router = useRouter();
@@ -16,17 +24,19 @@ export function SearchBar() {
     clearTimeout(timer.current);
     if (v.length < 1) { setResults([]); setOpen(false); return; }
     timer.current = setTimeout(async () => {
-      const r = await searchStocks(v);
-      setResults(r.slice(0, 6));
+      const r = await searchStocks(v, "ALL");
+      setResults(r.slice(0, 8));
       setOpen(true);
-    }, 300);
+    }, 150);
   }, []);
 
-  const pick = (symbol: string) => {
-    const market = symbol.endsWith(".NS") || symbol.endsWith(".BO") ? "IN" : "US";
-    const clean = symbol.replace(/\.(NS|BO)$/, "");
-    router.push(`/stock/${clean}?market=${market}`);
-    setQuery(""); setOpen(false);
+  const pick = (result: SearchResult) => {
+    const mkt = result.market ?? (
+      result.symbol.endsWith(".NS") || result.symbol.endsWith(".BO") ? "IN" : "US"
+    );
+    const clean = result.symbol.replace(/\.(NS|BO)$/, "");
+    router.push(`/stock/${clean}?market=${mkt}`);
+    setQuery(""); setOpen(false); setResults([]);
   };
 
   return (
@@ -35,21 +45,28 @@ export function SearchBar() {
         <Search size={16} className="text-gray-400" />
         <input
           className="bg-transparent text-white text-sm outline-none flex-1 placeholder:text-gray-500"
-          placeholder="Search stocks… (AAPL, RELIANCE)"
+          placeholder="Search stocks… (AAPL, RELIANCE, BTC)"
           value={query}
           onChange={(e) => handleChange(e.target.value)}
+          onBlur={() => setTimeout(() => setOpen(false), 150)}
+          onFocus={() => results.length > 0 && setOpen(true)}
         />
       </div>
       {open && results.length > 0 && (
         <ul className="absolute top-full mt-2 w-full bg-dark-card border border-dark-border rounded-xl overflow-hidden z-50 shadow-xl">
           {results.map((r) => (
-            <li key={r.symbol}>
+            <li key={`${r.symbol}-${r.market}`}>
               <button
-                onClick={() => pick(r.symbol)}
-                className="w-full text-left px-4 py-3 hover:bg-dark-border transition-colors flex items-center justify-between"
+                onMouseDown={() => pick(r)}
+                className="w-full text-left px-4 py-3 hover:bg-dark-border transition-colors flex items-center gap-3"
               >
-                <span className="text-white font-mono font-bold text-sm">{r.symbol}</span>
-                <span className="text-gray-400 text-xs truncate ml-3">{r.name}</span>
+                <span className="text-base w-5 text-center flex-shrink-0">
+                  {MARKET_BADGE[r.market ?? "US"] ?? "🌐"}
+                </span>
+                <span className="text-white font-mono font-bold text-sm flex-shrink-0">
+                  {r.symbol.replace(/\.(NS|BO)$/, "")}
+                </span>
+                <span className="text-gray-400 text-xs truncate">{r.name}</span>
               </button>
             </li>
           ))}
