@@ -115,10 +115,13 @@ async def predict_crypto(symbol: str, horizon: str) -> dict:
     profit_distance = abs(target - current_price)
     if horizon == "short":
         sl_distance = atr * 2.0                              # crypto is volatile
+        trailing_stop_pct = None                             # no trailing for short term
     elif horizon == "medium":
         sl_distance = max(profit_distance * 0.5, atr * 4.0) # wider for 3-month swings
+        trailing_stop_pct = 18.0                             # crypto needs wider trail
     else:
         sl_distance = max(profit_distance * 0.4, atr * 7.0) # widest for long-term hold
+        trailing_stop_pct = 30.0                             # 30% trail for crypto long term
     # Cap at 40% for crypto (higher volatility tolerance than stocks)
     sl_distance = min(sl_distance, current_price * 0.40)
 
@@ -152,6 +155,7 @@ async def predict_crypto(symbol: str, horizon: str) -> dict:
         "entry_high": entry_high,
         "stop_loss": stop_loss,
         "take_profit": take_profit_val,
+        "trailing_stop_pct": trailing_stop_pct,
         "risk_per_share": round(risk, 2),
         "reward_per_share": round(reward, 2),
         "risk_reward_ratio": round(reward / risk, 2) if risk > 0 else 0,

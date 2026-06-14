@@ -164,10 +164,13 @@ class PredictionEngine:
         profit_distance = abs(target - price)
         if horizon == "short":
             sl_distance = atr * 1.5                              # tight: ~1-2 weeks noise
+            trailing_stop_pct = None                             # no trailing for short term
         elif horizon == "medium":
             sl_distance = max(profit_distance * 0.5, atr * 3.0) # wider: 3-month swings
+            trailing_stop_pct = 12.0                             # trail 12% below peak
         else:
             sl_distance = max(profit_distance * 0.4, atr * 5.0) # widest: long-term trend
+            trailing_stop_pct = 20.0                             # trail 20% below peak
         # Cap: stop loss can never be more than 25% away (prevents negatives on big targets)
         sl_distance = min(sl_distance, price * 0.25)
 
@@ -203,11 +206,12 @@ class PredictionEngine:
         rr_ratio = round(reward / risk, 2) if risk > 0 else 0
 
         return {
-            "signal": signal,          # pass signal so frontend can label correctly
+            "signal": signal,
             "entry_low": entry_low,
             "entry_high": entry_high,
             "stop_loss": stop_loss,
             "take_profit": take_profit,
+            "trailing_stop_pct": trailing_stop_pct,
             "risk_per_share": round(risk, 2),
             "reward_per_share": round(reward, 2),
             "risk_reward_ratio": rr_ratio,

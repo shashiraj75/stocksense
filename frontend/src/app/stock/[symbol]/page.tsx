@@ -192,48 +192,58 @@ export default function StockPage() {
           {prediction?.signal && (prediction as any).trade_levels && (
             <div className="bg-dark-card border border-dark-border rounded-2xl p-6">
               <h2 className="font-bold text-lg mb-4">Trade Levels <span className="text-xs font-normal text-gray-500 ml-2">({tab} term)</span></h2>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                {(() => {
+              {(() => {
                   const tl = (prediction as any).trade_levels;
                   const sig = prediction.signal;
                   const entryLabel = sig === "BUY" ? "Buy Zone" : sig === "SELL" ? "Sell Zone" : "Watch Zone";
                   const entryColor = sig === "SELL" ? "text-bear" : "text-bull";
                   const entryBg    = sig === "SELL" ? "bg-bear/10 border-bear/30" : "bg-bull/10 border-bull/30";
-                  const tpColor    = sig === "SELL" ? "text-bull" : "text-bull";
                   const rrGood     = tl.risk_reward_ratio >= 1.5;
-                  return [
-                    {
-                      label: entryLabel,
-                      value: `${currency}${tl.entry_low.toLocaleString()} – ${currency}${tl.entry_high.toLocaleString()}`,
-                      color: entryColor,
-                      bg: entryBg,
-                    },
-                    {
-                      label: "Take Profit",
-                      value: `${currency}${tl.take_profit.toLocaleString()}`,
-                      color: tpColor,
-                      bg: "bg-bull/10 border-bull/30",
-                    },
-                    {
-                      label: "Stop Loss",
-                      value: `${currency}${tl.stop_loss.toLocaleString()}`,
-                      color: "text-bear",
-                      bg: "bg-bear/10 border-bear/30",
-                    },
-                    {
-                      label: "Risk / Reward",
-                      value: `1 : ${tl.risk_reward_ratio}`,
-                      color: rrGood ? "text-bull" : "text-neutral",
-                      bg: rrGood ? "bg-bull/10 border-bull/30" : "bg-neutral/10 border-neutral/30",
-                    },
-                  ];
-                })().map(({ label, value, color, bg }) => (
-                  <div key={label} className={`rounded-xl border p-4 ${bg}`}>
-                    <p className="text-xs text-gray-400 mb-1">{label}</p>
-                    <p className={`font-mono font-bold text-sm ${color}`}>{value}</p>
-                  </div>
-                ))}
-              </div>
+                  const trailPct: number | null = tl.trailing_stop_pct ?? null;
+                  return (
+                    <>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <div className={`rounded-xl border p-4 ${entryBg}`}>
+                          <p className="text-xs text-gray-400 mb-1">{entryLabel}</p>
+                          <p className={`font-mono font-bold text-sm ${entryColor}`}>
+                            {currency}{tl.entry_low.toLocaleString()} – {currency}{tl.entry_high.toLocaleString()}
+                          </p>
+                        </div>
+                        <div className="rounded-xl border p-4 bg-bull/10 border-bull/30">
+                          <p className="text-xs text-gray-400 mb-1">Take Profit</p>
+                          <p className="font-mono font-bold text-sm text-bull">
+                            {currency}{tl.take_profit.toLocaleString()}
+                          </p>
+                        </div>
+                        <div className="rounded-xl border p-4 bg-bear/10 border-bear/30">
+                          <p className="text-xs text-gray-400 mb-1">Stop Loss</p>
+                          <p className="font-mono font-bold text-sm text-bear">
+                            {currency}{tl.stop_loss.toLocaleString()}
+                          </p>
+                          {trailPct && (
+                            <p className="text-xs text-gray-500 mt-1">
+                              Trail {trailPct}% below peak
+                            </p>
+                          )}
+                        </div>
+                        <div className={`rounded-xl border p-4 ${rrGood ? "bg-bull/10 border-bull/30" : "bg-neutral/10 border-neutral/30"}`}>
+                          <p className="text-xs text-gray-400 mb-1">Risk / Reward</p>
+                          <p className={`font-mono font-bold text-sm ${rrGood ? "text-bull" : "text-neutral"}`}>
+                            1 : {tl.risk_reward_ratio}
+                          </p>
+                        </div>
+                      </div>
+                      {trailPct && (
+                        <div className="mt-3 flex items-start gap-2 bg-dark-border/30 rounded-lg px-3 py-2">
+                          <span className="text-yellow-400 text-xs mt-0.5">★</span>
+                          <p className="text-xs text-gray-400">
+                            <span className="text-gray-300 font-medium">Trailing Stop:</span> Once the trade moves in your favour, raise your stop loss to trail {trailPct}% below the highest price reached — this locks in profits as the stock climbs.
+                          </p>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
               <p className="text-xs text-gray-500 mt-3">
                 Based on 14-day ATR · Not financial advice — always set your own risk limits.
               </p>
