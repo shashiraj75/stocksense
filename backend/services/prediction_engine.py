@@ -111,7 +111,20 @@ class PredictionEngine:
             info = ticker.info
         except Exception:
             info = {}
-        fund_score = self._fundamental_score(info, horizon)
+        ratio_score = self._fundamental_score(info, horizon)
+
+        # Deep fundamental analysis (statements) — only for medium/long to keep short term fast
+        if horizon in ("medium", "long"):
+            deep_score = self._deep_fundamental_score(ticker, horizon)
+            blend = 0.3 if horizon == "medium" else 0.6   # long term trusts statements more
+            blended = round(ratio_score["score"] * (1 - blend) + deep_score["score"] * blend)
+            fund_score = {
+                "score": max(0, min(100, blended)),
+                "reasons": ratio_score["reasons"] + deep_score["reasons"],
+                "deep_available": deep_score["available"],
+            }
+        else:
+            fund_score = ratio_score
 
         news_data = await _news_svc.get_news_with_sentiment(symbol, market, 10)
         sentiment_score = self._aggregate_sentiment(news_data["articles"])
@@ -214,6 +227,158 @@ class PredictionEngine:
             "reward_per_share": round(reward, 2),
             "risk_reward_ratio": rr_ratio,
         }
+
+    def _deep_fundamental_score(self, ticker, horizon: str) -> dict:
+        """
+        Analyses actual financial statements — Income Statement, Balance Sheet, Cash Flow.
+        Only called for medium and long term (skipped for short term to keep latency low).
+        Returns score 0-100 + list of key findings.
+        """
+        score = 50
+        reasons = []
+
+        try:
+            fin = ticker.financials          # P&L — columns = annual periods
+            bs  = ticker.balance_sheet       # Balance Sheet
+            cf  = ticker.cashflow            # Cash Flow
+        except Exception:
+            return {"score": 50, "reasons": [], "available": False}
+
+        if fin is None or fin.empty:
+            return {"score": 50, "reasons": [], "available": False}
+
+        try:
+            # ── Revenue trend (P&L) ──────────────────────────────────────────
+            rev_row = None
+            for label in ["Total Revenue", "Revenue"]:
+                if label in fin.index:
+                    rev_row = fin.loc[label].dropna()
+                    break
+            if rev_row is not None and len(rev_row) >= 2:
+                rev_vals = rev_row.sort_index().values  # oldest → newest
+                rev_growth_1y = (rev_vals[-1] - rev_vals[-2]) / abs(rev_vals[-2]) if rev_vals[-2] != 0 else 0
+                if rev_growth_1y > 0.20:
+                    score += 12
+                    reasons.append(f"Revenue grew {rev_growth_1y*100:.1f}% YoY — strong top-line growth")
+                elif rev_growth_1y > 0.08:
+                    score += 6
+                    reasons.append(f"Revenue grew {rev_growth_1y*100:.1f}% YoY — steady growth")
+                elif rev_growth_1y < -0.05:
+                    score -= 10
+                    reasons.append(f"Revenue declined {rev_growth_1y*100:.1f}% YoY — top-line pressure")
+
+                # Revenue acceleration: latest growth > prior growth
+                if len(rev_vals) >= 3:
+                    rev_growth_2y = (rev_vals[-2] - rev_vals[-3]) / abs(rev_vals[-3]) if rev_vals[-3] != 0 else 0
+                    if rev_growth_1y > rev_growth_2y + 0.05:
+                        score += 6
+                        reasons.append("Revenue growth accelerating — momentum building")
+                    elif rev_growth_1y < rev_growth_2y - 0.05:
+                        score -= 6
+                        reasons.append("Revenue growth decelerating — losing momentum")
+
+            # ── Operating Income / EBITDA margin (P&L) ──────────────────────
+            op_row = None
+            for label in ["Operating Income", "EBIT"]:
+                if label in fin.index:
+                    op_row = fin.loc[label].dropna()
+                    break
+            if op_row is not None and rev_row is not None and len(op_row) >= 1:
+                op_vals = op_row.sort_index().values
+                rev_latest = rev_vals[-1] if rev_row is not None else None
+                if rev_latest and rev_latest > 0:
+                    op_margin = op_vals[-1] / rev_latest
+                    if op_margin > 0.25:
+                        score += 10
+                        reasons.append(f"Operating margin {op_margin*100:.1f}% — highly profitable")
+                    elif op_margin > 0.10:
+                        score += 4
+                        reasons.append(f"Operating margin {op_margin*100:.1f}% — healthy")
+                    elif op_margin < 0:
+                        score -= 10
+                        reasons.append(f"Operating loss — margin {op_margin*100:.1f}%")
+
+            # ── Free Cash Flow (Cash Flow statement) ─────────────────────────
+            if cf is not None and not cf.empty:
+                ocf_row = None
+                capex_row = None
+                for label in ["Operating Cash Flow", "Total Cash From Operating Activities"]:
+                    if label in cf.index:
+                        ocf_row = cf.loc[label].dropna()
+                        break
+                for label in ["Capital Expenditure", "Capital Expenditures"]:
+                    if label in cf.index:
+                        capex_row = cf.loc[label].dropna()
+                        break
+
+                if ocf_row is not None and len(ocf_row) >= 1:
+                    ocf_vals = ocf_row.sort_index().values
+                    capex_vals = capex_row.sort_index().values if capex_row is not None else None
+
+                    fcf_latest = ocf_vals[-1]
+                    if capex_vals is not None and len(capex_vals) >= 1:
+                        fcf_latest = ocf_vals[-1] - abs(capex_vals[-1])
+
+                    if fcf_latest > 0:
+                        score += 10
+                        reasons.append(f"Positive free cash flow — company generates real cash")
+                        # FCF growing?
+                        if len(ocf_vals) >= 2:
+                            fcf_prev = ocf_vals[-2] - (abs(capex_vals[-2]) if capex_vals is not None and len(capex_vals) >= 2 else 0)
+                            if fcf_latest > fcf_prev * 1.10:
+                                score += 6
+                                reasons.append("Free cash flow growing — strengthening cash generation")
+                    else:
+                        score -= 8
+                        reasons.append("Negative free cash flow — burning more cash than it generates")
+
+            # ── Balance Sheet: Liquidity & Debt ─────────────────────────────
+            if bs is not None and not bs.empty:
+                curr_assets = curr_liab = total_debt = cash = None
+                for label in ["Current Assets", "Total Current Assets"]:
+                    if label in bs.index:
+                        curr_assets = bs.loc[label].dropna().sort_index().values[-1]
+                        break
+                for label in ["Current Liabilities", "Total Current Liabilities"]:
+                    if label in bs.index:
+                        curr_liab = bs.loc[label].dropna().sort_index().values[-1]
+                        break
+                for label in ["Total Debt", "Long Term Debt"]:
+                    if label in bs.index:
+                        total_debt = bs.loc[label].dropna().sort_index().values[-1]
+                        break
+                for label in ["Cash And Cash Equivalents", "Cash"]:
+                    if label in bs.index:
+                        cash = bs.loc[label].dropna().sort_index().values[-1]
+                        break
+
+                if curr_assets and curr_liab and curr_liab > 0:
+                    current_ratio = curr_assets / curr_liab
+                    if current_ratio > 2.0:
+                        score += 8
+                        reasons.append(f"Current ratio {current_ratio:.1f}x — strong liquidity")
+                    elif current_ratio > 1.2:
+                        score += 3
+                        reasons.append(f"Current ratio {current_ratio:.1f}x — adequate liquidity")
+                    elif current_ratio < 1.0:
+                        score -= 10
+                        reasons.append(f"Current ratio {current_ratio:.1f}x — liquidity risk")
+
+                # Net debt check
+                if total_debt and cash and rev_row is not None:
+                    net_debt = total_debt - cash
+                    rev_latest = rev_vals[-1] if rev_row is not None and len(rev_vals) >= 1 else None
+                    if rev_latest and rev_latest > 0 and net_debt > rev_latest * 3:
+                        score -= 8
+                        reasons.append("Net debt exceeds 3x revenue — highly leveraged")
+                    elif net_debt < 0:
+                        score += 6
+                        reasons.append("Net cash position — more cash than debt")
+
+        except Exception:
+            pass  # partial data is fine — use whatever we extracted
+
+        return {"score": max(0, min(100, score)), "reasons": reasons, "available": True}
 
     def _fundamental_score(self, info: dict, horizon: str) -> dict:
         score = 50
