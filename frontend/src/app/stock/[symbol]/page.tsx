@@ -201,7 +201,7 @@ export default function StockPage() {
       </div>
 
       {/* TradingView Chart */}
-      <div className="rounded-2xl overflow-hidden border border-dark-border">
+      <div className="rounded-2xl border border-dark-border">
         <TradingViewWidget symbol={symbol} market={isCrypto ? "CRYPTO" : market} height={480} />
       </div>
 
