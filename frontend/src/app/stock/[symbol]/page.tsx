@@ -192,20 +192,12 @@ export default function StockPage() {
           {prediction?.signal && (prediction as any).trade_levels && (
             <div className="bg-dark-card border border-dark-border rounded-2xl p-6">
               <h2 className="font-bold text-lg mb-4">Trade Levels <span className="text-xs font-normal text-gray-500 ml-2">({tab} term)</span></h2>
-              {prediction.signal === "HOLD" ? (
-                <div className="flex items-center gap-3 py-4 px-4 bg-neutral/10 border border-neutral/30 rounded-xl">
-                  <span className="text-2xl">⏸</span>
-                  <div>
-                    <p className="text-sm font-medium text-gray-200">No trade recommended</p>
-                    <p className="text-xs text-gray-500 mt-0.5">The AI signal is HOLD — conditions aren't favourable for a new entry. Wait for a clearer BUY or SELL signal before committing capital.</p>
-                  </div>
-                </div>
-              ) : (() => {
+              {(() => {
                   const tl = (prediction as any).trade_levels;
                   const sig = prediction.signal;
-                  const entryLabel = sig === "BUY" ? "Buy Zone" : "Sell Zone";
-                  const entryColor = sig === "SELL" ? "text-bear" : "text-bull";
-                  const entryBg    = sig === "SELL" ? "bg-bear/10 border-bear/30" : "bg-bull/10 border-bull/30";
+                  const entryLabel = sig === "BUY" ? "Buy Zone" : sig === "SELL" ? "Sell Zone" : "Watch Zone";
+                  const entryColor = sig === "SELL" ? "text-bear" : sig === "HOLD" ? "text-gray-300" : "text-bull";
+                  const entryBg    = sig === "SELL" ? "bg-bear/10 border-bear/30" : sig === "HOLD" ? "bg-dark-border/60 border-dark-border" : "bg-bull/10 border-bull/30";
                   const rrGood     = tl.risk_reward_ratio >= 1.5;
                   const trailPct: number | null = tl.trailing_stop_pct ?? null;
                   const gridCols = trailPct
@@ -250,11 +242,14 @@ export default function StockPage() {
                     </div>
                   );
                 })()}
-              {prediction.signal !== "HOLD" && (
-                <p className="text-xs text-gray-500 mt-3">
-                  Based on 14-day ATR · Not financial advice — always set your own risk limits.
+              {prediction.signal === "HOLD" && (
+                <p className="text-xs text-yellow-600/70 mt-3">
+                  HOLD signal — no strong directional edge on this horizon. Try switching to Medium or Long Term for a clearer signal.
                 </p>
               )}
+              <p className="text-xs text-gray-500 mt-1">
+                Based on 14-day ATR · Not financial advice — always set your own risk limits.
+              </p>
             </div>
           )}
 

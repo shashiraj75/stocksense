@@ -206,13 +206,13 @@ class PredictionEngine:
             risk        = round(stop_loss - price, 2)
             reward      = round(price - take_profit, 2)
 
-        else:  # HOLD — show range, no directional trade
+        else:  # HOLD — neutral range around current price
             entry_low   = round(price - atr * 0.5, 2)
             entry_high  = round(price + atr * 0.5, 2)
             stop_loss   = round(price - sl_distance, 2)
-            take_profit = round(price + min_tp_distance, 2)
+            take_profit = round(target, 2)
             risk        = round(price - stop_loss, 2)
-            reward      = round(take_profit - price, 2)
+            reward      = round(abs(take_profit - price), 2)
 
         rr_ratio = round(reward / risk, 2) if risk > 0 else 0
 

@@ -145,9 +145,9 @@ async def predict_crypto(symbol: str, horizon: str) -> dict:
         entry_low  = round(current_price - atr * 0.5, 2)
         entry_high = round(current_price + atr * 0.5, 2)
         stop_loss  = round(current_price - sl_distance, 2)
-        take_profit_val = round(current_price + min_tp_distance, 2)
+        take_profit_val = round(target, 2)
         risk = round(current_price - stop_loss, 2)
-        reward = round(take_profit_val - current_price, 2)
+        reward = round(abs(take_profit_val - current_price), 2)
 
     trade_levels = {
         "signal": signal,
