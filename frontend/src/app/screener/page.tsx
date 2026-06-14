@@ -8,7 +8,7 @@ import clsx from "clsx";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 
 export default function ScreenerPage() {
-  const [market, setMarket] = useState<Market>("US");
+  const [market, setMarket] = useState<Market>("IN");
   const { data, isLoading } = useQuery({
     queryKey: ["movers", market],
     queryFn: () => fetchTopMovers(market),
@@ -25,7 +25,7 @@ export default function ScreenerPage() {
       </div>
 
       <div className="flex items-center gap-3">
-        {(["US", "IN"] as Market[]).map((m) => (
+        {(["IN", "US"] as Market[]).map((m) => (
           <button
             key={m}
             onClick={() => setMarket(m)}
