@@ -41,9 +41,10 @@ interface BacktestResult {
 }
 
 export default function StockPage() {
-  const { symbol } = useParams<{ symbol: string }>();
+  const params = useParams<{ symbol: string }>();
+  const symbol = params?.symbol ?? "";
   const searchParams = useSearchParams();
-  const market = (searchParams.get("market") as Market) || "US";
+  const market = (searchParams?.get("market") as Market) || "US";
   const currency = market === "US" ? "$" : "₹";
 
   const [tab, setTab] = useState<Tab>("short");
