@@ -40,6 +40,23 @@ interface BacktestResult {
   }[];
 }
 
+function getCapCategory(marketCap: number | null | undefined, market: string) {
+  if (!marketCap || marketCap <= 0) return null;
+  if (market === "IN") {
+    const cr = marketCap / 1e7; // raw INR → crores
+    if (cr < 100)    return { label: "Penny",      color: "text-gray-400",   bg: "bg-gray-500/10 border-gray-500/30" };
+    if (cr < 5000)   return { label: "Small Cap",  color: "text-blue-400",   bg: "bg-blue-500/10 border-blue-500/30" };
+    if (cr < 20000)  return { label: "Mid Cap",    color: "text-yellow-400", bg: "bg-yellow-500/10 border-yellow-500/30" };
+    return             { label: "Large Cap",  color: "text-green-400",  bg: "bg-green-500/10 border-green-500/30" };
+  }
+  // USD
+  if (marketCap < 300e6)  return { label: "Penny",      color: "text-gray-400",   bg: "bg-gray-500/10 border-gray-500/30" };
+  if (marketCap < 2e9)    return { label: "Small Cap",  color: "text-blue-400",   bg: "bg-blue-500/10 border-blue-500/30" };
+  if (marketCap < 10e9)   return { label: "Mid Cap",    color: "text-yellow-400", bg: "bg-yellow-500/10 border-yellow-500/30" };
+  if (marketCap < 200e9)  return { label: "Large Cap",  color: "text-green-400",  bg: "bg-green-500/10 border-green-500/30" };
+  return                    { label: "Mega Cap",   color: "text-purple-400", bg: "bg-purple-500/10 border-purple-500/30" };
+}
+
 const CRYPTO_NAMES: Record<string, string> = {
   BTC: "Bitcoin", ETH: "Ethereum", BNB: "BNB", SOL: "Solana",
   XRP: "XRP", DOGE: "Dogecoin", ADA: "Cardano", AVAX: "Avalanche",
@@ -119,11 +136,20 @@ export default function StockPage() {
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <h1 className="text-3xl font-bold font-mono">{symbol}</h1>
             <span className="text-xs bg-dark-card border border-dark-border px-2 py-0.5 rounded text-gray-400">
               {isCrypto ? `CRYPTO · ${CRYPTO_NAMES[symbol] ?? symbol}` : market === "US" ? "🇺🇸 NYSE / NASDAQ" : "🇮🇳 NSE India"}
             </span>
+            {!isCrypto && (() => {
+              const cap = getCapCategory(quote?.market_cap, market);
+              if (!cap) return null;
+              return (
+                <span className={`text-xs border px-2 py-0.5 rounded font-medium ${cap.color} ${cap.bg}`}>
+                  {cap.label}
+                </span>
+              );
+            })()}
           </div>
           {(quote || cryptoQuote || (isCrypto && prediction?.current_price)) && (
             <div className="flex items-center gap-3 mt-2">
