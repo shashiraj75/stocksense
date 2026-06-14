@@ -94,7 +94,7 @@ export function SearchBar() {
   };
 
   return (
-    <div className="relative w-full max-w-md">
+    <div className="relative w-full max-w-xs">
       <div className="flex items-center gap-2 bg-dark-card border border-dark-border rounded-xl px-4 py-2.5">
         <Search size={16} className="text-gray-400" />
         <input
