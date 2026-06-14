@@ -27,7 +27,7 @@ function save(h: Holding[]) {
 export default function PortfolioPage() {
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [sym, setSym] = useState("");
-  const [market, setMarket] = useState<Market>("US");
+  const [market, setMarket] = useState<Market>("IN");
   const [qty, setQty] = useState("");
   const [avgPrice, setAvgPrice] = useState("");
   const [error, setError] = useState("");
@@ -118,7 +118,7 @@ export default function PortfolioPage() {
           <div>
             <label className="text-xs text-gray-400 mb-1 block">Market</label>
             <div className="flex gap-1">
-              {(["US", "IN"] as Market[]).map(m => (
+              {(["IN", "US"] as Market[]).map(m => (
                 <button key={m} onClick={() => setMarket(m)}
                   className={clsx("px-3 py-2 rounded-lg text-xs font-medium border transition-colors",
                     market === m ? "bg-brand-500 text-white border-brand-500" : "bg-dark-bg border-dark-border text-gray-400 hover:text-white")}>

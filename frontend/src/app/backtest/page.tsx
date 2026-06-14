@@ -22,7 +22,7 @@ interface BacktestResult {
 
 export default function BacktestPage() {
   const [symbol, setSymbol] = useState("AAPL");
-  const [market, setMarket] = useState<Market>("US");
+  const [market, setMarket] = useState<Market>("IN");
   const [horizon, setHorizon] = useState<Horizon>("short");
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<BacktestResult | null>(null);
@@ -68,7 +68,7 @@ export default function BacktestPage() {
         <div>
           <label className="text-xs text-gray-400 mb-1.5 block">Market</label>
           <div className="flex gap-2">
-            {(["US", "IN"] as Market[]).map(m => (
+            {(["IN", "US"] as Market[]).map(m => (
               <button key={m} onClick={() => setMarket(m)}
                 className={clsx("px-4 py-2.5 rounded-xl text-sm font-medium border transition-colors",
                   market === m ? "bg-brand-500 text-white border-brand-500" : "bg-dark-bg border-dark-border text-gray-400 hover:text-white")}>

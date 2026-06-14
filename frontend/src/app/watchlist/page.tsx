@@ -17,7 +17,7 @@ const removeFromWatchlist = (symbol: string) => api.delete(`/api/watchlist/${USE
 export default function WatchlistPage() {
   const qc = useQueryClient();
   const [symbol, setSymbol] = useState("");
-  const [market, setMarket] = useState<Market>("US");
+  const [market, setMarket] = useState<Market>("IN");
 
   const { data, isLoading } = useQuery({ queryKey: ["watchlist"], queryFn: getWatchlist });
 
@@ -47,7 +47,7 @@ export default function WatchlistPage() {
           onChange={e => setSymbol(e.target.value.toUpperCase())}
           onKeyDown={e => e.key === "Enter" && symbol && add.mutate({ symbol, market, notes: "" })}
         />
-        {(["US", "IN"] as Market[]).map(m => (
+        {(["IN", "US"] as Market[]).map(m => (
           <button key={m} onClick={() => setMarket(m)}
             className={clsx("px-4 py-2 rounded-xl text-sm font-medium border transition-colors",
               market === m ? "bg-brand-500 text-white border-brand-500" : "bg-dark-card border-dark-border text-gray-400 hover:text-white")}>

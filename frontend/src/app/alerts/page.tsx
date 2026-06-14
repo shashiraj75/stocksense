@@ -22,7 +22,7 @@ function save(a: Alert[]) { localStorage.setItem(STORAGE_KEY, JSON.stringify(a))
 export default function AlertsPage() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [sym, setSym] = useState("");
-  const [market, setMarket] = useState<Market>("US");
+  const [market, setMarket] = useState<Market>("IN");
   const [targetPrice, setTargetPrice] = useState("");
   const [direction, setDirection] = useState<"above" | "below">("above");
   const [error, setError] = useState("");
@@ -111,7 +111,7 @@ export default function AlertsPage() {
           <div>
             <label className="text-xs text-gray-400 mb-1 block">Market</label>
             <div className="flex gap-1">
-              {(["US", "IN"] as Market[]).map(m => (
+              {(["IN", "US"] as Market[]).map(m => (
                 <button key={m} onClick={() => setMarket(m)}
                   className={clsx("px-3 py-2 rounded-lg text-xs font-medium border transition-colors",
                     market === m ? "bg-brand-500 text-white border-brand-500" : "bg-dark-bg border-dark-border text-gray-400 hover:text-white")}>
