@@ -116,10 +116,13 @@ export function TradingViewWidget({ symbol, market, height = 450 }: Props) {
       interval: "D",
       timezone: "Etc/UTC",
       theme: "dark",
-      style: "1",
+      style: "1",           // 1 = Candles
       locale: "en",
       enable_publishing: false,
       allow_symbol_change: false,
+      hide_top_toolbar: false,
+      hide_legend: false,
+      save_image: false,
       calendar: false,
       support_host: "https://www.tradingview.com",
     });
@@ -136,6 +139,6 @@ export function TradingViewWidget({ symbol, market, height = 450 }: Props) {
   }, [tvSymbol, height]);
 
   return (
-    <div className="tradingview-widget-container w-full rounded-xl overflow-hidden" style={{ height }} ref={containerRef} />
+    <div className="tradingview-widget-container w-full rounded-xl" style={{ height }} ref={containerRef} />
   );
 }
