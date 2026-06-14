@@ -160,14 +160,16 @@ class PredictionEngine:
         """
         MIN_RR = 1.5  # never show a trade with R:R worse than 1.5
 
-        # Step 1 — determine stop loss distance
+        # Step 1 — determine stop loss distance (wider for longer horizons)
         profit_distance = abs(target - price)
         if horizon == "short":
-            sl_distance = atr * 1.5
+            sl_distance = atr * 1.5                              # tight: ~1-2 weeks noise
         elif horizon == "medium":
-            sl_distance = max(profit_distance * 0.5, atr * 1.5)
+            sl_distance = max(profit_distance * 0.5, atr * 3.0) # wider: 3-month swings
         else:
-            sl_distance = max(profit_distance * 0.4, atr * 2.0)
+            sl_distance = max(profit_distance * 0.4, atr * 5.0) # widest: long-term trend
+        # Cap: stop loss can never be more than 25% away (prevents negatives on big targets)
+        sl_distance = min(sl_distance, price * 0.25)
 
         # Step 2 — ensure take profit gives at least MIN_RR
         min_tp_distance = sl_distance * MIN_RR
