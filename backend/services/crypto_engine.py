@@ -107,7 +107,39 @@ async def predict_crypto(symbol: str, horizon: str) -> dict:
     confidence = min(100, int(abs(composite - 50) * 3.0))
 
     current_price = float(df["Close"].iloc[-1])
+    atr = float((df["High"] - df["Low"]).rolling(14).mean().iloc[-1])
     target = _estimate_target(current_price, signal, confidence, horizon, df)
+
+    # Trade levels (ATR-based, wider for crypto volatility)
+    atr_mult = {"short": 2.0, "medium": 3.0, "long": 5.0}[horizon]
+    if signal == "BUY":
+        entry_low  = round(current_price - atr * 0.3, 2)
+        entry_high = round(current_price + atr * 0.1, 2)
+        stop_loss  = round(current_price - atr * atr_mult, 2)
+        risk = round(current_price - stop_loss, 2)
+        reward = round(target - current_price, 2)
+    elif signal == "SELL":
+        entry_low  = round(current_price - atr * 0.1, 2)
+        entry_high = round(current_price + atr * 0.3, 2)
+        stop_loss  = round(current_price + atr * atr_mult, 2)
+        risk = round(stop_loss - current_price, 2)
+        reward = round(current_price - target, 2)
+    else:
+        entry_low  = round(current_price - atr * 0.5, 2)
+        entry_high = round(current_price + atr * 0.5, 2)
+        stop_loss  = round(current_price - atr * atr_mult, 2)
+        risk = round(current_price - stop_loss, 2)
+        reward = round(abs(target - current_price), 2)
+
+    trade_levels = {
+        "entry_low": entry_low,
+        "entry_high": entry_high,
+        "stop_loss": stop_loss,
+        "take_profit": target,
+        "risk_per_share": risk,
+        "reward_per_share": reward,
+        "risk_reward_ratio": round(reward / risk, 2) if risk > 0 else 0,
+    }
 
     # Build reasoning
     reasoning = []
@@ -137,6 +169,7 @@ async def predict_crypto(symbol: str, horizon: str) -> dict:
         "confidence": confidence,
         "current_price": round(current_price, 2),
         "target_price": target,
+        "trade_levels": trade_levels,
         "reasoning": reasoning,
         "technical": tech,
         "fear_greed": fear_greed,

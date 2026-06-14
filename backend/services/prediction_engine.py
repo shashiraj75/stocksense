@@ -123,10 +123,13 @@ class PredictionEngine:
             tech_signal, fund_score, sentiment_score, horizon, weights, regime
         )
 
-        current_price = df["Close"].iloc[-1]
+        current_price = float(df["Close"].iloc[-1])
+        atr = float((df["High"] - df["Low"]).rolling(14).mean().iloc[-1])
+
         target_price = self._estimate_target(
             current_price, signal, confidence, horizon, df, info
         )
+        trade_levels = self._trade_levels(current_price, signal, target_price, atr, horizon)
 
         return {
             "symbol": symbol,
@@ -136,12 +139,54 @@ class PredictionEngine:
             "confidence": confidence,
             "current_price": round(current_price, 2),
             "target_price": target_price,
+            "trade_levels": trade_levels,
             "reasoning": reasoning,
             "technical": tech_signal,
             "fundamental_score": fund_score,
             "sentiment_score": sentiment_score,
             "market_regime": regime,
             "weights_used": {k: v for k, v in weights.items() if k in ("tech", "fund", "sentiment", "vol_regime")},
+        }
+
+    def _trade_levels(self, price: float, signal: str, target: float, atr: float, horizon: str) -> dict:
+        """
+        Returns actionable entry, stop-loss, and take-profit levels.
+        ATR multipliers scale with horizon: longer horizon = wider stops.
+        """
+        atr_mult = {"short": 1.5, "medium": 2.5, "long": 4.0}[horizon]
+
+        if signal == "BUY":
+            entry_low  = round(price - atr * 0.3, 2)   # slight dip entry
+            entry_high = round(price + atr * 0.1, 2)   # don't chase above this
+            stop_loss  = round(price - atr * atr_mult, 2)
+            take_profit = target
+            risk   = round(price - stop_loss, 2)
+            reward = round(take_profit - price, 2)
+        elif signal == "SELL":
+            entry_low  = round(price - atr * 0.1, 2)
+            entry_high = round(price + atr * 0.3, 2)   # short entry zone
+            stop_loss  = round(price + atr * atr_mult, 2)
+            take_profit = target
+            risk   = round(stop_loss - price, 2)
+            reward = round(price - take_profit, 2)
+        else:  # HOLD
+            entry_low  = round(price - atr * 0.5, 2)
+            entry_high = round(price + atr * 0.5, 2)
+            stop_loss  = round(price - atr * atr_mult, 2)
+            take_profit = target
+            risk   = round(price - stop_loss, 2)
+            reward = round(abs(take_profit - price), 2)
+
+        rr_ratio = round(reward / risk, 2) if risk > 0 else 0
+
+        return {
+            "entry_low": entry_low,
+            "entry_high": entry_high,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "risk_per_share": risk,
+            "reward_per_share": reward,
+            "risk_reward_ratio": rr_ratio,
         }
 
     def _fundamental_score(self, info: dict, horizon: str) -> dict:

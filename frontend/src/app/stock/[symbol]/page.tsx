@@ -284,6 +284,49 @@ export default function StockPage() {
             </div>
           </div>
 
+          {/* Trade Levels */}
+          {prediction?.signal && (prediction as any).trade_levels && (
+            <div className="bg-dark-card border border-dark-border rounded-2xl p-6">
+              <h2 className="font-bold text-lg mb-4">Trade Levels</h2>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {[
+                  {
+                    label: "Buy Zone",
+                    value: `${currency}${(prediction as any).trade_levels.entry_low.toLocaleString()} – ${currency}${(prediction as any).trade_levels.entry_high.toLocaleString()}`,
+                    color: "text-bull",
+                    bg: "bg-bull/10 border-bull/30",
+                  },
+                  {
+                    label: "Take Profit",
+                    value: `${currency}${(prediction as any).trade_levels.take_profit.toLocaleString()}`,
+                    color: "text-bull",
+                    bg: "bg-bull/10 border-bull/30",
+                  },
+                  {
+                    label: "Stop Loss",
+                    value: `${currency}${(prediction as any).trade_levels.stop_loss.toLocaleString()}`,
+                    color: "text-bear",
+                    bg: "bg-bear/10 border-bear/30",
+                  },
+                  {
+                    label: "Risk / Reward",
+                    value: `1 : ${(prediction as any).trade_levels.risk_reward_ratio}`,
+                    color: (prediction as any).trade_levels.risk_reward_ratio >= 1.5 ? "text-bull" : "text-neutral",
+                    bg: (prediction as any).trade_levels.risk_reward_ratio >= 1.5 ? "bg-bull/10 border-bull/30" : "bg-neutral/10 border-neutral/30",
+                  },
+                ].map(({ label, value, color, bg }) => (
+                  <div key={label} className={`rounded-xl border p-4 ${bg}`}>
+                    <p className="text-xs text-gray-400 mb-1">{label}</p>
+                    <p className={`font-mono font-bold text-sm ${color}`}>{value}</p>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-gray-600 mt-3">
+                Based on 14-day ATR. Not financial advice — always set your own risk limits.
+              </p>
+            </div>
+          )}
+
           <section>
             <h2 className="text-lg font-semibold mb-3">News & Sentiment</h2>
             <div className="grid md:grid-cols-2 gap-3">
