@@ -99,6 +99,14 @@ def generate_picks() -> dict:
     elapsed = round(time.time() - start, 1)
     total = sum(len(v) for v in picks.values())
     print(f"[picks] Done in {elapsed}s — {total} BUY picks found.")
+
+    # Send to Telegram if configured
+    try:
+        from services.telegram_bot import send_picks_to_telegram
+        send_picks_to_telegram(picks)
+    except Exception as e:
+        print(f"[telegram] Error: {e}")
+
     return payload
 
 

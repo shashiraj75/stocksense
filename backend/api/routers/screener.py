@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Query
 from services.screener_service import ScreenerService
+from services.heatmap_service import get_heatmap
 from typing import Literal, Optional
 import yfinance as yf
 
@@ -39,6 +40,11 @@ async def crypto_movers():
 @router.get("/top-movers")
 async def top_movers(market: Literal["US", "IN"] = Query("US")):
     return await svc.get_top_movers(market)
+
+
+@router.get("/heatmap")
+async def heatmap(market: Literal["US", "IN"] = Query("IN")):
+    return {"sectors": get_heatmap(market)}
 
 
 @router.get("/filter")
