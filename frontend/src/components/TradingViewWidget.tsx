@@ -1,4 +1,5 @@
 "use client";
+import { useState } from "react";
 
 interface Props {
   symbol: string;
@@ -58,19 +59,30 @@ function getTVSymbol(symbol: string, market: "US" | "IN" | "CRYPTO" | "EU"): str
   return `NASDAQ:${up}`;
 }
 
-export function TradingViewWidget({ symbol, market, height = 450 }: Props) {
+const INTERVALS = [
+  { label: "1m",  value: "1"  },
+  { label: "5m",  value: "5"  },
+  { label: "15m", value: "15" },
+  { label: "1h",  value: "60" },
+  { label: "4h",  value: "240"},
+  { label: "1D",  value: "D"  },
+  { label: "1W",  value: "W"  },
+  { label: "1M",  value: "M"  },
+];
+
+export function TradingViewWidget({ symbol, market, height = 420 }: Props) {
+  const [interval, setInterval] = useState("D");
   const tvSymbol = getTVSymbol(symbol, market);
 
-  // Use TradingView's widgetembed URL directly — no JS wrapper, no overlay divs
   const src =
     `https://www.tradingview.com/widgetembed/` +
     `?symbol=${encodeURIComponent(tvSymbol)}` +
-    `&interval=D` +
+    `&interval=${interval}` +
     `&hidesidetoolbar=0` +
-    `&hidetoptoolbar=0` +
+    `&hidetoptoolbar=1` +
     `&symboledit=0` +
     `&saveimage=0` +
-    `&toolbarbg=1a1d2e` +
+    `&toolbarbg=131722` +
     `&theme=dark` +
     `&style=1` +
     `&timezone=Etc%2FUTC` +
@@ -79,15 +91,35 @@ export function TradingViewWidget({ symbol, market, height = 450 }: Props) {
     `&utm_source=stocksense`;
 
   return (
-    <iframe
-      key={tvSymbol}
-      src={src}
-      width="100%"
-      height={height}
-      frameBorder="0"
-      allow="clipboard-read; clipboard-write"
-      style={{ display: "block", border: "none" }}
-      title={`${symbol} chart`}
-    />
+    <div className="w-full bg-[#131722] rounded-xl overflow-hidden">
+      {/* Custom interval bar */}
+      <div className="flex items-center gap-1 px-3 pt-3 pb-2">
+        {INTERVALS.map((iv) => (
+          <button
+            key={iv.value}
+            onClick={() => setInterval(iv.value)}
+            className={`px-3 py-1 rounded text-xs font-semibold transition-colors ${
+              interval === iv.value
+                ? "bg-blue-600 text-white"
+                : "text-gray-400 hover:text-white hover:bg-white/10"
+            }`}
+          >
+            {iv.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Chart iframe — hidetoptoolbar=1 hides TV's broken interval row */}
+      <iframe
+        key={`${tvSymbol}-${interval}`}
+        src={src}
+        width="100%"
+        height={height}
+        frameBorder="0"
+        allow="clipboard-read; clipboard-write"
+        style={{ display: "block", border: "none" }}
+        title={`${symbol} chart`}
+      />
+    </div>
   );
 }
