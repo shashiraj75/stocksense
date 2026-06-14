@@ -82,9 +82,9 @@ export default function StockPage() {
   });
 
   const { data: prediction, isLoading: predLoading } = useQuery({
-    queryKey: ["prediction", symbol, market, horizon],
-    queryFn: () => fetchPrediction(symbol, market, horizon),
-    enabled: tab !== "backtest" && !isCrypto,
+    queryKey: ["prediction", symbol, isCrypto ? "CRYPTO" : market, horizon],
+    queryFn: () => fetchPrediction(symbol, isCrypto ? "CRYPTO" as any : market, horizon),
+    enabled: tab !== "backtest",
   });
 
   const { data: news } = useQuery({
@@ -146,40 +146,37 @@ export default function StockPage() {
         )}
       </div>
 
-      {/* Tabs: Short / Medium / Long / Backtest — hidden for crypto */}
-      {!isCrypto && <div className="flex gap-2 flex-wrap">
-        {HORIZON_TABS.map(({ key, label }) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
+      {/* Tabs — Short / Medium / Long for all markets, + Backtest for stocks only */}
+      <div className="flex gap-2 flex-wrap">
+        {(isCrypto
+          ? HORIZON_TABS.filter(t => t.key !== "backtest")
+          : HORIZON_TABS
+        ).map(({ key, label }) => (
+          <button key={key} onClick={() => setTab(key)}
             className={clsx(
               "flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
-              tab === key
-                ? "bg-brand-500 text-white"
+              tab === key ? "bg-brand-500 text-white"
                 : "bg-dark-card border border-dark-border text-gray-400 hover:text-white"
-            )}
-          >
+            )}>
             {key === "backtest" && <FlaskConical size={14} />}
             {label}
           </button>
         ))}
-      </div>}
-
-      {/* TradingView Chart — taller for crypto since it's the only content */}
-      <div className="rounded-2xl overflow-hidden border border-dark-border">
-        <TradingViewWidget symbol={symbol} market={isCrypto ? "CRYPTO" : market} height={isCrypto ? 620 : 480} />
       </div>
 
-      {/* Crypto notice */}
+      {/* TradingView Chart */}
+      <div className="rounded-2xl overflow-hidden border border-dark-border">
+        <TradingViewWidget symbol={symbol} market={isCrypto ? "CRYPTO" : market} height={480} />
+      </div>
+
       {isCrypto && (
-        <div className="flex items-center justify-between bg-dark-card border border-dark-border rounded-xl px-5 py-3 text-sm text-gray-400">
-          <span>Chart powered by <span className="text-white font-medium">TradingView</span> · Binance USDT pair</span>
-          <span className="text-xs text-brand-500">AI predictions for crypto — coming soon</span>
+        <div className="flex items-center justify-between bg-dark-card border border-dark-border rounded-xl px-4 py-2.5 text-xs text-gray-500">
+          <span>Chart: <span className="text-white">TradingView</span> · Binance USDT · Predictions: technicals + volume + sentiment</span>
         </div>
       )}
 
       {/* ── PREDICTION VIEW ── */}
-      {!isCrypto && tab !== "backtest" && (
+      {tab !== "backtest" && (
         <>
           <div className="grid md:grid-cols-2 gap-6">
             <div className="bg-dark-card border border-dark-border rounded-2xl p-6 space-y-5">
@@ -223,8 +220,8 @@ export default function StockPage() {
             </div>
 
             <div className="bg-dark-card border border-dark-border rounded-2xl p-6 space-y-4">
-              <h2 className="font-bold text-lg">Key Stats</h2>
-              {quote && (
+              <h2 className="font-bold text-lg">{isCrypto ? "Signal Breakdown" : "Key Stats"}</h2>
+              {!isCrypto && quote && (
                 <dl className="space-y-3">
                   {[
                     ["52W High", `${currency}${quote.fifty_two_week_high?.toLocaleString()}`],
@@ -240,14 +237,25 @@ export default function StockPage() {
                 </dl>
               )}
               {prediction && (
-                <div className="border-t border-dark-border pt-4 space-y-2">
+                <div className={!isCrypto ? "border-t border-dark-border pt-4 space-y-2" : "space-y-2"}>
                   <p className="text-gray-400 text-sm mb-2">Score Breakdown</p>
-                  <ConfidenceMeter value={prediction.fundamental_score.score} label="Fundamental Score" />
-                  <ConfidenceMeter value={prediction.sentiment_score.score} label="News Sentiment Score" />
-                  <ConfidenceMeter
-                    value={prediction.technical?.rsi ? Math.min(100, Math.round(prediction.technical.rsi)) : 50}
-                    label="RSI"
-                  />
+                  {isCrypto ? (
+                    <>
+                      <ConfidenceMeter value={prediction.technical?.score ?? 50} label="Technical Score" />
+                      <ConfidenceMeter value={(prediction as any).fear_greed?.score ?? 50} label="Market Sentiment (Fear/Greed)" />
+                      <ConfidenceMeter value={prediction.sentiment_score?.score ?? 50} label="News Sentiment" />
+                      <ConfidenceMeter value={(prediction as any).on_chain_proxy?.score ?? 50} label="Volume Analysis" />
+                    </>
+                  ) : (
+                    <>
+                      <ConfidenceMeter value={prediction.fundamental_score.score} label="Fundamental Score" />
+                      <ConfidenceMeter value={prediction.sentiment_score.score} label="News Sentiment Score" />
+                      <ConfidenceMeter
+                        value={prediction.technical?.rsi ? Math.min(100, Math.round(prediction.technical.rsi)) : 50}
+                        label="RSI"
+                      />
+                    </>
+                  )}
                 </div>
               )}
             </div>
