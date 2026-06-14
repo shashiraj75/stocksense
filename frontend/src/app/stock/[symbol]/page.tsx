@@ -190,6 +190,7 @@ export default function StockPage() {
               <h2 className="font-bold text-lg">AI Prediction — {tab} term</h2>
               {predLoading ? (
                 <div className="space-y-3">
+                  <p className="text-xs text-gray-500 animate-pulse">Fetching prediction — backend may be waking up, please wait…</p>
                   {[1, 2, 3].map((i) => (
                     <div key={i} className="h-5 bg-dark-border rounded animate-pulse" />
                   ))}
