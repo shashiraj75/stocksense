@@ -3,7 +3,7 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
 
 router = APIRouter()
 
-PICKS_SECRET = os.getenv("PICKS_SECRET", "stocksense-picks-2025")
+PICKS_SECRET = os.getenv("PICKS_SECRET", "stocksense-picks-2026")
 
 
 @router.get("/daily")
