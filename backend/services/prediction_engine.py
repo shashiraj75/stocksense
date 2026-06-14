@@ -153,54 +153,61 @@ class PredictionEngine:
 
     def _trade_levels(self, price: float, signal: str, target: float, atr: float, horizon: str) -> dict:
         """
-        Stop loss strategy:
-        - Short term: ATR-based (tight, precise for swing trades)
-        - Medium/Long: proportional to profit target so R:R stays meaningful.
-          Stop = price - (target_distance * stop_ratio), targeting ~1:2 R:R.
+        Trade level logic:
+        - Stop loss: ATR-based for short term; proportional for medium/long
+        - Take profit: AI target, but extended to guarantee minimum 1.5:1 R:R
+        - Entry zone: narrow band around current price based on signal direction
         """
-        profit_distance = abs(target - price)
+        MIN_RR = 1.5  # never show a trade with R:R worse than 1.5
 
+        # Step 1 — determine stop loss distance
+        profit_distance = abs(target - price)
         if horizon == "short":
-            # ATR-based stop — appropriate for short-term swing trades
             sl_distance = atr * 1.5
         elif horizon == "medium":
-            # Stop at 50% of profit target distance → 1:2 R:R
             sl_distance = max(profit_distance * 0.5, atr * 1.5)
-        else:  # long
-            # Stop at 40% of profit target distance → 1:2.5 R:R
+        else:
             sl_distance = max(profit_distance * 0.4, atr * 2.0)
+
+        # Step 2 — ensure take profit gives at least MIN_RR
+        min_tp_distance = sl_distance * MIN_RR
 
         if signal == "BUY":
             entry_low   = round(price - atr * 0.3, 2)
             entry_high  = round(price + atr * 0.1, 2)
             stop_loss   = round(price - sl_distance, 2)
-            take_profit = target
+            # extend TP if AI target is too close
+            take_profit = round(max(target, price + min_tp_distance), 2)
             risk        = round(price - stop_loss, 2)
             reward      = round(take_profit - price, 2)
+
         elif signal == "SELL":
             entry_low   = round(price - atr * 0.1, 2)
             entry_high  = round(price + atr * 0.3, 2)
             stop_loss   = round(price + sl_distance, 2)
-            take_profit = target
+            # extend TP downward if AI target is too close
+            take_profit = round(min(target, price - min_tp_distance), 2)
             risk        = round(stop_loss - price, 2)
             reward      = round(price - take_profit, 2)
-        else:  # HOLD
+
+        else:  # HOLD — show range, no directional trade
             entry_low   = round(price - atr * 0.5, 2)
             entry_high  = round(price + atr * 0.5, 2)
             stop_loss   = round(price - sl_distance, 2)
-            take_profit = target
+            take_profit = round(price + min_tp_distance, 2)
             risk        = round(price - stop_loss, 2)
-            reward      = round(abs(take_profit - price), 2)
+            reward      = round(take_profit - price, 2)
 
         rr_ratio = round(reward / risk, 2) if risk > 0 else 0
 
         return {
+            "signal": signal,          # pass signal so frontend can label correctly
             "entry_low": entry_low,
             "entry_high": entry_high,
             "stop_loss": stop_loss,
             "take_profit": take_profit,
-            "risk_per_share": risk,
-            "reward_per_share": reward,
+            "risk_per_share": round(risk, 2),
+            "reward_per_share": round(reward, 2),
             "risk_reward_ratio": rr_ratio,
         }
 

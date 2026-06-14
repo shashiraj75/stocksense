@@ -110,41 +110,48 @@ async def predict_crypto(symbol: str, horizon: str) -> dict:
     atr = float((df["High"] - df["Low"]).rolling(14).mean().iloc[-1])
     target = _estimate_target(current_price, signal, confidence, horizon, df)
 
-    # Trade levels — short: ATR-based; medium/long: proportional to target
+    # Trade levels — short: ATR-based; medium/long: proportional; min 1.5:1 R:R
+    MIN_RR = 1.5
     profit_distance = abs(target - current_price)
     if horizon == "short":
-        sl_distance = atr * 2.0   # wider for crypto volatility
+        sl_distance = atr * 2.0
     elif horizon == "medium":
         sl_distance = max(profit_distance * 0.5, atr * 2.0)
     else:
         sl_distance = max(profit_distance * 0.4, atr * 3.0)
 
+    min_tp_distance = sl_distance * MIN_RR
+
     if signal == "BUY":
         entry_low  = round(current_price - atr * 0.3, 2)
         entry_high = round(current_price + atr * 0.1, 2)
         stop_loss  = round(current_price - sl_distance, 2)
+        take_profit_val = round(max(target, current_price + min_tp_distance), 2)
         risk = round(current_price - stop_loss, 2)
-        reward = round(target - current_price, 2)
+        reward = round(take_profit_val - current_price, 2)
     elif signal == "SELL":
         entry_low  = round(current_price - atr * 0.1, 2)
         entry_high = round(current_price + atr * 0.3, 2)
         stop_loss  = round(current_price + sl_distance, 2)
+        take_profit_val = round(min(target, current_price - min_tp_distance), 2)
         risk = round(stop_loss - current_price, 2)
-        reward = round(current_price - target, 2)
+        reward = round(current_price - take_profit_val, 2)
     else:
         entry_low  = round(current_price - atr * 0.5, 2)
         entry_high = round(current_price + atr * 0.5, 2)
         stop_loss  = round(current_price - sl_distance, 2)
+        take_profit_val = round(current_price + min_tp_distance, 2)
         risk = round(current_price - stop_loss, 2)
-        reward = round(abs(target - current_price), 2)
+        reward = round(take_profit_val - current_price, 2)
 
     trade_levels = {
+        "signal": signal,
         "entry_low": entry_low,
         "entry_high": entry_high,
         "stop_loss": stop_loss,
-        "take_profit": target,
-        "risk_per_share": risk,
-        "reward_per_share": reward,
+        "take_profit": take_profit_val,
+        "risk_per_share": round(risk, 2),
+        "reward_per_share": round(reward, 2),
         "risk_reward_ratio": round(reward / risk, 2) if risk > 0 else 0,
     }
 

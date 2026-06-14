@@ -192,32 +192,41 @@ export default function StockPage() {
             <div className="bg-dark-card border border-dark-border rounded-2xl p-6">
               <h2 className="font-bold text-lg mb-4">Trade Levels <span className="text-xs font-normal text-gray-500 ml-2">({tab} term)</span></h2>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                {[
-                  {
-                    label: "Buy Zone",
-                    value: `${currency}${(prediction as any).trade_levels.entry_low.toLocaleString()} – ${currency}${(prediction as any).trade_levels.entry_high.toLocaleString()}`,
-                    color: "text-bull",
-                    bg: "bg-bull/10 border-bull/30",
-                  },
-                  {
-                    label: "Take Profit",
-                    value: `${currency}${(prediction as any).trade_levels.take_profit.toLocaleString()}`,
-                    color: "text-bull",
-                    bg: "bg-bull/10 border-bull/30",
-                  },
-                  {
-                    label: "Stop Loss",
-                    value: `${currency}${(prediction as any).trade_levels.stop_loss.toLocaleString()}`,
-                    color: "text-bear",
-                    bg: "bg-bear/10 border-bear/30",
-                  },
-                  {
-                    label: "Risk / Reward",
-                    value: `1 : ${(prediction as any).trade_levels.risk_reward_ratio}`,
-                    color: (prediction as any).trade_levels.risk_reward_ratio >= 1.5 ? "text-bull" : "text-neutral",
-                    bg: (prediction as any).trade_levels.risk_reward_ratio >= 1.5 ? "bg-bull/10 border-bull/30" : "bg-neutral/10 border-neutral/30",
-                  },
-                ].map(({ label, value, color, bg }) => (
+                {(() => {
+                  const tl = (prediction as any).trade_levels;
+                  const sig = prediction.signal;
+                  const entryLabel = sig === "BUY" ? "Buy Zone" : sig === "SELL" ? "Sell Zone" : "Watch Zone";
+                  const entryColor = sig === "SELL" ? "text-bear" : "text-bull";
+                  const entryBg    = sig === "SELL" ? "bg-bear/10 border-bear/30" : "bg-bull/10 border-bull/30";
+                  const tpColor    = sig === "SELL" ? "text-bull" : "text-bull";
+                  const rrGood     = tl.risk_reward_ratio >= 1.5;
+                  return [
+                    {
+                      label: entryLabel,
+                      value: `${currency}${tl.entry_low.toLocaleString()} – ${currency}${tl.entry_high.toLocaleString()}`,
+                      color: entryColor,
+                      bg: entryBg,
+                    },
+                    {
+                      label: "Take Profit",
+                      value: `${currency}${tl.take_profit.toLocaleString()}`,
+                      color: tpColor,
+                      bg: "bg-bull/10 border-bull/30",
+                    },
+                    {
+                      label: "Stop Loss",
+                      value: `${currency}${tl.stop_loss.toLocaleString()}`,
+                      color: "text-bear",
+                      bg: "bg-bear/10 border-bear/30",
+                    },
+                    {
+                      label: "Risk / Reward",
+                      value: `1 : ${tl.risk_reward_ratio}`,
+                      color: rrGood ? "text-bull" : "text-neutral",
+                      bg: rrGood ? "bg-bull/10 border-bull/30" : "bg-neutral/10 border-neutral/30",
+                    },
+                  ];
+                })().map(({ label, value, color, bg }) => (
                   <div key={label} className={`rounded-xl border p-4 ${bg}`}>
                     <p className="text-xs text-gray-400 mb-1">{label}</p>
                     <p className={`font-mono font-bold text-sm ${color}`}>{value}</p>
