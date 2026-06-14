@@ -88,9 +88,8 @@ export default function StockPage() {
   });
 
   const { data: news } = useQuery({
-    queryKey: ["news", symbol, market],
-    queryFn: () => fetchNews(symbol, market),
-    enabled: !isCrypto,
+    queryKey: ["news", symbol, isCrypto ? "US" : market],
+    queryFn: () => fetchNews(symbol, isCrypto ? "US" : market),
   });
 
   const runBacktest = async () => {
@@ -267,8 +266,11 @@ export default function StockPage() {
               {news?.articles.slice(0, 8).map((a: any, i: number) => (
                 <NewsCard key={i} article={a} />
               ))}
-              {!news?.articles.length && (
-                <p className="text-gray-500 text-sm col-span-2">Loading news from free RSS feeds…</p>
+              {news && !news.articles.length && (
+                <p className="text-gray-500 text-sm col-span-2">No recent news found.</p>
+              )}
+              {!news && (
+                <p className="text-gray-500 text-sm col-span-2 animate-pulse">Fetching latest news…</p>
               )}
             </div>
           </section>
