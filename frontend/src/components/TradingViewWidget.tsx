@@ -118,14 +118,14 @@ export function TradingViewWidget({ symbol, market, height = 450 }: Props) {
       style: "1",
       locale: "en",
       enable_publishing: false,
-      allow_symbol_change: true,
+      allow_symbol_change: false,
       calendar: false,
       support_host: "https://www.tradingview.com",
     });
 
     const wrapper = document.createElement("div");
     wrapper.className = "tradingview-widget-container__widget";
-    wrapper.style.height = `${height - 32}px`;
+    wrapper.style.height = "100%";
     wrapper.style.width = "100%";
 
     containerRef.current.appendChild(wrapper);
