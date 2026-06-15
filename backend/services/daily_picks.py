@@ -170,6 +170,7 @@ def _predict_stock(symbol: str, horizon: str) -> dict | None:
                 "reasoning": reasoning,
                 "summary": _build_summary(result, horizon),
                 "global_context": result.get("global_context"),
+                "quality_factors": result.get("quality_factors"),
                 "horizon": horizon,
             }
     except Exception:

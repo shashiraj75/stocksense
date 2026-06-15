@@ -4,6 +4,7 @@ import numpy as np
 from services.technical_indicators import compute_indicators, get_signal_summary
 from services.news_sentiment import NewsSentimentService
 from services.global_context import get_global_context
+from services.quality_factors import compute_all_quality_factors
 
 MARKET_SUFFIX = {"US": "", "IN": ".NS"}
 _news_svc = NewsSentimentService()
@@ -147,12 +148,21 @@ class PredictionEngine:
         # 52-week position
         week52_score = self._week52_score(df, info)
 
+        # Professional quality factors (earnings revisions, institutional, RS, sector, liquidity, Piotroski, ROIC)
+        quality = {}
+        if market == "IN":
+            try:
+                quality = compute_all_quality_factors(symbol, ticker, df, info, horizon)
+            except Exception as e:
+                print(f"[quality] Error for {symbol}: {e}")
+
         # Dynamic weights based on volatility
         weights = _dynamic_weights(df, horizon)
 
         signal, confidence, reasoning = self._composite_signal(
             tech_signal, fund_score, sentiment_score, horizon, weights, regime,
             global_ctx=global_ctx, analyst_score=analyst_score, week52_score=week52_score,
+            quality=quality,
         )
 
         current_price = float(df["Close"].iloc[-1])
@@ -182,6 +192,12 @@ class PredictionEngine:
                 "levels": global_ctx.get("levels", {}),
                 "changes": global_ctx.get("changes", {}),
             } if global_ctx else None,
+            "quality_factors": {
+                "score": quality.get("score"),
+                "sector": quality.get("sector"),
+                "piotroski": quality.get("piotroski"),
+                "breakdown": {k: v.get("score") for k, v in quality.get("breakdown", {}).items()},
+            } if quality else None,
             "weights_used": {k: v for k, v in weights.items() if k in ("tech", "fund", "sentiment", "vol_regime")},
         }
 
@@ -562,7 +578,8 @@ class PredictionEngine:
     def _composite_signal(self, tech, fund, sentiment, horizon, weights, regime,
                           global_ctx: dict | None = None,
                           analyst_score: dict | None = None,
-                          week52_score: dict | None = None):
+                          week52_score: dict | None = None,
+                          quality: dict | None = None):
         tech_score = tech.get("score", 50)
 
         # Base composite from core signals
@@ -593,6 +610,11 @@ class PredictionEngine:
         if week52_score:
             week52_contribution = (week52_score.get("score", 50) - 50) * 0.06
             composite += week52_contribution
+
+        # Quality factors — professional-grade signal (±10 max, consistent across horizons)
+        if quality and quality.get("score") is not None:
+            quality_contribution = (quality["score"] - 50) * 0.12
+            composite += quality_contribution
 
         composite = max(0, min(100, composite))
 
@@ -640,6 +662,11 @@ class PredictionEngine:
                 reasoning.append(r)
             # Stock-specific macro impact
             for r in global_ctx.get("stock_reasons", [])[:3]:
+                reasoning.append(r)
+
+        # Quality factors — top reasons from each dimension
+        if quality:
+            for r in quality.get("reasons", [])[:6]:
                 reasoning.append(r)
 
         # News sentiment

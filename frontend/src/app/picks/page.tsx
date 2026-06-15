@@ -7,6 +7,13 @@ import { TrendingUp, Clock, AlertCircle, ChevronDown, ChevronUp } from "lucide-r
 
 type ReasonItem = { indicator: string; signal: string; reason: string };
 
+type QualityFactors = {
+  score?: number;
+  sector?: string;
+  piotroski?: number | null;
+  breakdown?: Record<string, number>;
+};
+
 type Pick = {
   symbol: string;
   name: string;
@@ -22,6 +29,7 @@ type Pick = {
   sentiment?: string;
   reasoning: ReasonItem[];
   summary?: string;
+  quality_factors?: QualityFactors;
   horizon: string;
 };
 
@@ -52,9 +60,14 @@ const SIGNAL_COLOR: Record<string, string> = {
 const INDICATOR_GROUP: Record<string, string> = {
   RSI: "Technical", MACD: "Technical", EMA: "Technical", SMA: "Technical",
   Momentum: "Technical", Volume: "Technical", Candlestick: "Technical",
-  "Bollinger Bands": "Technical", ATR: "Technical",
-  Fundamental: "Fundamental", "Market Regime": "Market",
+  "Bollinger Bands": "Technical", ATR: "Technical", "Price Level": "Technical",
+  Fundamental: "Fundamental", Analyst: "Fundamental",
+  "Market Regime": "Market", Global: "Global Macro", Macro: "Global Macro",
   Sentiment: "Sentiment",
+  Earnings: "Quality Factors", Ownership: "Quality Factors",
+  "Rel. Strength": "Quality Factors", Sector: "Quality Factors",
+  Liquidity: "Quality Factors", "Corp. Actions": "Quality Factors",
+  Quality: "Quality Factors",
 };
 
 function ScoreBar({ label, value, color }: { label: string; value: number; color: string }) {
@@ -180,13 +193,44 @@ function PickCard({ pick }: { pick: Pick }) {
 
       {expanded && (
         <div className="px-4 pb-4 space-y-4 border-t border-dark-border bg-black/20">
-          {/* Score bars */}
-          {(pick.tech_score != null || pick.fund_score != null) && (
-            <div className="pt-3 space-y-2">
-              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Signal Scores</p>
-              {pick.tech_score != null && <ScoreBar label="Technical" value={pick.tech_score} color="text-blue-400" />}
-              {pick.fund_score != null && <ScoreBar label="Fundamental" value={pick.fund_score} color="text-purple-400" />}
-              <ScoreBar label="AI Confidence" value={pick.confidence} color="text-green-400" />
+          {/* Core signal scores */}
+          <div className="pt-3 space-y-2">
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Core Signal Scores</p>
+            {pick.tech_score != null && <ScoreBar label="Technical" value={pick.tech_score} color="text-blue-400" />}
+            {pick.fund_score != null && <ScoreBar label="Fundamental" value={pick.fund_score} color="text-purple-400" />}
+            <ScoreBar label="AI Confidence" value={pick.confidence} color="text-green-400" />
+          </div>
+
+          {/* Quality Factor Radar */}
+          {pick.quality_factors?.breakdown && Object.keys(pick.quality_factors.breakdown).length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Professional Quality Factors</p>
+                <div className="flex items-center gap-2 text-xs">
+                  {pick.quality_factors.sector && (
+                    <span className="px-1.5 py-0.5 bg-dark-border rounded text-gray-400">{pick.quality_factors.sector}</span>
+                  )}
+                  {pick.quality_factors.piotroski != null && (
+                    <span className={`px-1.5 py-0.5 rounded font-semibold ${pick.quality_factors.piotroski >= 7 ? "bg-green-500/20 text-green-400" : pick.quality_factors.piotroski <= 3 ? "bg-red-500/20 text-red-400" : "bg-yellow-500/20 text-yellow-400"}`}>
+                      Piotroski {pick.quality_factors.piotroski}/9
+                    </span>
+                  )}
+                </div>
+              </div>
+              {([
+                ["earnings_revision", "Earnings Revisions"],
+                ["institutional",     "Institutional Ownership"],
+                ["relative_strength", "Relative Strength"],
+                ["sector_strength",   "Sector Strength"],
+                ["liquidity",         "Liquidity"],
+                ["corporate_actions", "Corporate Actions"],
+                ["quality_metrics",   "Quality / ROIC"],
+              ] as [string, string][]).map(([key, label]) => {
+                const val = pick.quality_factors?.breakdown?.[key];
+                if (val == null) return null;
+                const color = val >= 65 ? "text-green-400" : val <= 40 ? "text-red-400" : "text-yellow-400";
+                return <ScoreBar key={key} label={label} value={val} color={color} />;
+              })}
             </div>
           )}
 
