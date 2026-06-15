@@ -9,9 +9,11 @@ import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 
 export default function ScreenerPage() {
   const [market, setMarket] = useState<Market>("IN");
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, dataUpdatedAt } = useQuery({
     queryKey: ["movers", market],
     queryFn: () => fetchTopMovers(market),
+    refetchInterval: 6_000,
+    staleTime: 5_000,
   });
 
   const currency = market === "US" ? "$" : "₹";
@@ -19,9 +21,20 @@ export default function ScreenerPage() {
   return (
     <div className="space-y-6">
       <MarketDisclaimer market={market} />
-      <div>
-        <h1 className="text-2xl font-bold">Stock Screener</h1>
-        <p className="text-gray-400 text-sm mt-1">Top movers across US and Indian markets</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Stock Screener</h1>
+          <p className="text-gray-400 text-sm mt-1">Top movers across US and Indian markets</p>
+        </div>
+        {dataUpdatedAt > 0 && (
+          <div className="flex items-center gap-1.5 text-xs text-gray-500">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+            </span>
+            Live · {new Date(dataUpdatedAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true })}
+          </div>
+        )}
       </div>
 
       <div className="flex items-center gap-3">
