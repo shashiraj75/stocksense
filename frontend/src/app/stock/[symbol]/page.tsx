@@ -313,7 +313,7 @@ export default function StockPage() {
           )}
 
           <div className="grid md:grid-cols-2 gap-6">
-            <div className="bg-dark-card border border-dark-border rounded-2xl p-6 space-y-5">
+            <div className="bg-dark-card border border-dark-border rounded-2xl p-6 space-y-3">
               <div className="flex items-baseline justify-between gap-2">
                 <h2 className="font-bold text-lg">AI Prediction — {tab} term</h2>
                 {prediction?.target_price && prediction?.current_price && (() => {
