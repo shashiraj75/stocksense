@@ -64,10 +64,12 @@ export default function Dashboard() {
       {/* Header row: title + market tabs */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <Globe size={18} className="text-brand-500" />
           <div>
-            <h1 className="text-lg font-bold">StockSense</h1>
             <LiveClock inline />
+            <div className="flex items-center gap-2">
+              <Globe size={18} className="text-brand-500" />
+              <h1 className="text-lg font-bold">StockSense</h1>
+            </div>
           </div>
         </div>
         <div className="flex gap-2">
