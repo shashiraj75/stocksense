@@ -993,7 +993,8 @@ class PredictionEngine:
                     return round(max(blend, price * 1.05), 2)
                 elif signal == "SELL":
                     return round(min(blend, price * 0.95), 2)
-                return round(blend, 2)
+                # HOLD: cap within ±8% — a big target contradicts a HOLD signal
+                return round(min(max(blend, price * 0.96), price * 1.08), 2)
 
             monthly_ret = df["Close"].pct_change(21).dropna()
             avg_monthly = monthly_ret.mean()
@@ -1002,7 +1003,8 @@ class PredictionEngine:
                 return round(max(projected, price * 1.05), 2)
             elif signal == "SELL":
                 return round(min(projected, price * 0.92), 2)
-            return round(projected, 2)
+            # HOLD: cap within ±8%
+            return round(min(max(projected, price * 0.96), price * 1.08), 2)
 
         else:  # long
             pe = info.get("trailingPE") or info.get("forwardPE")
@@ -1022,4 +1024,5 @@ class PredictionEngine:
                 return round(max(long_target, price * 1.15), 2)
             elif signal == "SELL":
                 return round(min(long_target, price * 0.80), 2)
-            return round(long_target, 2)
+            # HOLD: cap within ±10% — large upside should trigger BUY not HOLD
+            return round(min(max(long_target, price * 0.95), price * 1.10), 2)
