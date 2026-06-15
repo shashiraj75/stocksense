@@ -6,6 +6,7 @@ import Link from "next/link";
 import { TrendingUp } from "lucide-react";
 import { LiveClock } from "@/components/LiveClock";
 import { MobileNav } from "@/components/MobileNav";
+import { NavLinks } from "@/components/NavLinks";
 
 export const metadata: Metadata = {
   title: { default: "StockSense — AI Stock Predictor", template: "%s | StockSense" },
@@ -37,14 +38,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <div className="flex-1 min-w-0"><SearchBar /></div>
               <LiveClock />
               {/* Desktop nav */}
-              <div className="hidden lg:flex items-center gap-4 ml-2 text-sm text-gray-400">
-                {NAV_LINKS.map(({ href, label, accent }) => (
-                  <Link key={href} href={href}
-                    className={`hover:text-white transition-colors ${accent ? "font-medium text-green-400 hover:text-green-300" : ""}`}>
-                    {label}
-                  </Link>
-                ))}
-              </div>
+              <NavLinks links={NAV_LINKS} />
               {/* Mobile hamburger */}
               <div className="lg:hidden ml-auto">
                 <MobileNav links={NAV_LINKS} />
