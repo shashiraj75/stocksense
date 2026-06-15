@@ -974,6 +974,24 @@ def valuation_score(symbol: str, df: pd.DataFrame, info: dict) -> dict:
                 score -= 8
                 reasons.append(f"Stock trading above analyst consensus target by {abs(upside):.0f}% — limited upside")
 
+        # ── FCF Yield ────────────────────────────────────────────────────────
+        fcf     = info.get("freeCashflow")
+        mkt_cap = info.get("marketCap")
+        if fcf is not None and mkt_cap and mkt_cap > 0:
+            fcf_yield = fcf / mkt_cap * 100
+            if fcf_yield > 5:
+                score += 10
+                reasons.append(f"FCF yield {fcf_yield:.1f}% — strong free cash generation relative to market cap; self-funding growth")
+            elif fcf_yield > 3:
+                score += 5
+                reasons.append(f"FCF yield {fcf_yield:.1f}% — healthy free cash flow generation")
+            elif fcf_yield > 0:
+                score += 2
+                reasons.append(f"FCF yield {fcf_yield:.1f}% — positive but modest free cash flow")
+            elif fcf_yield < 0:
+                score -= 8
+                reasons.append(f"Negative FCF yield ({fcf_yield:.1f}%) — burning cash; reliant on external financing")
+
     except Exception:
         pass
 
@@ -1086,10 +1104,38 @@ def risk_management_score(df: pd.DataFrame, info: dict) -> dict:
                     score -= 6
                     reasons.append(f"High downside deviation ({downside_dev:.1f}%) — losses can be sharp when they occur")
 
+        # ── Earnings Volatility (EPS consistency across quarters) ─────────────
+        # Proxy: measure cross-quarter consistency of 63-day rolling returns std.
+        # High inconsistency → earnings are unpredictable → risk deduction.
+        if len(returns) >= 126:
+            try:
+                window_vols = [
+                    float(returns.iloc[max(0, i - 63):i].std() * (252 ** 0.5) * 100)
+                    for i in range(63, len(returns), 21)
+                ]
+                if len(window_vols) >= 4:
+                    mean_vol = np.mean(window_vols)
+                    std_vol  = np.std(window_vols)
+                    cv = std_vol / (mean_vol + 1e-10)   # coefficient of variation
+                    if cv < 0.20:
+                        score += 6
+                        reasons.append("Highly consistent return volatility across quarters — predictable, stable stock behaviour")
+                    elif cv < 0.35:
+                        score += 2
+                        reasons.append("Reasonably consistent volatility across quarters — low earnings surprise risk")
+                    elif cv > 0.60:
+                        score -= 8
+                        reasons.append(f"Highly erratic return volatility (CV {cv:.2f}) — earnings and price moves are unpredictable")
+                    elif cv > 0.45:
+                        score -= 4
+                        reasons.append(f"Above-average volatility inconsistency (CV {cv:.2f}) — stock can be choppy; execution risk elevated")
+            except Exception:
+                pass
+
     except Exception:
         pass
 
-    return {"score": max(0, min(100, score)), "reasons": reasons[:4]}
+    return {"score": max(0, min(100, score)), "reasons": reasons[:5]}
 
 
 # ── MASTER FUNCTION ──────────────────────────────────────────────────────────

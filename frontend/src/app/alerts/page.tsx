@@ -85,11 +85,19 @@ export default function AlertsPage() {
 
   return (
     <div className="space-y-6">
+      <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-3 flex items-start gap-2.5 text-xs text-yellow-300">
+        <Bell size={14} className="shrink-0 mt-0.5" />
+        <span>
+          <strong>Keep this tab open</strong> — alerts only fire while this page is active in your browser.
+          Closing or switching tabs pauses monitoring. For persistent alerts, enable browser notifications when prompted.
+        </span>
+      </div>
+
       <div className="flex items-center gap-3">
         <Bell size={22} className="text-brand-500" />
         <div>
           <h1 className="text-2xl font-bold">Price Alerts</h1>
-          <p className="text-gray-400 text-sm">Get notified when a stock hits your target — checked every minute</p>
+          <p className="text-gray-400 text-sm">Get notified when a stock hits your target — checked every 5 seconds</p>
         </div>
         {triggered.length > 0 && (
           <span className="ml-auto flex items-center gap-1.5 px-3 py-1 rounded-full bg-bull/20 text-bull text-xs font-semibold">

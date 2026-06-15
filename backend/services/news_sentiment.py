@@ -1,7 +1,13 @@
+import time
 import feedparser
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 _vader = SentimentIntensityAnalyzer()
+
+# News cache: { "SYMBOL:MARKET" -> (timestamp, result) }
+_news_cache: dict[str, tuple[float, dict]] = {}
+_NEWS_TTL = 10 * 60  # 10 minutes
 
 # Free public RSS feeds — no API key needed
 RSS_FEEDS = {
@@ -43,10 +49,17 @@ def score_sentiment(text: str) -> dict:
 
 class NewsSentimentService:
     async def get_news_with_sentiment(self, symbol: str, market: str, limit: int = 20) -> dict:
+        cache_key = f"{symbol}:{market}"
+        cached = _news_cache.get(cache_key)
+        if cached and (time.time() - cached[0]) < _NEWS_TTL:
+            return cached[1]
+
         articles = self._fetch_rss(symbol, market, limit)
         for a in articles:
             a["sentiment"] = score_sentiment(a["title"])
-        return {"symbol": symbol, "market": market, "articles": articles}
+        result = {"symbol": symbol, "market": market, "articles": articles}
+        _news_cache[cache_key] = (time.time(), result)
+        return result
 
     async def get_macro_news(self, market: str) -> dict:
         articles = self._fetch_macro_rss(market, 15)
@@ -55,23 +68,30 @@ class NewsSentimentService:
         return {"market": market, "articles": articles}
 
     def _fetch_rss(self, symbol: str, market: str, limit: int) -> list:
-        articles = []
-        for url_template in RSS_FEEDS.get(market, RSS_FEEDS["US"]):
-            url = url_template.format(symbol=symbol)
+        urls = [t.format(symbol=symbol) for t in RSS_FEEDS.get(market, RSS_FEEDS["US"])]
+
+        def _parse(url: str) -> list:
             try:
                 feed = feedparser.parse(url)
-                for entry in feed.entries[:limit]:
-                    articles.append({
+                return [
+                    {
                         "title": entry.get("title", ""),
                         "source": feed.feed.get("title", "RSS"),
                         "url": entry.get("link", "#"),
                         "published_at": entry.get("published", ""),
                         "description": entry.get("summary", "")[:200],
-                    })
+                    }
+                    for entry in feed.entries[:limit]
+                ]
             except Exception:
-                pass
-            if len(articles) >= limit:
-                break
+                return []
+
+        articles: list = []
+        with ThreadPoolExecutor(max_workers=len(urls)) as pool:
+            for batch in pool.map(_parse, urls):
+                articles.extend(batch)
+                if len(articles) >= limit:
+                    break
         return articles[:limit]
 
     def _fetch_macro_rss(self, market: str, limit: int) -> list:

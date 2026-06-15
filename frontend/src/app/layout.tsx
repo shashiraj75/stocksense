@@ -5,11 +5,23 @@ import { SearchBar } from "@/components/SearchBar";
 import Link from "next/link";
 import { TrendingUp } from "lucide-react";
 import { LiveClock } from "@/components/LiveClock";
+import { MobileNav } from "@/components/MobileNav";
 
 export const metadata: Metadata = {
-  title: "StockSense — AI Stock Predictor",
-  description: "AI-powered stock predictions for US & Indian markets",
+  title: { default: "StockSense — AI Stock Predictor", template: "%s | StockSense" },
+  description: "Free AI-powered stock predictions for US and Indian markets. Daily picks, heatmap, screener, and portfolio tracker.",
+  icons: { icon: "/favicon.svg" },
 };
+
+export const NAV_LINKS = [
+  { href: "/picks",     label: "Daily Picks", accent: true },
+  { href: "/",          label: "Dashboard" },
+  { href: "/heatmap",   label: "Heatmap" },
+  { href: "/screener",  label: "Screener" },
+  { href: "/portfolio", label: "Portfolio" },
+  { href: "/alerts",    label: "Alerts" },
+  { href: "/watchlist", label: "Watchlist" },
+];
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -17,21 +29,25 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="bg-dark-bg text-white min-h-screen font-sans antialiased">
         <Providers>
           <nav className="sticky top-0 z-10 border-b border-dark-border bg-dark-bg/80 backdrop-blur-md">
-            <div className="max-w-7xl mx-auto px-4 py-3 flex items-center gap-6">
+            <div className="max-w-7xl mx-auto px-4 py-3 flex items-center gap-4">
               <Link href="/" className="flex items-center gap-2 text-brand-500 font-bold text-lg shrink-0">
                 <TrendingUp size={22} />
                 StockSense
               </Link>
-              <SearchBar />
+              <div className="flex-1 min-w-0"><SearchBar /></div>
               <LiveClock />
-              <div className="flex items-center gap-4 ml-auto text-sm text-gray-400">
-                <Link href="/picks" className="hover:text-white transition-colors font-medium text-green-400 hover:text-green-300">Daily Picks</Link>
-                <Link href="/" className="hover:text-white transition-colors">Dashboard</Link>
-                <Link href="/heatmap" className="hover:text-white transition-colors">Heatmap</Link>
-                <Link href="/screener" className="hover:text-white transition-colors">Screener</Link>
-                <Link href="/portfolio" className="hover:text-white transition-colors">Portfolio</Link>
-                <Link href="/alerts" className="hover:text-white transition-colors">Alerts</Link>
-                <Link href="/watchlist" className="hover:text-white transition-colors">Watchlist</Link>
+              {/* Desktop nav */}
+              <div className="hidden lg:flex items-center gap-4 ml-2 text-sm text-gray-400">
+                {NAV_LINKS.map(({ href, label, accent }) => (
+                  <Link key={href} href={href}
+                    className={`hover:text-white transition-colors ${accent ? "font-medium text-green-400 hover:text-green-300" : ""}`}>
+                    {label}
+                  </Link>
+                ))}
+              </div>
+              {/* Mobile hamburger */}
+              <div className="lg:hidden ml-auto">
+                <MobileNav links={NAV_LINKS} />
               </div>
             </div>
           </nav>

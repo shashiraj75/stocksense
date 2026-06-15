@@ -107,11 +107,11 @@ export default function StockPage() {
     queryKey: ["prediction", symbol, isCrypto ? "CRYPTO" : market, horizon],
     queryFn: () => fetchPrediction(symbol, isCrypto ? "CRYPTO" as any : market, horizon),
     enabled: tab !== "backtest",
-    retry: 4,
-    retryDelay: (attempt) => Math.min(attempt * 8000, 30000),
-    placeholderData: (prev) => prev,
-    refetchOnMount: true,
-    staleTime: 0,   // always refetch when switching horizons
+    retry: 3,
+    retryDelay: (attempt) => Math.min(attempt * 8000, 24000),
+    placeholderData: (prev) => prev,  // show previous horizon data while new one loads
+    staleTime: 4 * 60_000,   // match backend 5-min cache — no redundant refetches
+    refetchOnWindowFocus: false,
   });
 
   const { data: news } = useQuery({

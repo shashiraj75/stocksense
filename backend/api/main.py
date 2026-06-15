@@ -2,6 +2,7 @@ import os
 import sys
 import asyncio
 import importlib
+import urllib.request
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -50,16 +51,33 @@ async def _weekly_refresh_loop():
         await asyncio.sleep(REFRESH_INTERVAL_SECONDS)
 
 
+async def _keepalive_loop():
+    """Ping own /health every 10 minutes to prevent Render free-tier sleep."""
+    await asyncio.sleep(60)  # wait for server to fully start
+    self_url = os.getenv("RENDER_EXTERNAL_URL", "")
+    if not self_url:
+        return  # only runs on Render where RENDER_EXTERNAL_URL is set automatically
+    url = f"{self_url}/health"
+    while True:
+        try:
+            urllib.request.urlopen(url, timeout=10)
+        except Exception:
+            pass
+        await asyncio.sleep(10 * 60)  # 10 minutes
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Start the weekly refresh loop in the background
     task = asyncio.create_task(_weekly_refresh_loop())
+    keepalive = asyncio.create_task(_keepalive_loop())
     yield
     task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    keepalive.cancel()
+    for t in (task, keepalive):
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(

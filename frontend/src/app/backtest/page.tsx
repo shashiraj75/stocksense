@@ -21,7 +21,7 @@ interface BacktestResult {
 }
 
 export default function BacktestPage() {
-  const [symbol, setSymbol] = useState("AAPL");
+  const [symbol, setSymbol] = useState("RELIANCE");
   const [market, setMarket] = useState<Market>("IN");
   const [horizon, setHorizon] = useState<Horizon>("short");
   const [loading, setLoading] = useState(false);
@@ -144,12 +144,12 @@ export default function BacktestPage() {
                 <span className="text-sm text-gray-400">{data.sell_signals_tested} signals</span>
               </div>
               <p className="text-sm text-gray-300">
-                Avg return when SELL predicted:
+                Avg price decline after SELL:
                 <span className={clsx("ml-2 font-bold", data.avg_return_on_sell_pct <= 0 ? "text-bull" : "text-bear")}>
                   {data.avg_return_on_sell_pct >= 0 ? "+" : ""}{data.avg_return_on_sell_pct}%
                 </span>
               </p>
-              <p className="text-xs text-gray-500">{data.profitable_sell_calls} of {data.sell_signals_tested} declined as predicted</p>
+              <p className="text-xs text-gray-500">{data.profitable_sell_calls} of {data.sell_signals_tested} declined as predicted (negative = correct)</p>
             </div>
             <div className="bg-dark-card border border-dark-border rounded-2xl p-5 space-y-3">
               <div className="flex items-center justify-between">
@@ -183,8 +183,8 @@ export default function BacktestPage() {
                     <tr key={i} className={clsx("border-b border-dark-border",
                       r.correct ? "bg-bull/5" : "bg-bear/5")}>
                       <td className="px-4 py-3 text-gray-400 font-mono text-xs">{r.date}</td>
-                      <td className="px-4 py-3 text-right font-mono">${r.entry_price}</td>
-                      <td className="px-4 py-3 text-right font-mono">${r.exit_price}</td>
+                      <td className="px-4 py-3 text-right font-mono">{market === "IN" ? "₹" : "$"}{r.entry_price}</td>
+                      <td className="px-4 py-3 text-right font-mono">{market === "IN" ? "₹" : "$"}{r.exit_price}</td>
                       <td className={clsx("px-4 py-3 text-right font-mono font-bold",
                         r.actual_return_pct >= 0 ? "text-bull" : "text-bear")}>
                         {r.actual_return_pct >= 0 ? "+" : ""}{r.actual_return_pct}%

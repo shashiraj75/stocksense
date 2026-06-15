@@ -1,3 +1,5 @@
+import asyncio
+import time
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -12,6 +14,15 @@ _news_svc = NewsSentimentService()
 # Market regime index tickers
 REGIME_TICKER = {"US": "^GSPC", "IN": "^NSEI"}
 
+# ── Caches ────────────────────────────────────────────────────────────────────
+# Prediction cache: { "SYMBOL:MARKET:HORIZON" -> (timestamp, result) }
+_pred_cache: dict[str, tuple[float, dict]] = {}
+_PRED_TTL = 5 * 60  # 5 minutes
+
+# Market regime cache: { "IN"|"US" -> (timestamp, result) }
+_regime_cache: dict[str, tuple[float, dict]] = {}
+_REGIME_TTL = 30 * 60  # 30 minutes — broad-market trend changes slowly
+
 
 def _market_regime(market: str) -> dict:
     """
@@ -20,6 +31,9 @@ def _market_regime(market: str) -> dict:
     Returns: {"trend": "BULL"/"BEAR"/"SIDEWAYS", "score_adj": int}
     score_adj is applied to the composite score (+8 in bull, -8 in bear).
     """
+    cached = _regime_cache.get(market)
+    if cached and (time.time() - cached[0]) < _REGIME_TTL:
+        return cached[1]
     try:
         ticker = yf.Ticker(REGIME_TICKER.get(market, "^GSPC"))
         df = ticker.history(period="6mo")
@@ -47,16 +61,40 @@ def _market_regime(market: str) -> dict:
             adj = 0
             reason = "Market moving sideways"
 
-        return {"trend": trend, "score_adj": adj, "reason": reason}
+        result = {"trend": trend, "score_adj": adj, "reason": reason}
+        _regime_cache[market] = (time.time(), result)
+        return result
     except Exception:
         return {"trend": "SIDEWAYS", "score_adj": 0, "reason": "Could not fetch market data"}
 
 
-def _dynamic_weights(df: pd.DataFrame, horizon: str) -> dict:
+SCORE_BANDS = [
+    (90, "Exceptional Opportunity"),
+    (80, "Strong Buy Candidate"),
+    (70, "Good Watchlist Stock"),
+    (60, "Neutral — Monitor"),
+    (0,  "Avoid"),
+]
+
+def _score_label(score: int) -> str:
+    for threshold, label in SCORE_BANDS:
+        if score >= threshold:
+            return label
+    return "Avoid"
+
+
+def _dynamic_weights(df: pd.DataFrame, horizon: str, regime: dict | None = None) -> dict:
     """
-    Adjusts horizon weights based on current volatility.
-    High volatility → trust fundamentals more (less noise from technicals).
-    Low volatility → technicals are more reliable.
+    Adjusts weights based on both volatility AND market regime:
+
+    Volatility adjustment:
+      High vol  → trust fundamentals more (technicals get noisy)
+      Low vol   → technicals are more reliable
+
+    Regime adjustment (applied on top of vol adjustment):
+      BULL      → boost technicals + relative strength (momentum pays)
+      BEAR      → boost fundamentals + quality/FCF (defensiveness pays)
+      SIDEWAYS  → boost valuation weight (mean reversion pays)
     """
     base_weights = {
         "short":  {"tech": 0.60, "fund": 0.10, "sentiment": 0.30},
@@ -64,105 +102,243 @@ def _dynamic_weights(df: pd.DataFrame, horizon: str) -> dict:
         "long":   {"tech": 0.15, "fund": 0.70, "sentiment": 0.15},
     }[horizon]
 
-    try:
-        # 20-day historical volatility (annualised)
-        returns = df["Close"].pct_change().dropna()
-        vol_20d = returns.iloc[-20:].std() * np.sqrt(252)
+    vol_regime = "NORMAL"
+    vol_20d = 0.0
 
-        if vol_20d > 0.35:  # high volatility (>35% annualised)
-            # Shift weight from tech → fundamentals
+    try:
+        returns = df["Close"].pct_change().dropna()
+        vol_20d = float(returns.iloc[-20:].std() * np.sqrt(252))
+
+        if vol_20d > 0.35:
             shift = 0.10
-            return {
+            base_weights = {
                 "tech": max(0.10, base_weights["tech"] - shift),
                 "fund": min(0.80, base_weights["fund"] + shift),
                 "sentiment": base_weights["sentiment"],
-                "vol_regime": "HIGH",
-                "vol_20d": round(vol_20d * 100, 1),
             }
-        elif vol_20d < 0.15:  # low volatility (<15% annualised)
-            # Technicals are more reliable in calm markets
+            vol_regime = "HIGH"
+        elif vol_20d < 0.15:
             shift = 0.08
-            return {
+            base_weights = {
                 "tech": min(0.75, base_weights["tech"] + shift),
                 "fund": max(0.05, base_weights["fund"] - shift),
                 "sentiment": base_weights["sentiment"],
-                "vol_regime": "LOW",
-                "vol_20d": round(vol_20d * 100, 1),
             }
+            vol_regime = "LOW"
     except Exception:
         pass
 
-    return {**base_weights, "vol_regime": "NORMAL", "vol_20d": 0}
+    # ── Regime-aware weight adjustment ───────────────────────────────────────
+    regime_trend = (regime or {}).get("trend", "SIDEWAYS")
+    regime_shift = 0.08
+
+    if regime_trend == "BULL":
+        # Bull market: momentum and technicals pay — boost tech, trim fundamentals
+        base_weights["tech"] = min(0.80, base_weights["tech"] + regime_shift)
+        base_weights["fund"] = max(0.05, base_weights["fund"] - regime_shift)
+
+    elif regime_trend == "BEAR":
+        # Bear market: quality and fundamentals are defensive anchors
+        base_weights["fund"] = min(0.85, base_weights["fund"] + regime_shift)
+        base_weights["tech"] = max(0.05, base_weights["tech"] - regime_shift)
+
+    # SIDEWAYS: default weights are fine — valuation-based mean reversion
+    # is handled by the quality factor valuation sub-score
+
+    # Normalise so weights sum to 1.0
+    total = sum(base_weights[k] for k in ("tech", "fund", "sentiment"))
+    if total > 0:
+        for k in ("tech", "fund", "sentiment"):
+            base_weights[k] = round(base_weights[k] / total, 4)
+
+    return {
+        **base_weights,
+        "vol_regime": vol_regime,
+        "vol_20d": round(vol_20d * 100, 1),
+        "regime_applied": regime_trend,
+    }
+
+
+def _compute_risk_penalty(info: dict, df: pd.DataFrame, quality: dict | None = None) -> tuple[int, list[str]]:
+    """
+    Step 3 of the framework: compute a risk penalty to subtract from raw score.
+    Risk factors reduce the score — they never add to it.
+
+    Returns (penalty_points, penalty_reasons).
+    """
+    penalty = 0
+    reasons: list[str] = []
+
+    try:
+        # High debt
+        de = info.get("debtToEquity")
+        if de and de > 300:
+            penalty += 8
+            reasons.append(f"High debt-to-equity ({de:.0f}%) — financial fragility risk")
+        elif de and de > 200:
+            penalty += 4
+            reasons.append(f"Elevated debt-to-equity ({de:.0f}%) — leverage risk")
+
+        # High beta
+        beta = info.get("beta")
+        if beta and beta > 2.0:
+            penalty += 6
+            reasons.append(f"High beta ({beta:.2f}) — amplified downside in market corrections")
+        elif beta and beta > 1.6:
+            penalty += 3
+            reasons.append(f"Above-average beta ({beta:.2f}) — sensitive to market swings")
+
+        # Negative FCF
+        fcf = info.get("freeCashflow")
+        if fcf is not None and fcf < 0:
+            penalty += 5
+            reasons.append("Negative free cash flow — company burning cash; survival risk in downturns")
+
+        # Negative ROE (loss-making)
+        roe = info.get("returnOnEquity")
+        if roe and roe < -0.05:
+            penalty += 5
+            reasons.append(f"Negative ROE ({roe*100:.1f}%) — destroying shareholder value")
+
+        # Max drawdown from risk_management sub-score
+        if quality:
+            risk_bd = quality.get("breakdown", {}).get("risk_management", {})
+            risk_sc = risk_bd.get("score", 50) if isinstance(risk_bd, dict) else 50
+            if risk_sc < 35:
+                penalty += 5
+                reasons.append("Poor risk profile — high drawdown and/or low risk-adjusted returns")
+            elif risk_sc < 45:
+                penalty += 2
+
+        # Earnings volatility — high EPS std dev signals unpredictability
+        if len(df) >= 60:
+            try:
+                returns = df["Close"].pct_change().dropna()
+                quarterly_vol = returns.resample("QE").std() if hasattr(returns.index, "freq") else None
+                # Simpler proxy: rolling 63-day vol std
+                vol_series = [returns.iloc[max(0,i-63):i].std() for i in range(63, len(returns), 21)]
+                if len(vol_series) >= 4:
+                    vol_consistency = np.std(vol_series) / (np.mean(vol_series) + 1e-10)
+                    if vol_consistency > 0.5:
+                        penalty += 4
+                        reasons.append("High earnings/return volatility — unpredictable stock behaviour increases execution risk")
+                    elif vol_consistency > 0.35:
+                        penalty += 2
+            except Exception:
+                pass
+
+    except Exception:
+        pass
+
+    return min(penalty, 20), reasons  # cap penalty at 20 to prevent over-penalising
 
 
 class PredictionEngine:
     async def predict(self, symbol: str, market: str, horizon: str) -> dict:
-        suffix = MARKET_SUFFIX.get(market, "")
-        ticker = yf.Ticker(symbol + suffix)
+        # ── Prediction cache — skip ALL work on repeated requests ───────────────
+        cache_key = f"{symbol}:{market}:{horizon}"
+        cached = _pred_cache.get(cache_key)
+        if cached and (time.time() - cached[0]) < _PRED_TTL:
+            return cached[1]
 
-        period_map = {"short": "6mo", "medium": "2y", "long": "5y"}
-        df = ticker.history(period=period_map[horizon])
+        suffix = MARKET_SUFFIX.get(market, "")
+        loop = asyncio.get_event_loop()
+
+        # ── Round 1: fetch price history + ticker.info + regime in parallel ─────
+        period = {"short": "6mo", "medium": "2y", "long": "5y"}[horizon]
+
+        def _fetch_history():
+            return yf.Ticker(symbol + suffix).history(period=period)
+
+        def _fetch_info():
+            try:
+                return yf.Ticker(symbol + suffix).info
+            except Exception:
+                return {}
+
+        df, info, regime = await asyncio.gather(
+            loop.run_in_executor(None, _fetch_history),
+            loop.run_in_executor(None, _fetch_info),
+            loop.run_in_executor(None, _market_regime, market),
+        )
 
         if df.empty:
             return {"error": "No data found for symbol"}
 
         df = compute_indicators(df)
         tech_signal = get_signal_summary(df)
-
-        try:
-            info = ticker.info
-        except Exception:
-            info = {}
         ratio_score = self._fundamental_score(info, horizon)
 
-        # Deep fundamental analysis (statements) — only for medium/long to keep short term fast
-        if horizon in ("medium", "long"):
-            deep_score = self._deep_fundamental_score(ticker, horizon)
-            blend = 0.3 if horizon == "medium" else 0.6   # long term trusts statements more
-            blended = round(ratio_score["score"] * (1 - blend) + deep_score["score"] * blend)
+        # ── Hard quality gate — reject fundamentally broken stocks ──────────────
+        gate_passed, gate_reasons = self._quality_gate(info, df)
+        if not gate_passed:
+            return {
+                "symbol": symbol,
+                "market": market,
+                "horizon": horizon,
+                "signal": "REJECTED",
+                "rejection_reasons": gate_reasons,
+                "confidence": 0,
+                "current_price": round(float(df["Close"].iloc[-1]), 2) if not df.empty else None,
+            }
+
+        # ── Round 2: news + global_ctx + quality + deep_fund all in parallel ────
+        async def _get_news():
+            return await _news_svc.get_news_with_sentiment(symbol, market, 10)
+
+        def _get_global_ctx():
+            if market != "IN":
+                return {}
+            try:
+                return get_global_context(symbol)
+            except Exception:
+                return {}
+
+        def _get_quality():
+            if market != "IN":
+                return {}
+            try:
+                return compute_all_quality_factors(symbol, yf.Ticker(symbol + suffix), df, info, horizon)
+            except Exception:
+                return {}
+
+        def _get_deep_fund():
+            if horizon not in ("medium", "long"):
+                return None
+            return self._deep_fundamental_score(yf.Ticker(symbol + suffix), horizon)
+
+        news_data, global_ctx, quality, deep_score_raw = await asyncio.gather(
+            _get_news(),
+            loop.run_in_executor(None, _get_global_ctx),
+            loop.run_in_executor(None, _get_quality),
+            loop.run_in_executor(None, _get_deep_fund),
+        )
+
+        sentiment_score = self._aggregate_sentiment(news_data["articles"])
+
+        # Blend deep fundamentals for medium/long
+        if deep_score_raw is not None:
+            blend = 0.3 if horizon == "medium" else 0.6
+            blended = round(ratio_score["score"] * (1 - blend) + deep_score_raw["score"] * blend)
             fund_score = {
                 "score": max(0, min(100, blended)),
-                "reasons": ratio_score["reasons"] + deep_score["reasons"],
-                "deep_available": deep_score["available"],
+                "reasons": ratio_score["reasons"] + deep_score_raw["reasons"],
+                "deep_available": deep_score_raw["available"],
             }
         else:
             fund_score = ratio_score
 
-        news_data = await _news_svc.get_news_with_sentiment(symbol, market, 10)
-        sentiment_score = self._aggregate_sentiment(news_data["articles"])
-
-        # Market regime check (local — Nifty/S&P trend)
-        regime = _market_regime(market)
-
-        # Global macro context (cached 15 min, shared across all stocks)
-        global_ctx = {}
-        if market == "IN":
-            try:
-                global_ctx = get_global_context(symbol)
-            except Exception as e:
-                print(f"[global_ctx] Error for {symbol}: {e}")
-
-        # Analyst consensus from yfinance
+        # Analyst consensus + 52W position (fast — computed from info/df already fetched)
         analyst_score = self._analyst_score(info)
-
-        # 52-week position
         week52_score = self._week52_score(df, info)
 
-        # Professional quality factors (earnings revisions, institutional, RS, sector, liquidity, Piotroski, ROIC)
-        quality = {}
-        if market == "IN":
-            try:
-                quality = compute_all_quality_factors(symbol, ticker, df, info, horizon)
-            except Exception as e:
-                print(f"[quality] Error for {symbol}: {e}")
+        # Dynamic weights based on volatility + market regime
+        weights = _dynamic_weights(df, horizon, regime=regime)
 
-        # Dynamic weights based on volatility
-        weights = _dynamic_weights(df, horizon)
-
-        signal, confidence, reasoning = self._composite_signal(
+        signal, confidence, reasoning, score_band = self._composite_signal(
             tech_signal, fund_score, sentiment_score, horizon, weights, regime,
             global_ctx=global_ctx, analyst_score=analyst_score, week52_score=week52_score,
-            quality=quality,
+            quality=quality, df=df,
         )
 
         current_price = float(df["Close"].iloc[-1])
@@ -173,12 +349,13 @@ class PredictionEngine:
         )
         trade_levels = self._trade_levels(current_price, signal, target_price, atr, horizon)
 
-        return {
+        result = {
             "symbol": symbol,
             "market": market,
             "horizon": horizon,
             "signal": signal,
             "confidence": confidence,
+            "score_band": score_band,
             "current_price": round(current_price, 2),
             "target_price": target_price,
             "trade_levels": trade_levels,
@@ -200,6 +377,8 @@ class PredictionEngine:
             } if quality else None,
             "weights_used": {k: v for k, v in weights.items() if k in ("tech", "fund", "sentiment", "vol_regime")},
         }
+        _pred_cache[cache_key] = (time.time(), result)
+        return result
 
     def _trade_levels(self, price: float, signal: str, target: float, atr: float, horizon: str) -> dict:
         """
@@ -575,48 +754,95 @@ class PredictionEngine:
         label = "BULLISH" if score > 60 else "BEARISH" if score < 40 else "NEUTRAL"
         return {"score": score, "label": label, "bullish": bullish, "bearish": bearish}
 
+    def _quality_gate(self, info: dict, df: pd.DataFrame) -> tuple[bool, list[str]]:
+        """
+        Hard quality gate — run BEFORE scoring.
+        Stocks failing this gate are rejected immediately and never scored.
+        Checks for fundamentally broken financials only.
+        """
+        rejections: list[str] = []
+
+        try:
+            # Loss-making with negative operating cash flows
+            roe = info.get("returnOnEquity")
+            profit_margin = info.get("profitMargins")
+            op_cf = info.get("operatingCashflows")
+
+            if (roe is not None and roe < -0.10
+                    and profit_margin is not None and profit_margin < -0.05):
+                rejections.append(
+                    f"Severely loss-making: ROE {roe*100:.1f}%, margins {profit_margin*100:.1f}%"
+                )
+
+            if op_cf is not None and op_cf < 0:
+                rejections.append("Negative operating cash flows — core business not generating cash")
+
+            # Extreme leverage — exclude NBFC/banks by checking sector
+            sector = (info.get("sector") or "").lower()
+            is_financial = any(k in sector for k in ("financial", "bank", "insurance"))
+            de = info.get("debtToEquity")
+            if not is_financial and de and de > 500:
+                rejections.append(
+                    f"Extreme leverage (D/E {de:.0f}%) — balance sheet risk too high to score"
+                )
+
+        except Exception:
+            pass
+
+        return (len(rejections) == 0), rejections
+
     def _composite_signal(self, tech, fund, sentiment, horizon, weights, regime,
                           global_ctx: dict | None = None,
                           analyst_score: dict | None = None,
                           week52_score: dict | None = None,
-                          quality: dict | None = None):
+                          quality: dict | None = None,
+                          df: pd.DataFrame | None = None):
         tech_score = tech.get("score", 50)
 
-        # Base composite from core signals
-        composite = (
+        # ── Step 1: Raw composite from core signals ───────────────────────────
+        raw_score = (
             tech_score * weights["tech"]
             + fund["score"] * weights["fund"]
             + sentiment["score"] * weights["sentiment"]
         )
 
         # Local market regime adjustment (±8)
-        composite += regime["score_adj"]
+        raw_score += regime["score_adj"]
 
         # Global macro adjustment — weighted by horizon (short term most sensitive)
         global_adj_weight = {"short": 0.15, "medium": 0.10, "long": 0.05}.get(horizon, 0.10)
         if global_ctx:
             global_base_score = global_ctx.get("score", 50)
             stock_adj = global_ctx.get("stock_score_adj", 0)
-            # Blend global score deviation from neutral + stock-specific adj
             global_contribution = (global_base_score - 50) * global_adj_weight + stock_adj
-            composite += global_contribution
+            raw_score += global_contribution
 
         # Analyst consensus nudge (±6 max, soft signal)
         if analyst_score:
-            analyst_contribution = (analyst_score.get("score", 50) - 50) * 0.08
-            composite += analyst_contribution
+            raw_score += (analyst_score.get("score", 50) - 50) * 0.08
 
         # 52-week position nudge (±4 max)
         if week52_score:
-            week52_contribution = (week52_score.get("score", 50) - 50) * 0.06
-            composite += week52_contribution
+            raw_score += (week52_score.get("score", 50) - 50) * 0.06
 
-        # Quality factors — professional-grade signal (±10 max, consistent across horizons)
+        # Quality factors — professional-grade signal (±10 max)
         if quality and quality.get("score") is not None:
-            quality_contribution = (quality["score"] - 50) * 0.12
-            composite += quality_contribution
+            raw_score += (quality["score"] - 50) * 0.12
 
-        composite = max(0, min(100, composite))
+        raw_score = max(0, min(100, raw_score))
+
+        # ── Step 2: Risk penalty — separate deduction step ────────────────────
+        # This ensures high-risk stocks can't "score their way" to a BUY signal;
+        # risk is always subtracted last so it can override a strong raw signal.
+        risk_penalty, penalty_reasons = _compute_risk_penalty(
+            info=fund.get("_info", {}),   # passed through if available
+            df=df if df is not None else pd.DataFrame(),
+            quality=quality,
+        )
+        # Also probe quality breakdown for fast D/E and FCF checks using fund data
+        # (info dict may not be fully accessible here — done best-effort)
+
+        composite = max(0, raw_score - risk_penalty)
 
         if composite >= 55:
             signal = "BUY"
@@ -626,9 +852,22 @@ class PredictionEngine:
             signal = "HOLD"
 
         confidence = min(100, int(abs(composite - 50) * 3.0))
+        score_band = _score_label(int(composite))
 
         # Build reasoning — most impactful signals first
         reasoning = []
+
+        # Score band (top-line context for the investor)
+        reasoning.append({
+            "indicator": "AI Score",
+            "signal": "INFO",
+            "reason": f"Composite score: {composite:.0f}/100 — {score_band}"
+                      + (f" (raw {raw_score:.0f} − risk penalty {risk_penalty})" if risk_penalty > 0 else ""),
+        })
+
+        # Risk penalty reasons (if any)
+        for r in penalty_reasons:
+            reasoning.append({"indicator": "Risk Flag", "signal": "BEARISH", "reason": r})
 
         # Technical breakdown
         reasoning.extend(tech["breakdown"][:3])
@@ -677,7 +916,7 @@ class PredictionEngine:
                 "reason": f"{sentiment['bullish']} bullish vs {sentiment['bearish']} bearish in recent news"
             })
 
-        return signal, confidence, reasoning
+        return signal, confidence, reasoning, score_band
 
     def _estimate_target(self, price, signal, confidence, horizon, df, info):
         conf_factor = max(0.5, confidence / 100)

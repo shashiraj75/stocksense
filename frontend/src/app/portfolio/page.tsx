@@ -59,8 +59,10 @@ export default function PortfolioPage() {
 
   const currency = (m: Market) => m === "US" ? "$" : "₹";
 
-  // Compute totals
-  let totalInvested = 0, totalCurrent = 0;
+  // Compute totals per currency — never mix ₹ and $ into one number
+  let totalInvestedIN = 0, totalCurrentIN = 0;
+  let totalInvestedUS = 0, totalCurrentUS = 0;
+
   const rows = holdings.map((h, i) => {
     const q = quoteQueries[i]?.data;
     const curPrice = q?.price ?? null;
@@ -68,12 +70,19 @@ export default function PortfolioPage() {
     const current = curPrice ? h.qty * curPrice : null;
     const plAmt = current !== null ? current - invested : null;
     const plPct = plAmt !== null ? (plAmt / invested) * 100 : null;
-    if (current !== null) { totalInvested += invested; totalCurrent += current; }
+    if (current !== null) {
+      if (h.market === "IN") { totalInvestedIN += invested; totalCurrentIN += current; }
+      else { totalInvestedUS += invested; totalCurrentUS += current; }
+    }
     return { ...h, curPrice, invested, current, plAmt, plPct, loading: quoteQueries[i]?.isLoading };
   });
 
-  const totalPL = totalCurrent - totalInvested;
-  const totalPLPct = totalInvested > 0 ? (totalPL / totalInvested) * 100 : 0;
+  const hasIN = totalInvestedIN > 0;
+  const hasUS = totalInvestedUS > 0;
+  const totalPLIN = totalCurrentIN - totalInvestedIN;
+  const totalPLUS = totalCurrentUS - totalInvestedUS;
+  const totalPLPctIN = totalInvestedIN > 0 ? (totalPLIN / totalInvestedIN) * 100 : 0;
+  const totalPLPctUS = totalInvestedUS > 0 ? (totalPLUS / totalInvestedUS) * 100 : 0;
 
   return (
     <div className="space-y-6">
@@ -89,19 +98,54 @@ export default function PortfolioPage() {
 
       {/* Summary cards */}
       {holdings.length > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          {[
-            { label: "Holdings", value: holdings.length, color: "text-white" },
-            { label: "Invested", value: `$${totalInvested.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, color: "text-white" },
-            { label: "Current Value", value: `$${totalCurrent.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, color: "text-white" },
-            { label: "Total P&L", value: `${totalPL >= 0 ? "+" : ""}$${totalPL.toLocaleString(undefined, { maximumFractionDigits: 0 })} (${totalPLPct >= 0 ? "+" : ""}${totalPLPct.toFixed(1)}%)`,
-              color: totalPL >= 0 ? "text-bull" : "text-bear" },
-          ].map(c => (
-            <div key={c.label} className="bg-dark-card border border-dark-border rounded-2xl p-5">
-              <p className="text-xs text-gray-400 mb-1">{c.label}</p>
-              <p className={clsx("text-xl font-bold", c.color)}>{c.value}</p>
+        <div className="space-y-3">
+          {/* Indian holdings summary */}
+          {hasIN && (
+            <div>
+              <p className="text-xs text-gray-500 mb-2 flex items-center gap-1">🇮🇳 Indian Holdings (₹)</p>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[
+                  { label: "Holdings", value: String(holdings.filter(h => h.market === "IN").length), color: "text-white" },
+                  { label: "Invested", value: `₹${totalInvestedIN.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`, color: "text-white" },
+                  { label: "Current Value", value: `₹${totalCurrentIN.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`, color: "text-white" },
+                  { label: "P&L", value: `${totalPLIN >= 0 ? "+" : ""}₹${Math.abs(totalPLIN).toLocaleString("en-IN", { maximumFractionDigits: 0 })} (${totalPLPctIN >= 0 ? "+" : ""}${totalPLPctIN.toFixed(1)}%)`, color: totalPLIN >= 0 ? "text-bull" : "text-bear" },
+                ].map(c => (
+                  <div key={c.label} className="bg-dark-card border border-dark-border rounded-2xl p-4">
+                    <p className="text-xs text-gray-400 mb-1">{c.label}</p>
+                    <p className={clsx("text-lg font-bold", c.color)}>{c.value}</p>
+                  </div>
+                ))}
+              </div>
             </div>
-          ))}
+          )}
+          {/* US holdings summary */}
+          {hasUS && (
+            <div>
+              <p className="text-xs text-gray-500 mb-2 flex items-center gap-1">🇺🇸 US Holdings ($)</p>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[
+                  { label: "Holdings", value: String(holdings.filter(h => h.market === "US").length), color: "text-white" },
+                  { label: "Invested", value: `$${totalInvestedUS.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, color: "text-white" },
+                  { label: "Current Value", value: `$${totalCurrentUS.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, color: "text-white" },
+                  { label: "P&L", value: `${totalPLUS >= 0 ? "+" : ""}$${Math.abs(totalPLUS).toLocaleString(undefined, { maximumFractionDigits: 0 })} (${totalPLPctUS >= 0 ? "+" : ""}${totalPLPctUS.toFixed(1)}%)`, color: totalPLUS >= 0 ? "text-bull" : "text-bear" },
+                ].map(c => (
+                  <div key={c.label} className="bg-dark-card border border-dark-border rounded-2xl p-4">
+                    <p className="text-xs text-gray-400 mb-1">{c.label}</p>
+                    <p className={clsx("text-lg font-bold", c.color)}>{c.value}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {/* Total holdings count when no prices loaded yet */}
+          {!hasIN && !hasUS && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="bg-dark-card border border-dark-border rounded-2xl p-4">
+                <p className="text-xs text-gray-400 mb-1">Holdings</p>
+                <p className="text-lg font-bold text-white">{holdings.length}</p>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
