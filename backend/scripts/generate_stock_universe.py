@@ -36,7 +36,7 @@ US_ETFS = [
     ("ARKK","ARK Innovation ETF"),("ARKG","ARK Genomic Revolution ETF"),
     ("ARKW","ARK Next Generation Internet ETF"),("ARKF","ARK Fintech Innovation ETF"),
     ("ARKQ","ARK Autonomous Technology & Robotics ETF"),
-    ("SPCX","SPAC and New Issue ETF"),("SPAK","Defiance Next Gen SPAC ETF"),
+    ("SPAK","Defiance Next Gen SPAC ETF"),
     ("SOXX","iShares Semiconductor ETF"),("SMH","VanEck Semiconductor ETF"),
     ("JETS","US Global Jets ETF"),("HACK","ETFMG Prime Cyber Security ETF"),
     ("BOTZ","Global X Robotics & AI ETF"),("ROBO","Robo Global Robotics & Automation ETF"),

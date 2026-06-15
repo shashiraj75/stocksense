@@ -133,6 +133,25 @@ export default function StockPage() {
     }
   };
 
+  // Show "not found" if quote loaded but returned nothing (delisted / invalid symbol)
+  const notFound = !isCrypto && !predLoading && !quote && prediction === undefined;
+
+  if (notFound) {
+    return (
+      <div className="flex flex-col items-center justify-center py-32 text-center space-y-4">
+        <div className="text-5xl">🔍</div>
+        <h1 className="text-2xl font-bold text-white">{symbol} not found</h1>
+        <p className="text-gray-400 text-sm max-w-sm">
+          This symbol may be delisted, invalid, or not supported by our data provider.
+          Try searching for a different stock.
+        </p>
+        <a href="/" className="mt-4 px-5 py-2 rounded-xl bg-brand-500 text-white text-sm font-medium hover:bg-brand-600 transition-colors">
+          Back to Dashboard
+        </a>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       {!isCrypto && <MarketDisclaimer market={market} />}
