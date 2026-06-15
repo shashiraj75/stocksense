@@ -2,7 +2,7 @@ import axios from "axios";
 
 export const api = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000",
-  timeout: 45000,
+  timeout: 90000,  // 90s — Render cold start takes 50-70s; must outlast it
 });
 
 export type Market = "US" | "IN";

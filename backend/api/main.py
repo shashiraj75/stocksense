@@ -52,18 +52,25 @@ async def _weekly_refresh_loop():
 
 
 async def _keepalive_loop():
-    """Ping own /health every 10 minutes to prevent Render free-tier sleep."""
+    """
+    Ping own /health every 14 minutes to prevent Render free-tier sleep.
+    Render sleeps after 15 min of inactivity — 14 min keeps a safe margin.
+    NOTE: self-pings don't reset Render's sleep timer on their own;
+    set up UptimeRobot (free) at /health every 5 min as the primary keepalive.
+    This loop is a secondary fallback.
+    """
     await asyncio.sleep(60)  # wait for server to fully start
     self_url = os.getenv("RENDER_EXTERNAL_URL", "")
     if not self_url:
-        return  # only runs on Render where RENDER_EXTERNAL_URL is set automatically
+        return  # only runs on Render
     url = f"{self_url}/health"
     while True:
         try:
-            urllib.request.urlopen(url, timeout=10)
-        except Exception:
-            pass
-        await asyncio.sleep(10 * 60)  # 10 minutes
+            urllib.request.urlopen(url, timeout=15)
+            print(f"[keepalive] pinged {url}")
+        except Exception as e:
+            print(f"[keepalive] ping failed: {e}")
+        await asyncio.sleep(14 * 60)  # 14 minutes
 
 
 @asynccontextmanager

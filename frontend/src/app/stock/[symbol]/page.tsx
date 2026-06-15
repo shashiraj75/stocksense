@@ -8,7 +8,7 @@ import { SignalBadge } from "@/components/SignalBadge";
 import { ConfidenceMeter } from "@/components/ConfidenceMeter";
 import { NewsCard } from "@/components/NewsCard";
 import clsx from "clsx";
-import { ArrowUpRight, ArrowDownRight, FlaskConical, CheckCircle, XCircle } from "lucide-react";
+import { ArrowUpRight, ArrowDownRight, FlaskConical, CheckCircle, XCircle, Loader2 } from "lucide-react";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 
 type Tab = Horizon | "backtest";
@@ -105,14 +105,14 @@ export default function StockPage() {
     ? cryptoMovers?.movers.find(m => m.symbol === symbol) ?? null
     : null;
 
-  const { data: prediction, isLoading: predLoading, refetch: refetchPrediction, isError: predError } = useQuery({
+  const { data: prediction, isLoading: predLoading, refetch: refetchPrediction, isError: predError, failureCount } = useQuery({
     queryKey: ["prediction", symbol, isCrypto ? "CRYPTO" : market, horizon],
     queryFn: () => fetchPrediction(symbol, isCrypto ? "CRYPTO" as any : market, horizon),
     enabled: tab !== "backtest",
-    retry: 3,
-    retryDelay: (attempt) => Math.min(attempt * 8000, 24000),
-    placeholderData: (prev) => prev,  // show previous horizon data while new one loads
-    staleTime: 14 * 60_000,  // match backend 15-min cache — no redundant refetches
+    retry: 2,                                     // 3 total attempts (1 + 2 retries)
+    retryDelay: () => 5000,                       // flat 5s between retries — don't pile on a waking server
+    placeholderData: (prev) => prev,
+    staleTime: 14 * 60_000,
     refetchOnWindowFocus: false,
   });
 
@@ -331,11 +331,35 @@ export default function StockPage() {
                 })()}
               </div>
               {predLoading ? (
-                <div className="space-y-3">
-                  <p className="text-xs text-gray-500 animate-pulse">Fetching prediction — backend may be waking up, please wait…</p>
+                <div className="space-y-4 py-2">
+                  <div className="flex items-center gap-3">
+                    <Loader2 size={18} className="animate-spin text-brand-500 shrink-0" />
+                    <div>
+                      <p className="text-sm text-white font-medium">
+                        {failureCount === 0 ? "Running AI analysis…" : `Waking up server… (attempt ${failureCount + 1}/3)`}
+                      </p>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        {failureCount === 0
+                          ? "Analysing technicals, fundamentals & news sentiment"
+                          : "Free tier server was sleeping — takes ~60s to wake up. Hang tight."}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="w-full h-1.5 bg-dark-border rounded-full overflow-hidden">
+                    <div className="h-full bg-brand-500 rounded-full animate-[progress_60s_linear_forwards]" style={{ width: failureCount > 0 ? "80%" : "40%" }} />
+                  </div>
                   {[1, 2, 3].map((i) => (
-                    <div key={i} className="h-5 bg-dark-border rounded animate-pulse" />
+                    <div key={i} className="h-4 bg-dark-border rounded animate-pulse" />
                   ))}
+                </div>
+              ) : predError && !prediction ? (
+                <div className="space-y-3 py-2">
+                  <p className="text-red-400 text-sm font-medium">Failed to load prediction</p>
+                  <p className="text-gray-500 text-xs">The server may still be starting up. Try again in a moment.</p>
+                  <button onClick={() => refetchPrediction()}
+                    className="px-4 py-2 rounded-lg bg-brand-500 text-white text-sm font-medium hover:bg-brand-600 transition-colors">
+                    Retry Now
+                  </button>
                 </div>
               ) : (prediction as any)?.error ? (
                 <p className="text-red-400 text-sm">{(prediction as any).error}</p>
