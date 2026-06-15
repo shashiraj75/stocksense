@@ -51,8 +51,8 @@ const CRYPTO_MAP: Record<string, string> = {
   "LTC": "BINANCE:LTCUSDT",  "ATOM": "BINANCE:ATOMUSDT",
 };
 
-// Stocks not yet indexed by TradingView — skip symbol prefix so TV tries NASDAQ default
 const OTHER_EXCHANGE: Record<string, string> = {
+  "SPCX": "NASDAQ:SPCX",
   "SPAK": "NASDAQ:SPAK",
 };
 
