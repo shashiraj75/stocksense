@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 
-export function LiveClock() {
+export function LiveClock({ inline }: { inline?: boolean }) {
   const [now, setNow] = useState<Date | null>(null);
 
   useEffect(() => {
@@ -18,6 +18,14 @@ export function LiveClock() {
   const time = now.toLocaleTimeString("en-IN", {
     hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true,
   });
+
+  if (inline) {
+    return (
+      <span className="text-xs text-gray-500">
+        {time} · {date}
+      </span>
+    );
+  }
 
   return (
     <div className="text-right text-xs text-gray-400 leading-5">

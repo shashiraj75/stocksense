@@ -4,7 +4,6 @@ import { Providers } from "./providers";
 import { SearchBar } from "@/components/SearchBar";
 import Link from "next/link";
 import { TrendingUp } from "lucide-react";
-import { LiveClock } from "@/components/LiveClock";
 import { MobileNav } from "@/components/MobileNav";
 import { NavLinks } from "@/components/NavLinks";
 import { UserMenu } from "@/components/UserMenu";
@@ -37,7 +36,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 StockSense
               </Link>
               <div className="flex-1 min-w-0 max-w-[180px] sm:max-w-xs"><SearchBar /></div>
-              <div className="hidden sm:block"><LiveClock /></div>
               {/* Desktop nav */}
               <NavLinks links={NAV_LINKS} />
               <UserMenu />
