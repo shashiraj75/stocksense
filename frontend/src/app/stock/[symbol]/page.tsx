@@ -112,7 +112,7 @@ export default function StockPage() {
     retry: 3,
     retryDelay: (attempt) => Math.min(attempt * 8000, 24000),
     placeholderData: (prev) => prev,  // show previous horizon data while new one loads
-    staleTime: 4 * 60_000,   // match backend 5-min cache — no redundant refetches
+    staleTime: 14 * 60_000,  // match backend 15-min cache — no redundant refetches
     refetchOnWindowFocus: false,
   });
 

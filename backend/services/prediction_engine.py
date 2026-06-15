@@ -17,7 +17,7 @@ REGIME_TICKER = {"US": "^GSPC", "IN": "^NSEI"}
 # ── Caches ────────────────────────────────────────────────────────────────────
 # Prediction cache: { "SYMBOL:MARKET:HORIZON" -> (timestamp, result) }
 _pred_cache: dict[str, tuple[float, dict]] = {}
-_PRED_TTL = 5 * 60  # 5 minutes
+_PRED_TTL = 15 * 60  # 15 minutes — fundamentals don't shift in 15 min
 
 # Market regime cache: { "IN"|"US" -> (timestamp, result) }
 _regime_cache: dict[str, tuple[float, dict]] = {}

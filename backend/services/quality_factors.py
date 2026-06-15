@@ -19,6 +19,7 @@ Sector index data is cached for 15 minutes (shared across all stocks in a genera
 
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import numpy as np
@@ -30,6 +31,27 @@ _sector_lock  = threading.Lock()
 _sector_cache: dict | None = None
 _sector_expiry: float = 0
 SECTOR_CACHE_TTL = 900  # 15 min
+
+# ── Nifty 50 history cache (shared between relative_strength + sector fetch) ──
+_nifty_lock: threading.Lock = threading.Lock()
+_nifty_df: pd.DataFrame | None = None
+_nifty_expiry: float = 0
+_NIFTY_TTL = 900  # 15 min
+
+
+def _get_nifty_history() -> pd.DataFrame:
+    """Return cached Nifty 50 7-month history. Fetched at most once per 15 min."""
+    global _nifty_df, _nifty_expiry
+    with _nifty_lock:
+        if _nifty_df is not None and time.time() < _nifty_expiry:
+            return _nifty_df
+        try:
+            df = yf.Ticker("^NSEI").history(period="7mo")
+            _nifty_df = df
+            _nifty_expiry = time.time() + _NIFTY_TTL
+            return df
+        except Exception:
+            return pd.DataFrame()
 
 # Nifty sector index tickers
 SECTOR_INDICES = {
@@ -94,24 +116,38 @@ STOCK_SECTOR: dict[str, str] = {
 }
 
 
-def _get_sector_returns() -> dict[str, float | None]:
-    """Fetch 1M and 3M returns for all sector indices. Cached 15 min."""
+def _fetch_sector_one(sector_sym: tuple[str, str]) -> tuple[str, dict | None]:
+    """Fetch returns for one sector index (called in thread pool)."""
+    sector, sym = sector_sym
+    try:
+        df = yf.Ticker(sym).history(period="4mo")
+        if len(df) < 20:
+            return sector, None
+        ret_1m = (df["Close"].iloc[-1] - df["Close"].iloc[-21]) / df["Close"].iloc[-21] * 100
+        ret_3m = (df["Close"].iloc[-1] - df["Close"].iloc[-63]) / df["Close"].iloc[-63] * 100 if len(df) >= 63 else None
+        # Also warm the Nifty cache if this is the Nifty50 ticker
+        if sym == "^NSEI":
+            global _nifty_df, _nifty_expiry
+            with _nifty_lock:
+                if _nifty_df is None or time.time() >= _nifty_expiry:
+                    _nifty_df = yf.Ticker("^NSEI").history(period="7mo")
+                    _nifty_expiry = time.time() + _NIFTY_TTL
+        return sector, {"1m": round(ret_1m, 2), "3m": round(ret_3m, 2) if ret_3m is not None else None}
+    except Exception:
+        return sector, None
+
+
+def _get_sector_returns() -> dict[str, dict | None]:
+    """Fetch 1M and 3M returns for all sector indices in parallel. Cached 15 min."""
     global _sector_cache, _sector_expiry
     with _sector_lock:
         if _sector_cache is not None and time.time() < _sector_expiry:
             return _sector_cache
-        result: dict[str, float | None] = {}
-        for sector, sym in SECTOR_INDICES.items():
-            try:
-                df = yf.Ticker(sym).history(period="4mo")
-                if len(df) < 20:
-                    result[sector] = None
-                    continue
-                ret_1m = (df["Close"].iloc[-1] - df["Close"].iloc[-21]) / df["Close"].iloc[-21] * 100
-                ret_3m = (df["Close"].iloc[-1] - df["Close"].iloc[-63]) / df["Close"].iloc[-63] * 100 if len(df) >= 63 else None
-                result[sector] = {"1m": round(ret_1m, 2), "3m": round(ret_3m, 2) if ret_3m is not None else None}
-            except Exception:
-                result[sector] = None
+        # Parallel fetch — was 11 sequential calls (~16s), now ~2s
+        result: dict[str, dict | None] = {}
+        with ThreadPoolExecutor(max_workers=len(SECTOR_INDICES)) as pool:
+            for sector, val in pool.map(_fetch_sector_one, SECTOR_INDICES.items()):
+                result[sector] = val
         _sector_cache = result
         _sector_expiry = time.time() + SECTOR_CACHE_TTL
         return result
@@ -281,7 +317,7 @@ def relative_strength_score(df: pd.DataFrame) -> dict:
     reasons: list[str] = []
 
     try:
-        nifty_data = yf.Ticker("^NSEI").history(period="7mo")
+        nifty_data = _get_nifty_history()   # uses shared 15-min cache — no duplicate fetch
         if nifty_data.empty or len(df) < 21:
             return {"score": 50, "reasons": []}
 
