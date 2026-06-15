@@ -858,11 +858,14 @@ class PredictionEngine:
             signal = "SELL"
 
         if signal == "BUY":
-            confidence = min(100, int((composite - 70) * 5))   # 70=0%, 90=100%
+            # Floor at 30% — stock earned the signal; scales to 100% at score 90
+            confidence = min(100, 30 + int((composite - 70) * 3.5))
         elif signal == "SELL":
-            confidence = min(100, int((55 - composite) * 5))   # 55=0%, 33=110%→100%
+            # Floor at 30% — mirrors BUY; scales to 100% at score ~37
+            confidence = min(100, 30 + int((55 - composite) * 3.5))
         else:
-            confidence = min(40, int(abs(composite - 62) * 4)) # HOLD: max 40% by design
+            # HOLD is the uncertain zone — cap at 25% so it never looks like conviction
+            confidence = min(25, int(abs(composite - 62) * 3))
         score_band = _score_label(int(composite))
 
         # Build reasoning — most impactful signals first
