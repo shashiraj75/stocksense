@@ -3,15 +3,25 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { api } from "@/utils/api";
-import { TrendingUp, Clock, AlertCircle } from "lucide-react";
+import { TrendingUp, Clock, AlertCircle, ChevronDown, ChevronUp } from "lucide-react";
+
+type ReasonItem = { indicator: string; signal: string; reason: string };
 
 type Pick = {
   symbol: string;
   name: string;
   price: number;
   target: number;
+  stop_loss?: number;
+  entry_low?: number;
+  entry_high?: number;
+  risk_reward?: number;
   confidence: number;
-  reasoning: string[];
+  tech_score?: number;
+  fund_score?: number;
+  sentiment?: string;
+  reasoning: ReasonItem[];
+  summary?: string;
   horizon: string;
 };
 
@@ -27,69 +37,168 @@ const HORIZONS = [
   { key: "long",   label: "Long Term",   sub: "3–6 months" },
 ] as const;
 
+const SIGNAL_COLOR: Record<string, string> = {
+  BUY: "text-green-400", BULLISH: "text-green-400",
+  SELL: "text-red-400",  BEARISH: "text-red-400",
+  HOLD: "text-yellow-400", NEUTRAL: "text-gray-400", INFO: "text-blue-400",
+};
+
+const INDICATOR_GROUP: Record<string, string> = {
+  RSI: "Technical", MACD: "Technical", EMA: "Technical", SMA: "Technical",
+  Momentum: "Technical", Volume: "Technical", Candlestick: "Technical",
+  "Bollinger Bands": "Technical", ATR: "Technical",
+  Fundamental: "Fundamental", "Market Regime": "Market",
+  Sentiment: "Sentiment",
+};
+
+function ScoreBar({ label, value, color }: { label: string; value: number; color: string }) {
+  return (
+    <div>
+      <div className="flex justify-between text-xs mb-0.5">
+        <span className="text-gray-500">{label}</span>
+        <span className={`font-medium ${color}`}>{value}%</span>
+      </div>
+      <div className="h-1 bg-dark-border rounded-full overflow-hidden">
+        <div className={`h-full rounded-full ${color.replace("text-", "bg-")}`} style={{ width: `${value}%` }} />
+      </div>
+    </div>
+  );
+}
+
 function PickCard({ pick }: { pick: Pick }) {
   const router = useRouter();
+  const [expanded, setExpanded] = useState(false);
+
   const upside = pick.price && pick.target
     ? (((pick.target - pick.price) / pick.price) * 100).toFixed(1)
     : null;
 
+  // Group reasoning by category
+  const grouped: Record<string, ReasonItem[]> = {};
+  for (const r of pick.reasoning ?? []) {
+    const group = INDICATOR_GROUP[r.indicator] ?? "Other";
+    if (!grouped[group]) grouped[group] = [];
+    grouped[group].push(r);
+  }
+
   return (
-    <div
-      onClick={() => router.push(`/stock/${pick.symbol}?market=IN`)}
-      className="bg-dark-card border border-dark-border rounded-xl p-4 cursor-pointer hover:border-green-500/50 transition-all hover:shadow-lg hover:shadow-green-500/5 group"
-    >
-      <div className="flex items-start justify-between mb-3">
-        <div>
-          <div className="flex items-center gap-2">
-            <span className="font-mono font-bold text-white text-lg group-hover:text-green-400 transition-colors">
-              {pick.symbol}
-            </span>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-green-500/15 text-green-400 font-semibold border border-green-500/30">
-              BUY
-            </span>
+    <div className="bg-dark-card border border-dark-border rounded-xl overflow-hidden hover:border-green-500/50 transition-all hover:shadow-lg hover:shadow-green-500/5 group">
+      {/* Clickable header — navigates to stock page */}
+      <div
+        onClick={() => router.push(`/stock/${pick.symbol}?market=IN`)}
+        className="p-4 cursor-pointer"
+      >
+        {/* Top row: symbol + price */}
+        <div className="flex items-start justify-between mb-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-mono font-bold text-white text-lg group-hover:text-green-400 transition-colors">
+                {pick.symbol}
+              </span>
+              <span className="text-xs px-2 py-0.5 rounded-full bg-green-500/15 text-green-400 font-semibold border border-green-500/30">
+                BUY
+              </span>
+              {pick.sentiment && pick.sentiment !== "NEUTRAL" && (
+                <span className={`text-xs px-1.5 py-0.5 rounded border ${pick.sentiment === "BULLISH" ? "bg-green-500/10 text-green-400 border-green-500/20" : "bg-red-500/10 text-red-400 border-red-500/20"}`}>
+                  {pick.sentiment === "BULLISH" ? "📰 Bullish News" : "📰 Bearish News"}
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-gray-500 mt-0.5 truncate max-w-[200px]">{pick.name}</p>
           </div>
-          <p className="text-xs text-gray-500 mt-0.5 truncate max-w-[180px]">{pick.name}</p>
-        </div>
-        <div className="text-right">
-          <div className="text-sm font-semibold text-white">
-            ₹{pick.price?.toLocaleString("en-IN")}
+          <div className="text-right">
+            <div className="text-sm font-semibold text-white">₹{pick.price?.toLocaleString("en-IN")}</div>
+            {upside && <div className="text-xs text-green-400 font-medium">+{upside}% upside</div>}
           </div>
-          {upside && (
-            <div className="text-xs text-green-400 font-medium">+{upside}% upside</div>
-          )}
         </div>
-      </div>
 
-      {/* Confidence bar */}
-      <div className="mb-3">
-        <div className="flex justify-between text-xs text-gray-500 mb-1">
-          <span>AI Confidence</span>
-          <span className="text-white font-medium">{pick.confidence}%</span>
+        {/* AI Confidence bar */}
+        <div className="mb-3">
+          <div className="flex justify-between text-xs text-gray-500 mb-1">
+            <span>AI Confidence</span>
+            <span className="text-white font-medium">{pick.confidence}%</span>
+          </div>
+          <div className="h-1.5 bg-dark-border rounded-full overflow-hidden">
+            <div
+              className="h-full bg-gradient-to-r from-green-500 to-emerald-400 rounded-full"
+              style={{ width: `${pick.confidence}%` }}
+            />
+          </div>
         </div>
-        <div className="h-1.5 bg-dark-border rounded-full overflow-hidden">
-          <div
-            className="h-full bg-gradient-to-r from-green-500 to-emerald-400 rounded-full"
-            style={{ width: `${pick.confidence}%` }}
-          />
-        </div>
-      </div>
 
-      {/* Target */}
-      {pick.target && (
-        <div className="flex items-center justify-between text-xs mb-3">
-          <span className="text-gray-500">Target Price</span>
-          <span className="text-green-400 font-semibold">₹{pick.target?.toLocaleString("en-IN")}</span>
-        </div>
-      )}
-
-      {/* Top reasoning */}
-      {pick.reasoning?.length > 0 && (
-        <div className="space-y-1">
-          {pick.reasoning.map((r, i) => (
-            <p key={i} className="text-xs text-gray-400 flex items-start gap-1.5">
-              <span className="text-green-500 mt-0.5 flex-shrink-0">•</span>
-              {r}
+        {/* Price targets row */}
+        <div className="grid grid-cols-3 gap-2 mb-3">
+          <div className="bg-dark-border/40 rounded-lg p-2 text-center">
+            <p className="text-xs text-gray-500 mb-0.5">Entry Zone</p>
+            <p className="text-xs text-white font-mono">
+              {pick.entry_low && pick.entry_high
+                ? `₹${pick.entry_low.toLocaleString("en-IN")}–${pick.entry_high.toLocaleString("en-IN")}`
+                : `₹${pick.price?.toLocaleString("en-IN")}`}
             </p>
+          </div>
+          <div className="bg-green-500/10 rounded-lg p-2 text-center border border-green-500/20">
+            <p className="text-xs text-gray-500 mb-0.5">Target</p>
+            <p className="text-xs text-green-400 font-mono font-semibold">₹{pick.target?.toLocaleString("en-IN")}</p>
+          </div>
+          <div className="bg-red-500/10 rounded-lg p-2 text-center border border-red-500/20">
+            <p className="text-xs text-gray-500 mb-0.5">Stop Loss</p>
+            <p className="text-xs text-red-400 font-mono font-semibold">
+              {pick.stop_loss ? `₹${pick.stop_loss.toLocaleString("en-IN")}` : "—"}
+            </p>
+          </div>
+        </div>
+
+        {pick.risk_reward && (
+          <div className="flex items-center gap-1 text-xs text-gray-500 mb-3">
+            <span>Risk:Reward</span>
+            <span className="text-white font-semibold">1 : {pick.risk_reward.toFixed(1)}</span>
+          </div>
+        )}
+
+        {/* Smart Summary */}
+        {pick.summary && (
+          <div className="bg-dark-border/30 rounded-lg p-3 mb-1 border border-dark-border">
+            <p className="text-xs text-gray-300 leading-relaxed">{pick.summary}</p>
+          </div>
+        )}
+      </div>
+
+      {/* Expandable deep reasoning */}
+      <button
+        onClick={() => setExpanded(e => !e)}
+        className="w-full flex items-center justify-between px-4 py-2.5 border-t border-dark-border text-xs text-gray-500 hover:text-white hover:bg-dark-border/20 transition-colors"
+      >
+        <span className="font-medium">View detailed analysis</span>
+        {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+      </button>
+
+      {expanded && (
+        <div className="px-4 pb-4 space-y-4 border-t border-dark-border bg-black/20">
+          {/* Score bars */}
+          {(pick.tech_score != null || pick.fund_score != null) && (
+            <div className="pt-3 space-y-2">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Signal Scores</p>
+              {pick.tech_score != null && <ScoreBar label="Technical" value={pick.tech_score} color="text-blue-400" />}
+              {pick.fund_score != null && <ScoreBar label="Fundamental" value={pick.fund_score} color="text-purple-400" />}
+              <ScoreBar label="AI Confidence" value={pick.confidence} color="text-green-400" />
+            </div>
+          )}
+
+          {/* Grouped reasoning */}
+          {Object.entries(grouped).map(([group, items]) => (
+            <div key={group}>
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1.5">{group}</p>
+              <div className="space-y-1.5">
+                {items.map((r, i) => (
+                  <div key={i} className="flex items-start gap-2">
+                    <span className={`text-xs font-semibold mt-0.5 flex-shrink-0 w-16 ${SIGNAL_COLOR[r.signal] ?? "text-gray-400"}`}>
+                      {r.signal}
+                    </span>
+                    <p className="text-xs text-gray-300 leading-relaxed">{r.reason}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
           ))}
         </div>
       )}
@@ -162,13 +271,13 @@ export default function DailyPicksPage() {
 
       {/* Content */}
       {isLoading ? (
-        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid md:grid-cols-2 gap-4">
           {[...Array(5)].map((_, i) => (
-            <div key={i} className="bg-dark-card border border-dark-border rounded-xl p-4 animate-pulse h-48" />
+            <div key={i} className="bg-dark-card border border-dark-border rounded-xl p-4 animate-pulse h-64" />
           ))}
         </div>
       ) : picks.length > 0 ? (
-        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid md:grid-cols-2 gap-4">
           {picks.map((pick) => (
             <PickCard key={pick.symbol} pick={pick} />
           ))}

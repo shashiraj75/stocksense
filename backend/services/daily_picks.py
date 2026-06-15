@@ -40,19 +40,100 @@ NIFTY100 = [
 ]
 
 
+HORIZON_LABELS = {
+    "short":  ("1–5 days",   "short-term"),
+    "medium": ("2–4 weeks",  "medium-term"),
+    "long":   ("3–6 months", "long-term"),
+}
+
+
+def _build_summary(result: dict, horizon: str) -> str:
+    """Compose a human-readable analyst-style summary from prediction engine output."""
+    name       = result.get("company_name", result.get("symbol", ""))
+    confidence = result.get("confidence", 0)
+    price      = result.get("current_price", 0)
+    target     = result.get("target_price", 0)
+    upside     = round((target - price) / price * 100, 1) if price and target else 0
+    period, term = HORIZON_LABELS.get(horizon, ("", ""))
+
+    tech  = result.get("technical", {})
+    fund  = result.get("fundamental_score", {})
+    sent  = result.get("sentiment_score", {})
+    reg   = result.get("market_regime", {})
+
+    # Tech strength label
+    tech_score = tech.get("score", 50)
+    if tech_score >= 70:
+        tech_label = "strong bullish technical setup"
+    elif tech_score >= 60:
+        tech_label = "moderately bullish technical momentum"
+    else:
+        tech_label = "emerging bullish technical signals"
+
+    # Fundamental label
+    fund_score = fund.get("score", 50)
+    if fund_score >= 70:
+        fund_label = "solid fundamental backing"
+    elif fund_score >= 55:
+        fund_label = "decent fundamental support"
+    else:
+        fund_label = "neutral fundamental profile"
+
+    # Sentiment label
+    sent_label = ""
+    sent_score = sent.get("score", 50)
+    if sent.get("label") == "BULLISH" or sent_score >= 60:
+        sent_label = " News sentiment is bullish with positive market buzz."
+    elif sent.get("label") == "BEARISH" or sent_score <= 40:
+        sent_label = " Recent news sentiment leans cautious, but technical strength overrides."
+
+    # Market regime
+    regime_note = ""
+    reg_trend = reg.get("trend", "")
+    if reg_trend == "BULLISH":
+        regime_note = " The broader market regime supports upside momentum."
+    elif reg_trend == "BEARISH":
+        regime_note = " Broader market is under pressure — position sizing and stop-loss discipline are key."
+
+    # Confidence tone
+    if confidence >= 70:
+        conf_tone = f"with high conviction ({confidence}% AI confidence)"
+    elif confidence >= 50:
+        conf_tone = f"with moderate confidence ({confidence}% AI confidence)"
+    else:
+        conf_tone = f"as a speculative opportunity ({confidence}% AI confidence)"
+
+    summary = (
+        f"{name} is flagged as a {term} BUY {conf_tone}. "
+        f"The AI engine detects a {tech_label} combined with {fund_label}.{sent_label}{regime_note} "
+        f"Target price of ₹{target:,.2f} implies a {upside}% potential upside within {period}."
+    )
+    return summary
+
+
 def _predict_stock(symbol: str, horizon: str) -> dict | None:
     """Run prediction engine for one stock + horizon. Returns None on error."""
     try:
         engine = PredictionEngine()
         result = engine.predict(symbol, "IN", horizon)
         if result and result.get("signal") == "BUY":
+            reasoning = result.get("reasoning", [])
+            trade = result.get("trade_levels", {})
             return {
                 "symbol": symbol,
                 "name": result.get("company_name", symbol),
                 "price": result.get("current_price"),
                 "target": result.get("target_price"),
+                "stop_loss": trade.get("stop_loss"),
+                "entry_low": trade.get("entry_low"),
+                "entry_high": trade.get("entry_high"),
+                "risk_reward": trade.get("risk_reward"),
                 "confidence": result.get("confidence"),
-                "reasoning": result.get("reasoning", [])[:2],
+                "tech_score": result.get("technical", {}).get("score"),
+                "fund_score": result.get("fundamental_score", {}).get("score"),
+                "sentiment": result.get("sentiment_score", {}).get("label", "NEUTRAL"),
+                "reasoning": reasoning,
+                "summary": _build_summary(result, horizon),
                 "horizon": horizon,
             }
     except Exception:
