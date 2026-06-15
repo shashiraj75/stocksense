@@ -9,11 +9,12 @@ import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 
 export default function ScreenerPage() {
   const [market, setMarket] = useState<Market>("IN");
-  const { data, isLoading, dataUpdatedAt } = useQuery({
+  const { data, isLoading, isFetching, dataUpdatedAt } = useQuery({
     queryKey: ["movers", market],
     queryFn: () => fetchTopMovers(market),
-    refetchInterval: 5_000,
-    staleTime: 4_000,
+    refetchInterval: 60_000,   // matches backend 60s TTL
+    staleTime: 55_000,
+    refetchOnWindowFocus: false,
   });
 
   const currency = market === "US" ? "$" : "₹";
@@ -28,11 +29,14 @@ export default function ScreenerPage() {
         </div>
         {dataUpdatedAt > 0 && (
           <div className="flex items-center gap-1.5 text-xs text-gray-500">
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
-            </span>
-            Live · {new Date(dataUpdatedAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true })}
+            {isFetching
+              ? <span className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse inline-block" />
+              : <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
+                </span>
+            }
+            {isFetching ? "Refreshing…" : `Updated ${new Date(dataUpdatedAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true })}`}
           </div>
         )}
       </div>

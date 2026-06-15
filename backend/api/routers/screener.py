@@ -1,3 +1,5 @@
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from fastapi import APIRouter, Query
 from services.screener_service import ScreenerService
 from services.heatmap_service import get_heatmap
@@ -13,28 +15,34 @@ CRYPTO_NAMES = {"BTC":"Bitcoin","ETH":"Ethereum","BNB":"BNB","SOL":"Solana",
                 "XRP":"XRP","DOGE":"Dogecoin","ADA":"Cardano","AVAX":"Avalanche",
                 "LINK":"Chainlink","DOT":"Polkadot"}
 
+_crypto_cache: tuple[float, dict] | None = None
+_CRYPTO_TTL = 60  # seconds
+
+
+def _fetch_crypto(yf_sym: str) -> dict:
+    sym = yf_sym.replace("-USD", "")
+    try:
+        fi = yf.Ticker(yf_sym).fast_info
+        price = round(float(fi.last_price), 4) if fi.last_price else None
+        prev  = round(float(fi.previous_close), 4) if fi.previous_close else None
+        change_pct = round((price - prev) / prev * 100, 2) if price and prev else 0
+        return {"symbol": sym, "name": CRYPTO_NAMES.get(sym, sym), "price": price, "change_pct": change_pct}
+    except Exception:
+        return {"symbol": sym, "name": CRYPTO_NAMES.get(sym, sym), "price": None, "change_pct": 0}
+
 
 @router.get("/crypto-movers")
 async def crypto_movers():
-    results = []
-    for yf_sym in CRYPTO_UNIVERSE:
-        sym = yf_sym.replace("-USD", "")
-        try:
-            t = yf.Ticker(yf_sym)
-            info = t.fast_info
-            price = round(float(info.last_price), 4) if info.last_price else None
-            prev  = round(float(info.previous_close), 4) if info.previous_close else None
-            if price and prev:
-                change_pct = round((price - prev) / prev * 100, 2)
-            else:
-                change_pct = 0
-            results.append({
-                "symbol": sym, "name": CRYPTO_NAMES.get(sym, sym),
-                "price": price, "change_pct": change_pct,
-            })
-        except Exception:
-            results.append({"symbol": sym, "name": CRYPTO_NAMES.get(sym, sym), "price": None, "change_pct": 0})
-    return {"movers": results}
+    global _crypto_cache
+    if _crypto_cache and (time.time() - _crypto_cache[0]) < _CRYPTO_TTL:
+        return _crypto_cache[1]
+
+    with ThreadPoolExecutor(max_workers=len(CRYPTO_UNIVERSE)) as pool:
+        results = list(pool.map(_fetch_crypto, CRYPTO_UNIVERSE))
+
+    response = {"movers": results}
+    _crypto_cache = (time.time(), response)
+    return response
 
 
 @router.get("/top-movers")

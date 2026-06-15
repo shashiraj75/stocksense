@@ -1,8 +1,12 @@
+import time
 import yfinance as yf
 from typing import Optional
 
-# yfinance is completely free — no API key needed
 MARKET_SUFFIX = {"US": "", "IN": ".NS"}
+
+# Quote cache: { "SYMBOL:MARKET" -> (timestamp, result) }
+_quote_cache: dict[str, tuple[float, dict]] = {}
+_QUOTE_TTL = 30  # seconds — fast_info is cheap but still a network call
 
 
 class MarketDataService:
@@ -10,12 +14,16 @@ class MarketDataService:
         return symbol + MARKET_SUFFIX.get(market, "")
 
     async def get_quote(self, symbol: str, market: str) -> Optional[dict]:
+        key = f"{symbol}:{market}"
+        cached = _quote_cache.get(key)
+        if cached and (time.time() - cached[0]) < _QUOTE_TTL:
+            return cached[1]
         try:
             t = yf.Ticker(self._sym(symbol, market))
             fi = t.fast_info
             price = fi.last_price
             prev = fi.previous_close
-            return {
+            result = {
                 "symbol": symbol,
                 "market": market,
                 "price": round(price, 2),
@@ -27,6 +35,8 @@ class MarketDataService:
                 "fifty_two_week_high": fi.year_high,
                 "fifty_two_week_low": fi.year_low,
             }
+            _quote_cache[key] = (time.time(), result)
+            return result
         except Exception:
             return None
 

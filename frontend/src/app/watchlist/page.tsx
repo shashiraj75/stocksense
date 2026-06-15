@@ -19,7 +19,12 @@ export default function WatchlistPage() {
   const [symbol, setSymbol] = useState("");
   const [market, setMarket] = useState<Market>("IN");
 
-  const { data, isLoading } = useQuery({ queryKey: ["watchlist"], queryFn: getWatchlist, refetchInterval: 5_000, staleTime: 4_000 });
+  const { data, isLoading } = useQuery({
+    queryKey: ["watchlist"],
+    queryFn: getWatchlist,
+    staleTime: 5 * 60_000,         // watchlist is DB-backed, not live market data
+    refetchOnWindowFocus: false,    // no polling needed — mutations invalidate manually
+  });
 
   const add = useMutation({
     mutationFn: addToWatchlist,

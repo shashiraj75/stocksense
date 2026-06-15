@@ -7,10 +7,12 @@ export function Providers({ children }: { children: React.ReactNode }) {
   const [qc] = useState(() => new QueryClient({
     defaultOptions: {
       queries: {
-        staleTime: 5 * 60_000,
+        staleTime: 60_000,          // 1 min global floor — pages that need fresher data override explicitly
         gcTime: 30 * 60_000,
         retry: 1,
+        retryDelay: 5_000,          // wait 5s before retry instead of instant (avoids hammering cold server)
         refetchOnWindowFocus: false,
+        refetchOnReconnect: false,  // reconnect already triggers enough re-renders
       },
     },
   }));
