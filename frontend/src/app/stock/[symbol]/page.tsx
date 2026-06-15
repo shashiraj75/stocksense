@@ -250,6 +250,8 @@ export default function StockPage() {
               {(() => {
                   const tl = (prediction as any).trade_levels;
                   const sig = prediction.signal;
+                  const cp: number | null = prediction.current_price ?? null;
+                  const pctFrom = (price: number) => cp ? ((price - cp) / cp * 100).toFixed(1) : null;
                   const entryLabel = sig === "BUY" ? "Buy Zone" : sig === "SELL" ? "Sell Zone" : "Watch Zone";
                   const entryColor = sig === "SELL" ? "text-bear" : sig === "HOLD" ? "text-gray-300" : "text-bull";
                   const entryBg    = sig === "SELL" ? "bg-bear/10 border-bear/30" : sig === "HOLD" ? "bg-dark-border/60 border-dark-border" : "bg-bull/10 border-bull/30";
@@ -270,12 +272,14 @@ export default function StockPage() {
                         <p className="text-xs text-gray-400 mb-1">Take Profit</p>
                         <p className="font-mono font-bold text-sm text-bull">
                           {currency}{tl.take_profit.toLocaleString()}
+                          {pctFrom(tl.take_profit) && <span className="ml-1 text-xs font-normal">+{pctFrom(tl.take_profit)}%</span>}
                         </p>
                       </div>
                       <div className="rounded-xl border p-4 bg-bear/10 border-bear/30">
                         <p className="text-xs text-gray-400 mb-1">Stop Loss</p>
                         <p className="font-mono font-bold text-sm text-bear">
                           {currency}{tl.stop_loss.toLocaleString()}
+                          {pctFrom(tl.stop_loss) && <span className="ml-1 text-xs font-normal">{pctFrom(tl.stop_loss)}%</span>}
                         </p>
                         <p className="text-xs text-gray-500 mt-0.5">Fixed entry stop</p>
                       </div>
