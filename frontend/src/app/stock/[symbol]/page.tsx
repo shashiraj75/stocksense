@@ -312,11 +312,18 @@ export default function StockPage() {
             <div className="bg-dark-card border border-dark-border rounded-2xl p-6 space-y-5">
               <div className="flex items-baseline justify-between gap-2">
                 <h2 className="font-bold text-lg">AI Prediction — {tab} term</h2>
-                {prediction?.target_price && (
-                  <span className="font-mono font-bold text-base shrink-0">
-                    {currency}{prediction.target_price.toLocaleString()}
-                  </span>
-                )}
+                {prediction?.target_price && prediction?.current_price && (() => {
+                  const pct = ((prediction.target_price - prediction.current_price) / prediction.current_price) * 100;
+                  const up = pct >= 0;
+                  return (
+                    <span className="shrink-0 text-right">
+                      <span className="font-mono font-bold text-base">{currency}{prediction.target_price.toLocaleString()}</span>
+                      <span className={`ml-2 text-sm font-medium ${up ? "text-bull" : "text-bear"}`}>
+                        {up ? "+" : ""}{pct.toFixed(1)}%
+                      </span>
+                    </span>
+                  );
+                })()}
               </div>
               {predLoading ? (
                 <div className="space-y-3">
