@@ -68,29 +68,9 @@ export default function StockPage() {
   const params = useParams<{ symbol: string }>();
   const symbol = params?.symbol ?? "";
   const searchParams = useSearchParams();
-  const rawMarket = searchParams?.get("market");
+  const rawMarket = searchParams?.get("market") || "US";
   const isCrypto = rawMarket === "CRYPTO";
-
-  // Auto-detect market from universe if not in URL
-  const [detectedMarket, setDetectedMarket] = useState<Market>(
-    rawMarket === "IN" ? "IN" : "US"
-  );
-  useEffect(() => {
-    if (rawMarket) return; // URL has explicit market — trust it
-    fetch("/stock_universe.json")
-      .then((r) => r.json())
-      .then((u: { US: {symbol:string}[]; IN: {symbol:string}[]; CRYPTO: {symbol:string}[] }) => {
-        const sym = symbol.toUpperCase();
-        if (u.IN?.some((s) => s.symbol.replace(/\.(NS|BO)$/, "") === sym)) {
-          setDetectedMarket("IN");
-        } else if (u.CRYPTO?.some((s) => s.symbol === sym)) {
-          // handled by isCrypto
-        }
-      })
-      .catch(() => {});
-  }, [symbol, rawMarket]);
-
-  const market: Market = isCrypto ? "US" : (rawMarket === "IN" ? "IN" : rawMarket === "US" ? "US" : detectedMarket);
+  const market = isCrypto ? "US" : (rawMarket as Market);
   const currency = market === "IN" ? "₹" : "$";
 
   const [tab, setTab] = useState<Tab>("short");

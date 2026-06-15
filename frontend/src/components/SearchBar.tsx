@@ -96,6 +96,23 @@ export function SearchBar() {
     setQuery(""); setOpen(false); setResults([]);
   };
 
+  const handleEnter = () => {
+    if (results.length > 0) { pick(results[0]); return; }
+    if (!query.trim()) return;
+    const sym = query.trim().toUpperCase();
+    // Look up in universe first so market is always correct
+    if (universe) {
+      const inMatch = universe.IN.find(s => s.symbol.replace(/\.(NS|BO)$/, "") === sym || s.symbol === sym);
+      if (inMatch) { pick(inMatch); return; }
+      const cryptoMatch = universe.CRYPTO.find(s => s.symbol === sym);
+      if (cryptoMatch) { pick(cryptoMatch); return; }
+      const usMatch = universe.US.find(s => s.symbol === sym);
+      if (usMatch) { pick(usMatch); return; }
+    }
+    // Final fallback — default to US
+    pick({ symbol: sym, name: sym, market: "US" });
+  };
+
   return (
     <div className="relative w-full max-w-xs">
       <div className="flex items-center gap-2 bg-dark-card border border-dark-border rounded-xl px-4 py-2.5">
@@ -107,6 +124,7 @@ export function SearchBar() {
           onChange={(e) => handleChange(e.target.value)}
           onBlur={() => setTimeout(() => setOpen(false), 150)}
           onFocus={() => results.length > 0 && setOpen(true)}
+          onKeyDown={(e) => e.key === "Enter" && handleEnter()}
         />
       </div>
       {(open && results.length > 0) || showFallback ? (
