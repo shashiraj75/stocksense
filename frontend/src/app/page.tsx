@@ -39,16 +39,16 @@ export default function Dashboard() {
     queryKey: ["movers", market],
     queryFn: () => fetchTopMovers(market as any),
     enabled: market !== "CRYPTO",
-    refetchInterval: 30_000,
-    staleTime: 25_000,
+    refetchInterval: 5_000,
+    staleTime: 4_000,
   });
 
   const { data: cryptoMovers, isLoading: cryptoLoading, dataUpdatedAt: cryptoUpdatedAt } = useQuery({
     queryKey: ["crypto-movers"],
     queryFn: () => api.get<{ movers: { symbol: string; name: string; price: number | null; change_pct: number }[] }>("/api/screener/crypto-movers").then(r => r.data),
     enabled: market === "CRYPTO",
-    refetchInterval: 30_000,
-    staleTime: 25_000,
+    refetchInterval: 5_000,
+    staleTime: 4_000,
   });
 
   const lastUpdated = market === "CRYPTO" ? cryptoUpdatedAt : moversUpdatedAt;
