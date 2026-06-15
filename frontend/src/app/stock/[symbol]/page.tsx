@@ -317,6 +317,7 @@ export default function StockPage() {
                   const up = pct >= 0;
                   return (
                     <span className="shrink-0 text-right">
+                      <span className="text-gray-400 text-sm mr-1">Target Price:</span>
                       <span className="font-mono font-bold text-base">{currency}{prediction.target_price.toLocaleString()}</span>
                       <span className={`ml-2 text-sm font-medium ${up ? "text-bull" : "text-bear"}`}>
                         {up ? "+" : ""}{pct.toFixed(1)}%
