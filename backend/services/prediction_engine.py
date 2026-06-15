@@ -69,11 +69,11 @@ def _market_regime(market: str) -> dict:
 
 
 SCORE_BANDS = [
-    (90, "Exceptional Opportunity"),
-    (80, "Strong Buy Candidate"),
-    (70, "Good Watchlist Stock"),
-    (60, "Neutral — Monitor"),
-    (0,  "Avoid"),
+    (90, "Exceptional Opportunity"),   # BUY — very high confidence
+    (80, "Strong Buy Candidate"),       # BUY — high confidence
+    (65, "Good Watchlist Stock"),       # BUY — moderate confidence
+    (55, "Neutral — Monitor"),          # HOLD
+    (0,  "Avoid"),                      # SELL
 ]
 
 def _score_label(score: int) -> str:
@@ -844,14 +844,14 @@ class PredictionEngine:
 
         composite = max(0, raw_score - risk_penalty)
 
-        if composite >= 55:
+        if composite >= 65:
             signal = "BUY"
-        elif composite <= 45:
-            signal = "SELL"
-        else:
+        elif composite >= 55:
             signal = "HOLD"
+        else:
+            signal = "SELL"
 
-        confidence = min(100, int(abs(composite - 50) * 3.0))
+        confidence = min(100, int(abs(composite - 55) * 3.0))
         score_band = _score_label(int(composite))
 
         # Build reasoning — most impactful signals first
