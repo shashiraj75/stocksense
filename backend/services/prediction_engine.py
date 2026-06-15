@@ -36,7 +36,15 @@ def _market_regime(market: str) -> dict:
         return cached[1]
     try:
         ticker = yf.Ticker(REGIME_TICKER.get(market, "^GSPC"))
-        df = ticker.history(period="6mo")
+        for attempt in range(3):
+            try:
+                df = ticker.history(period="6mo")
+                break
+            except Exception as e:
+                if "rate" in str(e).lower() and attempt < 2:
+                    time.sleep(5 * (attempt + 1))
+                else:
+                    raise
         if len(df) < 50:
             return {"trend": "SIDEWAYS", "score_adj": 0, "reason": "Insufficient regime data"}
 
@@ -248,13 +256,25 @@ class PredictionEngine:
         period = {"short": "6mo", "medium": "2y", "long": "5y"}[horizon]
 
         def _fetch_history():
-            return yf.Ticker(symbol + suffix).history(period=period)
+            for attempt in range(4):
+                try:
+                    return yf.Ticker(symbol + suffix).history(period=period)
+                except Exception as e:
+                    if "rate" in str(e).lower() and attempt < 3:
+                        time.sleep(5 * (attempt + 1))
+                        continue
+                    raise
 
         def _fetch_info():
-            try:
-                return yf.Ticker(symbol + suffix).info
-            except Exception:
-                return {}
+            for attempt in range(4):
+                try:
+                    return yf.Ticker(symbol + suffix).info
+                except Exception as e:
+                    if "rate" in str(e).lower() and attempt < 3:
+                        time.sleep(5 * (attempt + 1))
+                        continue
+                    return {}
+            return {}
 
         df, info, regime = await asyncio.gather(
             loop.run_in_executor(None, _fetch_history),
