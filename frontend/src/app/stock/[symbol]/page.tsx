@@ -81,20 +81,23 @@ export default function StockPage() {
 
   const horizon = tab === "backtest" ? "short" : (tab as Horizon);
 
-  const { data: quote } = useQuery({
+  const { data: quote, dataUpdatedAt: quoteUpdatedAt } = useQuery({
     queryKey: ["quote", symbol, market],
     queryFn: () => fetchQuote(symbol, market),
     enabled: !isCrypto,
+    refetchInterval: 30_000,   // refresh every 30 seconds
+    staleTime: 25_000,
   });
 
   // For crypto, fetch price via screener/crypto-movers (already returns live prices)
-  const { data: cryptoMovers } = useQuery({
+  const { data: cryptoMovers, dataUpdatedAt: cryptoUpdatedAt } = useQuery({
     queryKey: ["crypto-movers"],
     queryFn: () => api.get<{ movers: { symbol: string; name: string; price: number | null; change_pct: number }[] }>(
       "/api/screener/crypto-movers"
     ).then(r => r.data),
     enabled: isCrypto,
-    staleTime: 60_000,
+    refetchInterval: 30_000,   // refresh every 30 seconds
+    staleTime: 25_000,
   });
   const cryptoQuote = isCrypto
     ? cryptoMovers?.movers.find(m => m.symbol === symbol) ?? null
@@ -152,7 +155,7 @@ export default function StockPage() {
             })()}
           </div>
           {(quote || cryptoQuote || (isCrypto && prediction?.current_price)) && (
-            <div className="flex items-center gap-3 mt-2">
+            <div className="flex items-center gap-3 mt-2 flex-wrap">
               <span className="text-4xl font-bold">
                 {isCrypto
                   ? `$${(cryptoQuote?.price ?? prediction?.current_price ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
@@ -177,6 +180,16 @@ export default function StockPage() {
                   </span>
                 );
               })()}
+              {/* Live indicator */}
+              <div className="flex items-center gap-1.5 ml-1">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                </span>
+                <span className="text-xs text-gray-500">
+                  Live · {new Date(isCrypto ? cryptoUpdatedAt : quoteUpdatedAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true })}
+                </span>
+              </div>
             </div>
           )}
         </div>
