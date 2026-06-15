@@ -48,7 +48,7 @@ async def get_fundamentals(
 
 # ── Live index data ────────────────────────────────────────────────────────────
 _index_cache: dict[str, tuple[float, dict]] = {}
-_INDEX_TTL = 60  # 1 minute
+_INDEX_TTL = 15  # 15 seconds — fast_info is lightweight enough for near-live updates
 
 INDICES = {
     "IN":     [("^NSEI", "NIFTY 50"), ("^BSESN", "SENSEX")],
