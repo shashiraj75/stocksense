@@ -242,7 +242,7 @@ class PredictionEngine:
             return cached[1]
 
         suffix = MARKET_SUFFIX.get(market, "")
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         # ── Round 1: fetch price history + ticker.info + regime in parallel ─────
         period = {"short": "6mo", "medium": "2y", "long": "5y"}[horizon]

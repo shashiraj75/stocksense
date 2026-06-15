@@ -20,6 +20,7 @@ async def get_prediction(
         if market == "CRYPTO":
             return await predict_crypto(sym, horizon)
         return await engine.predict(sym, market, horizon)
-    except Exception as e:
+    except BaseException as e:
+        # Catch BaseException (includes CancelledError) so nothing escapes to Starlette
         tb = traceback.format_exc()
         return JSONResponse(status_code=500, content={"error": str(e), "trace": tb})

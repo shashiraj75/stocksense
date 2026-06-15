@@ -2,7 +2,6 @@ import os
 import sys
 import asyncio
 import importlib
-import urllib.request
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -20,7 +19,7 @@ async def _refresh_universe():
         if backend_root not in sys.path:
             sys.path.insert(0, backend_root)
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _do_refresh)
     except Exception as e:
         print(f"[universe] Background refresh error: {e}")
@@ -53,24 +52,28 @@ async def _weekly_refresh_loop():
 
 async def _keepalive_loop():
     """
-    Ping own /health every 14 minutes to prevent Render free-tier sleep.
-    Render sleeps after 15 min of inactivity — 14 min keeps a safe margin.
-    NOTE: self-pings don't reset Render's sleep timer on their own;
-    set up UptimeRobot (free) at /health every 5 min as the primary keepalive.
-    This loop is a secondary fallback.
+    Ping own /health every 14 minutes as a secondary keepalive fallback.
+    Uses asyncio-native HTTP so it never blocks the event loop.
+    Primary keepalive is UptimeRobot pinging /health every 5 min from outside.
     """
-    await asyncio.sleep(60)  # wait for server to fully start
+    await asyncio.sleep(60)
     self_url = os.getenv("RENDER_EXTERNAL_URL", "")
     if not self_url:
-        return  # only runs on Render
+        return
     url = f"{self_url}/health"
     while True:
         try:
-            urllib.request.urlopen(url, timeout=15)
+            # Use asyncio subprocess so we never block the event loop
+            proc = await asyncio.create_subprocess_exec(
+                "curl", "-sf", "--max-time", "10", url,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
             print(f"[keepalive] pinged {url}")
         except Exception as e:
             print(f"[keepalive] ping failed: {e}")
-        await asyncio.sleep(14 * 60)  # 14 minutes
+        await asyncio.sleep(14 * 60)
 
 
 @asynccontextmanager
