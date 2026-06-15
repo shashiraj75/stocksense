@@ -25,6 +25,12 @@ type Pick = {
   horizon: string;
 };
 
+type GlobalContext = {
+  score?: number;
+  levels?: Record<string, number>;
+  changes?: Record<string, number>;
+};
+
 type DailyPicksResponse = {
   generated_at: string | null;
   picks: { short: Pick[]; medium: Pick[]; long: Pick[] };
@@ -248,6 +254,51 @@ export default function DailyPicksPage() {
           </div>
         )}
       </div>
+
+      {/* Global Macro Snapshot — sourced from first pick's global_context */}
+      {(() => {
+        const allPicks = [...(data?.picks?.short ?? []), ...(data?.picks?.medium ?? []), ...(data?.picks?.long ?? [])];
+        const ctx = (allPicks[0] as any)?.global_context as GlobalContext | undefined;
+        if (!ctx?.levels && !ctx?.changes) return null;
+        const l = ctx.levels ?? {};
+        const c = ctx.changes ?? {};
+        const macroItems = [
+          { label: "S&P 500", value: c.sp500 != null ? `${c.sp500 > 0 ? "+" : ""}${c.sp500.toFixed(1)}%` : null, positive: (c.sp500 ?? 0) >= 0 },
+          { label: "NASDAQ", value: c.nasdaq != null ? `${c.nasdaq > 0 ? "+" : ""}${c.nasdaq.toFixed(1)}%` : null, positive: (c.nasdaq ?? 0) >= 0 },
+          { label: "Brent Crude", value: c.crude_brent != null ? `${c.crude_brent > 0 ? "+" : ""}${c.crude_brent.toFixed(1)}%` : null, positive: (c.crude_brent ?? 0) <= 0 },
+          { label: "Gold", value: c.gold != null ? `${c.gold > 0 ? "+" : ""}${c.gold.toFixed(1)}%` : null, positive: true },
+          { label: "USD/INR", value: l.usdinr != null ? `₹${l.usdinr.toFixed(1)}` : null, positive: true },
+          { label: "VIX", value: l.vix != null ? l.vix.toFixed(1) : null, positive: (l.vix ?? 99) < 20 },
+          { label: "DXY", value: l.dxy != null ? l.dxy.toFixed(1) : null, positive: (l.dxy ?? 999) < 102 },
+          { label: "US 10Y", value: l.us10y != null ? `${l.us10y.toFixed(2)}%` : null, positive: (l.us10y ?? 99) < 4.5 },
+        ].filter(i => i.value !== null);
+        if (!macroItems.length) return null;
+        return (
+          <div className="bg-dark-card border border-dark-border rounded-xl p-4">
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">🌍 Global Macro Snapshot (at time of pick generation)</p>
+            <div className="flex flex-wrap gap-3">
+              {macroItems.map(({ label, value, positive }) => (
+                <div key={label} className="flex flex-col items-center bg-dark-border/40 rounded-lg px-3 py-2 min-w-[70px]">
+                  <span className="text-xs text-gray-500 mb-0.5">{label}</span>
+                  <span className={`text-xs font-bold font-mono ${positive ? "text-green-400" : "text-red-400"}`}>{value}</span>
+                </div>
+              ))}
+            </div>
+            {ctx.score != null && (
+              <div className="mt-3 flex items-center gap-2">
+                <span className="text-xs text-gray-500">Global Macro Score</span>
+                <div className="flex-1 h-1.5 bg-dark-border rounded-full overflow-hidden max-w-[120px]">
+                  <div className={`h-full rounded-full ${ctx.score >= 55 ? "bg-green-500" : ctx.score <= 45 ? "bg-red-500" : "bg-yellow-500"}`}
+                    style={{ width: `${ctx.score}%` }} />
+                </div>
+                <span className={`text-xs font-semibold ${ctx.score >= 55 ? "text-green-400" : ctx.score <= 45 ? "text-red-400" : "text-yellow-400"}`}>
+                  {ctx.score >= 55 ? "Supportive" : ctx.score <= 45 ? "Headwind" : "Neutral"} ({ctx.score}/100)
+                </span>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Horizon tabs */}
       <div className="flex gap-2">

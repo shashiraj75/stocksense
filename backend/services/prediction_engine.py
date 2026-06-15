@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from services.technical_indicators import compute_indicators, get_signal_summary
 from services.news_sentiment import NewsSentimentService
+from services.global_context import get_global_context
 
 MARKET_SUFFIX = {"US": "", "IN": ".NS"}
 _news_svc = NewsSentimentService()
@@ -129,14 +130,29 @@ class PredictionEngine:
         news_data = await _news_svc.get_news_with_sentiment(symbol, market, 10)
         sentiment_score = self._aggregate_sentiment(news_data["articles"])
 
-        # Market regime check
+        # Market regime check (local — Nifty/S&P trend)
         regime = _market_regime(market)
+
+        # Global macro context (cached 15 min, shared across all stocks)
+        global_ctx = {}
+        if market == "IN":
+            try:
+                global_ctx = get_global_context(symbol)
+            except Exception as e:
+                print(f"[global_ctx] Error for {symbol}: {e}")
+
+        # Analyst consensus from yfinance
+        analyst_score = self._analyst_score(info)
+
+        # 52-week position
+        week52_score = self._week52_score(df, info)
 
         # Dynamic weights based on volatility
         weights = _dynamic_weights(df, horizon)
 
         signal, confidence, reasoning = self._composite_signal(
-            tech_signal, fund_score, sentiment_score, horizon, weights, regime
+            tech_signal, fund_score, sentiment_score, horizon, weights, regime,
+            global_ctx=global_ctx, analyst_score=analyst_score, week52_score=week52_score,
         )
 
         current_price = float(df["Close"].iloc[-1])
@@ -161,6 +177,11 @@ class PredictionEngine:
             "fundamental_score": fund_score,
             "sentiment_score": sentiment_score,
             "market_regime": regime,
+            "global_context": {
+                "score": global_ctx.get("score"),
+                "levels": global_ctx.get("levels", {}),
+                "changes": global_ctx.get("changes", {}),
+            } if global_ctx else None,
             "weights_used": {k: v for k, v in weights.items() if k in ("tech", "fund", "sentiment", "vol_regime")},
         }
 
@@ -453,6 +474,81 @@ class PredictionEngine:
 
         return {"score": max(0, min(100, score)), "reasons": reasons}
 
+    def _analyst_score(self, info: dict) -> dict:
+        """Score based on analyst consensus and price target."""
+        score = 50
+        reasons = []
+        try:
+            recommendation = info.get("recommendationKey", "")
+            num_analysts = info.get("numberOfAnalystOpinions", 0)
+            target_mean = info.get("targetMeanPrice")
+            target_high = info.get("targetHighPrice")
+            target_low  = info.get("targetLowPrice")
+            current     = info.get("currentPrice") or info.get("regularMarketPrice")
+
+            rec_map = {
+                "strong_buy": (20, "BULLISH", "Strong Buy"),
+                "buy":        (12, "BULLISH", "Buy"),
+                "hold":       (0,  "NEUTRAL", "Hold"),
+                "underperform": (-10, "BEARISH", "Underperform"),
+                "sell":       (-18, "BEARISH", "Sell"),
+                "strong_sell": (-20, "BEARISH", "Strong Sell"),
+            }
+            if recommendation in rec_map and num_analysts >= 3:
+                adj, sig, label = rec_map[recommendation]
+                score += adj
+                reasons.append(f"{label} consensus from {num_analysts} analysts")
+
+            if target_mean and current and current > 0:
+                upside = (target_mean - current) / current * 100
+                if upside > 20:
+                    score += 8
+                    reasons.append(f"Analyst mean target ₹{target_mean:,.0f} implies {upside:.1f}% upside")
+                elif upside > 8:
+                    score += 4
+                    reasons.append(f"Analyst mean target implies {upside:.1f}% upside")
+                elif upside < -10:
+                    score -= 8
+                    reasons.append(f"Analyst mean target implies {upside:.1f}% downside")
+
+        except Exception:
+            pass
+        return {"score": max(0, min(100, score)), "reasons": reasons}
+
+    def _week52_score(self, df: pd.DataFrame, info: dict) -> dict:
+        """Score based on 52-week price position — breakouts and deep discounts."""
+        score = 50
+        reasons = []
+        try:
+            high52 = info.get("fiftyTwoWeekHigh") or float(df["High"].rolling(252).max().iloc[-1])
+            low52  = info.get("fiftyTwoWeekLow")  or float(df["Low"].rolling(252).min().iloc[-1])
+            current = float(df["Close"].iloc[-1])
+
+            if high52 and low52 and high52 > low52:
+                pct_range = (current - low52) / (high52 - low52) * 100
+
+                if pct_range >= 90:
+                    score += 12
+                    reasons.append(f"Trading near 52-week high ({pct_range:.0f}% of range) — strong momentum, breakout territory")
+                elif pct_range >= 70:
+                    score += 6
+                    reasons.append(f"In upper half of 52-week range ({pct_range:.0f}%) — momentum intact")
+                elif pct_range <= 10:
+                    # Deep in 52W range — could be value or falling knife
+                    score -= 6
+                    reasons.append(f"Near 52-week low ({pct_range:.0f}% of range) — watch for support; potential value or continued weakness")
+                elif pct_range <= 30:
+                    score -= 2
+                    reasons.append(f"In lower third of 52-week range ({pct_range:.0f}%) — below trend")
+
+                pct_from_high = (current - high52) / high52 * 100
+                if pct_from_high > -5:
+                    reasons.append(f"Within {abs(pct_from_high):.1f}% of 52-week high — potential breakout")
+
+        except Exception:
+            pass
+        return {"score": max(0, min(100, score)), "reasons": reasons}
+
     def _aggregate_sentiment(self, articles: list) -> dict:
         if not articles:
             return {"score": 50, "label": "NEUTRAL", "bullish": 0, "bearish": 0}
@@ -463,19 +559,43 @@ class PredictionEngine:
         label = "BULLISH" if score > 60 else "BEARISH" if score < 40 else "NEUTRAL"
         return {"score": score, "label": label, "bullish": bullish, "bearish": bearish}
 
-    def _composite_signal(self, tech, fund, sentiment, horizon, weights, regime):
-        tech_score = tech.get("score", 50)  # now a full 0-100 score, not just 75/50/25
+    def _composite_signal(self, tech, fund, sentiment, horizon, weights, regime,
+                          global_ctx: dict | None = None,
+                          analyst_score: dict | None = None,
+                          week52_score: dict | None = None):
+        tech_score = tech.get("score", 50)
+
+        # Base composite from core signals
         composite = (
             tech_score * weights["tech"]
             + fund["score"] * weights["fund"]
             + sentiment["score"] * weights["sentiment"]
         )
 
-        # Apply market regime bias
+        # Local market regime adjustment (±8)
         composite += regime["score_adj"]
+
+        # Global macro adjustment — weighted by horizon (short term most sensitive)
+        global_adj_weight = {"short": 0.15, "medium": 0.10, "long": 0.05}.get(horizon, 0.10)
+        if global_ctx:
+            global_base_score = global_ctx.get("score", 50)
+            stock_adj = global_ctx.get("stock_score_adj", 0)
+            # Blend global score deviation from neutral + stock-specific adj
+            global_contribution = (global_base_score - 50) * global_adj_weight + stock_adj
+            composite += global_contribution
+
+        # Analyst consensus nudge (±6 max, soft signal)
+        if analyst_score:
+            analyst_contribution = (analyst_score.get("score", 50) - 50) * 0.08
+            composite += analyst_contribution
+
+        # 52-week position nudge (±4 max)
+        if week52_score:
+            week52_contribution = (week52_score.get("score", 50) - 50) * 0.06
+            composite += week52_contribution
+
         composite = max(0, min(100, composite))
 
-        # Reduced HOLD band — score 55+ is BUY, 45- is SELL
         if composite >= 55:
             signal = "BUY"
         elif composite <= 45:
@@ -483,25 +603,51 @@ class PredictionEngine:
         else:
             signal = "HOLD"
 
-        # Confidence = how far from neutral
         confidence = min(100, int(abs(composite - 50) * 3.0))
 
+        # Build reasoning — most impactful signals first
         reasoning = []
+
+        # Technical breakdown
         reasoning.extend(tech["breakdown"][:3])
-        for r in fund["reasons"][:2]:
-            reasoning.append({"indicator": "Fundamental", "signal": "INFO", "reason": r})
-        reasoning.append({"indicator": "Market Regime", "signal": regime["trend"], "reason": regime["reason"]})
-        if sentiment["label"] != "NEUTRAL":
-            reasoning.append({
-                "indicator": "Sentiment",
-                "signal": sentiment["label"],
-                "reason": f"{sentiment['bullish']} bullish vs {sentiment['bearish']} bearish in recent news"
-            })
         if tech.get("candlestick", {}).get("patterns"):
             reasoning.append({
                 "indicator": "Candlestick",
                 "signal": tech["candlestick"]["signal"],
                 "reason": ", ".join(tech["candlestick"]["patterns"]),
+            })
+
+        # 52-week context
+        if week52_score:
+            for r in week52_score.get("reasons", [])[:1]:
+                reasoning.append({"indicator": "Price Level", "signal": "INFO", "reason": r})
+
+        # Fundamentals
+        for r in fund["reasons"][:3]:
+            reasoning.append({"indicator": "Fundamental", "signal": "INFO", "reason": r})
+
+        # Analyst consensus
+        if analyst_score:
+            for r in analyst_score.get("reasons", [])[:2]:
+                reasoning.append({"indicator": "Analyst", "signal": "INFO", "reason": r})
+
+        # Local market regime
+        reasoning.append({"indicator": "Market Regime", "signal": regime["trend"], "reason": regime["reason"]})
+
+        # Global macro — general signals
+        if global_ctx:
+            for r in global_ctx.get("reasons", [])[:4]:
+                reasoning.append(r)
+            # Stock-specific macro impact
+            for r in global_ctx.get("stock_reasons", [])[:3]:
+                reasoning.append(r)
+
+        # News sentiment
+        if sentiment["label"] != "NEUTRAL":
+            reasoning.append({
+                "indicator": "Sentiment",
+                "signal": sentiment["label"],
+                "reason": f"{sentiment['bullish']} bullish vs {sentiment['bearish']} bearish in recent news"
             })
 
         return signal, confidence, reasoning

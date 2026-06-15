@@ -60,6 +60,7 @@ def _build_summary(result: dict, horizon: str) -> str:
     fund  = result.get("fundamental_score", {})
     sent  = result.get("sentiment_score", {})
     reg   = result.get("market_regime", {})
+    glob  = result.get("global_context") or {}
 
     # Tech strength label
     tech_score = tech.get("score", 50)
@@ -81,19 +82,52 @@ def _build_summary(result: dict, horizon: str) -> str:
 
     # Sentiment label
     sent_label = ""
-    sent_score = sent.get("score", 50)
-    if sent.get("label") == "BULLISH" or sent_score >= 60:
-        sent_label = " News sentiment is bullish with positive market buzz."
-    elif sent.get("label") == "BEARISH" or sent_score <= 40:
-        sent_label = " Recent news sentiment leans cautious, but technical strength overrides."
+    if sent.get("label") == "BULLISH" or sent.get("score", 50) >= 60:
+        sent_label = " News sentiment is bullish."
+    elif sent.get("label") == "BEARISH" or sent.get("score", 50) <= 40:
+        sent_label = " Recent news sentiment leans cautious, but technicals override."
 
     # Market regime
     regime_note = ""
     reg_trend = reg.get("trend", "")
-    if reg_trend == "BULLISH":
-        regime_note = " The broader market regime supports upside momentum."
-    elif reg_trend == "BEARISH":
-        regime_note = " Broader market is under pressure — position sizing and stop-loss discipline are key."
+    if reg_trend == "BULL":
+        regime_note = " Domestic market is in an uptrend."
+    elif reg_trend == "BEAR":
+        regime_note = " Domestic market is under pressure — tight stop-loss recommended."
+
+    # Global macro note
+    global_note = ""
+    global_score = glob.get("score")
+    if global_score is not None:
+        levels = glob.get("levels", {})
+        changes = glob.get("changes", {})
+        vix = levels.get("vix")
+        sp500_chg = changes.get("sp500")
+        crude_chg = changes.get("crude_brent")
+        usdinr = levels.get("usdinr")
+
+        parts = []
+        if global_score >= 60:
+            parts.append("Global macro environment is supportive")
+        elif global_score <= 40:
+            parts.append("Global macro headwinds are present")
+
+        if vix and vix > 20:
+            parts.append(f"VIX elevated at {vix:.0f} (risk-off)")
+        elif vix and vix < 14:
+            parts.append(f"VIX calm at {vix:.0f} (risk-on)")
+
+        if sp500_chg is not None and abs(sp500_chg) > 0.5:
+            parts.append(f"S&P 500 {sp500_chg:+.1f}%")
+
+        if crude_chg is not None and abs(crude_chg) > 1.0:
+            parts.append(f"Brent crude {crude_chg:+.1f}%")
+
+        if usdinr:
+            parts.append(f"USD/INR ₹{usdinr:.1f}")
+
+        if parts:
+            global_note = " " + "; ".join(parts) + "."
 
     # Confidence tone
     if confidence >= 70:
@@ -105,8 +139,9 @@ def _build_summary(result: dict, horizon: str) -> str:
 
     summary = (
         f"{name} is flagged as a {term} BUY {conf_tone}. "
-        f"The AI engine detects a {tech_label} combined with {fund_label}.{sent_label}{regime_note} "
-        f"Target price of ₹{target:,.2f} implies a {upside}% potential upside within {period}."
+        f"The AI engine detects a {tech_label} combined with {fund_label}.{sent_label}"
+        f"{regime_note}{global_note} "
+        f"Target ₹{target:,.2f} implies {upside}% upside within {period}."
     )
     return summary
 
@@ -134,6 +169,7 @@ def _predict_stock(symbol: str, horizon: str) -> dict | None:
                 "sentiment": result.get("sentiment_score", {}).get("label", "NEUTRAL"),
                 "reasoning": reasoning,
                 "summary": _build_summary(result, horizon),
+                "global_context": result.get("global_context"),
                 "horizon": horizon,
             }
     except Exception:
