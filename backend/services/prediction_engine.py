@@ -284,14 +284,19 @@ class PredictionEngine:
 
         # ── Round 2: news + global_ctx + quality + deep_fund all in parallel ────
         async def _get_news():
-            return await _news_svc.get_news_with_sentiment(symbol, market, 10)
+            try:
+                return await _news_svc.get_news_with_sentiment(symbol, market, 10)
+            except BaseException as e:
+                print(f"[news] failed for {symbol}: {e}")
+                return {"articles": []}
 
         def _get_global_ctx():
             if market != "IN":
                 return {}
             try:
                 return get_global_context(symbol)
-            except Exception:
+            except BaseException as e:
+                print(f"[global_ctx] failed for {symbol}: {e}")
                 return {}
 
         def _get_quality():
@@ -299,17 +304,29 @@ class PredictionEngine:
                 return {}
             try:
                 return compute_all_quality_factors(symbol, yf.Ticker(symbol + suffix), df, info, horizon)
-            except Exception:
+            except BaseException as e:
+                print(f"[quality] failed for {symbol}: {e}")
+                return {}
+
+        def _get_global_ctx_safe():
+            try:
+                return _get_global_ctx()
+            except BaseException as e:
+                print(f"[global_ctx] failed for {symbol}: {e}")
                 return {}
 
         def _get_deep_fund():
             if horizon not in ("medium", "long"):
                 return None
-            return self._deep_fundamental_score(yf.Ticker(symbol + suffix), horizon)
+            try:
+                return self._deep_fundamental_score(yf.Ticker(symbol + suffix), horizon)
+            except BaseException as e:
+                print(f"[deep_fund] failed for {symbol}: {e}")
+                return None
 
         news_data, global_ctx, quality, deep_score_raw = await asyncio.gather(
             _get_news(),
-            loop.run_in_executor(None, _get_global_ctx),
+            loop.run_in_executor(None, _get_global_ctx_safe),
             loop.run_in_executor(None, _get_quality),
             loop.run_in_executor(None, _get_deep_fund),
         )
