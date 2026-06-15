@@ -272,14 +272,14 @@ export default function StockPage() {
                         <p className="text-xs text-gray-400 mb-1">Take Profit</p>
                         <p className="font-mono font-bold text-sm text-bull">
                           {currency}{tl.take_profit.toLocaleString()}
-                          {pctFrom(tl.take_profit) && <span className="ml-1 text-xs font-normal">+{pctFrom(tl.take_profit)}%</span>}
+                          {pctFrom(tl.take_profit) && <span className="ml-2 text-xs font-normal">+{pctFrom(tl.take_profit)}%</span>}
                         </p>
                       </div>
                       <div className="rounded-xl border p-4 bg-bear/10 border-bear/30">
                         <p className="text-xs text-gray-400 mb-1">Stop Loss</p>
                         <p className="font-mono font-bold text-sm text-bear">
                           {currency}{tl.stop_loss.toLocaleString()}
-                          {pctFrom(tl.stop_loss) && <span className="ml-1 text-xs font-normal">{pctFrom(tl.stop_loss)}%</span>}
+                          {pctFrom(tl.stop_loss) && <span className="ml-2 text-xs font-normal">{pctFrom(tl.stop_loss)}%</span>}
                         </p>
                         <p className="text-xs text-gray-500 mt-0.5">Fixed entry stop</p>
                       </div>
