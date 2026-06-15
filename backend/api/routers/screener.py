@@ -52,7 +52,14 @@ async def top_movers(market: Literal["US", "IN"] = Query("US")):
 
 @router.get("/heatmap")
 async def heatmap(market: Literal["US", "IN"] = Query("IN")):
-    return {"sectors": get_heatmap(market)}
+    import asyncio, traceback
+    try:
+        loop = asyncio.get_running_loop()
+        sectors = await loop.run_in_executor(None, get_heatmap, market)
+        return {"sectors": sectors}
+    except Exception as e:
+        traceback.print_exc()
+        return {"sectors": [], "error": str(e)}
 
 
 @router.get("/filter")

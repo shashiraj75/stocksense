@@ -39,22 +39,27 @@ US_SECTORS = {
 
 def _fetch_change(symbol: str, suffix: str = "") -> tuple[str, float | None]:
     full = symbol + suffix
-    # Primary: fast_info (lightweight, fast)
-    try:
-        t = yf.Ticker(full)
-        fi = t.fast_info
-        price = float(fi.last_price) if fi.last_price else None
-        prev  = float(fi.previous_close) if fi.previous_close else None
-        if price and prev and prev > 0:
-            return symbol, round((price - prev) / prev * 100, 2)
-    except Exception:
-        pass
-    # Fallback: history last 2 days (slower but more reliable for illiquid/special symbols)
+    for attempt in range(3):
+        try:
+            t = yf.Ticker(full)
+            fi = t.fast_info
+            price = float(fi.last_price) if fi.last_price else None
+            prev  = float(fi.previous_close) if fi.previous_close else None
+            if price and prev and prev > 0:
+                return symbol, round((price - prev) / prev * 100, 2)
+            break  # got a response, just no data — don't retry
+        except Exception as e:
+            if "rate" in str(e).lower() and attempt < 2:
+                time.sleep(3 * (attempt + 1))
+            else:
+                break
+    # Fallback: history last 2 days
     try:
         df = yf.Ticker(full).history(period="2d")
         if len(df) >= 2:
-            close = df["Close"]
-            return symbol, round((close.iloc[-1] - close.iloc[-2]) / close.iloc[-2] * 100, 2)
+            close = df["Close"].dropna()
+            if len(close) >= 2:
+                return symbol, round((close.iloc[-1] - close.iloc[-2]) / close.iloc[-2] * 100, 2)
     except Exception:
         pass
     return symbol, None
