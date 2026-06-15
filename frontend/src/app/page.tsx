@@ -5,6 +5,7 @@ import { fetchTopMovers, api } from "@/utils/api";
 import { TrendingUp, TrendingDown, Globe } from "lucide-react";
 import Link from "next/link";
 import clsx from "clsx";
+import { IndexBar } from "@/components/IndexBar";
 
 const POPULAR_US     = ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "JPM", "META", "AMZN"];
 const POPULAR_IN     = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "WIPRO", "BAJFINANCE", "ICICIBANK", "ADANIENT"];
@@ -80,6 +81,13 @@ export default function Dashboard() {
           ))}
         </div>
       </div>
+
+      {/* Live index bar */}
+      {market !== "CRYPTO" && (
+        <div className="bg-dark-card border border-dark-border rounded-xl px-4">
+          <IndexBar market={market} />
+        </div>
+      )}
 
       {/* Horizon info cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

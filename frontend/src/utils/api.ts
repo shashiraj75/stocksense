@@ -83,3 +83,14 @@ export const fetchTopMovers = (market: Market) =>
 
 export const searchStocks = (q: string, market: Market | "ALL" = "ALL") =>
   api.get<{ symbol: string; name: string }[]>("/api/stocks/search", { params: { q, market } }).then((r) => r.data);
+
+export interface IndexQuote {
+  symbol: string;
+  name: string;
+  price: number | null;
+  change_pct: number | null;
+  change_pts: number | null;
+}
+
+export const fetchIndices = (market: Market | "CRYPTO") =>
+  api.get<{ indices: IndexQuote[] }>("/api/stocks/indices", { params: { market } }).then((r) => r.data);

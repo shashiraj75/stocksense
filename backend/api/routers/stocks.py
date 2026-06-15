@@ -1,3 +1,6 @@
+import time
+import asyncio
+import yfinance as yf
 from fastapi import APIRouter, Query, HTTPException
 from services.market_data import MarketDataService
 from typing import Literal
@@ -41,3 +44,48 @@ async def get_fundamentals(
     market: Literal["US", "IN"] = Query("US"),
 ):
     return await svc.get_fundamentals(symbol.upper(), market)
+
+
+# ── Live index data ────────────────────────────────────────────────────────────
+_index_cache: dict[str, tuple[float, dict]] = {}
+_INDEX_TTL = 60  # 1 minute
+
+INDICES = {
+    "IN":     [("^NSEI", "NIFTY 50"), ("^BSESN", "SENSEX")],
+    "US":     [("^GSPC", "S&P 500"), ("^IXIC", "NASDAQ"), ("^DJI", "DOW")],
+    "CRYPTO": [("BTC-USD", "Bitcoin")],
+}
+
+def _fetch_index(ticker_sym: str, name: str) -> dict:
+    try:
+        fi = yf.Ticker(ticker_sym).fast_info
+        price = float(fi.last_price) if fi.last_price else None
+        prev  = float(fi.previous_close) if fi.previous_close else None
+        change_pct = round((price - prev) / prev * 100, 2) if price and prev else None
+        change_pts = round(price - prev, 2) if price and prev else None
+        return {
+            "symbol": ticker_sym,
+            "name": name,
+            "price": round(price, 2) if price else None,
+            "change_pct": change_pct,
+            "change_pts": change_pts,
+        }
+    except Exception:
+        return {"symbol": ticker_sym, "name": name, "price": None, "change_pct": None, "change_pts": None}
+
+
+@router.get("/indices")
+async def get_indices(market: Literal["US", "IN", "CRYPTO"] = Query("IN")):
+    cached = _index_cache.get(market)
+    if cached and (time.time() - cached[0]) < _INDEX_TTL:
+        return cached[1]
+
+    loop = asyncio.get_running_loop()
+    pairs = INDICES.get(market, [])
+    results = await asyncio.gather(*[
+        loop.run_in_executor(None, _fetch_index, sym, name)
+        for sym, name in pairs
+    ])
+    data = {"indices": list(results)}
+    _index_cache[market] = (time.time(), data)
+    return data

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { api } from "@/utils/api";
 import clsx from "clsx";
 import { RefreshCw, AlertCircle } from "lucide-react";
+import { IndexBar } from "@/components/IndexBar";
 
 type Stock  = { symbol: string; change_pct: number | null };
 type Sector = { sector: string; avg_change: number | null; stocks: Stock[]; loaded: number; total: number };
@@ -79,6 +80,11 @@ export default function HeatmapPage() {
             ))}
           </div>
         </div>
+      </div>
+
+      {/* Live index bar */}
+      <div className="bg-dark-card border border-dark-border rounded-xl px-4">
+        <IndexBar market={market} />
       </div>
 
       {/* Legend */}
