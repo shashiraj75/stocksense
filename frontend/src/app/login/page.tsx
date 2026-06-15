@@ -4,14 +4,48 @@ import { supabase } from "@/lib/supabase";
 import { TrendingUp } from "lucide-react";
 import { useRouter } from "next/navigation";
 
+const COUNTRY_CODES = [
+  { code: "+91", flag: "🇮🇳", name: "India" },
+  { code: "+1",  flag: "🇺🇸", name: "USA" },
+  { code: "+44", flag: "🇬🇧", name: "UK" },
+  { code: "+61", flag: "🇦🇺", name: "Australia" },
+  { code: "+971", flag: "🇦🇪", name: "UAE" },
+  { code: "+65", flag: "🇸🇬", name: "Singapore" },
+  { code: "+49", flag: "🇩🇪", name: "Germany" },
+  { code: "+33", flag: "🇫🇷", name: "France" },
+  { code: "+81", flag: "🇯🇵", name: "Japan" },
+  { code: "+86", flag: "🇨🇳", name: "China" },
+  { code: "+55", flag: "🇧🇷", name: "Brazil" },
+  { code: "+27", flag: "🇿🇦", name: "South Africa" },
+];
+
+const COUNTRIES = [
+  "India", "United States", "United Kingdom", "Australia", "UAE",
+  "Singapore", "Canada", "Germany", "France", "Japan", "China",
+  "Brazil", "South Africa", "Other",
+];
+
+const inputCls = "w-full bg-dark-bg border border-dark-border rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-gray-500 outline-none focus:border-brand-500 transition-colors";
+const selectCls = "w-full bg-dark-bg border border-dark-border rounded-xl px-4 py-2.5 text-sm text-white outline-none focus:border-brand-500 transition-colors appearance-none";
+
 export default function LoginPage() {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [message, setMessage] = useState<{ type: "error" | "success"; text: string } | null>(null);
   const router = useRouter();
+
+  // Common
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+
+  // Signup only
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName]   = useState("");
+  const [dob, setDob]             = useState("");
+  const [country, setCountry]     = useState("");
+  const [dialCode, setDialCode]   = useState("+91");
+  const [phone, setPhone]         = useState("");
 
   const handleEmail = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -22,10 +56,20 @@ export default function LoginPage() {
         const { error } = await supabase.auth.signUp({
           email,
           password,
-          options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
+          options: {
+            emailRedirectTo: `${window.location.origin}/auth/callback`,
+            data: {
+              first_name: firstName,
+              last_name:  lastName,
+              full_name:  `${firstName} ${lastName}`.trim(),
+              dob,
+              country,
+              phone:      phone ? `${dialCode}${phone}` : "",
+            },
+          },
         });
         if (error) throw error;
-        setMessage({ type: "success", text: "Check your email for a confirmation link!" });
+        setMessage({ type: "success", text: "Account created! Check your email for a confirmation link." });
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
@@ -51,10 +95,10 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-[80vh] flex items-center justify-center px-4">
-      <div className="w-full max-w-sm space-y-6">
+    <div className="min-h-[80vh] flex items-center justify-center px-4 py-8">
+      <div className="w-full max-w-md space-y-6">
         {/* Logo */}
-        <div className="text-center space-y-2">
+        <div className="text-center space-y-1">
           <div className="flex items-center justify-center gap-2 text-brand-500">
             <TrendingUp size={28} />
             <span className="text-2xl font-bold text-white">StockSense</span>
@@ -83,29 +127,72 @@ export default function LoginPage() {
           </button>
 
           <div className="flex items-center gap-3 text-xs text-gray-500">
-            <div className="flex-1 h-px bg-dark-border" />
-            or
+            <div className="flex-1 h-px bg-dark-border" />or
             <div className="flex-1 h-px bg-dark-border" />
           </div>
 
-          {/* Email form */}
           <form onSubmit={handleEmail} className="space-y-3">
+            {/* Signup-only fields */}
+            {mode === "signup" && (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <input
+                    type="text" placeholder="First name" value={firstName}
+                    onChange={e => setFirstName(e.target.value)} required
+                    className={inputCls}
+                  />
+                  <input
+                    type="text" placeholder="Last name" value={lastName}
+                    onChange={e => setLastName(e.target.value)} required
+                    className={inputCls}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Date of Birth</label>
+                  <input
+                    type="date" value={dob}
+                    onChange={e => setDob(e.target.value)} required
+                    max={new Date(new Date().setFullYear(new Date().getFullYear() - 13)).toISOString().split("T")[0]}
+                    className={inputCls}
+                  />
+                </div>
+
+                <select value={country} onChange={e => setCountry(e.target.value)} required className={selectCls}>
+                  <option value="" disabled>Select country</option>
+                  {COUNTRIES.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+
+                {/* Phone with dial code */}
+                <div className="flex gap-2">
+                  <select
+                    value={dialCode} onChange={e => setDialCode(e.target.value)}
+                    className="bg-dark-bg border border-dark-border rounded-xl px-3 py-2.5 text-sm text-white outline-none focus:border-brand-500 transition-colors w-28 shrink-0"
+                  >
+                    {COUNTRY_CODES.map(c => (
+                      <option key={c.code} value={c.code}>{c.flag} {c.code}</option>
+                    ))}
+                  </select>
+                  <input
+                    type="tel" placeholder="Mobile number" value={phone}
+                    onChange={e => setPhone(e.target.value.replace(/\D/g, ""))}
+                    maxLength={12}
+                    className={inputCls}
+                  />
+                </div>
+              </>
+            )}
+
+            {/* Common fields */}
             <input
-              type="email"
-              placeholder="Email address"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              required
-              className="w-full bg-dark-bg border border-dark-border rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-gray-500 outline-none focus:border-brand-500 transition-colors"
+              type="email" placeholder="Email address" value={email}
+              onChange={e => setEmail(e.target.value)} required
+              className={inputCls}
             />
             <input
-              type="password"
-              placeholder="Password"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              required
-              minLength={6}
-              className="w-full bg-dark-bg border border-dark-border rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-gray-500 outline-none focus:border-brand-500 transition-colors"
+              type="password" placeholder={mode === "signup" ? "Password (min 6 chars)" : "Password"} value={password}
+              onChange={e => setPassword(e.target.value)} required minLength={6}
+              className={inputCls}
             />
 
             {message && (
@@ -115,8 +202,7 @@ export default function LoginPage() {
             )}
 
             <button
-              type="submit"
-              disabled={loading}
+              type="submit" disabled={loading}
               className="w-full py-2.5 rounded-xl bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium transition-colors disabled:opacity-50"
             >
               {loading ? "Please wait…" : mode === "signin" ? "Sign In" : "Create Account"}
