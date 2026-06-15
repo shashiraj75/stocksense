@@ -849,24 +849,22 @@ class PredictionEngine:
         # (info dict may not be fully accessible here — done best-effort)
 
         composite = max(0, raw_score - risk_penalty)
+        composite_r = round(composite)  # use rounded value for both display and signal — no split-brain
 
-        if composite >= 70:
+        if composite_r >= 70:
             signal = "BUY"
-        elif composite >= 55:
+        elif composite_r >= 55:
             signal = "HOLD"
         else:
             signal = "SELL"
 
         if signal == "BUY":
-            # Floor at 30% — stock earned the signal; scales to 100% at score 90
-            confidence = min(100, 30 + int((composite - 70) * 3.5))
+            confidence = min(100, 30 + int((composite_r - 70) * 3.5))
         elif signal == "SELL":
-            # Floor at 30% — mirrors BUY; scales to 100% at score ~37
-            confidence = min(100, 30 + int((55 - composite) * 3.5))
+            confidence = min(100, 30 + int((55 - composite_r) * 3.5))
         else:
-            # HOLD is the uncertain zone — cap at 25% so it never looks like conviction
-            confidence = min(25, int(abs(composite - 62) * 3))
-        score_band = _score_label(int(composite))
+            confidence = min(25, int(abs(composite_r - 62) * 3))
+        score_band = _score_label(composite_r)
 
         # Build reasoning — most impactful signals first
         reasoning = []
@@ -875,8 +873,8 @@ class PredictionEngine:
         reasoning.append({
             "indicator": "AI Score",
             "signal": "INFO",
-            "reason": f"Composite score: {composite:.0f}/100 — {score_band}"
-                      + (f" (raw {raw_score:.0f} − risk penalty {risk_penalty})" if risk_penalty > 0 else ""),
+            "reason": f"Composite score: {composite_r}/100 — {score_band}"
+                      + (f" (raw {round(raw_score)} − risk penalty {risk_penalty})" if risk_penalty > 0 else ""),
         })
 
         # Risk penalty reasons (if any)
