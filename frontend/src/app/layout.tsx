@@ -35,8 +35,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 <TrendingUp size={22} />
                 StockSense
               </Link>
-              <div className="flex-1 min-w-0"><SearchBar /></div>
-              <LiveClock />
+              <div className="flex-1 min-w-0 max-w-[180px] sm:max-w-xs"><SearchBar /></div>
+              <div className="hidden sm:block"><LiveClock /></div>
               {/* Desktop nav */}
               <NavLinks links={NAV_LINKS} />
               {/* Mobile hamburger */}

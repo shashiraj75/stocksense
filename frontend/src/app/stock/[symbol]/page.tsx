@@ -224,7 +224,7 @@ export default function StockPage() {
         {HORIZON_TABS.map(({ key, label }) => (
           <button key={key} onClick={() => setTab(key)}
             className={clsx(
-              "flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
+              "flex items-center gap-1.5 px-3 py-1.5 text-xs sm:px-4 sm:py-2 sm:text-sm rounded-lg font-medium transition-colors",
               tab === key ? "bg-brand-500 text-white"
                 : "bg-dark-card border border-dark-border text-gray-400 hover:text-white"
             )}>
@@ -319,7 +319,7 @@ export default function StockPage() {
                   const pct = ((prediction.target_price - prediction.current_price) / prediction.current_price) * 100;
                   const up = pct >= 0;
                   return (
-                    <span className="shrink-0 text-right">
+                    <span className="hidden sm:flex shrink-0 text-right">
                       <span className="text-gray-400 text-sm mr-1">Target Price:</span>
                       <span className="font-mono font-bold text-base">{currency}{prediction.target_price.toLocaleString()}</span>
                       <span className={`ml-2 text-sm font-medium ${up ? "text-bull" : "text-bear"}`}>

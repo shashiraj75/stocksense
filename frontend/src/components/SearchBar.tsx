@@ -128,7 +128,7 @@ export function SearchBar() {
         />
       </div>
       {(open && results.length > 0) || showFallback ? (
-        <ul className="absolute top-full mt-2 w-full bg-dark-card border border-dark-border rounded-xl overflow-hidden z-50 shadow-xl">
+        <ul className="absolute top-full mt-2 w-[calc(100vw-2rem)] sm:w-full bg-dark-card border border-dark-border rounded-xl overflow-hidden z-50 shadow-xl">
           {results.map((r) => (
             <li key={`${r.symbol}-${r.market}`}>
               <button

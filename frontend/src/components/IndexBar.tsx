@@ -15,12 +15,12 @@ export function IndexBar({ market }: { market: Market | "CRYPTO" }) {
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-4 px-1 py-2 text-sm">
-      <div className="flex flex-wrap items-center gap-5">
+      <div className="flex items-center gap-4 overflow-x-auto scrollbar-hide pb-0.5">
         {data.indices.map((idx) => {
           const up = (idx.change_pct ?? 0) >= 0;
           if (!idx.price) return null;
           return (
-            <div key={idx.symbol} className="flex items-center gap-2">
+            <div key={idx.symbol} className="flex items-center gap-2 shrink-0">
               <span className="text-gray-400 text-xs">{idx.name}</span>
               <span className="font-mono font-bold text-white">
                 {idx.price.toLocaleString(undefined, { maximumFractionDigits: 2 })}
