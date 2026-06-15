@@ -244,73 +244,72 @@ export default function StockPage() {
       {tab !== "backtest" && (
         <>
           {/* Trade Levels — shown above prediction panels */}
-          {prediction?.signal && (prediction as any).trade_levels && (
-            <div className="bg-dark-card border border-dark-border rounded-2xl p-6">
-              <h2 className="font-bold text-lg mb-4">Trade Levels <span className="text-xs font-normal text-gray-500 ml-2">({tab} term)</span></h2>
-              {(() => {
-                  const tl = (prediction as any).trade_levels;
-                  const sig = prediction.signal;
-                  const cp: number | null = prediction.current_price ?? null;
-                  const pctFrom = (price: number) => cp ? ((price - cp) / cp * 100).toFixed(1) : null;
-                  const entryLabel = sig === "BUY" ? "Buy Zone" : sig === "SELL" ? "Sell Zone" : "Watch Zone";
-                  const entryColor = sig === "SELL" ? "text-bear" : sig === "HOLD" ? "text-gray-300" : "text-bull";
-                  const entryBg    = sig === "SELL" ? "bg-bear/10 border-bear/30" : sig === "HOLD" ? "bg-dark-border/60 border-dark-border" : "bg-bull/10 border-bull/30";
-                  const rrGood     = tl.risk_reward_ratio >= 1.5;
-                  const trailPct: number | null = tl.trailing_stop_pct ?? null;
-                  const gridCols = trailPct
-                    ? "grid-cols-2 md:grid-cols-3 lg:grid-cols-5"
-                    : "grid-cols-2 md:grid-cols-4";
-                  return (
-                    <div className={`grid ${gridCols} gap-4`}>
-                      <div className={`rounded-xl border p-4 ${entryBg}`}>
-                        <p className="text-xs text-gray-400 mb-1">{entryLabel}</p>
-                        <p className={`font-mono font-bold text-sm ${entryColor}`}>
-                          {currency}{tl.entry_low.toLocaleString()} – {currency}{tl.entry_high.toLocaleString()}
-                        </p>
-                      </div>
-                      <div className="rounded-xl border p-4 bg-bull/10 border-bull/30">
-                        <p className="text-xs text-gray-400 mb-1">Take Profit</p>
-                        <p className="font-mono font-bold text-sm text-bull">
-                          {currency}{tl.take_profit.toLocaleString()}
-                          {pctFrom(tl.take_profit) && <span className="ml-2 text-xs font-normal">+{pctFrom(tl.take_profit)}%</span>}
-                        </p>
-                      </div>
-                      <div className="rounded-xl border p-4 bg-bear/10 border-bear/30">
-                        <p className="text-xs text-gray-400 mb-1">Stop Loss</p>
-                        <p className="font-mono font-bold text-sm text-bear">
-                          {currency}{tl.stop_loss.toLocaleString()}
-                          {pctFrom(tl.stop_loss) && <span className="ml-2 text-xs font-normal">{pctFrom(tl.stop_loss)}%</span>}
-                        </p>
-                        <p className="text-xs text-gray-500 mt-0.5">Fixed entry stop</p>
-                      </div>
-                      {trailPct && (
-                        <div className="rounded-xl border p-4 bg-orange-500/10 border-orange-500/30">
-                          <p className="text-xs text-gray-400 mb-1">Trailing Stop</p>
-                          <p className="font-mono font-bold text-sm text-orange-400">
-                            {trailPct}% below peak
-                          </p>
-                          <p className="text-xs text-gray-500 mt-0.5">Moves up as price rises</p>
-                        </div>
-                      )}
-                      <div className={`rounded-xl border p-4 ${rrGood ? "bg-bull/10 border-bull/30" : "bg-neutral/10 border-neutral/30"}`}>
-                        <p className="text-xs text-gray-400 mb-1">Risk / Reward</p>
-                        <p className={`font-mono font-bold text-sm ${rrGood ? "text-bull" : "text-neutral"}`}>
-                          1 : {tl.risk_reward_ratio}
-                        </p>
-                      </div>
+          {prediction?.signal && (() => {
+            const tl = (prediction as any).trade_levels;
+            // Hide the whole block when key values are unavailable
+            if (!tl || tl.entry_low == null || tl.entry_high == null || tl.stop_loss == null || tl.take_profit == null) return null;
+            const sig = prediction.signal;
+            const cp: number | null = prediction.current_price ?? null;
+            const fmt = (n: number) => n.toLocaleString();
+            const pctFrom = (price: number) => cp ? ((price - cp) / cp * 100).toFixed(1) : null;
+            const entryLabel = sig === "BUY" ? "Buy Zone" : sig === "SELL" ? "Sell Zone" : "Watch Zone";
+            const entryColor = sig === "SELL" ? "text-bear" : sig === "HOLD" ? "text-gray-300" : "text-bull";
+            const entryBg    = sig === "SELL" ? "bg-bear/10 border-bear/30" : sig === "HOLD" ? "bg-dark-border/60 border-dark-border" : "bg-bull/10 border-bull/30";
+            const rrGood     = tl.risk_reward_ratio >= 1.5;
+            const trailPct: number | null = tl.trailing_stop_pct ?? null;
+            const gridCols = trailPct
+              ? "grid-cols-2 md:grid-cols-3 lg:grid-cols-5"
+              : "grid-cols-2 md:grid-cols-4";
+            return (
+              <div className="bg-dark-card border border-dark-border rounded-2xl p-6">
+                <h2 className="font-bold text-lg mb-4">Trade Levels <span className="text-xs font-normal text-gray-500 ml-2">({tab} term)</span></h2>
+                <div className={`grid ${gridCols} gap-4`}>
+                  <div className={`rounded-xl border p-4 ${entryBg}`}>
+                    <p className="text-xs text-gray-400 mb-1">{entryLabel}</p>
+                    <p className={`font-mono font-bold text-sm ${entryColor}`}>
+                      {currency}{fmt(tl.entry_low)} – {currency}{fmt(tl.entry_high)}
+                    </p>
+                  </div>
+                  <div className="rounded-xl border p-4 bg-bull/10 border-bull/30">
+                    <p className="text-xs text-gray-400 mb-1">Take Profit</p>
+                    <p className="font-mono font-bold text-sm text-bull">
+                      {currency}{fmt(tl.take_profit)}
+                      {pctFrom(tl.take_profit) && <span className="ml-2 text-xs font-normal">+{pctFrom(tl.take_profit)}%</span>}
+                    </p>
+                  </div>
+                  <div className="rounded-xl border p-4 bg-bear/10 border-bear/30">
+                    <p className="text-xs text-gray-400 mb-1">Stop Loss</p>
+                    <p className="font-mono font-bold text-sm text-bear">
+                      {currency}{fmt(tl.stop_loss)}
+                      {pctFrom(tl.stop_loss) && <span className="ml-2 text-xs font-normal">{pctFrom(tl.stop_loss)}%</span>}
+                    </p>
+                    <p className="text-xs text-gray-500 mt-0.5">Fixed entry stop</p>
+                  </div>
+                  {trailPct && (
+                    <div className="rounded-xl border p-4 bg-orange-500/10 border-orange-500/30">
+                      <p className="text-xs text-gray-400 mb-1">Trailing Stop</p>
+                      <p className="font-mono font-bold text-sm text-orange-400">{trailPct}% below peak</p>
+                      <p className="text-xs text-gray-500 mt-0.5">Moves up as price rises</p>
                     </div>
-                  );
-                })()}
-              {prediction.signal === "HOLD" && (
-                <p className="text-xs text-yellow-600/70 mt-3">
-                  HOLD signal — no strong directional edge on this horizon. Try switching to Medium or Long Term for a clearer signal.
+                  )}
+                  <div className={`rounded-xl border p-4 ${rrGood ? "bg-bull/10 border-bull/30" : "bg-neutral/10 border-neutral/30"}`}>
+                    <p className="text-xs text-gray-400 mb-1">Risk / Reward</p>
+                    <p className={`font-mono font-bold text-sm ${rrGood ? "text-bull" : "text-neutral"}`}>
+                      1 : {tl.risk_reward_ratio}
+                    </p>
+                  </div>
+                </div>
+                {sig === "HOLD" && (
+                  <p className="text-xs text-yellow-600/70 mt-3">
+                    HOLD signal — no strong directional edge on this horizon. Try switching to Medium or Long Term for a clearer signal.
+                  </p>
+                )}
+                <p className="text-xs text-gray-500 mt-1">
+                  Based on 14-day ATR · Not financial advice — always set your own risk limits.
                 </p>
-              )}
-              <p className="text-xs text-gray-500 mt-1">
-                Based on 14-day ATR · Not financial advice — always set your own risk limits.
-              </p>
-            </div>
-          )}
+              </div>
+            );
+          })()}
 
           <div className="grid md:grid-cols-2 gap-6">
             <div className="bg-dark-card border border-dark-border rounded-2xl p-6 space-y-3">
@@ -336,7 +335,7 @@ export default function StockPage() {
                     <Loader2 size={18} className="animate-spin text-brand-500 shrink-0" />
                     <div>
                       <p className="text-sm text-white font-medium">
-                        {failureCount === 0 ? "Running AI analysis…" : `Waking up server… (attempt ${failureCount + 1}/3)`}
+                        {failureCount === 0 ? "Running AI analysis…" : `Waking up server… (attempt ${failureCount + 1}/4)`}
                       </p>
                       <p className="text-xs text-gray-500 mt-0.5">
                         {failureCount === 0

@@ -285,6 +285,11 @@ class PredictionEngine:
         if df.empty:
             return {"error": "No data found for symbol"}
 
+        # Drop incomplete rows (NaN close) — last bar may be partial on live market
+        df = df.dropna(subset=["Close"])
+        if df.empty:
+            return {"error": "No valid price data for symbol"}
+
         df = compute_indicators(df)
         tech_signal = get_signal_summary(df)
         ratio_score = self._fundamental_score(info, horizon, market)
@@ -379,7 +384,8 @@ class PredictionEngine:
         )
 
         current_price = float(df["Close"].iloc[-1])
-        atr = float((df["High"] - df["Low"]).rolling(14).mean().iloc[-1])
+        atr_series = (df["High"] - df["Low"]).rolling(14).mean().dropna()
+        atr = float(atr_series.iloc[-1]) if not atr_series.empty else current_price * 0.02
 
         target_price = self._estimate_target(
             current_price, signal, confidence, horizon, df, info
