@@ -78,6 +78,9 @@ export function SearchBar() {
     }, 100);
   }, [universe]);
 
+  // Direct symbol fallback shown when no results found
+  const showFallback = open && results.length === 0 && query.length >= 1;
+
   // Re-run search once universe loads (if user already typed something)
   useEffect(() => {
     if (universe && query.length > 0) {
@@ -106,7 +109,7 @@ export function SearchBar() {
           onFocus={() => results.length > 0 && setOpen(true)}
         />
       </div>
-      {open && results.length > 0 && (
+      {(open && results.length > 0) || showFallback ? (
         <ul className="absolute top-full mt-2 w-full bg-dark-card border border-dark-border rounded-xl overflow-hidden z-50 shadow-xl">
           {results.map((r) => (
             <li key={`${r.symbol}-${r.market}`}>
@@ -124,8 +127,24 @@ export function SearchBar() {
               </button>
             </li>
           ))}
+          {showFallback && (
+            <>
+              {(["US", "IN", "CRYPTO"] as const).map((mkt) => (
+                <li key={mkt}>
+                  <button
+                    onMouseDown={() => pick({ symbol: query.toUpperCase(), name: query.toUpperCase(), market: mkt })}
+                    className="w-full text-left px-4 py-3 hover:bg-dark-border transition-colors flex items-center gap-3"
+                  >
+                    <span className="text-base w-5 text-center flex-shrink-0">{MARKET_BADGE[mkt]}</span>
+                    <span className="text-white font-mono font-bold text-sm flex-shrink-0">{query.toUpperCase()}</span>
+                    <span className="text-gray-400 text-xs">Search in {mkt === "IN" ? "NSE India" : mkt === "CRYPTO" ? "Crypto" : "US Market"} →</span>
+                  </button>
+                </li>
+              ))}
+            </>
+          )}
         </ul>
-      )}
+      ) : null}
     </div>
   );
 }

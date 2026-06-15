@@ -20,6 +20,41 @@ OUT_FILE = os.path.join(os.path.dirname(__file__), "../services/stock_universe.p
 
 HEADERS = {"User-Agent": "Mozilla/5.0 StockSense/1.0 (educational project)"}
 
+# ── Major US ETFs (static — always included regardless of Wikipedia scrape) ───
+US_ETFS = [
+    ("SPY","SPDR S&P 500 ETF"),("QQQ","Invesco NASDAQ-100 ETF"),("IWM","iShares Russell 2000 ETF"),
+    ("DIA","SPDR Dow Jones ETF"),("VTI","Vanguard Total Stock Market ETF"),("VOO","Vanguard S&P 500 ETF"),
+    ("GLD","SPDR Gold Shares"),("SLV","iShares Silver Trust"),("USO","United States Oil Fund"),
+    ("TLT","iShares 20+ Year Treasury Bond ETF"),("HYG","iShares High Yield Corporate Bond ETF"),
+    ("LQD","iShares Investment Grade Corporate Bond ETF"),("BND","Vanguard Total Bond Market ETF"),
+    ("XLE","Energy Select Sector SPDR"),("XLF","Financial Select Sector SPDR"),
+    ("XLK","Technology Select Sector SPDR"),("XLV","Health Care Select Sector SPDR"),
+    ("XLI","Industrial Select Sector SPDR"),("XLY","Consumer Discretionary Select Sector SPDR"),
+    ("XLP","Consumer Staples Select Sector SPDR"),("XLU","Utilities Select Sector SPDR"),
+    ("XLB","Materials Select Sector SPDR"),("XLRE","Real Estate Select Sector SPDR"),
+    ("XLC","Communication Services Select Sector SPDR"),
+    ("ARKK","ARK Innovation ETF"),("ARKG","ARK Genomic Revolution ETF"),
+    ("ARKW","ARK Next Generation Internet ETF"),("ARKF","ARK Fintech Innovation ETF"),
+    ("ARKQ","ARK Autonomous Technology & Robotics ETF"),
+    ("SPCX","SPAC and New Issue ETF"),("SPAK","Defiance Next Gen SPAC ETF"),
+    ("SOXX","iShares Semiconductor ETF"),("SMH","VanEck Semiconductor ETF"),
+    ("JETS","US Global Jets ETF"),("HACK","ETFMG Prime Cyber Security ETF"),
+    ("BOTZ","Global X Robotics & AI ETF"),("ROBO","Robo Global Robotics & Automation ETF"),
+    ("FINX","Global X FinTech ETF"),("CLOU","Global X Cloud Computing ETF"),
+    ("WCLD","WisdomTree Cloud Computing ETF"),("SKYY","First Trust Cloud Computing ETF"),
+    ("CIBR","First Trust NASDAQ Cybersecurity ETF"),("BUG","Global X Cybersecurity ETF"),
+    ("DRIV","Global X Autonomous & Electric Vehicles ETF"),("KARS","KraneShares Electric Vehicles ETF"),
+    ("ICLN","iShares Global Clean Energy ETF"),("QCLN","First Trust NASDAQ Clean Edge Green Energy ETF"),
+    ("TAN","Invesco Solar ETF"),("FAN","First Trust Global Wind Energy ETF"),
+    ("KWEB","KraneShares CSI China Internet ETF"),("EEM","iShares MSCI Emerging Markets ETF"),
+    ("EWJ","iShares MSCI Japan ETF"),("EWZ","iShares MSCI Brazil ETF"),("EWI","iShares MSCI India ETF"),
+    ("VWO","Vanguard Emerging Markets ETF"),("INDA","iShares MSCI India ETF"),
+    ("SOXS","Direxion Daily Semiconductor Bear 3x"),("SOXL","Direxion Daily Semiconductor Bull 3x"),
+    ("TQQQ","ProShares UltraPro QQQ"),("SQQQ","ProShares UltraPro Short QQQ"),
+    ("SPXL","Direxion Daily S&P 500 Bull 3x"),("SPXS","Direxion Daily S&P 500 Bear 3x"),
+    ("UVXY","ProShares Ultra VIX Short-Term Futures ETF"),("VXX","iPath Series B S&P 500 VIX"),
+]
+
 # ── Crypto list (static — no API needed) ─────────────────────────────────────
 CRYPTO_COINS = [
     ("BTC","Bitcoin"),("ETH","Ethereum"),("BNB","BNB"),("SOL","Solana"),
@@ -117,8 +152,13 @@ def fetch_us_stocks() -> list[tuple[str, str]]:
         except Exception as e:
             print(f"✗  {e}")
 
+    # Always include major ETFs
+    for sym, name in US_ETFS:
+        if sym not in stocks:
+            stocks[sym] = name
+
     result = sorted(stocks.items(), key=lambda x: x[0])
-    print(f"  → {len(result)} unique US stocks")
+    print(f"  → {len(result)} unique US stocks + ETFs")
     return result
 
 
