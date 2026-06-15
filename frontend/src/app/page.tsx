@@ -35,19 +35,23 @@ const MARKET_TABS: { key: DashMarket; label: string }[] = [
 export default function Dashboard() {
   const [market, setMarket] = useState<DashMarket>("IN");
 
-  const { data: movers, isLoading: moversLoading } = useQuery({
+  const { data: movers, isLoading: moversLoading, dataUpdatedAt: moversUpdatedAt } = useQuery({
     queryKey: ["movers", market],
     queryFn: () => fetchTopMovers(market as any),
     enabled: market !== "CRYPTO",
-    staleTime: 5 * 60_000,
+    refetchInterval: 30_000,
+    staleTime: 25_000,
   });
 
-  const { data: cryptoMovers, isLoading: cryptoLoading } = useQuery({
+  const { data: cryptoMovers, isLoading: cryptoLoading, dataUpdatedAt: cryptoUpdatedAt } = useQuery({
     queryKey: ["crypto-movers"],
     queryFn: () => api.get<{ movers: { symbol: string; name: string; price: number | null; change_pct: number }[] }>("/api/screener/crypto-movers").then(r => r.data),
     enabled: market === "CRYPTO",
-    staleTime: 2 * 60_000,
+    refetchInterval: 30_000,
+    staleTime: 25_000,
   });
+
+  const lastUpdated = market === "CRYPTO" ? cryptoUpdatedAt : moversUpdatedAt;
 
   const currency = market === "IN" ? "₹" : "$";
   const quickSymbols = market === "CRYPTO" ? POPULAR_CRYPTO : market === "IN" ? POPULAR_IN : POPULAR_US;
@@ -107,9 +111,20 @@ export default function Dashboard() {
 
       {/* Top Movers / Crypto grid */}
       <section>
-        <h2 className="text-sm font-semibold mb-3 text-gray-400 uppercase tracking-wide">
-          {market === "CRYPTO" ? "Top Cryptocurrencies" : "Top Movers Today"}
-        </h2>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">
+            {market === "CRYPTO" ? "Top Cryptocurrencies" : "Top Movers Today"}
+          </h2>
+          {lastUpdated > 0 && (
+            <div className="flex items-center gap-1.5 text-xs text-gray-500">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+              </span>
+              Live · {new Date(lastUpdated).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true })}
+            </div>
+          )}
+        </div>
 
         {market === "CRYPTO" ? (
           cryptoLoading ? (
