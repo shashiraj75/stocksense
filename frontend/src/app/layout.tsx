@@ -7,6 +7,7 @@ import { TrendingUp } from "lucide-react";
 import { LiveClock } from "@/components/LiveClock";
 import { MobileNav } from "@/components/MobileNav";
 import { NavLinks } from "@/components/NavLinks";
+import { UserMenu } from "@/components/UserMenu";
 
 export const metadata: Metadata = {
   title: { default: "StockSense — AI Stock Predictor", template: "%s | StockSense" },
@@ -39,8 +40,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <div className="hidden sm:block"><LiveClock /></div>
               {/* Desktop nav */}
               <NavLinks links={NAV_LINKS} />
+              <UserMenu />
               {/* Mobile hamburger */}
-              <div className="lg:hidden ml-auto">
+              <div className="lg:hidden">
                 <MobileNav links={NAV_LINKS} />
               </div>
             </div>

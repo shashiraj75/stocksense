@@ -2,6 +2,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState, useEffect } from "react";
 import { api } from "@/utils/api";
+import { AuthProvider } from "@/lib/AuthContext";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [qc] = useState(() => new QueryClient({
@@ -22,5 +23,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
     api.get("/health", { timeout: 60_000 }).catch(() => {});
   }, []);
 
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
+  return (
+    <QueryClientProvider client={qc}>
+      <AuthProvider>{children}</AuthProvider>
+    </QueryClientProvider>
+  );
 }
