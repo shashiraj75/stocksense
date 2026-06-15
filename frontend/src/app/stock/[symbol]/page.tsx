@@ -215,7 +215,7 @@ export default function StockPage() {
           )}
         </div>
         {tab !== "backtest" && prediction && !predLoading && (
-          <SignalBadge signal={prediction.signal} size="lg" />
+          <SignalBadge signal={prediction.signal} confidence={prediction.confidence} size="lg" />
         )}
       </div>
 
@@ -343,7 +343,7 @@ export default function StockPage() {
                 <>
                   <div className="flex items-center justify-between">
                     <span className="text-gray-400 text-sm">Signal</span>
-                    <SignalBadge signal={prediction.signal} />
+                    <SignalBadge signal={prediction.signal} confidence={prediction.confidence} />
                   </div>
                   <ConfidenceMeter value={prediction.confidence} label="Confidence" />
                   <div>

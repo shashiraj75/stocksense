@@ -1,14 +1,33 @@
 import { Signal } from "@/utils/api";
 import clsx from "clsx";
 
-const CONFIG: Record<Signal, { label: string; classes: string }> = {
-  BUY:  { label: "BUY",  classes: "bg-bull/20 text-bull border border-bull/40" },
-  SELL: { label: "SELL", classes: "bg-bear/20 text-bear border border-bear/40" },
-  HOLD: { label: "HOLD", classes: "bg-neutral/20 text-neutral border border-neutral/40" },
-};
+export function SignalBadge({
+  signal,
+  confidence,
+  size = "md",
+}: {
+  signal: Signal;
+  confidence?: number;
+  size?: "sm" | "md" | "lg";
+}) {
+  const getBuyClasses = (conf?: number) => {
+    if (!conf || conf >= 60) return "bg-bull/20 text-bull border border-bull/40";          // strong green
+    if (conf >= 45) return "bg-yellow-500/20 text-yellow-400 border border-yellow-500/40"; // amber — moderate
+    return "bg-gray-500/20 text-gray-400 border border-gray-500/40";                       // gray — weak
+  };
 
-export function SignalBadge({ signal, size = "md" }: { signal: Signal; size?: "sm" | "md" | "lg" }) {
-  const { label, classes } = CONFIG[signal];
+  const classes =
+    signal === "BUY"
+      ? getBuyClasses(confidence)
+      : signal === "SELL"
+      ? "bg-bear/20 text-bear border border-bear/40"
+      : "bg-neutral/20 text-neutral border border-neutral/40";
+
+  const label =
+    signal === "BUY" && confidence !== undefined && confidence < 45
+      ? "WATCH"   // downgrade label when conviction is too low
+      : signal;
+
   return (
     <span
       className={clsx(

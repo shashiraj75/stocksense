@@ -844,7 +844,7 @@ class PredictionEngine:
 
         composite = max(0, raw_score - risk_penalty)
 
-        if composite >= 65:
+        if composite >= 70:
             signal = "BUY"
         elif composite >= 55:
             signal = "HOLD"
