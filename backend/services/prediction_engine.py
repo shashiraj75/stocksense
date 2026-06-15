@@ -866,9 +866,10 @@ class PredictionEngine:
             global_contribution = (global_base_score - 50) * global_adj_weight + stock_adj
             raw_score += global_contribution
 
-        # Analyst consensus nudge (±6 max, soft signal)
+        # Analyst consensus — weight scales with horizon (long-term should trust analysts more)
+        analyst_weight = {"short": 0.08, "medium": 0.12, "long": 0.18}.get(horizon, 0.08)
         if analyst_score:
-            raw_score += (analyst_score.get("score", 50) - 50) * 0.08
+            raw_score += (analyst_score.get("score", 50) - 50) * analyst_weight
 
         # 52-week position nudge (±4 max)
         if week52_score:
