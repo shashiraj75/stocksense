@@ -137,10 +137,33 @@ def _build_summary(result: dict, horizon: str) -> str:
     else:
         conf_tone = f"as a speculative opportunity ({confidence}% AI confidence)"
 
+    # Quality factor highlights
+    quality_note = ""
+    qf = result.get("quality_factors") or {}
+    qf_breakdown = qf.get("breakdown") or {}
+    val_score  = qf_breakdown.get("valuation", {})
+    risk_score = qf_breakdown.get("risk_management", {})
+    flow_score = qf_breakdown.get("inst_flow", {})
+    piotroski  = qf.get("piotroski")
+
+    quality_parts = []
+    if isinstance(val_score, dict) and val_score.get("score", 50) >= 65:
+        quality_parts.append("attractively valued")
+    elif isinstance(val_score, dict) and val_score.get("score", 50) <= 35:
+        quality_parts.append("stretched valuation — risk to monitor")
+    if isinstance(risk_score, dict) and risk_score.get("score", 50) >= 65:
+        quality_parts.append("strong risk-adjusted return profile")
+    if isinstance(flow_score, dict) and flow_score.get("score", 50) >= 65:
+        quality_parts.append("institutional accumulation signals present")
+    if piotroski is not None and piotroski >= 7:
+        quality_parts.append(f"Piotroski F-Score {piotroski}/9 (high-quality financials)")
+    if quality_parts:
+        quality_note = " " + "; ".join(quality_parts[:2]).capitalize() + "."
+
     summary = (
         f"{name} is flagged as a {term} BUY {conf_tone}. "
         f"The AI engine detects a {tech_label} combined with {fund_label}.{sent_label}"
-        f"{regime_note}{global_note} "
+        f"{regime_note}{global_note}{quality_note} "
         f"Target ₹{target:,.2f} implies {upside}% upside within {period}."
     )
     return summary

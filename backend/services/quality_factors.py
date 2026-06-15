@@ -1,14 +1,17 @@
 """
 Professional-grade quality factor scoring for Indian stocks.
 
-Covers 7 dimensions:
-  1. Earnings Revisions      — EPS surprise trend + analyst upgrade/downgrade momentum
-  2. Institutional Ownership — % held, institutions count (proxy for smart-money confidence)
-  3. Relative Strength       — Stock return vs Nifty 50 (1M, 3M, 6M)
-  4. Sector Strength         — Sector index momentum; is the stock swimming with the tide?
-  5. Corporate Actions       — Dividend consistency, buybacks, stock splits (capital discipline)
-  6. Liquidity/Microstructure— Volume trend, avg daily turnover, market-cap liquidity tier
-  7. Quality Metrics         — Piotroski F-Score (9-pt), ROIC, asset efficiency
+Covers 10 dimensions:
+  1.  Earnings Revisions         — EPS surprise trend + analyst upgrade/downgrade momentum
+  2.  Institutional Ownership    — % held, institutions count (proxy for smart-money confidence)
+  3.  Institutional Flow Proxy   — Volume/price divergence, MFI, OBV trend (flow direction)
+  4.  Relative Strength          — Stock return vs Nifty 50 (1M, 3M, 6M)
+  5.  Sector Strength            — Sector index momentum; is the stock swimming with the tide?
+  6.  Valuation                  — PEG ratio, EV/EBITDA, sector-relative PE, margin of safety
+  7.  Risk Management            — Max drawdown, volatility percentile, Sharpe ratio, drawdown recovery
+  8.  Corporate Actions          — Dividend consistency, buybacks, stock splits (capital discipline)
+  9.  Liquidity/Microstructure   — Volume trend, avg daily turnover, market-cap liquidity tier
+  10. Quality Metrics            — Piotroski F-Score (9-pt), ROIC, asset efficiency
 
 All functions accept pre-fetched (ticker, df, info) to avoid redundant yfinance API calls.
 Sector index data is cached for 15 minutes (shared across all stocks in a generation run).
@@ -727,63 +730,468 @@ def quality_metrics_score(ticker, df: pd.DataFrame, info: dict) -> dict:
     return {"score": max(0, min(100, score)), "reasons": reasons, "piotroski": f_score}
 
 
+# ── Sector median PE benchmarks (updated quarterly) ─────────────────────────
+# Based on Nifty sector historical averages — used for relative valuation
+SECTOR_MEDIAN_PE: dict[str, float] = {
+    "IT":      28.0,
+    "Bank":    14.0,
+    "Finance": 20.0,
+    "Pharma":  30.0,
+    "Auto":    22.0,
+    "FMCG":    48.0,
+    "Metal":   10.0,
+    "Energy":  12.0,
+    "Realty":  35.0,
+    "Infra":   22.0,
+}
+
+INDIA_RISK_FREE_RATE = 0.068   # 10-year G-Sec yield (~6.8%)
+
+
+# ── 3b. INSTITUTIONAL FLOW PROXY ─────────────────────────────────────────────
+
+def institutional_flow_proxy(df: pd.DataFrame) -> dict:
+    """
+    Estimate institutional BUYING vs SELLING direction using price-volume signals.
+
+    Since NSE FII/DII daily flow data requires authenticated sessions, we use
+    three proven proxies that correlate highly with institutional activity:
+
+    1. OBV Trend (On-Balance Volume) — cumulative volume weighted by price direction.
+       Rising OBV + rising price = institutional accumulation.
+    2. Money Flow Index (MFI) — volume-weighted RSI. >60 = buying pressure, <40 = selling.
+    3. Price-Volume Divergence — price falling on below-average volume = institutional
+       holding (not panic selling); price rising on high volume = aggressive accumulation.
+    """
+    score = 50
+    reasons: list[str] = []
+
+    try:
+        if len(df) < 20:
+            return {"score": 50, "reasons": []}
+
+        close  = df["Close"]
+        high   = df["High"]
+        low    = df["Low"]
+        volume = df["Volume"]
+
+        # ── OBV Trend ────────────────────────────────────────────────────────
+        obv = pd.Series(0.0, index=df.index)
+        for i in range(1, len(df)):
+            if close.iloc[i] > close.iloc[i-1]:
+                obv.iloc[i] = obv.iloc[i-1] + volume.iloc[i]
+            elif close.iloc[i] < close.iloc[i-1]:
+                obv.iloc[i] = obv.iloc[i-1] - volume.iloc[i]
+            else:
+                obv.iloc[i] = obv.iloc[i-1]
+
+        obv_20d_slope = (obv.iloc[-1] - obv.iloc[-20]) / (abs(obv.iloc[-20]) + 1)
+        price_20d_ret = (close.iloc[-1] - close.iloc[-20]) / close.iloc[-20]
+
+        if obv_20d_slope > 0 and price_20d_ret > 0:
+            score += 12
+            reasons.append("OBV rising with price — volume confirms uptrend; institutional accumulation pattern")
+        elif obv_20d_slope > 0 and price_20d_ret < 0:
+            score += 8
+            reasons.append("OBV rising while price dips — hidden buying; institutional accumulation despite surface weakness")
+        elif obv_20d_slope < 0 and price_20d_ret > 0:
+            score -= 10
+            reasons.append("OBV falling while price rises — volume not confirming rally; potential distribution by institutions")
+        elif obv_20d_slope < 0 and price_20d_ret < 0:
+            score -= 8
+            reasons.append("OBV declining with price — consistent selling pressure")
+
+        # ── Money Flow Index (14-day) ─────────────────────────────────────────
+        typical_price = (high + low + close) / 3
+        raw_money_flow = typical_price * volume
+
+        pos_flow = pd.Series(0.0, index=df.index)
+        neg_flow = pd.Series(0.0, index=df.index)
+        for i in range(1, len(df)):
+            if typical_price.iloc[i] > typical_price.iloc[i-1]:
+                pos_flow.iloc[i] = raw_money_flow.iloc[i]
+            else:
+                neg_flow.iloc[i] = raw_money_flow.iloc[i]
+
+        period = 14
+        pos_mf = pos_flow.rolling(period).sum()
+        neg_mf = neg_flow.rolling(period).sum()
+        mfi = 100 - (100 / (1 + pos_mf / (neg_mf + 1e-10)))
+        mfi_val = float(mfi.iloc[-1])
+
+        if mfi_val > 70:
+            score += 8
+            reasons.append(f"MFI {mfi_val:.0f} — strong money inflow; institutions actively buying")
+        elif mfi_val > 55:
+            score += 4
+            reasons.append(f"MFI {mfi_val:.0f} — positive money flow; mild institutional interest")
+        elif mfi_val < 30:
+            score -= 8
+            reasons.append(f"MFI {mfi_val:.0f} — heavy money outflow; institutional selling pressure")
+        elif mfi_val < 45:
+            score -= 4
+            reasons.append(f"MFI {mfi_val:.0f} — negative money flow; cautious institutional stance")
+
+        # ── Volume Surge on Up Days (accumulation signature) ─────────────────
+        if len(df) >= 10:
+            up_days   = df[close > close.shift(1)].tail(10)
+            down_days = df[close < close.shift(1)].tail(10)
+            avg_up_vol   = up_days["Volume"].mean() if len(up_days) > 0 else 0
+            avg_down_vol = down_days["Volume"].mean() if len(down_days) > 0 else 1
+            vol_ratio = avg_up_vol / avg_down_vol if avg_down_vol > 0 else 1
+
+            if vol_ratio > 1.5:
+                score += 6
+                reasons.append(f"Up-day volume {vol_ratio:.1f}x down-day volume — institutional accumulation pattern (buying dips, not chasing)")
+            elif vol_ratio < 0.7:
+                score -= 5
+                reasons.append(f"Down-day volume {1/vol_ratio:.1f}x up-day volume — distribution pattern; selling on strength")
+
+    except Exception:
+        pass
+
+    return {"score": max(0, min(100, score)), "reasons": reasons[:3]}
+
+
+# ── 8. VALUATION ─────────────────────────────────────────────────────────────
+
+def valuation_score(symbol: str, df: pd.DataFrame, info: dict) -> dict:
+    """
+    Multi-dimensional valuation assessment:
+    1. PEG Ratio         — PE relative to earnings growth (≤1 = undervalued, >2 = expensive)
+    2. EV/EBITDA         — Enterprise value multiple (cross-sector comparable)
+    3. Sector-relative PE— Is the stock cheap or expensive vs sector median?
+    4. Price-to-Book     — Book value anchor, especially for banks/financials
+    5. Margin of Safety  — Current price vs analyst mean target (upside buffer)
+    """
+    score = 50
+    reasons: list[str] = []
+
+    try:
+        pe          = info.get("trailingPE")
+        forward_pe  = info.get("forwardPE")
+        pb          = info.get("priceToBook")
+        ev_ebitda   = info.get("enterpriseToEbitda")
+        eps_growth  = info.get("earningsGrowth") or info.get("revenueGrowth")
+        target_mean = info.get("targetMeanPrice")
+        current     = info.get("currentPrice") or info.get("regularMarketPrice")
+
+        # ── PEG Ratio ────────────────────────────────────────────────────────
+        if pe and eps_growth and eps_growth > 0:
+            peg = pe / (eps_growth * 100)   # eps_growth is decimal (0.20 = 20%)
+            if peg < 0.75:
+                score += 16
+                reasons.append(f"PEG ratio {peg:.2f} — significantly undervalued relative to growth (PEG <1 is classic value signal)")
+            elif peg < 1.0:
+                score += 10
+                reasons.append(f"PEG ratio {peg:.2f} — attractively valued relative to earnings growth")
+            elif peg < 1.5:
+                score += 4
+                reasons.append(f"PEG ratio {peg:.2f} — fairly valued for the growth rate")
+            elif peg < 2.5:
+                score -= 4
+                reasons.append(f"PEG ratio {peg:.2f} — moderately expensive relative to growth")
+            else:
+                score -= 12
+                reasons.append(f"PEG ratio {peg:.2f} — expensive; growth priced in and more")
+
+        # ── EV/EBITDA ────────────────────────────────────────────────────────
+        if ev_ebitda and ev_ebitda > 0:
+            sector = STOCK_SECTOR.get(symbol.upper(), "")
+            # Sector-specific EV/EBITDA benchmarks
+            ev_benchmarks = {
+                "IT": 20, "Pharma": 18, "FMCG": 35, "Bank": 8,
+                "Finance": 12, "Auto": 12, "Metal": 7, "Energy": 8,
+                "Realty": 20, "Infra": 15,
+            }
+            benchmark = ev_benchmarks.get(sector, 14)
+            discount = (benchmark - ev_ebitda) / benchmark * 100
+
+            if discount > 25:
+                score += 10
+                reasons.append(f"EV/EBITDA {ev_ebitda:.1f}x — trading at {discount:.0f}% discount to sector benchmark ({benchmark}x)")
+            elif discount > 10:
+                score += 5
+                reasons.append(f"EV/EBITDA {ev_ebitda:.1f}x — below sector benchmark ({benchmark}x); reasonable valuation")
+            elif discount < -30:
+                score -= 10
+                reasons.append(f"EV/EBITDA {ev_ebitda:.1f}x — {abs(discount):.0f}% premium to sector ({benchmark}x); priced for perfection")
+            elif discount < -15:
+                score -= 5
+                reasons.append(f"EV/EBITDA {ev_ebitda:.1f}x — above sector benchmark ({benchmark}x)")
+
+        # ── Sector-Relative PE ───────────────────────────────────────────────
+        use_pe = forward_pe or pe
+        sector = STOCK_SECTOR.get(symbol.upper(), "")
+        sector_pe = SECTOR_MEDIAN_PE.get(sector)
+        if use_pe and sector_pe and use_pe > 0:
+            pe_discount = (sector_pe - use_pe) / sector_pe * 100
+            if pe_discount > 30:
+                score += 12
+                reasons.append(f"Trades at {pe_discount:.0f}% discount to {sector} sector median PE ({sector_pe}x) — significant margin of safety")
+            elif pe_discount > 15:
+                score += 6
+                reasons.append(f"PE {use_pe:.1f}x is {pe_discount:.0f}% below {sector} sector median ({sector_pe}x) — relatively cheap")
+            elif pe_discount < -30:
+                score -= 10
+                reasons.append(f"PE {use_pe:.1f}x is {abs(pe_discount):.0f}% above {sector} sector median ({sector_pe}x) — premium valuation requires strong execution")
+            elif pe_discount < -15:
+                score -= 5
+                reasons.append(f"PE {use_pe:.1f}x slightly above {sector} sector median ({sector_pe}x)")
+
+        # ── Price-to-Book ────────────────────────────────────────────────────
+        if pb and pb > 0:
+            sector = STOCK_SECTOR.get(symbol.upper(), "")
+            if sector in ("Bank", "Finance"):
+                # For banks, P/B is the primary valuation anchor
+                if pb < 1.0:
+                    score += 12
+                    reasons.append(f"P/B {pb:.2f}x — below book value; deeply undervalued for a bank/NBFC")
+                elif pb < 2.0:
+                    score += 6
+                    reasons.append(f"P/B {pb:.2f}x — reasonable for a bank/NBFC")
+                elif pb > 4.0:
+                    score -= 8
+                    reasons.append(f"P/B {pb:.2f}x — premium to book; high expectations baked in")
+            else:
+                if pb < 1.5:
+                    score += 6
+                    reasons.append(f"P/B {pb:.2f}x — trading near book value; strong asset backing")
+                elif pb > 8.0:
+                    score -= 5
+                    reasons.append(f"P/B {pb:.2f}x — high price-to-book; limited asset margin of safety")
+
+        # ── Margin of Safety (analyst target buffer) ─────────────────────────
+        if target_mean and current and current > 0:
+            upside = (target_mean - current) / current * 100
+            if upside > 30:
+                score += 10
+                reasons.append(f"Analyst consensus target implies {upside:.0f}% upside — wide margin of safety")
+            elif upside > 15:
+                score += 5
+                reasons.append(f"Analyst consensus target implies {upside:.0f}% upside")
+            elif upside < -10:
+                score -= 8
+                reasons.append(f"Stock trading above analyst consensus target by {abs(upside):.0f}% — limited upside")
+
+    except Exception:
+        pass
+
+    return {"score": max(0, min(100, score)), "reasons": reasons}
+
+
+# ── 9. RISK MANAGEMENT ───────────────────────────────────────────────────────
+
+def risk_management_score(df: pd.DataFrame, info: dict) -> dict:
+    """
+    Quantitative risk assessment:
+    1. Max Drawdown          — Worst peak-to-trough decline (12M). High drawdown = fragile.
+    2. Drawdown Recovery     — Has it recovered after the last major drawdown?
+    3. Volatility Percentile — Where does current volatility sit vs its own history?
+       Low vol = trending cleanly; high vol = noisy/risky.
+    4. Sharpe Ratio (approx) — (Annualised return - risk-free rate) / annualised vol.
+       >1 = good risk-adjusted return; <0 = not worth the risk.
+    5. Downside Deviation    — Sortino-style; only counts negative return days.
+    """
+    score = 50
+    reasons: list[str] = []
+
+    try:
+        if len(df) < 60:
+            return {"score": 50, "reasons": []}
+
+        close   = df["Close"]
+        returns = close.pct_change().dropna()
+
+        # ── Max Drawdown (12 months) ──────────────────────────────────────────
+        lookback = min(252, len(close))
+        recent   = close.iloc[-lookback:]
+        peak     = recent.cummax()
+        drawdown = (recent - peak) / peak * 100   # negative values
+        max_dd   = float(drawdown.min())           # most negative = worst
+
+        if max_dd > -10:
+            score += 14
+            reasons.append(f"Max drawdown only {max_dd:.1f}% over 12M — resilient stock; low capital destruction risk")
+        elif max_dd > -20:
+            score += 6
+            reasons.append(f"Max drawdown {max_dd:.1f}% over 12M — manageable downside")
+        elif max_dd < -40:
+            score -= 14
+            reasons.append(f"Max drawdown {max_dd:.1f}% over 12M — history of severe capital destruction; high risk")
+        elif max_dd < -30:
+            score -= 8
+            reasons.append(f"Max drawdown {max_dd:.1f}% over 12M — significant historical drawdown")
+
+        # ── Drawdown Recovery ─────────────────────────────────────────────────
+        current_dd = float(drawdown.iloc[-1])
+        if current_dd > -5:
+            score += 6
+            reasons.append("Currently near 12M high — full recovery from drawdowns; strong upward trend")
+        elif current_dd < -25:
+            score -= 6
+            reasons.append(f"Currently {current_dd:.1f}% below 12M peak — still recovering from drawdown")
+
+        # ── Volatility Percentile (30D vol vs 1Y history) ────────────────────
+        if len(returns) >= 252:
+            vol_30d  = returns.iloc[-30:].std() * (252 ** 0.5) * 100
+            vol_hist = [returns.iloc[max(0,i-30):i].std() * (252**0.5) * 100
+                        for i in range(30, len(returns), 5)]
+            if vol_hist:
+                vol_pct = sum(1 for v in vol_hist if v < vol_30d) / len(vol_hist) * 100
+                if vol_pct < 25:
+                    score += 10
+                    reasons.append(f"Current volatility ({vol_30d:.1f}% ann.) in bottom quartile of its own history — unusually calm; trend likely to continue")
+                elif vol_pct < 50:
+                    score += 4
+                    reasons.append(f"Current volatility ({vol_30d:.1f}% ann.) below historical median — controlled risk environment")
+                elif vol_pct > 80:
+                    score -= 10
+                    reasons.append(f"Current volatility ({vol_30d:.1f}% ann.) in top quintile of its own history — elevated risk; wider stops needed")
+                elif vol_pct > 65:
+                    score -= 5
+                    reasons.append(f"Current volatility ({vol_30d:.1f}% ann.) above historical median — choppier than usual")
+
+        # ── Sharpe Ratio (1-year, annualised) ────────────────────────────────
+        if len(returns) >= 252:
+            ann_return = float((1 + returns.iloc[-252:].mean()) ** 252 - 1) * 100
+            ann_vol    = float(returns.iloc[-252:].std() * (252 ** 0.5) * 100)
+            if ann_vol > 0:
+                sharpe = (ann_return - INDIA_RISK_FREE_RATE * 100) / ann_vol
+                if sharpe > 1.5:
+                    score += 12
+                    reasons.append(f"Sharpe ratio {sharpe:.2f} — excellent risk-adjusted returns; high reward per unit of risk taken")
+                elif sharpe > 1.0:
+                    score += 6
+                    reasons.append(f"Sharpe ratio {sharpe:.2f} — good risk-adjusted returns")
+                elif sharpe > 0.5:
+                    score += 2
+                    reasons.append(f"Sharpe ratio {sharpe:.2f} — acceptable risk-adjusted returns")
+                elif sharpe < 0:
+                    score -= 10
+                    reasons.append(f"Sharpe ratio {sharpe:.2f} — negative; not compensating for risk taken vs risk-free rate")
+                elif sharpe < 0.3:
+                    score -= 4
+                    reasons.append(f"Sharpe ratio {sharpe:.2f} — below-average risk compensation")
+
+        # ── Downside Deviation (Sortino-style) ───────────────────────────────
+        if len(returns) >= 60:
+            neg_returns = returns[returns < 0].iloc[-60:]
+            if len(neg_returns) > 5:
+                downside_dev = float(neg_returns.std() * (252 ** 0.5) * 100)
+                if downside_dev < 10:
+                    score += 6
+                    reasons.append(f"Low downside deviation ({downside_dev:.1f}%) — losses are small and controlled")
+                elif downside_dev > 30:
+                    score -= 6
+                    reasons.append(f"High downside deviation ({downside_dev:.1f}%) — losses can be sharp when they occur")
+
+    except Exception:
+        pass
+
+    return {"score": max(0, min(100, score)), "reasons": reasons[:4]}
+
+
 # ── MASTER FUNCTION ──────────────────────────────────────────────────────────
 
 def compute_all_quality_factors(symbol: str, ticker, df: pd.DataFrame, info: dict, horizon: str) -> dict:
     """
-    Run all 7 quality factor checks and return a combined score + all reasons.
-    Skips deep financial analysis for short-horizon (too slow, less relevant).
+    Run all 10 quality factor checks and return a combined score + all reasons.
+
+    Horizon-aware:
+    - Short  : fast signals only (no deep Piotroski/ROIC to keep latency <30s)
+    - Medium : adds corporate actions + quality metrics
+    - Long   : full suite
     """
     results: dict[str, dict] = {}
     all_reasons: list[dict] = []
 
-    # Always run (fast, from info dict or precomputed)
-    results["earnings_revision"]   = earnings_revision_score(ticker, info)
-    results["institutional"]       = institutional_ownership_score(ticker, info)
-    results["relative_strength"]   = relative_strength_score(df)
-    results["sector_strength"]     = sector_strength_score(symbol)
-    results["liquidity"]           = liquidity_score(df, info)
+    # ── Always run (fast — from info dict + precomputed df) ──────────────────
+    results["earnings_revision"]    = earnings_revision_score(ticker, info)
+    results["institutional"]        = institutional_ownership_score(ticker, info)
+    results["inst_flow"]            = institutional_flow_proxy(df)
+    results["relative_strength"]    = relative_strength_score(df)
+    results["sector_strength"]      = sector_strength_score(symbol)
+    results["valuation"]            = valuation_score(symbol, df, info)
+    results["risk_management"]      = risk_management_score(df, info)
+    results["liquidity"]            = liquidity_score(df, info)
 
-    # Corporate actions and quality metrics — skip for short term to keep latency manageable
+    # ── Deeper analysis for medium/long only ─────────────────────────────────
     if horizon in ("medium", "long"):
         results["corporate_actions"] = corporate_actions_score(ticker, info)
         results["quality_metrics"]   = quality_metrics_score(ticker, df, info)
     else:
-        # For short term: still run corporate actions (fast), skip deep Piotroski
-        results["corporate_actions"] = corporate_actions_score(ticker, info)
+        results["corporate_actions"] = corporate_actions_score(ticker, info)   # fast
         results["quality_metrics"]   = {"score": 50, "reasons": [], "piotroski": None}
 
-    # Build combined score (weighted average)
-    weights = {
-        "earnings_revision":  0.20,
-        "institutional":      0.12,
-        "relative_strength":  0.20,
-        "sector_strength":    0.18,
-        "liquidity":          0.10,
-        "corporate_actions":  0.08,
-        "quality_metrics":    0.12,
-    }
+    # ── Horizon-adjusted weights ──────────────────────────────────────────────
+    # Short term: momentum (RS, inst flow, sector) matters most
+    # Long term:  valuation + quality metrics dominate
+    if horizon == "short":
+        weights = {
+            "earnings_revision": 0.14,
+            "institutional":     0.08,
+            "inst_flow":         0.14,   # flow direction is critical for short term
+            "relative_strength": 0.16,
+            "sector_strength":   0.16,
+            "valuation":         0.08,
+            "risk_management":   0.10,
+            "liquidity":         0.08,
+            "corporate_actions": 0.03,
+            "quality_metrics":   0.03,
+        }
+    elif horizon == "medium":
+        weights = {
+            "earnings_revision": 0.16,
+            "institutional":     0.10,
+            "inst_flow":         0.10,
+            "relative_strength": 0.12,
+            "sector_strength":   0.12,
+            "valuation":         0.14,
+            "risk_management":   0.10,
+            "liquidity":         0.06,
+            "corporate_actions": 0.06,
+            "quality_metrics":   0.04,
+        }
+    else:  # long
+        weights = {
+            "earnings_revision": 0.14,
+            "institutional":     0.10,
+            "inst_flow":         0.06,
+            "relative_strength": 0.08,
+            "sector_strength":   0.08,
+            "valuation":         0.18,   # valuation matters most for long term
+            "risk_management":   0.10,
+            "liquidity":         0.04,
+            "corporate_actions": 0.10,
+            "quality_metrics":   0.12,
+        }
+
     combined = sum(results[k]["score"] * weights[k] for k in weights if k in results)
 
-    # Collect reasons tagged by dimension
+    # ── Collect reasoning tagged by dimension ─────────────────────────────────
     dimension_labels = {
         "earnings_revision": "Earnings",
         "institutional":     "Ownership",
+        "inst_flow":         "Inst. Flow",
         "relative_strength": "Rel. Strength",
         "sector_strength":   "Sector",
+        "valuation":         "Valuation",
+        "risk_management":   "Risk",
         "liquidity":         "Liquidity",
         "corporate_actions": "Corp. Actions",
         "quality_metrics":   "Quality",
     }
     for key, label in dimension_labels.items():
+        dim_score = results.get(key, {}).get("score", 50)
         for reason in results.get(key, {}).get("reasons", []):
             all_reasons.append({
                 "indicator": label,
-                "signal": "BUY" if results[key]["score"] >= 60 else ("BEARISH" if results[key]["score"] <= 40 else "INFO"),
+                "signal": "BUY" if dim_score >= 60 else ("BEARISH" if dim_score <= 40 else "INFO"),
                 "reason": reason,
             })
 
-    sector = results.get("sector_strength", {}).get("sector", "Unknown")
+    sector    = results.get("sector_strength", {}).get("sector", "Unknown")
     piotroski = results.get("quality_metrics", {}).get("piotroski")
 
     return {

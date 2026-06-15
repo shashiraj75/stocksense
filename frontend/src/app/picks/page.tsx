@@ -65,9 +65,10 @@ const INDICATOR_GROUP: Record<string, string> = {
   "Market Regime": "Market", Global: "Global Macro", Macro: "Global Macro",
   Sentiment: "Sentiment",
   Earnings: "Quality Factors", Ownership: "Quality Factors",
-  "Rel. Strength": "Quality Factors", Sector: "Quality Factors",
-  Liquidity: "Quality Factors", "Corp. Actions": "Quality Factors",
-  Quality: "Quality Factors",
+  "Inst. Flow": "Quality Factors", "Rel. Strength": "Quality Factors",
+  Sector: "Quality Factors", Valuation: "Quality Factors",
+  Risk: "Quality Factors", Liquidity: "Quality Factors",
+  "Corp. Actions": "Quality Factors", Quality: "Quality Factors",
 };
 
 function ScoreBar({ label, value, color }: { label: string; value: number; color: string }) {
@@ -220,8 +221,11 @@ function PickCard({ pick }: { pick: Pick }) {
               {([
                 ["earnings_revision", "Earnings Revisions"],
                 ["institutional",     "Institutional Ownership"],
+                ["inst_flow",         "Institutional Flows"],
                 ["relative_strength", "Relative Strength"],
                 ["sector_strength",   "Sector Strength"],
+                ["valuation",         "Valuation"],
+                ["risk_management",   "Risk Management"],
                 ["liquidity",         "Liquidity"],
                 ["corporate_actions", "Corporate Actions"],
                 ["quality_metrics",   "Quality / ROIC"],
