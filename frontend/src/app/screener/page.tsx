@@ -12,8 +12,8 @@ export default function ScreenerPage() {
   const { data, isLoading, dataUpdatedAt } = useQuery({
     queryKey: ["movers", market],
     queryFn: () => fetchTopMovers(market),
-    refetchInterval: 6_000,
-    staleTime: 5_000,
+    refetchInterval: 5_000,
+    staleTime: 4_000,
   });
 
   const currency = market === "US" ? "$" : "₹";

@@ -19,7 +19,7 @@ export default function WatchlistPage() {
   const [symbol, setSymbol] = useState("");
   const [market, setMarket] = useState<Market>("IN");
 
-  const { data, isLoading } = useQuery({ queryKey: ["watchlist"], queryFn: getWatchlist });
+  const { data, isLoading } = useQuery({ queryKey: ["watchlist"], queryFn: getWatchlist, refetchInterval: 5_000, staleTime: 4_000 });
 
   const add = useMutation({
     mutationFn: addToWatchlist,

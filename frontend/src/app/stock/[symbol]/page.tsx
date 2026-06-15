@@ -85,8 +85,8 @@ export default function StockPage() {
     queryKey: ["quote", symbol, market],
     queryFn: () => fetchQuote(symbol, market),
     enabled: !isCrypto,
-    refetchInterval: 30_000,   // refresh every 30 seconds
-    staleTime: 25_000,
+    refetchInterval: 5_000,
+    staleTime: 4_000,
   });
 
   // For crypto, fetch price via screener/crypto-movers (already returns live prices)
@@ -96,8 +96,8 @@ export default function StockPage() {
       "/api/screener/crypto-movers"
     ).then(r => r.data),
     enabled: isCrypto,
-    refetchInterval: 30_000,   // refresh every 30 seconds
-    staleTime: 25_000,
+    refetchInterval: 5_000,
+    staleTime: 4_000,
   });
   const cryptoQuote = isCrypto
     ? cryptoMovers?.movers.find(m => m.symbol === symbol) ?? null

@@ -33,8 +33,8 @@ export default function AlertsPage() {
     queries: alerts.map(a => ({
       queryKey: ["quote", a.symbol, a.market],
       queryFn: () => fetchQuote(a.symbol, a.market),
-      staleTime: 60_000,
-      refetchInterval: 60_000, // check every minute
+      staleTime: 4_000,
+      refetchInterval: 5_000,
     })),
   });
 
