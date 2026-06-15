@@ -109,7 +109,7 @@ export default function StockPage() {
     queryKey: ["prediction", symbol, isCrypto ? "CRYPTO" : market, horizon],
     queryFn: () => fetchPrediction(symbol, isCrypto ? "CRYPTO" as any : market, horizon),
     enabled: tab !== "backtest",
-    retry: 2,                                     // 3 total attempts (1 + 2 retries)
+    retry: 3,                                     // 4 total attempts (1 + 3 retries)
     retryDelay: () => 5000,                       // flat 5s between retries — don't pile on a waking server
     placeholderData: (prev) => prev,
     staleTime: 14 * 60_000,
