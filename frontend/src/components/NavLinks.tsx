@@ -9,7 +9,7 @@ export function NavLinks({ links }: { links: NavLink[] }) {
   const pathname = usePathname();
 
   const isActive = (href: string) =>
-    href === "/" ? pathname === "/" : pathname.startsWith(href);
+    href === "/" ? pathname === "/" : pathname?.startsWith(href) ?? false;
 
   return (
     <div className="hidden lg:flex items-center gap-4 ml-2 text-sm text-gray-400">

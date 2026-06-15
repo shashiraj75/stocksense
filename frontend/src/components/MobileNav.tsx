@@ -9,7 +9,7 @@ interface NavLink { href: string; label: string; accent?: boolean }
 export function MobileNav({ links }: { links: NavLink[] }) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
-  const isActive = (href: string) => href === "/" ? pathname === "/" : pathname.startsWith(href);
+  const isActive = (href: string) => href === "/" ? pathname === "/" : pathname?.startsWith(href) ?? false;
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
