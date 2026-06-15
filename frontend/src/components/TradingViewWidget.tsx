@@ -51,10 +51,9 @@ const CRYPTO_MAP: Record<string, string> = {
   "LTC": "BINANCE:LTCUSDT",  "ATOM": "BINANCE:ATOMUSDT",
 };
 
-// Stocks that trade on CBOE or other exchanges not covered by NYSE/NASDAQ
+// Stocks not yet indexed by TradingView — skip symbol prefix so TV tries NASDAQ default
 const OTHER_EXCHANGE: Record<string, string> = {
-  "SPCX": "CBOE:SPCX",
-  "SPAK": "CBOE:SPAK",
+  "SPAK": "NASDAQ:SPAK",
 };
 
 function getTVSymbol(symbol: string, market: "US" | "IN" | "CRYPTO" | "EU"): string {
