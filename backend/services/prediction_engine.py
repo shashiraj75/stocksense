@@ -97,9 +97,9 @@ def _dynamic_weights(df: pd.DataFrame, horizon: str, regime: dict | None = None)
       SIDEWAYS  → boost valuation weight (mean reversion pays)
     """
     base_weights = {
-        "short":  {"tech": 0.60, "fund": 0.10, "sentiment": 0.30},
-        "medium": {"tech": 0.35, "fund": 0.40, "sentiment": 0.25},
-        "long":   {"tech": 0.15, "fund": 0.70, "sentiment": 0.15},
+        "short":  {"tech": 0.70, "fund": 0.15, "sentiment": 0.15},
+        "medium": {"tech": 0.40, "fund": 0.45, "sentiment": 0.15},
+        "long":   {"tech": 0.15, "fund": 0.75, "sentiment": 0.10},
     }[horizon]
 
     vol_regime = "NORMAL"
@@ -267,10 +267,10 @@ class PredictionEngine:
 
         df = compute_indicators(df)
         tech_signal = get_signal_summary(df)
-        ratio_score = self._fundamental_score(info, horizon)
+        ratio_score = self._fundamental_score(info, horizon, market)
 
         # ── Hard quality gate — reject fundamentally broken stocks ──────────────
-        gate_passed, gate_reasons = self._quality_gate(info, df)
+        gate_passed, gate_reasons = self._quality_gate(info, df, horizon)
         if not gate_passed:
             return {
                 "symbol": symbol,
@@ -329,7 +329,7 @@ class PredictionEngine:
             fund_score = ratio_score
 
         # Analyst consensus + 52W position (fast — computed from info/df already fetched)
-        analyst_score = self._analyst_score(info)
+        analyst_score = self._analyst_score(info, market)
         week52_score = self._week52_score(df, info)
 
         # Dynamic weights based on volatility + market regime
@@ -596,19 +596,23 @@ class PredictionEngine:
 
         return {"score": max(0, min(100, score)), "reasons": reasons, "available": True}
 
-    def _fundamental_score(self, info: dict, horizon: str) -> dict:
+    def _fundamental_score(self, info: dict, horizon: str, market: str = "US") -> dict:
         score = 50
         reasons = []
 
         pe = info.get("trailingPE")
         if pe:
-            if pe < 15:
+            # Indian markets structurally trade at higher multiples (Nifty avg ~22-24x)
+            pe_cheap   = 18 if market == "IN" else 15
+            pe_fair    = 30 if market == "IN" else 25
+            pe_stretch = 55 if market == "IN" else 50
+            if pe < pe_cheap:
                 score += 12
                 reasons.append(f"Low P/E ({pe:.1f}) — attractively valued")
-            elif pe < 25:
+            elif pe < pe_fair:
                 score += 5
                 reasons.append(f"Reasonable P/E ({pe:.1f})")
-            elif pe > 50:
+            elif pe > pe_stretch:
                 score -= 12
                 reasons.append(f"High P/E ({pe:.1f}) — stretched valuation")
 
@@ -669,7 +673,7 @@ class PredictionEngine:
 
         return {"score": max(0, min(100, score)), "reasons": reasons}
 
-    def _analyst_score(self, info: dict) -> dict:
+    def _analyst_score(self, info: dict, market: str = "US") -> dict:
         """Score based on analyst consensus and price target."""
         score = 50
         reasons = []
@@ -696,9 +700,10 @@ class PredictionEngine:
 
             if target_mean and current and current > 0:
                 upside = (target_mean - current) / current * 100
+                cur_sym = "₹" if market == "IN" else "$"
                 if upside > 20:
                     score += 8
-                    reasons.append(f"Analyst mean target ₹{target_mean:,.0f} implies {upside:.1f}% upside")
+                    reasons.append(f"Analyst mean target {cur_sym}{target_mean:,.0f} implies {upside:.1f}% upside")
                 elif upside > 8:
                     score += 4
                     reasons.append(f"Analyst mean target implies {upside:.1f}% upside")
@@ -754,7 +759,7 @@ class PredictionEngine:
         label = "BULLISH" if score > 60 else "BEARISH" if score < 40 else "NEUTRAL"
         return {"score": score, "label": label, "bullish": bullish, "bearish": bearish}
 
-    def _quality_gate(self, info: dict, df: pd.DataFrame) -> tuple[bool, list[str]]:
+    def _quality_gate(self, info: dict, df: pd.DataFrame, horizon: str = "medium") -> tuple[bool, list[str]]:
         """
         Hard quality gate — run BEFORE scoring.
         Stocks failing this gate are rejected immediately and never scored.
@@ -774,7 +779,8 @@ class PredictionEngine:
                     f"Severely loss-making: ROE {roe*100:.1f}%, margins {profit_margin*100:.1f}%"
                 )
 
-            if op_cf is not None and op_cf < 0:
+            # OCF gate only applies to medium/long — growth stocks may have negative OCF short-term
+            if horizon != "short" and op_cf is not None and op_cf < 0:
                 rejections.append("Negative operating cash flows — core business not generating cash")
 
             # Extreme leverage — exclude NBFC/banks by checking sector
@@ -851,7 +857,12 @@ class PredictionEngine:
         else:
             signal = "SELL"
 
-        confidence = min(100, int(abs(composite - 55) * 3.0))
+        if signal == "BUY":
+            confidence = min(100, int((composite - 70) * 5))   # 70=0%, 90=100%
+        elif signal == "SELL":
+            confidence = min(100, int((55 - composite) * 5))   # 55=0%, 33=110%→100%
+        else:
+            confidence = min(40, int(abs(composite - 62) * 4)) # HOLD: max 40% by design
         score_band = _score_label(int(composite))
 
         # Build reasoning — most impactful signals first
