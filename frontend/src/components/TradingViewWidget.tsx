@@ -51,10 +51,17 @@ const CRYPTO_MAP: Record<string, string> = {
   "LTC": "BINANCE:LTCUSDT",  "ATOM": "BINANCE:ATOMUSDT",
 };
 
+// Stocks that trade on CBOE or other exchanges not covered by NYSE/NASDAQ
+const OTHER_EXCHANGE: Record<string, string> = {
+  "SPCX": "CBOE:SPCX",
+  "SPAK": "CBOE:SPAK",
+};
+
 function getTVSymbol(symbol: string, market: "US" | "IN" | "CRYPTO" | "EU"): string {
   const up = symbol.toUpperCase();
   if (market === "CRYPTO") return CRYPTO_MAP[up] || `BINANCE:${up}USDT`;
   if (market === "IN")     return NSE_OVERRIDE[up] || `BSE:${up}`;
+  if (OTHER_EXCHANGE[up])  return OTHER_EXCHANGE[up];
   if (NYSE_SYMBOLS.has(up)) return `NYSE:${up}`;
   return `NASDAQ:${up}`;
 }

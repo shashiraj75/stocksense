@@ -133,8 +133,8 @@ export default function StockPage() {
     }
   };
 
-  // Show "not found" if quote loaded but returned nothing (delisted / invalid symbol)
-  const notFound = !isCrypto && !predLoading && !quote && prediction === undefined;
+  // Show "not found" only if BOTH quote and prediction failed with no data
+  const notFound = !isCrypto && !predLoading && !quote && predError;
 
   if (notFound) {
     return (
