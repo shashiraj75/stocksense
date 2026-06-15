@@ -310,7 +310,14 @@ export default function StockPage() {
 
           <div className="grid md:grid-cols-2 gap-6">
             <div className="bg-dark-card border border-dark-border rounded-2xl p-6 space-y-5">
-              <h2 className="font-bold text-lg">AI Prediction — {tab} term</h2>
+              <div className="flex items-baseline justify-between gap-2">
+                <h2 className="font-bold text-lg">AI Prediction — {tab} term</h2>
+                {prediction?.target_price && (
+                  <span className="font-mono font-bold text-base shrink-0">
+                    {currency}{prediction.target_price.toLocaleString()}
+                  </span>
+                )}
+              </div>
               {predLoading ? (
                 <div className="space-y-3">
                   <p className="text-xs text-gray-500 animate-pulse">Fetching prediction — backend may be waking up, please wait…</p>
@@ -327,12 +334,6 @@ export default function StockPage() {
                     <SignalBadge signal={prediction.signal} />
                   </div>
                   <ConfidenceMeter value={prediction.confidence} label="Confidence" />
-                  <div className="flex items-center justify-between">
-                    <span className="text-gray-400 text-sm">Target Price</span>
-                    <span className="font-mono font-bold">
-                      {currency}{prediction.target_price.toLocaleString()}
-                    </span>
-                  </div>
                   <div>
                     <p className="text-gray-400 text-sm mb-2">Key Reasons</p>
                     <ul className="space-y-1.5">
