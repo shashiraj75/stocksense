@@ -256,23 +256,32 @@ class PredictionEngine:
         period = {"short": "6mo", "medium": "2y", "long": "5y"}[horizon]
 
         def _fetch_history():
+            last_err = None
             for attempt in range(4):
                 try:
                     return yf.Ticker(symbol + suffix).history(period=period)
                 except Exception as e:
-                    if "rate" in str(e).lower() and attempt < 3:
+                    last_err = e
+                    if attempt < 3:
                         time.sleep(5 * (attempt + 1))
                         continue
-                    raise
+            raise last_err
 
         def _fetch_info():
+            # Retry on ANY exception, not just ones whose message happens to
+            # contain "rate" — Yahoo/yfinance failures on Render's shared IP
+            # come back as connection errors, timeouts, and malformed
+            # responses that don't match that narrow substring, which
+            # previously caused this to silently return {} on the very
+            # first failure with no retry and no log line.
             for attempt in range(4):
                 try:
                     return yf.Ticker(symbol + suffix).info
                 except Exception as e:
-                    if "rate" in str(e).lower() and attempt < 3:
+                    if attempt < 3:
                         time.sleep(5 * (attempt + 1))
                         continue
+                    print(f"[predict] _fetch_info failed for {symbol}{suffix} after 4 attempts: {e}")
                     return {}
             return {}
 
