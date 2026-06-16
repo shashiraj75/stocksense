@@ -13,7 +13,7 @@ jobs:
       - name: Wake up Render & trigger pick generation
         run: |
           echo "Triggering daily picks generation at $(date -u)..."
-          curl -s -o /dev/null -w "HTTP %{http_code}" \
+          curl -sS --fail-with-body \
             -X POST \
             -H "x-secret: ${{ secrets.PICKS_SECRET }}" \
             https://stocksense-api-12ii.onrender.com/api/picks/generate
