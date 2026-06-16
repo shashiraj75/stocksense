@@ -384,6 +384,13 @@ class PredictionEngine:
             quality=quality, df=df, info=info,
         )
 
+        from services.case_generator import generate_bull_bear_case
+        bull_case, bear_case = generate_bull_bear_case(
+            quality=quality, fund=fund_score, technical=tech_signal,
+            sentiment=sentiment_score, analyst_score=analyst_score,
+            week52_score=week52_score, info=info,
+        )
+
         current_price = float(df["Close"].iloc[-1])
         atr_series = (df["High"] - df["Low"]).rolling(14).mean().dropna()
         atr = float(atr_series.iloc[-1]) if not atr_series.empty else current_price * 0.02
@@ -405,6 +412,8 @@ class PredictionEngine:
             "confidence_score": confidence_score,
             "confidence_band": confidence_band,
             "confidence_breakdown": confidence_components,
+            "bull_case": bull_case,
+            "bear_case": bear_case,
             "current_price": round(current_price, 2),
             "target_price": target_price,
             "trade_levels": trade_levels,

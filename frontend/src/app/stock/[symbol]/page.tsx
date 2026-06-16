@@ -9,6 +9,7 @@ import { ConfidenceMeter } from "@/components/ConfidenceMeter";
 import { NewsCard } from "@/components/NewsCard";
 import { FactorAttributionWaterfall } from "@/components/FactorAttributionWaterfall";
 import { ConfidenceBreakdown } from "@/components/ConfidenceBreakdown";
+import { BullBearCase } from "@/components/BullBearCase";
 import clsx from "clsx";
 import { ArrowUpRight, ArrowDownRight, FlaskConical, CheckCircle, XCircle, Loader2 } from "lucide-react";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
@@ -460,6 +461,13 @@ export default function StockPage() {
               )}
             </div>
           </div>
+
+          {((prediction as any)?.bull_case?.length > 0 || (prediction as any)?.bear_case?.length > 0) && (
+            <BullBearCase
+              bull={(prediction as any).bull_case ?? []}
+              bear={(prediction as any).bear_case ?? []}
+            />
+          )}
 
           {attribution && !isCrypto && (
             <FactorAttributionWaterfall data={attribution} />
