@@ -52,7 +52,7 @@ export function IndexBar({ market }: { market: Market | "CRYPTO" }) {
             status.isOpen ? "bg-green-500 animate-pulse" : "bg-red-500"
           )}
         />
-        <span>{isFetching ? "Updating…" : status.label}</span>
+        <span>{isFetching ? "Updating…" : status.isOpen ? "Live" : status.label}</span>
       </div>
     </div>
   );
