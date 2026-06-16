@@ -1,6 +1,6 @@
 "use client";
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useState, useEffect } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useSearchParams } from "next/navigation";
 import { api, fetchQuote, fetchPrediction, fetchNews, fetchFactorAttribution, fetchScoreHistory, Market, Horizon } from "@/utils/api";
 import { TradingViewWidget } from "@/components/TradingViewWidget";
@@ -110,7 +110,7 @@ export default function StockPage() {
     ? cryptoMovers?.movers.find(m => m.symbol === symbol) ?? null
     : null;
 
-  const { data: prediction, isLoading: predLoading, refetch: refetchPrediction, isError: predError, failureCount } = useQuery({
+  const { data: prediction, isLoading: predLoading, isFetching: predFetching, refetch: refetchPrediction, isError: predError, failureCount } = useQuery({
     queryKey: ["prediction", symbol, isCrypto ? "CRYPTO" : market, horizon],
     queryFn: () => fetchPrediction(symbol, isCrypto ? "CRYPTO" as any : market, horizon),
     enabled: tab !== "backtest",
@@ -120,6 +120,26 @@ export default function StockPage() {
     staleTime: 14 * 60_000,
     refetchOnWindowFocus: false,
   });
+
+  // Prefetch the other two horizons in parallel as soon as the page loads,
+  // instead of fetching one-at-a-time as the user clicks tabs — each
+  // prediction call takes 5-15s, so sequential per-click fetching made
+  // switching horizons feel stuck/stale (placeholderData kept showing the
+  // previous tab's numbers while the new one was still in flight).
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (isCrypto) return;
+    const allHorizons: Horizon[] = ["short", "medium", "long"];
+    for (const h of allHorizons) {
+      if (h === horizon) continue;
+      queryClient.prefetchQuery({
+        queryKey: ["prediction", symbol, market, h],
+        queryFn: () => fetchPrediction(symbol, market, h),
+        staleTime: 14 * 60_000,
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [symbol, market, isCrypto]);
 
   const { data: news } = useQuery({
     queryKey: ["news", symbol, isCrypto ? "US" : market],
@@ -335,7 +355,15 @@ export default function StockPage() {
           <div className="grid md:grid-cols-2 gap-6">
             <div className="bg-dark-card border border-dark-border rounded-2xl p-6 space-y-3">
               <div className="flex items-baseline justify-between gap-2">
-                <h2 className="font-bold text-lg">AI Prediction — {tab} term</h2>
+                <h2 className="font-bold text-lg flex items-center gap-2">
+                  AI Prediction — {tab} term
+                  {predFetching && !predLoading && (
+                    <span className="flex items-center gap-1 text-xs font-normal text-yellow-500/80">
+                      <Loader2 size={12} className="animate-spin" />
+                      Updating…
+                    </span>
+                  )}
+                </h2>
                 {prediction?.target_price && prediction?.current_price && (() => {
                   const pct = ((prediction.target_price - prediction.current_price) / prediction.current_price) * 100;
                   const up = pct >= 0;
