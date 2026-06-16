@@ -441,35 +441,47 @@ class PredictionEngine:
     def _trade_levels(self, price: float, signal: str, target: float, atr: float, horizon: str) -> dict:
         """
         Trade level logic:
-        - Stop loss: ATR-based for short term; proportional for medium/long
-        - Take profit: AI target, but extended to guarantee minimum 1.5:1 R:R
-        - Entry zone: narrow band around current price based on signal direction
+        - Take profit ALWAYS equals the model's price target — the two must stay
+          consistent (the "Target Price" shown in the prediction panel and the
+          "Take Profit" in the trade card are the same forecast).
+        - Stop loss: ATR-based, but tightened toward the target (never below a
+          noise floor) so the risk/reward clears MIN_RR honestly. We adjust risk,
+          never fabricate reward beyond what the model actually forecasts.
+        - Entry zone: narrow band around current price based on signal direction.
         """
-        MIN_RR = 1.5  # never show a trade with R:R worse than 1.5
+        MIN_RR = 1.5  # target R:R — achieved by tightening the stop, not stretching the target
 
-        # Step 1 — determine stop loss distance (wider for longer horizons)
         profit_distance = abs(target - price)
+
+        # Step 1 — base (noise-appropriate) stop distance + a floor we won't tighten past
         if horizon == "short":
-            sl_distance = atr * 1.5                              # tight: ~1-2 weeks noise
-            trailing_stop_pct = None                             # no trailing for short term
+            base_sl = atr * 1.5                                  # ~1-2 weeks noise
+            sl_floor = atr * 1.0                                 # keep at least 1 ATR of buffer
+            trailing_stop_pct = None
         elif horizon == "medium":
-            sl_distance = max(profit_distance * 0.5, atr * 3.0) # wider: 3-month swings
-            trailing_stop_pct = 12.0                             # trail 12% below peak
+            base_sl = max(profit_distance * 0.5, atr * 3.0)      # 3-month swings
+            sl_floor = atr * 2.0
+            trailing_stop_pct = 12.0
         else:
-            sl_distance = max(profit_distance * 0.4, atr * 5.0) # widest: long-term trend
-            trailing_stop_pct = 20.0                             # trail 20% below peak
-        # Cap: stop loss can never be more than 25% away (prevents negatives on big targets)
+            base_sl = max(profit_distance * 0.4, atr * 5.0)      # long-term trend
+            sl_floor = atr * 3.0
+            trailing_stop_pct = 20.0
+        base_sl = min(base_sl, price * 0.25)                     # never more than 25% away
+
+        # Step 2 — tighten the stop toward MIN_RR, but never below the noise floor.
+        # If the forecast move is too small to reach MIN_RR even at the floor, we
+        # surface the honest (sub-1.5) R:R rather than faking the take-profit.
+        sl_for_rr = profit_distance / MIN_RR if profit_distance > 0 else base_sl
+        sl_distance = max(min(base_sl, sl_for_rr), sl_floor)
         sl_distance = min(sl_distance, price * 0.25)
 
-        # Step 2 — ensure take profit gives at least MIN_RR
-        min_tp_distance = sl_distance * MIN_RR
+        # Take profit is the model target — unchanged across signals.
+        take_profit = round(target, 2)
 
         if signal == "BUY":
             entry_low   = round(price - atr * 0.3, 2)
             entry_high  = round(price + atr * 0.1, 2)
             stop_loss   = round(price - sl_distance, 2)
-            # Extend target upward if it doesn't clear the MIN_RR threshold
-            take_profit = round(max(target, price + min_tp_distance), 2)
             risk        = round(price - stop_loss, 2)
             reward      = round(take_profit - price, 2)
 
@@ -477,8 +489,6 @@ class PredictionEngine:
             entry_low   = round(price - atr * 0.1, 2)
             entry_high  = round(price + atr * 0.3, 2)
             stop_loss   = round(price + sl_distance, 2)
-            # Extend target downward if it doesn't clear the MIN_RR threshold
-            take_profit = round(min(target, price - min_tp_distance), 2)
             risk        = round(stop_loss - price, 2)
             reward      = round(price - take_profit, 2)
 
@@ -486,7 +496,6 @@ class PredictionEngine:
             entry_low   = round(price - atr * 0.5, 2)
             entry_high  = round(price + atr * 0.5, 2)
             stop_loss   = round(price - sl_distance, 2)
-            take_profit = round(target, 2)
             risk        = round(price - stop_loss, 2)
             reward      = round(abs(take_profit - price), 2)
 
