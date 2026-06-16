@@ -1,6 +1,8 @@
 "use client";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchIndices, Market } from "@/utils/api";
+import { getMarketStatus } from "@/utils/marketHours";
 import clsx from "clsx";
 
 export function IndexBar({ market }: { market: Market | "CRYPTO" }) {
@@ -10,6 +12,14 @@ export function IndexBar({ market }: { market: Market | "CRYPTO" }) {
     staleTime: 10_000,
     refetchInterval: 15_000,
   });
+
+  const [status, setStatus] = useState(() => getMarketStatus(market));
+  useEffect(() => {
+    const update = () => setStatus(getMarketStatus(market));
+    update();
+    const id = setInterval(update, 30_000); // recheck every 30s — cheap, catches open/close transitions promptly
+    return () => clearInterval(id);
+  }, [market]);
 
   if (!data?.indices?.length) return null;
 
@@ -34,10 +44,15 @@ export function IndexBar({ market }: { market: Market | "CRYPTO" }) {
           );
         })}
       </div>
-      {/* Live pulse indicator */}
+      {/* Market open/closed indicator */}
       <div className="flex items-center gap-1.5 text-xs text-gray-500 shrink-0">
-        <span className={clsx("w-1.5 h-1.5 rounded-full", isFetching ? "bg-yellow-400 animate-pulse" : "bg-green-500 animate-pulse")} />
-        <span>{isFetching ? "Updating…" : "Live · 15s"}</span>
+        <span
+          className={clsx(
+            "w-1.5 h-1.5 rounded-full",
+            status.isOpen ? "bg-green-500 animate-pulse" : "bg-red-500"
+          )}
+        />
+        <span>{isFetching ? "Updating…" : status.label}</span>
       </div>
     </div>
   );
