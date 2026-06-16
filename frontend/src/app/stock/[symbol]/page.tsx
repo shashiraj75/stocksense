@@ -14,6 +14,7 @@ import { ScoreHistoryChart } from "@/components/ScoreHistoryChart";
 import clsx from "clsx";
 import { ArrowUpRight, ArrowDownRight, FlaskConical, CheckCircle, XCircle, Loader2 } from "lucide-react";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
+import { getMarketStatus } from "@/utils/marketHours";
 
 type Tab = Horizon | "backtest" | "history";
 
@@ -120,6 +121,14 @@ export default function StockPage() {
     staleTime: 14 * 60_000,
     refetchOnWindowFocus: false,
   });
+
+  const [marketStatus, setMarketStatus] = useState(() => getMarketStatus(isCrypto ? "CRYPTO" : market));
+  useEffect(() => {
+    const update = () => setMarketStatus(getMarketStatus(isCrypto ? "CRYPTO" : market));
+    update();
+    const id = setInterval(update, 30_000);
+    return () => clearInterval(id);
+  }, [market, isCrypto]);
 
   // Prefetch the other two horizons in parallel as soon as the page loads,
   // instead of fetching one-at-a-time as the user clicks tabs — each
@@ -242,14 +251,16 @@ export default function StockPage() {
                   </span>
                 );
               })()}
-              {/* Live indicator */}
+              {/* Market status indicator */}
               <div className="flex items-center gap-1.5 ml-1">
                 <span className="relative flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                  {marketStatus.isOpen && (
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                  )}
+                  <span className={clsx("relative inline-flex rounded-full h-2 w-2", marketStatus.isOpen ? "bg-green-500" : "bg-red-500")}></span>
                 </span>
                 <span className="text-xs text-gray-500">
-                  Live · {new Date(isCrypto ? cryptoUpdatedAt : quoteUpdatedAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true })}
+                  {marketStatus.isOpen ? "Live" : marketStatus.label} · {new Date(isCrypto ? cryptoUpdatedAt : quoteUpdatedAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true })}
                 </span>
               </div>
             </div>

@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchTopMovers, api } from "@/utils/api";
 import { TrendingUp, TrendingDown, Globe } from "lucide-react";
@@ -7,6 +7,7 @@ import { LiveClock } from "@/components/LiveClock";
 import Link from "next/link";
 import clsx from "clsx";
 import { IndexBar } from "@/components/IndexBar";
+import { getMarketStatus } from "@/utils/marketHours";
 
 const POPULAR_US     = ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "JPM", "META", "AMZN"];
 const POPULAR_IN     = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "WIPRO", "BAJFINANCE", "ICICIBANK", "ADANIENT"];
@@ -36,6 +37,14 @@ const MARKET_TABS: { key: DashMarket; label: string }[] = [
 
 export default function Dashboard() {
   const [market, setMarket] = useState<DashMarket>("IN");
+
+  const [marketStatus, setMarketStatus] = useState(() => getMarketStatus(market));
+  useEffect(() => {
+    const update = () => setMarketStatus(getMarketStatus(market));
+    update();
+    const id = setInterval(update, 30_000);
+    return () => clearInterval(id);
+  }, [market]);
 
   const { data: movers, isLoading: moversLoading, dataUpdatedAt: moversUpdatedAt } = useQuery({
     queryKey: ["movers", market],
@@ -129,10 +138,12 @@ export default function Dashboard() {
           {lastUpdated > 0 && (
             <div className="flex items-center gap-1.5 text-xs text-gray-500">
               <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                {marketStatus.isOpen && (
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                )}
+                <span className={clsx("relative inline-flex rounded-full h-2 w-2", marketStatus.isOpen ? "bg-green-500" : "bg-red-500")}></span>
               </span>
-              Live · {new Date(lastUpdated).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true })}
+              {marketStatus.isOpen ? "Live" : marketStatus.label} · {new Date(lastUpdated).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true })}
             </div>
           )}
         </div>
