@@ -3,10 +3,26 @@ import asyncio
 import yfinance as yf
 from fastapi import APIRouter, Query, HTTPException
 from services.market_data import MarketDataService
+from services.prediction_engine import PredictionEngine
 from typing import Literal
 
 router = APIRouter()
 svc = MarketDataService()
+_engine = PredictionEngine()
+
+FACTOR_LABELS = {
+    "technical":        "Technical",
+    "fundamental":      "Fundamentals",
+    "sentiment":        "News Sentiment",
+    "regime":           "Market Regime",
+    "global_macro":     "Global Macro",
+    "analyst":          "Analyst Consensus",
+    "week52":           "52-Week Position",
+    "quality":          "Quality Factors",
+    "clamp_adjustment":   "Score Bounds Adjustment",
+    "risk_penalty":       "Risk Penalty",
+    "rounding_adjustment": "Rounding Adjustment",
+}
 
 
 @router.get("/quote/{symbol}")
@@ -72,6 +88,45 @@ def _fetch_index(ticker_sym: str, name: str) -> dict:
         }
     except Exception:
         return {"symbol": ticker_sym, "name": name, "price": None, "change_pct": None, "change_pts": None}
+
+
+@router.get("/{symbol}/factor-attribution")
+async def get_factor_attribution(
+    symbol: str,
+    market: Literal["US", "IN"] = Query("US"),
+    horizon: Literal["short", "medium", "long"] = Query("medium"),
+):
+    result = await _engine.predict(symbol.upper(), market, horizon)
+    if not result or result.get("signal") == "REJECTED":
+        raise HTTPException(status_code=404, detail="No attribution available — prediction rejected or unavailable")
+
+    contributions_raw = result.get("factor_contributions") or {}
+    contributions = []
+    positive_total = 0.0
+    negative_total = 0.0
+    for factor, value in contributions_raw.items():
+        value = round(value, 2)
+        direction = "positive" if value >= 0 else "negative"
+        if value >= 0:
+            positive_total += value
+        else:
+            negative_total += value
+        contributions.append({
+            "factor": factor,
+            "label": FACTOR_LABELS.get(factor, factor.replace("_", " ").title()),
+            "contribution": value,
+            "direction": direction,
+        })
+
+    return {
+        "symbol": symbol.upper(),
+        "horizon": horizon,
+        "composite_score": result.get("composite_score"),
+        "contributions": contributions,
+        "positive_total": round(positive_total, 2),
+        "negative_total": round(negative_total, 2),
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
 
 
 @router.get("/indices")

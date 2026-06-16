@@ -2,11 +2,12 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useSearchParams } from "next/navigation";
-import { api, fetchQuote, fetchPrediction, fetchNews, Market, Horizon } from "@/utils/api";
+import { api, fetchQuote, fetchPrediction, fetchNews, fetchFactorAttribution, Market, Horizon } from "@/utils/api";
 import { TradingViewWidget } from "@/components/TradingViewWidget";
 import { SignalBadge } from "@/components/SignalBadge";
 import { ConfidenceMeter } from "@/components/ConfidenceMeter";
 import { NewsCard } from "@/components/NewsCard";
+import { FactorAttributionWaterfall } from "@/components/FactorAttributionWaterfall";
 import clsx from "clsx";
 import { ArrowUpRight, ArrowDownRight, FlaskConical, CheckCircle, XCircle, Loader2 } from "lucide-react";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
@@ -119,6 +120,14 @@ export default function StockPage() {
   const { data: news } = useQuery({
     queryKey: ["news", symbol, isCrypto ? "US" : market],
     queryFn: () => fetchNews(symbol, isCrypto ? "US" : market),
+  });
+
+  const { data: attribution } = useQuery({
+    queryKey: ["factor-attribution", symbol, market, horizon],
+    queryFn: () => fetchFactorAttribution(symbol, market, horizon),
+    enabled: tab !== "backtest" && !isCrypto && !!prediction?.signal,
+    staleTime: 14 * 60_000,
+    refetchOnWindowFocus: false,
   });
 
   const runBacktest = async () => {
@@ -441,6 +450,10 @@ export default function StockPage() {
               )}
             </div>
           </div>
+
+          {attribution && !isCrypto && (
+            <FactorAttributionWaterfall data={attribution} />
+          )}
 
           {/* TradingView Chart */}
           <div className="rounded-2xl border border-dark-border">

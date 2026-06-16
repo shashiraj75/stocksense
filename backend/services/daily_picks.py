@@ -437,7 +437,7 @@ def generate_picks() -> dict:
 
     # ── Phase 7: Log predictions to SQLite ────────────────────────────────────
     for horizon, items in picks.items():
-        for pick in items:
+        for rank, pick in enumerate(items, start=1):
             try:
                 log_prediction(
                     symbol=pick["symbol"],
@@ -448,6 +448,9 @@ def generate_picks() -> dict:
                     signal=pick.get("signal", "BUY"),
                     price=pick.get("price") or 0.0,
                     regime_label=regime_label,
+                    confidence_score=pick.get("confidence"),
+                    is_daily_pick=True,
+                    pick_rank=rank,
                 )
             except Exception as e:
                 print(f"[picks] Log error for {pick['symbol']}: {e}")

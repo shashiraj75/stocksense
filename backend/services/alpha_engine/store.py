@@ -15,6 +15,10 @@ from datetime import datetime, timezone
 DB_PATH = os.path.join(os.path.dirname(__file__), "../../../alpha_engine.db")
 _lock = threading.Lock()
 
+USE_POSTGRES = os.getenv("USE_POSTGRES") == "1"
+if USE_POSTGRES:
+    from services import postgres_store as _pg
+
 
 def _conn() -> sqlite3.Connection:
     c = sqlite3.connect(DB_PATH, timeout=30)
@@ -23,6 +27,8 @@ def _conn() -> sqlite3.Connection:
 
 
 def init_db():
+    if USE_POSTGRES:
+        return _pg.init_db()
     with _lock, _conn() as c:
         c.executescript("""
         CREATE TABLE IF NOT EXISTS predictions (
@@ -71,7 +77,11 @@ def init_db():
 
 def log_prediction(symbol: str, horizon: str, factor_zscores: dict,
                    combined_alpha: float, meta_alpha: float | None,
-                   signal: str, price: float, regime_label: str = ""):
+                   signal: str, price: float, regime_label: str = "",
+                   **kwargs):
+    if USE_POSTGRES:
+        return _pg.log_prediction(symbol, horizon, factor_zscores, combined_alpha,
+                                   meta_alpha, signal, price, regime_label, **kwargs)
     init_db()
     with _lock, _conn() as c:
         c.execute("""
@@ -92,7 +102,9 @@ def log_prediction(symbol: str, horizon: str, factor_zscores: dict,
 
 def log_outcome(symbol: str, horizon: str, pred_date: str,
                 return_1d: float | None, return_5d: float | None,
-                return_20d: float | None):
+                return_20d: float | None, **kwargs):
+    if USE_POSTGRES:
+        return _pg.log_outcome(symbol, horizon, pred_date, return_1d, return_5d, return_20d, **kwargs)
     init_db()
     with _lock, _conn() as c:
         # Avoid duplicate outcomes for the same prediction date
@@ -113,6 +125,8 @@ def log_outcome(symbol: str, horizon: str, pred_date: str,
 
 
 def log_regime(regime_id: int, label: str, features: list[float]):
+    if USE_POSTGRES:
+        return _pg.log_regime(regime_id, label, features)
     import json
     init_db()
     with _lock, _conn() as c:
@@ -122,11 +136,13 @@ def log_regime(regime_id: int, label: str, features: list[float]):
         )
 
 
-def get_training_data(horizon: str) -> list[dict]:
+def get_training_data(horizon: str, window_days: int | None = None) -> list[dict]:
     """
     Join predictions with outcomes to get labelled training rows.
     Forward return column selected by horizon.
     """
+    if USE_POSTGRES:
+        return _pg.get_training_data(horizon, window_days=window_days)
     init_db()
     fwd_col = {"short": "return_5d", "medium": "return_20d", "long": "return_20d"}[horizon]
     with _lock, _conn() as c:
@@ -150,6 +166,8 @@ def get_unresolved_predictions(horizon: str, min_days_old: int) -> list[dict]:
     Fetch predictions logged ≥ min_days_old ago that have no outcome entry yet.
     Used by the outcome logger to know which prices to fetch.
     """
+    if USE_POSTGRES:
+        return _pg.get_unresolved_predictions(horizon, min_days_old)
     init_db()
     with _lock, _conn() as c:
         rows = c.execute("""
@@ -170,6 +188,8 @@ def get_unresolved_predictions(horizon: str, min_days_old: int) -> list[dict]:
 
 def get_regime_history() -> list[list[float]]:
     """Return all stored regime feature vectors for KMeans retraining."""
+    if USE_POSTGRES:
+        return _pg.get_regime_history()
     import json
     init_db()
     with _lock, _conn() as c:

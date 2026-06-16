@@ -377,7 +377,7 @@ class PredictionEngine:
         # Dynamic weights based on volatility + market regime
         weights = _dynamic_weights(df, horizon, regime=regime)
 
-        signal, confidence, reasoning, score_band = self._composite_signal(
+        signal, confidence, reasoning, score_band, factor_contributions, composite_score = self._composite_signal(
             tech_signal, fund_score, sentiment_score, horizon, weights, regime,
             global_ctx=global_ctx, analyst_score=analyst_score, week52_score=week52_score,
             quality=quality, df=df,
@@ -399,6 +399,8 @@ class PredictionEngine:
             "signal": signal,
             "confidence": confidence,
             "score_band": score_band,
+            "composite_score": composite_score,
+            "factor_contributions": factor_contributions,
             "current_price": round(current_price, 2),
             "target_price": target_price,
             "trade_levels": trade_levels,
@@ -849,37 +851,47 @@ class PredictionEngine:
         tech_score = tech.get("score", 50)
 
         # ── Step 1: Raw composite from core signals ───────────────────────────
-        raw_score = (
-            tech_score * weights["tech"]
-            + fund["score"] * weights["fund"]
-            + sentiment["score"] * weights["sentiment"]
-        )
+        # Built as named contributions so the exact point breakdown can be
+        # surfaced via the factor-attribution endpoint — every term added to
+        # raw_score below has a matching entry in `contributions`.
+        contributions: dict[str, float] = {}
+
+        contributions["technical"]   = tech_score * weights["tech"]
+        contributions["fundamental"] = fund["score"] * weights["fund"]
+        contributions["sentiment"]   = sentiment["score"] * weights["sentiment"]
 
         # Local market regime adjustment (±8)
-        raw_score += regime["score_adj"]
+        contributions["regime"] = regime["score_adj"]
 
         # Global macro adjustment — weighted by horizon (short term most sensitive)
         global_adj_weight = {"short": 0.15, "medium": 0.10, "long": 0.05}.get(horizon, 0.10)
+        contributions["global_macro"] = 0.0
         if global_ctx:
             global_base_score = global_ctx.get("score", 50)
             stock_adj = global_ctx.get("stock_score_adj", 0)
-            global_contribution = (global_base_score - 50) * global_adj_weight + stock_adj
-            raw_score += global_contribution
+            contributions["global_macro"] = (global_base_score - 50) * global_adj_weight + stock_adj
 
         # Analyst consensus — weight scales with horizon (long-term should trust analysts more)
         analyst_weight = {"short": 0.08, "medium": 0.12, "long": 0.18}.get(horizon, 0.08)
+        contributions["analyst"] = 0.0
         if analyst_score:
-            raw_score += (analyst_score.get("score", 50) - 50) * analyst_weight
+            contributions["analyst"] = (analyst_score.get("score", 50) - 50) * analyst_weight
 
         # 52-week position nudge (±4 max)
+        contributions["week52"] = 0.0
         if week52_score:
-            raw_score += (week52_score.get("score", 50) - 50) * 0.06
+            contributions["week52"] = (week52_score.get("score", 50) - 50) * 0.06
 
         # Quality factors — professional-grade signal (±10 max)
+        contributions["quality"] = 0.0
         if quality and quality.get("score") is not None:
-            raw_score += (quality["score"] - 50) * 0.12
+            contributions["quality"] = (quality["score"] - 50) * 0.12
 
-        raw_score = max(0, min(100, raw_score))
+        raw_score_unclamped = sum(contributions.values())
+        raw_score = max(0, min(100, raw_score_unclamped))
+        # Clamping can change the sum — capture the delta so contributions
+        # always sum exactly to raw_score (and therefore to composite below).
+        contributions["clamp_adjustment"] = raw_score - raw_score_unclamped
 
         # ── Step 2: Risk penalty — separate deduction step ────────────────────
         # This ensures high-risk stocks can't "score their way" to a BUY signal;
@@ -892,8 +904,18 @@ class PredictionEngine:
         # Also probe quality breakdown for fast D/E and FCF checks using fund data
         # (info dict may not be fully accessible here — done best-effort)
 
+        contributions["risk_penalty"] = -risk_penalty
+
         composite = max(0, raw_score - risk_penalty)
         composite_r = round(composite)  # use rounded value for both display and signal — no split-brain
+        if composite < 0:
+            # max(0, ...) clamp on composite itself — extend clamp_adjustment
+            # so sum(contributions) == composite holds even in this edge case.
+            contributions["clamp_adjustment"] += composite - (raw_score - risk_penalty)
+        # Rounding composite -> composite_r (the displayed/persisted score) can
+        # introduce up to ±0.5 drift versus the unrounded contribution sum —
+        # fold that drift in so contributions sum EXACTLY to composite_r.
+        contributions["rounding_adjustment"] = composite_r - sum(contributions.values())
 
         if composite_r >= 70:
             signal = "BUY"
@@ -972,7 +994,7 @@ class PredictionEngine:
                 "reason": f"{sentiment['bullish']} bullish vs {sentiment['bearish']} bearish in recent news"
             })
 
-        return signal, confidence, reasoning, score_band
+        return signal, confidence, reasoning, score_band, contributions, composite_r
 
     def _estimate_target(self, price, signal, confidence, horizon, df, info):
         conf_factor = max(0.5, confidence / 100)

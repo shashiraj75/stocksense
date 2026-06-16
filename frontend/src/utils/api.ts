@@ -94,3 +94,8 @@ export interface IndexQuote {
 
 export const fetchIndices = (market: Market | "CRYPTO") =>
   api.get<{ indices: IndexQuote[] }>("/api/stocks/indices", { params: { market } }).then((r) => r.data);
+
+export const fetchFactorAttribution = (symbol: string, market: Market, horizon: Horizon) =>
+  api
+    .get(`/api/stocks/${symbol}/factor-attribution`, { params: { market, horizon } })
+    .then((r) => r.data);

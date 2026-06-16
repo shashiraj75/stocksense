@@ -78,6 +78,13 @@ async def _keepalive_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if os.getenv("USE_POSTGRES") == "1":
+        try:
+            from services.postgres_store import init_db
+            init_db()
+            print("[startup] Postgres schema initialized")
+        except Exception as e:
+            print(f"[startup] Postgres init failed: {e}")
     task = asyncio.create_task(_weekly_refresh_loop())
     keepalive = asyncio.create_task(_keepalive_loop())
     yield
