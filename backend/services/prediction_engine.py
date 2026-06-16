@@ -377,10 +377,11 @@ class PredictionEngine:
         # Dynamic weights based on volatility + market regime
         weights = _dynamic_weights(df, horizon, regime=regime)
 
-        signal, confidence, reasoning, score_band, factor_contributions, composite_score = self._composite_signal(
+        (signal, confidence, reasoning, score_band, factor_contributions, composite_score,
+         confidence_score, confidence_band, confidence_components) = self._composite_signal(
             tech_signal, fund_score, sentiment_score, horizon, weights, regime,
             global_ctx=global_ctx, analyst_score=analyst_score, week52_score=week52_score,
-            quality=quality, df=df,
+            quality=quality, df=df, info=info,
         )
 
         current_price = float(df["Close"].iloc[-1])
@@ -401,6 +402,9 @@ class PredictionEngine:
             "score_band": score_band,
             "composite_score": composite_score,
             "factor_contributions": factor_contributions,
+            "confidence_score": confidence_score,
+            "confidence_band": confidence_band,
+            "confidence_breakdown": confidence_components,
             "current_price": round(current_price, 2),
             "target_price": target_price,
             "trade_levels": trade_levels,
@@ -847,7 +851,8 @@ class PredictionEngine:
                           analyst_score: dict | None = None,
                           week52_score: dict | None = None,
                           quality: dict | None = None,
-                          df: pd.DataFrame | None = None):
+                          df: pd.DataFrame | None = None,
+                          info: dict | None = None):
         tech_score = tech.get("score", 50)
 
         # ── Step 1: Raw composite from core signals ───────────────────────────
@@ -932,6 +937,11 @@ class PredictionEngine:
             confidence = min(25, int(abs(composite_r - 62) * 3))
         score_band = _score_label(composite_r)
 
+        confidence_score, confidence_band, confidence_components = self._confidence_engine(
+            signal=signal, tech_score=tech_score, fund_score=fund["score"],
+            sentiment_score=sentiment["score"], quality=quality, regime=regime, info=info or {},
+        )
+
         # Build reasoning — most impactful signals first
         reasoning = []
 
@@ -994,7 +1004,88 @@ class PredictionEngine:
                 "reason": f"{sentiment['bullish']} bullish vs {sentiment['bearish']} bearish in recent news"
             })
 
-        return signal, confidence, reasoning, score_band, contributions, composite_r
+        return (signal, confidence, reasoning, score_band, contributions, composite_r,
+                confidence_score, confidence_band, confidence_components)
+
+    def _confidence_engine(self, signal, tech_score, fund_score, sentiment_score,
+                           quality, regime, info) -> tuple[int, str, dict]:
+        """
+        Multi-factor confidence score (0-100), distinct from the signal-strength
+        `confidence` above. Answers "how much should you trust this signal?"
+        rather than "how strong is this signal?".
+
+        Components (weighted blend):
+          data_completeness          — % of key fundamental fields present
+          factor_agreement           — % of factors pointing the same direction as `signal`
+          earnings_stability         — quality.breakdown.earnings_revision (India only; 50 elsewhere)
+          regime_certainty           — how clear-cut the market trend is (SIDEWAYS = least certain)
+          historical_factor_reliability — placeholder 50 until Session 6 (factor IC tracking) ships;
+                                          excluded from the weighted blend until real data exists,
+                                          with the other 4 weights rescaled to sum to 1.0
+        """
+        # data_completeness — presence of the 8 key fields used by _fundamental_score
+        key_fields = ["trailingPE", "returnOnEquity", "revenueGrowth", "debtToEquity",
+                      "profitMargins", "earningsGrowth", "freeCashflow", "beta"]
+        present = sum(1 for k in key_fields if info.get(k) is not None)
+        data_completeness = round(present / len(key_fields) * 100)
+
+        # factor_agreement — % of available factor scores agreeing with the final signal direction
+        factor_scores = [tech_score, fund_score, sentiment_score]
+        if quality and quality.get("score") is not None:
+            factor_scores.append(quality["score"])
+
+        def _agrees(score: float) -> bool:
+            if signal == "BUY":
+                return score >= 55
+            if signal == "SELL":
+                return score <= 45
+            return 40 <= score <= 60  # HOLD: agreement = not strongly directional
+
+        factor_agreement = round(sum(1 for s in factor_scores if _agrees(s)) / len(factor_scores) * 100)
+
+        # earnings_stability — from quality breakdown (India only); neutral elsewhere
+        earnings_stability = 50
+        if quality:
+            er = quality.get("breakdown", {}).get("earnings_revision")
+            if isinstance(er, dict) and er.get("score") is not None:
+                earnings_stability = round(er["score"])
+
+        # regime_certainty — a clear BULL/BEAR trend is more "certain" than SIDEWAYS (adj=0)
+        regime_certainty = round(50 + abs(regime.get("score_adj", 0)) * 6.25)
+
+        # historical_factor_reliability — wired in once Session 6 (factor IC tracking) ships
+        historical_factor_reliability = 50
+        historical_reliability_available = False
+
+        components = {
+            "data_completeness": data_completeness,
+            "factor_agreement": factor_agreement,
+            "earnings_stability": earnings_stability,
+            "regime_certainty": regime_certainty,
+            "historical_factor_reliability": historical_factor_reliability,
+        }
+
+        if historical_reliability_available:
+            weights = {"data_completeness": 0.25, "factor_agreement": 0.25,
+                       "earnings_stability": 0.15, "regime_certainty": 0.15,
+                       "historical_factor_reliability": 0.20}
+        else:
+            # Re-weight the 4 available components to sum to 1.0
+            weights = {"data_completeness": 0.3125, "factor_agreement": 0.3125,
+                       "earnings_stability": 0.1875, "regime_certainty": 0.1875,
+                       "historical_factor_reliability": 0.0}
+
+        confidence_score = round(sum(components[k] * weights[k] for k in components))
+        confidence_score = max(0, min(100, confidence_score))
+
+        if confidence_score >= 80:
+            confidence_band = "High"
+        elif confidence_score >= 60:
+            confidence_band = "Medium"
+        else:
+            confidence_band = "Low"
+
+        return confidence_score, confidence_band, components
 
     def _estimate_target(self, price, signal, confidence, horizon, df, info):
         conf_factor = max(0.5, confidence / 100)

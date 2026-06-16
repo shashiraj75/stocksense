@@ -8,6 +8,7 @@ import { SignalBadge } from "@/components/SignalBadge";
 import { ConfidenceMeter } from "@/components/ConfidenceMeter";
 import { NewsCard } from "@/components/NewsCard";
 import { FactorAttributionWaterfall } from "@/components/FactorAttributionWaterfall";
+import { ConfidenceBreakdown } from "@/components/ConfidenceBreakdown";
 import clsx from "clsx";
 import { ArrowUpRight, ArrowDownRight, FlaskConical, CheckCircle, XCircle, Loader2 } from "lucide-react";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
@@ -378,6 +379,15 @@ export default function StockPage() {
                     <SignalBadge signal={prediction.signal} confidence={prediction.confidence} />
                   </div>
                   <ConfidenceMeter value={prediction.confidence} label="Confidence" />
+                  {(prediction as any).confidence_score !== undefined && (prediction as any).confidence_breakdown && (
+                    <div className="border-t border-dark-border pt-3">
+                      <ConfidenceBreakdown
+                        score={(prediction as any).confidence_score}
+                        band={(prediction as any).confidence_band}
+                        components={(prediction as any).confidence_breakdown}
+                      />
+                    </div>
+                  )}
                   <div>
                     <p className="text-gray-400 text-sm mb-2">Key Reasons</p>
                     <ul className="space-y-1.5">
