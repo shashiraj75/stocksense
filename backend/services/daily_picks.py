@@ -26,8 +26,8 @@ from services.prediction_engine import PredictionEngine
 
 CACHE_FILE = os.path.join(os.path.dirname(__file__), "../picks_cache.json")
 
-# Nifty 150 — top 150 by Nifty 200 inclusion order (trimmed for Render free-tier speed)
-NIFTY150 = [
+# Top 50 (trimmed for quick test run)
+NIFTY50T = [
     "360ONE", "ABB", "APLAPOLLO", "AUBANK", "ADANIENSOL",
     "ADANIENT", "ADANIGREEN", "ADANIPORTS", "ADANIPOWER", "ATGL",
     "ABCAPITAL", "ALKEM", "AMBUJACEM", "APOLLOHOSP", "ASHOKLEY",
@@ -38,26 +38,6 @@ NIFTY150 = [
     "BLUESTARCO", "BOSCHLTD", "BRITANNIA", "CGPOWER", "CANBK",
     "CHOLAFIN", "CIPLA", "COALINDIA", "COCHINSHIP", "COFORGE",
     "COLPAL", "CONCOR", "COROMANDEL", "CUMMINSIND", "DLF",
-    "DABUR", "DIVISLAB", "DIXON", "DRREDDY", "EICHERMOT",
-    "ETERNAL", "EXIDEIND", "NYKAA", "FEDERALBNK", "FORTIS",
-    "GAIL", "GVT&D", "GMRAIRPORT", "GLENMARK", "GODFRYPHLP",
-    "GODREJCP", "GODREJPROP", "GRASIM", "HCLTECH", "HDFCAMC",
-    "HDFCBANK", "HDFCLIFE", "HAVELLS", "HEROMOTOCO", "HINDALCO",
-    "HAL", "HINDPETRO", "HINDUNILVR", "HINDZINC", "POWERINDIA",
-    "HUDCO", "HYUNDAI", "ICICIBANK", "ICICIGI", "ICICIAMC",
-    "IDFCFIRSTB", "ITC", "INDIANB", "INDHOTEL", "IOC",
-    "IRCTC", "IRFC", "IREDA", "INDUSTOWER", "INDUSINDBK",
-    "NAUKRI", "INFY", "INDIGO", "JSWENERGY", "JSWSTEEL",
-    "JINDALSTEL", "JIOFIN", "JUBLFOOD", "KEI", "KPITTECH",
-    "KALYANKJIL", "KOTAKBANK", "LTF", "LGEINDIA", "LICHSGFIN",
-    "LTM", "LT", "LAURUSLABS", "LENSKART", "LODHA",
-    "LUPIN", "MRF", "M&MFIN", "M&M", "MANKIND",
-    "MARICO", "MARUTI", "MFSL", "MAXHEALTH", "MAZDOCK",
-    "MOTILALOFS", "MPHASIS", "MCX", "MUTHOOTFIN", "NHPC",
-    "NMDC", "NTPC", "NATIONALUM", "NESTLEIND", "OBEROIRLTY",
-    "ONGC", "OIL", "PAYTM", "OFSS", "POLICYBZR",
-    "PIIND", "PAGEIND", "PATANJALI", "PERSISTENT", "PHOENIXLTD",
-    "PIDILITIND", "POLYCAB", "PFC", "POWERGRID", "PREMIERENE",
 ]
 
 
@@ -368,7 +348,7 @@ def generate_picks() -> dict:
     from services.alpha_engine.weight_adapter import run_adaptation
     from services.global_context import get_global_context
 
-    print(f"[picks] Starting Learning Alpha Engine for {len(NIFTY150)} stocks × 3 horizons …")
+    print(f"[picks] Starting Learning Alpha Engine for {len(NIFTY50T)} stocks × 3 horizons …")
     start = time.time()
 
     # ── Phase 0: Resolve outcomes from previous prediction runs ──────────────
@@ -387,7 +367,7 @@ def generate_picks() -> dict:
     print(f"[picks] Regime: {regime_label} — {regime['description']}")
 
     # ── Phase 1: Score all stocks in parallel ─────────────────────────────────
-    tasks = [(sym, h) for sym in NIFTY150 for h in ("short", "medium", "long")]
+    tasks = [(sym, h) for sym in NIFTY50T for h in ("short", "medium", "long")]
     raw: dict[str, list] = {"short": [], "medium": [], "long": []}
 
     with ThreadPoolExecutor(max_workers=8) as pool:
