@@ -950,9 +950,17 @@ class PredictionEngine:
             signal = "SELL"
 
         if signal == "BUY":
-            confidence = min(100, 30 + int((composite_r - 70) * 3.5))
+            # Linear over the full BUY range [70,100] — 0% at the threshold,
+            # 100% only at the true extreme. (Old formula saturated at ~90,
+            # making most strong BUYs look identically "100% confident".)
+            confidence = round(max(0, min(100, (composite_r - 70) / 30 * 100)))
         elif signal == "SELL":
-            confidence = min(100, 30 + int((55 - composite_r) * 3.5))
+            # Linear over the full SELL range [0,55) — 0% at the threshold,
+            # 100% only at composite=0. (Old formula saturated at ~27,
+            # so most "Avoid" scores showed a flat 100% regardless of how
+            # bad the score actually was — misleadingly contradicted the
+            # separate Model Confidence engine.)
+            confidence = round(max(0, min(100, (55 - composite_r) / 55 * 100)))
         else:
             confidence = min(25, int(abs(composite_r - 62) * 3))
         score_band = _score_label(composite_r)

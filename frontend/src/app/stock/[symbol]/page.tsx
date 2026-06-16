@@ -428,7 +428,7 @@ export default function StockPage() {
                     <span className="text-gray-400 text-sm">Signal</span>
                     <SignalBadge signal={prediction.signal} confidence={prediction.confidence} />
                   </div>
-                  <ConfidenceMeter value={prediction.confidence} label="Confidence" />
+                  <ConfidenceMeter value={prediction.confidence} label="Signal Strength" />
                   {(prediction as any).confidence_score !== undefined && (prediction as any).confidence_breakdown && (
                     <div className="border-t border-dark-border pt-3">
                       <ConfidenceBreakdown
