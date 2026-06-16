@@ -26,8 +26,8 @@ from services.prediction_engine import PredictionEngine
 
 CACHE_FILE = os.path.join(os.path.dirname(__file__), "../picks_cache.json")
 
-# Nifty 200 — sourced from NSE official constituent list (archives.nseindia.com)
-NIFTY200 = [
+# Nifty 150 — top 150 by Nifty 200 inclusion order (trimmed for Render free-tier speed)
+NIFTY150 = [
     "360ONE", "ABB", "APLAPOLLO", "AUBANK", "ADANIENSOL",
     "ADANIENT", "ADANIGREEN", "ADANIPORTS", "ADANIPOWER", "ATGL",
     "ABCAPITAL", "ALKEM", "AMBUJACEM", "APOLLOHOSP", "ASHOKLEY",
@@ -58,17 +58,6 @@ NIFTY200 = [
     "ONGC", "OIL", "PAYTM", "OFSS", "POLICYBZR",
     "PIIND", "PAGEIND", "PATANJALI", "PERSISTENT", "PHOENIXLTD",
     "PIDILITIND", "POLYCAB", "PFC", "POWERGRID", "PREMIERENE",
-    "PRESTIGE", "PNB", "RECLTD", "RADICO", "RVNL",
-    "RELIANCE", "SBICARD", "SBILIFE", "SRF", "MOTHERSON",
-    "SHREECEM", "SHRIRAMFIN", "ENRIN", "SIEMENS", "SOLARINDS",
-    "SBIN", "SAIL", "SUNPHARMA", "SUPREMEIND", "SUZLON",
-    "SWIGGY", "TVSMOTOR", "TATACAP", "TATACOMM", "TCS",
-    "TATACONSUM", "TATAELXSI", "TATAINVEST", "TMCV", "TMPV",
-    "TATAPOWER", "TATASTEEL", "TECHM", "TITAN", "TORNTPHARM",
-    "TRENT", "TIINDIA", "UPL", "ULTRACEMCO", "UNIONBANK",
-    "UNITDSPR", "VBL", "VAML", "VISL", "VEDL",
-    "VOGL", "VEDPOWER", "VMM", "IDEA", "VOLTAS",
-    "WAAREEENER", "WIPRO", "YESBANK", "ZYDUSLIFE",
 ]
 
 
@@ -379,7 +368,7 @@ def generate_picks() -> dict:
     from services.alpha_engine.weight_adapter import run_adaptation
     from services.global_context import get_global_context
 
-    print(f"[picks] Starting Learning Alpha Engine for {len(NIFTY200)} stocks × 3 horizons …")
+    print(f"[picks] Starting Learning Alpha Engine for {len(NIFTY150)} stocks × 3 horizons …")
     start = time.time()
 
     # ── Phase 0: Resolve outcomes from previous prediction runs ──────────────
@@ -398,7 +387,7 @@ def generate_picks() -> dict:
     print(f"[picks] Regime: {regime_label} — {regime['description']}")
 
     # ── Phase 1: Score all stocks in parallel ─────────────────────────────────
-    tasks = [(sym, h) for sym in NIFTY200 for h in ("short", "medium", "long")]
+    tasks = [(sym, h) for sym in NIFTY150 for h in ("short", "medium", "long")]
     raw: dict[str, list] = {"short": [], "medium": [], "long": []}
 
     with ThreadPoolExecutor(max_workers=8) as pool:
