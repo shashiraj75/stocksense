@@ -459,7 +459,8 @@ class PredictionEngine:
             entry_low   = round(price - atr * 0.3, 2)
             entry_high  = round(price + atr * 0.1, 2)
             stop_loss   = round(price - sl_distance, 2)
-            take_profit = round(target, 2)
+            # Extend target upward if it doesn't clear the MIN_RR threshold
+            take_profit = round(max(target, price + min_tp_distance), 2)
             risk        = round(price - stop_loss, 2)
             reward      = round(take_profit - price, 2)
 
@@ -467,7 +468,8 @@ class PredictionEngine:
             entry_low   = round(price - atr * 0.1, 2)
             entry_high  = round(price + atr * 0.3, 2)
             stop_loss   = round(price + sl_distance, 2)
-            take_profit = round(target, 2)
+            # Extend target downward if it doesn't clear the MIN_RR threshold
+            take_profit = round(min(target, price - min_tp_distance), 2)
             risk        = round(stop_loss - price, 2)
             reward      = round(price - take_profit, 2)
 
