@@ -99,3 +99,24 @@ export const fetchFactorAttribution = (symbol: string, market: Market, horizon: 
   api
     .get(`/api/stocks/${symbol}/factor-attribution`, { params: { market, horizon } })
     .then((r) => r.data);
+
+export interface ScoreHistoryPoint {
+  date: string;
+  composite_score: number | null;
+  quality_score: number | null;
+  growth_score: number | null;
+  valuation_score: number | null;
+  technical_score: number | null;
+  sentiment_score: number | null;
+  risk_score: number | null;
+  confidence_score: number | null;
+  signal: string | null;
+}
+
+export const fetchScoreHistory = (symbol: string, horizon: Horizon, days = 90) =>
+  api
+    .get<{ symbol: string; horizon: string; window_days: number; points: ScoreHistoryPoint[] }>(
+      `/api/stocks/${symbol}/score-history`,
+      { params: { horizon, days } }
+    )
+    .then((r) => r.data);

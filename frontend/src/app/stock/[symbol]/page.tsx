@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useSearchParams } from "next/navigation";
-import { api, fetchQuote, fetchPrediction, fetchNews, fetchFactorAttribution, Market, Horizon } from "@/utils/api";
+import { api, fetchQuote, fetchPrediction, fetchNews, fetchFactorAttribution, fetchScoreHistory, Market, Horizon } from "@/utils/api";
 import { TradingViewWidget } from "@/components/TradingViewWidget";
 import { SignalBadge } from "@/components/SignalBadge";
 import { ConfidenceMeter } from "@/components/ConfidenceMeter";
@@ -10,17 +10,19 @@ import { NewsCard } from "@/components/NewsCard";
 import { FactorAttributionWaterfall } from "@/components/FactorAttributionWaterfall";
 import { ConfidenceBreakdown } from "@/components/ConfidenceBreakdown";
 import { BullBearCase } from "@/components/BullBearCase";
+import { ScoreHistoryChart } from "@/components/ScoreHistoryChart";
 import clsx from "clsx";
 import { ArrowUpRight, ArrowDownRight, FlaskConical, CheckCircle, XCircle, Loader2 } from "lucide-react";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 
-type Tab = Horizon | "backtest";
+type Tab = Horizon | "backtest" | "history";
 
 const HORIZON_TABS: { key: Tab; label: string }[] = [
   { key: "short", label: "Short Term" },
   { key: "medium", label: "Medium Term" },
   { key: "long", label: "Long Term" },
   { key: "backtest", label: "Backtest" },
+  { key: "history", label: "History" },
 ];
 
 const HORIZON_LABEL: Record<string, string> = {
@@ -82,7 +84,7 @@ export default function StockPage() {
   const [btData, setBtData] = useState<BacktestResult | null>(null);
   const [btError, setBtError] = useState("");
 
-  const horizon = tab === "backtest" ? "short" : (tab as Horizon);
+  const horizon = tab === "backtest" ? "short" : tab === "history" ? "medium" : (tab as Horizon);
 
   const { data: quote, dataUpdatedAt: quoteUpdatedAt } = useQuery({
     queryKey: ["quote", symbol, market],
@@ -127,8 +129,16 @@ export default function StockPage() {
   const { data: attribution } = useQuery({
     queryKey: ["factor-attribution", symbol, market, horizon],
     queryFn: () => fetchFactorAttribution(symbol, market, horizon),
-    enabled: tab !== "backtest" && !isCrypto && !!prediction?.signal,
+    enabled: tab !== "backtest" && tab !== "history" && !isCrypto && !!prediction?.signal,
     staleTime: 14 * 60_000,
+    refetchOnWindowFocus: false,
+  });
+
+  const { data: scoreHistory } = useQuery({
+    queryKey: ["score-history", symbol, "medium"],
+    queryFn: () => fetchScoreHistory(symbol, "medium", 90),
+    enabled: tab === "history" && !isCrypto,
+    staleTime: 60 * 60_000,
     refetchOnWindowFocus: false,
   });
 
@@ -252,7 +262,7 @@ export default function StockPage() {
       )}
 
       {/* ── PREDICTION VIEW ── */}
-      {tab !== "backtest" && (
+      {tab !== "backtest" && tab !== "history" && (
         <>
           {/* Trade Levels — shown above prediction panels */}
           {prediction?.signal && (() => {
@@ -493,6 +503,19 @@ export default function StockPage() {
             </div>
           </section>
         </>
+      )}
+
+      {/* ── HISTORY VIEW ── */}
+      {tab === "history" && (
+        <div className="space-y-6">
+          {isCrypto ? (
+            <div className="bg-dark-card border border-dark-border rounded-2xl p-6 text-center text-gray-500 text-sm">
+              Score history is available for stocks only.
+            </div>
+          ) : (
+            <ScoreHistoryChart points={scoreHistory?.points ?? []} />
+          )}
+        </div>
       )}
 
       {/* ── BACKTEST VIEW ── */}

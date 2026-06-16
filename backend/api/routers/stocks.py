@@ -1,3 +1,4 @@
+import os
 import time
 import asyncio
 import yfinance as yf
@@ -127,6 +128,45 @@ async def get_factor_attribution(
         "negative_total": round(negative_total, 2),
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+
+
+@router.get("/{symbol}/score-history")
+async def get_score_history(
+    symbol: str,
+    horizon: Literal["short", "medium", "long"] = Query("medium"),
+    days: int = Query(90, ge=7, le=365),
+):
+    """
+    Daily score-snapshot history for a stock. Empty until snapshots accumulate
+    (populated by the daily picks cron once USE_POSTGRES=1). Degrades gracefully
+    to an empty series if Postgres isn't configured.
+    """
+    points: list[dict] = []
+    if os.getenv("USE_POSTGRES") == "1":
+        try:
+            from services.postgres_store import get_score_history as _gsh
+            loop = asyncio.get_running_loop()
+            rows = await loop.run_in_executor(None, _gsh, symbol.upper(), horizon, days)
+            points = [
+                {
+                    "date": str(r["date"]),
+                    "composite_score": r["composite_score"],
+                    "quality_score": r["quality_score"],
+                    "growth_score": r["growth_score"],
+                    "valuation_score": r["valuation_score"],
+                    "technical_score": r["technical_score"],
+                    "sentiment_score": r["sentiment_score"],
+                    "risk_score": r["risk_score"],
+                    "confidence_score": r["confidence_score"],
+                    "signal": r["signal"],
+                }
+                for r in rows
+            ]
+        except Exception as e:
+            return {"symbol": symbol.upper(), "horizon": horizon, "window_days": days,
+                    "points": [], "error": str(e)}
+
+    return {"symbol": symbol.upper(), "horizon": horizon, "window_days": days, "points": points}
 
 
 @router.get("/indices")

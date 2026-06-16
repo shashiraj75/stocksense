@@ -219,6 +219,9 @@ def _predict_stock(symbol: str, horizon: str) -> dict | None:
             "global_context": result.get("global_context"),
             "quality_factors": result.get("quality_factors"),
             "horizon":        horizon,
+            # Score-snapshot fields (section 4)
+            "composite_score":   result.get("composite_score"),
+            "confidence_model":  result.get("confidence_score"),
         }
     except Exception:
         pass
@@ -231,6 +234,49 @@ _FACTOR_KEYS = {
     "sentiment": "sentiment_score",
     "quality":   "quality_score",
 }
+
+
+def _write_score_snapshots(raw: dict[str, list]):
+    """
+    Persist one daily score snapshot per (symbol, horizon) for every scored
+    stock. No-op unless USE_POSTGRES=1 (score history is Postgres-only, since
+    Render's local disk doesn't survive restarts). Best-effort — never blocks
+    or fails pick generation.
+    """
+    if os.getenv("USE_POSTGRES") != "1":
+        return
+    try:
+        from services.postgres_store import log_score_snapshot
+    except Exception as e:
+        print(f"[snapshots] postgres_store unavailable: {e}")
+        return
+
+    snapshot_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    written = 0
+    for horizon, items in raw.items():
+        for r in items:
+            try:
+                qf = r.get("quality_factors") or {}
+                breakdown = qf.get("breakdown") or {}
+                log_score_snapshot(
+                    snapshot_date=snapshot_date,
+                    symbol=r["symbol"],
+                    horizon=horizon,
+                    composite_score=r.get("composite_score") or 0.0,
+                    signal=r.get("signal"),
+                    quality_score=r.get("quality_score"),
+                    growth_score=breakdown.get("earnings_revision"),
+                    valuation_score=breakdown.get("valuation"),
+                    technical_score=r.get("tech_score"),
+                    sentiment_score=r.get("sentiment_score"),
+                    risk_score=breakdown.get("risk_management"),
+                    confidence_score=r.get("confidence_model"),
+                    factor_breakdown=breakdown or None,
+                )
+                written += 1
+            except Exception as e:
+                print(f"[snapshots] {r.get('symbol')} ({horizon}) failed: {e}")
+    print(f"[snapshots] wrote {written} score snapshots for {snapshot_date}")
 
 
 def _zscore_and_rank(
@@ -380,6 +426,10 @@ def generate_picks() -> dict:
             r = future.result()
             if r:
                 raw[r["horizon"]].append(r)
+
+    # ── Score snapshots (section 4) — persist every scored stock for history ──
+    # Piggybacks on the universe scan above so we don't re-fetch anything.
+    _write_score_snapshots(raw)
 
     # ── Phases 3-6 per horizon ────────────────────────────────────────────────
     picks: dict[str, list] = {}
