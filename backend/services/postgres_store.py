@@ -32,7 +32,13 @@ def _get_pool() -> ConnectionPool:
     if _pool is None:
         if not DATABASE_URL:
             raise RuntimeError("DATABASE_URL is not set — cannot use postgres_store")
-        _pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=5, open=True)
+        # autocommit=True — without it, psycopg_pool rolls back any uncommitted
+        # transaction when a connection is returned to the pool, silently
+        # discarding every CREATE TABLE / INSERT we never explicitly committed.
+        _pool = ConnectionPool(
+            DATABASE_URL, min_size=1, max_size=5, open=True,
+            kwargs={"autocommit": True},
+        )
     return _pool
 
 
