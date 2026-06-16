@@ -27,27 +27,109 @@ from services.prediction_engine import PredictionEngine
 CACHE_FILE = os.path.join(os.path.dirname(__file__), "../picks_cache.json")
 
 # Nifty 100 — liquid, well-known Indian stocks
-NIFTY100 = [
-    "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY",
-    "HINDUNILVR", "ITC", "SBIN", "BHARTIARTL", "KOTAKBANK",
-    "LT", "AXISBANK", "ASIANPAINT", "MARUTI", "TITAN",
-    "SUNPHARMA", "HCLTECH", "WIPRO", "ULTRACEMCO", "BAJFINANCE",
-    "NESTLEIND", "TECHM", "POWERGRID", "NTPC", "ONGC",
-    "COALINDIA", "TATAMOTORS", "ADANIENT", "ADANIPORTS", "BAJAJFINSV",
-    "DIVISLAB", "DRREDDY", "CIPLA", "EICHERMOT", "GRASIM",
-    "HDFCLIFE", "HEROMOTOCO", "HINDALCO", "INDUSINDBK", "JSWSTEEL",
-    "M&M", "SBILIFE", "SHREECEM", "TATACONSUM", "TATASTEEL",
-    "APOLLOHOSP", "BAJAJ-AUTO", "BPCL", "BRITANNIA", "CHOLAFIN",
-    "DABUR", "DLF", "DMART", "GODREJCP", "HAVELLS",
-    "ICICIPRULI", "INDHOTEL", "IOC", "IRCTC", "LUPIN",
-    "MCDOWELL-N", "MUTHOOTFIN", "NAUKRI", "PIDILITIND", "PNB",
-    "SAIL", "SIEMENS", "SRF", "TORNTPHARM", "TRENT",
-    "TVSMOTOR", "UBL", "VEDL", "VOLTAS", "ZOMATO",
-    "PAYTM", "NYKAA", "POLICYBZR", "DELHIVERY", "MARICO",
-    "BANDHANBNK", "BANKBARODA", "FEDERALBNK", "HAL", "BHEL",
-    "CANBK", "CONCOR", "GAIL", "HINDPETRO", "IDFCFIRSTB",
-    "LICHSGFIN", "MOTHERSON", "MPHASIS", "NMDC", "OBEROIRLTY",
-    "OFSS", "PERSISTENT", "PIIND", "RECLTD", "SUPREMEIND",
+# Nifty 500 — sourced from NSE official constituent list (archives.nseindia.com)
+NIFTY500 = [
+    "360ONE", "3MINDIA", "ABB", "ACC", "ACMESOLAR",
+    "AIAENG", "APLAPOLLO", "AUBANK", "AWL", "AADHARHFC",
+    "AARTIIND", "AAVAS", "ABBOTINDIA", "ACE", "ACUTAAS",
+    "ADANIENSOL", "ADANIENT", "ADANIGREEN", "ADANIPORTS", "ADANIPOWER",
+    "ATGL", "ABCAPITAL", "ABFRL", "ABLBL", "ABREL",
+    "ABSLAMC", "CPPLUS", "AEGISLOG", "AEGISVOPAK", "AFCONS",
+    "AFFLE", "AJANTPHARM", "ALKEM", "ABDL", "ARE&M",
+    "AMBER", "AMBUJACEM", "ANANDRATHI", "ANANTRAJ", "ANGELONE",
+    "ANTHEM", "ANURAS", "APARINDS", "APOLLOHOSP", "APOLLOTYRE",
+    "APTUS", "ASAHIINDIA", "ASHOKLEY", "ASIANPAINT", "ASTERDM",
+    "ASTRAL", "ATHERENERG", "ATUL", "AUROPHARMA", "AIIL",
+    "DMART", "AXISBANK", "BEML", "BLS", "BSE",
+    "BAJAJ-AUTO", "BAJFINANCE", "BAJAJFINSV", "BAJAJHLDNG", "BAJAJHFL",
+    "BALKRISIND", "BALRAMCHIN", "BANDHANBNK", "BANKBARODA", "BANKINDIA",
+    "MAHABANK", "BATAINDIA", "BAYERCROP", "BELRISE", "BERGEPAINT",
+    "BDL", "BEL", "BHARATFORG", "BHEL", "BPCL",
+    "BHARTIARTL", "BHARTIHEXA", "BIKAJI", "GROWW", "BIOCON",
+    "BSOFT", "BLUEDART", "BLUEJET", "BLUESTARCO", "BBTC",
+    "BOSCHLTD", "FIRSTCRY", "BRIGADE", "BRITANNIA", "MAPMYINDIA",
+    "CCL", "CESC", "CGPOWER", "CIEINDIA", "CRISIL",
+    "CANFINHOME", "CANBK", "CANHLIFE", "CAPLIPOINT", "CGCL",
+    "CARBORUNIV", "CARTRADE", "CASTROLIND", "CEATLTD", "CEMPRO",
+    "CENTRALBK", "CDSL", "CHALET", "CHAMBLFERT", "CHENNPETRO",
+    "CHOICEIN", "CHOLAHLDNG", "CHOLAFIN", "CIPLA", "CUB",
+    "CLEAN", "COALINDIA", "COCHINSHIP", "COFORGE", "COHANCE",
+    "COLPAL", "CAMS", "CONCORDBIO", "CONCOR", "COROMANDEL",
+    "CRAFTSMAN", "CREDITACC", "CROMPTON", "CUMMINSIND", "CYIENT",
+    "DCMSHRIRAM", "DLF", "DOMS", "DABUR", "DALBHARAT",
+    "DATAPATTNS", "DEEPAKFERT", "DEEPAKNTR", "DELHIVERY", "DEVYANI",
+    "DIVISLAB", "DIXON", "LALPATHLAB", "DRREDDY", "EIDPARRY",
+    "EIHOTEL", "EICHERMOT", "ELECON", "ELGIEQUIP", "EMAMILTD",
+    "EMCURE", "EMMVEE", "ENDURANCE", "ENGINERSIN", "ERIS",
+    "ESCORTS", "ETERNAL", "EXIDEIND", "NYKAA", "FEDERALBNK",
+    "FACT", "FINCABLES", "FSL", "FIVESTAR", "FORCEMOT",
+    "FORTIS", "GAIL", "GVT&D", "GMRAIRPORT", "GABRIEL",
+    "GALLANTT", "GRSE", "GICRE", "GILLETTE", "GLAND",
+    "GLAXO", "GLENMARK", "MEDANTA", "GODIGIT", "GPIL",
+    "GODFRYPHLP", "GODREJCP", "GODREJIND", "GODREJPROP", "GRANULES",
+    "GRAPHITE", "GRASIM", "GRAVITA", "GESHIP", "FLUOROCHEM",
+    "GMDCLTD", "HEG", "HBLENGINE", "HCLTECH", "HDBFS",
+    "HDFCAMC", "HDFCBANK", "HDFCLIFE", "HFCL", "HAVELLS",
+    "HEROMOTOCO", "HEXT", "HSCL", "HINDALCO", "HAL",
+    "HINDCOPPER", "HINDPETRO", "HINDUNILVR", "HINDZINC", "POWERINDIA",
+    "HOMEFIRST", "HONASA", "HONAUT", "HUDCO", "HYUNDAI",
+    "ICICIBANK", "ICICIGI", "ICICIAMC", "ICICIPRULI", "IDBI",
+    "IDFCFIRSTB", "IFCI", "IIFL", "IRB", "IRCON",
+    "ITCHOTELS", "ITC", "ITI", "INDGN", "INDIACEM",
+    "INDIAMART", "INDIANB", "IEX", "INDHOTEL", "IOC",
+    "IOB", "IRCTC", "IRFC", "IREDA", "IGL",
+    "INDUSTOWER", "INDUSINDBK", "NAUKRI", "INFY", "INOXWIND",
+    "INTELLECT", "INDIGO", "IGIL", "IKS", "IPCALAB",
+    "JBCHEPHARM", "JKCEMENT", "JBMA", "JKTYRE", "JMFINANCIL",
+    "JSWCEMENT", "JSWDULUX", "JSWENERGY", "JSWINFRA", "JSWSTEEL",
+    "JAINREC", "JPPOWER", "J&KBANK", "JINDALSAW", "JSL",
+    "JINDALSTEL", "JIOFIN", "JUBLFOOD", "JUBLINGREA", "JUBLPHARMA",
+    "JWL", "JYOTICNC", "KPRMILL", "KEI", "KPITTECH",
+    "KAJARIACER", "KPIL", "KALYANKJIL", "KARURVYSYA", "KAYNES",
+    "KEC", "KFINTECH", "KIRLOSENG", "KOTAKBANK", "KIMS",
+    "LTF", "LTTS", "LGEINDIA", "LICHSGFIN", "LTFOODS",
+    "LTM", "LT", "LATENTVIEW", "LAURUSLABS", "THELEELA",
+    "LEMONTREE", "LENSKART", "LICI", "LINDEINDIA", "LLOYDSME",
+    "LODHA", "LUPIN", "MMTC", "MRF", "MGL",
+    "M&MFIN", "M&M", "MANAPPURAM", "MRPL", "MANKIND",
+    "MARICO", "MARUTI", "MFSL", "MAXHEALTH", "MAZDOCK",
+    "MEESHO", "MINDACORP", "MSUMI", "MOTILALOFS", "MPHASIS",
+    "MCX", "MUTHOOTFIN", "NATCOPHARM", "NBCC", "NCC",
+    "NHPC", "NLCINDIA", "NMDC", "NSLNISP", "NTPCGREEN",
+    "NTPC", "NH", "NATIONALUM", "NAVA", "NAVINFLUOR",
+    "NESTLEIND", "NETWEB", "NEULANDLAB", "NEWGEN", "NAM-INDIA",
+    "NIVABUPA", "NUVAMA", "NUVOCO", "OBEROIRLTY", "ONGC",
+    "OIL", "OLAELEC", "OLECTRA", "PAYTM", "ONESOURCE",
+    "OFSS", "POLICYBZR", "PCBL", "PGEL", "PIIND",
+    "PNBHOUSING", "PTCIL", "PVRINOX", "PAGEIND", "PARADEEP",
+    "PATANJALI", "PERSISTENT", "PETRONET", "PFIZER", "PHOENIXLTD",
+    "PWL", "PIDILITIND", "PINELABS", "PIRAMALFIN", "PPLPHARMA",
+    "POLYMED", "POLYCAB", "POONAWALLA", "PFC", "POWERGRID",
+    "PREMIERENE", "PRESTIGE", "PNB", "RRKABEL", "RBLBANK",
+    "RECLTD", "RHIM", "RITES", "RADICO", "RVNL",
+    "RAILTEL", "RAINBOW", "RKFORGE", "REDINGTON", "RELIANCE",
+    "RPOWER", "SBFC", "SBICARD", "SBILIFE", "SJVN",
+    "SRF", "SAGILITY", "SAILIFE", "SAMMAANCAP", "MOTHERSON",
+    "SAPPHIRE", "SARDAEN", "SAREGAMA", "SCHAEFFLER", "SCHNEIDER",
+    "SCI", "SHREECEM", "SHRIRAMFIN", "SHYAMMETL", "ENRIN",
+    "SIEMENS", "SIGNATURE", "SOBHA", "SOLARINDS", "SONACOMS",
+    "SONATSOFTW", "STARHEALTH", "SBIN", "SAIL", "SUMICHEM",
+    "SUNPHARMA", "SUNTV", "SUNDARMFIN", "SUPREMEIND", "SPLPETRO",
+    "SUZLON", "SWANCORP", "SWIGGY", "SYNGENE", "SYRMA",
+    "TBOTEK", "TVSMOTOR", "TATACAP", "TATACHEM", "TATACOMM",
+    "TCS", "TATACONSUM", "TATAELXSI", "TATAINVEST", "TMCV",
+    "TMPV", "TATAPOWER", "TATASTEEL", "TATATECH", "TTML",
+    "TECHM", "TECHNOE", "TEGA", "TEJASNET", "TENNIND",
+    "NIACL", "RAMCOCEM", "THERMAX", "TIMKEN", "TITAGARH",
+    "TITAN", "TORNTPHARM", "TORNTPOWER", "TARIL", "TRAVELFOOD",
+    "TRENT", "TRIDENT", "TRITURBINE", "TIINDIA", "UCOBANK",
+    "UNOMINDA", "UPL", "UTIAMC", "ULTRACEMCO", "UNIONBANK",
+    "UBL", "UNITDSPR", "URBANCO", "USHAMART", "VTL",
+    "VBL", "VAML", "VISL", "VEDL", "VOGL",
+    "VEDPOWER", "VIJAYA", "VMM", "IDEA", "VOLTAS",
+    "WAAREEENER", "WELCORP", "WELSPUNLIV", "WHIRLPOOL", "WIPRO",
+    "WOCKPHARMA", "YESBANK", "ZFCVINDIA", "ZEEL", "ZENTEC",
+    "ZENSARTECH", "ZYDUSLIFE", "ZYDUSWELL", "ECLERX",
 ]
 
 
@@ -357,7 +439,7 @@ def generate_picks() -> dict:
     from services.alpha_engine.weight_adapter import run_adaptation
     from services.global_context import get_global_context
 
-    print(f"[picks] Starting Learning Alpha Engine for {len(NIFTY100)} stocks × 3 horizons …")
+    print(f"[picks] Starting Learning Alpha Engine for {len(NIFTY500)} stocks × 3 horizons …")
     start = time.time()
 
     # ── Phase 0: Resolve outcomes from previous prediction runs ──────────────
@@ -376,10 +458,10 @@ def generate_picks() -> dict:
     print(f"[picks] Regime: {regime_label} — {regime['description']}")
 
     # ── Phase 1: Score all stocks in parallel ─────────────────────────────────
-    tasks = [(sym, h) for sym in NIFTY100 for h in ("short", "medium", "long")]
+    tasks = [(sym, h) for sym in NIFTY500 for h in ("short", "medium", "long")]
     raw: dict[str, list] = {"short": [], "medium": [], "long": []}
 
-    with ThreadPoolExecutor(max_workers=6) as pool:
+    with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {pool.submit(_predict_stock, sym, h): (sym, h) for sym, h in tasks}
         done = 0
         for future in as_completed(futures):
