@@ -272,8 +272,9 @@ def _predict_stock(symbol: str, horizon: str) -> dict | None:
     caller can z-score cross-sectionally across the full universe.
     """
     try:
+        import asyncio
         engine = PredictionEngine()
-        result = engine.predict(symbol, "IN", horizon)
+        result = asyncio.run(engine.predict(symbol, "IN", horizon))
 
         if not result:
             return None
