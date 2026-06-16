@@ -26,12 +26,10 @@ from services.prediction_engine import PredictionEngine
 
 CACHE_FILE = os.path.join(os.path.dirname(__file__), "../picks_cache.json")
 
-# Top 20 (further trimmed — Render free tier OOMs on 50-stock scans)
-NIFTY20T = [
+# Top 10 (further trimmed overnight after repeated Render free-tier crashes — prioritizing a reliable 9 AM run over breadth)
+NIFTY10T = [
     "360ONE", "ABB", "APLAPOLLO", "AUBANK", "ADANIENSOL",
     "ADANIENT", "ADANIGREEN", "ADANIPORTS", "ADANIPOWER", "ATGL",
-    "ABCAPITAL", "ALKEM", "AMBUJACEM", "APOLLOHOSP", "ASHOKLEY",
-    "ASIANPAINT", "ASTRAL", "AUROPHARMA", "DMART", "AXISBANK",
 ]
 
 
@@ -388,7 +386,7 @@ def generate_picks() -> dict:
     from services.alpha_engine.weight_adapter import run_adaptation
     from services.global_context import get_global_context
 
-    print(f"[picks] Starting Learning Alpha Engine for {len(NIFTY20T)} stocks × 3 horizons …")
+    print(f"[picks] Starting Learning Alpha Engine for {len(NIFTY10T)} stocks × 3 horizons …")
     start = time.time()
 
     # ── Phase 0: Resolve outcomes from previous prediction runs ──────────────
@@ -407,10 +405,10 @@ def generate_picks() -> dict:
     print(f"[picks] Regime: {regime_label} — {regime['description']}")
 
     # ── Phase 1: Score all stocks in parallel ─────────────────────────────────
-    tasks = [(sym, h) for sym in NIFTY20T for h in ("short", "medium", "long")]
+    tasks = [(sym, h) for sym in NIFTY10T for h in ("short", "medium", "long")]
     raw: dict[str, list] = {"short": [], "medium": [], "long": []}
 
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=2) as pool:
         futures = {pool.submit(_predict_stock, sym, h): (sym, h) for sym, h in tasks}
         done = 0
         for future in as_completed(futures):
