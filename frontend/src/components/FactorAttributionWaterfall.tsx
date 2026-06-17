@@ -1,5 +1,5 @@
 "use client";
-import { BarChart, Bar, XAxis, YAxis, Cell, ResponsiveContainer, Tooltip } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, Cell, ResponsiveContainer, Tooltip, LabelList } from "recharts";
 
 export interface FactorContribution {
   factor: string;
@@ -36,7 +36,7 @@ export function FactorAttributionWaterfall({ data }: { data: FactorAttribution }
 
       <div className="h-56">
         <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={chartData} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
+          <BarChart data={chartData} layout="vertical" margin={{ left: 8, right: 48, top: 4, bottom: 4 }}>
             <XAxis type="number" hide />
             <YAxis
               type="category"
@@ -54,6 +54,12 @@ export function FactorAttributionWaterfall({ data }: { data: FactorAttribution }
               {chartData.map((entry, i) => (
                 <Cell key={i} fill={entry.value >= 0 ? "#22c55e" : "#ef4444"} />
               ))}
+              <LabelList
+                dataKey="value"
+                position="right"
+                style={{ fill: "#e5e7eb", fontSize: 11, fontFamily: "monospace", fontWeight: 600 }}
+                formatter={(v: number) => `${v > 0 ? "+" : ""}${v.toFixed(1)}`}
+              />
             </Bar>
           </BarChart>
         </ResponsiveContainer>
