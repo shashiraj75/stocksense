@@ -45,11 +45,24 @@ def _bg_thread(sym: str, market: str, horizon: str, key: str) -> None:
     """
     try:
         asyncio.run(engine.predict(sym, market, horizon))
-        log.info("[bg-predict] completed %s", key)
+        log.info("[bg-predict] completed %s | cache size: %d", key, len(_pred_cache))
     except Exception:
         log.exception("[bg-predict] failed for %s", key)
     finally:
         _computing.discard(key)
+        log.info("[bg-predict] finally: %s done, computing=%s, cache_has=%s", key, list(_computing), key in _pred_cache)
+
+
+@router.get("/debug/state")
+async def debug_state():
+    """Debug: show current cache keys and computing set."""
+    import time as t
+    return {
+        "computing": list(_computing),
+        "cache_keys": list(_pred_cache.keys()),
+        "cache_ages_s": {k: round(t.time() - v[0]) for k, v in _pred_cache.items()},
+        "thread_count": threading.active_count(),
+    }
 
 
 @router.get("/{symbol}")
