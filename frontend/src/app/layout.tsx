@@ -15,13 +15,14 @@ export const metadata: Metadata = {
 };
 
 export const NAV_LINKS = [
-  { href: "/picks",     label: "Daily Picks", accent: true },
-  { href: "/",          label: "Dashboard" },
-  { href: "/heatmap",   label: "Heatmap" },
-  { href: "/screener",  label: "Screener" },
-  { href: "/portfolio", label: "Portfolio" },
-  { href: "/alerts",    label: "Alerts" },
-  { href: "/watchlist", label: "Watchlist" },
+  { href: "/picks",      label: "Daily Picks", accent: true },
+  { href: "/",           label: "Dashboard" },
+  { href: "/heatmap",    label: "Heatmap" },
+  { href: "/screener",   label: "Screener" },
+  { href: "/portfolio",  label: "Portfolio" },
+  { href: "/alerts",     label: "Alerts" },
+  { href: "/watchlist",  label: "Watchlist" },
+  { href: "/validation", label: "Validation" },
 ];
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -32,9 +32,8 @@ def _fetch_return(symbol: str, pred_date_str: str, days: int) -> float | None:
         if len(avail) == 0:
             return None
         entry_price = float(hist.loc[avail[0], "Close"])
-        # Price at pred_date + days (or closest trading day)
-        target_date = pred_date + avail[0] - avail[0]  # same day
-        future_rows = hist.index[hist.index >= pred_date]
+        # Forward return: find price at entry_date + days trading days
+        future_rows = hist.index[hist.index >= avail[0]]
         if len(future_rows) <= days:
             # Use last available if not enough rows yet
             if len(future_rows) < 2:
