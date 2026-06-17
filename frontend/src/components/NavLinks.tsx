@@ -1,9 +1,37 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useQuery } from "@tanstack/react-query";
+import { api } from "@/utils/api";
 import clsx from "clsx";
 
 interface NavLink { href: string; label: string; accent?: boolean }
+
+function AccuracyBadge() {
+  const { data } = useQuery({
+    queryKey: ["validation-summary"],
+    queryFn: () => api.get<{ overall_accuracy_pct?: number; n_resolved?: number }>(
+      "/api/validation/results?horizon=medium"
+    ).then(r => r.data),
+    staleTime: 30 * 60 * 1000,   // re-fetch every 30 min — this rarely changes
+    retry: false,
+  });
+
+  const accuracy = data?.overall_accuracy_pct;
+  const n = data?.n_resolved ?? 0;
+  if (!accuracy || n < 10) return null;  // don't show until enough data
+
+  const color = accuracy >= 65 ? "text-bull" : accuracy >= 55 ? "text-yellow-400" : "text-gray-400";
+
+  return (
+    <span
+      className={clsx("text-xs font-semibold tabular-nums", color)}
+      title={`Direction accuracy across ${n} resolved predictions (medium term)`}
+    >
+      ✓ {Math.round(accuracy)}% accurate
+    </span>
+  );
+}
 
 export function NavLinks({ links }: { links: NavLink[] }) {
   const pathname = usePathname();
@@ -33,6 +61,8 @@ export function NavLinks({ links }: { links: NavLink[] }) {
           </Link>
         );
       })}
+      {/* Live accuracy badge — shows after 10+ resolved predictions */}
+      <AccuracyBadge />
     </div>
   );
 }
