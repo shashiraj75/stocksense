@@ -106,6 +106,8 @@ def _init_db():
             mfi_score       REAL,
             predicted       TEXT,
             fwd_return_pct  REAL,
+            nifty_fwd_ret_pct REAL,
+            alpha_pct       REAL,
             actual_direction TEXT,
             correct         INTEGER
         );
@@ -233,16 +235,18 @@ def _score_at(df: pd.DataFrame, i: int, nifty_close: pd.Series | None, fund_scor
         elif mfi_val < 30: mfi_score = 30.0
         elif mfi_val < 45: mfi_score = 42.0
 
-    # ── Composite (weights: tech 50%, RS 20%, OBV 15%, MFI 15%) ──────────────
-    # We can only use technicals historically (fundamentals fixed, no quality)
+    # ── Composite (weights: tech 30%, RS 30%, OBV 20%, MFI 20%) ──────────────
+    # Reduced tech weight (IC=-0.037, momentum-chasing after price has moved).
+    # Raised RS weight (cross-sectional alpha signal; leading not lagging).
+    # Fundamentals blend raised from 30% to 45% (quality / value is more stable).
     composite = (
-        tech      * 0.50
-        + rs_score  * 0.20
-        + obv_score * 0.15
-        + mfi_score * 0.15
+        tech      * 0.30
+        + rs_score  * 0.30
+        + obv_score * 0.20
+        + mfi_score * 0.20
     )
     # Blend with fundamentals (fixed for the whole stock period)
-    composite = composite * 0.70 + fund_score * 0.30
+    composite = composite * 0.55 + fund_score * 0.45
     composite += regime_adj
     composite = max(0.0, min(100.0, composite))
 
@@ -321,14 +325,33 @@ def _backtest_stock(symbol: str, horizon: str, nifty_df: pd.DataFrame | None) ->
                     continue
                 fwd_ret = (exit_ - entry) / entry * 100
 
+                # Nifty forward return over same window (benchmark-relative correctness)
+                nifty_fwd_ret = 0.0
+                if nifty_close is not None and i + fwd_days < len(nifty_close):
+                    n_entry = float(nifty_close.iloc[i])
+                    n_exit  = float(nifty_close.iloc[i + fwd_days])
+                    if n_entry != 0:
+                        nifty_fwd_ret = (n_exit - n_entry) / n_entry * 100
+
                 sc = _score_at(df, i, nifty_close, fund_score, regime_adjs[i])
                 composite = sc["composite"]
 
                 predicted = "BUY" if composite >= BUY_THRESHOLD else ("SELL" if composite <= SELL_THRESHOLD else "HOLD")
+
+                # "correct" = benchmark-relative:
+                #   BUY is correct  if stock outperforms Nifty by > 0 over fwd window
+                #   SELL is correct if stock underperforms Nifty by > 0 over fwd window
+                #   HOLD is correct if stock is within ±threshold% of Nifty return
+                alpha = fwd_ret - nifty_fwd_ret
+                if predicted == "BUY":
+                    correct = alpha > 0
+                elif predicted == "SELL":
+                    correct = alpha < 0
+                else:
+                    correct = abs(alpha) <= threshold * 100
+
+                # Keep absolute direction for context (used in avg return calcs)
                 actual_dir = "UP" if fwd_ret >= threshold * 100 else ("DOWN" if fwd_ret <= -threshold * 100 else "FLAT")
-                correct = (predicted == "BUY" and actual_dir == "UP") or \
-                          (predicted == "SELL" and actual_dir == "DOWN") or \
-                          (predicted == "HOLD" and actual_dir == "FLAT")
 
                 signals.append({
                     "symbol":          symbol,
@@ -341,6 +364,8 @@ def _backtest_stock(symbol: str, horizon: str, nifty_df: pd.DataFrame | None) ->
                     "mfi_score":       sc["mfi"],
                     "predicted":       predicted,
                     "fwd_return_pct":  round(fwd_ret, 3),
+                    "nifty_fwd_ret_pct": round(nifty_fwd_ret, 3),
+                    "alpha_pct":       round(alpha, 3),
                     "actual_direction": actual_dir,
                     "correct":         int(correct),
                 })
@@ -399,30 +424,39 @@ def _compute_metrics(signals: list[dict], nifty_return_pct: float) -> dict:
         return round(float(np.corrcoef(vals, rets)[0,1]), 4)
 
     # Portfolio simulation: equal-weight all BUY signals, measure vs benchmark
-    buy_rets = [s["fwd_return_pct"] for s in buys]
-    model_avg = _avg_ret(buys) or 0.0
+    buy_rets   = [s["fwd_return_pct"] for s in buys]
+    buy_alphas = [s["alpha_pct"] for s in buys if s.get("alpha_pct") is not None]
+    model_avg  = _avg_ret(buys) or 0.0
     outperformance = round(model_avg - nifty_return_pct, 2) if nifty_return_pct is not None else None
+
+    def _avg(lst):
+        return round(float(np.mean(lst)), 2) if lst else None
 
     return {
         "total_signals":    len(signals),
         "buy_signals":      len(buys),
         "sell_signals":     len(sells),
         "hold_signals":     len(holds),
-        "overall_accuracy_pct":  _hit_rate(signals),
-        "buy_hit_rate_pct":      _hit_rate(buys),
-        "sell_hit_rate_pct":     _hit_rate(sells),
-        "avg_return_on_buy_pct": _avg_ret(buys),
-        "avg_return_on_sell_pct": _avg_ret(sells),
-        "avg_return_benchmark_pct": round(nifty_return_pct, 2) if nifty_return_pct else None,
-        "buy_outperformance_pct": outperformance,
-        "sharpe_on_buys":        _sharpe(buy_rets) if buy_rets else None,
-        "profitable_buy_pct":    round(sum(1 for r in buy_rets if r > 0) / len(buy_rets) * 100, 1) if buy_rets else None,
-        "score_buckets":         buckets,
+        # Benchmark-relative hit rate (primary metric — stock must beat Nifty to be "correct")
+        "buy_hit_rate_pct":           _hit_rate(buys),
+        "sell_hit_rate_pct":          _hit_rate(sells),
+        "overall_accuracy_pct":       _hit_rate(signals),
+        # Return metrics
+        "avg_return_on_buy_pct":      _avg_ret(buys),
+        "avg_alpha_on_buy_pct":       _avg(buy_alphas),
+        "avg_return_on_sell_pct":     _avg_ret(sells),
+        "avg_return_benchmark_pct":   round(nifty_return_pct, 2) if nifty_return_pct else None,
+        "buy_outperformance_pct":     outperformance,
+        "sharpe_on_buys":             _sharpe(buy_rets) if buy_rets else None,
+        "sharpe_on_alphas":           _sharpe(buy_alphas) if buy_alphas else None,
+        "profitable_buy_pct":         round(sum(1 for r in buy_rets if r > 0) / len(buy_rets) * 100, 1) if buy_rets else None,
+        "beat_benchmark_pct":         round(sum(1 for a in buy_alphas if a > 0) / len(buy_alphas) * 100, 1) if buy_alphas else None,
+        "score_buckets":              buckets,
         "factor_ic": {
-            "tech":  _ic("tech_score"),
-            "rs":    _ic("rs_score"),
-            "obv":   _ic("obv_score"),
-            "mfi":   _ic("mfi_score"),
+            "tech":      _ic("tech_score"),
+            "rs":        _ic("rs_score"),
+            "obv":       _ic("obv_score"),
+            "mfi":       _ic("mfi_score"),
             "composite": _ic("composite_score"),
         },
     }
@@ -512,13 +546,16 @@ def run_validation(horizon: str = "medium", n_stocks: int = 50, max_workers: int
                 INSERT INTO val_signals
                   (run_id, symbol, horizon, signal_date, composite_score,
                    tech_score, rs_score, obv_score, mfi_score,
-                   predicted, fwd_return_pct, actual_direction, correct)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   predicted, fwd_return_pct, nifty_fwd_ret_pct, alpha_pct,
+                   actual_direction, correct)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, [
                 (run_id, s["symbol"], s["horizon"], s["signal_date"],
                  s["composite_score"], s["tech_score"], s["rs_score"],
                  s["obv_score"], s["mfi_score"],
-                 s["predicted"], s["fwd_return_pct"], s["actual_direction"], s["correct"])
+                 s["predicted"], s["fwd_return_pct"],
+                 s.get("nifty_fwd_ret_pct"), s.get("alpha_pct"),
+                 s["actual_direction"], s["correct"])
                 for s in all_signals
             ])
 
