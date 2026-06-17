@@ -1,7 +1,6 @@
 """
 Validation API — exposes walk-forward backtest results to the frontend.
 """
-import json
 import numpy as np
 from fastapi import APIRouter, Query, BackgroundTasks
 from fastapi.responses import JSONResponse
@@ -26,7 +25,6 @@ def _safe_json(obj):
 
 
 def _json_response(data: dict) -> JSONResponse:
-    """Serialize data safely then wrap in a JSONResponse to bypass FastAPI/Pydantic."""
     return JSONResponse(content=_safe_json(data))
 
 
@@ -34,35 +32,33 @@ def _json_response(data: dict) -> JSONResponse:
 async def trigger_validation(
     background_tasks: BackgroundTasks,
     horizon: Literal["short", "medium", "long"] = Query("medium"),
-    n_stocks: int = Query(50, ge=10, le=100),
 ):
     """
-    Trigger a walk-forward validation run in the background.
+    Trigger a walk-forward validation run across all Nifty 100 stocks.
     Returns immediately — poll /status for progress, /results for output.
     """
     from services.validation_engine import run_validation, get_run_status
 
     status = get_run_status()
     if status.get("running"):
-        return {"status": "already_running", "progress": status.get("progress"), "total": status.get("total")}
+        return _json_response({"status": "already_running", "progress": status.get("progress"), "total": status.get("total")})
 
     def _run():
-        run_validation(horizon=horizon, n_stocks=n_stocks)
+        run_validation(horizon=horizon)
 
     background_tasks.add_task(_run)
-    return {
+    return _json_response({
         "status": "started",
         "horizon": horizon,
-        "n_stocks": n_stocks,
-        "message": f"Walk-forward validation started across {n_stocks} Nifty 100 stocks. Poll /api/validation/status for progress.",
-    }
+        "message": f"Walk-forward validation started across all Nifty 100 stocks ({horizon} horizon). Poll /api/validation/status for progress.",
+    })
 
 
 @router.get("/status")
 def get_status():
     """Poll this endpoint to track validation run progress."""
     from services.validation_engine import get_run_status
-    return get_run_status()
+    return _json_response(get_run_status())
 
 
 @router.get("/results")
@@ -70,8 +66,7 @@ def get_results(horizon: Literal["short", "medium", "long"] = Query("medium")):
     """Return aggregate validation metrics for the latest run of the given horizon."""
     from services.validation_engine import get_latest_results
     try:
-        data = get_latest_results(horizon=horizon)
-        return _json_response(data)
+        return _json_response(get_latest_results(horizon=horizon))
     except Exception as e:
         import traceback
         return _json_response({"available": False, "error": str(e), "trace": traceback.format_exc()})

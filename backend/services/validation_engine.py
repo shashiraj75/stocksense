@@ -464,21 +464,23 @@ def _compute_metrics(signals: list[dict], nifty_return_pct: float) -> dict:
 
 # ── Main runner ───────────────────────────────────────────────────────────────
 
-def run_validation(horizon: str = "medium", n_stocks: int = 50, max_workers: int = 6) -> dict:
+def run_validation(horizon: str = "medium", max_workers: int = 6) -> dict:
     """
-    Run a full walk-forward validation across n_stocks from Nifty 100.
+    Run a full walk-forward validation across all Nifty 100 stocks.
     Stores results in SQLite and returns the summary metrics dict.
     """
+    stocks = NIFTY_100
+    n_stocks = len(stocks)
     with _status_lock:
         if _run_status["running"]:
             return {"error": "A validation run is already in progress"}
         _run_status.update({"running": True, "progress": 0, "total": n_stocks,
                             "started_at": datetime.now(timezone.utc).isoformat(),
-                            "log": [f"Starting {horizon}-term validation on {n_stocks} stocks…"]})
+                            "log": [f"Starting {horizon}-term validation on all {n_stocks} Nifty 100 stocks…"]})
 
     try:
         _init_db()
-        stocks = NIFTY_100[:n_stocks]
+        stocks = NIFTY_100
 
         # Fetch Nifty 50 benchmark once
         try:
