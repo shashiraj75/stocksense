@@ -582,7 +582,9 @@ def run_validation(horizon: str = "medium", max_workers: int = 6) -> dict:
             if isinstance(obj, dict):   return {k: _jsonify(v) for k, v in obj.items()}
             if isinstance(obj, list):   return [_jsonify(v) for v in obj]
             if isinstance(obj, np.integer):  return int(obj)
-            if isinstance(obj, np.floating): return float(obj)
+            if isinstance(obj, np.floating): return None if np.isnan(obj) or np.isinf(obj) else float(obj)
+            if isinstance(obj, float) and (obj != obj or obj == float("inf") or obj == float("-inf")):
+                return None
             return obj
 
         clean_metrics = _jsonify(metrics)
