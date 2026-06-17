@@ -26,11 +26,12 @@ from services.prediction_engine import PredictionEngine
 
 CACHE_FILE = os.path.join(os.path.dirname(__file__), "../picks_cache.json")
 
-# Top 10 (further trimmed overnight after repeated Render free-tier crashes — prioritizing a reliable 9 AM run over breadth)
-NIFTY10T = [
-    "360ONE", "ABB", "APLAPOLLO", "AUBANK", "ADANIENSOL",
-    "ADANIENT", "ADANIGREEN", "ADANIPORTS", "ADANIPOWER", "ATGL",
-]
+# Universe: pull from validation_engine's deduplicated Nifty 100 list.
+# PICKS_UNIVERSE_LIMIT env var caps the count for constrained environments
+# (e.g. Render free tier — set to 25 there, leave unset for full 98-stock run).
+from services.validation_engine import NIFTY_100 as _NIFTY_100
+_universe_limit = int(os.getenv("PICKS_UNIVERSE_LIMIT", len(_NIFTY_100)))
+NIFTY10T = _NIFTY_100[:_universe_limit]
 
 
 HORIZON_LABELS = {

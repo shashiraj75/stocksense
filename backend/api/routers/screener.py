@@ -1,5 +1,6 @@
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from fastapi import APIRouter, Query
 from services.screener_service import ScreenerService
 from services.heatmap_service import get_heatmap
@@ -16,6 +17,7 @@ CRYPTO_NAMES = {"BTC":"Bitcoin","ETH":"Ethereum","BNB":"BNB","SOL":"Solana",
                 "LINK":"Chainlink","DOT":"Polkadot"}
 
 _crypto_cache: tuple[float, dict] | None = None
+_crypto_lock = threading.Lock()
 _CRYPTO_TTL = 60  # seconds
 
 
@@ -34,14 +36,16 @@ def _fetch_crypto(yf_sym: str) -> dict:
 @router.get("/crypto-movers")
 async def crypto_movers():
     global _crypto_cache
-    if _crypto_cache and (time.time() - _crypto_cache[0]) < _CRYPTO_TTL:
-        return _crypto_cache[1]
+    with _crypto_lock:
+        if _crypto_cache and (time.time() - _crypto_cache[0]) < _CRYPTO_TTL:
+            return _crypto_cache[1]
 
     with ThreadPoolExecutor(max_workers=len(CRYPTO_UNIVERSE)) as pool:
         results = list(pool.map(_fetch_crypto, CRYPTO_UNIVERSE))
 
     response = {"movers": results}
-    _crypto_cache = (time.time(), response)
+    with _crypto_lock:
+        _crypto_cache = (time.time(), response)
     return response
 
 

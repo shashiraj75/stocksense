@@ -1,6 +1,10 @@
 import asyncio
+import logging
+import random
 import time
 import yfinance as yf
+
+log = logging.getLogger(__name__)
 import pandas as pd
 import numpy as np
 from services.technical_indicators import compute_indicators, get_signal_summary
@@ -263,7 +267,7 @@ class PredictionEngine:
                 except Exception as e:
                     last_err = e
                     if attempt < 3:
-                        time.sleep(5 * (attempt + 1))
+                        time.sleep(5 * (attempt + 1) + random.uniform(0, 2))
                         continue
             raise last_err
 
@@ -279,9 +283,9 @@ class PredictionEngine:
                     return yf.Ticker(symbol + suffix).info
                 except Exception as e:
                     if attempt < 3:
-                        time.sleep(5 * (attempt + 1))
+                        time.sleep(5 * (attempt + 1) + random.uniform(0, 2))
                         continue
-                    print(f"[predict] _fetch_info failed for {symbol}{suffix} after 4 attempts: {e}")
+                    log.warning("[predict] _fetch_info failed for %s%s after 4 attempts: %s", symbol, suffix, e)
                     return {}
             return {}
 

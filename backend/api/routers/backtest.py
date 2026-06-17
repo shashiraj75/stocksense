@@ -1,10 +1,11 @@
-import traceback
+import logging
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 from services.backtester import run_backtest
 from typing import Literal
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 
 @router.get("/{symbol}")
@@ -16,5 +17,5 @@ async def backtest(
     try:
         return run_backtest(symbol.upper(), market, horizon)
     except Exception as e:
-        tb = traceback.format_exc()
-        return JSONResponse(status_code=500, content={"error": str(e), "trace": tb})
+        log.exception("Backtest failed for %s (%s/%s)", symbol, market, horizon)
+        return JSONResponse(status_code=500, content={"error": "Backtest failed. Please try again."})

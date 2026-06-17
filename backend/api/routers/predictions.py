@@ -1,11 +1,13 @@
+import logging
 import math
-import traceback
 import numpy as np
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 from services.prediction_engine import PredictionEngine
 from services.crypto_engine import predict_crypto
 from typing import Literal
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 engine = PredictionEngine()
@@ -43,5 +45,5 @@ async def get_prediction(
             result = await engine.predict(sym, market, horizon)
         return JSONResponse(content=_to_python(result))
     except BaseException as e:
-        tb = traceback.format_exc()
-        return JSONResponse(status_code=500, content={"error": str(e), "trace": tb})
+        log.exception("Prediction failed for %s (%s/%s)", symbol, market, horizon)
+        return JSONResponse(status_code=500, content={"error": "Prediction failed. Please try again."})

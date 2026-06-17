@@ -1,6 +1,10 @@
+import logging
 import time
+import random
 import yfinance as yf
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 MARKET_SUFFIX = {"US": "", "IN": ".NS"}
 
@@ -37,7 +41,8 @@ class MarketDataService:
             }
             _quote_cache[key] = (time.time(), result)
             return result
-        except Exception:
+        except Exception as e:
+            log.warning("get_quote failed for %s/%s: %s", symbol, market, e)
             return None
 
     async def get_ohlcv(self, symbol: str, market: str, period: str, interval: str) -> dict:
@@ -61,7 +66,16 @@ class MarketDataService:
         }
 
     async def get_fundamentals(self, symbol: str, market: str) -> dict:
-        info = yf.Ticker(self._sym(symbol, market)).info
+        for attempt in range(3):
+            try:
+                info = yf.Ticker(self._sym(symbol, market)).info
+                break
+            except Exception as e:
+                if attempt < 2:
+                    time.sleep(3 * (attempt + 1) + random.uniform(0, 1))
+                else:
+                    log.warning("get_fundamentals failed for %s/%s: %s", symbol, market, e)
+                    info = {}
         return {
             "symbol": symbol,
             "pe_ratio": info.get("trailingPE"),
