@@ -25,7 +25,7 @@ export function SignalBadge({
 
   const label =
     signal === "BUY" && confidence !== undefined && confidence < 45
-      ? "WATCH"   // downgrade label when conviction is too low
+      ? "HOLD"    // downgrade to HOLD when conviction is too low
       : signal;
 
   return (
