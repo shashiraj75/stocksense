@@ -42,15 +42,21 @@ def _bg_thread(sym: str, market: str, horizon: str, key: str) -> None:
     Run prediction in a real OS thread with its own event loop.
     asyncio.create_task() gets cancelled by anyio when the HTTP request ends;
     a daemon thread is fully independent of the request lifecycle.
+    Always writes something to _pred_cache so polling resolves with a real response.
     """
     try:
         asyncio.run(engine.predict(sym, market, horizon))
-        log.info("[bg-predict] completed %s | cache size: %d", key, len(_pred_cache))
-    except Exception:
-        log.exception("[bg-predict] failed for %s", key)
+        # predict() caches successes AND data-errors internally now
+        log.info("[bg-predict] completed %s | cached=%s", key, key in _pred_cache)
+    except Exception as e:
+        # Unexpected crash — write a short-lived error so polling resolves (not infinite 202)
+        log.exception("[bg-predict] exception for %s: %s", key, e)
+        err = {"error": "Prediction failed — server error. Please retry in a moment."}
+        _short_ts = time.time() - (_PRED_TTL - 120)  # expires in 2 min
+        from services.prediction_engine import _cache_set
+        _cache_set(_pred_cache, key, (_short_ts, err))
     finally:
         _computing.discard(key)
-        log.info("[bg-predict] finally: %s done, computing=%s, cache_has=%s", key, list(_computing), key in _pred_cache)
 
 
 @router.get("/debug/state")

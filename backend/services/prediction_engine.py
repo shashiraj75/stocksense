@@ -269,35 +269,50 @@ class PredictionEngine:
         period = {"short": "6mo", "medium": "2y", "long": "5y"}[horizon]
 
         def _fetch_history():
-            last_err = None
-            for attempt in range(4):
+            for attempt in range(3):
                 try:
-                    return yf.Ticker(symbol + suffix).history(period=period)
+                    df = yf.Ticker(symbol + suffix).history(period=period)
+                    if not df.empty:
+                        return df
+                    # Empty but no exception — crumb/session issue; reset and retry
+                    if attempt < 2:
+                        try:
+                            yf.utils.get_crumb(force=True)
+                        except Exception:
+                            pass
+                        time.sleep(4 + attempt * 3)
                 except Exception as e:
-                    last_err = e
-                    if attempt < 3:
-                        time.sleep(5 * (attempt + 1) + random.uniform(0, 2))
-                        continue
-            raise last_err
+                    if attempt < 2:
+                        time.sleep(4 + attempt * 3)
+                    else:
+                        raise
+            return yf.Ticker(symbol + suffix).history(period=period)  # final attempt, let it fail naturally
 
         def _fetch_info():
-            for attempt in range(4):
+            for attempt in range(3):
                 try:
-                    return yf.Ticker(symbol + suffix).info
+                    info = yf.Ticker(symbol + suffix).info
+                    if info and len(info) > 5:  # valid info has many fields
+                        return info
+                    # Sparse info — crumb/session issue
+                    if attempt < 2:
+                        try:
+                            yf.utils.get_crumb(force=True)
+                        except Exception:
+                            pass
+                        time.sleep(5 + attempt * 3)
                 except Exception as e:
                     err_str = str(e).lower()
-                    if attempt < 3:
-                        wait = 8 * (attempt + 1) + random.uniform(0, 3)
-                        # Crumb/401 errors need a session reset, not just a wait
+                    if attempt < 2:
                         if "crumb" in err_str or "401" in err_str or "unauthorized" in err_str:
                             try:
                                 yf.utils.get_crumb(force=True)
                             except Exception:
                                 pass
-                        time.sleep(wait)
-                        continue
-                    log.warning("[predict] _fetch_info failed for %s%s after 4 attempts: %s", symbol, suffix, e)
-                    return {}
+                        time.sleep(5 + attempt * 3)
+                    else:
+                        log.warning("[predict] _fetch_info failed for %s%s after 3 attempts: %s", symbol, suffix, e)
+                        return {}
             return {}
 
         df, info, regime = await asyncio.gather(
@@ -335,13 +350,19 @@ class PredictionEngine:
                 except Exception as e:
                     print(f"[bse] fallback failed for {symbol}: {e}")
 
+        _SHORT_TTL_TS = lambda: time.time() - (_PRED_TTL - 120)  # 2-min TTL for errors
+
         if df.empty:
-            return {"error": "No data found for symbol"}
+            err = {"error": "No price data returned — Yahoo Finance may be rate-limiting. Try again in a moment."}
+            _cache_set(_pred_cache, cache_key, (_SHORT_TTL_TS(), err))
+            return err
 
         # Drop incomplete rows (NaN close) — last bar may be partial on live market
         df = df.dropna(subset=["Close"])
         if df.empty:
-            return {"error": "No valid price data for symbol"}
+            err = {"error": "No valid price data for symbol"}
+            _cache_set(_pred_cache, cache_key, (_SHORT_TTL_TS(), err))
+            return err
 
         df = compute_indicators(df)
         tech_signal = get_signal_summary(df)
