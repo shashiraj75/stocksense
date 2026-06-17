@@ -61,7 +61,10 @@ def fetch_screener_data(symbol: str) -> dict:
         try:
             resp = _SESSION.get(url, timeout=10)
             if resp.status_code == 200 and "company" in resp.url:
-                soup = BeautifulSoup(resp.text, "lxml")
+                try:
+                    soup = BeautifulSoup(resp.text, "lxml")
+                except Exception:
+                    soup = BeautifulSoup(resp.text, "html.parser")
                 result = _parse_screener_page(soup, sym)
                 result["source_url"] = resp.url
                 break
