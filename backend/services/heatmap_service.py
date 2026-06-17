@@ -11,29 +11,31 @@ _heatmap_cache: dict[str, tuple[float, list]] = {}
 _HEATMAP_TTL = 180  # 3 minutes — market tiles don't need faster than this
 
 INDIA_SECTORS = {
-    "Banking":    ["HDFCBANK", "ICICIBANK", "SBIN", "KOTAKBANK", "AXISBANK", "INDUSINDBK", "BANKBARODA", "PNB"],
-    "IT":         ["TCS", "INFY", "WIPRO", "HCLTECH", "TECHM", "LTIM", "MPHASIS", "PERSISTENT"],
-    "Energy":     ["RELIANCE", "ONGC", "BPCL", "IOC", "GAIL", "POWERGRID", "NTPC", "HINDPETRO"],
-    "Auto":       ["MARUTI", "TATAMOTORS", "M&M", "BAJAJ-AUTO", "EICHERMOT", "HEROMOTOCO", "TVSMOTOR"],
-    "Pharma":     ["SUNPHARMA", "DRREDDY", "CIPLA", "DIVISLAB", "LUPIN", "TORNTPHARM", "AUROPHARMA"],
-    "FMCG":       ["HINDUNILVR", "ITC", "NESTLEIND", "BRITANNIA", "DABUR", "GODREJCP", "MARICO"],
-    "Metal":      ["TATASTEEL", "JSWSTEEL", "HINDALCO", "VEDL", "SAIL", "NMDC", "COALINDIA"],
-    "Realty":     ["DLF", "OBEROIRLTY", "GODREJPROP", "PRESTIGE"],
-    "Telecom":    ["BHARTIARTL", "IDEA"],
-    "Finance":    ["BAJFINANCE", "BAJAJFINSV", "CHOLAFIN", "MUTHOOTFIN", "LICHSGFIN"],
+    "Banking":    ["HDFCBANK", "ICICIBANK", "SBIN", "KOTAKBANK", "AXISBANK", "INDUSINDBK", "BANKBARODA", "PNB", "CANBK", "UNIONBANK", "FEDERALBNK", "IDFCFIRSTB"],
+    "IT":         ["TCS", "INFY", "WIPRO", "HCLTECH", "TECHM", "LTIM", "MPHASIS", "PERSISTENT", "COFORGE", "LTTS", "KPITTECH", "OFSS"],
+    "Energy":     ["RELIANCE", "ONGC", "BPCL", "IOC", "GAIL", "POWERGRID", "NTPC", "HINDPETRO", "ADANIGREEN", "TATAPOWER", "TORNTPOWER", "JSWENERGY"],
+    "Auto":       ["MARUTI", "TATAMOTORS", "M&M", "BAJAJ-AUTO", "EICHERMOT", "HEROMOTOCO", "TVSMOTOR", "BOSCHLTD", "MOTHERSON", "APOLLOTYRE", "MRF", "TIINDIA"],
+    "Pharma":     ["SUNPHARMA", "DRREDDY", "CIPLA", "DIVISLAB", "LUPIN", "TORNTPHARM", "AUROPHARMA", "ALKEM", "BIOCON", "GLENMARK", "IPCALAB", "ZYDUSLIFE"],
+    "FMCG":       ["HINDUNILVR", "ITC", "NESTLEIND", "BRITANNIA", "DABUR", "GODREJCP", "MARICO", "COLPAL", "EMAMILTD", "TATACONSUM", "VBL", "PGHH"],
+    "Metal":      ["TATASTEEL", "JSWSTEEL", "HINDALCO", "VEDL", "SAIL", "NMDC", "COALINDIA", "JINDALSTEL", "NATIONALUM", "WELSPUNLIV"],
+    "Finance":    ["BAJFINANCE", "BAJAJFINSV", "CHOLAFIN", "MUTHOOTFIN", "LICHSGFIN", "SBICARD", "M&MFIN", "MANAPPURAM", "POONAWALLA", "SHRIRAMFIN"],
+    "Realty":     ["DLF", "OBEROIRLTY", "GODREJPROP", "PRESTIGE", "LODHA", "PHOENIXLTD", "SOBHA", "BRIGADE", "SUNTECK", "MAHLIFE"],
+    "Telecom":    ["BHARTIARTL", "IDEA", "TATACOMM", "HCLTECH"],
+    "Consumer":   ["TITAN", "TRENT", "DMART", "NYKAA", "ZOMATO", "INDHOTEL", "JUBLFOOD", "DEVYANI", "SAPPHIRE", "WESTLIFE"],
+    "Infra":      ["LT", "SIEMENS", "HAL", "BHEL", "ADANIPORTS", "IRCTC", "DELHIVERY", "CONCOR", "GMRINFRA", "IRB"],
 }
 
 US_SECTORS = {
-    "Tech":       ["AAPL", "MSFT", "NVDA", "META", "GOOGL", "AMZN", "TSLA"],
-    "Finance":    ["JPM", "BAC", "GS", "MS", "WFC", "AXP", "BLK"],
-    "Healthcare": ["JNJ", "UNH", "PFE", "MRK", "ABT", "ABBV", "LLY"],
-    "Energy":     ["XOM", "CVX", "COP", "SLB", "OXY", "EOG"],
-    "Consumer":   ["WMT", "TGT", "HD", "MCD", "NKE", "SBUX", "COST"],
-    "Industrials":["BA", "CAT", "GE", "MMM", "HON", "UPS", "RTX"],
-    "Telecom":    ["T", "VZ", "TMUS"],
-    "Utilities":  ["NEE", "DUK", "SO", "AEP"],
-    "Realty":     ["AMT", "PLD", "EQIX", "CCI"],
-    "Materials":  ["LIN", "APD", "ECL", "NEM"],
+    "Tech":        ["AAPL", "MSFT", "NVDA", "META", "GOOGL", "AMZN", "TSLA", "AMD", "INTC", "CRM", "ADBE", "ORCL"],
+    "Finance":     ["JPM", "BAC", "GS", "MS", "WFC", "AXP", "BLK", "C", "SCHW", "COF", "USB", "PNC"],
+    "Healthcare":  ["JNJ", "UNH", "PFE", "MRK", "ABT", "ABBV", "LLY", "BMY", "AMGN", "GILD", "CVS", "CI"],
+    "Energy":      ["XOM", "CVX", "COP", "SLB", "OXY", "EOG", "MPC", "PSX", "VLO", "HAL"],
+    "Consumer":    ["WMT", "TGT", "HD", "MCD", "NKE", "SBUX", "COST", "LOW", "AMZN", "BKNG"],
+    "Industrials": ["BA", "CAT", "GE", "MMM", "HON", "UPS", "RTX", "LMT", "NOC", "DE"],
+    "Telecom":     ["T", "VZ", "TMUS", "DISH", "LUMN"],
+    "Utilities":   ["NEE", "DUK", "SO", "AEP", "EXC", "SRE", "PCG", "XEL", "WEC", "ES"],
+    "Realty":      ["AMT", "PLD", "EQIX", "CCI", "SPG", "O", "WELL", "DLR", "PSA", "EXR"],
+    "Materials":   ["LIN", "APD", "ECL", "NEM", "FCX", "DOW", "DD", "PPG", "ALB", "CF"],
 }
 
 
