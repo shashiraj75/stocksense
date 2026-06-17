@@ -65,30 +65,6 @@ export function FactorAttributionWaterfall({ data }: { data: FactorAttribution }
         </ResponsiveContainer>
       </div>
 
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="text-gray-500 border-b border-dark-border">
-            <th className="text-left py-1.5 font-medium">Factor</th>
-            <th className="text-right py-1.5 font-medium">Contribution</th>
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.map((c) => (
-            <tr key={c.factor} className="border-b border-dark-border/50 last:border-0">
-              <td className="py-1.5 text-gray-300">{c.label}</td>
-              <td
-                className={`py-1.5 text-right font-mono font-medium ${
-                  c.direction === "positive" ? "text-bull" : "text-bear"
-                }`}
-              >
-                {c.contribution > 0 ? "+" : ""}
-                {c.contribution.toFixed(1)}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
       <div className="flex items-center justify-between text-xs pt-1 border-t border-dark-border">
         <span className="text-bull">Positive: +{data.positive_total.toFixed(1)}</span>
         <span className="text-bear">Negative: {data.negative_total.toFixed(1)}</span>
