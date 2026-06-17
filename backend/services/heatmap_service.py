@@ -89,7 +89,8 @@ def get_heatmap(market: str) -> list[dict]:
             _, change = future.result()
             results[sec][sym] = change
 
-    # Build response: per sector, list of stocks with change_pct
+    # Build response: per sector, top 10 by absolute move, sorted descending
+    MAX_STOCKS = 10
     output = []
     for sector, stocks in sectors.items():
         stock_data = []
@@ -100,6 +101,13 @@ def get_heatmap(market: str) -> list[dict]:
             if chg is not None:
                 changes.append(chg)
         sector_avg = round(sum(changes) / len(changes), 2) if changes else None
+
+        # Sort by absolute change descending, keep top 10 significant movers
+        stock_data.sort(key=lambda s: abs(s["change_pct"]) if s["change_pct"] is not None else 0, reverse=True)
+        stock_data = stock_data[:MAX_STOCKS]
+        # Then re-sort the top 10 descending by actual value (gainers first, losers last)
+        stock_data.sort(key=lambda s: s["change_pct"] if s["change_pct"] is not None else -999, reverse=True)
+
         output.append({
             "sector": sector,
             "avg_change": sector_avg,
