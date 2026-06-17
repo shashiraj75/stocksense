@@ -1149,6 +1149,28 @@ class PredictionEngine:
                 "reason": f"{sentiment['bullish']} bullish vs {sentiment['bearish']} bearish in recent news"
             })
 
+        # ── Log prediction for track record / IC engine ──────────────────────
+        try:
+            from services.alpha_engine.store import log_prediction
+            current_price = float(info.get("currentPrice") or info.get("regularMarketPrice") or df["Close"].iloc[-1])
+            log_prediction(
+                symbol=symbol,
+                horizon=horizon,
+                factor_zscores={
+                    "tech":      round(tech_score / 100, 4),
+                    "fund":      round(fund["score"] / 100, 4),
+                    "sentiment": round(sentiment["score"] / 100, 4),
+                    "quality":   round(quality["score"] / 100, 4) if quality else None,
+                },
+                combined_alpha=round(composite_r / 100, 4),
+                meta_alpha=None,
+                signal=signal,
+                price=current_price,
+                regime_label=regime.get("trend", ""),
+            )
+        except Exception as e:
+            log.warning("Failed to log prediction for %s: %s", symbol, e)
+
         return (signal, confidence, reasoning, score_band, contributions, composite_r,
                 confidence_score, confidence_band, confidence_components)
 

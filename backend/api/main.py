@@ -76,6 +76,19 @@ async def _keepalive_loop():
         await asyncio.sleep(14 * 60)
 
 
+async def _outcome_resolver_loop():
+    """Resolve pending predictions against actual returns every 6 hours."""
+    await asyncio.sleep(120)  # let server fully start first
+    while True:
+        try:
+            loop = asyncio.get_event_loop()
+            from services.alpha_engine.outcome_logger import resolve_pending_outcomes
+            await loop.run_in_executor(None, resolve_pending_outcomes)
+        except Exception as e:
+            print(f"[outcome_resolver] error: {e}")
+        await asyncio.sleep(6 * 3600)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if os.getenv("USE_POSTGRES") == "1":
@@ -87,10 +100,12 @@ async def lifespan(app: FastAPI):
             print(f"[startup] Postgres init failed: {e}")
     task = asyncio.create_task(_weekly_refresh_loop())
     keepalive = asyncio.create_task(_keepalive_loop())
+    outcome_task = asyncio.create_task(_outcome_resolver_loop())
     yield
     task.cancel()
     keepalive.cancel()
-    for t in (task, keepalive):
+    outcome_task.cancel()
+    for t in (task, keepalive, outcome_task):
         try:
             await t
         except asyncio.CancelledError:
