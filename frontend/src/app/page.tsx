@@ -74,10 +74,8 @@ export default function Dashboard() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <div>
-            <LiveClock inline />
             <div className="flex items-center gap-2">
-              <Globe size={18} className="text-brand-500" />
-              <h1 className="text-lg font-bold">StockSense</h1>
+              <LiveClock inline />
               {market !== "CRYPTO" && (
                 <div className="flex items-center gap-1.5">
                   <span className="relative flex h-2 w-2">
@@ -86,9 +84,18 @@ export default function Dashboard() {
                     )}
                     <span className={clsx("relative inline-flex rounded-full h-2 w-2", marketStatus.isOpen ? "bg-green-500" : "bg-red-500")}></span>
                   </span>
-                  <span className="text-xs text-gray-500">{marketStatus.isOpen ? "Live" : "Market Closed"}</span>
+                  <span className="text-sm text-gray-500">
+                    {marketStatus.isOpen ? "Live" : "Market Closed"}
+                    {marketStatus.nextEventLabel && (
+                      <span className="text-gray-600"> · {marketStatus.nextEventLabel}</span>
+                    )}
+                  </span>
                 </div>
               )}
+            </div>
+            <div className="flex items-center gap-2">
+              <Globe size={18} className="text-brand-500" />
+              <h1 className="text-lg font-bold">StockSense</h1>
             </div>
           </div>
         </div>
