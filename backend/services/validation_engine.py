@@ -69,8 +69,8 @@ HORIZON_STEP  = {"short": 5,  "medium": 10, "long": 21}
 HORIZON_THRESHOLDS = {"short": 0.02, "medium": 0.04, "long": 0.10}
 HORIZON_PERIOD = {"short": "3y", "medium": "5y", "long": "7y"}
 
-BUY_THRESHOLD  = 62   # composite score ≥ this → BUY
-SELL_THRESHOLD = 45   # composite score ≤ this → SELL
+BUY_THRESHOLD  = 68   # composite score ≥ this → BUY (raised from 62 for higher precision)
+SELL_THRESHOLD = 42   # composite score ≤ this → SELL (tightened to reduce false sells)
 
 
 # ── Database ──────────────────────────────────────────────────────────────────
