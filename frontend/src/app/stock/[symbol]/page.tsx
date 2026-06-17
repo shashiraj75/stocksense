@@ -116,8 +116,8 @@ export default function StockPage() {
     queryKey: ["prediction", symbol, isCrypto ? "CRYPTO" : market, horizon],
     queryFn: () => fetchPrediction(symbol, isCrypto ? "CRYPTO" as any : market, horizon),
     enabled: tab !== "backtest",
-    retry: 7,                                     // 8 total attempts — enough to outlast a 60s cold start
-    retryDelay: (attempt) => Math.min(8000, 3000 + attempt * 1500), // 3s→10.5s ramp; caps at 8s
+    retry: 12,                                    // cold start (60s) + prediction (30s) needs ~90s total
+    retryDelay: (attempt) => Math.min(12000, 4000 + attempt * 1500), // ramp 4s→12s, covers 150s total
     placeholderData: (prev) => prev,
     staleTime: 14 * 60_000,
     refetchOnWindowFocus: false,
@@ -391,7 +391,7 @@ export default function StockPage() {
                     <Loader2 size={18} className="animate-spin text-brand-500 shrink-0" />
                     <div>
                       <p className="text-sm text-white font-medium">
-                        {failureCount === 0 ? "Running AI analysis…" : `Waking up server… (attempt ${Math.min(failureCount + 1, 8)}/8)`}
+                        {failureCount === 0 ? "Running AI analysis…" : `Waking up server… (attempt ${Math.min(failureCount + 1, 13)}/13)`}
                       </p>
                       <p className="text-xs text-gray-500 mt-0.5">
                         {failureCount === 0
