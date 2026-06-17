@@ -1,11 +1,33 @@
 """
 Validation API — exposes walk-forward backtest results to the frontend.
 """
-import asyncio
+import json
+import numpy as np
 from fastapi import APIRouter, Query, BackgroundTasks
+from fastapi.responses import JSONResponse
 from typing import Literal
 
 router = APIRouter()
+
+
+def _safe_json(obj):
+    """Recursively convert numpy scalars / ndarrays to native Python types."""
+    if isinstance(obj, dict):
+        return {k: _safe_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_safe_json(v) for v in obj]
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return obj
+
+
+def _json_response(data: dict) -> JSONResponse:
+    """Serialize data safely then wrap in a JSONResponse to bypass FastAPI/Pydantic."""
+    return JSONResponse(content=_safe_json(data))
 
 
 @router.post("/run")
@@ -47,18 +69,29 @@ def get_status():
 def get_results(horizon: Literal["short", "medium", "long"] = Query("medium")):
     """Return aggregate validation metrics for the latest run of the given horizon."""
     from services.validation_engine import get_latest_results
-    return get_latest_results(horizon=horizon)
+    try:
+        data = get_latest_results(horizon=horizon)
+        return _json_response(data)
+    except Exception as e:
+        import traceback
+        return _json_response({"available": False, "error": str(e), "trace": traceback.format_exc()})
 
 
 @router.get("/results/stocks")
 def get_stock_results(horizon: Literal["short", "medium", "long"] = Query("medium")):
     """Per-stock hit rate and average return breakdown for the latest run."""
     from services.validation_engine import get_per_stock_results
-    return {"horizon": horizon, "stocks": get_per_stock_results(horizon=horizon)}
+    try:
+        return _json_response({"horizon": horizon, "stocks": get_per_stock_results(horizon=horizon)})
+    except Exception as e:
+        return _json_response({"horizon": horizon, "stocks": [], "error": str(e)})
 
 
 @router.get("/results/history")
 def get_history():
     """List of all past validation runs with key summary metrics."""
     from services.validation_engine import get_all_run_summaries
-    return {"runs": get_all_run_summaries()}
+    try:
+        return _json_response({"runs": get_all_run_summaries()})
+    except Exception as e:
+        return _json_response({"runs": [], "error": str(e)})
