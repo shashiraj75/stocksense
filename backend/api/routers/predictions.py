@@ -18,6 +18,14 @@ engine = PredictionEngine()
 # Track which predictions are currently computing to avoid duplicate background tasks
 _computing: set[str] = set()
 
+# Circular log buffer — visible via /debug/state so we can inspect without Render logs
+_bg_log: list[str] = []
+def _bglog(msg: str) -> None:
+    _bg_log.append(msg)
+    if len(_bg_log) > 30:
+        _bg_log.pop(0)
+    print(msg, flush=True)
+
 
 def _to_python(obj):
     """Recursively convert numpy/pandas types to plain Python — prevents JSON serialization errors."""
@@ -44,30 +52,45 @@ def _bg_thread(sym: str, market: str, horizon: str, key: str) -> None:
     a daemon thread is fully independent of the request lifecycle.
     Always writes something to _pred_cache so polling resolves with a real response.
     """
+    _bglog(f"[bg_thread] START {key} thread_id={threading.get_ident()}")
     try:
-        asyncio.run(engine.predict(sym, market, horizon))
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            result = loop.run_until_complete(engine.predict(sym, market, horizon))
+        finally:
+            loop.close()
+            asyncio.set_event_loop(None)
+        _bglog(f"[bg_thread] DONE {key} result_keys={list(result.keys()) if result else None} in_cache={key in _pred_cache} cache_size={len(_pred_cache)}")
         # predict() caches successes AND data-errors internally now
-        log.info("[bg-predict] completed %s | cached=%s", key, key in _pred_cache)
+        if key not in _pred_cache:
+            # Shouldn't happen — but guarantee cache is written
+            from services.prediction_engine import _cache_set
+            _short_ts = time.time() - (_PRED_TTL - 120)
+            _cache_set(_pred_cache, key, (_short_ts, result or {"error": "No result"}))
+            _bglog(f"[bg_thread] FORCE-CACHED {key}")
     except Exception as e:
-        # Unexpected crash — write a short-lived error so polling resolves (not infinite 202)
-        log.exception("[bg-predict] exception for %s: %s", key, e)
-        err = {"error": "Prediction failed — server error. Please retry in a moment."}
-        _short_ts = time.time() - (_PRED_TTL - 120)  # expires in 2 min
+        import traceback
+        _bglog(f"[bg_thread] EXCEPTION {key}: {type(e).__name__}: {e}\n{traceback.format_exc()[-500:]}")
+        err = {"error": f"Prediction failed: {type(e).__name__}. Please retry."}
+        _short_ts = time.time() - (_PRED_TTL - 120)
         from services.prediction_engine import _cache_set
         _cache_set(_pred_cache, key, (_short_ts, err))
     finally:
         _computing.discard(key)
+        _bglog(f"[bg_thread] FINALLY {key} in_cache={key in _pred_cache}")
 
 
 @router.get("/debug/state")
 async def debug_state():
-    """Debug: show current cache keys and computing set."""
+    """Debug: show current cache keys, computing set, and background thread log."""
     import time as t
     return {
         "computing": list(_computing),
         "cache_keys": list(_pred_cache.keys()),
         "cache_ages_s": {k: round(t.time() - v[0]) for k, v in _pred_cache.items()},
         "thread_count": threading.active_count(),
+        "log": list(_bg_log),
     }
 
 
