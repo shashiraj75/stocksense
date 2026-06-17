@@ -455,7 +455,7 @@ class PredictionEngine:
          confidence_score, confidence_band, confidence_components) = self._composite_signal(
             tech_signal, fund_score, sentiment_score, horizon, weights, regime,
             global_ctx=global_ctx, analyst_score=analyst_score, week52_score=week52_score,
-            quality=quality, df=df, info=info, symbol=symbol,
+            quality=quality, df=df, info=info, symbol=symbol, market=market,
         )
 
         from services.case_generator import generate_bull_bear_case
@@ -1049,7 +1049,8 @@ class PredictionEngine:
                           quality: dict | None = None,
                           df: pd.DataFrame | None = None,
                           info: dict | None = None,
-                          symbol: str = ""):
+                          symbol: str = "",
+                          market: str = "US"):
         tech_score = tech.get("score", 50)
 
         # ── Step 1: Raw composite from core signals ───────────────────────────
