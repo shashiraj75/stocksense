@@ -488,11 +488,24 @@ def run_validation(horizon: str = "medium", n_stocks: int = 50, max_workers: int
         metrics["run_at"] = datetime.now(timezone.utc).isoformat()
         metrics["nifty_avg_fwd_return_pct"] = round(nifty_avg_ret, 2)
 
-        # Persist to DB
+        # Persist to DB — convert numpy scalars to native Python before JSON serialization
+        def _jsonify(obj):
+            if isinstance(obj, dict):
+                return {k: _jsonify(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_jsonify(v) for v in obj]
+            if isinstance(obj, (np.integer,)):
+                return int(obj)
+            if isinstance(obj, (np.floating,)):
+                return float(obj)
+            return obj
+
+        metrics_json = json.dumps(_jsonify(metrics))
+
         with _db_lock, _get_conn() as conn:
             cur = conn.execute(
                 "INSERT INTO val_runs (run_at, horizon, n_stocks, n_signals, summary) VALUES (?,?,?,?,?)",
-                (metrics["run_at"], horizon, n_stocks, len(all_signals), json.dumps(metrics))
+                (metrics["run_at"], horizon, n_stocks, len(all_signals), metrics_json)
             )
             run_id = cur.lastrowid
             conn.executemany("""
