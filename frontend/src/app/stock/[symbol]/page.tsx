@@ -307,8 +307,8 @@ export default function StockPage() {
             const fmt = (n: number) => n.toLocaleString();
             const pctFrom = (price: number) => cp ? ((price - cp) / cp * 100).toFixed(1) : null;
             const entryLabel = sig === "BUY" ? "Buy Zone" : sig === "SELL" ? "Sell Zone" : "Watch Zone";
-            const entryColor = sig === "SELL" ? "text-bear" : sig === "HOLD" ? "text-gray-300" : "text-bull";
-            const entryBg    = sig === "SELL" ? "bg-bear/10 border-bear/30" : sig === "HOLD" ? "bg-dark-border/60 border-dark-border" : "bg-bull/10 border-bull/30";
+            const entryColor = sig === "SELL" ? "text-bear" : "text-bull";
+            const entryBg    = sig === "SELL" ? "bg-bear/10 border-bear/30" : "bg-bull/10 border-bull/30";
             const rrGood     = tl.risk_reward_ratio >= 1.5;
             const trailPct: number | null = tl.trailing_stop_pct ?? null;
             const gridCols = trailPct
@@ -353,11 +353,7 @@ export default function StockPage() {
                     </p>
                   </div>
                 </div>
-                {sig === "HOLD" && (
-                  <p className="text-xs text-yellow-600/70 mt-3">
-                    HOLD signal — no strong directional edge on this horizon. Try switching to Medium or Long Term for a clearer signal.
-                  </p>
-                )}
+
                 <p className="text-xs text-gray-500 mt-1">
                   Based on 14-day ATR · Not financial advice — always set your own risk limits.
                 </p>
