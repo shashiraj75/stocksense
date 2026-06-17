@@ -1154,27 +1154,30 @@ class PredictionEngine:
         # Primary fields (yfinance); screener.in fills gaps for Indian stocks.
         # We check both standard keys AND screener-mapped equivalents so that
         # enriched Indian stocks aren't penalised for missing raw yfinance fields.
-        key_fields = [
-            ("trailingPE",           None),
-            ("returnOnEquity",       None),          # screener maps roe_pct → here
-            ("revenueGrowth",        None),          # screener maps sales_growth_ttm → here
-            ("debtToEquity",         None),
-            ("profitMargins",        None),
-            ("earningsGrowth",       None),          # screener maps profit_growth_ttm → here
-            ("freeCashflow",         None),
-            ("beta",                 None),
-            # Screener.in exclusive fields (bonus; only present for Indian stocks)
-            ("returnOnCapitalEmployed", "_screener_data.roce_pct"),
+        # Fields checked via info dict (screener.in fills some of these for Indian stocks)
+        key_fields_info = [
+            "trailingPE",       # screener fills if yf missing
+            "returnOnEquity",   # screener fills from roe_pct
+            "revenueGrowth",    # screener fills from sales_growth_ttm
+            "debtToEquity",
+            "profitMargins",
+            "earningsGrowth",   # screener fills from profit_growth_ttm
+            "freeCashflow",
+            "beta",
+            "returnOnCapitalEmployed",  # screener fills from roce_pct
         ]
-        present = 0
-        for std_key, _alt in key_fields:
-            if info.get(std_key) is not None:
-                present += 1
-            elif _alt and _alt.startswith("_screener_data."):
-                alt_key = _alt.split(".")[1]
-                if (info.get("_screener_data") or {}).get(alt_key) is not None:
-                    present += 1
-        data_completeness = round(present / len(key_fields) * 100)
+        # Screener-exclusive fields that directly feed _fundamental_score
+        screener_d = info.get("_screener_data") or {}
+        key_fields_screener = [
+            "sales_growth_3y_pct",
+            "profit_growth_3y_pct",
+            "fii_holding_pct",
+            "promoter_holding_pct",
+        ]
+        present = sum(1 for k in key_fields_info if info.get(k) is not None)
+        present += sum(1 for k in key_fields_screener if screener_d.get(k) is not None)
+        total_fields = len(key_fields_info) + len(key_fields_screener)
+        data_completeness = round(present / total_fields * 100)
 
         # ── factor_agreement ─────────────────────────────────────────────────
         factor_scores = [tech_score, fund_score, sentiment_score]
@@ -1190,10 +1193,12 @@ class PredictionEngine:
 
         # ── earnings_stability ───────────────────────────────────────────────
         earnings_stability = 50
+        earnings_stability_available = False
         if quality:
             er = quality.get("breakdown", {}).get("earnings_revision")
             if isinstance(er, dict) and er.get("score") is not None:
                 earnings_stability = round(er["score"])
+                earnings_stability_available = True
 
         # ── regime_certainty ─────────────────────────────────────────────────
         # Continuous score from actual market momentum rather than a 3-bucket flag.
@@ -1238,7 +1243,8 @@ class PredictionEngine:
             "earnings_stability":             earnings_stability,
             "regime_certainty":               regime_certainty,
             "historical_factor_reliability":  historical_factor_reliability,
-            "_historical_reliability_live":   historical_reliability_available,  # UI flag
+            "_historical_reliability_live":   historical_reliability_available,
+            "_earnings_stability_live":       earnings_stability_available,
         }
 
         if historical_reliability_available:

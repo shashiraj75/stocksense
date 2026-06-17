@@ -8,6 +8,7 @@ export interface ConfidenceComponents {
   regime_certainty: number;
   historical_factor_reliability: number;
   _historical_reliability_live?: boolean;
+  _earnings_stability_live?: boolean;
 }
 
 const LABELS: Record<string, string> = {
@@ -42,6 +43,7 @@ export function ConfidenceBreakdown({
   components: ConfidenceComponents;
 }) {
   const isHistoricalLive = components._historical_reliability_live === true;
+  const isEarningsLive = components._earnings_stability_live === true;
   const displayKeys = (Object.keys(LABELS)) as (keyof typeof LABELS)[];
 
   return (
@@ -58,9 +60,11 @@ export function ConfidenceBreakdown({
       <div className="space-y-2">
         {displayKeys.map((key) => {
           const isPendingHistorical = key === "historical_factor_reliability" && !isHistoricalLive;
+          const isPendingEarnings = key === "earnings_stability" && !isEarningsLive;
+          const isPending = isPendingHistorical || isPendingEarnings;
           return (
             <div key={key} title={TOOLTIPS[key]}>
-              {isPendingHistorical ? (
+              {isPending ? (
                 <div className="space-y-1">
                   <div className="flex items-center justify-between">
                     <p className="text-xs text-gray-400">{LABELS[key]}</p>
