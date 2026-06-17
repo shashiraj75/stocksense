@@ -207,67 +207,63 @@ export default function StockPage() {
   return (
     <div className="space-y-6">
       {!isCrypto && <MarketDisclaimer market={market} />}
-      {/* Header */}
+      {/* Header — single row: symbol · badges · price · change · market status */}
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-3 flex-wrap">
-            <h1 className="text-3xl font-bold font-mono">{symbol}</h1>
-            <span className="text-xs bg-dark-card border border-dark-border px-2 py-0.5 rounded text-gray-400">
-              {isCrypto ? `CRYPTO · ${CRYPTO_NAMES[symbol] ?? symbol}` : market === "US" ? "🇺🇸 NYSE / NASDAQ" : "🇮🇳 NSE India"}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <h1 className="text-2xl font-bold font-mono">{symbol}</h1>
+          <span className="text-xs bg-dark-card border border-dark-border px-2 py-0.5 rounded text-gray-400">
+            {isCrypto ? `CRYPTO · ${CRYPTO_NAMES[symbol] ?? symbol}` : market === "US" ? "🇺🇸 NYSE / NASDAQ" : "🇮🇳 NSE India"}
+          </span>
+          {!isCrypto && (() => {
+            const cap = getCapCategory(quote?.market_cap, market);
+            if (!cap) return null;
+            return (
+              <span className={`text-xs border px-2 py-0.5 rounded font-medium ${cap.color} ${cap.bg}`}>
+                {cap.label}
+              </span>
+            );
+          })()}
+          {(quote || cryptoQuote || (isCrypto && prediction?.current_price)) && (<>
+            <span className="text-2xl font-bold">
+              {isCrypto
+                ? `$${(cryptoQuote?.price ?? prediction?.current_price ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+                : `${currency}${quote?.price.toLocaleString()}`}
             </span>
+            {isCrypto && cryptoQuote?.change_pct != null && (
+              <span className={clsx("flex items-center gap-1 text-sm font-semibold",
+                cryptoQuote.change_pct >= 0 ? "text-bull" : "text-bear")}>
+                {cryptoQuote.change_pct >= 0 ? <ArrowUpRight size={16} /> : <ArrowDownRight size={16} />}
+                {cryptoQuote.change_pct >= 0 ? "+" : ""}{cryptoQuote.change_pct}%
+              </span>
+            )}
             {!isCrypto && (() => {
-              const cap = getCapCategory(quote?.market_cap, market);
-              if (!cap) return null;
+              const chg = quote?.change;
+              const pct = quote?.change_pct;
+              if (chg == null || pct == null) return null;
               return (
-                <span className={`text-xs border px-2 py-0.5 rounded font-medium ${cap.color} ${cap.bg}`}>
-                  {cap.label}
+                <span className={clsx("flex items-center gap-1 text-sm font-semibold",
+                  chg >= 0 ? "text-bull" : "text-bear")}>
+                  {chg >= 0 ? <ArrowUpRight size={16} /> : <ArrowDownRight size={16} />}
+                  {chg >= 0 ? "+" : ""}{chg} ({pct}%)
                 </span>
               );
             })()}
-          </div>
-          {(quote || cryptoQuote || (isCrypto && prediction?.current_price)) && (
-            <div className="flex items-center gap-3 mt-2 flex-wrap">
-              <span className="text-4xl font-bold">
-                {isCrypto
-                  ? `$${(cryptoQuote?.price ?? prediction?.current_price ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
-                  : `${currency}${quote?.price.toLocaleString()}`}
+            {/* Market status indicator */}
+            <div className="flex items-center gap-1.5">
+              <span className="relative flex h-2 w-2">
+                {marketStatus.isOpen && (
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                )}
+                <span className={clsx("relative inline-flex rounded-full h-2 w-2", marketStatus.isOpen ? "bg-green-500" : "bg-red-500")}></span>
               </span>
-              {isCrypto && cryptoQuote?.change_pct != null && (
-                <span className={clsx("flex items-center gap-1 text-lg font-semibold",
-                  cryptoQuote.change_pct >= 0 ? "text-bull" : "text-bear")}>
-                  {cryptoQuote.change_pct >= 0 ? <ArrowUpRight /> : <ArrowDownRight />}
-                  {cryptoQuote.change_pct >= 0 ? "+" : ""}{cryptoQuote.change_pct}%
-                </span>
-              )}
-              {!isCrypto && (() => {
-                const chg = quote?.change;
-                const pct = quote?.change_pct;
-                if (chg == null || pct == null) return null;
-                return (
-                  <span className={clsx("flex items-center gap-1 text-lg font-semibold",
-                    chg >= 0 ? "text-bull" : "text-bear")}>
-                    {chg >= 0 ? <ArrowUpRight /> : <ArrowDownRight />}
-                    {chg >= 0 ? "+" : ""}{chg} ({pct}%)
-                  </span>
-                );
-              })()}
-              {/* Market status indicator */}
-              <div className="flex items-center gap-1.5 ml-1">
-                <span className="relative flex h-2 w-2">
-                  {marketStatus.isOpen && (
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                  )}
-                  <span className={clsx("relative inline-flex rounded-full h-2 w-2", marketStatus.isOpen ? "bg-green-500" : "bg-red-500")}></span>
-                </span>
-                <span className="text-xs text-gray-500">
-                  {marketStatus.isOpen ? "Live" : marketStatus.label} · {new Date(isCrypto ? cryptoUpdatedAt : quoteUpdatedAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true })}
-                  {marketStatus.nextEventLabel && (
-                    <span className="text-gray-600"> · {marketStatus.nextEventLabel}</span>
-                  )}
-                </span>
-              </div>
+              <span className="text-xs text-gray-500">
+                {marketStatus.isOpen ? "Live" : marketStatus.label} · {new Date(isCrypto ? cryptoUpdatedAt : quoteUpdatedAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true })}
+                {marketStatus.nextEventLabel && (
+                  <span className="text-gray-600"> · {marketStatus.nextEventLabel}</span>
+                )}
+              </span>
             </div>
-          )}
+          </>)}
         </div>
         {tab !== "backtest" && prediction && !predLoading && (
           <SignalBadge signal={prediction.signal} confidence={prediction.confidence} size="lg" />
