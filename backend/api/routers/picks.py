@@ -3,7 +3,7 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
 
 router = APIRouter()
 
-PICKS_SECRET = os.getenv("PICKS_SECRET", "stocksense-picks-2026")  # override via env in production
+PICKS_SECRET = os.getenv("PICKS_SECRET", "")  # must be set in Render environment variables
 
 
 @router.get("/daily")

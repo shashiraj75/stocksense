@@ -76,7 +76,8 @@ def detect_candlestick_patterns(df: pd.DataFrame) -> dict:
         patterns.append("Doji (indecision)")
 
     # Hammer (bullish reversal) — small body at top, long lower wick
-    if lower_wick > body * 2 and upper_wick < body * 0.5 and c > o:
+    # Valid on red OR green candles; prior downtrend confirmed by prev close < prev2 close
+    if lower_wick > body * 2 and upper_wick < body * 0.5 and pc < p2c:
         patterns.append("Hammer (bullish reversal)")
         signal = "BULLISH"
 
@@ -95,13 +96,15 @@ def detect_candlestick_patterns(df: pd.DataFrame) -> dict:
         patterns.append("Bearish Engulfing")
         signal = "BEARISH"
 
-    # Morning Star (bullish 3-candle) — big red, small body, big green
-    if p2c < p2o and body > abs(pc - po) * 1.5 and c > o:
+    # Morning Star (bullish 3-candle): prev2=big red, prev=small body, last=big green
+    prev_body = abs(pc - po)
+    prev2_body = abs(p2c - p2o)
+    if p2c < p2o and prev_body < prev2_body * 0.5 and c > o and body > prev2_body * 0.6:
         patterns.append("Morning Star (bullish)")
         signal = "BULLISH"
 
-    # Evening Star (bearish 3-candle) — big green, small body, big red
-    if p2c > p2o and body > abs(pc - po) * 1.5 and c < o:
+    # Evening Star (bearish 3-candle): prev2=big green, prev=small body, last=big red
+    if p2c > p2o and prev_body < prev2_body * 0.5 and c < o and body > prev2_body * 0.6:
         patterns.append("Evening Star (bearish)")
         signal = "BEARISH"
 

@@ -19,13 +19,22 @@ _news_svc = NewsSentimentService()
 REGIME_TICKER = {"US": "^GSPC", "IN": "^NSEI"}
 
 # ── Caches ────────────────────────────────────────────────────────────────────
+_PRED_TTL = 15 * 60    # 15 minutes
+_REGIME_TTL = 30 * 60  # 30 minutes
+_CACHE_MAX = 300        # cap at 300 entries to prevent OOM on free-tier 512MB Render
+
+def _cache_set(cache: dict, key: str, value: tuple) -> None:
+    """Insert into cache, evicting the oldest entry when cap is reached."""
+    if key not in cache and len(cache) >= _CACHE_MAX:
+        oldest = min(cache, key=lambda k: cache[k][0])
+        del cache[oldest]
+    cache[key] = value
+
 # Prediction cache: { "SYMBOL:MARKET:HORIZON" -> (timestamp, result) }
 _pred_cache: dict[str, tuple[float, dict]] = {}
-_PRED_TTL = 15 * 60  # 15 minutes — fundamentals don't shift in 15 min
 
 # Market regime cache: { "IN"|"US" -> (timestamp, result) }
 _regime_cache: dict[str, tuple[float, dict]] = {}
-_REGIME_TTL = 30 * 60  # 30 minutes — broad-market trend changes slowly
 
 
 def _market_regime(market: str) -> dict:
@@ -74,7 +83,7 @@ def _market_regime(market: str) -> dict:
             reason = "Market moving sideways"
 
         result = {"trend": trend, "score_adj": adj, "reason": reason}
-        _regime_cache[market] = (time.time(), result)
+        _cache_set(_regime_cache, market, (time.time(), result))
         return result
     except Exception:
         return {"trend": "SIDEWAYS", "score_adj": 0, "reason": "Could not fetch market data"}
@@ -482,7 +491,7 @@ class PredictionEngine:
             } if quality else None,
             "weights_used": {k: v for k, v in weights.items() if k in ("tech", "fund", "sentiment", "vol_regime")},
         }
-        _pred_cache[cache_key] = (time.time(), result)
+        _cache_set(_pred_cache, cache_key, (time.time(), result))
         return result
 
     def _trade_levels(self, price: float, signal: str, target: float, atr: float, horizon: str) -> dict:
@@ -1028,9 +1037,22 @@ class PredictionEngine:
         # raw_score below has a matching entry in `contributions`.
         contributions: dict[str, float] = {}
 
-        contributions["technical"]   = tech_score * weights["tech"]
-        contributions["fundamental"] = fund["score"] * weights["fund"]
-        contributions["sentiment"]   = sentiment["score"] * weights["sentiment"]
+        # If no news was found, redistribute sentiment weight to tech+fund
+        # proportionally — a score-50 default is not a genuine neutral signal
+        effective_weights = dict(weights)
+        if not sentiment.get("data_available", True):
+            sent_w = effective_weights.pop("sentiment", 0)
+            total_tf = effective_weights["tech"] + effective_weights["fund"]
+            if total_tf > 0:
+                effective_weights["tech"]  += sent_w * (effective_weights["tech"] / total_tf)
+                effective_weights["fund"]  += sent_w * (effective_weights["fund"] / total_tf)
+            effective_weights["sentiment"] = 0
+        else:
+            effective_weights["sentiment"] = weights["sentiment"]
+
+        contributions["technical"]   = tech_score * effective_weights["tech"]
+        contributions["fundamental"] = fund["score"] * effective_weights["fund"]
+        contributions["sentiment"]   = sentiment["score"] * effective_weights["sentiment"]
 
         # Local market regime adjustment (±8)
         contributions["regime"] = regime["score_adj"]
@@ -1115,7 +1137,7 @@ class PredictionEngine:
         confidence_score, confidence_band, confidence_components = self._confidence_engine(
             signal=signal, tech_score=tech_score, fund_score=fund["score"],
             sentiment_score=sentiment["score"], quality=quality, regime=regime,
-            info=info or {}, horizon=horizon,
+            info=info or {}, horizon=horizon, sentiment_obj=sentiment,
         )
 
         # Build reasoning — most impactful signals first
@@ -1206,7 +1228,7 @@ class PredictionEngine:
                 confidence_score, confidence_band, confidence_components)
 
     def _confidence_engine(self, signal, tech_score, fund_score, sentiment_score,
-                           quality, regime, info, horizon: str = "short") -> tuple[int, str, dict]:
+                           quality, regime, info, horizon: str = "short", **kwargs) -> tuple[int, str, dict]:
         """
         Multi-factor confidence score (0-100). Answers "how much should you
         trust this signal?" rather than "how strong is this signal?".
@@ -1276,7 +1298,12 @@ class PredictionEngine:
         data_completeness = round(present / total_fields * 100)
 
         # ── factor_agreement ─────────────────────────────────────────────────
-        factor_scores = [tech_score, fund_score, sentiment_score]
+        # Only include sentiment if real data was available — score-50 default
+        # is not a signal and would artificially inflate agreement on neutral
+        sentiment_obj = kwargs.get("sentiment_obj") or {}
+        factor_scores = [tech_score, fund_score]
+        if sentiment_obj.get("data_available", True):
+            factor_scores.append(sentiment_score)
         if quality and quality.get("score") is not None:
             factor_scores.append(quality["score"])
 

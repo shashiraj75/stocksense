@@ -81,6 +81,7 @@ export default function StockPage() {
 
   const [tab, setTab] = useState<Tab>("short");
   const [btHorizon, setBtHorizon] = useState<Horizon>("short");
+  const [historyHorizon, setHistoryHorizon] = useState<Horizon>("medium");
   const [btRunning, setBtRunning] = useState(false);
   const [btData, setBtData] = useState<BacktestResult | null>(null);
   const [btError, setBtError] = useState("");
@@ -164,8 +165,8 @@ export default function StockPage() {
   });
 
   const { data: scoreHistory } = useQuery({
-    queryKey: ["score-history", symbol, "medium"],
-    queryFn: () => fetchScoreHistory(symbol, "medium", 90),
+    queryKey: ["score-history", symbol, historyHorizon],
+    queryFn: () => fetchScoreHistory(symbol, historyHorizon, 90),
     enabled: tab === "history" && !isCrypto,
     staleTime: 60 * 60_000,
     refetchOnWindowFocus: false,
@@ -573,7 +574,21 @@ export default function StockPage() {
 
       {/* ── HISTORY VIEW ── */}
       {tab === "history" && (
-        <div className="space-y-6">
+        <div className="space-y-4">
+          {/* Horizon selector */}
+          {!isCrypto && (
+            <div className="flex gap-2">
+              {(["short", "medium", "long"] as Horizon[]).map(h => (
+                <button key={h} onClick={() => setHistoryHorizon(h)}
+                  className={clsx("px-4 py-1.5 rounded-lg text-xs font-medium border transition-colors capitalize",
+                    historyHorizon === h
+                      ? "bg-brand-500 text-white border-brand-500"
+                      : "bg-dark-card border-dark-border text-gray-400 hover:text-white")}>
+                  {h} term
+                </button>
+              ))}
+            </div>
+          )}
           {isCrypto ? (
             <div className="bg-dark-card border border-dark-border rounded-2xl p-6 text-center text-gray-500 text-sm">
               Score history is available for stocks only.

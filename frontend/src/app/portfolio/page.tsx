@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect } from "react";
 import { useQueries } from "@tanstack/react-query";
-import { fetchQuote, Market } from "@/utils/api";
+import { fetchQuote, fetchPrediction, Market } from "@/utils/api";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { SignalBadge } from "@/components/SignalBadge";
 import Link from "next/link";
@@ -42,6 +42,15 @@ export default function PortfolioPage() {
     })),
   });
 
+  const signalQueries = useQueries({
+    queries: holdings.map(h => ({
+      queryKey: ["prediction", h.symbol, h.market, "medium"],
+      queryFn: () => fetchPrediction(h.symbol, h.market, "medium"),
+      staleTime: 15 * 60_000,   // predictions cache for 15 min
+      retry: 1,
+    })),
+  });
+
   const add = () => {
     setError("");
     if (!sym.trim()) return setError("Enter a symbol");
@@ -74,7 +83,10 @@ export default function PortfolioPage() {
       if (h.market === "IN") { totalInvestedIN += invested; totalCurrentIN += current; }
       else { totalInvestedUS += invested; totalCurrentUS += current; }
     }
-    return { ...h, curPrice, invested, current, plAmt, plPct, loading: quoteQueries[i]?.isLoading };
+    const sig = signalQueries[i]?.data;
+    const signal = sig?.signal ?? null;
+    const confidence = sig?.confidence ?? undefined;
+    return { ...h, curPrice, invested, current, plAmt, plPct, loading: quoteQueries[i]?.isLoading, signal, confidence, sigLoading: signalQueries[i]?.isLoading };
   });
 
   const hasIN = totalInvestedIN > 0;
@@ -207,6 +219,7 @@ export default function PortfolioPage() {
                   <th className="px-4 py-3 font-medium text-right">Value</th>
                   <th className="px-4 py-3 font-medium text-right">P&L</th>
                   <th className="px-4 py-3 font-medium text-right">P&L %</th>
+                  <th className="px-4 py-3 font-medium text-center">Signal</th>
                   <th className="px-4 py-3"></th>
                 </tr>
               </thead>
@@ -242,6 +255,15 @@ export default function PortfolioPage() {
                             {r.plPct >= 0 ? "+" : ""}{r.plPct.toFixed(1)}%
                           </span>
                         : "—"}
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      {r.sigLoading ? (
+                        <span className="text-gray-600 text-xs animate-pulse">…</span>
+                      ) : r.signal ? (
+                        <SignalBadge signal={r.signal} confidence={r.confidence} size="sm" />
+                      ) : (
+                        <span className="text-gray-600 text-xs">—</span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-right">
                       <button onClick={() => remove(i)} className="text-gray-500 hover:text-bear transition-colors">
