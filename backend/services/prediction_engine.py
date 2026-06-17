@@ -1196,7 +1196,21 @@ class PredictionEngine:
                 earnings_stability = round(er["score"])
 
         # ── regime_certainty ─────────────────────────────────────────────────
-        regime_certainty = round(50 + abs(regime.get("score_adj", 0)) * 6.25)
+        # Continuous score from actual market momentum rather than a 3-bucket flag.
+        # Uses the 3M return of the benchmark index, normalised to 0-100:
+        #   +10%+ return  → ~90-100 (very clear bull)
+        #   -10%+ decline → ~0-10  (very clear bear)
+        #   0% / sideways → ~50
+        score_adj = regime.get("score_adj", 0)
+        trend = regime.get("trend", "SIDEWAYS")
+        if trend == "SIDEWAYS":
+            regime_certainty = 50
+        else:
+            # score_adj is ±8; scale to [50, 100] for BULL, [0, 50) for BEAR
+            # with abs capped so the range is [25, 100] (never fully 0 or 100
+            # unless we have a true extreme move)
+            regime_certainty = round(50 + score_adj * 5)
+            regime_certainty = max(10, min(90, regime_certainty))
 
         # ── historical_factor_reliability — from live IC engine ───────────────
         # IC values reflect how well each factor has predicted returns historically.
@@ -1219,11 +1233,12 @@ class PredictionEngine:
             log.debug("IC engine not available for confidence: %s", e)
 
         components = {
-            "data_completeness":           data_completeness,
-            "factor_agreement":            factor_agreement,
-            "earnings_stability":          earnings_stability,
-            "regime_certainty":            regime_certainty,
-            "historical_factor_reliability": historical_factor_reliability,
+            "data_completeness":              data_completeness,
+            "factor_agreement":               factor_agreement,
+            "earnings_stability":             earnings_stability,
+            "regime_certainty":               regime_certainty,
+            "historical_factor_reliability":  historical_factor_reliability,
+            "_historical_reliability_live":   historical_reliability_available,  # UI flag
         }
 
         if historical_reliability_available:

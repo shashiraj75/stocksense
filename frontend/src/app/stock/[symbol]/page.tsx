@@ -516,10 +516,20 @@ export default function StockPage() {
                     <>
                       <ConfidenceMeter value={prediction.fundamental_score.score} label="Fundamental Score" />
                       <ConfidenceMeter value={prediction.sentiment_score.score} label="News Sentiment Score" />
-                      <ConfidenceMeter
-                        value={prediction.technical?.rsi ? Math.min(100, Math.round(prediction.technical.rsi)) : 50}
-                        label="RSI"
-                      />
+                      {(() => {
+                        const rsi = prediction.technical?.rsi;
+                        if (!rsi) return null;
+                        const r = Math.round(rsi);
+                        // Interpret RSI in context: >70 overbought, <30 oversold, 40-60 neutral
+                        const label = r >= 70 ? `RSI ${r} — Overbought`
+                                    : r <= 30 ? `RSI ${r} — Oversold`
+                                    : r >= 55 ? `RSI ${r} — Bullish momentum`
+                                    : r <= 45 ? `RSI ${r} — Bearish momentum`
+                                    : `RSI ${r} — Neutral`;
+                        // Remap to signal bar: 50=neutral(50%), 70+=overbought(90%), 30-=oversold(10%)
+                        const barVal = r >= 70 ? 85 : r <= 30 ? 15 : Math.round(50 + (r - 50) * 1.5);
+                        return <ConfidenceMeter value={Math.max(0, Math.min(100, barVal))} label={label} />;
+                      })()}
                     </>
                   )}
                 </div>
