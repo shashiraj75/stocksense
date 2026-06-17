@@ -445,7 +445,7 @@ export default function StockPage() {
                   </div>
                   <ConfidenceMeter
                     value={prediction.confidence}
-                    label={prediction.signal === "HOLD" ? "Signal Conviction (HOLD cap 25%)" : "Signal Conviction"}
+                    label="Signal Conviction"
                   />
                   {(prediction as any).confidence_score !== undefined && (prediction as any).confidence_breakdown && (
                     <div className="border-t border-dark-border pt-3">
