@@ -421,7 +421,7 @@ export default function StockPage() {
                   <div className="w-full h-1.5 bg-dark-border rounded-full overflow-hidden">
                     <div
                       className="h-full bg-brand-500 rounded-full transition-all duration-1000"
-                      style={{ width: isComputing ? `${Math.min(95, (computeSeconds / 90) * 100)}%` : "15%" }}
+                      style={{ width: isComputing ? `${Math.min(95, (computeSeconds / 120) * 100)}%` : "15%" }}
                     />
                   </div>
                   {[1, 2, 3].map((i) => (

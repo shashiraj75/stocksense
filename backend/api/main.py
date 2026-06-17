@@ -89,38 +89,38 @@ async def _outcome_resolver_loop():
         await asyncio.sleep(6 * 3600)
 
 
-# Popular stocks to pre-warm at startup so the first user request always hits cache
-_WARMUP_STOCKS = [
-    ("RELIANCE", "IN"), ("INFY", "IN"), ("TCS", "IN"), ("HDFCBANK", "IN"),
-    ("SUNPHARMA", "IN"), ("WIPRO", "IN"), ("ICICIBANK", "IN"), ("TATAMOTORS", "IN"),
-    ("AAPL", "US"), ("MSFT", "US"), ("NVDA", "US"), ("GOOGL", "US"),
-]
-
 async def _warmup_loop():
-    """Pre-compute predictions for popular stocks after startup so cache is hot."""
-    await asyncio.sleep(90)  # wait for server to fully start + universe refresh
+    """
+    Pre-warm the top 4 most-visited stocks gently after startup.
+    Runs with 60s gaps so it never saturates the thread pool alongside user requests.
+    """
+    await asyncio.sleep(120)  # let server fully settle + universe refresh
     from api.routers.predictions import engine, _computing
     from services.prediction_engine import _pred_cache, _PRED_TTL
     import time
-    print("[warmup] Starting prediction pre-warm for popular stocks…")
-    for sym, mkt in _WARMUP_STOCKS:
-        for horizon in ("short", "medium"):
-            key = f"{sym}:{mkt}:{horizon}"
-            cached = _pred_cache.get(key)
-            if cached and (time.time() - cached[0]) < _PRED_TTL:
-                continue  # already cached
-            if key in _computing:
-                continue  # already computing
-            _computing.add(key)
-            try:
-                await engine.predict(sym, mkt, horizon)
-                print(f"[warmup] {key} ✓")
-            except Exception as e:
-                print(f"[warmup] {key} failed: {e}")
-            finally:
-                _computing.discard(key)
-            await asyncio.sleep(2)  # small gap to avoid rate limits
-    print("[warmup] Pre-warm complete.")
+    # Only warm the highest-traffic stocks, medium horizon — enough to be useful
+    warmup = [("RELIANCE", "IN", "medium"), ("INFY", "IN", "medium"),
+              ("AAPL", "US", "medium"), ("MSFT", "US", "medium")]
+    print("[warmup] Starting gentle pre-warm for top 4 stocks…")
+    for sym, mkt, horizon in warmup:
+        key = f"{sym}:{mkt}:{horizon}"
+        cached = _pred_cache.get(key)
+        if cached and (time.time() - cached[0]) < _PRED_TTL:
+            print(f"[warmup] {key} already cached, skipping")
+            continue
+        if key in _computing:
+            await asyncio.sleep(60)  # wait for it to finish then check next
+            continue
+        _computing.add(key)
+        try:
+            await engine.predict(sym, mkt, horizon)
+            print(f"[warmup] {key} ✓")
+        except Exception as e:
+            print(f"[warmup] {key} failed: {e}")
+        finally:
+            _computing.discard(key)
+        await asyncio.sleep(60)  # 60s gap between each — don't compete with user requests
+    print("[warmup] Pre-warm done.")
 
 
 @asynccontextmanager

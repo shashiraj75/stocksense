@@ -70,8 +70,8 @@ export const fetchPrediction = async (
   horizon: Horizon,
   onComputing?: () => void,
 ): Promise<Prediction> => {
-  // Poll up to 120 s (24 × 5 s) for background computation to complete
-  for (let attempt = 0; attempt < 24; attempt++) {
+  // Poll up to 180 s (36 × 5 s) for background computation to complete
+  for (let attempt = 0; attempt < 36; attempt++) {
     const res = await api.get<Prediction | { status: string; retry_after?: number }>(
       `/api/predictions/${symbol}`,
       {
