@@ -766,6 +766,78 @@ class PredictionEngine:
                 score -= 8
                 reasons.append(f"EPS declining ({eps_growth*100:.1f}%)")
 
+        # ── Screener.in exclusive fields (India only) ─────────────────────────
+
+        # ROCE — more reliable capital efficiency metric than ROE alone for Indian cos
+        roce = info.get("returnOnCapitalEmployed")
+        if roce is not None:
+            if roce > 0.20:
+                score += 10
+                reasons.append(f"High ROCE ({roce*100:.1f}%) — excellent capital efficiency")
+            elif roce > 0.12:
+                score += 4
+                reasons.append(f"Decent ROCE ({roce*100:.1f}%)")
+            elif roce < 0.06:
+                score -= 6
+                reasons.append(f"Low ROCE ({roce*100:.1f}%) — poor capital allocation")
+
+        # 3-year revenue CAGR — filters out one-off beats vs sustained growth
+        rev_3y = info.get("_screener_data", {}).get("sales_growth_3y_pct")
+        if rev_3y is not None:
+            if rev_3y > 15:
+                score += 8
+                reasons.append(f"3Y revenue CAGR {rev_3y:.1f}% — consistent top-line growth")
+            elif rev_3y < 0:
+                score -= 6
+                reasons.append(f"3Y revenue CAGR {rev_3y:.1f}% — sustained revenue decline")
+
+        # 3-year profit CAGR
+        pat_3y = info.get("_screener_data", {}).get("profit_growth_3y_pct")
+        if pat_3y is not None:
+            if pat_3y > 15:
+                score += 8
+                reasons.append(f"3Y profit CAGR {pat_3y:.1f}% — sustained earnings growth")
+            elif pat_3y < -10:
+                score -= 6
+                reasons.append(f"3Y profit CAGR {pat_3y:.1f}% — eroding profitability")
+
+        # Price-to-Book (book_value from screener + current price from info)
+        book_value = info.get("_screener_data", {}).get("book_value") or info.get("bookValue")
+        current_price = info.get("currentPrice") or info.get("regularMarketPrice")
+        if book_value and current_price and book_value > 0:
+            pb = current_price / book_value
+            pb_cheap = 2.5 if market == "IN" else 2.0
+            pb_rich  = 8.0 if market == "IN" else 6.0
+            if pb < pb_cheap:
+                score += 6
+                reasons.append(f"Low P/B ratio ({pb:.1f}x) — trading below asset value")
+            elif pb > pb_rich:
+                score -= 6
+                reasons.append(f"High P/B ratio ({pb:.1f}x) — premium to book")
+
+        # FII + DII institutional ownership — high = quality signal for India
+        screener_d = info.get("_screener_data", {}) or {}
+        fii = screener_d.get("fii_holding_pct") or 0
+        dii = screener_d.get("dii_holding_pct") or 0
+        inst_total = fii + dii
+        if inst_total > 0:
+            if inst_total > 50:
+                score += 6
+                reasons.append(f"High institutional ownership (FII {fii:.1f}% + DII {dii:.1f}%) — strong smart-money conviction")
+            elif inst_total > 25:
+                score += 3
+                reasons.append(f"Solid institutional ownership (FII {fii:.1f}% + DII {dii:.1f}%)")
+
+        # Promoter holding — high & stable = alignment; very low = concern
+        promoter = screener_d.get("promoter_holding_pct")
+        if promoter is not None:
+            if promoter > 55:
+                score += 5
+                reasons.append(f"High promoter holding ({promoter:.1f}%) — founder skin-in-the-game")
+            elif promoter < 25:
+                score -= 5
+                reasons.append(f"Low promoter holding ({promoter:.1f}%) — limited insider conviction")
+
         return {"score": max(0, min(100, score)), "reasons": reasons}
 
     def _analyst_score(self, info: dict, market: str = "US") -> dict:

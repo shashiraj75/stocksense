@@ -238,13 +238,18 @@ def augment_info_with_screener(info: dict, symbol: str) -> dict:
         # Tag enrichment metadata
         enriched["_screener_available"] = True
         enriched["_screener_data"] = {
-            "promoter_holding_pct": screener.get("promoter_holding_pct"),
-            "fii_holding_pct":      screener.get("fii_holding_pct"),
-            "dii_holding_pct":      screener.get("dii_holding_pct"),
-            "roce_pct":             screener.get("roce_pct"),
-            "sales_growth_3y_pct":  screener.get("sales_growth_3y_pct"),
-            "profit_growth_3y_pct": screener.get("profit_growth_3y_pct"),
-            "price_cagr_5y_pct":    screener.get("price_cagr_5y_pct"),
+            "promoter_holding_pct":      screener.get("promoter_holding_pct"),
+            "fii_holding_pct":           screener.get("fii_holding_pct"),
+            "dii_holding_pct":           screener.get("dii_holding_pct"),
+            "roce_pct":                  screener.get("roce_pct"),
+            "sales_growth_3y_pct":       screener.get("sales_growth_3y_pct"),
+            "sales_growth_5y_pct":       screener.get("sales_growth_5y_pct"),
+            "profit_growth_3y_pct":      screener.get("profit_growth_3y_pct"),
+            "profit_growth_5y_pct":      screener.get("profit_growth_5y_pct"),
+            "price_cagr_5y_pct":         screener.get("price_cagr_5y_pct"),
+            "book_value":                screener.get("book_value"),
+            "latest_quarter_revenue_cr": screener.get("latest_quarter_revenue_cr"),
+            "latest_quarter_pat_cr":     screener.get("latest_quarter_pat_cr"),
         }
         return enriched
 
