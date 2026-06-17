@@ -805,18 +805,15 @@ INDIA_RISK_FREE_RATE = 0.068   # 10-year G-Sec yield (~6.8%)
 
 # ── 3b. INSTITUTIONAL FLOW PROXY ─────────────────────────────────────────────
 
-def institutional_flow_proxy(df: pd.DataFrame) -> dict:
+def institutional_flow_proxy(df: pd.DataFrame, fii_dii: dict | None = None) -> dict:
     """
-    Estimate institutional BUYING vs SELLING direction using price-volume signals.
-
-    Since NSE FII/DII daily flow data requires authenticated sessions, we use
-    three proven proxies that correlate highly with institutional activity:
+    Estimate institutional BUYING vs SELLING direction using price-volume signals,
+    blended with real NSE FII/DII daily flow data when available (Indian stocks only).
 
     1. OBV Trend (On-Balance Volume) — cumulative volume weighted by price direction.
-       Rising OBV + rising price = institutional accumulation.
     2. Money Flow Index (MFI) — volume-weighted RSI. >60 = buying pressure, <40 = selling.
-    3. Price-Volume Divergence — price falling on below-average volume = institutional
-       holding (not panic selling); price rising on high volume = aggressive accumulation.
+    3. Price-Volume Divergence — accumulation vs distribution signature.
+    4. NSE FII/DII actual net flows (Cr) — real institutional buy/sell data when provided.
     """
     score = 50
     reasons: list[str] = []
@@ -908,7 +905,15 @@ def institutional_flow_proxy(df: pd.DataFrame) -> dict:
     except Exception:
         pass
 
-    return {"score": max(0, min(100, score)), "reasons": reasons[:3]}
+    # ── Blend real NSE FII/DII flows when available (Indian stocks) ───────────
+    if fii_dii and fii_dii.get("available"):
+        fii_score = fii_dii["score"]  # 0-100, 50=neutral
+        # Weight real data at 40%, proxy signals at 60%
+        score = round(score * 0.6 + fii_score * 0.4)
+        for r in fii_dii.get("reasons", [])[:2]:
+            reasons.append(r)
+
+    return {"score": max(0, min(100, score)), "reasons": reasons[:4]}
 
 
 # ── 8. VALUATION ─────────────────────────────────────────────────────────────
@@ -1215,7 +1220,19 @@ def compute_all_quality_factors(symbol: str, ticker, df: pd.DataFrame, info: dic
     # ── Always run (fast — from info dict + precomputed df) ──────────────────
     results["earnings_revision"]    = earnings_revision_score(ticker, info)
     results["institutional"]        = institutional_ownership_score(ticker, info)
-    results["inst_flow"]            = institutional_flow_proxy(df)
+
+    # Fetch real NSE FII/DII flows for Indian stocks (market-wide signal, cached 30 min)
+    fii_dii_data: dict | None = None
+    market = (info.get("market") or info.get("exchange") or "").upper()
+    is_indian = "NS" in market or market in ("NSE", "BSE", "IN")
+    if is_indian:
+        try:
+            from services.nse_fii_dii import get_fii_dii_flow
+            fii_dii_data = get_fii_dii_flow()
+        except Exception:
+            pass
+
+    results["inst_flow"]            = institutional_flow_proxy(df, fii_dii=fii_dii_data)
     results["relative_strength"]    = relative_strength_score(df)
     results["sector_strength"]      = sector_strength_score(symbol)
     results["valuation"]            = valuation_score(symbol, df, info)
