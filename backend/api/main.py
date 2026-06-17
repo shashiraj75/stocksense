@@ -91,36 +91,26 @@ async def _outcome_resolver_loop():
 
 async def _warmup_loop():
     """
-    Pre-warm the top 4 most-visited stocks gently after startup.
-    Runs with 60s gaps so it never saturates the thread pool alongside user requests.
+    Pre-warm 2 top-traffic stocks after startup so first user hit is a cache hit.
+    Uses threading.Thread (same as the prediction endpoint) so tasks survive
+    the asyncio lifecycle and never get cancelled by anyio.
     """
-    await asyncio.sleep(120)  # let server fully settle + universe refresh
-    from api.routers.predictions import engine, _computing
+    await asyncio.sleep(150)  # wait for server + universe refresh to fully settle
+    import threading, time
+    from api.routers.predictions import engine, _computing, _bg_thread
     from services.prediction_engine import _pred_cache, _PRED_TTL
-    import time
-    # Only warm the highest-traffic stocks, medium horizon — enough to be useful
-    warmup = [("RELIANCE", "IN", "medium"), ("INFY", "IN", "medium"),
-              ("AAPL", "US", "medium"), ("MSFT", "US", "medium")]
-    print("[warmup] Starting gentle pre-warm for top 4 stocks…")
+    warmup = [("RELIANCE", "IN", "medium"), ("AAPL", "US", "medium")]
+    print("[warmup] Starting pre-warm for 2 stocks…")
     for sym, mkt, horizon in warmup:
         key = f"{sym}:{mkt}:{horizon}"
-        cached = _pred_cache.get(key)
-        if cached and (time.time() - cached[0]) < _PRED_TTL:
-            print(f"[warmup] {key} already cached, skipping")
-            continue
-        if key in _computing:
-            await asyncio.sleep(60)  # wait for it to finish then check next
+        if (_pred_cache.get(key) and (time.time() - _pred_cache[key][0]) < _PRED_TTL) or key in _computing:
             continue
         _computing.add(key)
-        try:
-            await engine.predict(sym, mkt, horizon)
-            print(f"[warmup] {key} ✓")
-        except Exception as e:
-            print(f"[warmup] {key} failed: {e}")
-        finally:
-            _computing.discard(key)
-        await asyncio.sleep(60)  # 60s gap between each — don't compete with user requests
-    print("[warmup] Pre-warm done.")
+        t = threading.Thread(target=_bg_thread, args=(sym, mkt, horizon, key), daemon=True)
+        t.start()
+        print(f"[warmup] kicked off {key}")
+        await asyncio.sleep(90)  # don't start next until first has had time to complete
+    print("[warmup] Pre-warm triggered.")
 
 
 @asynccontextmanager

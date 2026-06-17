@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import math
+import threading
 import time
 import numpy as np
 from fastapi import APIRouter, Query
@@ -36,10 +37,14 @@ def _to_python(obj):
     return obj
 
 
-async def _compute_in_background(sym: str, market: str, horizon: str, key: str) -> None:
-    """Runs prediction in background so the HTTP request can return immediately."""
+def _bg_thread(sym: str, market: str, horizon: str, key: str) -> None:
+    """
+    Run prediction in a real OS thread with its own event loop.
+    asyncio.create_task() gets cancelled by anyio when the HTTP request ends;
+    a daemon thread is fully independent of the request lifecycle.
+    """
     try:
-        await engine.predict(sym, market, horizon)
+        asyncio.run(engine.predict(sym, market, horizon))
         log.info("[bg-predict] completed %s", key)
     except Exception:
         log.exception("[bg-predict] failed for %s", key)
@@ -75,8 +80,11 @@ async def get_prediction(
     if key in _computing:
         return JSONResponse(status_code=202, content={"status": "computing", "retry_after": 5})
 
-    # ── 3. Start background computation; return 202 immediately ─────────────
-    # This ensures Render's 30-second proxy timeout is never hit.
+    # ── 3. Spawn a daemon thread; return 202 immediately ────────────────────
+    # Using a real OS thread (not asyncio.create_task) because anyio cancels
+    # coroutine tasks when the HTTP request scope exits, which would abort the
+    # background prediction. A daemon thread lives independently of requests.
     _computing.add(key)
-    asyncio.create_task(_compute_in_background(sym, market, horizon, key))
+    t = threading.Thread(target=_bg_thread, args=(sym, market, horizon, key), daemon=True)
+    t.start()
     return JSONResponse(status_code=202, content={"status": "computing", "retry_after": 5})
