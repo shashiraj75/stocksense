@@ -380,12 +380,15 @@ export default function StockPage() {
                 </h2>
                 {prediction?.target_price && prediction?.current_price && (() => {
                   const pct = ((prediction.target_price - prediction.current_price) / prediction.current_price) * 100;
+                  const isHold = prediction.signal === "HOLD";
                   const up = pct >= 0;
+                  // HOLD: neutral grey — a small ± move is expected, not directional
+                  const pctColor = isHold ? "text-gray-400" : up ? "text-bull" : "text-bear";
                   return (
-                    <span className="hidden sm:flex shrink-0 text-right">
-                      <span className="text-gray-400 text-sm mr-1">Target Price:</span>
+                    <span className="hidden sm:flex shrink-0 text-right items-baseline gap-1">
+                      <span className="text-gray-400 text-sm">Target Price:</span>
                       <span className="font-mono font-bold text-base">{currency}{prediction.target_price.toLocaleString()}</span>
-                      <span className={`ml-2 text-sm font-medium ${up ? "text-bull" : "text-bear"}`}>
+                      <span className={`text-sm font-medium ${pctColor}`}>
                         {up ? "+" : ""}{pct.toFixed(1)}%
                       </span>
                     </span>
@@ -431,7 +434,10 @@ export default function StockPage() {
                     <span className="text-gray-400 text-sm">Signal</span>
                     <SignalBadge signal={prediction.signal} confidence={prediction.confidence} />
                   </div>
-                  <ConfidenceMeter value={prediction.confidence} label="Signal Strength" />
+                  <ConfidenceMeter
+                    value={prediction.confidence}
+                    label={prediction.signal === "HOLD" ? "Signal Conviction (HOLD cap 25%)" : "Signal Conviction"}
+                  />
                   {(prediction as any).confidence_score !== undefined && (prediction as any).confidence_breakdown && (
                     <div className="border-t border-dark-border pt-3">
                       <ConfidenceBreakdown
@@ -479,7 +485,14 @@ export default function StockPage() {
                   {[
                     ["52W High", `${currency}${quote.fifty_two_week_high?.toLocaleString()}`],
                     ["52W Low", `${currency}${quote.fifty_two_week_low?.toLocaleString()}`],
-                    ["Market Cap", quote.market_cap ? `${currency}${(quote.market_cap / 1e9).toFixed(2)}B` : "—"],
+                    ["Market Cap", quote.market_cap
+                      ? (() => {
+                          const v = quote.market_cap;
+                          if (v >= 1e12) return `${currency}${(v / 1e12).toFixed(2)}T`;
+                          if (v >= 1e9)  return `${currency}${(v / 1e9).toFixed(2)}B`;
+                          return `${currency}${(v / 1e6).toFixed(0)}M`;
+                        })()
+                      : "—"],
                     ["Avg Volume", quote.volume?.toLocaleString() ?? "—"],
                   ].map(([label, value]) => (
                     <div key={label} className="flex items-center justify-between text-sm">

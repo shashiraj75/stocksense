@@ -1151,9 +1151,29 @@ class PredictionEngine:
                                           falls back to 50 until 60+ outcome pairs exist
         """
         # ── data_completeness ────────────────────────────────────────────────
-        key_fields = ["trailingPE", "returnOnEquity", "revenueGrowth", "debtToEquity",
-                      "profitMargins", "earningsGrowth", "freeCashflow", "beta"]
-        present = sum(1 for k in key_fields if info.get(k) is not None)
+        # Primary fields (yfinance); screener.in fills gaps for Indian stocks.
+        # We check both standard keys AND screener-mapped equivalents so that
+        # enriched Indian stocks aren't penalised for missing raw yfinance fields.
+        key_fields = [
+            ("trailingPE",           None),
+            ("returnOnEquity",       None),          # screener maps roe_pct → here
+            ("revenueGrowth",        None),          # screener maps sales_growth_ttm → here
+            ("debtToEquity",         None),
+            ("profitMargins",        None),
+            ("earningsGrowth",       None),          # screener maps profit_growth_ttm → here
+            ("freeCashflow",         None),
+            ("beta",                 None),
+            # Screener.in exclusive fields (bonus; only present for Indian stocks)
+            ("returnOnCapitalEmployed", "_screener_data.roce_pct"),
+        ]
+        present = 0
+        for std_key, _alt in key_fields:
+            if info.get(std_key) is not None:
+                present += 1
+            elif _alt and _alt.startswith("_screener_data."):
+                alt_key = _alt.split(".")[1]
+                if (info.get("_screener_data") or {}).get(alt_key) is not None:
+                    present += 1
         data_completeness = round(present / len(key_fields) * 100)
 
         # ── factor_agreement ─────────────────────────────────────────────────
