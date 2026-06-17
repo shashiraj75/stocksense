@@ -141,13 +141,68 @@ function nseMarketHolidays(year: number): Set<string> {
 export interface MarketStatus {
   isOpen: boolean;
   label: string;
+  /** Human-readable "Opens at HH:MM AM · Mon DD Mon" or "Closes at HH:MM PM" in user's local time */
+  nextEventLabel: string | null;
 }
 
 const WEEKDAYS = new Set(["Mon", "Tue", "Wed", "Thu", "Fri"]);
 
+/** Format a UTC Date as "7:00 PM · Thu, 18 Jun" in the browser's local timezone. */
+function fmtLocalDateTime(date: Date): string {
+  const time = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true });
+  const day  = date.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+  return `${time} · ${day}`;
+}
+
+/**
+ * Walk forward in 1-minute steps (max 8 days) from `now` to find the next
+ * open or close transition for the given market, then return a label.
+ */
+function nextEvent(market: "IN" | "US", now: Date): string | null {
+  const tz         = market === "IN" ? "Asia/Kolkata" : "America/New_York";
+  const openMin    = market === "IN" ? 9 * 60 + 15 : 9 * 60 + 30;
+  const closeMin   = market === "IN" ? 15 * 60 + 30 : 16 * 60;
+  const holidays   = market === "IN"
+    ? (y: number) => nseMarketHolidays(y)
+    : (y: number) => usMarketHolidays(y);
+
+  const isOpenAt = (d: Date) => {
+    const p = getZonedParts(d, tz);
+    return (
+      WEEKDAYS.has(p.weekday) &&
+      !holidays(p.year).has(p.dateKey) &&
+      p.minutesSinceMidnight >= openMin &&
+      p.minutesSinceMidnight < closeMin
+    );
+  };
+
+  const currentlyOpen = isOpenAt(now);
+  const MS = 60_000;
+  const maxMs = 8 * 24 * 60 * MS;
+
+  for (let offset = MS; offset <= maxMs; offset += MS) {
+    const candidate = new Date(now.getTime() + offset);
+    const candidateOpen = isOpenAt(candidate);
+    if (!currentlyOpen && candidateOpen) {
+      // Snap to the exact open minute (openMin in tz)
+      const p = getZonedParts(candidate, tz);
+      const minsIntoWindow = p.minutesSinceMidnight - openMin;
+      const openMoment = new Date(candidate.getTime() - minsIntoWindow * MS);
+      return `Opens at ${fmtLocalDateTime(openMoment)}`;
+    }
+    if (currentlyOpen && !candidateOpen) {
+      const p = getZonedParts(candidate, tz);
+      const minsIntoClose = p.minutesSinceMidnight - closeMin;
+      const closeMoment = new Date(candidate.getTime() - minsIntoClose * MS);
+      return `Closes at ${fmtLocalDateTime(closeMoment)}`;
+    }
+  }
+  return null;
+}
+
 export function getMarketStatus(market: MarketKey, now: Date = new Date()): MarketStatus {
   if (market === "CRYPTO") {
-    return { isOpen: true, label: "Market Open" };
+    return { isOpen: true, label: "Market Open", nextEventLabel: null };
   }
 
   if (market === "IN") {
@@ -156,7 +211,7 @@ export function getMarketStatus(market: MarketKey, now: Date = new Date()): Mark
     const isHoliday = nseMarketHolidays(p.year).has(p.dateKey);
     const inHours = p.minutesSinceMidnight >= 9 * 60 + 15 && p.minutesSinceMidnight < 15 * 60 + 30;
     const isOpen = isWeekday && !isHoliday && inHours;
-    return { isOpen, label: isOpen ? "Market Open" : "Market Closed" };
+    return { isOpen, label: isOpen ? "Market Open" : "Market Closed", nextEventLabel: nextEvent("IN", now) };
   }
 
   // US
@@ -165,5 +220,5 @@ export function getMarketStatus(market: MarketKey, now: Date = new Date()): Mark
   const isHoliday = usMarketHolidays(p.year).has(p.dateKey);
   const inHours = p.minutesSinceMidnight >= 9 * 60 + 30 && p.minutesSinceMidnight < 16 * 60;
   const isOpen = isWeekday && !isHoliday && inHours;
-  return { isOpen, label: isOpen ? "Market Open" : "Market Closed" };
+  return { isOpen, label: isOpen ? "Market Open" : "Market Closed", nextEventLabel: nextEvent("US", now) };
 }

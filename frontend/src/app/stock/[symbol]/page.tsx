@@ -261,6 +261,9 @@ export default function StockPage() {
                 </span>
                 <span className="text-xs text-gray-500">
                   {marketStatus.isOpen ? "Live" : marketStatus.label} · {new Date(isCrypto ? cryptoUpdatedAt : quoteUpdatedAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true })}
+                  {marketStatus.nextEventLabel && (
+                    <span className="text-gray-600"> · {marketStatus.nextEventLabel}</span>
+                  )}
                 </span>
               </div>
             </div>
