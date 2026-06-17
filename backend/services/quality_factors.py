@@ -1239,6 +1239,19 @@ def compute_all_quality_factors(symbol: str, ticker, df: pd.DataFrame, info: dic
     results["risk_management"]      = risk_management_score(df, info)
     results["liquidity"]            = liquidity_score(df, info)
 
+    # ── MF / institutional holding trend (India only) ─────────────────────────
+    # Quarterly DII/FII trend from screener.in shareholding history.
+    # Available for all Indian stocks — no extra API call needed.
+    screener_d = info.get("_screener_data") or {}
+    if is_indian and screener_d.get("dii_quarterly_pct"):
+        try:
+            from services.mf_holdings import compute_mf_signal
+            results["mf_trend"] = compute_mf_signal(screener_d)
+        except Exception:
+            results["mf_trend"] = {"score": 50, "reasons": []}
+    else:
+        results["mf_trend"] = {"score": 50, "reasons": []}
+
     # ── Deeper analysis for medium/long only ─────────────────────────────────
     if horizon in ("medium", "long"):
         results["corporate_actions"] = corporate_actions_score(ticker, info)
@@ -1252,38 +1265,41 @@ def compute_all_quality_factors(symbol: str, ticker, df: pd.DataFrame, info: dic
     # Long term:  valuation + quality metrics dominate
     if horizon == "short":
         weights = {
-            "earnings_revision": 0.14,
-            "institutional":     0.08,
-            "inst_flow":         0.14,   # flow direction is critical for short term
-            "relative_strength": 0.16,
-            "sector_strength":   0.16,
+            "earnings_revision": 0.13,
+            "institutional":     0.05,
+            "mf_trend":          0.06,   # quarterly MF accumulation — slow but reliable
+            "inst_flow":         0.13,
+            "relative_strength": 0.15,
+            "sector_strength":   0.15,
             "valuation":         0.08,
             "risk_management":   0.10,
             "liquidity":         0.08,
             "corporate_actions": 0.03,
-            "quality_metrics":   0.03,
+            "quality_metrics":   0.04,
         }
     elif horizon == "medium":
         weights = {
-            "earnings_revision": 0.16,
-            "institutional":     0.10,
-            "inst_flow":         0.10,
-            "relative_strength": 0.12,
-            "sector_strength":   0.12,
-            "valuation":         0.14,
+            "earnings_revision": 0.14,
+            "institutional":     0.06,
+            "mf_trend":          0.08,   # medium term: MF trend matters more
+            "inst_flow":         0.09,
+            "relative_strength": 0.11,
+            "sector_strength":   0.11,
+            "valuation":         0.13,
             "risk_management":   0.10,
             "liquidity":         0.06,
             "corporate_actions": 0.06,
-            "quality_metrics":   0.04,
+            "quality_metrics":   0.06,
         }
     else:  # long
         weights = {
-            "earnings_revision": 0.14,
-            "institutional":     0.10,
-            "inst_flow":         0.06,
-            "relative_strength": 0.08,
-            "sector_strength":   0.08,
-            "valuation":         0.18,   # valuation matters most for long term
+            "earnings_revision": 0.12,
+            "institutional":     0.06,
+            "mf_trend":          0.10,   # long term: sustained MF conviction is key
+            "inst_flow":         0.05,
+            "relative_strength": 0.07,
+            "sector_strength":   0.07,
+            "valuation":         0.17,
             "risk_management":   0.10,
             "liquidity":         0.04,
             "corporate_actions": 0.10,
@@ -1296,6 +1312,7 @@ def compute_all_quality_factors(symbol: str, ticker, df: pd.DataFrame, info: dic
     dimension_labels = {
         "earnings_revision": "Earnings",
         "institutional":     "Ownership",
+        "mf_trend":          "MF Trend",
         "inst_flow":         "Inst. Flow",
         "relative_strength": "Rel. Strength",
         "sector_strength":   "Sector",

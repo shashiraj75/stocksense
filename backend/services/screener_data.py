@@ -242,7 +242,7 @@ def _parse_screener_page(soup: BeautifulSoup, symbol: str) -> dict:
                             data["profit_growth_3y_pct"] = round(cagr, 2)
                             data["profit_growth_ttm_pct"] = round(cagr, 2)
 
-    # ── Shareholding pattern (promoter, FII, DII, pledge) ────────────────────
+    # ── Shareholding pattern — latest + full quarterly history ───────────────
     shareholding_section = soup.find("section", id="shareholding")
     if shareholding_section:
         table = shareholding_section.find("table")
@@ -253,15 +253,22 @@ def _parse_screener_page(soup: BeautifulSoup, symbol: str) -> dict:
                 if len(cells) < 2:
                     continue
                 label = cells[0].get_text(strip=True).lower()
-                latest = _parse_number(cells[-1].get_text(strip=True))
+                # Parse all quarters (strip % sign), oldest first
+                all_vals = [_parse_number(c.get_text(strip=True).replace("%", ""))
+                            for c in cells[1:]]
+                all_vals = [v for v in all_vals if v is not None]
+                latest = all_vals[-1] if all_vals else None
                 if latest is None:
                     continue
                 if "promoters" in label:
                     data["promoter_holding_pct"] = latest
+                    data["promoter_quarterly_pct"] = all_vals
                 elif "fii" in label or "foreign" in label:
                     data["fii_holding_pct"] = latest
+                    data["fii_quarterly_pct"] = all_vals
                 elif "dii" in label or "domestic inst" in label:
                     data["dii_holding_pct"] = latest
+                    data["dii_quarterly_pct"] = all_vals   # main MF signal
                 elif "public" in label:
                     data["public_holding_pct"] = latest
                 elif "pledge" in label:
@@ -354,6 +361,10 @@ def augment_info_with_screener(info: dict, symbol: str) -> dict:
             "latest_quarter_pat_cr":     screener.get("latest_quarter_pat_cr"),
             "quarterly_pat_cr":          screener.get("quarterly_pat_cr"),
             "quarterly_revenue_cr":      screener.get("quarterly_revenue_cr"),
+            # Quarterly shareholding trend (MF accumulation signal)
+            "dii_quarterly_pct":         screener.get("dii_quarterly_pct"),
+            "fii_quarterly_pct":         screener.get("fii_quarterly_pct"),
+            "promoter_quarterly_pct":    screener.get("promoter_quarterly_pct"),
             # Banking-specific KPIs
             "nim_pct":                   screener.get("nim_pct"),
             "net_npa_pct":               screener.get("net_npa_pct"),
