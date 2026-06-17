@@ -2,8 +2,8 @@ name: Keep Server Alive (Market Hours)
 
 on:
   schedule:
-    # Every 10 min, 0:30 AM – 5:30 PM UTC = 6:00 AM – 11:00 PM IST, every day
-    - cron: "*/10 0-17 * * *"
+    # Every 10 min, 24/7 — covers India market (8AM-6PM IST) + US market (8PM-2:30AM IST)
+    - cron: "*/10 * * * *"
   workflow_dispatch:
 
 jobs:
