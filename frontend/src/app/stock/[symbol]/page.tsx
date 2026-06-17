@@ -115,8 +115,8 @@ export default function StockPage() {
     queryKey: ["prediction", symbol, isCrypto ? "CRYPTO" : market, horizon],
     queryFn: () => fetchPrediction(symbol, isCrypto ? "CRYPTO" as any : market, horizon),
     enabled: tab !== "backtest",
-    retry: 3,                                     // 4 total attempts (1 + 3 retries)
-    retryDelay: () => 5000,                       // flat 5s between retries — don't pile on a waking server
+    retry: 7,                                     // 8 total attempts — enough to outlast a 60s cold start
+    retryDelay: (attempt) => Math.min(8000, 3000 + attempt * 1500), // 3s→10.5s ramp; caps at 8s
     placeholderData: (prev) => prev,
     staleTime: 14 * 60_000,
     refetchOnWindowFocus: false,
@@ -419,12 +419,24 @@ export default function StockPage() {
                 </div>
               ) : predError && !prediction ? (
                 <div className="space-y-3 py-2">
-                  <p className="text-red-400 text-sm font-medium">Failed to load prediction</p>
-                  <p className="text-gray-500 text-xs">The server may still be starting up. Try again in a moment.</p>
-                  <button onClick={() => refetchPrediction()}
-                    className="px-4 py-2 rounded-lg bg-brand-500 text-white text-sm font-medium hover:bg-brand-600 transition-colors">
-                    Retry Now
-                  </button>
+                  {failureCount < 7 ? (
+                    <>
+                      <div className="flex items-center gap-2 text-yellow-400 text-sm font-medium">
+                        <Loader2 size={14} className="animate-spin" />
+                        Waking up the server… ({failureCount}/8)
+                      </div>
+                      <p className="text-gray-500 text-xs">Render free tier sleeps after inactivity. Usually ready in 30–60 seconds.</p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-red-400 text-sm font-medium">Failed to load prediction</p>
+                      <p className="text-gray-500 text-xs">The server isn&apos;t responding. Try again in a moment.</p>
+                      <button onClick={() => refetchPrediction()}
+                        className="px-4 py-2 rounded-lg bg-brand-500 text-white text-sm font-medium hover:bg-brand-600 transition-colors">
+                        Retry Now
+                      </button>
+                    </>
+                  )}
                 </div>
               ) : (prediction as any)?.error ? (
                 <p className="text-red-400 text-sm">{(prediction as any).error}</p>

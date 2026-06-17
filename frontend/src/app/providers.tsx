@@ -18,9 +18,12 @@ export function Providers({ children }: { children: React.ReactNode }) {
     },
   }));
 
-  // Ping backend on app load so Render wakes up before the user needs data
+  // Ping on load + every 9 min so Render never goes cold (spins down after 15 min idle)
   useEffect(() => {
-    api.get("/health", { timeout: 60_000 }).catch(() => {});
+    const ping = () => api.get("/health", { timeout: 30_000 }).catch(() => {});
+    ping();
+    const id = setInterval(ping, 9 * 60_000);
+    return () => clearInterval(id);
   }, []);
 
   return (
