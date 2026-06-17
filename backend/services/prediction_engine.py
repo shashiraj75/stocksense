@@ -1264,7 +1264,7 @@ class PredictionEngine:
                 "historical_factor_reliability": 0.0,
             }
 
-        confidence_score = round(sum(components[k] * weights[k] for k in components))
+        confidence_score = round(sum(components[k] * weights[k] for k in weights))
         confidence_score = max(0, min(100, confidence_score))
 
         if confidence_score >= 80:
