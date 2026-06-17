@@ -1,0 +1,18 @@
+name: Keep Server Alive (Market Hours)
+
+on:
+  schedule:
+    # Every 10 min, 2:30 AM – 1:00 PM UTC = 8:00 AM – 6:30 PM IST, Mon–Fri
+    - cron: "*/10 2-13 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping backend health endpoint
+        run: |
+          curl -sS --max-time 30 \
+            https://stocksense-api-12ii.onrender.com/health \
+            && echo "Server is alive" \
+            || echo "Ping failed (server may be starting up)"

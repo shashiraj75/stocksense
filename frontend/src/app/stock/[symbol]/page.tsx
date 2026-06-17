@@ -397,7 +397,7 @@ export default function StockPage() {
                     <Loader2 size={18} className="animate-spin text-brand-500 shrink-0" />
                     <div>
                       <p className="text-sm text-white font-medium">
-                        {failureCount === 0 ? "Running AI analysis…" : `Waking up server… (attempt ${failureCount + 1}/4)`}
+                        {failureCount === 0 ? "Running AI analysis…" : `Waking up server… (attempt ${Math.min(failureCount + 1, 8)}/8)`}
                       </p>
                       <p className="text-xs text-gray-500 mt-0.5">
                         {failureCount === 0
