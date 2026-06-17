@@ -840,8 +840,17 @@ class PredictionEngine:
                 score -= 5
                 reasons.append(f"Low promoter holding ({promoter:.1f}%) — limited insider conviction")
 
-        # Promoter pledge — pledged shares = margin call risk; a key Indian market red flag
-        pledge = screener_d.get("promoter_pledge_pct")
+        # Promoter pledge — fetch from NSE (real-time quarterly disclosure)
+        # screener.in doesn't expose pledge in static HTML; NSE API has the data
+        pledge = screener_d.get("promoter_pledge_pct")  # fallback if NSE fails
+        if market == "IN":
+            try:
+                from services.nse_pledge import get_promoter_pledge_pct
+                nse_pledge = get_promoter_pledge_pct(symbol)
+                if nse_pledge is not None:
+                    pledge = nse_pledge
+            except Exception:
+                pass
         if pledge is not None:
             if pledge > 50:
                 score -= 15

@@ -28,6 +28,51 @@ _SESSION.headers.update({
 })
 
 
+_url_cache: dict[str, str] = {}  # symbol -> resolved path
+
+# NSE symbol → screener.in path overrides for known mismatches in Nifty 100
+_SCREENER_OVERRIDES: dict[str, str] = {
+    "TATAMOTORS":   "/company/TMCV/consolidated/",
+    "M&M":          "/company/M&M/consolidated/",
+    "BAJAJ-AUTO":   "/company/BAJAJ-AUTO/consolidated/",
+    "HCLTECH":      "/company/HCL-Technologies/consolidated/",
+    "LTIM":         "",  # LTIMindtree merger not yet indexed on screener.in
+    "NIFTY50":      "",  # index, not a company
+}
+
+
+def _resolve_screener_url(symbol: str) -> str | None:
+    """
+    Return the screener.in path for a given NSE symbol.
+    Priority: static override map → search API → None.
+    """
+    if symbol in _url_cache:
+        return _url_cache[symbol]
+
+    # 1. Static overrides for known Nifty mismatches
+    if symbol in _SCREENER_OVERRIDES:
+        path = _SCREENER_OVERRIDES[symbol]
+        if path:
+            _url_cache[symbol] = path
+        return path or None
+
+    # 2. Try screener's search API with company name query
+    try:
+        resp = _SESSION.get(
+            f"https://www.screener.in/api/company/search/?q={symbol}&v=3&fts=1",
+            timeout=6,
+        )
+        if resp.status_code == 200:
+            for item in resp.json():
+                url = item.get("url", "")
+                if "/company/" in url and "/full-text-search/" not in url:
+                    _url_cache[symbol] = url
+                    return url
+    except Exception:
+        pass
+    return None
+
+
 def _parse_number(text: str) -> Optional[float]:
     """Convert screener's formatted numbers ('1,234.56', '12.3%', '-45.6 Cr') to float."""
     if not text:
@@ -55,8 +100,13 @@ def fetch_screener_data(symbol: str) -> dict:
 
     result: dict = {"symbol": sym, "source": "screener.in", "available": False}
 
-    # Try consolidated view first, fall back to standalone
-    for path in (f"/company/{sym}/consolidated/", f"/company/{sym}/"):
+    # Build URL candidates: direct match first, then search-resolved URL
+    paths = [f"/company/{sym}/consolidated/", f"/company/{sym}/"]
+    resolved = _resolve_screener_url(sym)
+    if resolved and resolved not in paths:
+        paths.insert(0, resolved)
+
+    for path in paths:
         url = f"https://www.screener.in{path}"
         try:
             resp = _SESSION.get(url, timeout=10)
