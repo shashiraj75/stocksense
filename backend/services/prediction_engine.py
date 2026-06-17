@@ -661,9 +661,11 @@ class PredictionEngine:
                         reasons.append(f"Operating loss — margin {op_margin*100:.1f}%")
 
             # ── Free Cash Flow (Cash Flow statement) ─────────────────────────
+            screener_cf = info.get("_screener_data") or {}
+            ocf_vals = capex_vals = None
+
             if cf is not None and not cf.empty:
-                ocf_row = None
-                capex_row = None
+                ocf_row = capex_row = None
                 for label in ["Operating Cash Flow", "Total Cash From Operating Activities"]:
                     if label in cf.index:
                         ocf_row = cf.loc[label].dropna()
@@ -672,27 +674,32 @@ class PredictionEngine:
                     if label in cf.index:
                         capex_row = cf.loc[label].dropna()
                         break
-
                 if ocf_row is not None and len(ocf_row) >= 1:
-                    ocf_vals = ocf_row.sort_index().values
-                    capex_vals = capex_row.sort_index().values if capex_row is not None else None
+                    ocf_vals = list(ocf_row.sort_index().values)
+                    capex_vals = list(capex_row.sort_index().values) if capex_row is not None else None
 
-                    fcf_latest = ocf_vals[-1]
-                    if capex_vals is not None and len(capex_vals) >= 1:
-                        fcf_latest = ocf_vals[-1] - abs(capex_vals[-1])
+            # Fall back to screener.in cashflow for Indian stocks (yfinance often empty)
+            if ocf_vals is None and screener_cf.get("operating_cf_annual_cr"):
+                ocf_vals = [v for v in screener_cf["operating_cf_annual_cr"] if v is not None]
+                inv_cf = screener_cf.get("investing_cf_annual_cr") or []
+                capex_vals = [abs(v) for v in inv_cf if v is not None] if inv_cf else None
 
-                    if fcf_latest > 0:
-                        score += 10
-                        reasons.append(f"Positive free cash flow — company generates real cash")
-                        # FCF growing?
-                        if len(ocf_vals) >= 2:
-                            fcf_prev = ocf_vals[-2] - (abs(capex_vals[-2]) if capex_vals is not None and len(capex_vals) >= 2 else 0)
-                            if fcf_latest > fcf_prev * 1.10:
-                                score += 6
-                                reasons.append("Free cash flow growing — strengthening cash generation")
-                    else:
-                        score -= 8
-                        reasons.append("Negative free cash flow — burning more cash than it generates")
+            if ocf_vals and len(ocf_vals) >= 1:
+                fcf_latest = ocf_vals[-1]
+                if capex_vals is not None and len(capex_vals) >= 1:
+                    fcf_latest = ocf_vals[-1] - abs(capex_vals[-1])
+
+                if fcf_latest > 0:
+                    score += 10
+                    reasons.append("Positive free cash flow — company generates real cash")
+                    if len(ocf_vals) >= 2:
+                        fcf_prev = ocf_vals[-2] - (abs(capex_vals[-2]) if capex_vals is not None and len(capex_vals) >= 2 else 0)
+                        if fcf_latest > fcf_prev * 1.10:
+                            score += 6
+                            reasons.append("Free cash flow growing — strengthening cash generation")
+                else:
+                    score -= 8
+                    reasons.append("Negative free cash flow — burning more cash than it generates")
 
             # ── Balance Sheet: Liquidity & Debt ─────────────────────────────
             if bs is not None and not bs.empty:

@@ -274,6 +274,29 @@ def _parse_screener_page(soup: BeautifulSoup, symbol: str) -> dict:
                 elif "pledge" in label:
                     data["promoter_pledge_pct"] = latest
 
+    # ── Cash Flow statement — annual operating CF & capex ────────────────────
+    cf_section = soup.find("section", id="cash-flow")
+    if cf_section:
+        table = cf_section.find("table")
+        if table:
+            rows = table.find_all("tr")
+            for row in rows:
+                cells = row.find_all("td")
+                if len(cells) < 2:
+                    continue
+                label = cells[0].get_text(strip=True).lower()
+                vals = [_parse_number(c.get_text(strip=True)) for c in cells[1:]]
+                vals = [v for v in vals if v is not None]
+                if not vals:
+                    continue
+                if "operating" in label or "cash from operations" in label:
+                    data["operating_cf_annual_cr"] = vals  # oldest → newest
+                    data["operating_cf_latest_cr"] = vals[-1]
+                elif "investing" in label or "cash from investing" in label:
+                    # capex is typically the dominant investing outflow
+                    data["investing_cf_annual_cr"] = vals
+                    data["investing_cf_latest_cr"] = vals[-1]
+
     # ── Quarterly results — last 8 quarters of revenue + PAT ─────────────────
     quarterly_section = soup.find("section", id="quarters")
     if quarterly_section:
@@ -365,6 +388,11 @@ def augment_info_with_screener(info: dict, symbol: str) -> dict:
             "dii_quarterly_pct":         screener.get("dii_quarterly_pct"),
             "fii_quarterly_pct":         screener.get("fii_quarterly_pct"),
             "promoter_quarterly_pct":    screener.get("promoter_quarterly_pct"),
+            # Cash flow
+            "operating_cf_annual_cr":    screener.get("operating_cf_annual_cr"),
+            "operating_cf_latest_cr":    screener.get("operating_cf_latest_cr"),
+            "investing_cf_annual_cr":    screener.get("investing_cf_annual_cr"),
+            "investing_cf_latest_cr":    screener.get("investing_cf_latest_cr"),
             # Banking-specific KPIs
             "nim_pct":                   screener.get("nim_pct"),
             "net_npa_pct":               screener.get("net_npa_pct"),
