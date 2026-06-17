@@ -2,8 +2,8 @@ name: Daily Stock Picks (9 AM IST)
 
 on:
   schedule:
-    # 3:30 UTC = 9:00 AM IST (UTC+5:30)
-    - cron: "30 3 * * 1-5"   # Monday–Friday only (market days)
+    # 3:00 UTC = 8:30 AM IST — generation takes ~10 min, results ready by 9 AM IST
+    - cron: "0 3 * * 1-5"   # Monday–Friday only (market days)
   workflow_dispatch:           # allow manual trigger from GitHub UI
 
 jobs:
