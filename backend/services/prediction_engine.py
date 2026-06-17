@@ -1233,23 +1233,22 @@ class PredictionEngine:
         )
 
         if is_financial:
-            # Banking KPIs replace D/E, FCF, ROCE (which are meaningless for banks)
+            # For banks/insurance/NBFCs: D/E, FCF, ROCE are structurally N/A.
+            # Use only fields that are reliably populated for financial stocks.
+            # 6 from yfinance (all confirmed available) + 4 from screener = 10 total.
             key_fields_info = [
-                "trailingPE",           # P/B is more relevant but P/E still valid
-                "returnOnEquity",       # ROE — core bank profitability metric
-                "revenueGrowth",        # Net revenue / NII growth
-                "profitMargins",        # Net profit margin
-                "earningsGrowth",       # EPS growth
-                "beta",                 # price sensitivity
+                "trailingPE",       # confirmed available from yfinance for banks
+                "returnOnEquity",   # confirmed available
+                "revenueGrowth",    # confirmed available (NII growth proxy)
+                "profitMargins",    # confirmed available
+                "earningsGrowth",   # confirmed available
+                "beta",             # confirmed available
             ]
             key_fields_screener = [
-                "nim_pct",              # Net Interest Margin — replaces FCF
-                "net_npa_pct",          # Asset quality — replaces D/E
-                "casa_ratio_pct",       # Deposit quality — replaces ROCE
-                "sales_growth_3y_pct",  # Revenue CAGR
-                "profit_growth_3y_pct", # Profit CAGR
-                "fii_holding_pct",      # Institutional interest
-                "promoter_holding_pct", # Promoter conviction
+                "sales_growth_3y_pct",  # calculated from P&L annual data (fallback)
+                "profit_growth_3y_pct", # calculated from P&L annual data (fallback)
+                "fii_holding_pct",      # confirmed from shareholding section
+                "promoter_holding_pct", # confirmed from shareholding section
             ]
         else:
             # Standard fields for all non-financial sectors

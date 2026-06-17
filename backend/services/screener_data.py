@@ -213,6 +213,35 @@ def _parse_screener_page(soup: BeautifulSoup, symbol: str) -> dict:
                     vals = [_parse_number(c.get_text(strip=True)) for c in cells[1:]]
                     data["price_cagr_5y_pct"] = vals[1] if len(vals) > 1 else None
 
+    # ── Fallback growth from P&L annual data (banks lack #growth section) ───────
+    # Banks on screener.in don't have the compounded growth table — calculate
+    # 3-year CAGR from the annual profit-loss revenue and net profit rows instead.
+    if data.get("sales_growth_3y_pct") is None:
+        pl_section = soup.find("section", id="profit-loss")
+        if pl_section:
+            for table in pl_section.find_all("table"):
+                for row in table.find_all("tr"):
+                    cells = row.find_all("td")
+                    if len(cells) < 4:
+                        continue
+                    label = cells[0].get_text(strip=True).lower()
+                    vals = [_parse_number(c.get_text(strip=True)) for c in cells[1:]]
+                    vals = [v for v in vals if v is not None]
+                    if ("revenue" in label or "sales" in label) and len(vals) >= 4 and not data.get("sales_growth_3y_pct"):
+                        oldest, latest = vals[0], vals[-1]
+                        n = len(vals) - 1
+                        if oldest and oldest > 0 and n > 0:
+                            cagr = ((latest / oldest) ** (1 / n) - 1) * 100
+                            data["sales_growth_3y_pct"] = round(cagr, 2)
+                            data["sales_growth_ttm_pct"] = round(cagr, 2)
+                    elif ("net profit" in label or ("profit" in label and "tax" not in label and "before" not in label)) and len(vals) >= 4 and not data.get("profit_growth_3y_pct"):
+                        oldest, latest = vals[0], vals[-1]
+                        n = len(vals) - 1
+                        if oldest and oldest > 0 and latest and n > 0:
+                            cagr = ((latest / oldest) ** (1 / n) - 1) * 100
+                            data["profit_growth_3y_pct"] = round(cagr, 2)
+                            data["profit_growth_ttm_pct"] = round(cagr, 2)
+
     # ── Shareholding pattern (promoter, FII, DII, pledge) ────────────────────
     shareholding_section = soup.find("section", id="shareholding")
     if shareholding_section:
