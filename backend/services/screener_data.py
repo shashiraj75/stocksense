@@ -147,7 +147,7 @@ def _parse_screener_page(soup: BeautifulSoup, symbol: str) -> dict:
                     vals = [_parse_number(c.get_text(strip=True)) for c in cells[1:]]
                     data["price_cagr_5y_pct"] = vals[1] if len(vals) > 1 else None
 
-    # ── Shareholding pattern (promoter, FII, DII) ────────────────────────────
+    # ── Shareholding pattern (promoter, FII, DII, pledge) ────────────────────
     shareholding_section = soup.find("section", id="shareholding")
     if shareholding_section:
         table = shareholding_section.find("table")
@@ -169,8 +169,10 @@ def _parse_screener_page(soup: BeautifulSoup, symbol: str) -> dict:
                     data["dii_holding_pct"] = latest
                 elif "public" in label:
                     data["public_holding_pct"] = latest
+                elif "pledge" in label:
+                    data["promoter_pledge_pct"] = latest
 
-    # ── Quarterly results — extract latest quarter revenue + PAT ─────────────
+    # ── Quarterly results — last 8 quarters of revenue + PAT ─────────────────
     quarterly_section = soup.find("section", id="quarters")
     if quarterly_section:
         table = quarterly_section.find("table")
@@ -181,11 +183,15 @@ def _parse_screener_page(soup: BeautifulSoup, symbol: str) -> dict:
                 if len(cells) < 2:
                     continue
                 label = cells[0].get_text(strip=True).lower()
-                latest = _parse_number(cells[-1].get_text(strip=True))
+                # Collect all available quarterly values (newest = last column)
+                vals = [_parse_number(c.get_text(strip=True)) for c in cells[1:]]
+                vals = [v for v in vals if v is not None]
                 if "sales" in label or "revenue" in label:
-                    data["latest_quarter_revenue_cr"] = latest
+                    data["latest_quarter_revenue_cr"] = vals[-1] if vals else None
+                    data["quarterly_revenue_cr"] = vals  # full history
                 elif "net profit" in label or "pat" in label:
-                    data["latest_quarter_pat_cr"] = latest
+                    data["latest_quarter_pat_cr"] = vals[-1] if vals else None
+                    data["quarterly_pat_cr"] = vals  # full history for earnings stability
 
     return data
 
@@ -239,6 +245,7 @@ def augment_info_with_screener(info: dict, symbol: str) -> dict:
         enriched["_screener_available"] = True
         enriched["_screener_data"] = {
             "promoter_holding_pct":      screener.get("promoter_holding_pct"),
+            "promoter_pledge_pct":       screener.get("promoter_pledge_pct"),
             "fii_holding_pct":           screener.get("fii_holding_pct"),
             "dii_holding_pct":           screener.get("dii_holding_pct"),
             "roce_pct":                  screener.get("roce_pct"),
@@ -250,6 +257,8 @@ def augment_info_with_screener(info: dict, symbol: str) -> dict:
             "book_value":                screener.get("book_value"),
             "latest_quarter_revenue_cr": screener.get("latest_quarter_revenue_cr"),
             "latest_quarter_pat_cr":     screener.get("latest_quarter_pat_cr"),
+            "quarterly_pat_cr":          screener.get("quarterly_pat_cr"),
+            "quarterly_revenue_cr":      screener.get("quarterly_revenue_cr"),
         }
         return enriched
 

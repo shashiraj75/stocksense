@@ -838,6 +838,22 @@ class PredictionEngine:
                 score -= 5
                 reasons.append(f"Low promoter holding ({promoter:.1f}%) — limited insider conviction")
 
+        # Promoter pledge — pledged shares = margin call risk; a key Indian market red flag
+        pledge = screener_d.get("promoter_pledge_pct")
+        if pledge is not None:
+            if pledge > 50:
+                score -= 15
+                reasons.append(f"High promoter pledge ({pledge:.1f}%) — severe margin call risk; avoid")
+            elif pledge > 25:
+                score -= 8
+                reasons.append(f"Elevated promoter pledge ({pledge:.1f}%) — forced selling risk if stock falls")
+            elif pledge > 10:
+                score -= 3
+                reasons.append(f"Moderate promoter pledge ({pledge:.1f}%) — watch for increase")
+            elif pledge == 0:
+                score += 3
+                reasons.append("Zero promoter pledge — no forced selling risk")
+
         return {"score": max(0, min(100, score)), "reasons": reasons}
 
     def _analyst_score(self, info: dict, market: str = "US") -> dict:
@@ -1192,12 +1208,36 @@ class PredictionEngine:
         factor_agreement = round(sum(1 for s in factor_scores if _agrees(s)) / len(factor_scores) * 100)
 
         # ── earnings_stability ───────────────────────────────────────────────
+        # Primary: earnings_revision from quality factors (yfinance EPS history)
+        # Fallback: quarterly PAT trend from screener.in (works for all Indian stocks)
         earnings_stability = 50
         earnings_stability_available = False
         if quality:
             er = quality.get("breakdown", {}).get("earnings_revision")
             if isinstance(er, dict) and er.get("score") is not None:
                 earnings_stability = round(er["score"])
+                earnings_stability_available = True
+
+        if not earnings_stability_available:
+            pat_history = screener_d.get("quarterly_pat_cr") or []
+            # Need at least 4 quarters to assess a trend
+            if len(pat_history) >= 4:
+                recent = pat_history[-4:]
+                # Score: proportion of profitable quarters + growth trend
+                profitable = sum(1 for p in recent if p > 0)
+                profit_ratio = profitable / len(recent)  # 0→1
+                # Growth: compare latest half vs prior half
+                mid = len(recent) // 2
+                prior_avg = sum(recent[:mid]) / mid if mid else 0
+                recent_avg = sum(recent[mid:]) / (len(recent) - mid)
+                if prior_avg > 0:
+                    growth = (recent_avg - prior_avg) / abs(prior_avg)
+                    growth_score = max(-1.0, min(1.0, growth))
+                else:
+                    growth_score = 0.0
+                # Combine: 60% profitability consistency + 40% growth direction
+                raw = profit_ratio * 0.6 + (0.5 + growth_score * 0.5) * 0.4
+                earnings_stability = round(raw * 100)
                 earnings_stability_available = True
 
         # ── regime_certainty ─────────────────────────────────────────────────
