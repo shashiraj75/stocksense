@@ -1137,7 +1137,7 @@ class PredictionEngine:
         confidence_score, confidence_band, confidence_components = self._confidence_engine(
             signal=signal, tech_score=tech_score, fund_score=fund["score"],
             sentiment_score=sentiment["score"], quality=quality, regime=regime,
-            info=info or {}, horizon=horizon, sentiment_obj=sentiment,
+            info=info or {}, horizon=horizon, sentiment_obj=sentiment, market=market,
         )
 
         # Build reasoning — most impactful signals first
@@ -1273,24 +1273,44 @@ class PredictionEngine:
                 "promoter_holding_pct", # confirmed from shareholding section
             ]
         else:
-            # Standard fields for all non-financial sectors
-            key_fields_info = [
-                "trailingPE",
-                "returnOnEquity",
-                "revenueGrowth",
-                "debtToEquity",
-                "profitMargins",
-                "earningsGrowth",
-                "freeCashflow",
-                "beta",
-                "returnOnCapitalEmployed",  # screener fills from roce_pct
-            ]
-            key_fields_screener = [
-                "sales_growth_3y_pct",
-                "profit_growth_3y_pct",
-                "fii_holding_pct",
-                "promoter_holding_pct",
-            ]
+            is_indian = kwargs.get("market", "US") == "IN"
+            if is_indian:
+                # Indian non-financial: freeCashflow & earningsGrowth structurally
+                # absent from yfinance for NSE — use screener fields instead
+                key_fields_info = [
+                    "trailingPE",
+                    "returnOnEquity",
+                    "revenueGrowth",
+                    "debtToEquity",
+                    "profitMargins",
+                    "beta",
+                ]
+                key_fields_screener = [
+                    "sales_growth_3y_pct",
+                    "profit_growth_3y_pct",
+                    "roce_pct",
+                    "fii_holding_pct",
+                    "promoter_holding_pct",
+                ]
+            else:
+                # US stocks — yfinance returns full fundamental set
+                key_fields_info = [
+                    "trailingPE",
+                    "returnOnEquity",
+                    "revenueGrowth",
+                    "debtToEquity",
+                    "profitMargins",
+                    "earningsGrowth",
+                    "freeCashflow",
+                    "beta",
+                    "returnOnCapitalEmployed",
+                ]
+                key_fields_screener = [
+                    "sales_growth_3y_pct",
+                    "profit_growth_3y_pct",
+                    "fii_holding_pct",
+                    "promoter_holding_pct",
+                ]
 
         present = sum(1 for k in key_fields_info if info.get(k) is not None)
         present += sum(1 for k in key_fields_screener if screener_d.get(k) is not None)
