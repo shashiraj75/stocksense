@@ -19,11 +19,14 @@ export interface FactorAttribution {
 }
 
 export function FactorAttributionWaterfall({ data }: { data: FactorAttribution }) {
-  const sorted = [...data.contributions].sort((a, b) => b.contribution - a.contribution);
+  const sorted = [...data.contributions]
+    .filter((c) => c.contribution !== 0)
+    .sort((a, b) => b.contribution - a.contribution);
   const chartData = sorted.map((c) => ({
     name: c.label,
     value: c.contribution,
   }));
+  const chartHeight = Math.max(160, sorted.length * 32);
 
   return (
     <div className="bg-dark-card border border-dark-border rounded-xl p-5 space-y-4">
@@ -34,7 +37,7 @@ export function FactorAttributionWaterfall({ data }: { data: FactorAttribution }
         </span>
       </div>
 
-      <div className="h-56">
+      <div style={{ height: chartHeight }}>
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={chartData} layout="vertical" margin={{ left: 8, right: 48, top: 4, bottom: 4 }}>
             <XAxis type="number" hide />
