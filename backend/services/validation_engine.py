@@ -69,8 +69,8 @@ HORIZON_STEP  = {"short": 5,  "medium": 10, "long": 21}
 HORIZON_THRESHOLDS = {"short": 0.02, "medium": 0.04, "long": 0.10}
 HORIZON_PERIOD = {"short": "3y", "medium": "5y", "long": "7y"}
 
-BUY_THRESHOLD  = 68   # composite score ≥ this → BUY (raised from 62 for higher precision)
-SELL_THRESHOLD = 42   # composite score ≤ this → SELL (tightened to reduce false sells)
+BUY_THRESHOLD  = 65   # composite score ≥ this → BUY
+SELL_THRESHOLD = 42   # composite score ≤ this → SELL
 
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -550,7 +550,8 @@ def get_latest_results(horizon: str | None = None) -> dict:
                 return {"available": False, "message": "No validation run found. Run /api/validation/run first."}
             return {"available": True, **json.loads(row["summary"])}
     except Exception as e:
-        return {"available": False, "error": str(e)}
+        import traceback
+        return {"available": False, "error": str(e), "trace": traceback.format_exc()}
 
 
 def get_per_stock_results(run_id: int | None = None, horizon: str = "medium") -> list[dict]:
