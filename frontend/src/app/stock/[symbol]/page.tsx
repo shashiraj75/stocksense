@@ -297,12 +297,8 @@ export default function StockPage() {
           {/* Trade Levels — shown above prediction panels */}
           {prediction?.signal && (() => {
             const tl = (prediction as any).trade_levels;
-            // Hide for HOLD (no directional conviction) or missing values
             if (!tl || tl.entry_low == null || tl.entry_high == null || tl.stop_loss == null || tl.take_profit == null) return null;
             const sig = prediction.signal;
-            const isEffectiveHold = sig === "HOLD" ||
-              (sig === "BUY" && (prediction.confidence ?? 100) < 45);
-            if (isEffectiveHold) return null;
             const cp: number | null = prediction.current_price ?? null;
             const fmt = (n: number) => n.toLocaleString();
             const pctFrom = (price: number) => cp ? ((price - cp) / cp * 100).toFixed(1) : null;
@@ -375,10 +371,6 @@ export default function StockPage() {
                 </h2>
                 {prediction?.target_price && prediction?.current_price && (() => {
                   const pct = ((prediction.target_price - prediction.current_price) / prediction.current_price) * 100;
-                  const isHold = prediction.signal === "HOLD" ||
-                    (prediction.signal === "BUY" && (prediction.confidence ?? 100) < 45);
-                  // Hide target price for HOLD — ATR-derived number without directional conviction is misleading
-                  if (isHold) return null;
                   const up = pct >= 0;
                   const pctColor = up ? "text-bull" : "text-bear";
                   return (
