@@ -144,9 +144,6 @@ export default function Dashboard() {
                 <span className={clsx("relative inline-flex rounded-full h-2 w-2", marketStatus.isOpen ? "bg-green-500" : "bg-red-500")}></span>
               </span>
               {marketStatus.isOpen ? "Live" : marketStatus.label}
-              {marketStatus.nextEventLabel && (
-                <span className="text-gray-600">· {marketStatus.nextEventLabel}</span>
-              )}
             </div>
           )}
         </div>
