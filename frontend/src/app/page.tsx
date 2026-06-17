@@ -195,7 +195,7 @@ export default function Dashboard() {
           </div>
         ) : (
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            {movers?.movers.map((m) => (
+            {[...(movers?.movers ?? [])].sort((a, b) => b.change_pct - a.change_pct).map((m) => (
               <Link key={m.symbol} href={`/stock/${m.symbol}?market=${market}`}
                 className="p-4 rounded-xl bg-dark-card border border-dark-border hover:border-brand-500/50 transition-colors">
                 <p className="font-mono font-bold text-white">{m.symbol}</p>
