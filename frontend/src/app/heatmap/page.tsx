@@ -149,19 +149,19 @@ export default function HeatmapPage() {
                 </span>
               </div>
 
-              {/* Stock tiles */}
-              <div className="flex flex-wrap gap-2">
+              {/* Stock tiles — grow to fill full width */}
+              <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${sector.stocks.length}, minmax(0, 1fr))` }}>
                 {sector.stocks.map(stock => (
                   <button
                     key={stock.symbol}
                     onClick={() => router.push(`/stock/${stock.symbol}?market=${market}`)}
                     title={stock.change_pct !== null ? `${stock.symbol}: ${stock.change_pct >= 0 ? "+" : ""}${stock.change_pct}%` : `${stock.symbol}: no data`}
                     className={clsx(
-                      "rounded-lg px-3 py-2 text-center min-w-[80px] transition-opacity hover:opacity-75 active:scale-95 cursor-pointer",
+                      "rounded-lg px-2 py-3 text-center w-full transition-opacity hover:opacity-75 active:scale-95 cursor-pointer",
                       getColor(stock.change_pct)
                     )}
                   >
-                    <div className="text-xs font-bold font-mono leading-tight">{stock.symbol}</div>
+                    <div className="text-xs font-bold font-mono leading-tight truncate">{stock.symbol}</div>
                     <div className="text-xs mt-0.5 font-medium tabular-nums">
                       {stock.change_pct !== null
                         ? `${stock.change_pct >= 0 ? "+" : ""}${stock.change_pct}%`
