@@ -64,10 +64,29 @@ export const fetchOHLCV = (symbol: string, market: Market, period = "1y", interv
     .get<{ data: OHLCVBar[] }>(`/api/stocks/ohlcv/${symbol}`, { params: { market, period, interval } })
     .then((r) => r.data);
 
-export const fetchPrediction = (symbol: string, market: Market, horizon: Horizon) =>
-  api
-    .get<Prediction>(`/api/predictions/${symbol}`, { params: { market, horizon } })
-    .then((r) => r.data);
+export const fetchPrediction = async (
+  symbol: string,
+  market: Market,
+  horizon: Horizon,
+  onComputing?: () => void,
+): Promise<Prediction> => {
+  // Poll up to 120 s (24 × 5 s) for background computation to complete
+  for (let attempt = 0; attempt < 24; attempt++) {
+    const res = await api.get<Prediction | { status: string; retry_after?: number }>(
+      `/api/predictions/${symbol}`,
+      {
+        params: { market, horizon },
+        validateStatus: (s) => s === 200 || s === 202,
+      },
+    );
+    if (res.status === 200) return res.data as Prediction;
+    // 202 = computing in background — notify caller and wait
+    if (attempt === 0) onComputing?.();
+    const delay = ((res.data as { retry_after?: number }).retry_after ?? 5) * 1000;
+    await new Promise((r) => setTimeout(r, delay));
+  }
+  throw new Error("Prediction timed out after 120 s");
+};
 
 export const fetchNews = (symbol: string, market: Market) =>
   api

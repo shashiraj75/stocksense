@@ -85,6 +85,8 @@ export default function StockPage() {
   const [btRunning, setBtRunning] = useState(false);
   const [btData, setBtData] = useState<BacktestResult | null>(null);
   const [btError, setBtError] = useState("");
+  const [isComputing, setIsComputing] = useState(false);
+  const [computeSeconds, setComputeSeconds] = useState(0);
 
   const horizon = tab === "backtest" ? "short" : tab === "history" ? "medium" : (tab as Horizon);
 
@@ -112,16 +114,30 @@ export default function StockPage() {
     ? cryptoMovers?.movers.find(m => m.symbol === symbol) ?? null
     : null;
 
-  const { data: prediction, isLoading: predLoading, isFetching: predFetching, refetch: refetchPrediction, isError: predError, failureCount } = useQuery({
+  const { data: prediction, isLoading: predLoading, isFetching: predFetching, refetch: refetchPrediction, isError: predError } = useQuery({
     queryKey: ["prediction", symbol, isCrypto ? "CRYPTO" : market, horizon],
-    queryFn: () => fetchPrediction(symbol, isCrypto ? "CRYPTO" as any : market, horizon),
+    queryFn: () => fetchPrediction(symbol, isCrypto ? "CRYPTO" as any : market, horizon, () => {
+      setIsComputing(true);
+      setComputeSeconds(0);
+    }),
     enabled: tab !== "backtest",
-    retry: 12,                                    // cold start (60s) + prediction (30s) needs ~90s total
-    retryDelay: (attempt) => Math.min(12000, 4000 + attempt * 1500), // ramp 4s→12s, covers 150s total
+    retry: 2,           // fetchPrediction already polls for 120s; only retry on hard errors
+    retryDelay: 3000,
     placeholderData: (prev) => prev,
     staleTime: 14 * 60_000,
     refetchOnWindowFocus: false,
   });
+
+  // Elapsed timer while background prediction is running
+  useEffect(() => {
+    if (!isComputing || !predLoading) {
+      setIsComputing(false);
+      setComputeSeconds(0);
+      return;
+    }
+    const id = setInterval(() => setComputeSeconds((s) => s + 1), 1000);
+    return () => clearInterval(id);
+  }, [isComputing, predLoading]);
 
   const [marketStatus, setMarketStatus] = useState(() => getMarketStatus(isCrypto ? "CRYPTO" : market));
   useEffect(() => {
@@ -144,7 +160,7 @@ export default function StockPage() {
       if (h === horizon) continue;
       queryClient.prefetchQuery({
         queryKey: ["prediction", symbol, market, h],
-        queryFn: () => fetchPrediction(symbol, market, h),
+        queryFn: () => fetchPrediction(symbol, market, h),  // no onComputing — prefetch is silent
         staleTime: 14 * 60_000,
       });
     }
@@ -391,17 +407,22 @@ export default function StockPage() {
                     <Loader2 size={18} className="animate-spin text-brand-500 shrink-0" />
                     <div>
                       <p className="text-sm text-white font-medium">
-                        {failureCount === 0 ? "Running AI analysis…" : `Waking up server… (attempt ${Math.min(failureCount + 1, 13)}/13)`}
+                        {isComputing
+                          ? `Computing prediction… ${computeSeconds}s`
+                          : "Running AI analysis…"}
                       </p>
                       <p className="text-xs text-gray-500 mt-0.5">
-                        {failureCount === 0
-                          ? "Analysing technicals, fundamentals & news sentiment"
-                          : "Free tier server was sleeping — takes ~60s to wake up. Hang tight."}
+                        {isComputing
+                          ? "Server is crunching technicals, fundamentals & news in the background"
+                          : "Analysing technicals, fundamentals & news sentiment"}
                       </p>
                     </div>
                   </div>
                   <div className="w-full h-1.5 bg-dark-border rounded-full overflow-hidden">
-                    <div className="h-full bg-brand-500 rounded-full animate-[progress_60s_linear_forwards]" style={{ width: failureCount > 0 ? "80%" : "40%" }} />
+                    <div
+                      className="h-full bg-brand-500 rounded-full transition-all duration-1000"
+                      style={{ width: isComputing ? `${Math.min(95, (computeSeconds / 90) * 100)}%` : "15%" }}
+                    />
                   </div>
                   {[1, 2, 3].map((i) => (
                     <div key={i} className="h-4 bg-dark-border rounded animate-pulse" />
@@ -409,24 +430,12 @@ export default function StockPage() {
                 </div>
               ) : predError && !prediction ? (
                 <div className="space-y-3 py-2">
-                  {failureCount < 7 ? (
-                    <>
-                      <div className="flex items-center gap-2 text-yellow-400 text-sm font-medium">
-                        <Loader2 size={14} className="animate-spin" />
-                        Loading prediction… attempt {failureCount + 1} of 8
-                      </div>
-                      <p className="text-gray-500 text-xs">Server is processing — may take up to 60 seconds on first load.</p>
-                    </>
-                  ) : (
-                    <>
-                      <p className="text-red-400 text-sm font-medium">Failed to load prediction</p>
-                      <p className="text-gray-500 text-xs">The server isn&apos;t responding. Try again in a moment.</p>
-                      <button onClick={() => refetchPrediction()}
-                        className="px-4 py-2 rounded-lg bg-brand-500 text-white text-sm font-medium hover:bg-brand-600 transition-colors">
-                        Retry Now
-                      </button>
-                    </>
-                  )}
+                  <p className="text-red-400 text-sm font-medium">Failed to load prediction</p>
+                  <p className="text-gray-500 text-xs">The server isn&apos;t responding. Try again in a moment.</p>
+                  <button onClick={() => { setIsComputing(false); refetchPrediction(); }}
+                    className="px-4 py-2 rounded-lg bg-brand-500 text-white text-sm font-medium hover:bg-brand-600 transition-colors">
+                    Retry Now
+                  </button>
                 </div>
               ) : (prediction as any)?.error ? (
                 <p className="text-red-400 text-sm">{(prediction as any).error}</p>

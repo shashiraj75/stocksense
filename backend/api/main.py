@@ -89,6 +89,40 @@ async def _outcome_resolver_loop():
         await asyncio.sleep(6 * 3600)
 
 
+# Popular stocks to pre-warm at startup so the first user request always hits cache
+_WARMUP_STOCKS = [
+    ("RELIANCE", "IN"), ("INFY", "IN"), ("TCS", "IN"), ("HDFCBANK", "IN"),
+    ("SUNPHARMA", "IN"), ("WIPRO", "IN"), ("ICICIBANK", "IN"), ("TATAMOTORS", "IN"),
+    ("AAPL", "US"), ("MSFT", "US"), ("NVDA", "US"), ("GOOGL", "US"),
+]
+
+async def _warmup_loop():
+    """Pre-compute predictions for popular stocks after startup so cache is hot."""
+    await asyncio.sleep(90)  # wait for server to fully start + universe refresh
+    from api.routers.predictions import engine, _computing
+    from services.prediction_engine import _pred_cache, _PRED_TTL
+    import time
+    print("[warmup] Starting prediction pre-warm for popular stocks…")
+    for sym, mkt in _WARMUP_STOCKS:
+        for horizon in ("short", "medium"):
+            key = f"{sym}:{mkt}:{horizon}"
+            cached = _pred_cache.get(key)
+            if cached and (time.time() - cached[0]) < _PRED_TTL:
+                continue  # already cached
+            if key in _computing:
+                continue  # already computing
+            _computing.add(key)
+            try:
+                await engine.predict(sym, mkt, horizon)
+                print(f"[warmup] {key} ✓")
+            except Exception as e:
+                print(f"[warmup] {key} failed: {e}")
+            finally:
+                _computing.discard(key)
+            await asyncio.sleep(2)  # small gap to avoid rate limits
+    print("[warmup] Pre-warm complete.")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if os.getenv("USE_POSTGRES") == "1":
@@ -101,11 +135,13 @@ async def lifespan(app: FastAPI):
     task = asyncio.create_task(_weekly_refresh_loop())
     keepalive = asyncio.create_task(_keepalive_loop())
     outcome_task = asyncio.create_task(_outcome_resolver_loop())
+    warmup_task = asyncio.create_task(_warmup_loop())
     yield
     task.cancel()
     keepalive.cancel()
     outcome_task.cancel()
-    for t in (task, keepalive, outcome_task):
+    warmup_task.cancel()
+    for t in (task, keepalive, outcome_task, warmup_task):
         try:
             await t
         except asyncio.CancelledError:
