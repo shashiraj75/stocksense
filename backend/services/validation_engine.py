@@ -133,8 +133,11 @@ def _init_db():
         if _db_initialised:
             return
         if _USE_POSTGRES:
-            with _pg_conn() as conn:
+            conn = _pg_conn()
+            try:
                 conn.execute(_PG_SCHEMA)
+            finally:
+                conn.close()
         else:
             with _get_sqlite_conn() as c:
                 c.executescript("""
@@ -599,23 +602,27 @@ def run_validation(horizon: str = "medium", max_workers: int = 6) -> dict:
 
         with _db_lock:
             if _USE_POSTGRES:
-                with _pg_conn() as conn:
-                    row = conn.execute(
-                        "INSERT INTO val_runs (run_at, horizon, n_stocks, n_signals, summary) "
-                        "VALUES (%s,%s,%s,%s,%s) RETURNING id",
-                        (metrics["run_at"], horizon, n_stocks, len(all_signals),
-                         json.dumps(clean_metrics))
-                    ).fetchone()
-                    run_id = row[0]
-                    conn.executemany(
-                        """INSERT INTO val_signals
-                           (run_id, symbol, horizon, signal_date, composite_score,
-                            tech_score, rs_score, obv_score, mfi_score,
-                            predicted, fwd_return_pct, nifty_fwd_ret_pct, alpha_pct,
-                            actual_direction, correct)
-                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                        [(run_id,) + r for r in signal_rows]
-                    )
+                conn = _pg_conn()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "INSERT INTO val_runs (run_at, horizon, n_stocks, n_signals, summary) "
+                            "VALUES (%s,%s,%s,%s,%s) RETURNING id",
+                            (metrics["run_at"], horizon, n_stocks, len(all_signals),
+                             json.dumps(clean_metrics))
+                        )
+                        run_id = cur.fetchone()[0]
+                        cur.executemany(
+                            """INSERT INTO val_signals
+                               (run_id, symbol, horizon, signal_date, composite_score,
+                                tech_score, rs_score, obv_score, mfi_score,
+                                predicted, fwd_return_pct, nifty_fwd_ret_pct, alpha_pct,
+                                actual_direction, correct)
+                               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                            [(run_id,) + r for r in signal_rows]
+                        )
+                finally:
+                    conn.close()
             else:
                 with _get_sqlite_conn() as conn:
                     cur = conn.execute(
@@ -645,25 +652,28 @@ def run_validation(horizon: str = "medium", max_workers: int = 6) -> dict:
         raise
 
 
-def _fetchone(sql_pg: str, sql_sq: str, params):
+def _fetchone(sql_pg: str, sql_sq: str, params=()):
     if _USE_POSTGRES:
-        with _pg_conn() as conn:
-            row = conn.execute(sql_pg, params).fetchone()
-        return row
+        conn = _pg_conn()
+        try:
+            return conn.execute(sql_pg, params).fetchone()
+        finally:
+            conn.close()
     with _get_sqlite_conn() as conn:
-        row = conn.execute(sql_sq, params).fetchone()
-    return row
+        conn.row_factory = sqlite3.Row
+        return conn.execute(sql_sq, params).fetchone()
 
 
 def _fetchall(sql_pg: str, sql_sq: str, params=()):
     if _USE_POSTGRES:
-        with _pg_conn() as conn:
-            rows = conn.execute(sql_pg, params).fetchall()
-        return rows
+        conn = _pg_conn()
+        try:
+            return conn.execute(sql_pg, params).fetchall()
+        finally:
+            conn.close()
     with _get_sqlite_conn() as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(sql_sq, params).fetchall()
-    return rows
+        return conn.execute(sql_sq, params).fetchall()
 
 
 def get_latest_results(horizon: str | None = None) -> dict:
