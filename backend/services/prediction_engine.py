@@ -307,6 +307,25 @@ class PredictionEngine:
             except Exception as e:
                 print(f"[screener] augmentation failed for {symbol}: {e}")
 
+            # ── BSE fallback for merged/renamed companies ─────────────────────
+            # When yfinance returns minimal data (< 5 key fields), try BSE API
+            # which always has current data from official exchange filings.
+            _yf_key_fields = ("trailingPE", "returnOnEquity", "revenueGrowth",
+                               "profitMargins", "earningsGrowth", "beta")
+            _yf_filled = sum(1 for k in _yf_key_fields if info.get(k) is not None)
+            if _yf_filled < 3:
+                try:
+                    from services.bse_data import get_bse_fundamentals
+                    bse_info = await loop.run_in_executor(None, get_bse_fundamentals, symbol)
+                    if bse_info:
+                        # Merge BSE data: BSE fills gaps, yfinance values take priority
+                        merged = dict(bse_info)
+                        merged.update({k: v for k, v in info.items() if v is not None})
+                        info = merged
+                        print(f"[bse] fallback filled {len(bse_info)} fields for {symbol}")
+                except Exception as e:
+                    print(f"[bse] fallback failed for {symbol}: {e}")
+
         if df.empty:
             return {"error": "No data found for symbol"}
 
@@ -1201,29 +1220,57 @@ class PredictionEngine:
                                           falls back to 50 until 60+ outcome pairs exist
         """
         # ── data_completeness ────────────────────────────────────────────────
-        # Primary fields (yfinance); screener.in fills gaps for Indian stocks.
-        # We check both standard keys AND screener-mapped equivalents so that
-        # enriched Indian stocks aren't penalised for missing raw yfinance fields.
-        # Fields checked via info dict (screener.in fills some of these for Indian stocks)
-        key_fields_info = [
-            "trailingPE",       # screener fills if yf missing
-            "returnOnEquity",   # screener fills from roe_pct
-            "revenueGrowth",    # screener fills from sales_growth_ttm
-            "debtToEquity",
-            "profitMargins",
-            "earningsGrowth",   # screener fills from profit_growth_ttm
-            "freeCashflow",
-            "beta",
-            "returnOnCapitalEmployed",  # screener fills from roce_pct
-        ]
-        # Screener-exclusive fields that directly feed _fundamental_score
+        # Sector-aware: financial stocks (banks, insurance, NBFCs) are evaluated
+        # on different KPIs — D/E and FCF are structurally N/A for them.
         screener_d = info.get("_screener_data") or {}
-        key_fields_screener = [
-            "sales_growth_3y_pct",
-            "profit_growth_3y_pct",
-            "fii_holding_pct",
-            "promoter_holding_pct",
-        ]
+        sector = (info.get("sector") or "").lower()
+        industry = (info.get("industry") or "").lower()
+        is_financial = (
+            "financial" in sector
+            or "bank" in industry
+            or "insurance" in industry
+            or "nbfc" in industry
+        )
+
+        if is_financial:
+            # Banking KPIs replace D/E, FCF, ROCE (which are meaningless for banks)
+            key_fields_info = [
+                "trailingPE",           # P/B is more relevant but P/E still valid
+                "returnOnEquity",       # ROE — core bank profitability metric
+                "revenueGrowth",        # Net revenue / NII growth
+                "profitMargins",        # Net profit margin
+                "earningsGrowth",       # EPS growth
+                "beta",                 # price sensitivity
+            ]
+            key_fields_screener = [
+                "nim_pct",              # Net Interest Margin — replaces FCF
+                "net_npa_pct",          # Asset quality — replaces D/E
+                "casa_ratio_pct",       # Deposit quality — replaces ROCE
+                "sales_growth_3y_pct",  # Revenue CAGR
+                "profit_growth_3y_pct", # Profit CAGR
+                "fii_holding_pct",      # Institutional interest
+                "promoter_holding_pct", # Promoter conviction
+            ]
+        else:
+            # Standard fields for all non-financial sectors
+            key_fields_info = [
+                "trailingPE",
+                "returnOnEquity",
+                "revenueGrowth",
+                "debtToEquity",
+                "profitMargins",
+                "earningsGrowth",
+                "freeCashflow",
+                "beta",
+                "returnOnCapitalEmployed",  # screener fills from roce_pct
+            ]
+            key_fields_screener = [
+                "sales_growth_3y_pct",
+                "profit_growth_3y_pct",
+                "fii_holding_pct",
+                "promoter_holding_pct",
+            ]
+
         present = sum(1 for k in key_fields_info if info.get(k) is not None)
         present += sum(1 for k in key_fields_screener if screener_d.get(k) is not None)
         total_fields = len(key_fields_info) + len(key_fields_screener)

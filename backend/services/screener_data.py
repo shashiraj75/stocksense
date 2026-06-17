@@ -165,6 +165,19 @@ def _parse_screener_page(soup: BeautifulSoup, symbol: str) -> dict:
                 data["roe_pct"] = val
             elif "face value" in name:
                 data["face_value"] = val
+            # ── Banking-specific KPIs (replace D/E and FCF for financial sector) ──
+            elif "net npa" in name or "net non-performing" in name:
+                data["net_npa_pct"] = val
+            elif "gross npa" in name or "gnpa" in name:
+                data["gross_npa_pct"] = val
+            elif "nim" == name or "net interest margin" in name:
+                data["nim_pct"] = val
+            elif "casa" in name:
+                data["casa_ratio_pct"] = val
+            elif "capital adequacy" in name or name == "car":
+                data["capital_adequacy_ratio_pct"] = val
+            elif "net interest income" in name or "nii" == name:
+                data["nii_cr"] = val
 
     # ── Compounded growth rates table ─────────────────────────────────────────
     # Screener shows: Sales/Profit/Stock price growth for 10Y/5Y/3Y/TTM
@@ -312,6 +325,13 @@ def augment_info_with_screener(info: dict, symbol: str) -> dict:
             "latest_quarter_pat_cr":     screener.get("latest_quarter_pat_cr"),
             "quarterly_pat_cr":          screener.get("quarterly_pat_cr"),
             "quarterly_revenue_cr":      screener.get("quarterly_revenue_cr"),
+            # Banking-specific KPIs
+            "nim_pct":                   screener.get("nim_pct"),
+            "net_npa_pct":               screener.get("net_npa_pct"),
+            "gross_npa_pct":             screener.get("gross_npa_pct"),
+            "casa_ratio_pct":            screener.get("casa_ratio_pct"),
+            "capital_adequacy_ratio_pct": screener.get("capital_adequacy_ratio_pct"),
+            "nii_cr":                    screener.get("nii_cr"),
         }
         return enriched
 
