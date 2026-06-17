@@ -42,7 +42,9 @@ export default function HeatmapPage() {
     refetchOnWindowFocus: false,
   });
 
-  const sectors = data?.sectors ?? [];
+  const sectors = [...(data?.sectors ?? [])]
+    .sort((a, b) => (b.avg_change ?? -Infinity) - (a.avg_change ?? -Infinity))
+    .map(s => ({ ...s, stocks: [...s.stocks].sort((a, b) => (b.change_pct ?? -Infinity) - (a.change_pct ?? -Infinity)) }));
 
   const lastUpdated = dataUpdatedAt
     ? new Date(dataUpdatedAt).toLocaleTimeString("en-IN", {
