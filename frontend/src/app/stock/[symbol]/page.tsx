@@ -556,7 +556,7 @@ export default function StockPage() {
           )}
 
           {attribution && !isCrypto && (
-            <FactorAttributionWaterfall data={attribution} />
+            <FactorAttributionWaterfall data={attribution} prediction={prediction} />
           )}
 
           {/* TradingView Chart */}
