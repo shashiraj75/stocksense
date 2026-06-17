@@ -78,8 +78,8 @@ def _fetch_index(ticker_sym: str, name: str) -> dict:
         fi = yf.Ticker(ticker_sym).fast_info
         price = float(fi.last_price) if fi.last_price else None
         prev  = float(fi.previous_close) if fi.previous_close else None
-        change_pct = round((price - prev) / prev * 100, 2) if price and prev else None
-        change_pts = round(price - prev, 2) if price and prev else None
+        change_pct = round((price - prev) / prev * 100, 2) if price is not None and prev is not None and prev != 0 else None
+        change_pts = round(price - prev, 2) if price is not None and prev is not None else None
         return {
             "symbol": ticker_sym,
             "name": name,

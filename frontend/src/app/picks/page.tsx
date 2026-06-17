@@ -373,12 +373,17 @@ export default function DailyPicksPage() {
             Top 5 AI-selected BUY calls from Nifty 100 — refreshed every market day at 9 AM IST
           </p>
         </div>
-        {generatedAt && (
-          <div className="flex items-center gap-1.5 text-xs text-gray-500 bg-dark-card border border-dark-border rounded-lg px-3 py-2 flex-shrink-0">
-            <Clock size={12} />
-            <span>Updated {generatedAt}</span>
-          </div>
-        )}
+        {generatedAt && (() => {
+          const genMs = data?.generated_at ? new Date(data.generated_at).getTime() : 0;
+          const ageHours = genMs ? Math.floor((Date.now() - genMs) / 3_600_000) : 0;
+          const isStale = ageHours >= 4;
+          return (
+            <div className={`flex items-center gap-1.5 text-xs bg-dark-card border rounded-lg px-3 py-2 flex-shrink-0 ${isStale ? "border-yellow-500/40 text-yellow-400" : "border-dark-border text-gray-500"}`}>
+              <Clock size={12} />
+              <span>Updated {generatedAt}{isStale ? ` (${ageHours}h ago — may be stale)` : ""}</span>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Global Macro Snapshot — sourced from first pick's global_context */}

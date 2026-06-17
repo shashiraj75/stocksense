@@ -105,14 +105,28 @@ STOCK_SECTOR: dict[str, str] = {
     # Infra / Capital Goods
     "LT": "Infra", "SIEMENS": "Infra", "HAL": "Infra", "BHEL": "Infra",
     "CONCOR": "Infra", "ADANIPORTS": "Infra",
-    # Consumer Discretionary / Others
-    "TITAN": "FMCG", "ASIANPAINT": "FMCG", "PIDILITIND": "FMCG",
-    "NAUKRI": "IT", "ZOMATO": "Finance", "PAYTM": "Finance", "NYKAA": "Finance",
-    "POLICYBZR": "Finance", "DELHIVERY": "Infra", "IRCTC": "Infra",
-    "INDHOTEL": "Finance", "TRENT": "FMCG", "VOLTAS": "FMCG", "HAVELLS": "FMCG",
-    "ADANIENT": "Energy", "DMART": "FMCG", "SUPREMEIND": "FMCG",
+    # Consumer Discretionary / Paints / Others
+    "TITAN": "Consumer", "ASIANPAINT": "FMCG", "PIDILITIND": "FMCG",
+    # New-age tech/consumer — NOT Finance; classified by primary business
+    "NAUKRI": "IT", "ZOMATO": "Consumer", "PAYTM": "Finance",
+    "NYKAA": "Consumer", "POLICYBZR": "Finance",
+    "DELHIVERY": "Infra", "IRCTC": "Infra",
+    "INDHOTEL": "Consumer", "TRENT": "Consumer", "VOLTAS": "FMCG", "HAVELLS": "FMCG",
+    "ADANIENT": "Energy", "ADANIPORTS": "Infra",
+    "ADANIPOWER": "Energy", "ADANIGRE": "Energy",
+    "DMART": "FMCG", "SUPREMEIND": "FMCG",
     "SRF": "Pharma", "PIIND": "Pharma", "ULTRACEMCO": "Infra", "SHREECEM": "Infra",
     "GRASIM": "Infra",
+    # Additional Nifty 100 stocks
+    "BAJAJHINDGE": "FMCG", "BOSCHLTD": "Auto", "CUMMINSIND": "Infra",
+    "DIXON": "Consumer", "ESCORTS": "Auto", "FLUOROCHEM": "Pharma",
+    "GMRINFRA": "Infra", "GODREJPROP": "Realty", "INDIGO": "Infra",
+    "INDUSTOWER": "IT", "JSWENERGY": "Energy", "KALYANKJIL": "Consumer",
+    "LICI": "Finance", "LODHA": "Realty", "MAXHEALTH": "Pharma",
+    "NYKAA": "Consumer", "ONGC": "Energy", "PAGEIND": "Consumer",
+    "PHOENIXLTD": "Realty", "PPLPHARMA": "Pharma", "SOLARINDS": "Pharma",
+    "SUNTV": "Consumer", "TIINDIA": "Auto", "TORNTPOWER": "Energy",
+    "VBL": "FMCG", "ZYDUSLIFE": "Pharma",
 }
 
 
@@ -594,6 +608,7 @@ def quality_metrics_score(ticker, df: pd.DataFrame, info: dict) -> dict:
 
     # ── Piotroski F-Score ────────────────────────────────────────────────────
     f_score = 0
+    f_score_available = False   # stays False if financials are absent
     f_details: list[str] = []
     try:
         fin = ticker.financials
@@ -601,6 +616,7 @@ def quality_metrics_score(ticker, df: pd.DataFrame, info: dict) -> dict:
         cf  = ticker.cashflow
 
         if fin is not None and not fin.empty and bs is not None and not bs.empty and cf is not None and not cf.empty:
+            f_score_available = True
             # Sort columns oldest → newest
             fin_s = fin.sort_index(axis=1)
             bs_s  = bs.sort_index(axis=1)
@@ -674,8 +690,9 @@ def quality_metrics_score(ticker, df: pd.DataFrame, info: dict) -> dict:
                 gm_prev = (rev[-2] - cogs[-2]) / rev[-2] if rev[-2] != 0 else 0
                 if gm_now > gm_prev:
                     f_score += 1; f_details.append("Gross margin expanding ✓")
-            elif gm_curr:
-                f_score += 1  # assume passing if current margin is positive and > 20%
+            elif gm_curr and gm_curr > 0.20:
+                # Fallback: award point only when current gross margin actually exceeds 20%
+                f_score += 1
 
             # P9: Δ Asset Turnover — improving
             if rev is not None and total_assets_row is not None and len(rev) >= 2 and len(total_assets_row) >= 2:
@@ -684,24 +701,25 @@ def quality_metrics_score(ticker, df: pd.DataFrame, info: dict) -> dict:
                 if at_curr > at_prev:
                     f_score += 1; f_details.append("Asset turnover improving ✓")
 
-            # Score the F-Score
-            if f_score >= 8:
-                score += 20
-                reasons.append(f"Excellent Piotroski F-Score {f_score}/9 — high-quality business on all financial health metrics")
-            elif f_score >= 6:
-                score += 10
-                reasons.append(f"Strong Piotroski F-Score {f_score}/9 — financially healthy company")
-            elif f_score >= 4:
-                score += 0
-                reasons.append(f"Moderate Piotroski F-Score {f_score}/9 — mixed financial signals")
-            else:
-                score -= 12
-                reasons.append(f"Weak Piotroski F-Score {f_score}/9 — multiple financial health red flags")
-
     except Exception:
         pass
 
-    # ── ROIC (Return on Invested Capital) ────────────────────────────────────
+    # Score F-Score only when financial statements were actually available.
+    # Missing data → neutral contribution, not worst-case 0.
+    if not f_score_available:
+        reasons.append("Piotroski score unavailable — financial statements not found")
+    elif f_score >= 8:
+        score += 20
+        reasons.append(f"Excellent Piotroski F-Score {f_score}/9 — high-quality business on all financial health metrics")
+    elif f_score >= 6:
+        score += 10
+        reasons.append(f"Strong Piotroski F-Score {f_score}/9 — financially healthy company")
+    elif f_score >= 4:
+        reasons.append(f"Moderate Piotroski F-Score {f_score}/9 — mixed financial signals")
+    else:
+        score -= 12
+        reasons.append(f"Weak Piotroski F-Score {f_score}/9 — multiple financial health red flags")
+
     try:
         ticker_obj = ticker
         bs  = ticker_obj.balance_sheet
@@ -766,19 +784,20 @@ def quality_metrics_score(ticker, df: pd.DataFrame, info: dict) -> dict:
     return {"score": max(0, min(100, score)), "reasons": reasons, "piotroski": f_score}
 
 
-# ── Sector median PE benchmarks (updated quarterly) ─────────────────────────
-# Based on Nifty sector historical averages — used for relative valuation
+# ── Sector median PE benchmarks (calibrated Q2 2025) ────────────────────────
+# Source: NSE sector index trailing P/E, Bloomberg consensus — review quarterly
 SECTOR_MEDIAN_PE: dict[str, float] = {
-    "IT":      28.0,
-    "Bank":    14.0,
-    "Finance": 20.0,
-    "Pharma":  30.0,
-    "Auto":    22.0,
-    "FMCG":    48.0,
-    "Metal":   10.0,
-    "Energy":  12.0,
-    "Realty":  35.0,
-    "Infra":   22.0,
+    "IT":      32.0,   # premium for high-margin offshore earnings
+    "Bank":    14.0,   # structurally lower; interest-rate sensitive
+    "Finance": 22.0,   # NBFC/insurance at slight premium to banks
+    "Pharma":  28.0,   # domestic pharma; adjusted down from 30 (US generic pressure)
+    "Auto":    24.0,   # EV-transition premium lifted multiples
+    "FMCG":    38.0,   # corrected from 48 (was overstated); FMCG now 35-42x realistic
+    "Metal":    9.0,   # cyclical; China-demand dependent
+    "Energy":  12.0,   # commodity / PSU discount
+    "Realty":  40.0,   # post-RERA re-rating
+    "Infra":   25.0,   # capex supercycle premium
+    "Consumer": 35.0,  # new-age consumer / discretionary
 }
 
 INDIA_RISK_FREE_RATE = 0.068   # 10-year G-Sec yield (~6.8%)
@@ -821,8 +840,10 @@ def institutional_flow_proxy(df: pd.DataFrame) -> dict:
             else:
                 obv.iloc[i] = obv.iloc[i-1]
 
-        obv_20d_slope = (obv.iloc[-1] - obv.iloc[-20]) / (abs(obv.iloc[-20]) + 1)
-        price_20d_ret = (close.iloc[-1] - close.iloc[-20]) / close.iloc[-20]
+        # Use raw OBV difference — no normalization that could mislead near zero
+        obv_20d_slope = float(obv.iloc[-1] - obv.iloc[-20])
+        base_close = float(close.iloc[-20])
+        price_20d_ret = (float(close.iloc[-1]) - base_close) / base_close if base_close != 0 else 0.0
 
         if obv_20d_slope > 0 and price_20d_ret > 0:
             score += 12
@@ -852,7 +873,8 @@ def institutional_flow_proxy(df: pd.DataFrame) -> dict:
         period = 14
         pos_mf = pos_flow.rolling(period).sum()
         neg_mf = neg_flow.rolling(period).sum()
-        mfi = 100 - (100 / (1 + pos_mf / (neg_mf + 1e-10)))
+        # Standard MFI: 100 × positive_money_flow / total_money_flow
+        mfi = 100 * pos_mf / (pos_mf + neg_mf + 1e-10)
         mfi_val = float(mfi.iloc[-1])
 
         if mfi_val > 70:
@@ -936,11 +958,13 @@ def valuation_score(symbol: str, df: pd.DataFrame, info: dict) -> dict:
             sector = STOCK_SECTOR.get(symbol.upper(), "")
             # Sector-specific EV/EBITDA benchmarks
             ev_benchmarks = {
-                "IT": 20, "Pharma": 18, "FMCG": 35, "Bank": 8,
-                "Finance": 12, "Auto": 12, "Metal": 7, "Energy": 8,
-                "Realty": 20, "Infra": 15,
+                "IT": 22, "Pharma": 18, "FMCG": 32, "Bank": 8,
+                "Finance": 14, "Auto": 13, "Metal": 7, "Energy": 8,
+                "Realty": 22, "Infra": 16, "Consumer": 28,
             }
             benchmark = ev_benchmarks.get(sector, 14)
+            if benchmark == 0:
+                benchmark = 14
             discount = (benchmark - ev_ebitda) / benchmark * 100
 
             if discount > 25:
@@ -960,7 +984,7 @@ def valuation_score(symbol: str, df: pd.DataFrame, info: dict) -> dict:
         use_pe = forward_pe or pe
         sector = STOCK_SECTOR.get(symbol.upper(), "")
         sector_pe = SECTOR_MEDIAN_PE.get(sector)
-        if use_pe and sector_pe and use_pe > 0:
+        if use_pe and sector_pe and use_pe > 0 and sector_pe > 0:
             pe_discount = (sector_pe - use_pe) / sector_pe * 100
             if pe_discount > 30:
                 score += 12

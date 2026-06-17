@@ -19,6 +19,8 @@ RSS_FEEDS = {
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}.NS&region=IN&lang=en-IN",
         "https://news.google.com/rss/search?q={symbol}+NSE+India+stock&hl=en-IN&gl=IN&ceid=IN:en",
         "https://economictimes.indiatimes.com/markets/stocks/rssfeeds/{symbol}.cms",
+        # Moneycontrol — India's largest financial news portal
+        "https://www.moneycontrol.com/rss/buzzingstocks.xml",
     ],
 }
 
@@ -31,6 +33,9 @@ MACRO_FEEDS = {
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5ENSEI&region=IN&lang=en-IN",
         "https://news.google.com/rss/search?q=RBI+India+Nifty+Sensex+economy&hl=en-IN&gl=IN&ceid=IN:en",
         "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
+        # Moneycontrol macro feeds
+        "https://www.moneycontrol.com/rss/marketreports.xml",
+        "https://www.moneycontrol.com/rss/economy.xml",
     ],
 }
 
@@ -69,20 +74,29 @@ class NewsSentimentService:
 
     def _fetch_rss(self, symbol: str, market: str, limit: int) -> list:
         urls = [t.format(symbol=symbol) for t in RSS_FEEDS.get(market, RSS_FEEDS["US"])]
+        sym_lower = symbol.lower()
 
         def _parse(url: str) -> list:
             try:
                 feed = feedparser.parse(url)
-                return [
-                    {
-                        "title": entry.get("title", ""),
+                articles = []
+                for entry in feed.entries[:limit * 2]:
+                    title = entry.get("title", "")
+                    # For broad feeds (moneycontrol buzzingstocks), only include articles
+                    # that mention the stock symbol or company name in the title/summary
+                    is_broad_feed = "moneycontrol.com/rss/buzzing" in url
+                    if is_broad_feed:
+                        combined = (title + " " + entry.get("summary", "")).lower()
+                        if sym_lower not in combined:
+                            continue
+                    articles.append({
+                        "title": title,
                         "source": feed.feed.get("title", "RSS"),
                         "url": entry.get("link", "#"),
                         "published_at": entry.get("published", ""),
                         "description": entry.get("summary", "")[:200],
-                    }
-                    for entry in feed.entries[:limit]
-                ]
+                    })
+                return articles[:limit]
             except Exception:
                 return []
 

@@ -238,7 +238,7 @@ def _compute_risk_penalty(info: dict, df: pd.DataFrame, quality: dict | None = N
     except Exception:
         pass
 
-    return min(penalty, 20), reasons  # cap penalty at 20 to prevent over-penalising
+    return min(penalty, 30), reasons  # cap at 30 — allows extremely risky stocks to be penalised fairly
 
 
 class PredictionEngine:
@@ -290,6 +290,16 @@ class PredictionEngine:
             loop.run_in_executor(None, _fetch_info),
             loop.run_in_executor(None, _market_regime, market),
         )
+
+        # ── Screener.in enrichment (India only) ──────────────────────────────
+        # Fills missing ROE, ROCE, promoter holding, revenue/profit growth from
+        # screener.in — more reliable for Indian stocks than yfinance alone.
+        if market == "IN":
+            try:
+                from services.screener_data import augment_info_with_screener
+                info = await loop.run_in_executor(None, augment_info_with_screener, info, symbol)
+            except Exception as e:
+                print(f"[screener] augmentation failed for {symbol}: {e}")
 
         if df.empty:
             return {"error": "No data found for symbol"}
@@ -409,10 +419,13 @@ class PredictionEngine:
         )
         trade_levels = self._trade_levels(current_price, signal, target_price, atr, horizon)
 
+        import datetime as _dt
         result = {
             "symbol": symbol,
             "market": market,
             "horizon": horizon,
+            "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            "data_timestamp": df.index[-1].isoformat() if hasattr(df.index[-1], "isoformat") else str(df.index[-1]),
             "signal": signal,
             "confidence": confidence,
             "score_band": score_band,
@@ -829,13 +842,15 @@ class PredictionEngine:
 
     def _aggregate_sentiment(self, articles: list) -> dict:
         if not articles:
-            return {"score": 50, "label": "NEUTRAL", "bullish": 0, "bearish": 0}
+            # No news fetched — return neutral but flag as data-unavailable so UI
+            # can display "No news data" rather than "Neutral sentiment"
+            return {"score": 50, "label": "NEUTRAL", "bullish": 0, "bearish": 0, "data_available": False}
         bullish = sum(1 for a in articles if a.get("sentiment", {}).get("label") == "BULLISH")
         bearish = sum(1 for a in articles if a.get("sentiment", {}).get("label") == "BEARISH")
         total = len(articles)
         score = int(50 + (bullish - bearish) / total * 50)
         label = "BULLISH" if score > 60 else "BEARISH" if score < 40 else "NEUTRAL"
-        return {"score": score, "label": label, "bullish": bullish, "bearish": bearish}
+        return {"score": score, "label": label, "bullish": bullish, "bearish": bearish, "data_available": True}
 
     def _quality_gate(self, info: dict, df: pd.DataFrame, horizon: str = "medium") -> tuple[bool, list[str]]:
         """
@@ -931,7 +946,7 @@ class PredictionEngine:
         # This ensures high-risk stocks can't "score their way" to a BUY signal;
         # risk is always subtracted last so it can override a strong raw signal.
         risk_penalty, penalty_reasons = _compute_risk_penalty(
-            info=fund.get("_info", {}),   # passed through if available
+            info=info or {},   # use the real info dict fetched in predict()
             df=df if df is not None else pd.DataFrame(),
             quality=quality,
         )
