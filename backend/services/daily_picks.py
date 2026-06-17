@@ -32,6 +32,8 @@ CACHE_FILE = os.path.join(os.path.dirname(__file__), "../picks_cache.json")
 from services.validation_engine import NIFTY_100 as _NIFTY_100
 _universe_limit = int(os.getenv("PICKS_UNIVERSE_LIMIT", len(_NIFTY_100)))
 NIFTY10T = _NIFTY_100[:_universe_limit]
+print(f"[picks] Universe: {len(NIFTY10T)}/{len(_NIFTY_100)} stocks "
+      f"(set PICKS_UNIVERSE_LIMIT to cap on memory-constrained hosts)")
 
 
 HORIZON_LABELS = {

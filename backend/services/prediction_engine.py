@@ -995,7 +995,8 @@ class PredictionEngine:
 
         confidence_score, confidence_band, confidence_components = self._confidence_engine(
             signal=signal, tech_score=tech_score, fund_score=fund["score"],
-            sentiment_score=sentiment["score"], quality=quality, regime=regime, info=info or {},
+            sentiment_score=sentiment["score"], quality=quality, regime=regime,
+            info=info or {}, horizon=horizon,
         )
 
         # Build reasoning — most impactful signals first
@@ -1064,72 +1065,91 @@ class PredictionEngine:
                 confidence_score, confidence_band, confidence_components)
 
     def _confidence_engine(self, signal, tech_score, fund_score, sentiment_score,
-                           quality, regime, info) -> tuple[int, str, dict]:
+                           quality, regime, info, horizon: str = "short") -> tuple[int, str, dict]:
         """
-        Multi-factor confidence score (0-100), distinct from the signal-strength
-        `confidence` above. Answers "how much should you trust this signal?"
-        rather than "how strong is this signal?".
+        Multi-factor confidence score (0-100). Answers "how much should you
+        trust this signal?" rather than "how strong is this signal?".
 
-        Components (weighted blend):
-          data_completeness          — % of key fundamental fields present
-          factor_agreement           — % of factors pointing the same direction as `signal`
-          earnings_stability         — quality.breakdown.earnings_revision (India only; 50 elsewhere)
-          regime_certainty           — how clear-cut the market trend is (SIDEWAYS = least certain)
-          historical_factor_reliability — placeholder 50 until Session 6 (factor IC tracking) ships;
-                                          excluded from the weighted blend until real data exists,
-                                          with the other 4 weights rescaled to sum to 1.0
+        Components:
+          data_completeness          — % of 8 key fundamental fields present
+          factor_agreement           — % of factors agreeing with signal direction
+          earnings_stability         — quality breakdown earnings_revision (India; 50 elsewhere)
+          regime_certainty           — BULL/BEAR more certain than SIDEWAYS
+          historical_factor_reliability — live IC-based reliability from ic_engine;
+                                          falls back to 50 until 60+ outcome pairs exist
         """
-        # data_completeness — presence of the 8 key fields used by _fundamental_score
+        # ── data_completeness ────────────────────────────────────────────────
         key_fields = ["trailingPE", "returnOnEquity", "revenueGrowth", "debtToEquity",
                       "profitMargins", "earningsGrowth", "freeCashflow", "beta"]
         present = sum(1 for k in key_fields if info.get(k) is not None)
         data_completeness = round(present / len(key_fields) * 100)
 
-        # factor_agreement — % of available factor scores agreeing with the final signal direction
+        # ── factor_agreement ─────────────────────────────────────────────────
         factor_scores = [tech_score, fund_score, sentiment_score]
         if quality and quality.get("score") is not None:
             factor_scores.append(quality["score"])
 
         def _agrees(score: float) -> bool:
-            if signal == "BUY":
-                return score >= 55
-            if signal == "SELL":
-                return score <= 45
-            return 40 <= score <= 60  # HOLD: agreement = not strongly directional
+            if signal == "BUY":  return score >= 55
+            if signal == "SELL": return score <= 45
+            return 40 <= score <= 60
 
         factor_agreement = round(sum(1 for s in factor_scores if _agrees(s)) / len(factor_scores) * 100)
 
-        # earnings_stability — from quality breakdown (India only); neutral elsewhere
+        # ── earnings_stability ───────────────────────────────────────────────
         earnings_stability = 50
         if quality:
             er = quality.get("breakdown", {}).get("earnings_revision")
             if isinstance(er, dict) and er.get("score") is not None:
                 earnings_stability = round(er["score"])
 
-        # regime_certainty — a clear BULL/BEAR trend is more "certain" than SIDEWAYS (adj=0)
+        # ── regime_certainty ─────────────────────────────────────────────────
         regime_certainty = round(50 + abs(regime.get("score_adj", 0)) * 6.25)
 
-        # historical_factor_reliability — wired in once Session 6 (factor IC tracking) ships
+        # ── historical_factor_reliability — from live IC engine ───────────────
+        # IC values reflect how well each factor has predicted returns historically.
+        # We normalise avg(positive IC) against the "meaningful" threshold of 0.05
+        # to get a 0-100 reliability score. Falls back to 50 (neutral) when fewer
+        # than MIN_REAL_DATA_ROWS outcome pairs exist.
         historical_factor_reliability = 50
         historical_reliability_available = False
+        try:
+            from services.alpha_engine.ic_engine import get_ic_values
+            from services.alpha_engine.store import count_training_rows
+            from services.alpha_engine.ic_engine import MIN_REAL_DATA_ROWS
+            if count_training_rows(horizon) >= MIN_REAL_DATA_ROWS:
+                ic_vals = get_ic_values(horizon)
+                avg_positive_ic = sum(max(0.0, v) for v in ic_vals.values()) / max(1, len(ic_vals))
+                # Normalise: IC of 0.07+ → 100; IC of 0 → 0. Clamp to [0,100].
+                historical_factor_reliability = round(min(100, avg_positive_ic / 0.07 * 100))
+                historical_reliability_available = True
+        except Exception as e:
+            log.debug("IC engine not available for confidence: %s", e)
 
         components = {
-            "data_completeness": data_completeness,
-            "factor_agreement": factor_agreement,
-            "earnings_stability": earnings_stability,
-            "regime_certainty": regime_certainty,
+            "data_completeness":           data_completeness,
+            "factor_agreement":            factor_agreement,
+            "earnings_stability":          earnings_stability,
+            "regime_certainty":            regime_certainty,
             "historical_factor_reliability": historical_factor_reliability,
         }
 
         if historical_reliability_available:
-            weights = {"data_completeness": 0.25, "factor_agreement": 0.25,
-                       "earnings_stability": 0.15, "regime_certainty": 0.15,
-                       "historical_factor_reliability": 0.20}
+            weights = {
+                "data_completeness":           0.25,
+                "factor_agreement":            0.25,
+                "earnings_stability":          0.15,
+                "regime_certainty":            0.15,
+                "historical_factor_reliability": 0.20,
+            }
         else:
-            # Re-weight the 4 available components to sum to 1.0
-            weights = {"data_completeness": 0.3125, "factor_agreement": 0.3125,
-                       "earnings_stability": 0.1875, "regime_certainty": 0.1875,
-                       "historical_factor_reliability": 0.0}
+            weights = {
+                "data_completeness":           0.3125,
+                "factor_agreement":            0.3125,
+                "earnings_stability":          0.1875,
+                "regime_certainty":            0.1875,
+                "historical_factor_reliability": 0.0,
+            }
 
         confidence_score = round(sum(components[k] * weights[k] for k in components))
         confidence_score = max(0, min(100, confidence_score))
