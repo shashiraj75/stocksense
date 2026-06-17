@@ -10,7 +10,7 @@ MARKET_SUFFIX = {"US": "", "IN": ".NS"}
 
 # Quote cache: { "SYMBOL:MARKET" -> (timestamp, result) }
 _quote_cache: dict[str, tuple[float, dict]] = {}
-_QUOTE_TTL = 30  # seconds — fast_info is cheap but still a network call
+_QUOTE_TTL = 120  # 2 min — reduces yfinance hammering under rate limits
 
 
 class MarketDataService:

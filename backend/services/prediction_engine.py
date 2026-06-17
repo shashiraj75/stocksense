@@ -272,18 +272,20 @@ class PredictionEngine:
             raise last_err
 
         def _fetch_info():
-            # Retry on ANY exception, not just ones whose message happens to
-            # contain "rate" — Yahoo/yfinance failures on Render's shared IP
-            # come back as connection errors, timeouts, and malformed
-            # responses that don't match that narrow substring, which
-            # previously caused this to silently return {} on the very
-            # first failure with no retry and no log line.
             for attempt in range(4):
                 try:
                     return yf.Ticker(symbol + suffix).info
                 except Exception as e:
+                    err_str = str(e).lower()
                     if attempt < 3:
-                        time.sleep(5 * (attempt + 1) + random.uniform(0, 2))
+                        wait = 8 * (attempt + 1) + random.uniform(0, 3)
+                        # Crumb/401 errors need a session reset, not just a wait
+                        if "crumb" in err_str or "401" in err_str or "unauthorized" in err_str:
+                            try:
+                                yf.utils.get_crumb(force=True)
+                            except Exception:
+                                pass
+                        time.sleep(wait)
                         continue
                     log.warning("[predict] _fetch_info failed for %s%s after 4 attempts: %s", symbol, suffix, e)
                     return {}

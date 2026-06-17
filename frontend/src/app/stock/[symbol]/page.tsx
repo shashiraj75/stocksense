@@ -423,9 +423,9 @@ export default function StockPage() {
                     <>
                       <div className="flex items-center gap-2 text-yellow-400 text-sm font-medium">
                         <Loader2 size={14} className="animate-spin" />
-                        Waking up the server… ({failureCount}/8)
+                        Loading prediction… attempt {failureCount + 1} of 8
                       </div>
-                      <p className="text-gray-500 text-xs">Render free tier sleeps after inactivity. Usually ready in 30–60 seconds.</p>
+                      <p className="text-gray-500 text-xs">Server is processing — may take up to 60 seconds on first load.</p>
                     </>
                   ) : (
                     <>
