@@ -22,10 +22,8 @@ import os
 import json
 import sqlite3
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -33,13 +31,57 @@ import yfinance as yf
 
 from services.technical_indicators import compute_indicators
 
-# ── Storage ───────────────────────────────────────────────────────────────────
-_DB_PATH = os.path.join(os.path.dirname(__file__), "../../validation_results.db")
-_db_lock = threading.Lock()
+# ── Storage — Postgres (production) or SQLite (local dev) ────────────────────
+_USE_POSTGRES = bool(os.getenv("DATABASE_URL") and os.getenv("USE_POSTGRES", "0") == "1")
+_DB_PATH      = os.path.join(os.path.dirname(__file__), "../../validation_results.db")
+_db_lock      = threading.Lock()
 
 # ── Progress tracking (in-memory, for API polling) ────────────────────────────
 _run_status: dict = {"running": False, "progress": 0, "total": 0, "started_at": None, "log": []}
 _status_lock = threading.Lock()
+
+
+# ── Postgres helpers ──────────────────────────────────────────────────────────
+
+def _pg_conn():
+    """Open a single psycopg connection (no pool needed — called under _db_lock)."""
+    import psycopg
+    return psycopg.connect(os.environ["DATABASE_URL"], autocommit=True)
+
+
+_PG_SCHEMA = """
+CREATE TABLE IF NOT EXISTS val_runs (
+    id          BIGSERIAL PRIMARY KEY,
+    run_at      TIMESTAMPTZ NOT NULL,
+    horizon     TEXT NOT NULL,
+    n_stocks    INTEGER,
+    n_signals   INTEGER,
+    summary     JSONB
+);
+
+CREATE TABLE IF NOT EXISTS val_signals (
+    id                BIGSERIAL PRIMARY KEY,
+    run_id            BIGINT REFERENCES val_runs(id) ON DELETE CASCADE,
+    symbol            TEXT NOT NULL,
+    horizon           TEXT NOT NULL,
+    signal_date       DATE NOT NULL,
+    composite_score   REAL,
+    tech_score        REAL,
+    rs_score          REAL,
+    obv_score         REAL,
+    mfi_score         REAL,
+    predicted         TEXT,
+    fwd_return_pct    REAL,
+    nifty_fwd_ret_pct REAL,
+    alpha_pct         REAL,
+    actual_direction  TEXT,
+    correct           SMALLINT
+);
+
+CREATE INDEX IF NOT EXISTS idx_val_signals_run   ON val_signals(run_id, horizon);
+CREATE INDEX IF NOT EXISTS idx_val_signals_sym   ON val_signals(symbol, horizon);
+CREATE INDEX IF NOT EXISTS idx_val_signals_score ON val_signals(composite_score);
+"""
 
 NIFTY_100 = [
     "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY", "HINDUNILVR", "ITC",
@@ -75,47 +117,58 @@ SELL_THRESHOLD = 42   # composite score ≤ this → SELL
 
 # ── Database ──────────────────────────────────────────────────────────────────
 
-def _get_conn() -> sqlite3.Connection:
+def _get_sqlite_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(_DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     return conn
 
 
+_db_initialised = False
+
 def _init_db():
-    with _db_lock, _get_conn() as c:
-        c.executescript("""
-        CREATE TABLE IF NOT EXISTS val_runs (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_at      TEXT NOT NULL,
-            horizon     TEXT NOT NULL,
-            n_stocks    INTEGER,
-            n_signals   INTEGER,
-            summary     TEXT    -- JSON blob with all aggregate metrics
-        );
-
-        CREATE TABLE IF NOT EXISTS val_signals (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_id          INTEGER REFERENCES val_runs(id),
-            symbol          TEXT NOT NULL,
-            horizon         TEXT NOT NULL,
-            signal_date     TEXT NOT NULL,
-            composite_score REAL,
-            tech_score      REAL,
-            rs_score        REAL,
-            obv_score       REAL,
-            mfi_score       REAL,
-            predicted       TEXT,
-            fwd_return_pct  REAL,
-            nifty_fwd_ret_pct REAL,
-            alpha_pct       REAL,
-            actual_direction TEXT,
-            correct         INTEGER
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_vs_symbol  ON val_signals(symbol, horizon);
-        CREATE INDEX IF NOT EXISTS idx_vs_run     ON val_signals(run_id, horizon);
-        CREATE INDEX IF NOT EXISTS idx_vs_score   ON val_signals(composite_score);
-        """)
+    global _db_initialised
+    if _db_initialised:
+        return
+    with _db_lock:
+        if _db_initialised:
+            return
+        if _USE_POSTGRES:
+            with _pg_conn() as conn:
+                conn.execute(_PG_SCHEMA)
+        else:
+            with _get_sqlite_conn() as c:
+                c.executescript("""
+                CREATE TABLE IF NOT EXISTS val_runs (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_at      TEXT NOT NULL,
+                    horizon     TEXT NOT NULL,
+                    n_stocks    INTEGER,
+                    n_signals   INTEGER,
+                    summary     TEXT
+                );
+                CREATE TABLE IF NOT EXISTS val_signals (
+                    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id            INTEGER REFERENCES val_runs(id),
+                    symbol            TEXT NOT NULL,
+                    horizon           TEXT NOT NULL,
+                    signal_date       TEXT NOT NULL,
+                    composite_score   REAL,
+                    tech_score        REAL,
+                    rs_score          REAL,
+                    obv_score         REAL,
+                    mfi_score         REAL,
+                    predicted         TEXT,
+                    fwd_return_pct    REAL,
+                    nifty_fwd_ret_pct REAL,
+                    alpha_pct         REAL,
+                    actual_direction  TEXT,
+                    correct           INTEGER
+                );
+                CREATE INDEX IF NOT EXISTS idx_vs_symbol ON val_signals(symbol, horizon);
+                CREATE INDEX IF NOT EXISTS idx_vs_run    ON val_signals(run_id, horizon);
+                CREATE INDEX IF NOT EXISTS idx_vs_score  ON val_signals(composite_score);
+                """)
+        _db_initialised = True
 
 
 # ── Scoring (uses ONLY data at index i — no look-ahead) ──────────────────────
@@ -524,42 +577,60 @@ def run_validation(horizon: str = "medium", max_workers: int = 6) -> dict:
         metrics["run_at"] = datetime.now(timezone.utc).isoformat()
         metrics["nifty_avg_fwd_return_pct"] = round(nifty_avg_ret, 2)
 
-        # Persist to DB — convert numpy scalars to native Python before JSON serialization
+        # Persist — convert numpy scalars to native Python first
         def _jsonify(obj):
-            if isinstance(obj, dict):
-                return {k: _jsonify(v) for k, v in obj.items()}
-            if isinstance(obj, list):
-                return [_jsonify(v) for v in obj]
-            if isinstance(obj, (np.integer,)):
-                return int(obj)
-            if isinstance(obj, (np.floating,)):
-                return float(obj)
+            if isinstance(obj, dict):   return {k: _jsonify(v) for k, v in obj.items()}
+            if isinstance(obj, list):   return [_jsonify(v) for v in obj]
+            if isinstance(obj, np.integer):  return int(obj)
+            if isinstance(obj, np.floating): return float(obj)
             return obj
 
-        metrics_json = json.dumps(_jsonify(metrics))
+        clean_metrics = _jsonify(metrics)
+        signal_rows = [
+            (s["symbol"], s["horizon"], s["signal_date"],
+             s["composite_score"], s["tech_score"], s["rs_score"],
+             s["obv_score"], s["mfi_score"], s["predicted"],
+             s["fwd_return_pct"], s.get("nifty_fwd_ret_pct"), s.get("alpha_pct"),
+             s["actual_direction"], s["correct"])
+            for s in all_signals
+        ]
 
-        with _db_lock, _get_conn() as conn:
-            cur = conn.execute(
-                "INSERT INTO val_runs (run_at, horizon, n_stocks, n_signals, summary) VALUES (?,?,?,?,?)",
-                (metrics["run_at"], horizon, n_stocks, len(all_signals), metrics_json)
-            )
-            run_id = cur.lastrowid
-            conn.executemany("""
-                INSERT INTO val_signals
-                  (run_id, symbol, horizon, signal_date, composite_score,
-                   tech_score, rs_score, obv_score, mfi_score,
-                   predicted, fwd_return_pct, nifty_fwd_ret_pct, alpha_pct,
-                   actual_direction, correct)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, [
-                (run_id, s["symbol"], s["horizon"], s["signal_date"],
-                 s["composite_score"], s["tech_score"], s["rs_score"],
-                 s["obv_score"], s["mfi_score"],
-                 s["predicted"], s["fwd_return_pct"],
-                 s.get("nifty_fwd_ret_pct"), s.get("alpha_pct"),
-                 s["actual_direction"], s["correct"])
-                for s in all_signals
-            ])
+        with _db_lock:
+            if _USE_POSTGRES:
+                with _pg_conn() as conn:
+                    row = conn.execute(
+                        "INSERT INTO val_runs (run_at, horizon, n_stocks, n_signals, summary) "
+                        "VALUES (%s,%s,%s,%s,%s) RETURNING id",
+                        (metrics["run_at"], horizon, n_stocks, len(all_signals),
+                         json.dumps(clean_metrics))
+                    ).fetchone()
+                    run_id = row[0]
+                    conn.executemany(
+                        """INSERT INTO val_signals
+                           (run_id, symbol, horizon, signal_date, composite_score,
+                            tech_score, rs_score, obv_score, mfi_score,
+                            predicted, fwd_return_pct, nifty_fwd_ret_pct, alpha_pct,
+                            actual_direction, correct)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                        [(run_id,) + r for r in signal_rows]
+                    )
+            else:
+                with _get_sqlite_conn() as conn:
+                    cur = conn.execute(
+                        "INSERT INTO val_runs (run_at, horizon, n_stocks, n_signals, summary) VALUES (?,?,?,?,?)",
+                        (metrics["run_at"], horizon, n_stocks, len(all_signals),
+                         json.dumps(clean_metrics))
+                    )
+                    run_id = cur.lastrowid
+                    conn.executemany(
+                        """INSERT INTO val_signals
+                           (run_id, symbol, horizon, signal_date, composite_score,
+                            tech_score, rs_score, obv_score, mfi_score,
+                            predicted, fwd_return_pct, nifty_fwd_ret_pct, alpha_pct,
+                            actual_direction, correct)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        [(run_id,) + r for r in signal_rows]
+                    )
 
         with _status_lock:
             _run_status.update({"running": False, "log": _run_status["log"] + ["✅ Validation complete"]})
@@ -572,22 +643,48 @@ def run_validation(horizon: str = "medium", max_workers: int = 6) -> dict:
         raise
 
 
+def _fetchone(sql_pg: str, sql_sq: str, params):
+    if _USE_POSTGRES:
+        with _pg_conn() as conn:
+            row = conn.execute(sql_pg, params).fetchone()
+        return row
+    with _get_sqlite_conn() as conn:
+        row = conn.execute(sql_sq, params).fetchone()
+    return row
+
+
+def _fetchall(sql_pg: str, sql_sq: str, params=()):
+    if _USE_POSTGRES:
+        with _pg_conn() as conn:
+            rows = conn.execute(sql_pg, params).fetchall()
+        return rows
+    with _get_sqlite_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(sql_sq, params).fetchall()
+    return rows
+
+
 def get_latest_results(horizon: str | None = None) -> dict:
     """Return the most recent validation summary (or per-horizon breakdown)."""
     try:
         _init_db()
-        with _db_lock, _get_conn() as conn:
-            if horizon:
-                row = conn.execute(
-                    "SELECT summary FROM val_runs WHERE horizon=? ORDER BY id DESC LIMIT 1", (horizon,)
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    "SELECT summary FROM val_runs ORDER BY id DESC LIMIT 1"
-                ).fetchone()
-            if not row:
-                return {"available": False, "message": "No validation run found. Run /api/validation/run first."}
-            return {"available": True, **json.loads(row["summary"])}
+        if horizon:
+            row = _fetchone(
+                "SELECT summary FROM val_runs WHERE horizon=%s ORDER BY id DESC LIMIT 1",
+                "SELECT summary FROM val_runs WHERE horizon=? ORDER BY id DESC LIMIT 1",
+                (horizon,)
+            )
+        else:
+            row = _fetchone(
+                "SELECT summary FROM val_runs ORDER BY id DESC LIMIT 1",
+                "SELECT summary FROM val_runs ORDER BY id DESC LIMIT 1",
+                ()
+            )
+        if not row:
+            return {"available": False, "message": "No validation run found. Run /api/validation/run first."}
+        summary = row[0] if _USE_POSTGRES else row["summary"]
+        data = summary if isinstance(summary, dict) else json.loads(summary)
+        return {"available": True, **data}
     except Exception as e:
         import traceback
         return {"available": False, "error": str(e), "trace": traceback.format_exc()}
@@ -597,38 +694,56 @@ def get_per_stock_results(run_id: int | None = None, horizon: str = "medium") ->
     """Return per-stock hit rate and average return for the latest (or given) run."""
     try:
         _init_db()
-        with _db_lock, _get_conn() as conn:
-            if run_id is None:
-                row = conn.execute("SELECT id FROM val_runs WHERE horizon=? ORDER BY id DESC LIMIT 1", (horizon,)).fetchone()
-                if not row:
-                    return []
-                run_id = row["id"]
-            rows = conn.execute("""
-                SELECT
-                    symbol,
-                    COUNT(*) AS total,
-                    SUM(correct) AS correct,
-                    AVG(fwd_return_pct) AS avg_ret,
-                    AVG(CASE WHEN predicted='BUY' THEN fwd_return_pct END) AS buy_ret,
-                    COUNT(CASE WHEN predicted='BUY' THEN 1 END) AS buy_count
-                FROM val_signals
-                WHERE run_id=? AND horizon=?
-                GROUP BY symbol
-                ORDER BY buy_ret DESC NULLS LAST
-            """, (run_id, horizon)).fetchall()
+        if run_id is None:
+            row = _fetchone(
+                "SELECT id FROM val_runs WHERE horizon=%s ORDER BY id DESC LIMIT 1",
+                "SELECT id FROM val_runs WHERE horizon=? ORDER BY id DESC LIMIT 1",
+                (horizon,)
+            )
+            if not row:
+                return []
+            run_id = row[0] if _USE_POSTGRES else row["id"]
+
+        rows = _fetchall(
+            """SELECT symbol,
+                      COUNT(*) AS total,
+                      SUM(correct) AS correct,
+                      AVG(fwd_return_pct) AS avg_ret,
+                      AVG(CASE WHEN predicted='BUY' THEN fwd_return_pct END) AS buy_ret,
+                      COUNT(CASE WHEN predicted='BUY' THEN 1 END) AS buy_count
+               FROM val_signals
+               WHERE run_id=%s AND horizon=%s
+               GROUP BY symbol
+               ORDER BY buy_ret DESC NULLS LAST""",
+            """SELECT symbol,
+                      COUNT(*) AS total,
+                      SUM(correct) AS correct,
+                      AVG(fwd_return_pct) AS avg_ret,
+                      AVG(CASE WHEN predicted='BUY' THEN fwd_return_pct END) AS buy_ret,
+                      COUNT(CASE WHEN predicted='BUY' THEN 1 END) AS buy_count
+               FROM val_signals
+               WHERE run_id=? AND horizon=?
+               GROUP BY symbol
+               ORDER BY buy_ret DESC NULLS LAST""",
+            (run_id, horizon)
+        )
+
+        def _v(r, key, idx):
+            return r[idx] if _USE_POSTGRES else r[key]
+
         return [
             {
-                "symbol": r["symbol"],
-                "total_signals": r["total"],
-                "correct": r["correct"],
-                "hit_rate_pct": round(r["correct"] / r["total"] * 100, 1) if r["total"] else 0,
-                "avg_fwd_return_pct": round(r["avg_ret"], 2) if r["avg_ret"] is not None else None,
-                "buy_avg_return_pct": round(r["buy_ret"], 2) if r["buy_ret"] is not None else None,
-                "buy_signal_count": r["buy_count"],
+                "symbol":            _v(r, "symbol", 0),
+                "total_signals":     _v(r, "total", 1),
+                "correct":           _v(r, "correct", 2),
+                "hit_rate_pct":      round(_v(r, "correct", 2) / _v(r, "total", 1) * 100, 1) if _v(r, "total", 1) else 0,
+                "avg_fwd_return_pct": round(_v(r, "avg_ret", 3), 2) if _v(r, "avg_ret", 3) is not None else None,
+                "buy_avg_return_pct": round(_v(r, "buy_ret", 4), 2) if _v(r, "buy_ret", 4) is not None else None,
+                "buy_signal_count":  _v(r, "buy_count", 5),
             }
             for r in rows
         ]
-    except Exception as e:
+    except Exception:
         return []
 
 
@@ -641,23 +756,26 @@ def get_all_run_summaries() -> list[dict]:
     """List of all past validation runs with key metrics."""
     try:
         _init_db()
-        with _db_lock, _get_conn() as conn:
-            rows = conn.execute(
-                "SELECT id, run_at, horizon, n_stocks, n_signals, summary FROM val_runs ORDER BY id DESC LIMIT 20"
-            ).fetchall()
+        rows = _fetchall(
+            "SELECT id, run_at, horizon, n_stocks, n_signals, summary FROM val_runs ORDER BY id DESC LIMIT 20",
+            "SELECT id, run_at, horizon, n_stocks, n_signals, summary FROM val_runs ORDER BY id DESC LIMIT 20",
+        )
         results = []
         for r in rows:
-            s = json.loads(r["summary"])
+            if _USE_POSTGRES:
+                rid, rat, hor, ns, nsig, summ = r
+                s = summ if isinstance(summ, dict) else json.loads(summ)
+            else:
+                rid, rat, hor, ns, nsig = r["id"], r["run_at"], r["horizon"], r["n_stocks"], r["n_signals"]
+                s = json.loads(r["summary"])
             results.append({
-                "run_id": r["id"],
-                "run_at": r["run_at"],
-                "horizon": r["horizon"],
-                "n_stocks": r["n_stocks"],
-                "n_signals": r["n_signals"],
-                "buy_hit_rate_pct": s.get("buy_hit_rate_pct"),
+                "run_id": rid, "run_at": str(rat), "horizon": hor,
+                "n_stocks": ns, "n_signals": nsig,
+                "buy_hit_rate_pct":      s.get("buy_hit_rate_pct"),
                 "avg_return_on_buy_pct": s.get("avg_return_on_buy_pct"),
-                "buy_outperformance_pct": s.get("buy_outperformance_pct"),
-                "sharpe_on_buys": s.get("sharpe_on_buys"),
+                "avg_alpha_on_buy_pct":  s.get("avg_alpha_on_buy_pct"),
+                "beat_benchmark_pct":    s.get("beat_benchmark_pct"),
+                "sharpe_on_buys":        s.get("sharpe_on_buys"),
             })
         return results
     except Exception:
