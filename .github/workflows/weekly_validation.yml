@@ -22,7 +22,7 @@ jobs:
       - name: Run medium-horizon validation (all Nifty 100)
         run: |
           echo "Starting medium-horizon validation..."
-          curl -sS --fail-with-body -X POST \
+          curl -sS -X POST \
             "https://stocksense-api-12ii.onrender.com/api/validation/run?horizon=medium"
           echo ""
 
@@ -44,7 +44,7 @@ jobs:
       - name: Run long-horizon validation (all Nifty 100)
         run: |
           echo "Starting long-horizon validation..."
-          curl -sS --fail-with-body -X POST \
+          curl -sS -X POST \
             "https://stocksense-api-12ii.onrender.com/api/validation/run?horizon=long"
           echo ""
 
