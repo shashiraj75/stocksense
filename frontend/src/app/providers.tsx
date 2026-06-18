@@ -18,9 +18,18 @@ export function Providers({ children }: { children: React.ReactNode }) {
     },
   }));
 
-  // Ping on load + every 9 min so Render never goes cold (spins down after 15 min idle)
+  // Ping on load + every 9 min so Render never goes cold (spins down after 15 min idle).
+  // After ping succeeds, silently kick off a prediction for RELIANCE so the backend's
+  // cache is warm and the first real user request gets a fast response.
   useEffect(() => {
-    const ping = () => api.get("/health", { timeout: 30_000 }).catch(() => {});
+    const ping = () =>
+      api.get("/health", { timeout: 30_000 })
+        .then(() => {
+          // Fire-and-forget: warm up the most common Indian + US stock
+          api.get("/api/predictions/RELIANCE?market=IN&horizon=medium", { timeout: 5_000 }).catch(() => {});
+          api.get("/api/predictions/AAPL?market=US&horizon=medium",     { timeout: 5_000 }).catch(() => {});
+        })
+        .catch(() => {});
     ping();
     const id = setInterval(ping, 9 * 60_000);
     return () => clearInterval(id);

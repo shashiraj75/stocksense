@@ -280,10 +280,10 @@ class PredictionEngine:
                             yf.utils.get_crumb(force=True) if hasattr(yf.utils, "get_crumb") else None
                         except Exception:
                             pass
-                        time.sleep(4 + attempt * 3)
+                        time.sleep(2 + attempt * 2)  # 2s, 4s — enough to recover without blocking user
                 except Exception as e:
                     if attempt < 2:
-                        time.sleep(4 + attempt * 3)
+                        time.sleep(2 + attempt * 2)
                     else:
                         raise
             return yf.Ticker(symbol + suffix).history(period=period)  # final attempt, let it fail naturally
@@ -300,7 +300,7 @@ class PredictionEngine:
                             yf.utils.get_crumb(force=True) if hasattr(yf.utils, "get_crumb") else None
                         except Exception:
                             pass
-                        time.sleep(5 + attempt * 3)
+                        time.sleep(2 + attempt * 2)
                 except Exception as e:
                     err_str = str(e).lower()
                     if attempt < 2:
@@ -309,9 +309,9 @@ class PredictionEngine:
                                 yf.utils.get_crumb(force=True) if hasattr(yf.utils, "get_crumb") else None
                             except Exception:
                                 pass
-                        # Longer backoff for rate-limit (429 / Too Many Requests)
-                        backoff = 15 + attempt * 10 if "too many" in err_str or "429" in err_str else 5 + attempt * 3
-                        time.sleep(backoff)
+                        # Keep retries short — if Yahoo is rate-limiting, long sleeps don't help;
+                        # screener.in / BSE fallbacks will fill the gaps instead.
+                        time.sleep(3 + attempt * 2)  # 3s, 5s max
                     else:
                         log.warning("[predict] _fetch_info failed for %s%s after 3 attempts: %s", symbol, suffix, e)
                         return {}

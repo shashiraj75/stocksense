@@ -95,12 +95,17 @@ async def _warmup_loop():
     Uses threading.Thread (same as the prediction endpoint) so tasks survive
     the asyncio lifecycle and never get cancelled by anyio.
     """
-    await asyncio.sleep(150)  # wait for server + universe refresh to fully settle
+    await asyncio.sleep(90)  # wait for server to fully settle
     import threading, time
     from api.routers.predictions import engine, _computing, _bg_thread
     from services.prediction_engine import _pred_cache, _PRED_TTL
-    warmup = [("RELIANCE", "IN", "medium"), ("AAPL", "US", "medium")]
-    print("[warmup] Starting pre-warm for 2 stocks…")
+    # Top-traffic stocks across both markets — pre-warm so first user hit is a cache hit
+    warmup = [
+        ("RELIANCE", "IN", "medium"), ("TCS",      "IN", "medium"),
+        ("HDFCBANK", "IN", "medium"), ("INFY",     "IN", "medium"),
+        ("AAPL",     "US", "medium"), ("MSFT",     "US", "medium"),
+    ]
+    print(f"[warmup] Pre-warming {len(warmup)} stocks…")
     for sym, mkt, horizon in warmup:
         key = f"{sym}:{mkt}:{horizon}"
         if (_pred_cache.get(key) and (time.time() - _pred_cache[key][0]) < _PRED_TTL) or key in _computing:
@@ -109,7 +114,7 @@ async def _warmup_loop():
         t = threading.Thread(target=_bg_thread, args=(sym, mkt, horizon, key), daemon=True)
         t.start()
         print(f"[warmup] kicked off {key}")
-        await asyncio.sleep(90)  # don't start next until first has had time to complete
+        await asyncio.sleep(45)  # stagger launches — don't hammer Yahoo all at once
     print("[warmup] Pre-warm triggered.")
 
 
