@@ -289,15 +289,40 @@ export default function StockPage() {
           {tab !== "backtest" && prediction && !predLoading && (
             <SignalBadge signal={prediction.signal} confidence={prediction.confidence} size="lg" />
           )}
-          {prediction?.signal && !predLoading && !isCrypto && (
-            <button
-              onClick={() => setShowPaperModal(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-dark-card border border-dark-border text-gray-400 hover:text-white hover:border-white/30 transition-colors"
-            >
-              <Beaker size={13} />
-              Paper Trade
-            </button>
-          )}
+          {prediction?.signal && !predLoading && !isCrypto && (() => {
+            const sig = prediction.signal;
+            const isBuy  = sig === "BUY";
+            const isSell = sig === "SELL";
+            const isHold = sig === "HOLD";
+            return (
+              <div className="flex flex-col items-end gap-1">
+                <button
+                  onClick={() => setShowPaperModal(true)}
+                  className={clsx(
+                    "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors",
+                    isBuy
+                      ? "bg-bull/10 border-bull/30 text-bull hover:bg-bull/20"
+                      : isSell
+                      ? "bg-bear/10 border-bear/30 text-red-400 hover:bg-bear/20"
+                      : "bg-dark-card border-dark-border text-gray-400 hover:text-white hover:border-white/30"
+                  )}
+                >
+                  <Beaker size={13} />
+                  {isBuy ? "Paper Buy" : isSell ? "Paper Sell / Short" : "Paper Trade"}
+                </button>
+                {(isSell || isHold) && (
+                  <p className={clsx(
+                    "text-[10px] max-w-[160px] text-right leading-tight",
+                    isSell ? "text-red-400/70" : "text-gray-500"
+                  )}>
+                    {isSell
+                      ? "AI signals exit/short — proceed with caution"
+                      : "No strong entry signal from AI"}
+                  </p>
+                )}
+              </div>
+            );
+          })()}
         </div>
       </div>
 

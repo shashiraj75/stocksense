@@ -144,6 +144,24 @@ export function PaperTradeModal({
           </div>
         )}
 
+        {/* Signal warning for SELL / HOLD */}
+        {!isSell && (activeSignal === "SELL" || activeSignal === "HOLD") && (
+          <div className={clsx(
+            "flex items-start gap-2 rounded-xl px-3 py-2.5 mb-4 text-xs border",
+            activeSignal === "SELL"
+              ? "bg-bear/10 border-bear/30 text-red-300"
+              : "bg-yellow-500/10 border-yellow-500/30 text-yellow-300"
+          )}>
+            <AlertCircle size={14} className="shrink-0 mt-0.5" />
+            <span>
+              {activeSignal === "SELL"
+                ? <><strong>AI signal is SELL</strong> — this stock is not recommended for a new long position at current price. The model expects a price decline. Only proceed if you have a specific reason to trade against the signal.</>
+                : <><strong>AI signal is HOLD</strong> — no strong entry point identified right now. Consider waiting for a clearer BUY signal before opening a position.</>
+              }
+            </span>
+          </div>
+        )}
+
         {/* AI Signal pill */}
         {!isSell && (
           <div className={clsx(
