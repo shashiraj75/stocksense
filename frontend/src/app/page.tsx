@@ -6,6 +6,7 @@ import { TrendingUp, TrendingDown } from "lucide-react";
 import Link from "next/link";
 import clsx from "clsx";
 import { IndexBar } from "@/components/IndexBar";
+import { StockContextMenu } from "@/components/StockContextMenu";
 
 const POPULAR_US     = ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "JPM", "META", "AMZN"];
 const POPULAR_IN     = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "WIPRO", "BAJFINANCE", "ICICIBANK", "ADANIENT"];
@@ -192,15 +193,17 @@ export default function Dashboard() {
             </div>
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
               {[...(movers?.gainers ?? [])].map((m: any) => (
-                <Link key={m.symbol} href={`/stock/${m.symbol}?market=${market}`}
-                  className="p-4 rounded-xl bg-dark-card border border-bull/20 hover:border-bull/50 transition-colors">
-                  <p className="font-mono font-bold text-white text-sm">{m.symbol}</p>
-                  {m.name && <p className="text-[10px] text-gray-500 mt-0.5 truncate">{m.name}</p>}
-                  <p className="text-base font-bold mt-1.5">{currency}{m.price.toLocaleString()}</p>
-                  <div className="flex items-center gap-1 text-sm font-medium mt-1 text-bull">
-                    <TrendingUp size={14} />+{m.change_pct}%
-                  </div>
-                </Link>
+                <StockContextMenu key={m.symbol} symbol={m.symbol} market={market}>
+                  <Link href={`/stock/${m.symbol}?market=${market}`}
+                    className="block p-4 rounded-xl bg-dark-card border border-bull/20 hover:border-bull/50 transition-colors">
+                    <p className="font-mono font-bold text-white text-sm">{m.symbol}</p>
+                    {m.name && <p className="text-[10px] text-gray-500 mt-0.5 truncate">{m.name}</p>}
+                    <p className="text-base font-bold mt-1.5">{currency}{m.price.toLocaleString()}</p>
+                    <div className="flex items-center gap-1 text-sm font-medium mt-1 text-bull">
+                      <TrendingUp size={14} />+{m.change_pct}%
+                    </div>
+                  </Link>
+                </StockContextMenu>
               ))}
             </div>
           </section>
@@ -218,15 +221,17 @@ export default function Dashboard() {
             </div>
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
               {[...(movers?.losers ?? [])].map((m: any) => (
-                <Link key={m.symbol} href={`/stock/${m.symbol}?market=${market}`}
-                  className="p-4 rounded-xl bg-dark-card border border-bear/20 hover:border-bear/50 transition-colors">
-                  <p className="font-mono font-bold text-white text-sm">{m.symbol}</p>
-                  {m.name && <p className="text-[10px] text-gray-500 mt-0.5 truncate">{m.name}</p>}
-                  <p className="text-base font-bold mt-1.5">{currency}{m.price.toLocaleString()}</p>
-                  <div className="flex items-center gap-1 text-sm font-medium mt-1 text-bear">
-                    <TrendingDown size={14} />{m.change_pct}%
-                  </div>
-                </Link>
+                <StockContextMenu key={m.symbol} symbol={m.symbol} market={market}>
+                  <Link href={`/stock/${m.symbol}?market=${market}`}
+                    className="block p-4 rounded-xl bg-dark-card border border-bear/20 hover:border-bear/50 transition-colors">
+                    <p className="font-mono font-bold text-white text-sm">{m.symbol}</p>
+                    {m.name && <p className="text-[10px] text-gray-500 mt-0.5 truncate">{m.name}</p>}
+                    <p className="text-base font-bold mt-1.5">{currency}{m.price.toLocaleString()}</p>
+                    <div className="flex items-center gap-1 text-sm font-medium mt-1 text-bear">
+                      <TrendingDown size={14} />{m.change_pct}%
+                    </div>
+                  </Link>
+                </StockContextMenu>
               ))}
             </div>
           </section>

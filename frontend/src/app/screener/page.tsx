@@ -6,6 +6,7 @@ import { TrendingUp, TrendingDown } from "lucide-react";
 import Link from "next/link";
 import clsx from "clsx";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
+import { StockContextMenu } from "@/components/StockContextMenu";
 
 export default function ScreenerPage() {
   const [market, setMarket] = useState<Market>("IN");
@@ -78,27 +79,29 @@ export default function ScreenerPage() {
                   </tr>
                 ))
               : data?.movers.map((stock) => (
-                  <tr key={stock.symbol} className="border-b border-dark-border hover:bg-dark-border/30 transition-colors">
-                    <td className="px-6 py-4 font-mono font-bold text-white">{stock.symbol}</td>
-                    <td className="px-6 py-4 text-right font-mono">
-                      {currency}{stock.price.toLocaleString()}
-                    </td>
-                    <td className={clsx("px-6 py-4 text-right font-medium",
-                      stock.change_pct >= 0 ? "text-bull" : "text-bear")}>
-                      <span className="flex items-center justify-end gap-1">
-                        {stock.change_pct >= 0 ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
-                        {stock.change_pct >= 0 ? "+" : ""}{stock.change_pct}%
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-right">
-                      <Link
-                        href={`/stock/${stock.symbol}?market=${market}`}
-                        className="px-3 py-1 rounded-lg bg-brand-500/20 text-brand-500 border border-brand-500/30 hover:bg-brand-500/30 text-xs font-medium transition-colors"
-                      >
-                        Analyse →
-                      </Link>
-                    </td>
-                  </tr>
+                  <StockContextMenu key={stock.symbol} symbol={stock.symbol} market={market} className="contents">
+                    <tr className="border-b border-dark-border hover:bg-dark-border/30 transition-colors">
+                      <td className="px-6 py-4 font-mono font-bold text-white">{stock.symbol}</td>
+                      <td className="px-6 py-4 text-right font-mono">
+                        {currency}{stock.price.toLocaleString()}
+                      </td>
+                      <td className={clsx("px-6 py-4 text-right font-medium",
+                        stock.change_pct >= 0 ? "text-bull" : "text-bear")}>
+                        <span className="flex items-center justify-end gap-1">
+                          {stock.change_pct >= 0 ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
+                          {stock.change_pct >= 0 ? "+" : ""}{stock.change_pct}%
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-right">
+                        <Link
+                          href={`/stock/${stock.symbol}?market=${market}`}
+                          className="px-3 py-1 rounded-lg bg-brand-500/20 text-brand-500 border border-brand-500/30 hover:bg-brand-500/30 text-xs font-medium transition-colors"
+                        >
+                          Analyse →
+                        </Link>
+                      </td>
+                    </tr>
+                  </StockContextMenu>
                 ))}
           </tbody>
         </table>
