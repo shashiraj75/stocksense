@@ -183,7 +183,10 @@ export default function Dashboard() {
               <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">
                 Top Gainers · {market === "IN" ? "NSE" : "NYSE / NASDAQ"}
               </h2>
-              <span className="text-[10px] text-bull font-medium bg-bull/10 px-2 py-0.5 rounded-full">Live</span>
+              {movers?.market_open
+                ? <span className="text-[10px] text-bull font-medium bg-bull/10 px-2 py-0.5 rounded-full">Live</span>
+                : <span className="text-[10px] text-gray-400 font-medium bg-white/5 px-2 py-0.5 rounded-full">Market Closed · Last Session</span>
+              }
             </div>
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
               {[...(movers?.gainers ?? [])].map((m: any) => (
@@ -206,7 +209,10 @@ export default function Dashboard() {
               <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">
                 Top Losers · {market === "IN" ? "NSE" : "NYSE / NASDAQ"}
               </h2>
-              <span className="text-[10px] text-bear font-medium bg-bear/10 px-2 py-0.5 rounded-full">Live</span>
+              {movers?.market_open
+                ? <span className="text-[10px] text-bear font-medium bg-bear/10 px-2 py-0.5 rounded-full">Live</span>
+                : <span className="text-[10px] text-gray-400 font-medium bg-white/5 px-2 py-0.5 rounded-full">Market Closed · Last Session</span>
+              }
             </div>
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
               {[...(movers?.losers ?? [])].map((m: any) => (

@@ -98,7 +98,7 @@ export const fetchNews = (symbol: string, market: Market) =>
 type Mover = { symbol: string; price: number; change_pct: number; name?: string };
 export const fetchTopMovers = (market: Market) =>
   api
-    .get<{ movers: Mover[]; gainers: Mover[]; losers: Mover[] }>("/api/screener/top-movers", {
+    .get<{ movers: Mover[]; gainers: Mover[]; losers: Mover[]; market_open: boolean }>("/api/screener/top-movers", {
       params: { market },
     })
     .then((r) => r.data);

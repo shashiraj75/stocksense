@@ -1,7 +1,27 @@
 import time
+import datetime
 import yfinance as yf
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+def _is_market_open(market: str) -> bool:
+    """Simple check: NSE is open Mon–Fri 9:15–15:30 IST, NYSE Mon–Fri 9:30–16:00 ET."""
+    if market == "IN":
+        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+        if now.weekday() >= 5:
+            return False
+        open_t  = now.replace(hour=9,  minute=15, second=0, microsecond=0)
+        close_t = now.replace(hour=15, minute=30, second=0, microsecond=0)
+        return open_t <= now <= close_t
+    elif market == "US":
+        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-4)))  # EDT
+        if now.weekday() >= 5:
+            return False
+        open_t  = now.replace(hour=9,  minute=30, second=0, microsecond=0)
+        close_t = now.replace(hour=16, minute=0,  second=0, microsecond=0)
+        return open_t <= now <= close_t
+    return False
 
 # Fallback universes used only if live screener fails
 US_UNIVERSE = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "JPM", "BAC", "XOM",
@@ -82,6 +102,7 @@ class ScreenerService:
         if cached and (time.time() - cached[0]) < _MOVERS_TTL:
             return cached[1]
 
+        is_open = _is_market_open(market)
         gainers, losers = [], []
         try:
             if market == "IN":
@@ -91,7 +112,7 @@ class ScreenerService:
         except Exception:
             pass
 
-        # Fallback to fixed universe if screener fails
+        # Fallback to fixed universe only if screener returns nothing at all
         if not gainers and not losers:
             universe = US_UNIVERSE if market == "US" else IN_UNIVERSE
             all_movers = []
@@ -104,7 +125,7 @@ class ScreenerService:
             gainers = sorted([m for m in all_movers if m["change_pct"] >= 0], key=lambda x: x["change_pct"], reverse=True)[:10]
             losers  = sorted([m for m in all_movers if m["change_pct"] < 0],  key=lambda x: x["change_pct"])[:10]
 
-        response = {"market": market, "gainers": gainers, "losers": losers, "movers": gainers + losers}
+        response = {"market": market, "market_open": is_open, "gainers": gainers, "losers": losers, "movers": gainers + losers}
         _movers_cache[market] = (time.time(), response)
         return response
 
