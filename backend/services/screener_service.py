@@ -32,34 +32,31 @@ def _quotes_to_movers(quotes: list, suffix_strip: str = "") -> list:
     return movers
 
 
-def _live_movers_in() -> list:
-    """Fetch actual NSE top movers via yfinance EquityQuery screener."""
-    # min market cap ~100 Cr (1B INR) to filter out illiquid micro-caps
-    min_mcap = 1_000_000_000
+MIN_MCAP_IN = 1_000_000_000  # ~100 Cr INR — filters out illiquid micro-caps
+
+
+def _live_gainers_losers_in() -> tuple[list, list]:
+    """Fetch top 10 NSE gainers and top 10 NSE losers from the full exchange."""
     gainers_q = yf.EquityQuery("and", [
         yf.EquityQuery("eq", ["exchange", "NSI"]),
-        yf.EquityQuery("gt", ["intradaymarketcap", min_mcap]),
+        yf.EquityQuery("gt", ["intradaymarketcap", MIN_MCAP_IN]),
         yf.EquityQuery("gt", ["percentchange", 0]),
     ])
     losers_q = yf.EquityQuery("and", [
         yf.EquityQuery("eq", ["exchange", "NSI"]),
-        yf.EquityQuery("gt", ["intradaymarketcap", min_mcap]),
+        yf.EquityQuery("gt", ["intradaymarketcap", MIN_MCAP_IN]),
         yf.EquityQuery("lt", ["percentchange", 0]),
     ])
-    gainers = yf.screen(gainers_q, sortField="percentchange", sortAsc=False, count=10).get("quotes", [])
-    losers  = yf.screen(losers_q,  sortField="percentchange", sortAsc=True,  count=10).get("quotes", [])
-    all_movers = _quotes_to_movers(gainers) + _quotes_to_movers(losers)
-    all_movers.sort(key=lambda x: abs(x["change_pct"]), reverse=True)
-    return all_movers[:10]
+    gainers = _quotes_to_movers(yf.screen(gainers_q, sortField="percentchange", sortAsc=False, count=10).get("quotes", []))
+    losers  = _quotes_to_movers(yf.screen(losers_q,  sortField="percentchange", sortAsc=True,  count=10).get("quotes", []))
+    return gainers[:10], losers[:10]
 
 
-def _live_movers_us() -> list:
-    """Fetch actual US top movers via yfinance predefined screeners."""
-    gainers = yf.screen("day_gainers", count=10).get("quotes", [])
-    losers  = yf.screen("day_losers",  count=10).get("quotes", [])
-    all_movers = _quotes_to_movers(gainers) + _quotes_to_movers(losers)
-    all_movers.sort(key=lambda x: abs(x["change_pct"]), reverse=True)
-    return all_movers[:10]
+def _live_gainers_losers_us() -> tuple[list, list]:
+    """Fetch top 10 US gainers and top 10 US losers via predefined screeners."""
+    gainers = _quotes_to_movers(yf.screen("day_gainers", count=10).get("quotes", []))
+    losers  = _quotes_to_movers(yf.screen("day_losers",  count=10).get("quotes", []))
+    return gainers[:10], losers[:10]
 
 
 def _fetch_mover(sym: str) -> dict | None:
@@ -85,28 +82,29 @@ class ScreenerService:
         if cached and (time.time() - cached[0]) < _MOVERS_TTL:
             return cached[1]
 
-        movers = []
+        gainers, losers = [], []
         try:
             if market == "IN":
-                movers = _live_movers_in()
+                gainers, losers = _live_gainers_losers_in()
             elif market == "US":
-                movers = _live_movers_us()
+                gainers, losers = _live_gainers_losers_us()
         except Exception:
             pass
 
         # Fallback to fixed universe if screener fails
-        if not movers:
+        if not gainers and not losers:
             universe = US_UNIVERSE if market == "US" else IN_UNIVERSE
+            all_movers = []
             with ThreadPoolExecutor(max_workers=20) as pool:
                 futures = {pool.submit(_fetch_mover, sym): sym for sym in universe}
                 for future in as_completed(futures):
                     result = future.result()
                     if result:
-                        movers.append(result)
-            movers.sort(key=lambda x: abs(x["change_pct"]), reverse=True)
-            movers = movers[:10]
+                        all_movers.append(result)
+            gainers = sorted([m for m in all_movers if m["change_pct"] >= 0], key=lambda x: x["change_pct"], reverse=True)[:10]
+            losers  = sorted([m for m in all_movers if m["change_pct"] < 0],  key=lambda x: x["change_pct"])[:10]
 
-        response = {"market": market, "movers": movers}
+        response = {"market": market, "gainers": gainers, "losers": losers, "movers": gainers + losers}
         _movers_cache[market] = (time.time(), response)
         return response
 
