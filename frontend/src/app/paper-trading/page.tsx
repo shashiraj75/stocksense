@@ -190,7 +190,8 @@ function OpenTradeRow({ trade, onSell, sessionId }: { trade: PaperTrade; onSell:
         </td>
       </tr>
     )}
-  </>;
+    </>
+  );
 }
 
 function ClosedTradeRow({ trade }: { trade: PaperTrade }) {
