@@ -40,6 +40,9 @@ export function MarketStatusBar() {
             <span className={clsx("text-xs font-medium", status.isOpen ? "text-green-400" : "text-red-400")}>
               {status.isOpen ? "Open" : "Closed"}
             </span>
+            {status.nextEventLabel && (
+              <span className="text-[11px] text-gray-500">· {status.nextEventLabel}</span>
+            )}
           </div>
         ))}
       </div>
