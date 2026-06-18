@@ -507,8 +507,21 @@ def generate_picks() -> dict:
         "regime":          {"label": regime_label, "description": regime["description"]},
     }
 
-    with open(CACHE_FILE, "w") as f:
-        json.dump(payload, f)
+    # Save to disk (best-effort — ephemeral on Render free tier)
+    try:
+        with open(CACHE_FILE, "w") as f:
+            json.dump(payload, f)
+    except Exception as e:
+        print(f"[picks] Disk cache write failed: {e}")
+
+    # Save to Postgres (survives redeploys)
+    if os.getenv("USE_POSTGRES") == "1":
+        try:
+            from services.postgres_store import save_picks_to_db
+            save_picks_to_db(payload)
+            print("[picks] Saved to Postgres.")
+        except Exception as e:
+            print(f"[picks] Postgres save failed: {e}")
 
     elapsed = round(time.time() - start, 1)
     total = sum(len(v) for v in picks.values())
@@ -532,7 +545,21 @@ def generate_picks() -> dict:
 
 
 def get_cached_picks() -> dict | None:
-    """Return cached picks from disk, or None if not yet generated."""
+    """
+    Return today's picks. Reads from Postgres first (survives Render redeploys),
+    falls back to local disk cache.
+    """
+    # Postgres first
+    if os.getenv("USE_POSTGRES") == "1":
+        try:
+            from services.postgres_store import load_picks_from_db
+            data = load_picks_from_db()
+            if data:
+                return data
+        except Exception as e:
+            print(f"[picks] Postgres load failed, falling back to disk: {e}")
+
+    # Disk fallback
     try:
         with open(CACHE_FILE) as f:
             return json.load(f)

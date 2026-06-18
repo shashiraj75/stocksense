@@ -126,6 +126,13 @@ CREATE TABLE IF NOT EXISTS score_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_score_snapshots_symbol ON score_snapshots(symbol, horizon, snapshot_date);
 
+CREATE TABLE IF NOT EXISTS daily_picks_cache (
+    id           BIGSERIAL PRIMARY KEY,
+    generated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    payload      JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_daily_picks_cache_date ON daily_picks_cache(generated_at DESC);
+
 CREATE TABLE IF NOT EXISTS factor_ic_history (
     id            BIGSERIAL PRIMARY KEY,
     computed_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -360,6 +367,37 @@ def get_factor_ic_history(horizon: str) -> list[dict]:
 
 
 # ── New: Daily picks performance (section 5) ────────────────────────────────
+
+def save_picks_to_db(payload: dict) -> None:
+    """Persist the full picks payload to Postgres so it survives Render redeploys."""
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO daily_picks_cache (generated_at, payload) VALUES (%s, %s)",
+            (datetime.now(timezone.utc), json.dumps(payload)),
+        )
+        # Keep only last 10 rows to avoid bloat
+        conn.execute("""
+            DELETE FROM daily_picks_cache
+            WHERE id NOT IN (
+                SELECT id FROM daily_picks_cache ORDER BY generated_at DESC LIMIT 10
+            )
+        """)
+
+
+def load_picks_from_db() -> dict | None:
+    """Load the most recently generated picks from Postgres."""
+    try:
+        with _get_pool().connection() as conn:
+            row = conn.execute(
+                "SELECT payload FROM daily_picks_cache ORDER BY generated_at DESC LIMIT 1"
+            ).fetchone()
+        if row:
+            payload = row[0]
+            return payload if isinstance(payload, dict) else json.loads(payload)
+    except Exception as e:
+        print(f"[postgres_store] load_picks_from_db error: {e}")
+    return None
+
 
 def get_daily_picks_performance(horizon: str, window_days: int = 90) -> list[dict]:
     """All daily-pick predictions in the window, joined with outcomes if resolved."""
