@@ -1,7 +1,7 @@
 # StockSense — Complete Product & Technical Documentation
 
 > **Live Document** — Updated automatically as the product evolves.  
-> Last updated: 2026-06-18
+> Last updated: 2026-06-18 (Session 3)
 
 ---
 
@@ -23,12 +23,16 @@
 14. [Backtesting & Validation Engine](#14-backtesting--validation-engine)
 15. [Crypto Prediction Module](#15-crypto-prediction-module)
 16. [Screener & Universe Management](#16-screener--universe-management)
-17. [API Reference](#17-api-reference)
-18. [Frontend Pages & Components](#18-frontend-pages--components)
-19. [Infrastructure & Deployment](#19-infrastructure--deployment)
-20. [Automation Workflows](#20-automation-workflows)
-21. [Factor Weights by Horizon](#21-factor-weights-by-horizon)
-22. [Key Design Principles](#22-key-design-principles)
+17. [Paper Trading Module](#17-paper-trading-module)
+18. [Alerts System](#18-alerts-system)
+19. [API Reference](#19-api-reference)
+20. [Frontend Pages & Components](#20-frontend-pages--components)
+21. [Infrastructure & Deployment](#21-infrastructure--deployment)
+22. [Automation Workflows](#22-automation-workflows)
+23. [Persistence & Data Durability](#23-persistence--data-durability)
+24. [Factor Weights by Horizon](#24-factor-weights-by-horizon)
+25. [Key Design Principles](#25-key-design-principles)
+26. [Changelog](#26-changelog)
 
 ---
 
@@ -794,7 +798,87 @@ BTC, ETH, BNB, SOL, XRP, DOGE, ADA, AVAX, LINK, DOT
 
 ---
 
-## 17. API Reference
+## 17. Paper Trading Module
+
+**File:** `backend/api/routers/paper_trading.py`, `frontend/src/app/paper-trading/page.tsx`
+
+A simulated trading environment where users can test stock calls without real money. All trades persist in PostgreSQL and survive Render restarts.
+
+### Database Schema
+
+```sql
+paper_portfolio (session_id, cash_balance, updated_at)
+paper_trades    (id, session_id, symbol, market, quantity, entry_price, exit_price,
+                 stop_loss, target_price, status, signal, horizon, opened_at, closed_at)
+```
+
+### Session Model
+
+- Single shared session ID: `"default"` (no real auth required)
+- Starting virtual cash: **₹1,00,000 / $10,000** (depending on market)
+- All positions are long only (no shorting)
+
+### Trade Lifecycle
+
+```
+Open Trade  → entry_price captured at trade time
+Live Price  → fetched real-time via Finnhub / yfinance
+Unrealised P&L = (live_price − entry_price) × quantity
+Close Trade → exit_price set, status = 'CLOSED'
+Realised P&L = (exit_price − entry_price) × quantity
+```
+
+### Stop Loss & Target Price
+
+- Optionally set per trade via inline edit (✎ icon)
+- ATR-based defaults pre-filled when placing a trade from the stock detail page
+- Both values always shown per position with % from entry
+- UI highlights rows where price is within 2% of stop (yellow) or target (green)
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/paper-trading/{session_id}` | GET | All open + closed positions with live P&L |
+| `/api/paper-trading/{session_id}/trade` | POST | Open a new position |
+| `/api/paper-trading/{session_id}/close/{trade_id}` | POST | Close a position |
+| `/api/paper-trading/{session_id}/update/{trade_id}` | PATCH | Edit stop_loss / target_price |
+
+---
+
+## 18. Alerts System
+
+**File:** `backend/api/routers/alerts.py`, `frontend/src/app/alerts/page.tsx`
+
+Price-level alerts that trigger when a stock crosses a target price. All alerts persist in PostgreSQL.
+
+### Database Schema
+
+```sql
+price_alerts (id TEXT PK, user_id TEXT, symbol TEXT, market TEXT,
+              target_price NUMERIC, direction TEXT CHECK('above','below'),
+              triggered BOOL DEFAULT FALSE, created_at TIMESTAMPTZ, triggered_at TIMESTAMPTZ)
+```
+
+### Alert Check Logic
+
+- Frontend polls live quote every 60 seconds
+- Compares `live_price` vs `target_price` by direction (`above` / `below`)
+- On trigger: PATCH alert to `triggered = true`, stores `triggered_at`
+- Triggered alerts shown with timestamp; can be reset or deleted
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/alerts/{user_id}` | GET | All alerts for user |
+| `/api/alerts/{user_id}` | POST | Create new alert |
+| `/api/alerts/{user_id}/{alert_id}` | PATCH | Update (reset triggered, edit price) |
+| `/api/alerts/{user_id}/{alert_id}` | DELETE | Remove alert |
+
+---
+
+## 19. API Reference
 
 ### Prediction
 
@@ -811,6 +895,9 @@ BTC, ETH, BNB, SOL, XRP, DOGE, ADA, AVAX, LINK, DOT
 |----------|--------|-------------|
 | `/api/picks/daily` | GET | Today's cached picks (instant) |
 | `/api/picks/generate` | POST | Trigger pick generation (secret-protected) |
+| `/api/picks/performance` | GET | Live P&L of past picks vs benchmark |
+
+**Query params for performance:** `horizon` (short/medium/long), `window_days` (default 90)
 
 ### Screener
 
@@ -830,6 +917,32 @@ BTC, ETH, BNB, SOL, XRP, DOGE, ADA, AVAX, LINK, DOT
 | `/api/validation/status` | GET | Validation progress |
 | `/api/validation/results` | GET | Validation metrics by horizon |
 
+### Watchlist
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/watchlist/{user_id}` | GET | All saved stocks |
+| `/api/watchlist/{user_id}` | POST | Add stock |
+| `/api/watchlist/{user_id}/{symbol}` | DELETE | Remove stock |
+
+### Alerts
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/alerts/{user_id}` | GET | All price alerts |
+| `/api/alerts/{user_id}` | POST | Create alert |
+| `/api/alerts/{user_id}/{alert_id}` | PATCH | Update alert (reset / edit) |
+| `/api/alerts/{user_id}/{alert_id}` | DELETE | Delete alert |
+
+### Paper Trading
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/paper-trading/{session_id}` | GET | Positions + portfolio summary |
+| `/api/paper-trading/{session_id}/trade` | POST | Open position |
+| `/api/paper-trading/{session_id}/close/{trade_id}` | POST | Close position |
+| `/api/paper-trading/{session_id}/update/{trade_id}` | PATCH | Edit SL / target |
+
 ### Infrastructure
 
 | Endpoint | Method | Description |
@@ -838,20 +951,23 @@ BTC, ETH, BNB, SOL, XRP, DOGE, ADA, AVAX, LINK, DOT
 
 ---
 
-## 18. Frontend Pages & Components
+## 20. Frontend Pages & Components
 
 ### Pages
 
 | Page | Route | Description |
 |------|-------|-------------|
-| Dashboard | `/` | Top movers (US/IN/Crypto), market status, search |
-| Stock Detail | `/stock/:symbol` | Full prediction, trade levels, factor breakdown |
-| Daily Picks | `/picks` | Today's top BUY ideas by horizon + portfolio weights |
+| Dashboard | `/` | Top movers (US/IN/Crypto), market status, quick access, live index bar |
+| Stock Detail | `/stock/:symbol` | Full prediction, trade levels, factor breakdown, news, charts |
+| Daily Picks | `/picks` | Today's top BUY ideas by horizon, portfolio weights, trust layer |
 | Screener | `/screener` | Filter and explore the universe |
-| Backtest | `/backtest` | Single-stock historical test |
-| Watchlist | `/watchlist` | Saved stocks with live prices and signals |
-| Alerts | `/alerts` | Price and signal alerts |
-| Portfolio | `/portfolio` | Holdings with BUY/HOLD/SELL per position |
+| Backtest | `/backtest` | Single-stock historical walk-forward test |
+| Heatmap | `/heatmap` | Sector-wise colour-coded market snapshot (IN / US) |
+| Watchlist | `/watchlist` | Saved stocks with live prices and change% (Postgres-backed) |
+| Alerts | `/alerts` | Price alerts with live trigger detection (Postgres-backed) |
+| Portfolio | `/portfolio` | Holdings with BUY/HOLD/SELL per position + history tab |
+| Paper Trade | `/paper-trading` | Simulated trading — open/close positions, track P&L (Postgres-backed) |
+| Validation | `/validation` | Walk-forward validation results — hit rate, Sharpe, alpha vs benchmark |
 
 ### Key Components
 
@@ -862,14 +978,33 @@ BTC, ETH, BNB, SOL, XRP, DOGE, ADA, AVAX, LINK, DOT
 | `ConfidenceBreakdown` | SVG gauge + 5-component confidence bars with tooltips |
 | `BullBearCase` | Generated analyst-style bull/bear thesis bullets |
 | `TradingViewWidget` | Embedded TradingView advanced chart (visual only; not connected to prediction engine) |
-| `IndexBar` | Live NIFTY 50, SENSEX, VIX ticker strip |
+| `IndexBar` | Live NIFTY 50, SENSEX, VIX ticker strip (inline or full bar mode) |
 | `SignalBadge` | BUY / HOLD / SELL badge with colour coding |
 | `ScoreHistoryChart` | Composite score trend over time |
 | `NewsCard` | Sentiment-tagged news article card |
+| `BacktestPanel` | Real walk-forward results per horizon on Daily Picks page |
+| `LivePerformanceTracker` | Per-pick P&L table showing entry, current return, alpha vs Nifty |
+| `PaperTradeModal` | Trade entry form (qty, horizon, pre-filled SL/target from engine) |
+
+### Daily Picks Trust Layer
+
+The Picks page has a collapsible **"Show Real Accuracy"** panel with three layers:
+
+1. **Backtest results** — real walk-forward hit rate, avg return, Sharpe, alpha vs Nifty per horizon
+2. **Confidence calibration table** — empirical hit rate per score band (60–65, 65–70, 70–75, 75–80, 80–85, 85–91) so users can see if higher confidence = higher win rate
+3. **Live P&L tracker** — every past daily pick with entry price, current return%, and alpha vs benchmark
+
+### Pick Card UI
+
+- Rank badge (#1–#5)
+- Score band label (STRONG BUY / BUY / HOLD) with colour
+- Sector tag
+- Top 3 signals inline (▲ BULLISH, ▼ BEARISH, → NEUTRAL) without needing to expand
+- Compact market regime bar
 
 ---
 
-## 19. Infrastructure & Deployment
+## 21. Infrastructure & Deployment
 
 ### Hosting
 
@@ -889,20 +1024,26 @@ BTC, ETH, BNB, SOL, XRP, DOGE, ADA, AVAX, LINK, DOT
 | `USE_POSTGRES` | `1` = Postgres, `0` = SQLite | `0` |
 | `PICKS_SECRET` | Secret header for `/api/picks/generate` | Required in prod |
 | `PICKS_UNIVERSE_LIMIT` | Cap stock count (set < 25 on constrained hosts) | 98 (full Nifty 100) |
+| `SCREENER_EMAIL` | screener.in login email | Required for Indian fundamental data |
+| `SCREENER_PASSWORD` | screener.in login password | Required for Indian fundamental data |
+| `FRONTEND_URL` | Vercel frontend URL for CORS | Must be set in prod |
+| `RENDER_EXTERNAL_URL` | Auto-set by Render — used for self-ping keepalive | Auto |
 
 ### Backend Startup Sequence
 
 1. Uvicorn starts FastAPI app
 2. CORS middleware enabled (frontend HTTPS origin)
-3. Prediction router with daemon-thread async pattern initialised
-4. Universe refresh (async, 30s delay)
-5. Keepalive loop (14-minute interval)
-6. Outcome resolver (6-hour interval)
-7. Warmup loop — pre-computes RELIANCE:IN:medium and AAPL:US:medium (150s delay, 90s gap)
+3. **Postgres schema initialised** (`init_db()` — creates all tables if not exist)
+4. **screener.in login** — authenticated session established on boot (not lazily)
+5. Prediction router with daemon-thread async pattern initialised
+6. Universe refresh (async, 30s delay)
+7. Keepalive loop (14-minute self-ping interval)
+8. Outcome resolver (6-hour interval)
+9. Warmup loop — pre-computes RELIANCE:IN:medium and AAPL:US:medium (150s delay, 90s gap)
 
 ---
 
-## 20. Automation Workflows
+## 22. Automation Workflows
 
 **Directory:** `.github/workflows/`
 
@@ -910,9 +1051,11 @@ BTC, ETH, BNB, SOL, XRP, DOGE, ADA, AVAX, LINK, DOT
 
 ```
 Schedule: 0 3 * * 1-5  (3:00 AM UTC = 8:30 AM IST, Mon–Fri)
-Action:   POST /api/picks/generate with x-secret header
-Purpose:  Wake Render + trigger 10-min pick generation
-Result:   Picks ready by 9:00 AM IST
+Step 1:   Poll /health up to 10× (30s gap) until Render responds 200
+          — prevents silent failure when server is cold-starting
+Step 2:   POST /api/picks/generate with x-secret header
+Purpose:  Ensures picks are generated even after overnight sleep
+Result:   Picks ready by 9:00–9:10 AM IST
 ```
 
 ### weekly_validation.yml — Model Accuracy Validation
@@ -936,7 +1079,42 @@ Purpose:  Prevent Render free tier from spinning down
 
 ---
 
-## 21. Factor Weights by Horizon
+## 23. Persistence & Data Durability
+
+Render's free tier uses ephemeral disk — files written locally are wiped on every restart/redeploy. All user-facing and learning data is stored in PostgreSQL to survive this.
+
+### What Lives in Postgres
+
+| Data | Table | Survives Restart |
+|------|-------|-----------------|
+| Price alerts | `price_alerts` | ✅ Yes |
+| Watchlist | `watchlist` | ✅ Yes |
+| Paper trades & portfolio | `paper_trades`, `paper_portfolio` | ✅ Yes |
+| Daily picks cache | `daily_picks_cache` | ✅ Yes |
+| Validation results | `val_runs`, `val_signals` | ✅ Yes |
+| Alpha engine predictions | `predictions` | ✅ Yes |
+| Outcome resolution | `outcomes` | ✅ Yes |
+| IC history | `factor_ic_history` | ✅ Yes |
+| Regime log | `regime_log` | ✅ Yes |
+| Score snapshots | `score_snapshots` | ✅ Yes |
+
+### What Is Transient (acceptable)
+
+| Data | Storage | Why Acceptable |
+|------|---------|---------------|
+| Trained ML models (`meta_model_*.pkl`, `regime_kmeans.pkl`) | Local file | Auto-retrains from Postgres data on next picks run — no user data lost, just one cycle of degraded weights |
+| API response caches (quotes, heatmap, movers) | In-memory (TTL) | Market data; freshly fetched anyway |
+
+### screener.in Session
+
+- Login fires at Render boot (not lazily on first request)
+- Session refreshed every 6 hours
+- `SCREENER_EMAIL` + `SCREENER_PASSWORD` must be set as Render environment variables
+- Login logs: `[startup] screener.in login succeeded/failed` — check Render logs after deploy
+
+---
+
+## 24. Factor Weights by Horizon
 
 ### Short-Term (1–5 days)
 
@@ -967,7 +1145,7 @@ Purpose:  Prevent Render free tier from spinning down
 
 ---
 
-## 22. Key Design Principles
+## 25. Key Design Principles
 
 1. **No Look-Ahead Bias** — Backtester uses only data available at the prediction date. Forward returns computed strictly after prediction timestamp.
 
@@ -988,6 +1166,61 @@ Purpose:  Prevent Render free tier from spinning down
 9. **Real-Time Ready** — 15-minute prediction cache, async background computation, React Query polling for live data.
 
 10. **Investor Transparency** — Every number in the UI is traceable to a specific calculation in the codebase. This document is kept current with every code change.
+
+11. **Postgres-First Persistence** — All user data (watchlist, alerts, paper trades, picks, validation, alpha engine) is stored in PostgreSQL. Render's ephemeral disk is never trusted for user-facing state.
+
+---
+
+## 26. Changelog
+
+### Session 3 — 2026-06-18
+
+**New Features:**
+- **Paper Trading module** — full simulated trading with open/close positions, stop-loss/target tracking, unrealised and realised P&L, Postgres persistence
+- **Price Alerts system** — Postgres-backed price level alerts with live trigger detection
+- **Daily Picks Trust Layer** — real backtest results, confidence calibration table per score band, live P&L tracker for past picks
+- **Pick Card UI overhaul** — rank badges (#1–#5), sector tags, top 3 signals visible inline, compact regime bar
+
+**Fixes:**
+- Watchlist migrated from ephemeral JSON file to Postgres — no longer disappears on Render restart
+- screener.in login now fires at startup (not lazily) — data available from first request
+- screener.in login enhanced: tries both `username`/`email` field names, logs every step
+- Daily picks cron now waits for Render to be healthy before triggering — prevents silent cold-start failures
+- Paper trading open positions: stop loss/target hint row now always visible (shows "not set — click ✎ to add one" when unset, for consistent layout)
+- Open positions now always show SL/target hint row consistently regardless of signal type
+
+**Performance Improvements:**
+- `get_fundamentals`: replaced 3×sleep(3) blocking retry with `asyncio.wait_for(timeout=8s)`
+- OHLCV data: added 5-minute in-process cache (was completely uncached)
+- Quote enrichment: removed redundant second yfinance `fast_info` call
+- Heatmap cache TTL: 3 min → 5 min
+- Dashboard refetch interval: 60s → 120s, staleTime aligned
+- Heatmap frontend refetch: 3 min → 5 min, staleTime aligned
+- Stock detail quote refetch: 30s → 60s
+- `refetchOnWindowFocus: false` added across all major queries
+
+### Session 2 — (prior)
+
+- Walk-forward validation engine with Postgres storage
+- Learning Alpha Engine (IC weights, regime clustering, meta-model, outcome logger)
+- Screener.in authenticated scraping for Indian fundamental data
+- Portfolio page with BUY/HOLD/SELL signals per holding
+- History tab with horizon selector on portfolio page
+- Backtest async fix (non-blocking event loop)
+- Prediction cache size cap (300 entries, LRU eviction)
+- Hammer & Morning Star candlestick pattern bug fixes
+
+### Session 1 — (initial)
+
+- Core prediction engine (technical, fundamental, sentiment, quality, macro)
+- Stock detail page with full factor breakdown
+- Dashboard with top movers (US/IN/Crypto)
+- Heatmap page (sector-wise colour-coded)
+- Screener with filters
+- Watchlist with live prices
+- Daily Picks engine (9-phase Learning Alpha pipeline)
+- GitHub Actions automation (daily picks, weekly validation, keep-alive)
+- Render + Vercel deployment
 
 ---
 
