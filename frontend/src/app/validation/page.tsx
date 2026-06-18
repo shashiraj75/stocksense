@@ -180,8 +180,11 @@ export default function ValidationPage() {
         <AlertCircle size={18} className="text-yellow-400 mt-0.5 shrink-0" />
         <div className="text-sm text-yellow-300/80">
           <strong className="text-yellow-300">Walk-forward guarantee:</strong> At each historical date, the model only uses data
-          available <em>before</em> that date — no look-ahead bias. Correctness is measured relative to the Nifty 50 benchmark,
-          not absolute direction: a BUY call is "correct" only if the stock <em>outperforms</em> Nifty over the forward window.
+          available <em>before</em> that date — no look-ahead bias. Correctness is <em>benchmark-relative</em>:{" "}
+          a <strong className="text-yellow-300">BUY</strong> is correct only if the stock <em>outperforms</em> Nifty over the forward window;
+          a <strong className="text-yellow-300">SELL</strong> is correct only if it <em>underperforms</em> Nifty;
+          a <strong className="text-yellow-300">HOLD</strong> is correct if it stays within ±threshold% of Nifty.{" "}
+          "Avg BUY Return" and "Profitable BUY %" measure <em>absolute</em> return (not vs Nifty) — all other metrics are alpha-based.
         </div>
       </div>
 
@@ -317,13 +320,13 @@ export default function ValidationPage() {
             <StatCard
               label="Avg BUY Return"
               value={res.avg_return_on_buy_pct != null ? `${res.avg_return_on_buy_pct > 0 ? "+" : ""}${res.avg_return_on_buy_pct}%` : null}
-              sub={`Nifty baseline: ${res.nifty_avg_fwd_return_pct ?? "—"}%`}
+              sub={`Absolute return · Nifty avg: ${res.nifty_avg_fwd_return_pct ?? "—"}%`}
               color={(res.avg_return_on_buy_pct ?? 0) > (res.nifty_avg_fwd_return_pct ?? 0) ? "text-green-400" : "text-yellow-400"}
             />
             <StatCard
               label="Profitable BUY %"
               value={res.profitable_buy_pct != null ? `${res.profitable_buy_pct}%` : null}
-              sub="% with any positive return"
+              sub="% with positive absolute return (not vs Nifty)"
               color={(res.profitable_buy_pct ?? 0) >= 55 ? "text-green-400" : "text-yellow-400"}
             />
             <StatCard
