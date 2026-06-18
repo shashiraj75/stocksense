@@ -1330,7 +1330,7 @@ export default function StockPage() {
         <PaperTradeModal
           symbol={symbol}
           market={market as "IN" | "US"}
-          currentPrice={prediction.current_price ?? quote?.price ?? 0}
+          currentPrice={quote?.price ?? prediction.current_price ?? 0}
           signal={prediction.signal}
           horizon={horizon}
           currency={market === "IN" ? "₹" : "$"}
