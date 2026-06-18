@@ -37,11 +37,13 @@ export function PaperTradeModal({
 
   const [selectedHorizon, setSelectedHorizon] = useState<Horizon>(initialHorizon as Horizon);
   const [quantity, setQuantity] = useState(existingQuantity ?? 1);
+  // Only pre-fill AI suggestions when signal matches trade direction (BUY levels for BUY trade)
+  const signalMatchesBuy = initialSignal === "BUY";
   const [stopLoss, setStopLoss] = useState<string>(
-    suggestedStopLoss ? suggestedStopLoss.toFixed(2) : ""
+    suggestedStopLoss && signalMatchesBuy ? suggestedStopLoss.toFixed(2) : ""
   );
   const [targetPrice, setTargetPrice] = useState<string>(
-    suggestedTargetPrice ? suggestedTargetPrice.toFixed(2) : ""
+    suggestedTargetPrice && signalMatchesBuy ? suggestedTargetPrice.toFixed(2) : ""
   );
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -242,7 +244,7 @@ export function PaperTradeModal({
                 Stop Loss
                 <span className="text-gray-600 ml-1">(optional)</span>
               </label>
-              {suggestedStopLoss && (
+              {suggestedStopLoss && signalMatchesBuy && (
                 <button
                   onClick={() => setStopLoss(suggestedStopLoss.toFixed(2))}
                   className="text-[10px] text-brand-400 hover:text-brand-300 transition-colors"
@@ -263,8 +265,8 @@ export function PaperTradeModal({
             {stopLossPct !== null && (
               <p className={clsx("text-xs mt-1", stopLossPct < 0 ? "text-yellow-400" : "text-red-400")}>
                 {stopLossPct < 0
-                  ? `${stopLossPct.toFixed(1)}% below entry — triggers if price drops here`
-                  : "Stop loss is above entry price — please check"}
+                  ? `${stopLossPct.toFixed(1)}% below entry — triggers if price drops to this level`
+                  : `⚠ Stop loss is above entry price — for a long (BUY) position this would trigger immediately`}
               </p>
             )}
           </div>
@@ -279,7 +281,7 @@ export function PaperTradeModal({
                 Target Price
                 <span className="text-gray-600 ml-1">(optional)</span>
               </label>
-              {suggestedTargetPrice && (
+              {suggestedTargetPrice && signalMatchesBuy && (
                 <button
                   onClick={() => setTargetPrice(suggestedTargetPrice.toFixed(2))}
                   className="text-[10px] text-brand-400 hover:text-brand-300 transition-colors"
@@ -300,8 +302,8 @@ export function PaperTradeModal({
             {targetPricePct !== null && (
               <p className={clsx("text-xs mt-1", targetPricePct > 0 ? "text-green-400" : "text-red-400")}>
                 {targetPricePct > 0
-                  ? `+${targetPricePct.toFixed(1)}% above entry — exit when price hits this level`
-                  : "Target is below entry price — please check"}
+                  ? `+${targetPricePct.toFixed(1)}% above entry — take profit when price reaches this`
+                  : `⚠ Target is below entry price — for a long (BUY) position this means selling at a loss`}
               </p>
             )}
           </div>
