@@ -7,6 +7,12 @@ from typing import Optional
 log = logging.getLogger(__name__)
 
 from services.heatmap_service import INDIA_SECTORS, US_SECTORS
+from services.stock_universe import IN_STOCKS, US_STOCKS
+
+# Build symbol→name lookup from universe
+_NAME_MAP: dict[str, str] = {}
+for _sym, _name in (IN_STOCKS + US_STOCKS):
+    _NAME_MAP[_sym.upper()] = _name
 
 
 def _is_market_open(market: str) -> bool:
@@ -63,7 +69,7 @@ def _bulk_quotes(tickers: list[str]) -> dict[str, dict]:
                     "symbol": sym,
                     "price": round(float(today), 2),
                     "change_pct": round((float(today) - float(prev)) / float(prev) * 100, 2),
-                    "name": "",
+                    "name": _NAME_MAP.get(sym.upper(), ""),
                 }
     except Exception as e:
         log.warning("bulk_quotes failed: %s", e)
@@ -76,10 +82,11 @@ def _quotes_to_movers(quotes: list) -> list:
         sym = q.get("symbol", "")
         price = q.get("regularMarketPrice")
         change_pct = q.get("regularMarketChangePercent")
-        name = q.get("shortName") or q.get("longName") or ""
+        clean_sym = sym.replace(".NS", "").replace(".BO", "")
+        name = q.get("shortName") or q.get("longName") or _NAME_MAP.get(clean_sym.upper(), "")
         if sym and price is not None and change_pct is not None:
             movers.append({
-                "symbol": sym.replace(".NS", "").replace(".BO", ""),
+                "symbol": clean_sym,
                 "price": round(float(price), 2),
                 "change_pct": round(float(change_pct), 2),
                 "name": name,

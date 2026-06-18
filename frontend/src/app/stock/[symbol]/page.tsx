@@ -168,6 +168,16 @@ export default function StockPage() {
     queryFn: () => fetchNews(symbol, isCrypto ? "US" : market),
   });
 
+  const { data: stockAccuracy } = useQuery({
+    queryKey: ["stock-accuracy", symbol],
+    queryFn: () => api.get<{ symbol: string; accuracy: Record<string, { total: number; correct: number; avg_ret: number; buy_ret: number }> }>(
+      `/api/validation/results/stock/${symbol}`
+    ).then(r => r.data),
+    staleTime: 30 * 60_000,
+    enabled: !isCrypto,
+    retry: false,
+  });
+
   const { data: attribution } = useQuery({
     queryKey: ["factor-attribution", symbol, market, horizon],
     queryFn: () => fetchFactorAttribution(symbol, market, horizon),
@@ -391,6 +401,20 @@ export default function StockPage() {
                             )}>{prediction.confidence}%</span>
                           </div>
                           <p className="text-[10px] text-gray-600 mt-0.5">confidence</p>
+
+                          {/* Per-stock historical accuracy */}
+                          {(() => {
+                            const acc = stockAccuracy?.accuracy?.[horizon];
+                            if (!acc || acc.total < 5) return null;
+                            const pct = Math.round((acc.correct / acc.total) * 100);
+                            const color = pct >= 65 ? "text-bull" : pct >= 50 ? "text-yellow-400" : "text-gray-400";
+                            return (
+                              <div className="mt-2 px-2 py-1 rounded-lg bg-white/[0.04] border border-white/[0.07]">
+                                <p className={clsx("text-xs font-bold tabular-nums", color)}>✓ {pct}% accurate</p>
+                                <p className="text-[9px] text-gray-600 mt-0.5">{acc.total} past predictions</p>
+                              </div>
+                            );
+                          })()}
                         </div>
 
                         {/* Paper Trade button */}

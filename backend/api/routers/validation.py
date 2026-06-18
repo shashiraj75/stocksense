@@ -82,6 +82,22 @@ def get_stock_results(horizon: Literal["short", "medium", "long"] = Query("mediu
         return _json_response({"horizon": horizon, "stocks": [], "error": str(e)})
 
 
+@router.get("/results/stock/{symbol}")
+def get_single_stock_accuracy(symbol: str, horizon: Literal["short", "medium", "long"] = Query("medium")):
+    """Accuracy stats for a single stock symbol across all horizons."""
+    from services.validation_engine import get_per_stock_results
+    try:
+        all_results = {}
+        for h in ["short", "medium", "long"]:
+            rows = get_per_stock_results(horizon=h)
+            match = next((r for r in rows if r.get("symbol", "").upper() == symbol.upper()), None)
+            if match:
+                all_results[h] = match
+        return _json_response({"symbol": symbol, "accuracy": all_results})
+    except Exception as e:
+        return _json_response({"symbol": symbol, "accuracy": {}, "error": str(e)})
+
+
 @router.get("/results/history")
 def get_history():
     """List of all past validation runs with key summary metrics."""
