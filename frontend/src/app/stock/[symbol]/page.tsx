@@ -225,127 +225,143 @@ export default function StockPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {!isCrypto && <MarketDisclaimer market={market} />}
-      {/* Header — single row: symbol · badges · price · change · market status */}
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <h1 className="text-2xl font-bold font-mono">{symbol}</h1>
-          <span className="text-xs bg-dark-card border border-dark-border px-2 py-0.5 rounded text-gray-400">
-            {isCrypto ? `CRYPTO · ${CRYPTO_NAMES[symbol] ?? symbol}` : market === "US" ? "🇺🇸 NYSE / NASDAQ" : "🇮🇳 NSE India"}
-          </span>
-          {!isCrypto && (() => {
-            const cap = getCapCategory(quote?.market_cap, market);
-            if (!cap) return null;
-            return (
-              <span className={`text-xs border px-2 py-0.5 rounded font-medium ${cap.color} ${cap.bg}`}>
-                {cap.label}
+
+      {/* ── Hero Header Card ── */}
+      <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          {/* Left: symbol + price block */}
+          <div className="min-w-0">
+            {/* Symbol row */}
+            <div className="flex flex-wrap items-center gap-2 mb-2">
+              <h1 className="text-xl font-bold font-mono tracking-wide">{symbol}</h1>
+              <span className="text-xs bg-dark-bg border border-dark-border px-2 py-0.5 rounded text-gray-400">
+                {isCrypto ? `CRYPTO · ${CRYPTO_NAMES[symbol] ?? symbol}` : market === "US" ? "🇺🇸 NYSE / NASDAQ" : "🇮🇳 NSE India"}
               </span>
-            );
-          })()}
-          {(quote || cryptoQuote || (isCrypto && prediction?.current_price)) && (<>
-            <span className="text-2xl font-bold">
-              {isCrypto
-                ? `$${(cryptoQuote?.price ?? prediction?.current_price ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
-                : `${currency}${quote?.price.toLocaleString()}`}
-            </span>
-            {isCrypto && cryptoQuote?.change_pct != null && (
-              <span className={clsx("flex items-center gap-1 text-sm font-semibold",
-                cryptoQuote.change_pct >= 0 ? "text-bull" : "text-bear")}>
-                {cryptoQuote.change_pct >= 0 ? <ArrowUpRight size={16} /> : <ArrowDownRight size={16} />}
-                {cryptoQuote.change_pct >= 0 ? "+" : ""}{cryptoQuote.change_pct}%
-              </span>
-            )}
-            {!isCrypto && (() => {
-              const chg = quote?.change;
-              const pct = quote?.change_pct;
-              if (chg == null || pct == null) return null;
-              return (
-                <span className={clsx("flex items-center gap-1 text-sm font-semibold",
-                  chg >= 0 ? "text-bull" : "text-bear")}>
-                  {chg >= 0 ? <ArrowUpRight size={16} /> : <ArrowDownRight size={16} />}
-                  {chg >= 0 ? "+" : ""}{chg} ({pct}%)
-                </span>
-              );
-            })()}
-            {/* Market status indicator */}
-            <div className="flex items-center gap-1.5">
-              <span className="relative flex h-2 w-2">
-                {marketStatus.isOpen && (
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                )}
-                <span className={clsx("relative inline-flex rounded-full h-2 w-2", marketStatus.isOpen ? "bg-green-500" : "bg-red-500")}></span>
-              </span>
-              <span className="text-xs text-gray-500">
-                {marketStatus.isOpen ? "Live" : marketStatus.label} · {new Date(isCrypto ? cryptoUpdatedAt : quoteUpdatedAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true })}
-                {marketStatus.nextEventLabel && (
-                  <span className="text-gray-600"> · {marketStatus.nextEventLabel}</span>
-                )}
-              </span>
+              {!isCrypto && (() => {
+                const cap = getCapCategory(quote?.market_cap, market);
+                if (!cap) return null;
+                return (
+                  <span className={`text-xs border px-2 py-0.5 rounded font-medium ${cap.color} ${cap.bg}`}>
+                    {cap.label}
+                  </span>
+                );
+              })()}
             </div>
-          </>)}
-        </div>
-        <div className="flex flex-col items-end gap-2">
-          {tab !== "backtest" && prediction && !predLoading && (
-            <SignalBadge signal={prediction.signal} confidence={prediction.confidence} size="lg" />
-          )}
-          {prediction?.signal && !predLoading && !isCrypto && (() => {
-            const sig = prediction.signal;
-            const isBuy  = sig === "BUY";
-            const isSell = sig === "SELL";
-            const isHold = sig === "HOLD";
-            return (
-              <div className="flex flex-col items-end gap-1">
-                <button
-                  onClick={() => setShowPaperModal(true)}
-                  className={clsx(
-                    "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors",
-                    isBuy
-                      ? "bg-bull/10 border-bull/30 text-bull hover:bg-bull/20"
-                      : isSell
-                      ? "bg-bear/10 border-bear/30 text-red-400 hover:bg-bear/20"
-                      : "bg-dark-card border-dark-border text-gray-400 hover:text-white hover:border-white/30"
+            {/* Price + change */}
+            <div className="flex flex-wrap items-baseline gap-3 mb-3">
+              <span className="text-3xl font-black font-mono tracking-tight">
+                {isCrypto
+                  ? `$${(cryptoQuote?.price ?? prediction?.current_price ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+                  : quote ? `${currency}${quote.price.toLocaleString()}` : <span className="text-gray-600">—</span>}
+              </span>
+              {isCrypto && cryptoQuote?.change_pct != null && (
+                <span className={clsx("flex items-center gap-1 text-sm font-semibold",
+                  cryptoQuote.change_pct >= 0 ? "text-bull" : "text-bear")}>
+                  {cryptoQuote.change_pct >= 0 ? <ArrowUpRight size={15} /> : <ArrowDownRight size={15} />}
+                  {cryptoQuote.change_pct >= 0 ? "+" : ""}{cryptoQuote.change_pct}%
+                </span>
+              )}
+              {!isCrypto && quote?.change != null && (
+                <span className={clsx("flex items-center gap-1 text-sm font-semibold",
+                  quote.change >= 0 ? "text-bull" : "text-bear")}>
+                  {quote.change >= 0 ? <ArrowUpRight size={15} /> : <ArrowDownRight size={15} />}
+                  {quote.change >= 0 ? "+" : ""}{quote.change} ({quote.change_pct}%)
+                </span>
+              )}
+              {/* Market status pill */}
+              <div className="flex items-center gap-1.5 text-xs text-gray-500">
+                <span className="relative flex h-2 w-2">
+                  {marketStatus.isOpen && (
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
                   )}
-                >
-                  <Beaker size={13} />
-                  {isBuy ? "Paper Buy" : isSell ? "Paper Sell / Short" : "Paper Trade"}
-                </button>
-                {(isSell || isHold) && (
-                  <p className={clsx(
-                    "text-[10px] max-w-[160px] text-right leading-tight",
-                    isSell ? "text-red-400/70" : "text-gray-500"
-                  )}>
-                    {isSell
-                      ? "AI signals exit/short — proceed with caution"
-                      : "No strong entry signal from AI"}
-                  </p>
+                  <span className={clsx("relative inline-flex rounded-full h-2 w-2", marketStatus.isOpen ? "bg-green-500" : "bg-red-500")}></span>
+                </span>
+                {marketStatus.isOpen ? "Live" : marketStatus.label}
+                {marketStatus.nextEventLabel && (
+                  <span className="text-gray-600">· {marketStatus.nextEventLabel}</span>
                 )}
               </div>
-            );
-          })()}
+            </div>
+            {/* Quick stats bar */}
+            {!isCrypto && quote && (
+              <div className="flex flex-wrap gap-x-5 gap-y-1">
+                {[
+                  ["52W High", `${currency}${quote.fifty_two_week_high?.toLocaleString()}`],
+                  ["52W Low",  `${currency}${quote.fifty_two_week_low?.toLocaleString()}`],
+                  ["Mkt Cap",  (() => {
+                    const v = quote.market_cap;
+                    if (!v) return "—";
+                    if (v >= 1e12) return `${currency}${(v/1e12).toFixed(2)}T`;
+                    if (v >= 1e9)  return `${currency}${(v/1e9).toFixed(2)}B`;
+                    return `${currency}${(v/1e6).toFixed(0)}M`;
+                  })()],
+                  ["Volume", quote.volume?.toLocaleString() ?? "—"],
+                ].map(([label, value]) => (
+                  <div key={label} className="flex items-baseline gap-1.5">
+                    <span className="text-xs text-gray-500">{label}</span>
+                    <span className="text-xs font-mono font-semibold text-gray-200">{value}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {isCrypto && (
+              <p className="text-xs text-gray-500">Chart: TradingView · Binance USDT · Predictions: technicals + volume + sentiment</p>
+            )}
+          </div>
+
+          {/* Right: Signal + Paper Trade */}
+          <div className="flex flex-col items-end gap-2.5 shrink-0">
+            {tab !== "backtest" && prediction && !predLoading && (
+              <SignalBadge signal={prediction.signal} confidence={prediction.confidence} size="lg" />
+            )}
+            {prediction?.signal && !predLoading && !isCrypto && (() => {
+              const sig = prediction.signal;
+              const isBuy  = sig === "BUY";
+              const isSell = sig === "SELL";
+              const isHold = sig === "HOLD";
+              return (
+                <div className="flex flex-col items-end gap-1">
+                  <button
+                    onClick={() => setShowPaperModal(true)}
+                    className={clsx(
+                      "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors",
+                      isBuy  ? "bg-bull/10 border-bull/30 text-bull hover:bg-bull/20"
+                      : isSell ? "bg-bear/10 border-bear/30 text-red-400 hover:bg-bear/20"
+                      : "bg-dark-card border-dark-border text-gray-400 hover:text-white hover:border-white/30"
+                    )}
+                  >
+                    <Beaker size={13} />
+                    {isBuy ? "Paper Buy" : isSell ? "Paper Sell / Short" : "Paper Trade"}
+                  </button>
+                  {(isSell || isHold) && (
+                    <p className={clsx("text-[10px] max-w-[160px] text-right leading-tight",
+                      isSell ? "text-red-400/70" : "text-gray-500")}>
+                      {isSell ? "AI signals exit/short — proceed with caution" : "No strong entry signal from AI"}
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+
+        {/* Tabs row — inside the card, below price */}
+        <div className="flex gap-2 flex-wrap mt-4 pt-4 border-t border-dark-border">
+          {HORIZON_TABS.map(({ key, label }) => (
+            <button key={key} onClick={() => setTab(key)}
+              className={clsx(
+                "flex items-center gap-1.5 px-3 py-1.5 text-xs sm:px-4 sm:py-2 sm:text-sm rounded-lg font-medium transition-colors",
+                tab === key ? "bg-brand-500 text-white"
+                  : "bg-dark-bg border border-dark-border text-gray-400 hover:text-white"
+              )}>
+              {key === "backtest" && <FlaskConical size={14} />}
+              {label}
+            </button>
+          ))}
         </div>
       </div>
-
-      {/* Tabs — Short / Medium / Long / Backtest for all markets */}
-      <div className="flex gap-2 flex-wrap">
-        {HORIZON_TABS.map(({ key, label }) => (
-          <button key={key} onClick={() => setTab(key)}
-            className={clsx(
-              "flex items-center gap-1.5 px-3 py-1.5 text-xs sm:px-4 sm:py-2 sm:text-sm rounded-lg font-medium transition-colors",
-              tab === key ? "bg-brand-500 text-white"
-                : "bg-dark-card border border-dark-border text-gray-400 hover:text-white"
-            )}>
-            {key === "backtest" && <FlaskConical size={14} />}
-            {label}
-          </button>
-        ))}
-      </div>
-
-      {isCrypto && (
-        <div className="flex items-center justify-between bg-dark-card border border-dark-border rounded-xl px-4 py-2.5 text-xs text-gray-500">
-          <span>Chart: <span className="text-white">TradingView</span> · Binance USDT · Predictions: technicals + volume + sentiment</span>
-        </div>
-      )}
 
       {/* ── PREDICTION VIEW ── */}
       {tab !== "backtest" && tab !== "history" && (
@@ -454,6 +470,11 @@ export default function StockPage() {
               </div>
             );
           })()}
+
+          {/* TradingView Chart — high up for visual weight */}
+          <div className="rounded-2xl border border-dark-border overflow-hidden">
+            <TradingViewWidget symbol={symbol} market={isCrypto ? "CRYPTO" : market} height={460} />
+          </div>
 
           <div className="grid md:grid-cols-2 gap-6">
             <div className="bg-dark-card border border-dark-border rounded-2xl p-6 space-y-3">
@@ -606,31 +627,9 @@ export default function StockPage() {
             </div>
 
             <div className="bg-dark-card border border-dark-border rounded-2xl p-6 space-y-4">
-              <h2 className="font-bold text-lg">{isCrypto ? "Signal Breakdown" : "Key Stats"}</h2>
-              {!isCrypto && quote && (
-                <dl className="space-y-3">
-                  {[
-                    ["52W High", `${currency}${quote.fifty_two_week_high?.toLocaleString()}`],
-                    ["52W Low", `${currency}${quote.fifty_two_week_low?.toLocaleString()}`],
-                    ["Market Cap", quote.market_cap
-                      ? (() => {
-                          const v = quote.market_cap;
-                          if (v >= 1e12) return `${currency}${(v / 1e12).toFixed(2)}T`;
-                          if (v >= 1e9)  return `${currency}${(v / 1e9).toFixed(2)}B`;
-                          return `${currency}${(v / 1e6).toFixed(0)}M`;
-                        })()
-                      : "—"],
-                    ["Avg Volume", quote.volume?.toLocaleString() ?? "—"],
-                  ].map(([label, value]) => (
-                    <div key={label} className="flex items-center justify-between text-sm">
-                      <dt className="text-gray-400">{label}</dt>
-                      <dd className="font-mono font-bold">{value}</dd>
-                    </div>
-                  ))}
-                </dl>
-              )}
+              <h2 className="font-bold text-lg">Score Breakdown</h2>
               {prediction && (
-                <div className={!isCrypto ? "border-t border-dark-border pt-4 space-y-2" : "space-y-2"}>
+                <div className="space-y-2">
                   <p className="text-gray-400 text-sm mb-2">Score Breakdown</p>
                   {isCrypto ? (
                     <>
@@ -674,11 +673,6 @@ export default function StockPage() {
           {attribution && !isCrypto && (
             <FactorAttributionWaterfall data={attribution} prediction={prediction} />
           )}
-
-          {/* TradingView Chart */}
-          <div className="rounded-2xl border border-dark-border">
-            <TradingViewWidget symbol={symbol} market={isCrypto ? "CRYPTO" : market} height={480} />
-          </div>
 
           <section>
             <h2 className="text-lg font-semibold mb-3">News & Sentiment</h2>
