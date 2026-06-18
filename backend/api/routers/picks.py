@@ -20,6 +20,17 @@ def daily_picks():
     return data
 
 
+@router.get("/performance")
+def picks_performance(horizon: str = "medium", window_days: int = 90):
+    """Live performance of past daily picks — hit rate, P&L, vs benchmark."""
+    try:
+        from services.postgres_store import get_daily_picks_performance
+        rows = get_daily_picks_performance(horizon=horizon, window_days=window_days)
+        return {"horizon": horizon, "window_days": window_days, "picks": rows}
+    except Exception as e:
+        return {"horizon": horizon, "window_days": window_days, "picks": [], "error": str(e)}
+
+
 @router.post("/generate")
 def trigger_generation(background_tasks: BackgroundTasks, x_secret: str = Header(None)):
     """
