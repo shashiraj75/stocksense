@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import {
   fetchPaperPortfolio, closePaperTrade, resetPaperPortfolio, editPaperTrade,
-  type PaperTrade,
+  fetchQuote, type PaperTrade,
 } from "@/utils/api";
 import { useSessionId } from "@/hooks/useSessionId";
 import { PaperTradeModal } from "@/components/PaperTradeModal";
@@ -33,6 +33,19 @@ function StatCard({ label, value, sub, positive }: { label: string; value: strin
 
 function OpenTradeRow({ trade, onSell, sessionId }: { trade: PaperTrade; onSell: (t: PaperTrade) => void; sessionId: string }) {
   const currency = trade.market === "IN" ? "₹" : "$";
+
+  const { data: quote } = useQuery({
+    queryKey: ["quote", trade.symbol, trade.market],
+    queryFn: () => fetchQuote(trade.symbol, trade.market as any),
+    refetchInterval: 30_000,
+    staleTime: 25_000,
+  });
+
+  const livePrice = quote?.price ?? null;
+  const unrealizedPnl = livePrice != null ? (livePrice - trade.entry_price) * trade.quantity : null;
+  const unrealizedPct = livePrice != null ? ((livePrice - trade.entry_price) / trade.entry_price * 100) : null;
+  const nearStopLoss = livePrice != null && trade.stop_loss != null && livePrice <= trade.stop_loss * 1.02;
+  const nearTarget   = livePrice != null && trade.target_price != null && livePrice >= trade.target_price * 0.98;
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [slInput, setSlInput] = useState(trade.stop_loss ? trade.stop_loss.toFixed(2) : "");
@@ -62,8 +75,36 @@ function OpenTradeRow({ trade, onSell, sessionId }: { trade: PaperTrade; onSell:
       </td>
       <td className="px-4 py-3 text-sm font-mono">{trade.quantity}</td>
       <td className="px-4 py-3 text-sm font-mono">{currency}{fmt(trade.entry_price)}</td>
-      <td className="px-4 py-3 text-sm font-mono text-gray-400">
-        {currency}{fmt(trade.invested)}
+      <td className="px-4 py-3">
+        {livePrice != null ? (
+          <div>
+            <span className={clsx(
+              "text-sm font-mono font-bold",
+              nearStopLoss ? "text-red-400 animate-pulse" :
+              nearTarget   ? "text-bull animate-pulse" : "text-white"
+            )}>
+              {currency}{fmt(livePrice)}
+            </span>
+            {nearStopLoss && <p className="text-[10px] text-red-400 mt-0.5">⚠ Near stop loss</p>}
+            {nearTarget   && <p className="text-[10px] text-bull mt-0.5">🎯 Near target</p>}
+          </div>
+        ) : (
+          <span className="text-xs text-gray-600">Loading…</span>
+        )}
+      </td>
+      <td className="px-4 py-3">
+        {unrealizedPnl != null ? (
+          <div>
+            <span className={clsx("text-sm font-mono font-bold", unrealizedPnl >= 0 ? "text-bull" : "text-bear")}>
+              {unrealizedPnl >= 0 ? "+" : ""}{currency}{fmt(Math.abs(unrealizedPnl))}
+            </span>
+            <p className={clsx("text-[10px]", unrealizedPct! >= 0 ? "text-bull/70" : "text-bear/70")}>
+              {unrealizedPct! >= 0 ? "+" : ""}{unrealizedPct!.toFixed(2)}%
+            </p>
+          </div>
+        ) : (
+          <span className="text-xs text-gray-600">—</span>
+        )}
       </td>
       <td className="px-4 py-3">
         <SignalBadge signal={trade.signal as any} size="sm" />
@@ -153,7 +194,7 @@ function OpenTradeRow({ trade, onSell, sessionId }: { trade: PaperTrade; onSell:
       </td>
       <td className="px-4 py-3 text-right">
         <button
-          onClick={() => onSell(trade)}
+          onClick={() => onSell({ ...trade, _livePrice: livePrice } as any)}
           className="px-3 py-1.5 rounded-lg text-xs font-medium bg-bear/10 border border-bear/30 text-red-400 hover:bg-bear/20 transition-colors"
         >
           Close
@@ -163,7 +204,7 @@ function OpenTradeRow({ trade, onSell, sessionId }: { trade: PaperTrade; onSell:
     {/* Inline reminder row */}
     {(trade.stop_loss || trade.target_price) && (
       <tr className="border-b border-dark-border bg-dark-bg/40">
-        <td colSpan={9} className="px-4 py-2">
+        <td colSpan={11} className="px-4 py-2">
           <div className="flex flex-wrap gap-2">
             {trade.stop_loss && trade.stop_loss > 0 && (
               <span className="flex items-center gap-1.5 text-[11px] text-yellow-300/80">
@@ -390,7 +431,8 @@ export default function PaperTradingPage() {
                     <th className="px-4 py-2.5 text-left">Stock</th>
                     <th className="px-4 py-2.5 text-left">Qty</th>
                     <th className="px-4 py-2.5 text-left">Entry</th>
-                    <th className="px-4 py-2.5 text-left">Invested</th>
+                    <th className="px-4 py-2.5 text-left">Live Price</th>
+                    <th className="px-4 py-2.5 text-left">Unr. P&L</th>
                     <th className="px-4 py-2.5 text-left">Signal</th>
                     <th className="px-4 py-2.5 text-left">Stop Loss</th>
                     <th className="px-4 py-2.5 text-left">Target</th>
@@ -446,7 +488,7 @@ export default function PaperTradingPage() {
         <PaperTradeModal
           symbol={sellTarget.symbol}
           market={sellTarget.market}
-          currentPrice={sellTarget.entry_price}
+          currentPrice={(sellTarget as any)._livePrice ?? sellTarget.entry_price}
           signal={sellTarget.signal}
           horizon={sellTarget.horizon}
           currency={sellTarget.market === "IN" ? "₹" : "$"}
