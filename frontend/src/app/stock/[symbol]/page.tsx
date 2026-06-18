@@ -286,7 +286,7 @@ export default function StockPage() {
             </div>
             {/* Quick stats bar */}
             {!isCrypto && quote && (
-              <div className="flex flex-wrap gap-x-5 gap-y-1">
+              <div className="flex flex-wrap gap-x-5 gap-y-1 mb-3">
                 {[
                   ["52W High", `${currency}${quote.fifty_two_week_high?.toLocaleString()}`],
                   ["52W Low",  `${currency}${quote.fifty_two_week_low?.toLocaleString()}`],
@@ -306,6 +306,45 @@ export default function StockPage() {
                 ))}
               </div>
             )}
+            {/* Inline score pills — shown once prediction loads */}
+            {prediction && !predLoading && !isCrypto && (() => {
+              const items: { label: string; value: number; color: string }[] = [];
+              items.push({
+                label: "Fundamentals",
+                value: prediction.fundamental_score.score,
+                color: prediction.fundamental_score.score >= 65 ? "text-bull" : prediction.fundamental_score.score >= 45 ? "text-yellow-400" : "text-bear",
+              });
+              items.push({
+                label: "Sentiment",
+                value: prediction.sentiment_score.score,
+                color: prediction.sentiment_score.score >= 60 ? "text-bull" : prediction.sentiment_score.score >= 40 ? "text-yellow-400" : "text-bear",
+              });
+              const rsi = prediction.technical?.rsi;
+              if (rsi) {
+                const r = Math.round(rsi);
+                const rsiLabel = r >= 70 ? "Overbought" : r <= 30 ? "Oversold" : r >= 55 ? "Bullish" : r <= 45 ? "Bearish" : "Neutral";
+                const rsiColor = r >= 70 ? "text-yellow-400" : r <= 30 ? "text-yellow-400" : r >= 55 ? "text-bull" : r <= 45 ? "text-bear" : "text-gray-400";
+                items.push({ label: `RSI ${r} · ${rsiLabel}`, value: r, color: rsiColor });
+              }
+              return (
+                <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+                  {items.map(({ label, value, color }) => (
+                    <div key={label} className="flex items-center gap-2">
+                      <span className="text-xs text-gray-500">{label}</span>
+                      <div className="flex items-center gap-1.5">
+                        <div className="w-16 h-1.5 bg-dark-border rounded-full overflow-hidden">
+                          <div
+                            className={clsx("h-full rounded-full transition-all", color === "text-bull" ? "bg-bull" : color === "text-bear" ? "bg-bear" : "bg-yellow-400")}
+                            style={{ width: `${Math.min(100, value)}%` }}
+                          />
+                        </div>
+                        <span className={clsx("text-xs font-mono font-semibold tabular-nums", color)}>{value}%</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
             {isCrypto && (
               <p className="text-xs text-gray-500">Chart: TradingView · Binance USDT · Predictions: technicals + volume + sentiment</p>
             )}
@@ -566,15 +605,6 @@ export default function StockPage() {
                     value={prediction.confidence}
                     label="Signal Conviction"
                   />
-                  {(prediction as any).confidence_score !== undefined && (prediction as any).confidence_breakdown && (
-                    <div className="border-t border-dark-border pt-3">
-                      <ConfidenceBreakdown
-                        score={(prediction as any).confidence_score}
-                        band={(prediction as any).confidence_band}
-                        components={(prediction as any).confidence_breakdown}
-                      />
-                    </div>
-                  )}
                   <div>
                     <p className="text-gray-400 text-sm mb-2">Key Reasons</p>
                     <ul className="space-y-1.5">
@@ -627,10 +657,9 @@ export default function StockPage() {
             </div>
 
             <div className="bg-dark-card border border-dark-border rounded-2xl p-6 space-y-4">
-              <h2 className="font-bold text-lg">Score Breakdown</h2>
+              <h2 className="font-bold text-lg">{isCrypto ? "Signal Breakdown" : "Technical Signals"}</h2>
               {prediction && (
                 <div className="space-y-2">
-                  <p className="text-gray-400 text-sm mb-2">Score Breakdown</p>
                   {isCrypto ? (
                     <>
                       <ConfidenceMeter value={(prediction.technical as any)?.score ?? 50} label="Technical Score" />
@@ -640,22 +669,30 @@ export default function StockPage() {
                     </>
                   ) : (
                     <>
-                      <ConfidenceMeter value={prediction.fundamental_score.score} label="Fundamental Score" />
-                      <ConfidenceMeter value={prediction.sentiment_score.score} label="News Sentiment Score" />
-                      {(() => {
-                        const rsi = prediction.technical?.rsi;
-                        if (!rsi) return null;
-                        const r = Math.round(rsi);
-                        // Interpret RSI in context: >70 overbought, <30 oversold, 40-60 neutral
-                        const label = r >= 70 ? `RSI ${r} — Overbought`
-                                    : r <= 30 ? `RSI ${r} — Oversold`
-                                    : r >= 55 ? `RSI ${r} — Bullish momentum`
-                                    : r <= 45 ? `RSI ${r} — Bearish momentum`
-                                    : `RSI ${r} — Neutral`;
-                        // Remap to signal bar: 50=neutral(50%), 70+=overbought(90%), 30-=oversold(10%)
-                        const barVal = r >= 70 ? 85 : r <= 30 ? 15 : Math.round(50 + (r - 50) * 1.5);
-                        return <ConfidenceMeter value={Math.max(0, Math.min(100, barVal))} label={label} />;
-                      })()}
+                      {(prediction as any).confidence_breakdown ? (
+                        <ConfidenceBreakdown
+                          score={(prediction as any).confidence_score}
+                          band={(prediction as any).confidence_band}
+                          components={(prediction as any).confidence_breakdown}
+                        />
+                      ) : (
+                        <>
+                          <ConfidenceMeter value={prediction.fundamental_score.score} label="Fundamental Score" />
+                          <ConfidenceMeter value={prediction.sentiment_score.score} label="News Sentiment Score" />
+                          {(() => {
+                            const rsi = prediction.technical?.rsi;
+                            if (!rsi) return null;
+                            const r = Math.round(rsi);
+                            const label = r >= 70 ? `RSI ${r} — Overbought`
+                                        : r <= 30 ? `RSI ${r} — Oversold`
+                                        : r >= 55 ? `RSI ${r} — Bullish momentum`
+                                        : r <= 45 ? `RSI ${r} — Bearish momentum`
+                                        : `RSI ${r} — Neutral`;
+                            const barVal = r >= 70 ? 85 : r <= 30 ? 15 : Math.round(50 + (r - 50) * 1.5);
+                            return <ConfidenceMeter value={Math.max(0, Math.min(100, barVal))} label={label} />;
+                          })()}
+                        </>
+                      )}
                     </>
                   )}
                 </div>
