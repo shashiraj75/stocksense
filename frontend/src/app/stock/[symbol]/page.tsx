@@ -853,6 +853,7 @@ export default function StockPage() {
           signal={prediction.signal}
           horizon={horizon}
           currency={market === "IN" ? "₹" : "$"}
+          suggestedStopLoss={(prediction as any).trade_levels?.stop_loss ?? null}
           onClose={() => setShowPaperModal(false)}
         />
       )}

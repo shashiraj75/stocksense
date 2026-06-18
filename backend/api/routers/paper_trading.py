@@ -41,6 +41,7 @@ class BuyRequest(BaseModel):
     price: float          # current live price passed from frontend
     signal: str = "HOLD"
     horizon: str = "medium"
+    stop_loss: float | None = None
 
 
 class SellRequest(BaseModel):
@@ -56,7 +57,7 @@ def get_portfolio(session_id: str = Query(...)):
     with _conn() as conn:
         trades = conn.execute(
             """SELECT id, symbol, market, quantity, entry_price, exit_price,
-                      status, signal, horizon, opened_at, closed_at
+                      status, signal, horizon, opened_at, closed_at, stop_loss
                FROM paper_trades WHERE session_id = %s ORDER BY opened_at DESC""",
             (session_id,)
         ).fetchall()
@@ -66,7 +67,7 @@ def get_portfolio(session_id: str = Query(...)):
     total_realized = 0.0
 
     for t in trades:
-        tid, sym, mkt, qty, ep, xp, status, sig, hor, opened, closed = t
+        tid, sym, mkt, qty, ep, xp, status, sig, hor, opened, closed, sl = t
         trade = {
             "id": tid,
             "symbol": sym,
@@ -74,6 +75,7 @@ def get_portfolio(session_id: str = Query(...)):
             "quantity": qty,
             "entry_price": ep,
             "exit_price": xp,
+            "stop_loss": sl,
             "status": status,
             "signal": sig,
             "horizon": hor,
@@ -121,10 +123,10 @@ def paper_buy(req: BuyRequest):
             (cost, req.session_id)
         )
         row = conn.execute(
-            """INSERT INTO paper_trades (session_id, symbol, market, quantity, entry_price, signal, horizon)
-               VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+            """INSERT INTO paper_trades (session_id, symbol, market, quantity, entry_price, signal, horizon, stop_loss)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
             (req.session_id, req.symbol.upper(), req.market, req.quantity,
-             req.price, req.signal, req.horizon)
+             req.price, req.signal, req.horizon, req.stop_loss)
         ).fetchone()
 
     return {

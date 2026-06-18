@@ -151,6 +151,7 @@ export interface PaperTrade {
   quantity: number;
   entry_price: number;
   exit_price: number | null;
+  stop_loss: number | null;
   status: "OPEN" | "CLOSED";
   signal: string;
   horizon: string;
@@ -174,7 +175,7 @@ export const fetchPaperPortfolio = (sessionId: string) =>
 
 export const placePaperBuy = (data: {
   session_id: string; symbol: string; market: Market;
-  quantity: number; price: number; signal?: string; horizon?: string;
+  quantity: number; price: number; signal?: string; horizon?: string; stop_loss?: number | null;
 }) => api.post("/api/paper-trading/buy", data).then((r) => r.data);
 
 export const closePaperTrade = (tradeId: number, sessionId: string, price: number) =>

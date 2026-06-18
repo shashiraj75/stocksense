@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { X, TrendingUp, TrendingDown, Minus, AlertCircle, Loader2 } from "lucide-react";
+import { X, TrendingUp, TrendingDown, Minus, AlertCircle, Loader2, ShieldAlert } from "lucide-react";
 import clsx from "clsx";
 import { placePaperBuy, closePaperTrade, fetchPrediction, type Market, type Horizon } from "@/utils/api";
 import { useSessionId } from "@/hooks/useSessionId";
@@ -13,6 +13,7 @@ interface Props {
   signal: string;
   horizon: string;
   currency: string;
+  suggestedStopLoss?: number | null;
   onClose: () => void;
   existingTradeId?: number;
   existingQuantity?: number;
@@ -27,7 +28,7 @@ const HORIZONS: { key: Horizon; label: string; desc: string }[] = [
 
 export function PaperTradeModal({
   symbol, market, currentPrice, signal: initialSignal, horizon: initialHorizon, currency,
-  onClose, existingTradeId, existingQuantity, existingEntryPrice,
+  suggestedStopLoss, onClose, existingTradeId, existingQuantity, existingEntryPrice,
 }: Props) {
   const sessionId = useSessionId();
   const queryClient = useQueryClient();
@@ -35,6 +36,9 @@ export function PaperTradeModal({
 
   const [selectedHorizon, setSelectedHorizon] = useState<Horizon>(initialHorizon as Horizon);
   const [quantity, setQuantity] = useState(existingQuantity ?? 1);
+  const [stopLoss, setStopLoss] = useState<string>(
+    suggestedStopLoss ? suggestedStopLoss.toFixed(2) : ""
+  );
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -54,11 +58,17 @@ export function PaperTradeModal({
     ? (currentPrice - existingEntryPrice) * (existingQuantity ?? quantity)
     : null;
 
+  const stopLossValue = stopLoss ? parseFloat(stopLoss) : null;
+  const stopLossPct = stopLossValue && stopLossValue > 0
+    ? ((stopLossValue - currentPrice) / currentPrice * 100)
+    : null;
+
   const buyMutation = useMutation({
     mutationFn: () =>
       placePaperBuy({
         session_id: sessionId, symbol, market, quantity,
         price: currentPrice, signal: activeSignal, horizon: selectedHorizon,
+        stop_loss: stopLossValue && stopLossValue > 0 ? stopLossValue : null,
       }),
     onSuccess: () => {
       setSuccess(`Bought ${quantity} × ${symbol} @ ${currency}${currentPrice.toLocaleString()}`);
@@ -103,7 +113,12 @@ export function PaperTradeModal({
               {HORIZONS.map(({ key, label, desc }) => (
                 <button
                   key={key}
-                  onClick={() => { setSelectedHorizon(key); setError(null); }}
+                  onClick={() => {
+                setSelectedHorizon(key);
+                setError(null);
+                // Reset stop loss to suggested when switching horizons
+                setStopLoss(suggestedStopLoss ? suggestedStopLoss.toFixed(2) : "");
+              }}
                   className={clsx(
                     "rounded-xl px-3 py-2.5 text-center border transition-colors",
                     selectedHorizon === key
@@ -187,6 +202,43 @@ export function PaperTradeModal({
                 className="w-9 h-9 rounded-lg bg-dark-bg border border-dark-border text-white hover:bg-white/10 transition-colors font-bold"
               >+</button>
             </div>
+          </div>
+        )}
+
+        {/* Stop Loss input */}
+        {!isSell && (
+          <div className="mb-4">
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs text-gray-400 flex items-center gap-1">
+                <ShieldAlert size={12} className="text-yellow-400" />
+                Stop Loss
+                <span className="text-gray-600 ml-1">(optional)</span>
+              </label>
+              {suggestedStopLoss && (
+                <button
+                  onClick={() => setStopLoss(suggestedStopLoss.toFixed(2))}
+                  className="text-[10px] text-brand-400 hover:text-brand-300 transition-colors"
+                >
+                  Use AI suggestion ({currency}{suggestedStopLoss.toLocaleString(undefined, { maximumFractionDigits: 2 })})
+                </button>
+              )}
+            </div>
+            <input
+              type="number"
+              min={0}
+              step="0.01"
+              placeholder={suggestedStopLoss ? `AI suggests ${currency}${suggestedStopLoss.toFixed(2)}` : `e.g. ${currency}${(currentPrice * 0.95).toFixed(2)}`}
+              value={stopLoss}
+              onChange={e => setStopLoss(e.target.value)}
+              className="w-full bg-dark-bg border border-dark-border rounded-lg px-3 py-2 font-mono text-sm text-white focus:outline-none focus:border-yellow-500/60 placeholder:text-gray-600"
+            />
+            {stopLossPct !== null && (
+              <p className={clsx("text-xs mt-1", stopLossPct < 0 ? "text-yellow-400" : "text-red-400")}>
+                {stopLossPct < 0
+                  ? `${stopLossPct.toFixed(1)}% below entry — triggers if price drops here`
+                  : "Stop loss is above entry price — please check"}
+              </p>
+            )}
           </div>
         )}
 

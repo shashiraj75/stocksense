@@ -160,12 +160,15 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     quantity     INTEGER NOT NULL,
     entry_price  DOUBLE PRECISION NOT NULL,
     exit_price   DOUBLE PRECISION,
+    stop_loss    DOUBLE PRECISION,
     status       TEXT NOT NULL DEFAULT 'OPEN',
     signal       TEXT,
     horizon      TEXT,
     opened_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     closed_at    TIMESTAMPTZ
 );
+-- Add stop_loss to existing tables (safe to run multiple times)
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS stop_loss DOUBLE PRECISION;
 CREATE INDEX IF NOT EXISTS idx_paper_trades_session ON paper_trades(session_id, status);
 """
 

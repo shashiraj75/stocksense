@@ -5,7 +5,7 @@ import Link from "next/link";
 import clsx from "clsx";
 import {
   TrendingUp, TrendingDown, RotateCcw, ExternalLink, Beaker,
-  DollarSign, BarChart2, AlertTriangle, CheckCircle2,
+  DollarSign, BarChart2, AlertTriangle, CheckCircle2, ShieldAlert,
 } from "lucide-react";
 import {
   fetchPaperPortfolio, closePaperTrade, resetPaperPortfolio,
@@ -49,6 +49,17 @@ function OpenTradeRow({ trade, onSell }: { trade: PaperTrade; onSell: (t: PaperT
       </td>
       <td className="px-4 py-3">
         <SignalBadge signal={trade.signal as any} size="sm" />
+      </td>
+      <td className="px-4 py-3">
+        {trade.stop_loss ? (
+          <div className="flex items-center gap-1">
+            <span className="font-mono text-xs text-yellow-400">
+              {currency}{fmt(trade.stop_loss)}
+            </span>
+          </div>
+        ) : (
+          <span className="text-xs text-gray-600">—</span>
+        )}
       </td>
       <td className="px-4 py-3 text-xs text-gray-500">
         {new Date(trade.opened_at).toLocaleDateString("en-IN")}
@@ -231,7 +242,30 @@ export default function PaperTradingPage() {
             </span>
           )}
         </h2>
-        {openTrades.length === 0 ? (
+          {/* Stop loss breach warnings */}
+        {openTrades.filter(t => t.stop_loss && t.entry_price > 0).length > 0 && (
+          <div className="mb-3 space-y-2">
+            {openTrades
+              .filter(t => t.stop_loss && t.stop_loss > 0)
+              .map(t => {
+                const currency = t.market === "IN" ? "₹" : "$";
+                const pctFromSL = ((t.entry_price - t.stop_loss!) / t.entry_price * 100);
+                return (
+                  <div key={t.id} className="flex items-center gap-2 bg-yellow-500/10 border border-yellow-500/30 rounded-xl px-4 py-2.5 text-xs text-yellow-300">
+                    <ShieldAlert size={14} className="shrink-0" />
+                    <span>
+                      <strong>{t.symbol}</strong> — Stop Loss set at{" "}
+                      <strong>{currency}{fmt(t.stop_loss!)}</strong>
+                      {" "}({pctFromSL.toFixed(1)}% below entry).
+                      Close your position manually if the live price drops to this level.
+                    </span>
+                  </div>
+                );
+              })}
+          </div>
+        )}
+
+      {openTrades.length === 0 ? (
           <div className="bg-dark-card border border-dark-border rounded-xl px-6 py-10 text-center text-gray-500">
             <Beaker size={28} className="mx-auto mb-2 opacity-30" />
             <p className="text-sm">No open positions.</p>
@@ -248,6 +282,7 @@ export default function PaperTradingPage() {
                     <th className="px-4 py-2.5 text-left">Entry</th>
                     <th className="px-4 py-2.5 text-left">Invested</th>
                     <th className="px-4 py-2.5 text-left">Signal</th>
+                    <th className="px-4 py-2.5 text-left">Stop Loss</th>
                     <th className="px-4 py-2.5 text-left">Date</th>
                     <th className="px-4 py-2.5 text-right">Action</th>
                   </tr>
