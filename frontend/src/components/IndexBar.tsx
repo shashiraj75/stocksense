@@ -37,7 +37,7 @@ export function IndexBar({ market, inline }: { market: Market | "CRYPTO"; inline
   );
 
   if (inline) {
-    return <div className="flex items-center gap-4 flex-1 overflow-x-auto scrollbar-hide">{items}</div>;
+    return <div className="flex items-center gap-4 w-max">{items}</div>;
   }
 
   return (

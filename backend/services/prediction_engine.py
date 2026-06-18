@@ -827,6 +827,7 @@ class PredictionEngine:
                 reasons.append(f"EPS declining ({eps_growth*100:.1f}%)")
 
         # ── Screener.in exclusive fields (India only) ─────────────────────────
+        screener_d = info.get("_screener_data", {}) or {}
 
         # ROCE — more reliable capital efficiency metric than ROE alone for Indian cos
         roce = info.get("returnOnCapitalEmployed")
@@ -842,27 +843,83 @@ class PredictionEngine:
                 reasons.append(f"Low ROCE ({roce*100:.1f}%) — poor capital allocation")
 
         # 3-year revenue CAGR — filters out one-off beats vs sustained growth
-        rev_3y = info.get("_screener_data", {}).get("sales_growth_3y_pct")
+        rev_3y = screener_d.get("sales_growth_3y_pct")
         if rev_3y is not None:
             if rev_3y > 15:
                 score += 8
                 reasons.append(f"3Y revenue CAGR {rev_3y:.1f}% — consistent top-line growth")
+            elif rev_3y > 8:
+                score += 4
+                reasons.append(f"3Y revenue CAGR {rev_3y:.1f}% — steady growth")
             elif rev_3y < 0:
                 score -= 6
                 reasons.append(f"3Y revenue CAGR {rev_3y:.1f}% — sustained revenue decline")
 
         # 3-year profit CAGR
-        pat_3y = info.get("_screener_data", {}).get("profit_growth_3y_pct")
+        pat_3y = screener_d.get("profit_growth_3y_pct")
         if pat_3y is not None:
-            if pat_3y > 15:
-                score += 8
+            if pat_3y > 20:
+                score += 10
+                reasons.append(f"3Y profit CAGR {pat_3y:.1f}% — strong compounding earnings")
+            elif pat_3y > 10:
+                score += 5
                 reasons.append(f"3Y profit CAGR {pat_3y:.1f}% — sustained earnings growth")
             elif pat_3y < -10:
-                score -= 6
+                score -= 8
                 reasons.append(f"3Y profit CAGR {pat_3y:.1f}% — eroding profitability")
 
+        # 5-year profit CAGR (long-term horizon gets extra weight)
+        pat_5y = screener_d.get("profit_growth_5y_pct")
+        if pat_5y is not None and horizon == "long":
+            if pat_5y > 18:
+                score += 8
+                reasons.append(f"5Y profit CAGR {pat_5y:.1f}% — proven long-term compounder")
+            elif pat_5y > 10:
+                score += 4
+                reasons.append(f"5Y profit CAGR {pat_5y:.1f}% — consistent long-term growth")
+            elif pat_5y < 0:
+                score -= 6
+                reasons.append(f"5Y profit CAGR {pat_5y:.1f}% — declining earnings over 5 years")
+
+        # Quarterly PAT trend — earnings acceleration is a leading signal
+        eps_trend = screener_d.get("eps_trend")
+        if eps_trend == "accelerating":
+            score += 8
+            reasons.append("Quarterly PAT accelerating — 3 of 3 QoQ improvements")
+        elif eps_trend == "mixed_positive":
+            score += 3
+            reasons.append("Quarterly PAT trend broadly improving")
+        elif eps_trend == "mixed_negative":
+            score -= 3
+            reasons.append("Quarterly PAT trend mostly declining")
+        elif eps_trend == "decelerating":
+            score -= 8
+            reasons.append("Quarterly PAT declining 3 consecutive quarters")
+
+        # Operating cash flow quality — positive and growing = real earnings
+        op_cf = screener_d.get("operating_cf_annual_cr") or []
+        op_cf_latest = screener_d.get("operating_cf_latest_cr")
+        if op_cf_latest is not None:
+            if op_cf_latest < 0:
+                score -= 8
+                reasons.append(f"Negative operating cash flow (₹{op_cf_latest:.0f} Cr) — earnings not converting to cash")
+            elif len(op_cf) >= 3:
+                # Check if operating CF has been growing over last 3 years
+                recent_cf = [v for v in op_cf[-3:] if v is not None]
+                if len(recent_cf) == 3 and recent_cf[0] > 0:
+                    cf_growth = (recent_cf[-1] - recent_cf[0]) / abs(recent_cf[0]) * 100
+                    if cf_growth > 30:
+                        score += 7
+                        reasons.append(f"Operating cash flow grew {cf_growth:.0f}% over 3Y — strong cash generation")
+                    elif cf_growth > 0:
+                        score += 3
+                        reasons.append("Operating cash flow consistently positive and growing")
+                    elif recent_cf[-1] < recent_cf[0] * 0.5:
+                        score -= 5
+                        reasons.append("Operating cash flow declining significantly — watch earnings quality")
+
         # Price-to-Book (book_value from screener + current price from info)
-        book_value = info.get("_screener_data", {}).get("book_value") or info.get("bookValue")
+        book_value = screener_d.get("book_value") or info.get("bookValue")
         current_price = info.get("currentPrice") or info.get("regularMarketPrice")
         if book_value and current_price and book_value > 0:
             pb = current_price / book_value
@@ -876,7 +933,6 @@ class PredictionEngine:
                 reasons.append(f"High P/B ratio ({pb:.1f}x) — premium to book")
 
         # FII + DII institutional ownership — high = quality signal for India
-        screener_d = info.get("_screener_data", {}) or {}
         fii = screener_d.get("fii_holding_pct") or 0
         dii = screener_d.get("dii_holding_pct") or 0
         inst_total = fii + dii
@@ -888,7 +944,32 @@ class PredictionEngine:
                 score += 3
                 reasons.append(f"Solid institutional ownership (FII {fii:.1f}% + DII {dii:.1f}%)")
 
-        # Promoter holding — high & stable = alignment; very low = concern
+        # DII holding trend — mutual fund accumulation is a strong bullish signal
+        dii_trend = screener_d.get("dii_quarterly_pct") or []
+        if len(dii_trend) >= 4:
+            dii_change = dii_trend[-1] - dii_trend[-4]
+            if dii_change > 3:
+                score += 6
+                reasons.append(f"DII (MF) stake up {dii_change:.1f}% in last 4 quarters — active accumulation")
+            elif dii_change > 1:
+                score += 3
+                reasons.append(f"DII (MF) stake rising (+{dii_change:.1f}%) — gradual accumulation")
+            elif dii_change < -3:
+                score -= 5
+                reasons.append(f"DII (MF) stake fell {dii_change:.1f}% in last 4 quarters — institutional selling")
+
+        # FII trend — foreign capital flow signal
+        fii_trend = screener_d.get("fii_quarterly_pct") or []
+        if len(fii_trend) >= 4:
+            fii_change = fii_trend[-1] - fii_trend[-4]
+            if fii_change > 3:
+                score += 4
+                reasons.append(f"FII stake up {fii_change:.1f}% in last 4 quarters — foreign investor conviction")
+            elif fii_change < -3:
+                score -= 4
+                reasons.append(f"FII stake fell {fii_change:.1f}% — foreign capital exiting")
+
+        # Promoter holding — high & stable = alignment; declining = concern
         promoter = screener_d.get("promoter_holding_pct")
         if promoter is not None:
             if promoter > 55:
@@ -898,8 +979,42 @@ class PredictionEngine:
                 score -= 5
                 reasons.append(f"Low promoter holding ({promoter:.1f}%) — limited insider conviction")
 
+        # Promoter holding trend — declining promoter = red flag
+        promoter_trend = screener_d.get("promoter_quarterly_pct") or []
+        if len(promoter_trend) >= 4:
+            promoter_change = promoter_trend[-1] - promoter_trend[-4]
+            if promoter_change < -3:
+                score -= 7
+                reasons.append(f"Promoter stake fell {abs(promoter_change):.1f}% over last 4 quarters — insider offloading")
+            elif promoter_change < -1:
+                score -= 3
+                reasons.append(f"Promoter stake slightly declining ({promoter_change:.1f}%) — monitor")
+            elif promoter_change > 2:
+                score += 5
+                reasons.append(f"Promoter stake increased {promoter_change:.1f}% — insider buying conviction")
+
+        # Banking-specific: NPA quality and NIM (only when screener has these fields)
+        net_npa = screener_d.get("net_npa_pct")
+        nim = screener_d.get("nim_pct")
+        if net_npa is not None:
+            if net_npa > 3:
+                score -= 10
+                reasons.append(f"High Net NPA ({net_npa:.1f}%) — asset quality concern")
+            elif net_npa > 1.5:
+                score -= 4
+                reasons.append(f"Elevated Net NPA ({net_npa:.1f}%) — watch credit quality")
+            elif net_npa < 0.5:
+                score += 5
+                reasons.append(f"Clean book — Net NPA {net_npa:.1f}%")
+        if nim is not None:
+            if nim > 4:
+                score += 5
+                reasons.append(f"Strong NIM ({nim:.1f}%) — healthy lending spread")
+            elif nim < 2:
+                score -= 4
+                reasons.append(f"Thin NIM ({nim:.1f}%) — margin pressure")
+
         # Promoter pledge — fetch from NSE (real-time quarterly disclosure)
-        # screener.in doesn't expose pledge in static HTML; NSE API has the data
         pledge = screener_d.get("promoter_pledge_pct")  # fallback if NSE fails
         if market == "IN":
             try:

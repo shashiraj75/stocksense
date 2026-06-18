@@ -72,25 +72,29 @@ export default function Dashboard() {
   return (
     <div className="space-y-6">
 
-      {/* Single header bar: title + tabs + live indices */}
-      <div className="bg-dark-card border border-dark-border rounded-xl px-4 py-3 flex flex-wrap items-center gap-3">
-        <h1 className="text-sm font-bold text-white shrink-0">Market Overview</h1>
-        <div className="flex gap-1.5 shrink-0">
-          {MARKET_TABS.map(({ key, label }) => (
-            <button key={key} onClick={() => setMarket(key)}
-              className={clsx("px-3 py-1 rounded-lg text-xs font-medium transition-colors",
-                market === key
-                  ? "bg-brand-500 text-white"
-                  : "bg-dark-bg border border-dark-border text-gray-400 hover:text-white")}>
-              {label}
-            </button>
-          ))}
+      {/* Market Overview card: tabs row + index bar row */}
+      <div className="bg-dark-card border border-dark-border rounded-xl px-4 py-3 space-y-2">
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-sm font-bold text-white shrink-0">Market Overview</h1>
+          <div className="flex gap-1.5">
+            {MARKET_TABS.map(({ key, label }) => (
+              <button key={key} onClick={() => setMarket(key)}
+                className={clsx("px-3 py-1 rounded-lg text-xs font-medium transition-colors",
+                  market === key
+                    ? "bg-brand-500 text-white"
+                    : "bg-dark-bg border border-dark-border text-gray-400 hover:text-white")}>
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
-        <div className="h-4 w-px bg-dark-border shrink-0" />
-        {market !== "CRYPTO" && <IndexBar market={market} inline />}
-        {market === "CRYPTO" && (
-          <span className="text-xs text-gray-500">Live index data unavailable for crypto</span>
-        )}
+        {/* Index bar — scrollable on mobile */}
+        <div className="overflow-x-auto scrollbar-hide -mx-1 px-1">
+          {market !== "CRYPTO"
+            ? <IndexBar market={market} inline />
+            : <span className="text-xs text-gray-500">Live index data unavailable for crypto</span>
+          }
+        </div>
       </div>
 
       {/* Horizon info cards */}
@@ -112,11 +116,11 @@ export default function Dashboard() {
 
       {/* Quick Access */}
       <section>
-        <div className="flex items-center gap-2 mb-2">
+        <div className="mb-2 space-y-0.5">
           <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">Quick Access</h2>
           {isUsingWatchlist
-            ? <span className="text-[10px] text-brand-500 font-medium bg-brand-500/10 px-2 py-0.5 rounded-full">From your watchlist</span>
-            : <span className="text-[10px] text-gray-600 font-medium bg-white/5 px-2 py-0.5 rounded-full">Popular · Add stocks to watchlist to personalise</span>
+            ? <span className="text-[10px] text-brand-500 font-medium">From your watchlist</span>
+            : <span className="text-[10px] text-gray-500">Popular · Add to watchlist to personalise</span>
           }
         </div>
         <div className="flex flex-wrap gap-2">

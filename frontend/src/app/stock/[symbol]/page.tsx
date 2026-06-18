@@ -228,10 +228,16 @@ export default function StockPage() {
         <div className="text-5xl">🔍</div>
         <h1 className="text-2xl font-bold text-white">{symbol} not found</h1>
         <p className="text-gray-400 text-sm max-w-sm">
-          This symbol may be delisted, invalid, or not supported by our data provider.
-          Try searching for a different stock.
+          The server may still be starting up — wait a moment and try refreshing.
+          If the issue persists, this symbol may be delisted or unsupported.
         </p>
-        <a href="/" className="mt-4 px-5 py-2 rounded-xl bg-brand-500 text-white text-sm font-medium hover:bg-brand-600 transition-colors">
+        <button
+          onClick={() => window.location.reload()}
+          className="mt-2 px-5 py-2 rounded-xl bg-dark-card border border-dark-border text-white text-sm font-medium hover:bg-dark-border transition-colors"
+        >
+          Retry
+        </button>
+        <a href="/" className="px-5 py-2 rounded-xl bg-brand-500 text-white text-sm font-medium hover:bg-brand-600 transition-colors">
           Back to Dashboard
         </a>
       </div>
@@ -313,20 +319,20 @@ export default function StockPage() {
                   {!isCrypto && quote && (
                     <div className="flex flex-wrap gap-2 mb-3">
                       {[
-                        ["52W High", `${currency}${quote.fifty_two_week_high?.toLocaleString()}`, "text-gray-300"],
-                        ["52W Low",  `${currency}${quote.fifty_two_week_low?.toLocaleString()}`,  "text-gray-300"],
+                        ["52W High", `${currency}${quote.fifty_two_week_high?.toLocaleString()}`, "text-gray-200"],
+                        ["52W Low",  `${currency}${quote.fifty_two_week_low?.toLocaleString()}`,  "text-gray-200"],
                         ["Mkt Cap",  (() => {
                           const v = quote.market_cap;
                           if (!v) return "—";
                           if (v >= 1e12) return `${currency}${(v/1e12).toFixed(2)}T`;
                           if (v >= 1e9)  return `${currency}${(v/1e9).toFixed(2)}B`;
                           return `${currency}${(v/1e6).toFixed(0)}M`;
-                        })(), "text-gray-300"],
-                        ["Volume", quote.volume?.toLocaleString() ?? "—", "text-gray-300"],
+                        })(), "text-gray-200"],
+                        ["Volume", quote.volume?.toLocaleString() ?? "—", "text-gray-200"],
                       ].map(([label, value, valueColor]) => (
-                        <div key={label} className="flex items-center gap-1.5 bg-white/[0.04] border border-white/[0.07] rounded-lg px-2.5 py-1">
-                          <span className="text-[11px] text-gray-500">{label}</span>
-                          <span className={clsx("text-[11px] font-mono font-bold", valueColor)}>{value}</span>
+                        <div key={label} className="flex items-center gap-2 bg-white/[0.05] border border-white/[0.09] rounded-lg px-3 py-1.5">
+                          <span className="text-xs text-gray-500">{label}</span>
+                          <span className={clsx("text-sm font-mono font-bold", valueColor)}>{value}</span>
                         </div>
                       ))}
                     </div>
@@ -362,13 +368,13 @@ export default function StockPage() {
                     return (
                       <div className="flex flex-wrap gap-2">
                         {scoreItems.map(({ label, value, bg, bar, text }) => (
-                          <div key={label} className={clsx("flex items-center gap-2 rounded-lg border px-2.5 py-1.5", bg)}>
-                            <span className="text-[11px] text-gray-400 font-medium">{label}</span>
-                            <div className="flex items-center gap-1.5">
-                              <div className="w-14 h-1 bg-black/30 rounded-full overflow-hidden">
+                          <div key={label} className={clsx("flex items-center gap-3 rounded-lg border px-3 py-2", bg)}>
+                            <span className="text-xs text-gray-300 font-medium">{label}</span>
+                            <div className="flex items-center gap-2">
+                              <div className="w-20 h-1.5 bg-black/30 rounded-full overflow-hidden">
                                 <div className={clsx("h-full rounded-full", bar)} style={{ width: `${Math.min(100, value)}%` }} />
                               </div>
-                              <span className={clsx("text-[11px] font-black tabular-nums font-mono", text)}>{value}%</span>
+                              <span className={clsx("text-sm font-black tabular-nums font-mono", text)}>{value}%</span>
                             </div>
                           </div>
                         ))}
@@ -416,8 +422,9 @@ export default function StockPage() {
                           {/* Per-stock historical accuracy */}
                           {(() => {
                             const acc = stockAccuracy?.accuracy?.[horizon];
-                            if (!acc || acc.total < 5) return null;
+                            if (!acc || !acc.total || acc.total < 5) return null;
                             const pct = Math.round((acc.correct / acc.total) * 100);
+                            if (Number.isNaN(pct)) return null;
                             const color = pct >= 65 ? "text-bull" : pct >= 50 ? "text-yellow-400" : "text-gray-400";
                             return (
                               <div className="mt-2 px-2 py-1 rounded-lg bg-white/[0.04] border border-white/[0.07]">

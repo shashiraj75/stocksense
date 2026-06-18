@@ -412,8 +412,10 @@ def _parse_screener_page(soup: BeautifulSoup, symbol: str) -> dict:
 
 def augment_info_with_screener(info: dict, symbol: str) -> dict:
     """
-    Blend screener.in data into the yfinance `info` dict for missing fields.
-    Returns enriched info — original fields preserved, gaps filled from screener.
+    Blend screener.in data into the yfinance `info` dict for Indian stocks.
+    Screener.in is the authoritative source for Indian fundamentals — its values
+    OVERRIDE yfinance for PE, ROE, revenue/profit growth (yfinance is often stale
+    for NSE). Missing fields are filled from screener; present fields are replaced.
     """
     try:
         screener = fetch_screener_data(symbol)
@@ -422,61 +424,98 @@ def augment_info_with_screener(info: dict, symbol: str) -> dict:
 
         enriched = dict(info)
 
-        # Fill ROE if missing from yfinance
-        if not enriched.get("returnOnEquity") and screener.get("roe_pct") is not None:
+        # ── Override core ratios with screener values (more current for India) ──
+        # P/E: screener updates daily from BSE/NSE; yfinance can lag weeks
+        if screener.get("pe_ratio") is not None:
+            enriched["trailingPE"] = screener["pe_ratio"]
+
+        # ROE: screener uses latest annual report; yfinance often stale/missing
+        if screener.get("roe_pct") is not None:
             enriched["returnOnEquity"] = screener["roe_pct"] / 100
 
-        # Fill ROCE — yfinance doesn't provide this; add as custom field
+        # ROCE — yfinance never provides this for Indian stocks
         if screener.get("roce_pct") is not None:
             enriched["returnOnCapitalEmployed"] = screener["roce_pct"] / 100
 
-        # Fill revenue growth from 3Y CAGR if yfinance is missing
-        if not enriched.get("revenueGrowth") and screener.get("sales_growth_ttm_pct") is not None:
-            enriched["revenueGrowth"] = screener["sales_growth_ttm_pct"] / 100
+        # Revenue growth: prefer screener TTM CAGR; fall back to 3Y CAGR
+        rev_growth = screener.get("sales_growth_ttm_pct") or screener.get("sales_growth_3y_pct")
+        if rev_growth is not None:
+            enriched["revenueGrowth"] = rev_growth / 100
 
-        # Fill earnings growth
-        if not enriched.get("earningsGrowth") and screener.get("profit_growth_ttm_pct") is not None:
+        # Earnings growth: derive from quarterly PAT if available, else TTM CAGR
+        quarterly_pat = screener.get("quarterly_pat_cr") or []
+        if len(quarterly_pat) >= 4:
+            # YoY growth: compare latest quarter vs same quarter last year
+            latest_pat = quarterly_pat[-1]
+            year_ago_pat = quarterly_pat[-5] if len(quarterly_pat) >= 5 else quarterly_pat[0]
+            if year_ago_pat and year_ago_pat > 0 and latest_pat is not None:
+                yoy_pat_growth = (latest_pat - year_ago_pat) / abs(year_ago_pat)
+                enriched["earningsGrowth"] = round(yoy_pat_growth, 4)
+            elif screener.get("profit_growth_ttm_pct") is not None:
+                enriched["earningsGrowth"] = screener["profit_growth_ttm_pct"] / 100
+        elif screener.get("profit_growth_ttm_pct") is not None:
             enriched["earningsGrowth"] = screener["profit_growth_ttm_pct"] / 100
 
-        # P/E from screener (more current for Indian stocks)
-        if not enriched.get("trailingPE") and screener.get("pe_ratio") is not None:
-            enriched["trailingPE"] = screener["pe_ratio"]
-
-        # Promoter holding — yfinance calls this heldPercentInsiders but is unreliable for India
+        # Promoter holding — always use screener (yfinance is unreliable for India)
         if screener.get("promoter_holding_pct") is not None:
             enriched["promoterHolding"] = screener["promoter_holding_pct"] / 100
-            # Override insiders if screener has a more reliable figure
-            if not enriched.get("heldPercentInsiders"):
-                enriched["heldPercentInsiders"] = screener["promoter_holding_pct"] / 100
+            enriched["heldPercentInsiders"] = screener["promoter_holding_pct"] / 100
 
-        # FII / DII as institutional ownership proxy
-        fii = screener.get("fii_holding_pct", 0) or 0
-        dii = screener.get("dii_holding_pct", 0) or 0
-        if (fii + dii) > 0 and not enriched.get("heldPercentInstitutions"):
+        # FII + DII as institutional ownership
+        fii = screener.get("fii_holding_pct") or 0
+        dii = screener.get("dii_holding_pct") or 0
+        if (fii + dii) > 0:
             enriched["heldPercentInstitutions"] = (fii + dii) / 100
 
-        # Tag enrichment metadata
+        # ── Derive quarterly EPS trend for prediction engine ──────────────────
+        # Convert quarterly PAT (Cr) → relative QoQ acceleration signal
+        eps_trend = None
+        if len(quarterly_pat) >= 4:
+            recent = quarterly_pat[-4:]
+            try:
+                # Check if PAT is consistently growing over last 4 quarters
+                diffs = [recent[i+1] - recent[i] for i in range(len(recent)-1)]
+                positive_diffs = sum(1 for d in diffs if d > 0)
+                if positive_diffs == 3:
+                    eps_trend = "accelerating"
+                elif positive_diffs == 0:
+                    eps_trend = "decelerating"
+                elif positive_diffs >= 2:
+                    eps_trend = "mixed_positive"
+                else:
+                    eps_trend = "mixed_negative"
+            except Exception:
+                pass
+
+        # Tag all enrichment metadata for use in scoring functions
         enriched["_screener_available"] = True
         enriched["_screener_data"] = {
+            # Holding structure
             "promoter_holding_pct":      screener.get("promoter_holding_pct"),
             "promoter_pledge_pct":       screener.get("promoter_pledge_pct"),
             "fii_holding_pct":           screener.get("fii_holding_pct"),
             "dii_holding_pct":           screener.get("dii_holding_pct"),
+            # Quarterly holding trends (oldest → newest)
+            "promoter_quarterly_pct":    screener.get("promoter_quarterly_pct"),
+            "fii_quarterly_pct":         screener.get("fii_quarterly_pct"),
+            "dii_quarterly_pct":         screener.get("dii_quarterly_pct"),
+            # Capital efficiency
             "roce_pct":                  screener.get("roce_pct"),
+            # Growth CAGRs
             "sales_growth_3y_pct":       screener.get("sales_growth_3y_pct"),
             "sales_growth_5y_pct":       screener.get("sales_growth_5y_pct"),
             "profit_growth_3y_pct":      screener.get("profit_growth_3y_pct"),
             "profit_growth_5y_pct":      screener.get("profit_growth_5y_pct"),
             "price_cagr_5y_pct":         screener.get("price_cagr_5y_pct"),
+            # Book value for P/B calculation
             "book_value":                screener.get("book_value"),
+            # Quarterly financials
             "latest_quarter_revenue_cr": screener.get("latest_quarter_revenue_cr"),
             "latest_quarter_pat_cr":     screener.get("latest_quarter_pat_cr"),
             "quarterly_pat_cr":          screener.get("quarterly_pat_cr"),
             "quarterly_revenue_cr":      screener.get("quarterly_revenue_cr"),
-            # Quarterly shareholding trend (MF accumulation signal)
-            "dii_quarterly_pct":         screener.get("dii_quarterly_pct"),
-            "fii_quarterly_pct":         screener.get("fii_quarterly_pct"),
-            "promoter_quarterly_pct":    screener.get("promoter_quarterly_pct"),
+            # Derived signals
+            "eps_trend":                 eps_trend,
             # Cash flow
             "operating_cf_annual_cr":    screener.get("operating_cf_annual_cr"),
             "operating_cf_latest_cr":    screener.get("operating_cf_latest_cr"),

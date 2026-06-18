@@ -7,7 +7,7 @@ import { TrendingUp } from "lucide-react";
 import { MobileNav } from "@/components/MobileNav";
 import { NavLinks } from "@/components/NavLinks";
 import { UserMenu } from "@/components/UserMenu";
-import { MarketStatusInline } from "@/components/MarketStatusBar";
+import { MarketStatusInline, MobileMarketStrip } from "@/components/MarketStatusBar";
 import { LiveClock } from "@/components/LiveClock";
 
 export const metadata: Metadata = {
@@ -39,33 +39,48 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="bg-dark-bg text-white min-h-screen font-sans antialiased">
         <Providers>
           <nav className="sticky top-0 z-10 border-b border-dark-border bg-dark-bg/90 backdrop-blur-md">
-            {/* Row 1: Logo · Search · Clock · Market Status · Sign In */}
-            <div className="max-w-7xl mx-auto px-4 pt-3 pb-2 flex items-center gap-4">
-              <Link href="/" className="flex items-center gap-2 text-brand-500 font-bold text-lg shrink-0">
-                <TrendingUp size={22} />
-                StockSense
+            {/* Row 1: Logo · Search · Hamburger (mobile) / Clock + Market Status + Sign In (desktop) */}
+            <div className="max-w-7xl mx-auto px-3 sm:px-4 pt-2.5 pb-2 flex items-center gap-2 sm:gap-4">
+              {/* Logo */}
+              <Link href="/" className="flex items-center gap-1.5 text-brand-500 font-bold text-base sm:text-lg shrink-0">
+                <TrendingUp size={20} />
+                <span className="hidden sm:inline">StockSense</span>
               </Link>
-              <div className="flex-1 max-w-sm"><SearchBar /></div>
+
+              {/* Search — fills remaining space */}
+              <div className="flex-1 min-w-0"><SearchBar /></div>
+
+              {/* Desktop: clock + market status */}
               <div className="hidden md:flex items-start gap-4 shrink-0">
                 <LiveClock inline />
                 <span className="text-dark-border text-xs">|</span>
                 <MarketStatusInline />
               </div>
-              <div className="ml-auto flex items-center gap-2">
+
+              {/* User menu — always visible */}
+              <div className="shrink-0">
                 <UserMenu />
-                <div className="lg:hidden">
-                  <MobileNav links={NAV_LINKS} />
-                </div>
+              </div>
+
+              {/* Hamburger — mobile/tablet only */}
+              <div className="flex items-center lg:hidden shrink-0">
+                <MobileNav links={NAV_LINKS} />
               </div>
             </div>
-            {/* Row 2: Nav links (desktop only) */}
+
+            {/* Row 2 (mobile): compact market status strip */}
+            <div className="md:hidden border-t border-dark-border/40 px-3 py-1.5 overflow-x-auto scrollbar-hide">
+              <MobileMarketStrip />
+            </div>
+
+            {/* Row 3: Nav links (desktop only) */}
             <div className="hidden lg:block border-t border-dark-border/60">
               <div className="max-w-7xl mx-auto px-4">
                 <NavLinks links={NAV_LINKS} />
               </div>
             </div>
           </nav>
-          <main className="max-w-7xl mx-auto px-4 py-6">{children}</main>
+          <main className="max-w-7xl mx-auto px-3 sm:px-4 py-4 sm:py-6">{children}</main>
         </Providers>
       </body>
     </html>
