@@ -437,7 +437,7 @@ def _backtest_stock(symbol: str, horizon: str, nifty_df: pd.DataFrame | None) ->
 
 # ── Aggregate metrics ─────────────────────────────────────────────────────────
 
-def _compute_metrics(signals: list[dict], nifty_return_pct: float) -> dict:
+def _compute_metrics(signals: list[dict], nifty_return_pct: float, horizon: str = "medium") -> dict:
     """Compute all aggregate validation metrics from raw signals."""
     if not signals:
         return {}
@@ -445,6 +445,8 @@ def _compute_metrics(signals: list[dict], nifty_return_pct: float) -> dict:
     buys  = [s for s in signals if s["predicted"] == "BUY"]
     sells = [s for s in signals if s["predicted"] == "SELL"]
     holds = [s for s in signals if s["predicted"] == "HOLD"]
+
+    fwd_days = HORIZON_DAYS.get(horizon, 5)
 
     def _hit_rate(subset):
         if not subset: return None
@@ -457,7 +459,8 @@ def _compute_metrics(signals: list[dict], nifty_return_pct: float) -> dict:
     def _sharpe(rets, rf=0.0):
         arr = np.array(rets)
         if arr.std() == 0: return 0.0
-        return round(float((arr.mean() - rf) / arr.std() * np.sqrt(252 / 5)), 2)  # annualised
+        # Annualise using actual forward window (not a hardcoded 5-day assumption)
+        return round(float((arr.mean() - rf) / arr.std() * np.sqrt(252 / fwd_days)), 2)
 
     # Score bucket analysis — key table for investor confidence
     buckets = []
@@ -506,7 +509,8 @@ def _compute_metrics(signals: list[dict], nifty_return_pct: float) -> dict:
         "sharpe_on_buys":             _sharpe(buy_rets) if buy_rets else None,
         "sharpe_on_alphas":           _sharpe(buy_alphas) if buy_alphas else None,
         "profitable_buy_pct":         round(sum(1 for r in buy_rets if r > 0) / len(buy_rets) * 100, 1) if buy_rets else None,
-        "beat_benchmark_pct":         round(sum(1 for a in buy_alphas if a > 0) / len(buy_alphas) * 100, 1) if buy_alphas else None,
+        # "beat benchmark meaningfully" = alpha > 1% (not just alpha > 0 which equals buy_hit_rate)
+        "beat_benchmark_pct":         round(sum(1 for a in buy_alphas if a > 1.0) / len(buy_alphas) * 100, 1) if buy_alphas else None,
         "score_buckets":              buckets,
         "factor_ic": {
             "tech":      _ic("tech_score"),
@@ -574,7 +578,7 @@ def run_validation(horizon: str = "medium", max_workers: int = 6) -> dict:
                         _run_status["progress"] = done
                         _run_status["log"].append(f"[{done}/{n_stocks}] {sym}: ERROR {e}")
 
-        metrics = _compute_metrics(all_signals, nifty_avg_ret)
+        metrics = _compute_metrics(all_signals, nifty_avg_ret, horizon)
         metrics["horizon"] = horizon
         metrics["n_stocks_tested"] = n_stocks
         metrics["run_at"] = datetime.now(timezone.utc).isoformat()

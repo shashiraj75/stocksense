@@ -212,7 +212,7 @@ export default function ValidationPage() {
           >
             {isRunning
               ? <><Loader2 size={14} className="animate-spin" /> Running… {status?.progress}/{status?.total}</>
-              : <><Play size={14} /> Run Now (all 99 stocks)</>
+              : <><Play size={14} /> Run Now (Nifty 100 · {horizon})</>
             }
           </button>
         </div>
@@ -292,10 +292,13 @@ export default function ValidationPage() {
               icon={<TrendingUp size={14} />}
             />
             <StatCard
-              label="Beat Benchmark %"
+              label="Strong Alpha %"
               value={res.beat_benchmark_pct != null ? `${res.beat_benchmark_pct}%` : null}
-              sub="% of BUY calls that outperformed Nifty"
-              color={(res.beat_benchmark_pct ?? 0) >= 53 ? "text-green-400" : "text-red-400"}
+              sub="% of BUY calls with alpha > 1% vs Nifty"
+              color={
+                (res.beat_benchmark_pct ?? 0) >= 50 ? "text-green-400" :
+                (res.beat_benchmark_pct ?? 0) >= 38 ? "text-yellow-400" : "text-red-400"
+              }
               icon={<Zap size={14} />}
             />
             <StatCard
@@ -327,13 +330,20 @@ export default function ValidationPage() {
               label="SELL Hit Rate"
               value={res.sell_hit_rate_pct != null ? `${res.sell_hit_rate_pct}%` : null}
               sub="% of SELL calls that underperformed"
-              color={(res.sell_hit_rate_pct ?? 0) >= 53 ? "text-green-400" : "text-yellow-400"}
+              color={
+                (res.sell_hit_rate_pct ?? 0) >= 53 ? "text-green-400" :
+                (res.sell_hit_rate_pct ?? 0) >= 45 ? "text-yellow-400" : "text-red-400"
+              }
               icon={<TrendingDown size={14} />}
             />
             <StatCard
               label="Overall Accuracy"
               value={res.overall_accuracy_pct != null ? `${res.overall_accuracy_pct}%` : null}
               sub="All signals (BUY + SELL + HOLD)"
+              color={
+                (res.overall_accuracy_pct ?? 0) >= 58 ? "text-green-400" :
+                (res.overall_accuracy_pct ?? 0) >= 52 ? "text-yellow-400" : "text-red-400"
+              }
             />
           </div>
 
@@ -446,7 +456,7 @@ export default function ValidationPage() {
               <div className="space-y-2">
                 <div className="flex items-start gap-2">
                   <CheckCircle2 size={14} className="text-green-400 mt-0.5 shrink-0" />
-                  <p><strong className="text-gray-300">Beat benchmark &gt; 55%</strong> — model reliably picks stocks that outperform the index.</p>
+                  <p><strong className="text-gray-300">Strong Alpha &gt; 50%</strong> — more than half of BUY calls beat Nifty by &gt;1%, showing genuine edge.</p>
                 </div>
                 <div className="flex items-start gap-2">
                   <CheckCircle2 size={14} className="text-green-400 mt-0.5 shrink-0" />
@@ -460,7 +470,7 @@ export default function ValidationPage() {
               <div className="space-y-2">
                 <div className="flex items-start gap-2">
                   <XCircle size={14} className="text-red-400 mt-0.5 shrink-0" />
-                  <p><strong className="text-gray-300">Beat benchmark &lt; 52%</strong> — model is barely better than picking randomly.</p>
+                  <p><strong className="text-gray-300">Strong Alpha &lt; 38%</strong> — fewer than 2-in-5 BUY calls generate meaningful outperformance.</p>
                 </div>
                 <div className="flex items-start gap-2">
                   <XCircle size={14} className="text-red-400 mt-0.5 shrink-0" />
