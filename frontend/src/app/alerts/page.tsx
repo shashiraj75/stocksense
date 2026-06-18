@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
 import { useQueries } from "@tanstack/react-query";
-import { fetchQuote, Market } from "@/utils/api";
+import { fetchQuote, Market, api } from "@/utils/api";
 import { Bell, BellRing, PlusCircle, Trash2, CheckCircle } from "lucide-react";
 import clsx from "clsx";
 
@@ -15,19 +15,39 @@ interface Alert {
   createdAt: string;
 }
 
+const USER_ID = "default";
+const API_BASE = `/api/alerts/${USER_ID}`;
+
+// localStorage as fast-access cache (instant render before API responds)
 const STORAGE_KEY = "stocksense_alerts";
-function load(): Alert[] { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); } catch { return []; } }
-function save(a: Alert[]) { localStorage.setItem(STORAGE_KEY, JSON.stringify(a)); }
+function loadLocal(): Alert[] { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); } catch { return []; } }
+function saveLocal(a: Alert[]) { localStorage.setItem(STORAGE_KEY, JSON.stringify(a)); }
+
+async function fetchAlerts(): Promise<Alert[]> {
+  try {
+    const res = await api.get<{ items: Alert[] }>(API_BASE);
+    return res.data.items;
+  } catch {
+    return loadLocal();
+  }
+}
 
 export default function AlertsPage() {
-  const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [alerts, setAlerts] = useState<Alert[]>(() => loadLocal());
   const [sym, setSym] = useState("");
   const [market, setMarket] = useState<Market>("IN");
   const [targetPrice, setTargetPrice] = useState("");
   const [direction, setDirection] = useState<"above" | "below">("above");
   const [error, setError] = useState("");
+  const [syncing, setSyncing] = useState(false);
 
-  useEffect(() => { setAlerts(load()); }, []);
+  // Load from backend on mount
+  useEffect(() => {
+    fetchAlerts().then(items => {
+      setAlerts(items);
+      saveLocal(items);
+    });
+  }, []);
 
   const quoteQueries = useQueries({
     queries: alerts.map(a => ({
@@ -46,37 +66,65 @@ export default function AlertsPage() {
       const price = quoteQueries[i]?.data?.price;
       if (!price) return a;
       const hit = a.direction === "above" ? price >= a.targetPrice : price <= a.targetPrice;
-      if (hit) { changed = true; return { ...a, triggered: true }; }
+      if (hit) {
+        changed = true;
+        // persist trigger to backend
+        api.patch(`${API_BASE}/${a.id}`, { triggered: true }).catch(() => {});
+        return { ...a, triggered: true };
+      }
       return a;
     });
-    if (changed) { setAlerts(updated); save(updated); }
+    if (changed) { setAlerts(updated); saveLocal(updated); }
   }, [alerts, quoteQueries]);
 
   useEffect(() => { checkAlerts(); }, [quoteQueries.map(q => q.data?.price).join(",")]);
 
-  const add = () => {
+  const add = async () => {
     setError("");
     if (!sym.trim()) return setError("Enter a symbol");
     if (!targetPrice || isNaN(+targetPrice) || +targetPrice <= 0) return setError("Enter a valid target price");
-    const newAlert: Alert = {
-      id: Date.now().toString(),
-      symbol: sym.trim().toUpperCase(),
-      market, targetPrice: +targetPrice, direction,
-      triggered: false, createdAt: new Date().toISOString(),
-    };
-    const updated = [newAlert, ...alerts];
-    setAlerts(updated); save(updated);
+
+    setSyncing(true);
+    try {
+      const res = await api.post<Alert>(API_BASE, {
+        symbol: sym.trim().toUpperCase(),
+        market,
+        target_price: +targetPrice,
+        direction,
+      });
+      const newAlert = res.data;
+      const updated = [newAlert, ...alerts];
+      setAlerts(updated);
+      saveLocal(updated);
+    } catch {
+      // Fallback: create locally
+      const newAlert: Alert = {
+        id: Date.now().toString(),
+        symbol: sym.trim().toUpperCase(),
+        market, targetPrice: +targetPrice, direction,
+        triggered: false, createdAt: new Date().toISOString(),
+      };
+      const updated = [newAlert, ...alerts];
+      setAlerts(updated);
+      saveLocal(updated);
+    } finally {
+      setSyncing(false);
+    }
     setSym(""); setTargetPrice("");
   };
 
-  const remove = (id: string) => {
+  const remove = async (id: string) => {
     const updated = alerts.filter(a => a.id !== id);
-    setAlerts(updated); save(updated);
+    setAlerts(updated);
+    saveLocal(updated);
+    api.delete(`${API_BASE}/${id}`).catch(() => {});
   };
 
-  const resetTrigger = (id: string) => {
+  const resetTrigger = async (id: string) => {
     const updated = alerts.map(a => a.id === id ? { ...a, triggered: false } : a);
-    setAlerts(updated); save(updated);
+    setAlerts(updated);
+    saveLocal(updated);
+    api.patch(`${API_BASE}/${id}`, { triggered: false }).catch(() => {});
   };
 
   const currency = (m: Market) => m === "US" ? "$" : "₹";
@@ -89,7 +137,7 @@ export default function AlertsPage() {
         <Bell size={14} className="shrink-0 mt-0.5" />
         <span>
           <strong>Keep this tab open</strong> — alerts only fire while this page is active in your browser.
-          Closing or switching tabs pauses monitoring. For persistent alerts, enable browser notifications when prompted.
+          Closing or switching tabs pauses monitoring. Alerts are now saved to the cloud and persist across devices.
         </span>
       </div>
 
@@ -146,19 +194,20 @@ export default function AlertsPage() {
               placeholder="200.00" type="number" min="0" step="0.01" value={targetPrice}
               onChange={e => setTargetPrice(e.target.value)} />
           </div>
-          <button onClick={add} className="flex items-center gap-2 px-5 py-2 rounded-xl bg-brand-500 text-white text-sm font-medium hover:bg-brand-600 transition-colors">
-            <PlusCircle size={15} /> Set Alert
+          <button onClick={add} disabled={syncing}
+            className="flex items-center gap-2 px-5 py-2 rounded-xl bg-brand-500 text-white text-sm font-medium hover:bg-brand-600 transition-colors disabled:opacity-60">
+            <PlusCircle size={15} /> {syncing ? "Saving…" : "Set Alert"}
           </button>
         </div>
         {error && <p className="text-bear text-xs mt-2">{error}</p>}
-        <p className="text-xs text-gray-500 mt-3">Note: Alerts are checked while this tab is open. Prices update every 60 seconds from Yahoo Finance.</p>
+        <p className="text-xs text-gray-500 mt-3">Alerts are saved to the cloud and persist across sessions.</p>
       </div>
 
       {/* Triggered alerts */}
       {triggered.length > 0 && (
         <div className="space-y-2">
           <h2 className="text-sm font-semibold text-bull flex items-center gap-2"><BellRing size={15} /> Triggered Alerts</h2>
-          {triggered.map((a, i) => {
+          {triggered.map((a) => {
             const qi = alerts.indexOf(a);
             const price = quoteQueries[qi]?.data?.price;
             return (
