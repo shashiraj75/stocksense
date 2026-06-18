@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { X, TrendingUp, TrendingDown, Minus, AlertCircle, Loader2, ShieldAlert, Target } from "lucide-react";
 import clsx from "clsx";
@@ -37,14 +37,16 @@ export function PaperTradeModal({
 
   const [selectedHorizon, setSelectedHorizon] = useState<Horizon>(initialHorizon as Horizon);
   const [quantity, setQuantity] = useState(existingQuantity ?? 1);
-  // Only pre-fill AI suggestions when signal matches trade direction (BUY levels for BUY trade)
-  const signalMatchesBuy = initialSignal === "BUY";
+  // Always pre-fill with AI suggestions — visible and editable regardless of signal
   const [stopLoss, setStopLoss] = useState<string>(
-    suggestedStopLoss && signalMatchesBuy ? suggestedStopLoss.toFixed(2) : ""
+    suggestedStopLoss ? suggestedStopLoss.toFixed(2) : ""
   );
   const [targetPrice, setTargetPrice] = useState<string>(
-    suggestedTargetPrice && signalMatchesBuy ? suggestedTargetPrice.toFixed(2) : ""
+    suggestedTargetPrice ? suggestedTargetPrice.toFixed(2) : ""
   );
+  // Track whether the user manually edited the fields so we don't overwrite their changes
+  const stopLossEdited = useRef(false);
+  const targetPriceEdited = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -56,6 +58,19 @@ export function PaperTradeModal({
     retry: false,
     enabled: !isSell,
   });
+
+  // When the prediction for the selected horizon loads, sync AI-suggested values
+  // unless the user has already manually edited those fields.
+  useEffect(() => {
+    if (!prediction) return;
+    const levels = (prediction as any).trade_levels;
+    if (levels?.stop_loss != null && !stopLossEdited.current) {
+      setStopLoss(parseFloat(levels.stop_loss).toFixed(2));
+    }
+    if (levels?.take_profit != null && !targetPriceEdited.current) {
+      setTargetPrice(parseFloat(levels.take_profit).toFixed(2));
+    }
+  }, [prediction]);
 
   const activeSignal = prediction?.signal ?? initialSignal;
   const cost = currentPrice * quantity;
@@ -128,8 +143,9 @@ export function PaperTradeModal({
                   onClick={() => {
                 setSelectedHorizon(key);
                 setError(null);
-                setStopLoss(suggestedStopLoss ? suggestedStopLoss.toFixed(2) : "");
-                setTargetPrice(suggestedTargetPrice ? suggestedTargetPrice.toFixed(2) : "");
+                // Reset edit flags so new horizon's AI values auto-populate
+                stopLossEdited.current = false;
+                targetPriceEdited.current = false;
               }}
                   className={clsx(
                     "rounded-xl px-3 py-2.5 text-center border transition-colors",
@@ -242,25 +258,17 @@ export function PaperTradeModal({
               <label className="text-xs text-gray-400 flex items-center gap-1">
                 <ShieldAlert size={12} className="text-yellow-400" />
                 Stop Loss
-                <span className="text-gray-600 ml-1">(optional)</span>
+                <span className="text-gray-600 ml-1">(AI pre-filled · editable)</span>
               </label>
-              {suggestedStopLoss && signalMatchesBuy && (
-                <button
-                  onClick={() => setStopLoss(suggestedStopLoss.toFixed(2))}
-                  className="text-[10px] text-brand-400 hover:text-brand-300 transition-colors"
-                >
-                  Use AI suggestion ({currency}{suggestedStopLoss.toLocaleString(undefined, { maximumFractionDigits: 2 })})
-                </button>
-              )}
             </div>
             <input
               type="number"
               min={0}
               step="0.01"
-              placeholder={suggestedStopLoss ? `AI suggests ${currency}${suggestedStopLoss.toFixed(2)}` : `e.g. ${currency}${(currentPrice * 0.95).toFixed(2)}`}
+              placeholder={`e.g. ${currency}${(currentPrice * 0.95).toFixed(2)}`}
               value={stopLoss}
-              onChange={e => setStopLoss(e.target.value)}
-              className="w-full bg-dark-bg border border-dark-border rounded-lg px-3 py-2 font-mono text-sm text-white focus:outline-none focus:border-yellow-500/60 placeholder:text-gray-600"
+              onChange={e => { stopLossEdited.current = true; setStopLoss(e.target.value); }}
+              className="w-full bg-dark-bg border border-yellow-500/40 rounded-lg px-3 py-2 font-mono text-sm text-white focus:outline-none focus:border-yellow-500/80 placeholder:text-gray-600"
             />
             {stopLossPct !== null && (
               <p className={clsx("text-xs mt-1", stopLossPct < 0 ? "text-yellow-400" : "text-red-400")}>
@@ -279,25 +287,17 @@ export function PaperTradeModal({
               <label className="text-xs text-gray-400 flex items-center gap-1">
                 <Target size={12} className="text-green-400" />
                 Target Price
-                <span className="text-gray-600 ml-1">(optional)</span>
+                <span className="text-gray-600 ml-1">(AI pre-filled · editable)</span>
               </label>
-              {suggestedTargetPrice && signalMatchesBuy && (
-                <button
-                  onClick={() => setTargetPrice(suggestedTargetPrice.toFixed(2))}
-                  className="text-[10px] text-brand-400 hover:text-brand-300 transition-colors"
-                >
-                  Use AI suggestion ({currency}{suggestedTargetPrice.toLocaleString(undefined, { maximumFractionDigits: 2 })})
-                </button>
-              )}
             </div>
             <input
               type="number"
               min={0}
               step="0.01"
-              placeholder={suggestedTargetPrice ? `AI suggests ${currency}${suggestedTargetPrice.toFixed(2)}` : `e.g. ${currency}${(currentPrice * 1.1).toFixed(2)}`}
+              placeholder={`e.g. ${currency}${(currentPrice * 1.1).toFixed(2)}`}
               value={targetPrice}
-              onChange={e => setTargetPrice(e.target.value)}
-              className="w-full bg-dark-bg border border-dark-border rounded-lg px-3 py-2 font-mono text-sm text-white focus:outline-none focus:border-green-500/60 placeholder:text-gray-600"
+              onChange={e => { targetPriceEdited.current = true; setTargetPrice(e.target.value); }}
+              className="w-full bg-dark-bg border border-green-500/40 rounded-lg px-3 py-2 font-mono text-sm text-white focus:outline-none focus:border-green-500/80 placeholder:text-gray-600"
             />
             {targetPricePct !== null && (
               <p className={clsx("text-xs mt-1", targetPricePct > 0 ? "text-green-400" : "text-red-400")}>
