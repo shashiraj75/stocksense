@@ -39,32 +39,29 @@ US_SECTORS = {
 }
 
 
-def _fetch_change(symbol: str, suffix: str = "") -> tuple[str, float | None]:
-    full = symbol + suffix
-    for attempt in range(3):
-        try:
-            t = yf.Ticker(full)
-            fi = t.fast_info
-            price = float(fi.last_price) if fi.last_price else None
-            prev  = float(fi.previous_close) if fi.previous_close else None
-            if price and prev and prev > 0:
-                return symbol, round((price - prev) / prev * 100, 2)
-            break  # got a response, just no data — don't retry
-        except Exception as e:
-            if "rate" in str(e).lower() and attempt < 2:
-                time.sleep(3 * (attempt + 1))
-            else:
-                break
-    # Fallback: history last 2 days
+def _bulk_changes(symbols: list[str], suffix: str) -> dict[str, float | None]:
+    """
+    Fetch % change for all symbols in one yf.download() call — far more reliable
+    than per-stock fast_info requests from cloud IPs.
+    """
+    tickers = [s + suffix for s in symbols]
+    changes: dict[str, float | None] = {s: None for s in symbols}
     try:
-        df = yf.Ticker(full).history(period="2d")
-        if len(df) >= 2:
-            close = df["Close"].dropna()
-            if len(close) >= 2:
-                return symbol, round((close.iloc[-1] - close.iloc[-2]) / close.iloc[-2] * 100, 2)
-    except Exception:
-        pass
-    return symbol, None
+        df = yf.download(tickers, period="2d", interval="1d", progress=False, threads=True)
+        close = df["Close"] if "Close" in df.columns else df.xs("Close", axis=1, level=0)
+        close = close.dropna(how="all")
+        if len(close) < 2:
+            return changes
+        prev_row  = close.iloc[-2]
+        today_row = close.iloc[-1]
+        for sym, ticker in zip(symbols, tickers):
+            prev  = prev_row.get(ticker)
+            today = today_row.get(ticker)
+            if prev and today and float(prev) > 0:
+                changes[sym] = round((float(today) - float(prev)) / float(prev) * 100, 2)
+    except Exception as e:
+        log.warning("bulk_changes download failed: %s", e)
+    return changes
 
 
 def get_heatmap(market: str) -> list[dict]:
@@ -75,19 +72,17 @@ def get_heatmap(market: str) -> list[dict]:
     sectors = INDIA_SECTORS if market == "IN" else US_SECTORS
     suffix  = ".NS" if market == "IN" else ""
 
-    tasks: list[tuple[str, str, str]] = []
+    # Collect all unique symbols across sectors
+    all_symbols = list({sym for stocks in sectors.values() for sym in stocks})
+
+    # Single bulk download — one request instead of 125 individual ones
+    all_changes = _bulk_changes(all_symbols, suffix)
+
+    # Map back into sector structure
+    results: dict[str, dict[str, float | None]] = {s: {} for s in sectors}
     for sector, stocks in sectors.items():
         for sym in stocks:
-            tasks.append((sector, sym, suffix))
-
-    # Fetch all in parallel — bump workers to saturate yfinance faster
-    results: dict[str, dict[str, float | None]] = {s: {} for s in sectors}
-    with ThreadPoolExecutor(max_workers=25) as pool:
-        futures = {pool.submit(_fetch_change, sym, sfx): (sec, sym) for sec, sym, sfx in tasks}
-        for future in as_completed(futures):
-            sec, sym = futures[future]
-            _, change = future.result()
-            results[sec][sym] = change
+            results[sector][sym] = all_changes.get(sym)
 
     # Build response: per sector, top 10 by absolute move, sorted descending
     MAX_STOCKS = 10

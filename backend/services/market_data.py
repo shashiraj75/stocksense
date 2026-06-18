@@ -3,6 +3,7 @@ import time
 import random
 import yfinance as yf
 from typing import Optional
+from services import finnhub_client
 
 log = logging.getLogger(__name__)
 
@@ -10,7 +11,7 @@ MARKET_SUFFIX = {"US": "", "IN": ".NS"}
 
 # Quote cache: { "SYMBOL:MARKET" -> (timestamp, result) }
 _quote_cache: dict[str, tuple[float, dict]] = {}
-_QUOTE_TTL = 120  # 2 min — reduces yfinance hammering under rate limits
+_QUOTE_TTL = 60  # 1 min
 
 
 class MarketDataService:
@@ -22,28 +23,44 @@ class MarketDataService:
         cached = _quote_cache.get(key)
         if cached and (time.time() - cached[0]) < _QUOTE_TTL:
             return cached[1]
+
+        # Try Finnhub first (reliable from cloud IPs)
+        result = finnhub_client.get_quote(symbol, market)
+
+        # Fallback to yfinance if Finnhub unavailable or key not set
+        if not result:
+            try:
+                t = yf.Ticker(self._sym(symbol, market))
+                fi = t.fast_info
+                price = fi.last_price
+                prev = fi.previous_close
+                result = {
+                    "symbol": symbol,
+                    "market": market,
+                    "price": round(price, 2),
+                    "prev_close": round(prev, 2),
+                    "change": round(price - prev, 2),
+                    "change_pct": round((price - prev) / prev * 100, 2),
+                    "high": fi.day_high,
+                    "low": fi.day_low,
+                    "open": fi.open,
+                }
+            except Exception as e:
+                log.warning("get_quote failed for %s/%s: %s", symbol, market, e)
+                return None
+
+        # Enrich with extra fields from yfinance fast_info (non-critical)
         try:
-            t = yf.Ticker(self._sym(symbol, market))
-            fi = t.fast_info
-            price = fi.last_price
-            prev = fi.previous_close
-            result = {
-                "symbol": symbol,
-                "market": market,
-                "price": round(price, 2),
-                "prev_close": round(prev, 2),
-                "change": round(price - prev, 2),
-                "change_pct": round((price - prev) / prev * 100, 2),
-                "volume": int(fi.three_month_average_volume or 0),
-                "market_cap": fi.market_cap,
-                "fifty_two_week_high": fi.year_high,
-                "fifty_two_week_low": fi.year_low,
-            }
-            _quote_cache[key] = (time.time(), result)
-            return result
-        except Exception as e:
-            log.warning("get_quote failed for %s/%s: %s", symbol, market, e)
-            return None
+            fi = yf.Ticker(self._sym(symbol, market)).fast_info
+            result["volume"] = int(fi.three_month_average_volume or 0)
+            result["market_cap"] = fi.market_cap
+            result["fifty_two_week_high"] = fi.year_high
+            result["fifty_two_week_low"] = fi.year_low
+        except Exception:
+            pass
+
+        _quote_cache[key] = (time.time(), result)
+        return result
 
     async def get_ohlcv(self, symbol: str, market: str, period: str, interval: str) -> dict:
         t = yf.Ticker(self._sym(symbol, market))

@@ -1,8 +1,10 @@
 import time
+import logging
 import datetime
 import yfinance as yf
 from typing import Optional
-from concurrent.futures import ThreadPoolExecutor, as_completed
+
+log = logging.getLogger(__name__)
 
 from services.heatmap_service import INDIA_SECTORS, US_SECTORS
 
@@ -41,21 +43,31 @@ _TTL_OPEN   = 120   # 2 min when live
 _TTL_CLOSED = 300   # 5 min when closed
 
 
-def _fetch_one(sym: str) -> dict | None:
+def _bulk_quotes(tickers: list[str]) -> dict[str, dict]:
+    """Bulk download last 2 days — single request, reliable from cloud IPs."""
+    results = {}
     try:
-        fi = yf.Ticker(sym).fast_info
-        price = float(fi.last_price)
-        prev  = float(fi.previous_close)
-        if price and prev and prev > 0:
-            return {
-                "symbol": sym.replace(".NS", "").replace(".BO", ""),
-                "price": round(price, 2),
-                "change_pct": round((price - prev) / prev * 100, 2),
-                "name": "",
-            }
-    except Exception:
-        pass
-    return None
+        df = yf.download(tickers, period="2d", interval="1d", progress=False, threads=True)
+        close = df["Close"] if "Close" in df.columns else df.xs("Close", axis=1, level=0)
+        close = close.dropna(how="all")
+        if len(close) < 2:
+            return results
+        prev_row  = close.iloc[-2]
+        today_row = close.iloc[-1]
+        for ticker in tickers:
+            prev  = prev_row.get(ticker)
+            today = today_row.get(ticker)
+            if prev and today and float(prev) > 0:
+                sym = ticker.replace(".NS", "").replace(".BO", "")
+                results[ticker] = {
+                    "symbol": sym,
+                    "price": round(float(today), 2),
+                    "change_pct": round((float(today) - float(prev)) / float(prev) * 100, 2),
+                    "name": "",
+                }
+    except Exception as e:
+        log.warning("bulk_quotes failed: %s", e)
+    return results
 
 
 def _quotes_to_movers(quotes: list) -> list:
@@ -101,13 +113,9 @@ def _live_gainers_losers_us() -> tuple[list, list]:
 
 
 def _closed_gainers_losers(universe: list[str]) -> tuple[list, list]:
-    all_movers = []
-    with ThreadPoolExecutor(max_workers=30) as pool:
-        futures = {pool.submit(_fetch_one, sym): sym for sym in universe}
-        for future in as_completed(futures):
-            result = future.result()
-            if result:
-                all_movers.append(result)
+    """Rank universe by last session % change using a single bulk download."""
+    quotes = _bulk_quotes(universe)
+    all_movers = list(quotes.values())
     gainers = sorted([m for m in all_movers if m["change_pct"] > 0],  key=lambda x: x["change_pct"], reverse=True)[:10]
     losers  = sorted([m for m in all_movers if m["change_pct"] <= 0], key=lambda x: x["change_pct"])[:10]
     return gainers, losers
