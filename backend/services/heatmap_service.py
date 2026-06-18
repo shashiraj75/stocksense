@@ -3,8 +3,10 @@ Market Heatmap Service
 Returns sector-wise % change for Indian and US markets.
 """
 import time
+import logging
 import yfinance as yf
-from concurrent.futures import ThreadPoolExecutor, as_completed
+
+log = logging.getLogger(__name__)
 
 # TTL cache: { market -> (timestamp, result) }
 _heatmap_cache: dict[str, tuple[float, list]] = {}
@@ -47,8 +49,19 @@ def _bulk_changes(symbols: list[str], suffix: str) -> dict[str, float | None]:
     tickers = [s + suffix for s in symbols]
     changes: dict[str, float | None] = {s: None for s in symbols}
     try:
-        df = yf.download(tickers, period="2d", interval="1d", progress=False, threads=True)
-        close = df["Close"] if "Close" in df.columns else df.xs("Close", axis=1, level=0)
+        # period="5d" ensures we always have ≥2 rows of settled trading data.
+        # period="2d" breaks when today's row is all-NaN (market just closed,
+        # data not yet published) — dropna leaves only 1 row → len < 2 → all None.
+        df = yf.download(tickers, period="5d", interval="1d", progress=False)
+        if df.empty:
+            return changes
+        if isinstance(df.columns, type(df.columns)) and hasattr(df.columns, "levels"):
+            # MultiIndex: ("Close", ticker)
+            close = df["Close"] if "Close" in df.columns.get_level_values(0) else None
+        else:
+            close = df[["Close"]] if "Close" in df.columns else None
+        if close is None:
+            return changes
         close = close.dropna(how="all")
         if len(close) < 2:
             return changes
@@ -57,7 +70,7 @@ def _bulk_changes(symbols: list[str], suffix: str) -> dict[str, float | None]:
         for sym, ticker in zip(symbols, tickers):
             prev  = prev_row.get(ticker)
             today = today_row.get(ticker)
-            if prev and today and float(prev) > 0:
+            if prev is not None and today is not None and float(prev) > 0:
                 changes[sym] = round((float(today) - float(prev)) / float(prev) * 100, 2)
     except Exception as e:
         log.warning("bulk_changes download failed: %s", e)

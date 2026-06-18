@@ -50,11 +50,18 @@ _TTL_CLOSED = 300   # 5 min when closed
 
 
 def _bulk_quotes(tickers: list[str]) -> dict[str, dict]:
-    """Bulk download last 2 days — single request, reliable from cloud IPs."""
+    """Bulk download last 5 days — ensures ≥2 settled trading rows even when today is all-NaN."""
     results = {}
     try:
-        df = yf.download(tickers, period="2d", interval="1d", progress=False, threads=True)
-        close = df["Close"] if "Close" in df.columns else df.xs("Close", axis=1, level=0)
+        df = yf.download(tickers, period="5d", interval="1d", progress=False)
+        if df.empty:
+            return results
+        if hasattr(df.columns, "levels"):
+            close = df["Close"] if "Close" in df.columns.get_level_values(0) else None
+        else:
+            close = df[["Close"]] if "Close" in df.columns else None
+        if close is None:
+            return results
         close = close.dropna(how="all")
         if len(close) < 2:
             return results
@@ -63,7 +70,7 @@ def _bulk_quotes(tickers: list[str]) -> dict[str, dict]:
         for ticker in tickers:
             prev  = prev_row.get(ticker)
             today = today_row.get(ticker)
-            if prev and today and float(prev) > 0:
+            if prev is not None and today is not None and float(prev) > 0:
                 sym = ticker.replace(".NS", "").replace(".BO", "")
                 results[ticker] = {
                     "symbol": sym,
