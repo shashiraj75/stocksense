@@ -784,6 +784,302 @@ def quality_metrics_score(ticker, df: pd.DataFrame, info: dict) -> dict:
     return {"score": max(0, min(100, score)), "reasons": reasons, "piotroski": f_score}
 
 
+# ── Altman Z-Score ────────────────────────────────────────────────────────────
+
+def altman_zscore_signal(info: dict) -> dict:
+    """
+    Altman Z-Score bankruptcy predictor (Altman 1968; modified Z' for emerging markets).
+
+    US / non-financial:
+        Z = 1.2*X1 + 1.4*X2 + 3.3*X3 + 0.6*X4 + 1.0*X5
+        Safe > 2.99 | Grey 1.81-2.99 | Distress < 1.81
+
+    India / emerging market (Altman 1995 Z'-Score):
+        Z' = 6.56*X1 + 3.26*X2 + 6.72*X3 + 1.05*X4
+        Safe > 2.6 | Grey 1.1-2.6 | Distress < 1.1
+
+    X1 = Working Capital / Total Assets
+    X2 = Retained Earnings / Total Assets
+    X3 = EBIT / Total Assets
+    X4 = Market Cap / Total Liabilities (or Book Equity / Total Liabilities for Z')
+    X5 = Revenue / Total Assets (Z only)
+    """
+    score = 50
+    reasons: list[str] = []
+
+    try:
+        total_assets     = info.get("totalAssets")
+        working_capital  = info.get("workingCapital")
+        retained_earn    = info.get("retainedEarnings")
+        ebit             = info.get("ebit") or info.get("operatingIncome")
+        market_cap       = info.get("marketCap")
+        total_debt       = info.get("totalDebt") or 0
+        total_revenue    = info.get("totalRevenue")
+        book_equity      = info.get("bookValue") or info.get("stockholdersEquity")
+
+        # Need at least assets + one more field to compute anything meaningful
+        if not total_assets or total_assets <= 0:
+            return {"score": 50, "reasons": [], "z_score": None, "z_zone": "unavailable"}
+
+        # Working capital fallback
+        if working_capital is None:
+            curr_assets = info.get("currentAssets") or 0
+            curr_liab   = info.get("currentLiabilities") or 0
+            working_capital = curr_assets - curr_liab if (curr_assets or curr_liab) else None
+
+        # Total liabilities proxy
+        total_liab = total_debt or (total_assets - (book_equity or 0))
+        if total_liab <= 0:
+            total_liab = total_assets * 0.3  # rough fallback
+
+        # Compute ratios — each defaults to 0 if data missing (conservative)
+        x1 = (working_capital  / total_assets) if working_capital is not None else 0
+        x2 = (retained_earn    / total_assets) if retained_earn   is not None else 0
+        x3 = (ebit             / total_assets) if ebit            is not None else 0
+        x4 = (market_cap       / total_liab)   if market_cap      is not None else 1.0
+        x5 = (total_revenue    / total_assets) if total_revenue   is not None else 0
+
+        # Detect Indian stock: use Z' model (no x5, different weights + thresholds)
+        is_india = "IN" in (info.get("market") or info.get("exchange") or info.get("country") or "")
+        if is_india:
+            z = 6.56*x1 + 3.26*x2 + 6.72*x3 + 1.05*x4
+            safe_thresh, grey_thresh = 2.6, 1.1
+            model = "Z'"
+        else:
+            z = 1.2*x1 + 1.4*x2 + 3.3*x3 + 0.6*x4 + 1.0*x5
+            safe_thresh, grey_thresh = 2.99, 1.81
+            model = "Z"
+
+        z = round(z, 2)
+
+        if z > safe_thresh:
+            score += 12
+            zone = "safe"
+            reasons.append(f"Altman {model}-Score {z:.2f} — Safe Zone: strong balance sheet, low bankruptcy risk")
+        elif z > grey_thresh:
+            score += 0
+            zone = "grey"
+            reasons.append(f"Altman {model}-Score {z:.2f} — Grey Zone: moderate financial stress; monitor leverage")
+        else:
+            score -= 20
+            zone = "distress"
+            reasons.append(f"Altman {model}-Score {z:.2f} — Distress Zone: elevated bankruptcy risk; avoid")
+
+        return {"score": max(0, min(100, score)), "reasons": reasons,
+                "z_score": z, "z_zone": zone, "z_model": model}
+
+    except Exception:
+        return {"score": 50, "reasons": [], "z_score": None, "z_zone": "unavailable"}
+
+
+# ── Sloan Accruals Ratio ──────────────────────────────────────────────────────
+
+def sloan_accruals_signal(info: dict) -> dict:
+    """
+    Sloan (1996) Accruals Ratio: (Net Income - Operating CF) / Total Assets.
+
+    High accruals = earnings driven by accounting entries, not real cash.
+    Stocks in the top accruals quintile underperform by ~10% annually (Sloan 1996).
+
+    Thresholds:
+      < -5% : High cash earnings quality (CF >> Net Income) — bullish
+      -5% to +5% : Neutral
+      +5% to +10%: Mild earnings quality concern
+      > +10% : Strong red flag — earnings likely overstated
+    """
+    score = 50
+    reasons: list[str] = []
+
+    try:
+        net_income   = info.get("netIncome")
+        op_cf        = info.get("operatingCashflow") or info.get("operatingCashflows")
+        total_assets = info.get("totalAssets")
+
+        # Screener.in fallback for Indian stocks
+        screener_d = info.get("_screener_data") or {}
+        if op_cf is None and screener_d.get("operating_cf_latest_cr") is not None:
+            op_cf = screener_d["operating_cf_latest_cr"] * 1e7  # Cr → ₹
+
+        # Quarterly PAT as net income proxy for India
+        if net_income is None:
+            q_pat = screener_d.get("quarterly_pat_cr") or []
+            if len(q_pat) >= 4:
+                net_income = sum(q_pat[-4:]) * 1e7  # annualise last 4Q in ₹
+
+        if net_income is None or op_cf is None or not total_assets or total_assets <= 0:
+            return {"score": 50, "reasons": [], "accruals_ratio": None}
+
+        accruals_ratio = (net_income - op_cf) / total_assets
+        accruals_pct   = round(accruals_ratio * 100, 1)
+
+        if accruals_ratio < -0.05:
+            score += 10
+            reasons.append(f"Low accruals ratio ({accruals_pct}%) — earnings are cash-backed; high quality")
+        elif accruals_ratio <= 0.05:
+            score += 3
+            reasons.append(f"Neutral accruals ratio ({accruals_pct}%) — earnings quality acceptable")
+        elif accruals_ratio <= 0.10:
+            score -= 8
+            reasons.append(f"Elevated accruals ratio ({accruals_pct}%) — portion of earnings not yet cash; verify quality")
+        else:
+            score -= 18
+            reasons.append(f"High accruals ratio ({accruals_pct}%) — earnings significantly outpacing cash flow; manipulation risk")
+
+        return {"score": max(0, min(100, score)), "reasons": reasons,
+                "accruals_ratio": accruals_pct}
+
+    except Exception:
+        return {"score": 50, "reasons": [], "accruals_ratio": None}
+
+
+# ── Buffett / Munger Quality Checklist ───────────────────────────────────────
+
+def buffett_munger_score(info: dict, df: pd.DataFrame) -> dict:
+    """
+    8-point checklist distilled from Warren Buffett's shareholder letters and
+    Charlie Munger's Poor Charlie's Almanack.
+
+    1. Consistent earnings power  — 3Y/5Y profit CAGR > 10% (Buffett: predictable earnings)
+    2. High ROE without leverage  — ROE > 15% with D/E < 100% (Buffett: return on equity)
+    3. Capital efficiency (ROIC)  — ROCE > 15% (Munger: ROIC > WACC = moat)
+    4. Earnings predictability    — low quarterly PAT variance (Munger: predictable = moatable)
+    5. Positive owner earnings    — FCF > 0 or operating CF > 0 (Buffett: owner earnings)
+    6. FCF yield > 4%             — FCF / Market Cap (Buffett's min acceptable return)
+    7. Pricing power proxy        — gross margin > 25% stable (Munger: moat indicator)
+    8. Management integrity       — zero/low pledge + no promoter selling (India-specific)
+    """
+    score    = 50
+    reasons  : list[str] = []
+    checklist: list[dict] = []  # surfaced to frontend as a visual checklist
+    passed   = 0
+
+    screener_d = info.get("_screener_data") or {}
+
+    def _check(label: str, passed_: bool, bull_msg: str, bear_msg: str, weight: int = 1):
+        nonlocal score, passed
+        checklist.append({"criterion": label, "passed": passed_,
+                          "note": bull_msg if passed_ else bear_msg})
+        if passed_:
+            score  += weight
+            passed += 1
+            reasons.append(bull_msg)
+        else:
+            reasons.append(bear_msg)
+
+    # 1. Consistent earnings power
+    pat_3y = screener_d.get("profit_growth_3y_pct")
+    pat_5y = screener_d.get("profit_growth_5y_pct")
+    eps_growth = info.get("earningsGrowth")
+    growth_ok = (
+        (pat_3y is not None and pat_3y > 10) or
+        (pat_5y is not None and pat_5y > 8)  or
+        (eps_growth is not None and eps_growth > 0.10)
+    )
+    _check("Consistent earnings growth",
+           growth_ok,
+           f"Earnings growing consistently ({pat_3y:.1f}% 3Y CAGR)" if pat_3y else "Earnings growth confirmed",
+           f"Earnings growth weak/absent ({pat_3y:.1f}% 3Y CAGR)" if pat_3y else "No consistent earnings growth data",
+           weight=8)
+
+    # 2. High ROE without excessive leverage
+    roe = info.get("returnOnEquity") or 0
+    de  = info.get("debtToEquity")  or 0
+    roe_ok = roe > 0.15 and de < 150  # D/E as % in yfinance convention
+    _check("High ROE without leverage",
+           roe_ok,
+           f"ROE {roe*100:.1f}% with manageable debt (D/E {de:.0f}%) — Buffett quality",
+           f"ROE {roe*100:.1f}% {'but high debt' if de >= 150 else '— below Buffett threshold (15%)'}",
+           weight=8)
+
+    # 3. Capital efficiency — ROCE > 15%
+    roce = (info.get("returnOnCapitalEmployed") or 0) * 100
+    roce_ok = roce > 15
+    _check("Capital efficiency (ROCE > 15%)",
+           roce_ok,
+           f"ROCE {roce:.1f}% — capital deployed well above cost; Munger moat indicator",
+           f"ROCE {roce:.1f}% — below 15%; capital allocation needs scrutiny",
+           weight=7)
+
+    # 4. Earnings predictability (low quarterly variance)
+    q_pat = screener_d.get("quarterly_pat_cr") or []
+    predictable = False
+    cv_str = "N/A"
+    if len(q_pat) >= 4:
+        arr = [v for v in q_pat[-6:] if v is not None and v > 0]
+        if len(arr) >= 4:
+            mean_v = sum(arr) / len(arr)
+            std_v  = (sum((x - mean_v)**2 for x in arr) / len(arr)) ** 0.5
+            cv     = std_v / mean_v if mean_v > 0 else 99
+            predictable = cv < 0.35
+            cv_str = f"{cv:.2f}"
+    _check("Predictable earnings (low variance)",
+           predictable,
+           f"Quarterly PAT variance low (CV {cv_str}) — predictable business; Munger loves this",
+           f"Quarterly PAT volatile (CV {cv_str}) — earnings unpredictable; avoid",
+           weight=6)
+
+    # 5. Positive owner earnings (FCF / Operating CF)
+    fcf    = info.get("freeCashflow")
+    op_cf  = info.get("operatingCashflow") or info.get("operatingCashflows")
+    if op_cf is None:
+        op_cf_cr = screener_d.get("operating_cf_latest_cr")
+        op_cf = op_cf_cr * 1e7 if op_cf_cr is not None else None
+    cashflow_positive = (fcf is not None and fcf > 0) or (op_cf is not None and op_cf > 0)
+    _check("Positive owner earnings (FCF > 0)",
+           cashflow_positive,
+           "Free/operating cash flow positive — real earnings, not accounting fiction",
+           "Negative cash flow — earnings not converting to owner value; Buffett red flag",
+           weight=7)
+
+    # 6. FCF yield > 4% (Buffett's minimum acceptable return threshold)
+    mkt_cap = info.get("marketCap")
+    fcf_yield_ok = False
+    fcf_yield_str = "N/A"
+    if fcf and mkt_cap and mkt_cap > 0:
+        fcf_yield = fcf / mkt_cap * 100
+        fcf_yield_ok = fcf_yield > 4
+        fcf_yield_str = f"{fcf_yield:.1f}%"
+    _check("FCF yield > 4%",
+           fcf_yield_ok,
+           f"FCF yield {fcf_yield_str} — attractive cash return for equity holders",
+           f"FCF yield {fcf_yield_str} — below Buffett's 4% minimum threshold",
+           weight=6)
+
+    # 7. Gross margin > 25% — pricing power / moat proxy (Munger)
+    gm = info.get("grossMargins") or 0
+    gm_ok = gm > 0.25
+    _check("Gross margin > 25% (pricing power)",
+           gm_ok,
+           f"Gross margin {gm*100:.1f}% — strong pricing power; suggests durable moat",
+           f"Gross margin {gm*100:.1f}% — thin margins; limited pricing power",
+           weight=5)
+
+    # 8. Management integrity (India: no pledge; elsewhere: low short interest)
+    pledge = screener_d.get("promoter_pledge_pct")
+    p_trend = screener_d.get("promoter_quarterly_pct") or []
+    promoter_ok = True
+    if pledge is not None:
+        promoter_ok = pledge < 10
+    short_ratio = info.get("shortRatio") or 0
+    if pledge is None:
+        promoter_ok = short_ratio < 5  # US: low short interest as integrity proxy
+    p_drop = (p_trend[-1] - p_trend[-4]) if len(p_trend) >= 4 else 0
+    integrity_ok = promoter_ok and p_drop >= -2
+    _check("Management integrity / skin-in-the-game",
+           integrity_ok,
+           f"Low pledge ({pledge:.1f}%)" if pledge is not None else "No significant short interest — integrity signal",
+           f"High pledge ({pledge:.1f}%) or promoter selling — Munger red flag" if pledge is not None else "High short interest — concern",
+           weight=5)
+
+    return {
+        "score":     max(0, min(100, score)),
+        "reasons":   reasons,
+        "checklist": checklist,
+        "passed":    passed,
+        "total":     8,
+    }
+
+
 # ── Sector median PE benchmarks (calibrated Q2 2025) ────────────────────────
 # Source: NSE sector index trailing P/E, Bloomberg consensus — review quarterly
 SECTOR_MEDIAN_PE: dict[str, float] = {
@@ -1260,50 +1556,71 @@ def compute_all_quality_factors(symbol: str, ticker, df: pd.DataFrame, info: dic
         results["corporate_actions"] = corporate_actions_score(ticker, info)   # fast
         results["quality_metrics"]   = {"score": 50, "reasons": [], "piotroski": None}
 
+    # ── Academic signal layer (all horizons — these are hard filters not just scores) ──
+    results["altman"]   = altman_zscore_signal(info)
+    results["accruals"] = sloan_accruals_signal(info)
+    results["buffett"]  = buffett_munger_score(info, df)
+
     # ── Horizon-adjusted weights ──────────────────────────────────────────────
     # Short term: momentum (RS, inst flow, sector) matters most
     # Long term:  valuation + quality metrics dominate
+    # Altman distress = hard penalty regardless of horizon
+    altman_zone = results["altman"].get("z_zone", "unavailable")
+    if altman_zone == "distress":
+        for k in results:
+            if k not in ("altman",):
+                results[k]["score"] = max(0, results[k].get("score", 50) - 15)
+
     if horizon == "short":
         weights = {
-            "earnings_revision": 0.13,
+            "earnings_revision": 0.12,
             "institutional":     0.05,
-            "mf_trend":          0.06,   # quarterly MF accumulation — slow but reliable
-            "inst_flow":         0.13,
-            "relative_strength": 0.15,
-            "sector_strength":   0.15,
-            "valuation":         0.08,
-            "risk_management":   0.10,
-            "liquidity":         0.08,
+            "mf_trend":          0.05,
+            "inst_flow":         0.12,
+            "relative_strength": 0.14,
+            "sector_strength":   0.14,
+            "valuation":         0.07,
+            "risk_management":   0.09,
+            "liquidity":         0.07,
             "corporate_actions": 0.03,
             "quality_metrics":   0.04,
+            "altman":            0.03,  # distress zone is a short-term concern too
+            "accruals":          0.02,
+            "buffett":           0.03,
         }
     elif horizon == "medium":
         weights = {
-            "earnings_revision": 0.14,
-            "institutional":     0.06,
-            "mf_trend":          0.08,   # medium term: MF trend matters more
-            "inst_flow":         0.09,
-            "relative_strength": 0.11,
-            "sector_strength":   0.11,
-            "valuation":         0.13,
-            "risk_management":   0.10,
-            "liquidity":         0.06,
-            "corporate_actions": 0.06,
+            "earnings_revision": 0.12,
+            "institutional":     0.05,
+            "mf_trend":          0.07,
+            "inst_flow":         0.08,
+            "relative_strength": 0.10,
+            "sector_strength":   0.10,
+            "valuation":         0.11,
+            "risk_management":   0.09,
+            "liquidity":         0.05,
+            "corporate_actions": 0.05,
             "quality_metrics":   0.06,
+            "altman":            0.04,
+            "accruals":          0.04,
+            "buffett":           0.04,
         }
     else:  # long
         weights = {
-            "earnings_revision": 0.12,
-            "institutional":     0.06,
-            "mf_trend":          0.10,   # long term: sustained MF conviction is key
-            "inst_flow":         0.05,
-            "relative_strength": 0.07,
-            "sector_strength":   0.07,
-            "valuation":         0.17,
-            "risk_management":   0.10,
-            "liquidity":         0.04,
-            "corporate_actions": 0.10,
-            "quality_metrics":   0.12,
+            "earnings_revision": 0.10,
+            "institutional":     0.05,
+            "mf_trend":          0.08,
+            "inst_flow":         0.04,
+            "relative_strength": 0.06,
+            "sector_strength":   0.06,
+            "valuation":         0.13,
+            "risk_management":   0.08,
+            "liquidity":         0.03,
+            "corporate_actions": 0.08,
+            "quality_metrics":   0.10,
+            "altman":            0.06,  # balance sheet health matters most long-term
+            "accruals":          0.06,  # earnings quality critical for long-term
+            "buffett":           0.07,  # Buffett/Munger = long-term compounding lens
         }
 
     combined = sum(results[k]["score"] * weights[k] for k in weights if k in results)
@@ -1321,6 +1638,9 @@ def compute_all_quality_factors(symbol: str, ticker, df: pd.DataFrame, info: dic
         "liquidity":         "Liquidity",
         "corporate_actions": "Corp. Actions",
         "quality_metrics":   "Quality",
+        "altman":            "Balance Sheet",
+        "accruals":          "Earnings Quality",
+        "buffett":           "Buffett/Munger",
     }
     for key, label in dimension_labels.items():
         dim_score = results.get(key, {}).get("score", 50)
@@ -1335,9 +1655,16 @@ def compute_all_quality_factors(symbol: str, ticker, df: pd.DataFrame, info: dic
     piotroski = results.get("quality_metrics", {}).get("piotroski")
 
     return {
-        "score": round(max(0, min(100, combined))),
-        "breakdown": results,
-        "reasons": all_reasons,
-        "sector": sector,
-        "piotroski": piotroski,
+        "score":           round(max(0, min(100, combined))),
+        "breakdown":       results,
+        "reasons":         all_reasons,
+        "sector":          sector,
+        "piotroski":       piotroski,
+        # Academic signal summary — surfaced directly to frontend
+        "altman_z":        results["altman"].get("z_score"),
+        "altman_zone":     results["altman"].get("z_zone"),
+        "accruals_ratio":  results["accruals"].get("accruals_ratio"),
+        "buffett_passed":  results["buffett"].get("passed"),
+        "buffett_total":   results["buffett"].get("total"),
+        "buffett_checklist": results["buffett"].get("checklist"),
     }

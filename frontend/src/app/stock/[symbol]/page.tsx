@@ -824,6 +824,105 @@ export default function StockPage() {
             <FactorAttributionWaterfall data={attribution} prediction={prediction} />
           )}
 
+          {/* ── Academic Quality Signals card ── */}
+          {prediction && !isCrypto && (() => {
+            const qf = (prediction as any).quality_factors;
+            if (!qf) return null;
+
+            const piotroski   = qf.piotroski;
+            const altmanZ     = qf.altman_z;
+            const altmanZone  = qf.altman_zone;
+            const accruals    = qf.accruals_ratio;
+            const bPassed     = qf.buffett_passed;
+            const bTotal      = qf.buffett_total ?? 8;
+            const bChecklist  = qf.buffett_checklist ?? [];
+
+            const zoneColor = altmanZone === "safe" ? "text-bull" : altmanZone === "grey" ? "text-yellow-400" : altmanZone === "distress" ? "text-bear" : "text-gray-500";
+            const zoneLabel = altmanZone === "safe" ? "Safe Zone" : altmanZone === "grey" ? "Grey Zone" : altmanZone === "distress" ? "Distress Zone" : "N/A";
+            const accColor  = accruals == null ? "text-gray-500" : accruals < -5 ? "text-bull" : accruals <= 5 ? "text-yellow-400" : "text-bear";
+            const accLabel  = accruals == null ? "N/A" : accruals < -5 ? "Excellent" : accruals <= 5 ? "Neutral" : accruals <= 10 ? "Elevated" : "High Risk";
+
+            return (
+              <section className="bg-dark-card border border-dark-border rounded-2xl p-5 space-y-5">
+                <h2 className="text-base font-bold text-white">Academic Quality Signals</h2>
+                <p className="text-xs text-gray-500 -mt-3">Piotroski (2000) · Sloan (1996) · Altman (1968) · Buffett/Munger framework</p>
+
+                {/* Top 3 scores */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {/* Piotroski */}
+                  <div className="bg-dark-bg/60 border border-dark-border rounded-xl p-4">
+                    <p className="text-[11px] text-gray-500 mb-1">Piotroski F-Score</p>
+                    <div className="flex items-end gap-1.5">
+                      <span className={clsx("text-2xl font-black tabular-nums",
+                        piotroski == null ? "text-gray-600" :
+                        piotroski >= 7 ? "text-bull" : piotroski >= 4 ? "text-yellow-400" : "text-bear")}>
+                        {piotroski ?? "—"}
+                      </span>
+                      <span className="text-gray-500 text-sm mb-0.5">/ 9</span>
+                    </div>
+                    <p className="text-[10px] text-gray-500 mt-1">
+                      {piotroski == null ? "Awaiting data" : piotroski >= 7 ? "Strong financial health" : piotroski >= 4 ? "Mixed signals" : "Multiple red flags"}
+                    </p>
+                  </div>
+
+                  {/* Altman Z */}
+                  <div className="bg-dark-bg/60 border border-dark-border rounded-xl p-4">
+                    <p className="text-[11px] text-gray-500 mb-1">Altman Z-Score</p>
+                    <div className="flex items-end gap-1.5">
+                      <span className={clsx("text-2xl font-black tabular-nums", zoneColor)}>
+                        {altmanZ ?? "—"}
+                      </span>
+                    </div>
+                    <p className={clsx("text-[10px] mt-1", zoneColor)}>{zoneLabel}</p>
+                  </div>
+
+                  {/* Accruals */}
+                  <div className="bg-dark-bg/60 border border-dark-border rounded-xl p-4">
+                    <p className="text-[11px] text-gray-500 mb-1">Accruals Ratio <span className="text-gray-600">(Sloan)</span></p>
+                    <div className="flex items-end gap-1.5">
+                      <span className={clsx("text-2xl font-black tabular-nums", accColor)}>
+                        {accruals != null ? `${accruals}%` : "—"}
+                      </span>
+                    </div>
+                    <p className={clsx("text-[10px] mt-1", accColor)}>{accLabel}</p>
+                  </div>
+                </div>
+
+                {/* Buffett / Munger checklist */}
+                {bChecklist.length > 0 && (
+                  <div>
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="text-sm font-semibold text-white">Buffett / Munger Checklist</p>
+                      <span className={clsx("text-sm font-bold tabular-nums",
+                        (bPassed ?? 0) >= 6 ? "text-bull" : (bPassed ?? 0) >= 4 ? "text-yellow-400" : "text-bear")}>
+                        {bPassed ?? 0}/{bTotal} passed
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {bChecklist.map((item: any) => (
+                        <div key={item.criterion}
+                          className={clsx("flex items-start gap-2.5 rounded-lg px-3 py-2.5 border text-xs",
+                            item.passed
+                              ? "bg-bull/5 border-bull/20 text-gray-200"
+                              : "bg-bear/5 border-bear/20 text-gray-400")}>
+                          <span className={clsx("mt-0.5 shrink-0 text-sm", item.passed ? "text-bull" : "text-bear")}>
+                            {item.passed ? "✓" : "✗"}
+                          </span>
+                          <div>
+                            <p className={clsx("font-semibold leading-tight", item.passed ? "text-white" : "text-gray-400")}>
+                              {item.criterion}
+                            </p>
+                            <p className="text-gray-500 mt-0.5 leading-snug">{item.note}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </section>
+            );
+          })()}
+
           <section>
             <h2 className="text-lg font-semibold mb-3">News & Sentiment</h2>
             <div className="grid md:grid-cols-2 gap-3">
