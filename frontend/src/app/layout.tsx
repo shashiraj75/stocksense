@@ -46,7 +46,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 StockSense
               </Link>
               <div className="flex-1 max-w-sm"><SearchBar /></div>
-              <div className="hidden md:flex items-center gap-4 shrink-0">
+              <div className="hidden md:flex items-start gap-4 shrink-0">
                 <LiveClock inline />
                 <span className="text-dark-border text-xs">|</span>
                 <MarketStatusInline />

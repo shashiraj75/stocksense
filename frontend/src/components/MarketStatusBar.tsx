@@ -28,22 +28,26 @@ export function MarketStatusInline() {
   return (
     <div className="flex items-center gap-4">
       {statuses.map(({ key, label, flag, status }) => (
-        <div key={key} className="flex items-center gap-1.5 shrink-0">
-          <span className="text-sm leading-none">{flag}</span>
-          <span className="text-xs text-gray-500 hidden xl:inline">{label}</span>
-          <span className="relative flex h-1.5 w-1.5 shrink-0">
-            {status.isOpen && (
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
-            )}
-            <span className={clsx("relative inline-flex rounded-full h-1.5 w-1.5",
-              status.isOpen ? "bg-green-500" : "bg-red-500"
-            )} />
-          </span>
-          <span className={clsx("text-xs font-medium", status.isOpen ? "text-green-400" : "text-red-400")}>
-            {status.isOpen ? "Open" : "Closed"}
-          </span>
-          {status.nextEventLabel && !status.isOpen && (
-            <span className="text-[11px] text-gray-500 hidden xl:inline">· {status.nextEventLabel}</span>
+        <div key={key} className="flex flex-col shrink-0">
+          <div className="flex items-center gap-1.5">
+            <span className="text-sm leading-none">{flag}</span>
+            <span className="text-xs text-gray-400">{label}</span>
+            <span className="relative flex h-1.5 w-1.5 shrink-0">
+              {status.isOpen && (
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+              )}
+              <span className={clsx("relative inline-flex rounded-full h-1.5 w-1.5",
+                status.isOpen ? "bg-green-500" : "bg-red-500"
+              )} />
+            </span>
+            <span className={clsx("text-xs font-semibold", status.isOpen ? "text-green-400" : "text-red-400")}>
+              {status.isOpen ? "Open" : "Closed"}
+            </span>
+          </div>
+          {status.nextEventLabel && (
+            <span className="text-[10px] text-gray-600 leading-tight mt-0.5 pl-5">
+              {status.nextEventLabel}
+            </span>
           )}
         </div>
       ))}
