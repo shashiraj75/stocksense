@@ -229,178 +229,245 @@ export default function StockPage() {
       {!isCrypto && <MarketDisclaimer market={market} />}
 
       {/* ── Hero Header Card ── */}
-      <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          {/* Left: symbol + price block */}
-          <div className="min-w-0">
-            {/* Symbol row */}
-            <div className="flex flex-wrap items-center gap-2 mb-2">
-              <h1 className="text-xl font-bold font-mono tracking-wide">{symbol}</h1>
-              <span className="text-xs bg-dark-bg border border-dark-border px-2 py-0.5 rounded text-gray-400">
-                {isCrypto ? `CRYPTO · ${CRYPTO_NAMES[symbol] ?? symbol}` : market === "US" ? "🇺🇸 NYSE / NASDAQ" : "🇮🇳 NSE India"}
-              </span>
-              {!isCrypto && (() => {
-                const cap = getCapCategory(quote?.market_cap, market);
-                if (!cap) return null;
-                return (
-                  <span className={`text-xs border px-2 py-0.5 rounded font-medium ${cap.color} ${cap.bg}`}>
-                    {cap.label}
-                  </span>
-                );
-              })()}
-            </div>
-            {/* Price + change */}
-            <div className="flex flex-wrap items-baseline gap-3 mb-3">
-              <span className="text-3xl font-black font-mono tracking-tight">
-                {isCrypto
-                  ? `$${(cryptoQuote?.price ?? prediction?.current_price ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
-                  : quote ? `${currency}${quote.price.toLocaleString()}` : <span className="text-gray-600">—</span>}
-              </span>
-              {isCrypto && cryptoQuote?.change_pct != null && (
-                <span className={clsx("flex items-center gap-1 text-sm font-semibold",
-                  cryptoQuote.change_pct >= 0 ? "text-bull" : "text-bear")}>
-                  {cryptoQuote.change_pct >= 0 ? <ArrowUpRight size={15} /> : <ArrowDownRight size={15} />}
-                  {cryptoQuote.change_pct >= 0 ? "+" : ""}{cryptoQuote.change_pct}%
-                </span>
-              )}
-              {!isCrypto && quote?.change != null && (
-                <span className={clsx("flex items-center gap-1 text-sm font-semibold",
-                  quote.change >= 0 ? "text-bull" : "text-bear")}>
-                  {quote.change >= 0 ? <ArrowUpRight size={15} /> : <ArrowDownRight size={15} />}
-                  {quote.change >= 0 ? "+" : ""}{quote.change} ({quote.change_pct}%)
-                </span>
-              )}
-              {/* Market status pill */}
-              <div className="flex items-center gap-1.5 text-xs text-gray-500">
-                <span className="relative flex h-2 w-2">
-                  {marketStatus.isOpen && (
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+      {(() => {
+        const sig = (tab !== "backtest" && prediction && !predLoading) ? prediction.signal : null;
+        const accentClass = sig === "BUY" ? "border-bull/40" : sig === "SELL" ? "border-bear/40" : "border-dark-border";
+        const priceChange = !isCrypto ? quote?.change ?? null : cryptoQuote?.change_pct ?? null;
+        const priceUp = priceChange != null && priceChange >= 0;
+
+        return (
+          <div className={clsx("bg-dark-card border rounded-2xl overflow-hidden", accentClass)}>
+            {/* Top accent strip based on signal */}
+            {sig && (
+              <div className={clsx("h-0.5 w-full",
+                sig === "BUY" ? "bg-gradient-to-r from-bull/60 via-bull/30 to-transparent"
+                : sig === "SELL" ? "bg-gradient-to-r from-bear/60 via-bear/30 to-transparent"
+                : "bg-gradient-to-r from-neutral/40 via-neutral/20 to-transparent"
+              )} />
+            )}
+
+            <div className="p-5">
+              <div className="flex gap-6">
+                {/* ── Left column: all stock info ── */}
+                <div className="flex-1 min-w-0">
+
+                  {/* Row 1: symbol + badges */}
+                  <div className="flex flex-wrap items-center gap-2 mb-2.5">
+                    <h1 className="text-2xl font-black font-mono tracking-tight">{symbol}</h1>
+                    <span className="text-[11px] bg-white/5 border border-white/10 px-2 py-0.5 rounded-md text-gray-400">
+                      {isCrypto ? `CRYPTO · ${CRYPTO_NAMES[symbol] ?? symbol}` : market === "US" ? "🇺🇸 NYSE / NASDAQ" : "🇮🇳 NSE India"}
+                    </span>
+                    {!isCrypto && (() => {
+                      const cap = getCapCategory(quote?.market_cap, market);
+                      if (!cap) return null;
+                      return (
+                        <span className={`text-[11px] border px-2 py-0.5 rounded-md font-medium ${cap.color} ${cap.bg}`}>
+                          {cap.label}
+                        </span>
+                      );
+                    })()}
+                    {/* Market status inline */}
+                    <div className="flex items-center gap-1.5 ml-auto">
+                      <span className="relative flex h-2 w-2">
+                        {marketStatus.isOpen && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />}
+                        <span className={clsx("relative inline-flex rounded-full h-2 w-2", marketStatus.isOpen ? "bg-green-500" : "bg-red-500")} />
+                      </span>
+                      <span className="text-[11px] text-gray-500">
+                        {marketStatus.isOpen ? "Live" : marketStatus.label}
+                        {marketStatus.nextEventLabel && <span className="text-gray-600"> · {marketStatus.nextEventLabel}</span>}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Row 2: price + change */}
+                  <div className="flex flex-wrap items-baseline gap-3 mb-3">
+                    <span className="text-4xl font-black font-mono tracking-tighter">
+                      {isCrypto
+                        ? `$${(cryptoQuote?.price ?? prediction?.current_price ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+                        : quote ? `${currency}${quote.price.toLocaleString()}` : <span className="text-gray-600 text-2xl">Loading…</span>}
+                    </span>
+                    {!isCrypto && quote?.change != null && (
+                      <span className={clsx(
+                        "inline-flex items-center gap-1 text-sm font-bold px-2 py-0.5 rounded-lg",
+                        priceUp ? "bg-bull/10 text-bull" : "bg-bear/10 text-bear"
+                      )}>
+                        {priceUp ? <ArrowUpRight size={14} /> : <ArrowDownRight size={14} />}
+                        {quote.change >= 0 ? "+" : ""}{quote.change} ({quote.change_pct}%)
+                      </span>
+                    )}
+                    {isCrypto && cryptoQuote?.change_pct != null && (
+                      <span className={clsx(
+                        "inline-flex items-center gap-1 text-sm font-bold px-2 py-0.5 rounded-lg",
+                        priceUp ? "bg-bull/10 text-bull" : "bg-bear/10 text-bear"
+                      )}>
+                        {priceUp ? <ArrowUpRight size={14} /> : <ArrowDownRight size={14} />}
+                        {cryptoQuote.change_pct >= 0 ? "+" : ""}{cryptoQuote.change_pct}%
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Row 3: stats chips */}
+                  {!isCrypto && quote && (
+                    <div className="flex flex-wrap gap-2 mb-3">
+                      {[
+                        ["52W High", `${currency}${quote.fifty_two_week_high?.toLocaleString()}`, "text-gray-300"],
+                        ["52W Low",  `${currency}${quote.fifty_two_week_low?.toLocaleString()}`,  "text-gray-300"],
+                        ["Mkt Cap",  (() => {
+                          const v = quote.market_cap;
+                          if (!v) return "—";
+                          if (v >= 1e12) return `${currency}${(v/1e12).toFixed(2)}T`;
+                          if (v >= 1e9)  return `${currency}${(v/1e9).toFixed(2)}B`;
+                          return `${currency}${(v/1e6).toFixed(0)}M`;
+                        })(), "text-gray-300"],
+                        ["Volume", quote.volume?.toLocaleString() ?? "—", "text-gray-300"],
+                      ].map(([label, value, valueColor]) => (
+                        <div key={label} className="flex items-center gap-1.5 bg-white/[0.04] border border-white/[0.07] rounded-lg px-2.5 py-1">
+                          <span className="text-[11px] text-gray-500">{label}</span>
+                          <span className={clsx("text-[11px] font-mono font-bold", valueColor)}>{value}</span>
+                        </div>
+                      ))}
+                    </div>
                   )}
-                  <span className={clsx("relative inline-flex rounded-full h-2 w-2", marketStatus.isOpen ? "bg-green-500" : "bg-red-500")}></span>
-                </span>
-                {marketStatus.isOpen ? "Live" : marketStatus.label}
-                {marketStatus.nextEventLabel && (
-                  <span className="text-gray-600">· {marketStatus.nextEventLabel}</span>
+
+                  {/* Row 4: score indicator pills */}
+                  {prediction && !predLoading && !isCrypto && (() => {
+                    const scoreItems: { label: string; value: number; bg: string; bar: string; text: string }[] = [];
+                    const fundScore = prediction.fundamental_score.score;
+                    const sentScore = prediction.sentiment_score.score;
+                    const rsi = prediction.technical?.rsi ? Math.round(prediction.technical.rsi) : null;
+
+                    const fundTier = fundScore >= 65 ? { bg: "bg-bull/10 border-bull/20", bar: "bg-bull", text: "text-bull" }
+                                   : fundScore >= 45 ? { bg: "bg-yellow-500/10 border-yellow-500/20", bar: "bg-yellow-400", text: "text-yellow-400" }
+                                   : { bg: "bg-bear/10 border-bear/20", bar: "bg-bear", text: "text-bear" };
+                    const sentTier = sentScore >= 60 ? { bg: "bg-bull/10 border-bull/20", bar: "bg-bull", text: "text-bull" }
+                                   : sentScore >= 40 ? { bg: "bg-yellow-500/10 border-yellow-500/20", bar: "bg-yellow-400", text: "text-yellow-400" }
+                                   : { bg: "bg-bear/10 border-bear/20", bar: "bg-bear", text: "text-bear" };
+
+                    scoreItems.push({ label: "Fundamentals", value: fundScore, ...fundTier });
+                    scoreItems.push({ label: "Sentiment", value: sentScore, ...sentTier });
+
+                    if (rsi !== null) {
+                      const rsiLabel = rsi >= 70 ? "Overbought" : rsi <= 30 ? "Oversold" : rsi >= 55 ? "Bullish" : rsi <= 45 ? "Bearish" : "Neutral";
+                      const rsiTier = rsi >= 70 || rsi <= 30
+                        ? { bg: "bg-yellow-500/10 border-yellow-500/20", bar: "bg-yellow-400", text: "text-yellow-400" }
+                        : rsi >= 55 ? { bg: "bg-bull/10 border-bull/20", bar: "bg-bull", text: "text-bull" }
+                        : rsi <= 45 ? { bg: "bg-bear/10 border-bear/20", bar: "bg-bear", text: "text-bear" }
+                        : { bg: "bg-white/5 border-white/10", bar: "bg-gray-400", text: "text-gray-400" };
+                      scoreItems.push({ label: `RSI ${rsi} · ${rsiLabel}`, value: rsi, ...rsiTier });
+                    }
+
+                    return (
+                      <div className="flex flex-wrap gap-2">
+                        {scoreItems.map(({ label, value, bg, bar, text }) => (
+                          <div key={label} className={clsx("flex items-center gap-2 rounded-lg border px-2.5 py-1.5", bg)}>
+                            <span className="text-[11px] text-gray-400 font-medium">{label}</span>
+                            <div className="flex items-center gap-1.5">
+                              <div className="w-14 h-1 bg-black/30 rounded-full overflow-hidden">
+                                <div className={clsx("h-full rounded-full", bar)} style={{ width: `${Math.min(100, value)}%` }} />
+                              </div>
+                              <span className={clsx("text-[11px] font-black tabular-nums font-mono", text)}>{value}%</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                  {isCrypto && (
+                    <p className="text-xs text-gray-500 mt-1">TradingView · Binance USDT · Predictions: technicals + volume + sentiment</p>
+                  )}
+                </div>
+
+                {/* ── Right column: signal panel ── */}
+                {tab !== "backtest" && (
+                  <div className="shrink-0 flex flex-col items-center justify-center gap-3 min-w-[140px]">
+                    {prediction && !predLoading ? (
+                      <>
+                        {/* Big signal display */}
+                        <div className={clsx(
+                          "w-full rounded-xl border px-4 py-3 text-center",
+                          prediction.signal === "BUY"  ? "bg-bull/10 border-bull/30"
+                          : prediction.signal === "SELL" ? "bg-bear/10 border-bear/30"
+                          : "bg-white/5 border-white/10"
+                        )}>
+                          <p className="text-[10px] text-gray-500 uppercase tracking-widest mb-0.5">AI Signal</p>
+                          <p className={clsx("text-2xl font-black tracking-wider",
+                            prediction.signal === "BUY" ? "text-bull" : prediction.signal === "SELL" ? "text-bear" : "text-neutral"
+                          )}>
+                            {prediction.signal === "BUY" ? "▲ BUY" : prediction.signal === "SELL" ? "▼ SELL" : "— HOLD"}
+                          </p>
+                          <div className="mt-1.5 flex items-center justify-center gap-1.5">
+                            <div className="flex-1 h-1 bg-black/30 rounded-full overflow-hidden">
+                              <div
+                                className={clsx("h-full rounded-full",
+                                  prediction.signal === "BUY" ? "bg-bull" : prediction.signal === "SELL" ? "bg-bear" : "bg-neutral"
+                                )}
+                                style={{ width: `${prediction.confidence}%` }}
+                              />
+                            </div>
+                            <span className={clsx("text-xs font-bold tabular-nums",
+                              prediction.signal === "BUY" ? "text-bull" : prediction.signal === "SELL" ? "text-bear" : "text-neutral"
+                            )}>{prediction.confidence}%</span>
+                          </div>
+                          <p className="text-[10px] text-gray-600 mt-0.5">confidence</p>
+                        </div>
+
+                        {/* Paper Trade button */}
+                        {!isCrypto && (() => {
+                          const isBuy  = prediction.signal === "BUY";
+                          const isSell = prediction.signal === "SELL";
+                          return (
+                            <div className="w-full flex flex-col gap-1">
+                              <button
+                                onClick={() => setShowPaperModal(true)}
+                                className={clsx(
+                                  "w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border transition-all",
+                                  isBuy  ? "bg-bull/15 border-bull/40 text-bull hover:bg-bull/25"
+                                  : isSell ? "bg-bear/15 border-bear/40 text-red-400 hover:bg-bear/25"
+                                  : "bg-white/5 border-white/10 text-gray-400 hover:text-white hover:border-white/20"
+                                )}
+                              >
+                                <Beaker size={12} />
+                                {isBuy ? "Paper Buy" : isSell ? "Paper Sell / Short" : "Paper Trade"}
+                              </button>
+                              {(isSell || prediction.signal === "HOLD") && (
+                                <p className={clsx("text-[10px] text-center leading-tight",
+                                  isSell ? "text-red-400/60" : "text-gray-600")}>
+                                  {isSell ? "AI signals exit — caution" : "No strong entry signal"}
+                                </p>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </>
+                    ) : predLoading ? (
+                      <div className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-5 text-center">
+                        <Loader2 size={20} className="animate-spin text-brand-500 mx-auto mb-2" />
+                        <p className="text-[11px] text-gray-500">Computing…</p>
+                      </div>
+                    ) : null}
+                  </div>
                 )}
               </div>
-            </div>
-            {/* Quick stats bar */}
-            {!isCrypto && quote && (
-              <div className="flex flex-wrap gap-x-5 gap-y-1 mb-3">
-                {[
-                  ["52W High", `${currency}${quote.fifty_two_week_high?.toLocaleString()}`],
-                  ["52W Low",  `${currency}${quote.fifty_two_week_low?.toLocaleString()}`],
-                  ["Mkt Cap",  (() => {
-                    const v = quote.market_cap;
-                    if (!v) return "—";
-                    if (v >= 1e12) return `${currency}${(v/1e12).toFixed(2)}T`;
-                    if (v >= 1e9)  return `${currency}${(v/1e9).toFixed(2)}B`;
-                    return `${currency}${(v/1e6).toFixed(0)}M`;
-                  })()],
-                  ["Volume", quote.volume?.toLocaleString() ?? "—"],
-                ].map(([label, value]) => (
-                  <div key={label} className="flex items-baseline gap-1.5">
-                    <span className="text-xs text-gray-500">{label}</span>
-                    <span className="text-xs font-mono font-semibold text-gray-200">{value}</span>
-                  </div>
+
+              {/* Tabs row */}
+              <div className="flex gap-2 flex-wrap mt-4 pt-4 border-t border-white/[0.06]">
+                {HORIZON_TABS.map(({ key, label }) => (
+                  <button key={key} onClick={() => setTab(key)}
+                    className={clsx(
+                      "flex items-center gap-1.5 px-3.5 py-1.5 text-xs sm:text-sm rounded-lg font-medium transition-all",
+                      tab === key
+                        ? "bg-brand-500 text-white shadow-lg shadow-brand-500/20"
+                        : "bg-white/[0.04] border border-white/[0.07] text-gray-400 hover:text-white hover:bg-white/[0.08]"
+                    )}>
+                    {key === "backtest" && <FlaskConical size={13} />}
+                    {label}
+                  </button>
                 ))}
               </div>
-            )}
-            {/* Inline score pills — shown once prediction loads */}
-            {prediction && !predLoading && !isCrypto && (() => {
-              const items: { label: string; value: number; color: string }[] = [];
-              items.push({
-                label: "Fundamentals",
-                value: prediction.fundamental_score.score,
-                color: prediction.fundamental_score.score >= 65 ? "text-bull" : prediction.fundamental_score.score >= 45 ? "text-yellow-400" : "text-bear",
-              });
-              items.push({
-                label: "Sentiment",
-                value: prediction.sentiment_score.score,
-                color: prediction.sentiment_score.score >= 60 ? "text-bull" : prediction.sentiment_score.score >= 40 ? "text-yellow-400" : "text-bear",
-              });
-              const rsi = prediction.technical?.rsi;
-              if (rsi) {
-                const r = Math.round(rsi);
-                const rsiLabel = r >= 70 ? "Overbought" : r <= 30 ? "Oversold" : r >= 55 ? "Bullish" : r <= 45 ? "Bearish" : "Neutral";
-                const rsiColor = r >= 70 ? "text-yellow-400" : r <= 30 ? "text-yellow-400" : r >= 55 ? "text-bull" : r <= 45 ? "text-bear" : "text-gray-400";
-                items.push({ label: `RSI ${r} · ${rsiLabel}`, value: r, color: rsiColor });
-              }
-              return (
-                <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-                  {items.map(({ label, value, color }) => (
-                    <div key={label} className="flex items-center gap-2">
-                      <span className="text-xs text-gray-500">{label}</span>
-                      <div className="flex items-center gap-1.5">
-                        <div className="w-16 h-1.5 bg-dark-border rounded-full overflow-hidden">
-                          <div
-                            className={clsx("h-full rounded-full transition-all", color === "text-bull" ? "bg-bull" : color === "text-bear" ? "bg-bear" : "bg-yellow-400")}
-                            style={{ width: `${Math.min(100, value)}%` }}
-                          />
-                        </div>
-                        <span className={clsx("text-xs font-mono font-semibold tabular-nums", color)}>{value}%</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              );
-            })()}
-            {isCrypto && (
-              <p className="text-xs text-gray-500">Chart: TradingView · Binance USDT · Predictions: technicals + volume + sentiment</p>
-            )}
+            </div>
           </div>
-
-          {/* Right: Signal + Paper Trade */}
-          <div className="flex flex-col items-end gap-2.5 shrink-0">
-            {tab !== "backtest" && prediction && !predLoading && (
-              <SignalBadge signal={prediction.signal} confidence={prediction.confidence} size="lg" />
-            )}
-            {prediction?.signal && !predLoading && !isCrypto && (() => {
-              const sig = prediction.signal;
-              const isBuy  = sig === "BUY";
-              const isSell = sig === "SELL";
-              const isHold = sig === "HOLD";
-              return (
-                <div className="flex flex-col items-end gap-1">
-                  <button
-                    onClick={() => setShowPaperModal(true)}
-                    className={clsx(
-                      "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors",
-                      isBuy  ? "bg-bull/10 border-bull/30 text-bull hover:bg-bull/20"
-                      : isSell ? "bg-bear/10 border-bear/30 text-red-400 hover:bg-bear/20"
-                      : "bg-dark-card border-dark-border text-gray-400 hover:text-white hover:border-white/30"
-                    )}
-                  >
-                    <Beaker size={13} />
-                    {isBuy ? "Paper Buy" : isSell ? "Paper Sell / Short" : "Paper Trade"}
-                  </button>
-                  {(isSell || isHold) && (
-                    <p className={clsx("text-[10px] max-w-[160px] text-right leading-tight",
-                      isSell ? "text-red-400/70" : "text-gray-500")}>
-                      {isSell ? "AI signals exit/short — proceed with caution" : "No strong entry signal from AI"}
-                    </p>
-                  )}
-                </div>
-              );
-            })()}
-          </div>
-        </div>
-
-        {/* Tabs row — inside the card, below price */}
-        <div className="flex gap-2 flex-wrap mt-4 pt-4 border-t border-dark-border">
-          {HORIZON_TABS.map(({ key, label }) => (
-            <button key={key} onClick={() => setTab(key)}
-              className={clsx(
-                "flex items-center gap-1.5 px-3 py-1.5 text-xs sm:px-4 sm:py-2 sm:text-sm rounded-lg font-medium transition-colors",
-                tab === key ? "bg-brand-500 text-white"
-                  : "bg-dark-bg border border-dark-border text-gray-400 hover:text-white"
-              )}>
-              {key === "backtest" && <FlaskConical size={14} />}
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
+        );
+      })()}
 
       {/* ── PREDICTION VIEW ── */}
       {tab !== "backtest" && tab !== "history" && (
