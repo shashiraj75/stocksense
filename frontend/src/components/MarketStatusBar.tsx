@@ -24,37 +24,27 @@ export function MarketStatusBar() {
 
   return (
     <div className="border-t border-dark-border/40 bg-dark-bg/60">
-      <div className="max-w-7xl mx-auto px-4 py-1.5 flex items-center gap-6 overflow-x-auto">
+      <div className="max-w-7xl mx-auto px-4 py-1.5 flex flex-nowrap items-center gap-5 overflow-x-auto whitespace-nowrap">
         <LiveClock inline />
         <span className="text-gray-700 text-xs shrink-0">|</span>
         {statuses.map(({ key, label, flag, status }) => (
-          <div key={key} className="flex items-center gap-2 shrink-0">
+          <div key={key} className="flex items-center gap-1.5 shrink-0">
             <span className="text-sm leading-none">{flag}</span>
             <span className="text-xs text-gray-500">{label}</span>
-            <div className="flex items-center gap-1">
-              <span className="relative flex h-1.5 w-1.5">
-                {status.isOpen && (
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
-                )}
-                <span className={clsx(
-                  "relative inline-flex rounded-full h-1.5 w-1.5",
-                  status.isOpen ? "bg-green-500" : "bg-red-500"
-                )} />
-              </span>
-              <span className={clsx("text-xs font-medium", status.isOpen ? "text-green-400" : "text-red-400")}>
-                {status.isOpen ? "Open" : "Closed"}
-              </span>
-            </div>
-            {status.nextEventLabel && (
-              <span className="text-[10px] text-gray-600 hidden sm:inline">
-                · {status.nextEventLabel}
-              </span>
-            )}
+            <span className="relative flex h-1.5 w-1.5 shrink-0">
+              {status.isOpen && (
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+              )}
+              <span className={clsx(
+                "relative inline-flex rounded-full h-1.5 w-1.5",
+                status.isOpen ? "bg-green-500" : "bg-red-500"
+              )} />
+            </span>
+            <span className={clsx("text-xs font-medium", status.isOpen ? "text-green-400" : "text-red-400")}>
+              {status.isOpen ? "Open" : "Closed"}
+            </span>
           </div>
         ))}
-        <span className="ml-auto text-[10px] text-gray-700 shrink-0 hidden md:inline">
-          Times in your local timezone
-        </span>
       </div>
     </div>
   );
