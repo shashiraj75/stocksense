@@ -16,7 +16,6 @@ import { ArrowUpRight, ArrowDownRight, FlaskConical, CheckCircle, XCircle, Loade
 import { PaperTradeModal } from "@/components/PaperTradeModal";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { TradeLevelVisualizer } from "@/components/TradeLevelVisualizer";
-import { getMarketStatus } from "@/utils/marketHours";
 
 type Tab = Horizon | "backtest" | "history";
 
@@ -142,13 +141,7 @@ export default function StockPage() {
     return () => clearInterval(id);
   }, [isComputing, predLoading]);
 
-  const [marketStatus, setMarketStatus] = useState(() => getMarketStatus(isCrypto ? "CRYPTO" : market));
-  useEffect(() => {
-    const update = () => setMarketStatus(getMarketStatus(isCrypto ? "CRYPTO" : market));
-    update();
-    const id = setInterval(update, 30_000);
-    return () => clearInterval(id);
-  }, [market, isCrypto]);
+
 
   // Prefetch the other two horizons in parallel as soon as the page loads,
   // instead of fetching one-at-a-time as the user clicks tabs — each
@@ -266,17 +259,6 @@ export default function StockPage() {
                         </span>
                       );
                     })()}
-                    {/* Market status inline */}
-                    <div className="flex items-center gap-1.5 ml-auto">
-                      <span className="relative flex h-2 w-2">
-                        {marketStatus.isOpen && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />}
-                        <span className={clsx("relative inline-flex rounded-full h-2 w-2", marketStatus.isOpen ? "bg-green-500" : "bg-red-500")} />
-                      </span>
-                      <span className="text-[11px] text-gray-500">
-                        {marketStatus.isOpen ? "Live" : marketStatus.label}
-                        {marketStatus.nextEventLabel && <span className="text-gray-600"> · {marketStatus.nextEventLabel}</span>}
-                      </span>
-                    </div>
                   </div>
 
                   {/* Row 2: price + change */}
