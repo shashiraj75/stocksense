@@ -82,15 +82,17 @@ export default function Dashboard() {
       </div>
 
       {/* Horizon info cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         {[
           { label: "Short Term",  period: "1–10 Days",      desc: "Technicals, momentum, volume, news sentiment",              border: "border-green-500/40",  text: "text-green-400" },
           { label: "Medium Term", period: "1–3 Months",     desc: "Earnings, sector rotation, macro trends",                   border: "border-yellow-500/40", text: "text-yellow-400" },
           { label: "Long Term",   period: "6M – 3 Years",   desc: "Fundamentals, management quality, government policy",       border: "border-purple-500/40", text: "text-purple-400" },
         ].map(({ label, period, desc, border, text }) => (
           <div key={label} className={`bg-dark-card border ${border} rounded-xl p-4`}>
-            <p className={`text-sm font-bold ${text}`}>{label}</p>
-            <p className="text-xs text-gray-500 mb-2">{period}</p>
+            <div className="flex items-baseline gap-2 mb-1.5">
+              <p className={`text-sm font-bold ${text}`}>{label}</p>
+              <p className="text-xs text-gray-500">{period}</p>
+            </div>
             <p className="text-xs text-gray-300">{desc}</p>
           </div>
         ))}
