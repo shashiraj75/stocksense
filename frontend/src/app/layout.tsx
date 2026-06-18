@@ -7,6 +7,7 @@ import { TrendingUp } from "lucide-react";
 import { MobileNav } from "@/components/MobileNav";
 import { NavLinks } from "@/components/NavLinks";
 import { UserMenu } from "@/components/UserMenu";
+import { MarketStatusBar } from "@/components/MarketStatusBar";
 
 export const metadata: Metadata = {
   title: { default: "StockSense — AI Stock Predictor", template: "%s | StockSense" },
@@ -46,7 +47,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 </div>
               </div>
             </div>
-            {/* Row 2: Nav links (desktop only) */}
+            {/* Row 2: Market status bar */}
+            <MarketStatusBar />
+            {/* Row 3: Nav links (desktop only) */}
             <div className="hidden lg:block border-t border-dark-border/60">
               <div className="max-w-7xl mx-auto px-4">
                 <NavLinks links={NAV_LINKS} />
