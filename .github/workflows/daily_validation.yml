@@ -1,9 +1,9 @@
-name: Weekly Model Validation (Sunday)
+name: Daily Model Validation
 
 on:
   schedule:
-    # 02:00 UTC Sunday = 7:30 AM IST Sunday (market closed, server idle)
-    - cron: "0 2 * * 0"
+    # 00:30 UTC = 6:00 AM IST daily (before market open, server idle)
+    - cron: "30 0 * * *"
   workflow_dispatch:   # allow manual trigger from GitHub UI
 
 jobs:
@@ -16,7 +16,6 @@ jobs:
           curl -sf --max-time 60 --retry 3 --retry-delay 15 \
             https://stocksense-api-12ii.onrender.com/health
           echo " — backend alive"
-          # Give it a few extra seconds to fully initialise
           sleep 10
 
       - name: Run medium-horizon validation (all Nifty 100)
@@ -28,7 +27,7 @@ jobs:
 
       - name: Wait for medium run to finish (~15 min)
         run: |
-          for i in $(seq 1 30); do
+          for i in $(seq 1 35); do
             sleep 30
             STATUS=$(curl -s "https://stocksense-api-12ii.onrender.com/api/validation/status")
             RUNNING=$(echo $STATUS | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('running', True))")
@@ -41,7 +40,33 @@ jobs:
             fi
           done
 
-      - name: Run long-horizon validation (all Nifty 100)
+      - name: Print summary
+        run: |
+          echo ""
+          echo "=== Medium-horizon results ==="
+          curl -s "https://stocksense-api-12ii.onrender.com/api/validation/results?horizon=medium" | \
+            python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+if d.get('available'):
+    print(f'  BUY hit rate:    {d.get(\"buy_hit_rate_pct\")}%')
+    print(f'  Strong alpha:    {d.get(\"beat_benchmark_pct\")}%')
+    print(f'  Avg alpha:       {d.get(\"avg_alpha_on_buy_pct\")}%')
+    print(f'  Sharpe (alphas): {d.get(\"sharpe_on_alphas\")}')
+    print(f'  Max drawdown:    {d.get(\"max_drawdown_pct\")}%')
+    print(f'  Worst streak:    {d.get(\"max_consecutive_wrong\")} wrong in a row')
+    print(f'  Total signals:   {d.get(\"total_signals\")}')
+else:
+    print('  No results available:', d.get('message'))
+"
+
+  # Long-horizon runs only on Sundays — ~25 min, heavier on Yahoo Finance
+  run-long-validation:
+    runs-on: ubuntu-latest
+    needs: run-validation
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Run long-horizon validation
         run: |
           echo "Starting long-horizon validation..."
           curl -sS -X POST \
@@ -62,36 +87,3 @@ jobs:
               break
             fi
           done
-
-      - name: Print summary
-        run: |
-          echo ""
-          echo "=== Medium-horizon results ==="
-          curl -s "https://stocksense-api-12ii.onrender.com/api/validation/results?horizon=medium" | \
-            python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-if d.get('available'):
-    print(f'  BUY hit rate:    {d.get(\"buy_hit_rate_pct\")}%')
-    print(f'  Beat benchmark:  {d.get(\"beat_benchmark_pct\")}%')
-    print(f'  Avg alpha:       {d.get(\"avg_alpha_on_buy_pct\")}%')
-    print(f'  Sharpe (buys):   {d.get(\"sharpe_on_buys\")}')
-    print(f'  Total signals:   {d.get(\"total_signals\")}')
-else:
-    print('  No results available:', d.get('message'))
-"
-          echo ""
-          echo "=== Long-horizon results ==="
-          curl -s "https://stocksense-api-12ii.onrender.com/api/validation/results?horizon=long" | \
-            python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-if d.get('available'):
-    print(f'  BUY hit rate:    {d.get(\"buy_hit_rate_pct\")}%')
-    print(f'  Beat benchmark:  {d.get(\"beat_benchmark_pct\")}%')
-    print(f'  Avg alpha:       {d.get(\"avg_alpha_on_buy_pct\")}%')
-    print(f'  Sharpe (buys):   {d.get(\"sharpe_on_buys\")}')
-    print(f'  Total signals:   {d.get(\"total_signals\")}')
-else:
-    print('  No results available:', d.get('message'))
-"

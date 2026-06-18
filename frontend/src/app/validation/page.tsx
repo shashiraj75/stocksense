@@ -239,8 +239,8 @@ export default function ValidationPage() {
         </div>
 
         <p className="text-xs text-gray-600">
-          Full validation runs automatically every Sunday at 7:30 AM IST.
-          Use "Run Now" to trigger an on-demand run — takes ~15 min for medium, ~25 min for long.
+          Medium-horizon validation runs automatically every day at 6:00 AM IST.
+          Long-horizon runs on manual trigger only. Use "Run Now" to trigger on-demand — ~15 min for medium, ~25 min for long.
         </p>
 
         {/* Live log */}

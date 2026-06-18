@@ -46,7 +46,10 @@ _status_lock = threading.Lock()
 def _pg_conn():
     """Open a single psycopg connection (no pool needed — called under _db_lock)."""
     import psycopg
-    return psycopg.connect(os.environ["DATABASE_URL"], autocommit=True)
+    # prepare_threshold=None disables server-side prepared statements, preventing
+    # the '_pg3_0 already exists' error that occurs when Postgres retains prepared
+    # statement names across connections on the same backend process.
+    return psycopg.connect(os.environ["DATABASE_URL"], autocommit=True, prepare_threshold=None)
 
 
 _PG_SCHEMA = """
