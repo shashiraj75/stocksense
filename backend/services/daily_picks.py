@@ -175,7 +175,9 @@ def _predict_stock(symbol: str, horizon: str) -> dict | None:
     caller can z-score cross-sectionally across the full universe.
     """
     try:
-        import asyncio
+        import asyncio, random
+        # Small jitter between requests to avoid Yahoo Finance rate-limit bursts
+        time.sleep(random.uniform(0.3, 0.8))
         engine = PredictionEngine()
         result = asyncio.run(engine.predict(symbol, "IN", horizon))
 
@@ -395,6 +397,16 @@ def generate_picks() -> dict:
     # ── Phase 0: Resolve outcomes from previous prediction runs ──────────────
     resolve_pending_outcomes()
 
+    # ── Global crumb refresh — do this ONCE before bulk fetching ─────────────
+    # Running 100 stocks back-to-back expires Yahoo's session mid-run.
+    # A fresh crumb at the start reduces 401 "Invalid Crumb" errors.
+    try:
+        import yfinance as yf
+        yf.utils.get_crumb(force=True)
+        print("[picks] Yahoo Finance crumb refreshed.")
+    except Exception as e:
+        print(f"[picks] Crumb refresh failed (non-fatal): {e}")
+
     # ── Phase 2: Detect market regime (done once, shared across all stocks) ──
     # We need global context for regime features; use a proxy (no symbol)
     try:
@@ -407,11 +419,13 @@ def generate_picks() -> dict:
     regime_label = regime["label"]
     print(f"[picks] Regime: {regime_label} — {regime['description']}")
 
-    # ── Phase 1: Score all stocks in parallel ─────────────────────────────────
+    # ── Phase 1: Score all stocks ─────────────────────────────────────────────
+    # max_workers=1 to avoid Yahoo Finance rate-limiting Render's IP.
+    # Two parallel workers fire 6+ simultaneous requests which triggers 401s.
     tasks = [(sym, h) for sym in NIFTY10T for h in ("short", "medium", "long")]
     raw: dict[str, list] = {"short": [], "medium": [], "long": []}
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=1) as pool:
         futures = {pool.submit(_predict_stock, sym, h): (sym, h) for sym, h in tasks}
         done = 0
         for future in as_completed(futures):
