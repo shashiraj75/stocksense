@@ -437,6 +437,47 @@ def _backtest_stock(symbol: str, horizon: str, nifty_df: pd.DataFrame | None) ->
 
 # ── Aggregate metrics ─────────────────────────────────────────────────────────
 
+def _max_consec_wrong(buys: list[dict]) -> int:
+    ordered = sorted(buys, key=lambda s: s.get("signal_date", ""))
+    best = cur = 0
+    for s in ordered:
+        if not s["correct"]:
+            cur += 1
+            best = max(best, cur)
+        else:
+            cur = 0
+    return best
+
+
+def _max_consec_right(buys: list[dict]) -> int:
+    ordered = sorted(buys, key=lambda s: s.get("signal_date", ""))
+    best = cur = 0
+    for s in ordered:
+        if s["correct"]:
+            cur += 1
+            best = max(best, cur)
+        else:
+            cur = 0
+    return best
+
+
+def _max_drawdown(rets: list[float]) -> float | None:
+    """Peak-to-trough drawdown on a hypothetical equal-weight BUY portfolio."""
+    if not rets:
+        return None
+    equity = 100.0
+    peak = equity
+    max_dd = 0.0
+    for r in rets:
+        equity *= (1 + r / 100)
+        if equity > peak:
+            peak = equity
+        dd = (peak - equity) / peak * 100
+        if dd > max_dd:
+            max_dd = dd
+    return round(max_dd, 1)
+
+
 def _compute_metrics(signals: list[dict], nifty_return_pct: float, horizon: str = "medium") -> dict:
     """Compute all aggregate validation metrics from raw signals."""
     if not signals:
@@ -511,7 +552,11 @@ def _compute_metrics(signals: list[dict], nifty_return_pct: float, horizon: str 
         "profitable_buy_pct":         round(sum(1 for r in buy_rets if r > 0) / len(buy_rets) * 100, 1) if buy_rets else None,
         # "beat benchmark meaningfully" = alpha > 1% (not just alpha > 0 which equals buy_hit_rate)
         "beat_benchmark_pct":         round(sum(1 for a in buy_alphas if a > 1.0) / len(buy_alphas) * 100, 1) if buy_alphas else None,
-        "score_buckets":              buckets,
+        # Streak / drawdown analysis on BUY signals ordered by signal_date
+        "max_consecutive_wrong":  _max_consec_wrong(buys),
+        "max_consecutive_right":  _max_consec_right(buys),
+        "max_drawdown_pct":       _max_drawdown(buy_rets),
+        "score_buckets":          buckets,
         "factor_ic": {
             "tech":      _ic("tech_score"),
             "rs":        _ic("rs_score"),

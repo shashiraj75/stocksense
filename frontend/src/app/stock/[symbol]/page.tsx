@@ -390,6 +390,33 @@ export default function StockPage() {
             );
           })()}
 
+          {/* Regime warning — shown when model reliability is lower */}
+          {prediction?.market_regime && (() => {
+            const regime = prediction.market_regime;
+            const label: string = regime?.trend ?? "";
+            const isHighRisk = label === "BEAR_VOLATILE" || label === "BULL_VOLATILE";
+            const isBear = label.startsWith("BEAR");
+            if (!label || label === "SIDEWAYS") return null;
+            return (
+              <div className={clsx(
+                "flex items-start gap-3 rounded-xl px-4 py-3 border text-xs",
+                isHighRisk ? "bg-yellow-500/10 border-yellow-500/30 text-yellow-300"
+                  : isBear  ? "bg-bear/10 border-bear/30 text-red-300"
+                  : "bg-bull/10 border-bull/30 text-green-300"
+              )}>
+                <span className="text-lg leading-none mt-0.5">
+                  {isHighRisk ? "⚠️" : isBear ? "🐻" : "🐂"}
+                </span>
+                <div>
+                  <strong>Market Regime: {label.replace("_", " ")}</strong>
+                  {isHighRisk && <span className="ml-2 opacity-80">— Model hit rate historically drops ~5–8% in high-volatility regimes. Apply extra caution.</span>}
+                  {!isHighRisk && isBear && <span className="ml-2 opacity-80">— Bear market detected. BUY signals carry higher risk; favour shorter horizons.</span>}
+                  {!isHighRisk && !isBear && <span className="ml-2 opacity-80">— Favourable conditions for BUY signals based on historical validation.</span>}
+                </div>
+              </div>
+            );
+          })()}
+
           <div className="grid md:grid-cols-2 gap-6">
             <div className="bg-dark-card border border-dark-border rounded-2xl p-6 space-y-3">
               <div className="flex items-baseline justify-between gap-2">
@@ -516,6 +543,26 @@ export default function StockPage() {
                   >
                     Retry Now
                   </button>
+                </div>
+              )}
+              {/* Data source footer */}
+              {prediction?.signal && (
+                <div className="border-t border-dark-border pt-3 mt-2">
+                  <p className="text-xs text-gray-600 leading-relaxed">
+                    <span className="text-gray-500 font-medium">Sources: </span>
+                    {isCrypto
+                      ? "Price · Binance USDT · Technicals · News sentiment"
+                      : market === "IN"
+                      ? `Price · Yahoo Finance · Fundamentals · screener.in${prediction.market_regime ? " · NSE regime" : ""} · News`
+                      : `Price · Yahoo Finance · Fundamentals · SEC filings${prediction.market_regime ? " · Market regime" : ""} · News`
+                    }
+                    {" · "}
+                    <span title="Time when this prediction was computed">
+                      Updated {prediction.generated_at
+                        ? new Date(prediction.generated_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true })
+                        : "recently"}
+                    </span>
+                  </p>
                 </div>
               )}
             </div>

@@ -43,6 +43,9 @@ type ValidationResult = {
   sharpe_on_alphas?: number | null;
   profitable_buy_pct?: number | null;
   beat_benchmark_pct?: number | null;
+  max_consecutive_wrong?: number | null;
+  max_consecutive_right?: number | null;
+  max_drawdown_pct?: number | null;
   score_buckets?: ScoreBucket[];
   factor_ic?: FactorIC;
   nifty_avg_fwd_return_pct?: number | null;
@@ -118,6 +121,21 @@ function ICBar({ label, value, color }: { label: string; value: number | null; c
       </p>
     </div>
   );
+}
+
+// Normal approximation to binomial CDF (one-tailed p-value for hit rate > 50%)
+function binomialPValue(n: number, hitRatePct: number): { p: number; z: number; significant: boolean } | null {
+  if (!n || n < 30) return null;
+  const k = (hitRatePct / 100) * n;
+  const z = (k - n * 0.5) / Math.sqrt(n * 0.25);
+  // Approximation of upper-tail p from z-score
+  const p = (() => {
+    const t = 1 / (1 + 0.2316419 * Math.abs(z));
+    const poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+    const pNorm = 1 - (1 / Math.sqrt(2 * Math.PI)) * Math.exp(-z * z / 2) * poly;
+    return z >= 0 ? 1 - pNorm : pNorm;
+  })();
+  return { p: Math.max(0.0001, p), z: Math.round(z * 100) / 100, significant: p < 0.05 };
 }
 
 export default function ValidationPage() {
@@ -349,6 +367,74 @@ export default function ValidationPage() {
               }
             />
           </div>
+
+          {/* Statistical significance + drawdown */}
+          {(() => {
+            const pv = res.buy_signals && res.buy_hit_rate_pct != null
+              ? binomialPValue(res.buy_signals, res.buy_hit_rate_pct)
+              : null;
+            return (
+              <div className="grid md:grid-cols-2 gap-4">
+                {/* P-value card */}
+                {pv && (
+                  <div className={`rounded-xl border p-4 ${pv.significant ? "bg-green-500/10 border-green-500/30" : "bg-yellow-500/10 border-yellow-500/30"}`}>
+                    <div className="flex items-center gap-2 mb-2">
+                      {pv.significant
+                        ? <CheckCircle2 size={15} className="text-green-400" />
+                        : <AlertCircle size={15} className="text-yellow-400" />}
+                      <p className="text-xs font-semibold text-gray-300">Statistical Significance</p>
+                    </div>
+                    <p className={`text-2xl font-bold font-mono mb-1 ${pv.significant ? "text-green-400" : "text-yellow-400"}`}>
+                      p = {pv.p < 0.001 ? "<0.001" : pv.p.toFixed(3)}
+                    </p>
+                    <p className="text-xs text-gray-400">
+                      z-score: {pv.z} · n = {res.buy_signals?.toLocaleString()} BUY signals
+                    </p>
+                    <p className="text-xs mt-1.5">
+                      {pv.significant
+                        ? <span className="text-green-400">✅ Hit rate is statistically better than random (p &lt; 0.05)</span>
+                        : <span className="text-yellow-400">⚠️ Hit rate is not yet statistically significant — need more signals</span>}
+                    </p>
+                  </div>
+                )}
+                {/* Drawdown / streak card */}
+                {(res.max_drawdown_pct != null || res.max_consecutive_wrong != null) && (
+                  <div className="rounded-xl border border-dark-border bg-dark-card p-4 space-y-3">
+                    <p className="text-xs font-semibold text-gray-300">Worst-Case Analysis (BUY signals)</p>
+                    <div className="grid grid-cols-3 gap-3">
+                      {res.max_drawdown_pct != null && (
+                        <div>
+                          <p className="text-xs text-gray-500 mb-0.5">Max Drawdown</p>
+                          <p className={`text-lg font-bold font-mono ${res.max_drawdown_pct > 25 ? "text-red-400" : res.max_drawdown_pct > 15 ? "text-yellow-400" : "text-green-400"}`}>
+                            -{res.max_drawdown_pct}%
+                          </p>
+                          <p className="text-xs text-gray-600">peak-to-trough</p>
+                        </div>
+                      )}
+                      {res.max_consecutive_wrong != null && (
+                        <div>
+                          <p className="text-xs text-gray-500 mb-0.5">Worst Streak</p>
+                          <p className={`text-lg font-bold font-mono ${res.max_consecutive_wrong > 8 ? "text-red-400" : res.max_consecutive_wrong > 5 ? "text-yellow-400" : "text-green-400"}`}>
+                            {res.max_consecutive_wrong} wrong
+                          </p>
+                          <p className="text-xs text-gray-600">consecutive</p>
+                        </div>
+                      )}
+                      {res.max_consecutive_right != null && (
+                        <div>
+                          <p className="text-xs text-gray-500 mb-0.5">Best Streak</p>
+                          <p className="text-lg font-bold font-mono text-green-400">
+                            {res.max_consecutive_right} right
+                          </p>
+                          <p className="text-xs text-gray-600">consecutive</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Score bucket table */}
           {res.score_buckets && res.score_buckets.length > 0 && (

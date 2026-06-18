@@ -39,10 +39,12 @@ export interface Prediction {
   confidence: number;
   current_price: number;
   target_price: number;
+  generated_at?: string;
   reasoning: { indicator: string; signal: string; reason: string }[];
   technical: { overall: Signal; rsi: number; macd_diff: number };
   fundamental_score: { score: number; reasons: string[] };
   sentiment_score: { score: number; label: string; bullish: number; bearish: number };
+  market_regime?: { trend: string; score_adj: number; reason: string };
 }
 
 export interface NewsArticle {
