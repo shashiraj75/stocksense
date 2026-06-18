@@ -171,6 +171,16 @@ CREATE TABLE IF NOT EXISTS paper_trades (
 ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS stop_loss DOUBLE PRECISION;
 ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS target_price DOUBLE PRECISION;
 CREATE INDEX IF NOT EXISTS idx_paper_trades_session ON paper_trades(session_id, status);
+CREATE TABLE IF NOT EXISTS watchlist (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    symbol     TEXT NOT NULL,
+    market     TEXT NOT NULL,
+    notes      TEXT NOT NULL DEFAULT '',
+    added_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (user_id, symbol, market)
+);
+CREATE INDEX IF NOT EXISTS idx_watchlist_user ON watchlist(user_id);
 """
 
 
