@@ -399,13 +399,17 @@ def generate_picks() -> dict:
 
     # ── Global crumb refresh — do this ONCE before bulk fetching ─────────────
     # Running 100 stocks back-to-back expires Yahoo's session mid-run.
-    # A fresh crumb at the start reduces 401 "Invalid Crumb" errors.
     try:
         import yfinance as yf
-        yf.utils.get_crumb(force=True)
-        print("[picks] Yahoo Finance crumb refreshed.")
+        # API varies by yfinance version
+        if hasattr(yf.utils, "get_crumb"):
+            yf.utils.get_crumb(force=True)
+        elif hasattr(yf, "download"):
+            # Force a lightweight download to refresh the session/crumb
+            yf.download("^NSEI", period="1d", progress=False, auto_adjust=True)
+        print("[picks] Yahoo Finance session refreshed.")
     except Exception as e:
-        print(f"[picks] Crumb refresh failed (non-fatal): {e}")
+        print(f"[picks] Session refresh failed (non-fatal): {e}")
 
     # ── Phase 2: Detect market regime (done once, shared across all stocks) ──
     # We need global context for regime features; use a proxy (no symbol)

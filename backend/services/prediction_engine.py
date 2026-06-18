@@ -277,7 +277,7 @@ class PredictionEngine:
                     # Empty but no exception — crumb/session issue; reset and retry
                     if attempt < 2:
                         try:
-                            yf.utils.get_crumb(force=True)
+                            yf.utils.get_crumb(force=True) if hasattr(yf.utils, "get_crumb") else None
                         except Exception:
                             pass
                         time.sleep(4 + attempt * 3)
@@ -297,7 +297,7 @@ class PredictionEngine:
                     # Sparse info — crumb/session issue
                     if attempt < 2:
                         try:
-                            yf.utils.get_crumb(force=True)
+                            yf.utils.get_crumb(force=True) if hasattr(yf.utils, "get_crumb") else None
                         except Exception:
                             pass
                         time.sleep(5 + attempt * 3)
@@ -306,7 +306,7 @@ class PredictionEngine:
                     if attempt < 2:
                         if "crumb" in err_str or "401" in err_str or "unauthorized" in err_str:
                             try:
-                                yf.utils.get_crumb(force=True)
+                                yf.utils.get_crumb(force=True) if hasattr(yf.utils, "get_crumb") else None
                             except Exception:
                                 pass
                         # Longer backoff for rate-limit (429 / Too Many Requests)
