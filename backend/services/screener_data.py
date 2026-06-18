@@ -5,16 +5,23 @@ Screener.in (https://www.screener.in) is India's most reliable public source for
 10-year financial history, Piotroski-style ratios, and compounded growth rates.
 yfinance often has stale or missing Indian fundamental data — screener fills these gaps.
 
+Authentication: logs in with SCREENER_EMAIL / SCREENER_PASSWORD env vars so that
+requests from cloud IPs (Render) are not blocked. Session is refreshed every 6 hours.
+
 Cache TTL: 4 hours — data updates once daily after market close.
 """
 
+import os
 import re
 import threading
 import time
+import logging
 from typing import Optional
 
 import requests
 from bs4 import BeautifulSoup
+
+log = logging.getLogger(__name__)
 
 _cache: dict[str, tuple[float, dict]] = {}
 _cache_lock = threading.Lock()
@@ -22,10 +29,76 @@ CACHE_TTL = 4 * 3600  # 4 hours — screener data is updated daily
 
 _SESSION = requests.Session()
 _SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-    "Accept": "text/html,application/xhtml+xml",
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-IN,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Referer": "https://www.screener.in/",
 })
+
+_login_lock = threading.Lock()
+_last_login_at: float = 0.0
+_LOGIN_TTL = 6 * 3600  # re-login every 6 hours
+
+
+def _login() -> bool:
+    """
+    Log in to screener.in using SCREENER_EMAIL / SCREENER_PASSWORD env vars.
+    Sets session cookies so subsequent requests are authenticated.
+    Returns True if login succeeded.
+    """
+    global _last_login_at
+    email = os.getenv("SCREENER_EMAIL", "")
+    password = os.getenv("SCREENER_PASSWORD", "")
+    if not email or not password:
+        log.warning("SCREENER_EMAIL / SCREENER_PASSWORD not set — screener.in requests will be unauthenticated")
+        return False
+
+    try:
+        # 1. GET login page to obtain CSRF token
+        resp = _SESSION.get("https://www.screener.in/login/", timeout=10)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        csrf_input = soup.find("input", {"name": "csrfmiddlewaretoken"})
+        if not csrf_input:
+            log.error("screener.in login: could not find CSRF token")
+            return False
+        csrf = csrf_input.get("value", "")
+
+        # 2. POST credentials
+        login_resp = _SESSION.post(
+            "https://www.screener.in/login/",
+            data={
+                "username": email,
+                "password": password,
+                "csrfmiddlewaretoken": csrf,
+                "next": "/",
+            },
+            headers={"Referer": "https://www.screener.in/login/"},
+            timeout=10,
+            allow_redirects=True,
+        )
+
+        # Successful login redirects to dashboard (not back to /login/)
+        if "/login/" not in login_resp.url and login_resp.status_code == 200:
+            _last_login_at = time.time()
+            log.info("screener.in login successful")
+            return True
+        else:
+            log.error("screener.in login failed — check SCREENER_EMAIL/PASSWORD. URL after POST: %s", login_resp.url)
+            return False
+
+    except Exception as e:
+        log.error("screener.in login exception: %s", e)
+        return False
+
+
+def _ensure_logged_in():
+    """Login on first use and refresh every LOGIN_TTL seconds."""
+    global _last_login_at
+    with _login_lock:
+        if (time.time() - _last_login_at) > _LOGIN_TTL:
+            _login()
 
 
 _url_cache: dict[str, str] = {}  # symbol -> resolved path
@@ -97,6 +170,8 @@ def fetch_screener_data(symbol: str) -> dict:
         cached = _cache.get(cache_key)
         if cached and (time.time() - cached[0]) < CACHE_TTL:
             return cached[1]
+
+    _ensure_logged_in()
 
     result: dict = {"symbol": sym, "source": "screener.in", "available": False}
 
