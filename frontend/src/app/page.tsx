@@ -82,7 +82,7 @@ export default function Dashboard() {
       </div>
 
       {/* Horizon info cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {[
           { label: "Short Term",  period: "1–10 Days",      desc: "Technicals, momentum, volume, news sentiment",              border: "border-green-500/40",  text: "text-green-400" },
           { label: "Medium Term", period: "1–3 Months",     desc: "Earnings, sector rotation, macro trends",                   border: "border-yellow-500/40", text: "text-yellow-400" },
