@@ -51,7 +51,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <div className="flex-1 min-w-0"><SearchBar /></div>
 
               {/* Desktop: clock + market status */}
-              <div className="hidden md:flex items-start gap-4 shrink-0">
+              <div className="hidden lg:flex items-start gap-4 shrink-0">
                 <LiveClock inline />
                 <span className="text-dark-border text-xs">|</span>
                 <MarketStatusInline />
