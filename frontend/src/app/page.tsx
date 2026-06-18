@@ -130,7 +130,7 @@ export default function Dashboard() {
       <section>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">
-            {market === "CRYPTO" ? "Top Cryptocurrencies" : "Top Movers Today"}
+            {market === "CRYPTO" ? "Top Cryptocurrencies" : market === "IN" ? "Top Movers · NSE (Live)" : "Top Movers · NYSE / NASDAQ (Live)"}
           </h2>
         </div>
 
@@ -174,11 +174,13 @@ export default function Dashboard() {
           </div>
         ) : (
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            {[...(movers?.movers ?? [])].sort((a, b) => b.change_pct - a.change_pct).map((m) => (
+            {[...(movers?.movers ?? [])].sort((a, b) => Math.abs(b.change_pct) - Math.abs(a.change_pct)).map((m) => (
               <Link key={m.symbol} href={`/stock/${m.symbol}?market=${market}`}
-                className="p-4 rounded-xl bg-dark-card border border-dark-border hover:border-brand-500/50 transition-colors">
-                <p className="font-mono font-bold text-white">{m.symbol}</p>
-                <p className="text-lg font-bold mt-1">{currency}{m.price.toLocaleString()}</p>
+                className={clsx("p-4 rounded-xl bg-dark-card border hover:border-brand-500/50 transition-colors",
+                  m.change_pct >= 0 ? "border-bull/20" : "border-bear/20")}>
+                <p className="font-mono font-bold text-white text-sm">{m.symbol}</p>
+                {(m as any).name && <p className="text-[10px] text-gray-500 mt-0.5 truncate">{(m as any).name}</p>}
+                <p className="text-base font-bold mt-1.5">{currency}{m.price.toLocaleString()}</p>
                 <div className={clsx("flex items-center gap-1 text-sm font-medium mt-1",
                   m.change_pct >= 0 ? "text-bull" : "text-bear")}>
                   {m.change_pct >= 0 ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
