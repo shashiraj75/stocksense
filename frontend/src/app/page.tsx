@@ -2,7 +2,7 @@
 import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchTopMovers, api } from "@/utils/api";
-import { TrendingUp, TrendingDown, Globe } from "lucide-react";
+import { TrendingUp, TrendingDown } from "lucide-react";
 import Link from "next/link";
 import clsx from "clsx";
 import { IndexBar } from "@/components/IndexBar";
@@ -60,12 +60,9 @@ export default function Dashboard() {
   return (
     <div className="space-y-6">
 
-      {/* Header row: title + market tabs */}
+      {/* Header row: page title + market tabs */}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <Globe size={18} className="text-brand-500" />
-          <h1 className="text-lg font-bold">StockSense</h1>
-        </div>
+        <h1 className="text-lg font-bold text-white">Market Overview</h1>
         <div className="flex gap-2">
           {MARKET_TABS.map(({ key, label }) => (
             <button key={key} onClick={() => setMarket(key)}
