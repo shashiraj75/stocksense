@@ -48,6 +48,7 @@ function OpenTradeRow({ trade, onSell, sessionId }: { trade: PaperTrade; onSell:
   const nearTarget   = livePrice != null && trade.target_price != null && livePrice >= trade.target_price * 0.98;
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
+  const [epInput, setEpInput] = useState(trade.entry_price.toFixed(2));
   const [slInput, setSlInput] = useState(trade.stop_loss ? trade.stop_loss.toFixed(2) : "");
   const [tpInput, setTpInput] = useState(trade.target_price ? trade.target_price.toFixed(2) : "");
 
@@ -56,6 +57,7 @@ function OpenTradeRow({ trade, onSell, sessionId }: { trade: PaperTrade; onSell:
       trade.id, sessionId,
       slInput ? parseFloat(slInput) : null,
       tpInput ? parseFloat(tpInput) : null,
+      epInput ? parseFloat(epInput) : null,
     ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["paper-portfolio"] });
@@ -74,7 +76,18 @@ function OpenTradeRow({ trade, onSell, sessionId }: { trade: PaperTrade; onSell:
         <p className="text-xs text-gray-500">{trade.market} · {trade.horizon}</p>
       </td>
       <td className="px-4 py-3 text-sm font-mono">{trade.quantity}</td>
-      <td className="px-4 py-3 text-sm font-mono">{currency}{fmt(trade.entry_price)}</td>
+      <td className="px-4 py-3 text-sm font-mono">
+        {editing ? (
+          <input
+            type="number" min={0} step="0.01" value={epInput}
+            onChange={e => setEpInput(e.target.value)}
+            className="w-28 bg-dark-bg border border-brand-500/60 rounded-lg px-2 py-1 text-xs font-mono text-white focus:outline-none"
+            title="Correct entry price — cash is refunded/charged for the difference"
+          />
+        ) : (
+          <span>{currency}{fmt(trade.entry_price)}</span>
+        )}
+      </td>
       <td className="px-4 py-3">
         {livePrice != null ? (
           <div>

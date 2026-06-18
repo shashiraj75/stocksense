@@ -53,6 +53,7 @@ class EditRequest(BaseModel):
     session_id: str
     stop_loss: float | None = None
     target_price: float | None = None
+    entry_price: float | None = None  # correction only — adjusts cash to reflect true entry
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -198,7 +199,7 @@ def paper_sell(trade_id: int, req: SellRequest):
 def edit_trade(trade_id: int, req: EditRequest):
     with _conn() as conn:
         trade = conn.execute(
-            "SELECT session_id, status FROM paper_trades WHERE id = %s", (trade_id,)
+            "SELECT session_id, status, entry_price, quantity FROM paper_trades WHERE id = %s", (trade_id,)
         ).fetchone()
         if trade is None:
             raise HTTPException(status_code=404, detail="Trade not found")
@@ -206,11 +207,27 @@ def edit_trade(trade_id: int, req: EditRequest):
             raise HTTPException(status_code=403, detail="Not your trade")
         if trade[1] != "OPEN":
             raise HTTPException(status_code=400, detail="Cannot edit a closed trade")
+
+        old_entry, qty = trade[2], trade[3]
+
         conn.execute(
             "UPDATE paper_trades SET stop_loss = %s, target_price = %s WHERE id = %s",
             (req.stop_loss, req.target_price, trade_id)
         )
-    return {"message": "Trade updated", "trade_id": trade_id, "stop_loss": req.stop_loss, "target_price": req.target_price}
+
+        # If entry price correction requested, adjust cash to reflect the difference
+        if req.entry_price and req.entry_price > 0 and req.entry_price != old_entry:
+            cash_delta = (old_entry - req.entry_price) * qty  # positive = refund, negative = charge
+            conn.execute(
+                "UPDATE paper_trades SET entry_price = %s WHERE id = %s",
+                (req.entry_price, trade_id)
+            )
+            conn.execute(
+                "UPDATE paper_portfolio SET cash = cash + %s, updated_at = now() WHERE session_id = %s",
+                (cash_delta, req.session_id)
+            )
+
+    return {"message": "Trade updated", "trade_id": trade_id}
 
 
 @router.post("/reset")
