@@ -21,9 +21,10 @@ export function LiveClock({ inline }: { inline?: boolean }) {
 
   if (inline) {
     return (
-      <span className="text-sm font-medium text-gray-300">
-        {time} <span className="text-gray-500 font-normal">· {date}</span>
-      </span>
+      <div className="text-xs leading-5">
+        <div className="font-medium text-gray-300">{time}</div>
+        <div className="text-gray-500">{date}</div>
+      </div>
     );
   }
 
