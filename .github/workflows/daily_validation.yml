@@ -2,111 +2,69 @@ name: Daily Model Validation
 
 on:
   schedule:
-    # Mon–Sat 00:30 UTC = 6:00 AM IST — medium horizon only
-    - cron: "30 0 * * 1-6"
-    # Sunday 00:30 UTC = 6:00 AM IST — medium + long horizon
-    - cron: "30 0 * * 0"
-  workflow_dispatch:   # allow manual trigger from GitHub UI
+    - cron: "30 0 * * 1-6"   # Mon-Sat 6:00 AM IST - medium only
+    - cron: "30 0 * * 0"     # Sunday 6:00 AM IST  - medium + long
+  workflow_dispatch:
 
 jobs:
-  # ── Medium-horizon: runs every day ────────────────────────────────────────────
   run-medium-validation:
     runs-on: ubuntu-latest
     steps:
       - name: Wake up Render
         run: |
-          echo "Pinging backend to wake Render from sleep..."
-          curl -s --max-time 60 --retry 5 --retry-delay 15 --retry-all-errors \
-            https://stocksense-api-12ii.onrender.com/health || true
-          echo "backend ping done"
-          sleep 10
+          echo "Pinging backend..."
+          for i in 1 2 3 4 5; do
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 https://stocksense-api-12ii.onrender.com/health)
+            echo "Attempt $i: HTTP $CODE"
+            if [ "$CODE" = "200" ]; then echo "Backend alive."; break; fi
+            sleep 20
+          done
 
-      - name: Run medium-horizon validation (all Nifty 100)
+      - name: Run medium-horizon validation
         run: |
           echo "Starting medium-horizon validation..."
-          curl -sS -X POST \
-            "https://stocksense-api-12ii.onrender.com/api/validation/run?horizon=medium"
+          curl -sS -X POST "https://stocksense-api-12ii.onrender.com/api/validation/run?horizon=medium"
           echo ""
 
-      - name: Wait for medium run to finish (~15 min)
+      - name: Wait for medium run to finish
         run: |
-          for i in $(seq 1 35); do
+          for i in $(seq 1 40); do
             sleep 30
-            STATUS=$(curl -s "https://stocksense-api-12ii.onrender.com/api/validation/status")
-            RUNNING=$(echo $STATUS | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('running', True))")
-            PROGRESS=$(echo $STATUS | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('progress',0))")
-            TOTAL=$(echo $STATUS | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('total',0))")
-            echo "[$i] running=$RUNNING  $PROGRESS/$TOTAL"
-            if [ "$RUNNING" = "False" ] && [ "$TOTAL" != "0" ]; then
-              echo "Medium run complete."
-              break
-            fi
+            RESP=$(curl -s "https://stocksense-api-12ii.onrender.com/api/validation/status")
+            echo "[$i] $RESP"
+            DONE=$(echo "$RESP" | python3 -c "import sys,json,sys; d=json.load(sys.stdin); print('yes' if not d.get('running',True) and d.get('total',0)>0 else 'no')" 2>/dev/null || echo "no")
+            if [ "$DONE" = "yes" ]; then echo "Medium run complete."; break; fi
           done
 
       - name: Print medium summary
         run: |
-          echo ""
           echo "=== Medium-horizon results ==="
-          curl -s "https://stocksense-api-12ii.onrender.com/api/validation/results?horizon=medium" | \
-            python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-if d.get('available'):
-    print(f'  BUY hit rate:    {d.get(\"buy_hit_rate_pct\")}%')
-    print(f'  Strong alpha:    {d.get(\"beat_benchmark_pct\")}%')
-    print(f'  Avg alpha:       {d.get(\"avg_alpha_on_buy_pct\")}%')
-    print(f'  Sharpe (alphas): {d.get(\"sharpe_on_alphas\")}')
-    print(f'  Max drawdown:    {d.get(\"max_drawdown_pct\")}%')
-    print(f'  Worst streak:    {d.get(\"max_consecutive_wrong\")} wrong in a row')
-    print(f'  Total signals:   {d.get(\"total_signals\")}')
-else:
-    print('  No results available:', d.get('message'))
-"
+          curl -s "https://stocksense-api-12ii.onrender.com/api/validation/results?horizon=medium"
+          echo ""
 
-  # ── Long-horizon: Sundays only + manual trigger ────────────────────────────────
   run-long-validation:
     runs-on: ubuntu-latest
     needs: run-medium-validation
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 0 * * 0'
     steps:
-      - name: Run long-horizon validation (Sunday)
+      - name: Run long-horizon validation
         run: |
-          echo "Starting long-horizon validation (Sunday run)..."
-          curl -sS -X POST \
-            "https://stocksense-api-12ii.onrender.com/api/validation/run?horizon=long"
+          echo "Starting long-horizon validation..."
+          curl -sS -X POST "https://stocksense-api-12ii.onrender.com/api/validation/run?horizon=long"
           echo ""
 
-      - name: Wait for long run to finish (~25 min)
+      - name: Wait for long run to finish
         run: |
-          for i in $(seq 1 55); do
+          for i in $(seq 1 60); do
             sleep 30
-            STATUS=$(curl -s "https://stocksense-api-12ii.onrender.com/api/validation/status")
-            RUNNING=$(echo $STATUS | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('running', True))")
-            PROGRESS=$(echo $STATUS | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('progress',0))")
-            TOTAL=$(echo $STATUS | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('total',0))")
-            echo "[$i] running=$RUNNING  $PROGRESS/$TOTAL"
-            if [ "$RUNNING" = "False" ] && [ "$TOTAL" != "0" ]; then
-              echo "Long run complete."
-              break
-            fi
+            RESP=$(curl -s "https://stocksense-api-12ii.onrender.com/api/validation/status")
+            echo "[$i] $RESP"
+            DONE=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print('yes' if not d.get('running',True) and d.get('total',0)>0 else 'no')" 2>/dev/null || echo "no")
+            if [ "$DONE" = "yes" ]; then echo "Long run complete."; break; fi
           done
 
       - name: Print long summary
         run: |
-          echo ""
           echo "=== Long-horizon results ==="
-          curl -s "https://stocksense-api-12ii.onrender.com/api/validation/results?horizon=long" | \
-            python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-if d.get('available'):
-    print(f'  BUY hit rate:    {d.get(\"buy_hit_rate_pct\")}%')
-    print(f'  Strong alpha:    {d.get(\"beat_benchmark_pct\")}%')
-    print(f'  Avg alpha:       {d.get(\"avg_alpha_on_buy_pct\")}%')
-    print(f'  Sharpe (alphas): {d.get(\"sharpe_on_alphas\")}')
-    print(f'  Max drawdown:    {d.get(\"max_drawdown_pct\")}%')
-    print(f'  Worst streak:    {d.get(\"max_consecutive_wrong\")} wrong in a row')
-    print(f'  Total signals:   {d.get(\"total_signals\")}')
-else:
-    print('  No results available:', d.get('message'))
-"
+          curl -s "https://stocksense-api-12ii.onrender.com/api/validation/results?horizon=long"
+          echo ""
