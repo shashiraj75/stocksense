@@ -109,7 +109,7 @@ function OpenTradeRow({ trade, onSell, sessionId }: { trade: PaperTrade; onSell:
             )}
             <button
               onClick={() => setEditing(true)}
-              className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded text-gray-500 hover:text-white"
+              className="p-0.5 rounded text-gray-500 hover:text-white transition-colors"
               title="Edit stop loss"
             >
               <Pencil size={11} />
@@ -137,15 +137,13 @@ function OpenTradeRow({ trade, onSell, sessionId }: { trade: PaperTrade; onSell:
             ) : (
               <span className="text-xs text-gray-600">—</span>
             )}
-            {!editing && (
-              <button
-                onClick={() => setEditing(true)}
-                className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded text-gray-500 hover:text-white"
-                title="Edit target"
-              >
-                <Pencil size={11} />
-              </button>
-            )}
+            <button
+              onClick={() => setEditing(true)}
+              className="p-0.5 rounded text-gray-500 hover:text-white transition-colors"
+              title="Edit target"
+            >
+              <Pencil size={11} />
+            </button>
           </div>
         )}
       </td>
