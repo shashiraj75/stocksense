@@ -10,10 +10,24 @@ jobs:
   generate-picks:
     runs-on: ubuntu-latest
     steps:
-      - name: Wake up Render & trigger pick generation
+      - name: Wake up Render (wait until healthy)
+        run: |
+          echo "Waiting for Render server to be ready..."
+          for i in $(seq 1 10); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
+              https://stocksense-api-12ii.onrender.com/health)
+            echo "Attempt $i: HTTP $STATUS"
+            if [ "$STATUS" = "200" ]; then
+              echo "Server is ready!"
+              break
+            fi
+            sleep 30
+          done
+
+      - name: Trigger pick generation
         run: |
           echo "Triggering daily picks generation at $(date -u)..."
-          curl -sS --fail-with-body \
+          curl -sS --fail-with-body --max-time 30 \
             -X POST \
             -H "x-secret: ${{ secrets.PICKS_SECRET }}" \
             https://stocksense-api-12ii.onrender.com/api/picks/generate

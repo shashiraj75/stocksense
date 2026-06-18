@@ -127,6 +127,14 @@ async def lifespan(app: FastAPI):
             print("[startup] Postgres schema initialized")
         except Exception as e:
             print(f"[startup] Postgres init failed: {e}")
+    # Pre-login to screener.in so first stock request is already authenticated
+    try:
+        from services.screener_data import _login
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, _login)
+        print(f"[startup] screener.in login {'succeeded' if result else 'failed (check SCREENER_EMAIL/SCREENER_PASSWORD)'}")
+    except Exception as e:
+        print(f"[startup] screener.in login error: {e}")
     task = asyncio.create_task(_weekly_refresh_loop())
     keepalive = asyncio.create_task(_keepalive_loop())
     outcome_task = asyncio.create_task(_outcome_resolver_loop())

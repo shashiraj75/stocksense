@@ -58,38 +58,52 @@ def _login() -> bool:
         # 1. GET login page to obtain CSRF token
         resp = _SESSION.get("https://www.screener.in/login/", timeout=10)
         resp.raise_for_status()
+        log.info("screener.in login page status=%s url=%s", resp.status_code, resp.url)
+
         soup = BeautifulSoup(resp.text, "html.parser")
         csrf_input = soup.find("input", {"name": "csrfmiddlewaretoken"})
         if not csrf_input:
-            log.error("screener.in login: could not find CSRF token")
+            # Log the form fields we actually see to help debug
+            form = soup.find("form")
+            fields = [i.get("name") for i in form.find_all("input")] if form else []
+            log.error("screener.in login: CSRF token not found. Form fields seen: %s", fields)
             return False
         csrf = csrf_input.get("value", "")
+        log.info("screener.in CSRF token obtained (len=%d)", len(csrf))
 
-        # 2. POST credentials
-        login_resp = _SESSION.post(
-            "https://www.screener.in/login/",
-            data={
-                "username": email,
-                "password": password,
-                "csrfmiddlewaretoken": csrf,
-                "next": "/",
-            },
-            headers={"Referer": "https://www.screener.in/login/"},
-            timeout=10,
-            allow_redirects=True,
-        )
+        # 2. POST credentials — try both 'username' and 'email' field names
+        # screener.in uses 'username' but accepts email address as the value
+        for username_field in ("username", "email"):
+            login_resp = _SESSION.post(
+                "https://www.screener.in/login/",
+                data={
+                    username_field:          email,
+                    "password":              password,
+                    "csrfmiddlewaretoken":   csrf,
+                    "next":                  "/",
+                },
+                headers={"Referer": "https://www.screener.in/login/"},
+                timeout=10,
+                allow_redirects=True,
+            )
+            log.info("screener.in POST (field=%s) → status=%s url=%s",
+                     username_field, login_resp.status_code, login_resp.url)
 
-        # Successful login redirects to dashboard (not back to /login/)
-        if "/login/" not in login_resp.url and login_resp.status_code == 200:
-            _last_login_at = time.time()
-            log.info("screener.in login successful")
-            return True
-        else:
-            log.error("screener.in login failed — check SCREENER_EMAIL/PASSWORD. URL after POST: %s", login_resp.url)
-            return False
+            # Successful login redirects away from /login/
+            if "/login/" not in login_resp.url and login_resp.status_code == 200:
+                _last_login_at = time.time()
+                log.info("screener.in login successful (field=%s)", username_field)
+                return True
+
+        log.error("screener.in login failed with both username fields — final URL: %s", login_resp.url)
+        # Log a snippet of the response to see if there's an error message
+        error_div = soup.find(class_=lambda c: c and "error" in c.lower()) if soup else None
+        if error_div:
+            log.error("screener.in error message: %s", error_div.get_text(strip=True)[:200])
+        return False
 
     except Exception as e:
-        log.error("screener.in login exception: %s", e)
+        log.error("screener.in login exception: %s", e, exc_info=True)
         return False
 
 
