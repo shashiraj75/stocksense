@@ -51,7 +51,8 @@ function OpenTradeRow({ trade, onSell, sessionId }: { trade: PaperTrade; onSell:
   });
 
   return (
-    <tr className="border-b border-dark-border last:border-0 hover:bg-white/[0.02] transition-colors">
+    <>
+    <tr className="border-b border-dark-border hover:bg-white/[0.02] transition-colors">
       <td className="px-4 py-3">
         <Link href={`/stock/${trade.symbol}?market=${trade.market}`}
           className="font-bold text-white hover:text-brand-400 flex items-center gap-1">
@@ -159,7 +160,37 @@ function OpenTradeRow({ trade, onSell, sessionId }: { trade: PaperTrade; onSell:
         </button>
       </td>
     </tr>
-  );
+    {/* Inline reminder row */}
+    {(trade.stop_loss || trade.target_price) && (
+      <tr className="border-b border-dark-border bg-dark-bg/40">
+        <td colSpan={9} className="px-4 py-2">
+          <div className="flex flex-wrap gap-2">
+            {trade.stop_loss && trade.stop_loss > 0 && (
+              <span className="flex items-center gap-1.5 text-[11px] text-yellow-300/80">
+                <ShieldAlert size={11} className="shrink-0" />
+                Stop Loss: <strong>{currency}{fmt(trade.stop_loss)}</strong>
+                <span className="text-yellow-300/50">
+                  (−{((trade.entry_price - trade.stop_loss) / trade.entry_price * 100).toFixed(1)}% from entry) · Close manually if price drops here
+                </span>
+              </span>
+            )}
+            {trade.stop_loss && trade.target_price && (
+              <span className="text-gray-700 text-[11px]">·</span>
+            )}
+            {trade.target_price && trade.target_price > 0 && (
+              <span className="flex items-center gap-1.5 text-[11px] text-green-300/80">
+                <Target size={11} className="shrink-0" />
+                Target: <strong>{currency}{fmt(trade.target_price)}</strong>
+                <span className="text-green-300/50">
+                  (+{((trade.target_price - trade.entry_price) / trade.entry_price * 100).toFixed(1)}% from entry) · Consider closing when price reaches here
+                </span>
+              </span>
+            )}
+          </div>
+        </td>
+      </tr>
+    )}
+  </>;
 }
 
 function ClosedTradeRow({ trade }: { trade: PaperTrade }) {
@@ -343,47 +374,7 @@ export default function PaperTradingPage() {
             </span>
           )}
         </h2>
-          {/* Stop loss + target reminders */}
-        {openTrades.filter(t => t.stop_loss || t.target_price).length > 0 && (
-          <div className="mb-3 space-y-2">
-            {openTrades
-              .filter(t => t.stop_loss && t.stop_loss > 0)
-              .map(t => {
-                const cur = t.market === "IN" ? "₹" : "$";
-                const pct = ((t.entry_price - t.stop_loss!) / t.entry_price * 100);
-                return (
-                  <div key={`sl-${t.id}`} className="flex items-center gap-2 bg-yellow-500/10 border border-yellow-500/30 rounded-xl px-4 py-2.5 text-xs text-yellow-300">
-                    <ShieldAlert size={14} className="shrink-0" />
-                    <span>
-                      <strong>{t.symbol}</strong> — Stop Loss at{" "}
-                      <strong>{cur}{fmt(t.stop_loss!)}</strong>
-                      {" "}(−{pct.toFixed(1)}% from entry).
-                      Close manually if live price drops to this level.
-                    </span>
-                  </div>
-                );
-              })}
-            {openTrades
-              .filter(t => t.target_price && t.target_price > 0)
-              .map(t => {
-                const cur = t.market === "IN" ? "₹" : "$";
-                const pct = ((t.target_price! - t.entry_price) / t.entry_price * 100);
-                return (
-                  <div key={`tp-${t.id}`} className="flex items-center gap-2 bg-green-500/10 border border-green-500/30 rounded-xl px-4 py-2.5 text-xs text-green-300">
-                    <Target size={14} className="shrink-0" />
-                    <span>
-                      <strong>{t.symbol}</strong> — Target at{" "}
-                      <strong>{cur}{fmt(t.target_price!)}</strong>
-                      {" "}(+{pct.toFixed(1)}% from entry).
-                      Consider closing when live price reaches this level.
-                    </span>
-                  </div>
-                );
-              })}
-          </div>
-        )}
-
-      {openTrades.length === 0 ? (
+        {openTrades.length === 0 ? (
           <div className="bg-dark-card border border-dark-border rounded-xl px-6 py-10 text-center text-gray-500">
             <Beaker size={28} className="mx-auto mb-2 opacity-30" />
             <p className="text-sm">No open positions.</p>
