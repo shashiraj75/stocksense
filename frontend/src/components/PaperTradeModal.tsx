@@ -119,247 +119,173 @@ export function PaperTradeModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">
-      <div className="bg-dark-card border border-dark-border rounded-2xl w-full max-w-sm p-6 shadow-2xl">
+      <div className="bg-dark-card border border-dark-border rounded-2xl w-full max-w-sm shadow-2xl flex flex-col max-h-[92dvh]">
 
-        {/* Header */}
-        <div className="flex items-center justify-between mb-5">
+        {/* Header — fixed, never scrolls */}
+        <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-dark-border shrink-0">
           <div>
-            <h2 className="text-lg font-bold">{isSell ? "Close Position" : "Paper Trade"}</h2>
+            <h2 className="text-base font-bold">{isSell ? "Close Position" : "Paper Trade"}</h2>
             <p className="text-xs text-gray-400 mt-0.5">{symbol} · {market}</p>
           </div>
           <button onClick={onClose} className="text-gray-500 hover:text-white transition-colors">
-            <X size={20} />
+            <X size={18} />
           </button>
         </div>
 
-        {/* Horizon selector — buy only */}
-        {!isSell && (
-          <div className="mb-4">
-            <p className="text-xs text-gray-400 mb-2">Horizon</p>
-            <div className="grid grid-cols-3 gap-2">
-              {HORIZONS.map(({ key, label, desc }) => (
-                <button
-                  key={key}
-                  onClick={() => {
-                setSelectedHorizon(key);
-                setError(null);
-                // Reset edit flags so new horizon's AI values auto-populate
-                stopLossEdited.current = false;
-                targetPriceEdited.current = false;
-              }}
-                  className={clsx(
-                    "rounded-xl px-3 py-2.5 text-center border transition-colors",
-                    selectedHorizon === key
-                      ? "bg-brand-500/20 border-brand-500 text-white"
-                      : "bg-dark-bg border-dark-border text-gray-400 hover:border-white/30 hover:text-white"
-                  )}
-                >
-                  <p className="text-xs font-semibold">{label}</p>
-                  <p className="text-[10px] opacity-60 mt-0.5">{desc}</p>
-                </button>
-              ))}
+        {/* Scrollable body */}
+        <div className="overflow-y-auto flex-1 px-5 py-3 space-y-2.5">
+
+          {/* Horizon selector */}
+          {!isSell && (
+            <div>
+              <p className="text-xs text-gray-400 mb-1.5">Horizon</p>
+              <div className="grid grid-cols-3 gap-1.5">
+                {HORIZONS.map(({ key, label, desc }) => (
+                  <button key={key}
+                    onClick={() => { setSelectedHorizon(key); setError(null); stopLossEdited.current = false; targetPriceEdited.current = false; }}
+                    className={clsx("rounded-lg px-2 py-2 text-center border transition-colors",
+                      selectedHorizon === key ? "bg-brand-500/20 border-brand-500 text-white" : "bg-dark-bg border-dark-border text-gray-400 hover:border-white/30 hover:text-white")}>
+                    <p className="text-xs font-semibold">{label}</p>
+                    <p className="text-[10px] opacity-60">{desc}</p>
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Signal warning for SELL / HOLD */}
-        {!isSell && (activeSignal === "SELL" || activeSignal === "HOLD") && (
-          <div className={clsx(
-            "flex items-start gap-2 rounded-xl px-3 py-2.5 mb-4 text-xs border",
-            activeSignal === "SELL"
-              ? "bg-bear/10 border-bear/30 text-red-300"
-              : "bg-yellow-500/10 border-yellow-500/30 text-yellow-300"
-          )}>
-            <AlertCircle size={14} className="shrink-0 mt-0.5" />
-            <span>
-              {activeSignal === "SELL"
-                ? <><strong>AI signal is SELL</strong> — this stock is not recommended for a new long position at current price. The model expects a price decline. Only proceed if you have a specific reason to trade against the signal.</>
-                : <><strong>AI signal is HOLD</strong> — no strong entry point identified right now. Consider waiting for a clearer BUY signal before opening a position.</>
-              }
-            </span>
-          </div>
-        )}
-
-        {/* AI Signal pill */}
-        {!isSell && (
-          <div className={clsx(
-            "flex items-center gap-2 rounded-xl px-3 py-2 mb-4 text-sm font-medium transition-colors",
-            activeSignal === "BUY"  ? "bg-bull/10 border border-bull/30 text-bull" :
-            activeSignal === "SELL" ? "bg-bear/10 border border-bear/30 text-bear" :
-            "bg-white/5 border border-white/10 text-gray-400"
-          )}>
-            {predLoading
-              ? <Loader2 size={14} className="animate-spin opacity-60" />
-              : <SignalIcon size={15} />
-            }
-            <span>AI Signal:</span>
-            {predLoading
-              ? <span className="opacity-50">Loading…</span>
-              : <span className="font-bold">{activeSignal}</span>
-            }
-            {prediction?.confidence && !predLoading && (
-              <span className="ml-auto text-xs opacity-70">{prediction.confidence}% confidence</span>
-            )}
-          </div>
-        )}
-
-        {/* Price display */}
-        <div className="bg-dark-bg rounded-xl px-4 py-3 mb-4 flex items-center justify-between">
-          <span className="text-xs text-gray-400">Current Price</span>
-          <span className="font-mono font-bold text-white">
-            {currency}{currentPrice.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-          </span>
-        </div>
-
-        {/* Sell: entry price + P&L */}
-        {isSell && existingEntryPrice && (
-          <div className="bg-dark-bg rounded-xl px-4 py-3 mb-4 flex items-center justify-between">
-            <span className="text-xs text-gray-400">Entry Price</span>
-            <div className="text-right">
-              <span className="font-mono font-bold text-white">
-                {currency}{existingEntryPrice.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-              </span>
-              {pnl !== null && (
-                <p className={clsx("text-xs font-semibold", pnl >= 0 ? "text-bull" : "text-bear")}>
-                  {pnl >= 0 ? "+" : ""}{currency}{Math.abs(pnl).toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                  {" "}({pnl >= 0 ? "+" : ""}{((currentPrice - existingEntryPrice) / existingEntryPrice * 100).toFixed(2)}%)
-                </p>
-              )}
+          {/* Signal warning (compact single line) */}
+          {!isSell && (activeSignal === "SELL" || activeSignal === "HOLD") && (
+            <div className={clsx("flex items-center gap-2 rounded-lg px-3 py-2 text-xs border",
+              activeSignal === "SELL" ? "bg-bear/10 border-bear/30 text-red-300" : "bg-yellow-500/10 border-yellow-500/30 text-yellow-300")}>
+              <AlertCircle size={13} className="shrink-0" />
+              <span><strong>AI signal is {activeSignal}</strong> — {activeSignal === "SELL" ? "model expects decline, proceed carefully." : "no strong entry yet, consider waiting."}</span>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Quantity — buy only */}
-        {!isSell && (
-          <div className="mb-4">
-            <label className="text-xs text-gray-400 mb-1.5 block">Quantity</label>
+          {/* AI Signal pill + price — combined row */}
+          {!isSell && (
             <div className="flex items-center gap-2">
-              <button
-                onClick={() => setQuantity(q => Math.max(1, q - 1))}
-                className="w-9 h-9 rounded-lg bg-dark-bg border border-dark-border text-white hover:bg-white/10 transition-colors font-bold"
-              >−</button>
-              <input
-                type="number" min={1} value={quantity}
-                onChange={e => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
-                className="flex-1 bg-dark-bg border border-dark-border rounded-lg px-3 py-2 text-center font-mono font-bold text-white focus:outline-none focus:border-brand-500"
-              />
-              <button
-                onClick={() => setQuantity(q => q + 1)}
-                className="w-9 h-9 rounded-lg bg-dark-bg border border-dark-border text-white hover:bg-white/10 transition-colors font-bold"
-              >+</button>
+              <div className={clsx("flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium border flex-1",
+                activeSignal === "BUY" ? "bg-bull/10 border-bull/30 text-bull" :
+                activeSignal === "SELL" ? "bg-bear/10 border-bear/30 text-bear" :
+                "bg-white/5 border-white/10 text-gray-400")}>
+                {predLoading ? <Loader2 size={12} className="animate-spin opacity-60" /> : <SignalIcon size={13} />}
+                <span className="font-bold">{predLoading ? "Loading…" : activeSignal}</span>
+                {prediction?.confidence && !predLoading && <span className="opacity-60 ml-auto">{prediction.confidence}%</span>}
+              </div>
+              <div className="bg-dark-bg rounded-lg px-3 py-1.5 flex items-center gap-2 flex-1">
+                <span className="text-xs text-gray-400">Price</span>
+                <span className="font-mono font-bold text-white text-sm ml-auto">{currency}{currentPrice.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Stop Loss input */}
-        {!isSell && (
-          <div className="mb-4">
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="text-xs text-gray-400 flex items-center gap-1">
-                <ShieldAlert size={12} className="text-yellow-400" />
-                Stop Loss
-                <span className="text-gray-600 ml-1">(AI pre-filled · editable)</span>
-              </label>
+          {/* Sell: entry price + P&L */}
+          {isSell && existingEntryPrice && (
+            <div className="bg-dark-bg rounded-lg px-3 py-2 flex items-center justify-between">
+              <span className="text-xs text-gray-400">Entry Price</span>
+              <div className="text-right">
+                <span className="font-mono font-bold text-white text-sm">{currency}{existingEntryPrice.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                {pnl !== null && (
+                  <p className={clsx("text-xs font-semibold", pnl >= 0 ? "text-bull" : "text-bear")}>
+                    {pnl >= 0 ? "+" : ""}{currency}{Math.abs(pnl).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                    {" "}({pnl >= 0 ? "+" : ""}{((currentPrice - existingEntryPrice) / existingEntryPrice * 100).toFixed(2)}%)
+                  </p>
+                )}
+              </div>
             </div>
-            <input
-              type="number"
-              min={0}
-              step="0.01"
-              placeholder={`e.g. ${currency}${(currentPrice * 0.95).toFixed(2)}`}
-              value={stopLoss}
-              onChange={e => { stopLossEdited.current = true; setStopLoss(e.target.value); }}
-              className="w-full bg-dark-bg border border-yellow-500/40 rounded-lg px-3 py-2 font-mono text-sm text-white focus:outline-none focus:border-yellow-500/80 placeholder:text-gray-600"
-            />
-            {stopLossPct !== null && (
-              <p className={clsx("text-xs mt-1", stopLossPct < 0 ? "text-yellow-400" : "text-red-400")}>
-                {stopLossPct < 0
-                  ? `${stopLossPct.toFixed(1)}% below entry — triggers if price drops to this level`
-                  : `⚠ Stop loss is above entry price — for a long (BUY) position this would trigger immediately`}
-              </p>
-            )}
-          </div>
-        )}
+          )}
 
-        {/* Target Price input */}
-        {!isSell && (
-          <div className="mb-4">
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="text-xs text-gray-400 flex items-center gap-1">
-                <Target size={12} className="text-green-400" />
-                Target Price
-                <span className="text-gray-600 ml-1">(AI pre-filled · editable)</span>
-              </label>
+          {/* Quantity */}
+          {!isSell && (
+            <div>
+              <label className="text-xs text-gray-400 mb-1 block">Quantity</label>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setQuantity(q => Math.max(1, q - 1))}
+                  className="w-8 h-8 rounded-lg bg-dark-bg border border-dark-border text-white hover:bg-white/10 transition-colors font-bold text-sm shrink-0">−</button>
+                <input type="number" min={1} value={quantity}
+                  onChange={e => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
+                  className="flex-1 bg-dark-bg border border-dark-border rounded-lg px-3 py-1.5 text-center font-mono font-bold text-white focus:outline-none focus:border-brand-500 text-sm" />
+                <button onClick={() => setQuantity(q => q + 1)}
+                  className="w-8 h-8 rounded-lg bg-dark-bg border border-dark-border text-white hover:bg-white/10 transition-colors font-bold text-sm shrink-0">+</button>
+              </div>
             </div>
-            <input
-              type="number"
-              min={0}
-              step="0.01"
-              placeholder={`e.g. ${currency}${(currentPrice * 1.1).toFixed(2)}`}
-              value={targetPrice}
-              onChange={e => { targetPriceEdited.current = true; setTargetPrice(e.target.value); }}
-              className="w-full bg-dark-bg border border-green-500/40 rounded-lg px-3 py-2 font-mono text-sm text-white focus:outline-none focus:border-green-500/80 placeholder:text-gray-600"
-            />
-            {targetPricePct !== null && (
-              <p className={clsx("text-xs mt-1", targetPricePct > 0 ? "text-green-400" : "text-red-400")}>
-                {targetPricePct > 0
-                  ? `+${targetPricePct.toFixed(1)}% above entry — take profit when price reaches this`
-                  : `⚠ Target is below entry price — for a long (BUY) position this means selling at a loss`}
-              </p>
-            )}
-          </div>
-        )}
+          )}
 
-        {/* Cost summary */}
-        {!isSell && (
-          <div className="bg-dark-bg rounded-xl px-4 py-3 mb-5 flex items-center justify-between">
-            <span className="text-xs text-gray-400">Total Cost</span>
-            <span className="font-mono font-bold text-brand-400">
-              {currency}{cost.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-            </span>
-          </div>
-        )}
+          {/* Stop Loss + Target Price — side by side */}
+          {!isSell && (
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-xs text-gray-400 flex items-center gap-1 mb-1">
+                  <ShieldAlert size={11} className="text-yellow-400" /> Stop Loss
+                </label>
+                <input type="number" min={0} step="0.01"
+                  placeholder={(currentPrice * 0.95).toFixed(2)}
+                  value={stopLoss}
+                  onChange={e => { stopLossEdited.current = true; setStopLoss(e.target.value); }}
+                  className="w-full bg-dark-bg border border-yellow-500/40 rounded-lg px-2.5 py-1.5 font-mono text-sm text-white focus:outline-none focus:border-yellow-500/80 placeholder:text-gray-600" />
+                {stopLossPct !== null && (
+                  <p className={clsx("text-[10px] mt-0.5", stopLossPct < 0 ? "text-yellow-400" : "text-red-400")}>
+                    {stopLossPct.toFixed(1)}% {stopLossPct < 0 ? "below entry" : "⚠ above entry"}
+                  </p>
+                )}
+              </div>
+              <div>
+                <label className="text-xs text-gray-400 flex items-center gap-1 mb-1">
+                  <Target size={11} className="text-green-400" /> Target Price
+                </label>
+                <input type="number" min={0} step="0.01"
+                  placeholder={(currentPrice * 1.1).toFixed(2)}
+                  value={targetPrice}
+                  onChange={e => { targetPriceEdited.current = true; setTargetPrice(e.target.value); }}
+                  className="w-full bg-dark-bg border border-green-500/40 rounded-lg px-2.5 py-1.5 font-mono text-sm text-white focus:outline-none focus:border-green-500/80 placeholder:text-gray-600" />
+                {targetPricePct !== null && (
+                  <p className={clsx("text-[10px] mt-0.5", targetPricePct > 0 ? "text-green-400" : "text-red-400")}>
+                    {targetPricePct > 0 ? "+" : ""}{targetPricePct.toFixed(1)}% {targetPricePct > 0 ? "above entry" : "⚠ below entry"}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
 
-        {/* Error / success */}
-        {error && (
-          <div className="flex items-center gap-2 text-red-400 text-xs mb-4 bg-red-500/10 border border-red-500/30 rounded-xl px-3 py-2">
-            <AlertCircle size={14} /> {error}
-          </div>
-        )}
-        {success && (
-          <div className="text-bull text-xs mb-4 bg-bull/10 border border-bull/30 rounded-xl px-3 py-2 text-center font-medium">
-            {success}
-          </div>
-        )}
+          {/* Total cost */}
+          {!isSell && (
+            <div className="bg-dark-bg rounded-lg px-3 py-2 flex items-center justify-between">
+              <span className="text-xs text-gray-400">Total Cost</span>
+              <span className="font-mono font-bold text-brand-400">{currency}{cost.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+            </div>
+          )}
 
-        <p className="text-xs text-gray-600 text-center mb-4">
-          Paper trading uses virtual money. No real funds involved.
-        </p>
+          {/* Error / success */}
+          {error && (
+            <div className="flex items-center gap-2 text-red-400 text-xs bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
+              <AlertCircle size={13} /> {error}
+            </div>
+          )}
+          {success && (
+            <div className="text-bull text-xs bg-bull/10 border border-bull/30 rounded-lg px-3 py-2 text-center font-medium">{success}</div>
+          )}
 
-        {/* Actions */}
-        <div className="flex gap-3">
-          <button
-            onClick={onClose}
-            className="flex-1 px-4 py-2.5 rounded-xl border border-dark-border text-gray-400 hover:text-white hover:border-white/30 transition-colors text-sm"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={() => { setError(null); isSell ? sellMutation.mutate() : buyMutation.mutate(); }}
-            disabled={buyMutation.isPending || sellMutation.isPending || predLoading}
-            className={clsx(
-              "flex-1 px-4 py-2.5 rounded-xl font-semibold text-sm transition-colors",
-              isSell
-                ? "bg-bear hover:bg-red-600 text-white disabled:opacity-50"
-                : "bg-bull hover:bg-green-600 text-white disabled:opacity-50"
-            )}
-          >
-            {buyMutation.isPending || sellMutation.isPending
-              ? "Placing…"
-              : predLoading
-              ? "Loading signal…"
-              : isSell ? `Sell ${existingQuantity} shares` : `Buy ${quantity} shares`}
-          </button>
+        </div>{/* end scrollable body */}
+
+        {/* Sticky footer */}
+        <div className="px-5 py-3 border-t border-dark-border shrink-0 space-y-2">
+          <p className="text-[10px] text-gray-600 text-center">AI pre-filled · editable · Virtual money only</p>
+          <div className="flex gap-2">
+            <button onClick={onClose}
+              className="flex-1 px-4 py-2 rounded-xl border border-dark-border text-gray-400 hover:text-white hover:border-white/30 transition-colors text-sm">
+              Cancel
+            </button>
+            <button
+              onClick={() => { setError(null); isSell ? sellMutation.mutate() : buyMutation.mutate(); }}
+              disabled={buyMutation.isPending || sellMutation.isPending || predLoading}
+              className={clsx("flex-1 px-4 py-2 rounded-xl font-semibold text-sm transition-colors",
+                isSell ? "bg-bear hover:bg-red-600 text-white disabled:opacity-50" : "bg-bull hover:bg-green-600 text-white disabled:opacity-50")}>
+              {buyMutation.isPending || sellMutation.isPending ? "Placing…" : predLoading ? "Loading…" : isSell ? `Sell ${existingQuantity} shares` : `Buy ${quantity} shares`}
+            </button>
+          </div>
         </div>
+
       </div>
     </div>
   );
