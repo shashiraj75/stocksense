@@ -401,7 +401,8 @@ class PredictionEngine:
                 return {}
 
         def _get_quality():
-            if market != "IN":
+            # Quality factors now run for IN and US (not Crypto — no financials)
+            if market == "CRYPTO":
                 return {}
             try:
                 return compute_all_quality_factors(symbol, yf.Ticker(symbol + suffix), df, info, horizon)
@@ -1043,6 +1044,48 @@ class PredictionEngine:
             elif pledge == 0:
                 score += 3
                 reasons.append("Zero promoter pledge — no forced selling risk")
+
+        # ── Academic hard gates — apply to ALL markets (US + India) ─────────────
+        # These run inside _fundamental_score so they carry full fundamental weight
+        # (~25–40% of composite) rather than the limited 12% quality-block weight.
+
+        try:
+            from services.quality_factors import altman_zscore_signal, sloan_accruals_signal
+            info_with_market = dict(info)
+            info_with_market.setdefault("market", market)
+
+            # ── Altman Z-Score ────────────────────────────────────────────────
+            altman = altman_zscore_signal(info_with_market)
+            z_zone = altman.get("z_zone", "unavailable")
+            z      = altman.get("z_score")
+            if z_zone == "distress":
+                score -= 25
+                reasons.append(f"Altman Z-Score {z} — Distress Zone: balance sheet at risk; strong avoid signal")
+            elif z_zone == "grey":
+                score -= 10
+                reasons.append(f"Altman Z-Score {z} — Grey Zone: financial stress; monitor leverage closely")
+            elif z_zone == "safe":
+                # Reward only for medium/long horizons — short-term doesn't care about Z-Score
+                if horizon in ("medium", "long"):
+                    score += 8
+                    reasons.append(f"Altman Z-Score {z} — Safe Zone: strong balance sheet; low financial risk")
+
+            # ── Sloan Accruals (earnings quality) ─────────────────────────────
+            accruals = sloan_accruals_signal(info_with_market)
+            ar = accruals.get("accruals_ratio")
+            if ar is not None:
+                if ar < -5:
+                    score += 8
+                    reasons.append(f"Low accruals ({ar}%) — earnings are cash-backed; high earnings quality (Sloan 1996)")
+                elif ar > 10:
+                    score -= 15
+                    reasons.append(f"High accruals ({ar}%) — earnings outpacing cash flow; manipulation risk (Sloan 1996)")
+                elif ar > 5:
+                    score -= 7
+                    reasons.append(f"Elevated accruals ({ar}%) — portion of earnings not yet cash; verify quality")
+
+        except Exception:
+            pass  # never let academic signals break predictions
 
         return {"score": max(0, min(100, score)), "reasons": reasons}
 
