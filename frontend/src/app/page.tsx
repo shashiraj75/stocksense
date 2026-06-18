@@ -60,28 +60,26 @@ export default function Dashboard() {
   return (
     <div className="space-y-6">
 
-      {/* Header row: page title + market tabs */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-lg font-bold text-white">Market Overview</h1>
-        <div className="flex gap-2">
+      {/* Single header bar: title + tabs + live indices */}
+      <div className="bg-dark-card border border-dark-border rounded-xl px-4 py-3 flex flex-wrap items-center gap-3">
+        <h1 className="text-sm font-bold text-white shrink-0">Market Overview</h1>
+        <div className="flex gap-1.5 shrink-0">
           {MARKET_TABS.map(({ key, label }) => (
             <button key={key} onClick={() => setMarket(key)}
-              className={clsx("px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
+              className={clsx("px-3 py-1 rounded-lg text-xs font-medium transition-colors",
                 market === key
                   ? "bg-brand-500 text-white"
-                  : "bg-dark-card border border-dark-border text-gray-400 hover:text-white")}>
+                  : "bg-dark-bg border border-dark-border text-gray-400 hover:text-white")}>
               {label}
             </button>
           ))}
         </div>
+        <div className="h-4 w-px bg-dark-border shrink-0" />
+        {market !== "CRYPTO" && <IndexBar market={market} inline />}
+        {market === "CRYPTO" && (
+          <span className="text-xs text-gray-500">Live index data unavailable for crypto</span>
+        )}
       </div>
-
-      {/* Live index bar */}
-      {market !== "CRYPTO" && (
-        <div className="bg-dark-card border border-dark-border rounded-xl px-4">
-          <IndexBar market={market} />
-        </div>
-      )}
 
       {/* Horizon info cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
