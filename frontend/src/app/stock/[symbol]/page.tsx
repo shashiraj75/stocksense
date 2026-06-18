@@ -550,28 +550,62 @@ export default function StockPage() {
             );
           })()}
 
-          {/* Regime warning — shown when model reliability is lower */}
+          {/* Regime context — explains market backdrop vs stock-specific signal */}
           {prediction?.market_regime && (() => {
             const regime = prediction.market_regime;
             const label: string = regime?.trend ?? "";
             const isHighRisk = label === "BEAR_VOLATILE" || label === "BULL_VOLATILE";
-            const isBear = label.startsWith("BEAR");
+            const isBearRegime = label.startsWith("BEAR");
+            const stockSignal = prediction.signal;
             if (!label || label === "SIDEWAYS") return null;
+
+            // Explain the relationship between macro regime and stock signal
+            const conflicting = (!isBearRegime && !isHighRisk && stockSignal === "SELL")
+                             || (!isBearRegime && !isHighRisk && stockSignal === "HOLD")
+                             || (isBearRegime && !isHighRisk && stockSignal === "BUY");
+
+            const regimeDisplay = label.replace(/_/g, " ");
+            const emoji = isHighRisk ? "⚠️" : isBearRegime ? "🐻" : "🐂";
+
+            let explanation: string;
+            if (isHighRisk) {
+              explanation = "High volatility detected — model accuracy drops ~5–8% in choppy markets. Size positions conservatively.";
+            } else if (isBearRegime && stockSignal === "BUY") {
+              explanation = "Broad market is in a downtrend, yet this stock shows individual bullish signals. Higher risk — consider smaller position size and tighter stop loss.";
+            } else if (isBearRegime) {
+              explanation = "Broad market is in a downtrend, which aligns with the SELL signal for this stock. Extra caution warranted.";
+            } else if (!isBearRegime && stockSignal === "SELL") {
+              explanation = "Note: the broad market is bullish, but this stock's own fundamentals and technicals are weak — the SELL signal is stock-specific, not market-wide.";
+            } else if (!isBearRegime && stockSignal === "HOLD") {
+              explanation = "The broad market is in a healthy uptrend, but this stock has no clear edge right now. Watch for a stronger signal before entering.";
+            } else {
+              explanation = "Broad market conditions are supportive for this stock's signal. Historical model accuracy is higher in this regime.";
+            }
+
             return (
               <div className={clsx(
                 "flex items-start gap-3 rounded-xl px-4 py-3 border text-xs",
-                isHighRisk ? "bg-yellow-500/10 border-yellow-500/30 text-yellow-300"
-                  : isBear  ? "bg-bear/10 border-bear/30 text-red-300"
-                  : "bg-bull/10 border-bull/30 text-green-300"
+                isHighRisk   ? "bg-yellow-500/10 border-yellow-500/30 text-yellow-300"
+                : conflicting ? "bg-blue-500/10 border-blue-500/30 text-blue-300"
+                : isBearRegime ? "bg-bear/10 border-bear/30 text-red-300"
+                : "bg-bull/10 border-bull/30 text-green-300"
               )}>
-                <span className="text-lg leading-none mt-0.5">
-                  {isHighRisk ? "⚠️" : isBear ? "🐻" : "🐂"}
-                </span>
-                <div>
-                  <strong>Market Regime: {label.replace("_", " ")}</strong>
-                  {isHighRisk && <span className="ml-2 opacity-80">— Model hit rate historically drops ~5–8% in high-volatility regimes. Apply extra caution.</span>}
-                  {!isHighRisk && isBear && <span className="ml-2 opacity-80">— Bear market detected. BUY signals carry higher risk; favour shorter horizons.</span>}
-                  {!isHighRisk && !isBear && <span className="ml-2 opacity-80">— Favourable conditions for BUY signals based on historical validation.</span>}
+                <span className="text-base leading-none mt-0.5 shrink-0">{emoji}</span>
+                <div className="space-y-0.5">
+                  <p>
+                    <strong>Market Regime: {regimeDisplay}</strong>
+                    <span className={clsx("ml-1.5 text-[11px] px-1.5 py-0.5 rounded font-semibold",
+                      isBearRegime ? "bg-bear/20 text-red-300" : "bg-bull/20 text-green-300"
+                    )}>macro context</span>
+                    <span className="mx-2 opacity-40">·</span>
+                    <strong>Stock Signal: {stockSignal}</strong>
+                    <span className={clsx("ml-1.5 text-[11px] px-1.5 py-0.5 rounded font-semibold",
+                      stockSignal === "BUY" ? "bg-bull/20 text-green-300"
+                      : stockSignal === "SELL" ? "bg-bear/20 text-red-300"
+                      : "bg-white/10 text-gray-400"
+                    )}>stock-specific</span>
+                  </p>
+                  <p className="opacity-80">{explanation}</p>
                 </div>
               </div>
             );
