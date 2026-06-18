@@ -7,6 +7,7 @@ import { SignalBadge } from "@/components/SignalBadge";
 import Link from "next/link";
 import clsx from "clsx";
 import { PlusCircle, Trash2, TrendingUp, TrendingDown, Briefcase } from "lucide-react";
+import { PortfolioAllocationChart } from "@/components/PortfolioAllocationChart";
 
 interface Holding {
   symbol: string;
@@ -159,6 +160,17 @@ export default function PortfolioPage() {
             </div>
           )}
         </div>
+      )}
+
+      {/* Allocation chart */}
+      {holdings.length > 1 && (hasIN || hasUS) && (
+        <PortfolioAllocationChart
+          slices={rows.map(r => ({
+            symbol: r.symbol,
+            value: r.current ?? 0,
+            signal: r.signal,
+          }))}
+        />
       )}
 
       {/* Add holding form */}

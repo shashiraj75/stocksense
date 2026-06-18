@@ -14,6 +14,7 @@ import { ScoreHistoryChart } from "@/components/ScoreHistoryChart";
 import clsx from "clsx";
 import { ArrowUpRight, ArrowDownRight, FlaskConical, CheckCircle, XCircle, Loader2 } from "lucide-react";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
+import { TradeLevelVisualizer } from "@/components/TradeLevelVisualizer";
 import { getMarketStatus } from "@/utils/marketHours";
 
 type Tab = Horizon | "backtest" | "history";
@@ -367,6 +368,15 @@ export default function StockPage() {
                   </div>
                 </div>
 
+                <TradeLevelVisualizer
+                  entryLow={tl.entry_low}
+                  entryHigh={tl.entry_high}
+                  stopLoss={tl.stop_loss}
+                  takeProfit={tl.take_profit}
+                  currentPrice={cp}
+                  signal={sig as "BUY" | "SELL" | "HOLD"}
+                  currency={currency}
+                />
                 <p className="text-xs text-gray-500 mt-1">
                   Based on 14-day ATR · Not financial advice — always set your own risk limits.
                 </p>
@@ -441,9 +451,24 @@ export default function StockPage() {
                 <p className="text-red-400 text-sm">{(prediction as any).error}</p>
               ) : prediction?.signal ? (
                 <>
-                  <div className="flex items-center justify-between">
-                    <span className="text-gray-400 text-sm">Signal</span>
-                    <SignalBadge signal={prediction.signal} confidence={prediction.confidence} />
+                  {/* Signal strip */}
+                  <div className={clsx(
+                    "flex items-center justify-between rounded-xl px-4 py-3 border",
+                    prediction.signal === "BUY"  ? "bg-bull/10 border-bull/30" :
+                    prediction.signal === "SELL" ? "bg-bear/10 border-bear/30" :
+                    "bg-neutral/10 border-neutral/30"
+                  )}>
+                    <div>
+                      <p className="text-xs text-gray-400 mb-0.5">AI Signal</p>
+                      <SignalBadge signal={prediction.signal} confidence={prediction.confidence} size="md" />
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xs text-gray-400 mb-0.5">Conviction</p>
+                      <p className={clsx("text-2xl font-black tabular-nums",
+                        prediction.signal === "BUY"  ? "text-bull" :
+                        prediction.signal === "SELL" ? "text-bear" : "text-neutral"
+                      )}>{prediction.confidence}<span className="text-sm font-medium">%</span></p>
+                    </div>
                   </div>
                   <ConfidenceMeter
                     value={prediction.confidence}
