@@ -114,8 +114,11 @@ HORIZON_STEP  = {"short": 5,  "medium": 10, "long": 21}
 HORIZON_THRESHOLDS = {"short": 0.02, "medium": 0.04, "long": 0.10}
 HORIZON_PERIOD = {"short": "3y", "medium": "5y", "long": "7y"}
 
-BUY_THRESHOLD  = 65   # composite score ≥ this → BUY
-SELL_THRESHOLD = 42   # composite score ≤ this → SELL
+# Per-horizon thresholds — long horizon covers 7 years of data including bear markets
+# where regime_adj is often 0 or -5, so the composite ceiling is lower. Keeping a
+# single 65 threshold produced 0 BUY signals for long horizon.
+BUY_THRESHOLD  = {"short": 65, "medium": 65, "long": 60}
+SELL_THRESHOLD = {"short": 42, "medium": 42, "long": 44}
 
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -395,7 +398,9 @@ def _backtest_stock(symbol: str, horizon: str, nifty_df: pd.DataFrame | None) ->
                 sc = _score_at(df, i, nifty_close, fund_score, regime_adjs[i])
                 composite = sc["composite"]
 
-                predicted = "BUY" if composite >= BUY_THRESHOLD else ("SELL" if composite <= SELL_THRESHOLD else "HOLD")
+                buy_thr  = BUY_THRESHOLD[horizon]
+                sell_thr = SELL_THRESHOLD[horizon]
+                predicted = "BUY" if composite >= buy_thr else ("SELL" if composite <= sell_thr else "HOLD")
 
                 # "correct" = benchmark-relative:
                 #   BUY is correct  if stock outperforms Nifty by > 0 over fwd window

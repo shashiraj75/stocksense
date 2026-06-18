@@ -2,12 +2,15 @@ name: Daily Model Validation
 
 on:
   schedule:
-    # 00:30 UTC = 6:00 AM IST daily (before market open, server idle)
-    - cron: "30 0 * * *"
+    # Mon–Sat 00:30 UTC = 6:00 AM IST — medium horizon only
+    - cron: "30 0 * * 1-6"
+    # Sunday 00:30 UTC = 6:00 AM IST — medium + long horizon
+    - cron: "30 0 * * 0"
   workflow_dispatch:   # allow manual trigger from GitHub UI
 
 jobs:
-  run-validation:
+  # ── Medium-horizon: runs every day ────────────────────────────────────────────
+  run-medium-validation:
     runs-on: ubuntu-latest
     steps:
       - name: Wake up Render
@@ -40,7 +43,7 @@ jobs:
             fi
           done
 
-      - name: Print summary
+      - name: Print medium summary
         run: |
           echo ""
           echo "=== Medium-horizon results ==="
@@ -60,15 +63,15 @@ else:
     print('  No results available:', d.get('message'))
 "
 
-  # Long-horizon runs only on Sundays — ~25 min, heavier on Yahoo Finance
+  # ── Long-horizon: Sundays only + manual trigger ────────────────────────────────
   run-long-validation:
     runs-on: ubuntu-latest
-    needs: run-validation
-    if: github.event_name == 'workflow_dispatch'
+    needs: run-medium-validation
+    if: github.event.schedule == '30 0 * * 0' || github.event_name == 'workflow_dispatch'
     steps:
-      - name: Run long-horizon validation
+      - name: Run long-horizon validation (Sunday)
         run: |
-          echo "Starting long-horizon validation..."
+          echo "Starting long-horizon validation (Sunday run)..."
           curl -sS -X POST \
             "https://stocksense-api-12ii.onrender.com/api/validation/run?horizon=long"
           echo ""
@@ -87,3 +90,23 @@ else:
               break
             fi
           done
+
+      - name: Print long summary
+        run: |
+          echo ""
+          echo "=== Long-horizon results ==="
+          curl -s "https://stocksense-api-12ii.onrender.com/api/validation/results?horizon=long" | \
+            python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+if d.get('available'):
+    print(f'  BUY hit rate:    {d.get(\"buy_hit_rate_pct\")}%')
+    print(f'  Strong alpha:    {d.get(\"beat_benchmark_pct\")}%')
+    print(f'  Avg alpha:       {d.get(\"avg_alpha_on_buy_pct\")}%')
+    print(f'  Sharpe (alphas): {d.get(\"sharpe_on_alphas\")}')
+    print(f'  Max drawdown:    {d.get(\"max_drawdown_pct\")}%')
+    print(f'  Worst streak:    {d.get(\"max_consecutive_wrong\")} wrong in a row')
+    print(f'  Total signals:   {d.get(\"total_signals\")}')
+else:
+    print('  No results available:', d.get('message'))
+"
