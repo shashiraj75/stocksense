@@ -309,7 +309,9 @@ class PredictionEngine:
                                 yf.utils.get_crumb(force=True)
                             except Exception:
                                 pass
-                        time.sleep(5 + attempt * 3)
+                        # Longer backoff for rate-limit (429 / Too Many Requests)
+                        backoff = 15 + attempt * 10 if "too many" in err_str or "429" in err_str else 5 + attempt * 3
+                        time.sleep(backoff)
                     else:
                         log.warning("[predict] _fetch_info failed for %s%s after 3 attempts: %s", symbol, suffix, e)
                         return {}
