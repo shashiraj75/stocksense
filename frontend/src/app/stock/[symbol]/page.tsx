@@ -338,13 +338,19 @@ export default function StockPage() {
                       {currency}{fmt(tl.entry_low)} – {currency}{fmt(tl.entry_high)}
                     </p>
                   </div>
-                  <div className="rounded-xl border p-4 bg-bull/10 border-bull/30">
-                    <p className="text-xs text-gray-400 mb-1">Take Profit</p>
-                    <p className="font-mono font-bold text-sm text-bull">
-                      {currency}{fmt(tl.take_profit)}
-                      {pctFrom(tl.take_profit) && <span className="ml-2 text-xs font-normal">+{pctFrom(tl.take_profit)}%</span>}
-                    </p>
-                  </div>
+                  {(() => {
+                    const tpPct = pctFrom(tl.take_profit);
+                    const tpUp = tpPct === null || parseFloat(tpPct) >= 0;
+                    return (
+                      <div className={`rounded-xl border p-4 ${tpUp ? "bg-bull/10 border-bull/30" : "bg-bear/10 border-bear/30"}`}>
+                        <p className="text-xs text-gray-400 mb-1">Take Profit</p>
+                        <p className={`font-mono font-bold text-sm ${tpUp ? "text-bull" : "text-bear"}`}>
+                          {currency}{fmt(tl.take_profit)}
+                          {tpPct && <span className="ml-2 text-xs font-normal">{parseFloat(tpPct) >= 0 ? "+" : ""}{tpPct}%</span>}
+                        </p>
+                      </div>
+                    );
+                  })()}
                   <div className="rounded-xl border p-4 bg-bear/10 border-bear/30">
                     <p className="text-xs text-gray-400 mb-1">Stop Loss</p>
                     <p className="font-mono font-bold text-sm text-bear">
