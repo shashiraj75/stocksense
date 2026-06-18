@@ -76,6 +76,24 @@ async def _keepalive_loop():
         await asyncio.sleep(14 * 60)
 
 
+async def _yfinance_crumb_loop():
+    """Refresh yfinance session crumb every 90 minutes — prevents 401 Invalid Crumb errors."""
+    await asyncio.sleep(90 * 60)  # first refresh after 90 min
+    while True:
+        try:
+            import yfinance as yf
+            loop = asyncio.get_event_loop()
+            def _do():
+                if hasattr(yf.utils, "get_crumb"):
+                    yf.utils.get_crumb(force=True)
+                yf.Ticker("AAPL").fast_info
+            await loop.run_in_executor(None, _do)
+            print("[crumb] yfinance session refreshed")
+        except Exception as e:
+            print(f"[crumb] refresh failed (non-fatal): {e}")
+        await asyncio.sleep(90 * 60)
+
+
 async def _outcome_resolver_loop():
     """Resolve pending predictions against actual returns every 6 hours."""
     await asyncio.sleep(120)  # let server fully start first
@@ -127,6 +145,23 @@ async def lifespan(app: FastAPI):
             print("[startup] Postgres schema initialized")
         except Exception as e:
             print(f"[startup] Postgres init failed: {e}")
+    # Force yfinance crumb refresh so cloud IP starts with a valid session
+    try:
+        import yfinance as yf
+        loop = asyncio.get_running_loop()
+        def _refresh_crumb():
+            try:
+                if hasattr(yf.utils, "get_crumb"):
+                    yf.utils.get_crumb(force=True)
+                # Warm a lightweight ticker to establish session cookies
+                yf.Ticker("AAPL").fast_info
+                print("[startup] yfinance session initialised")
+            except Exception as e:
+                print(f"[startup] yfinance crumb refresh failed (non-fatal): {e}")
+        await loop.run_in_executor(None, _refresh_crumb)
+    except Exception as e:
+        print(f"[startup] yfinance init error: {e}")
+
     # Pre-login to screener.in so first stock request is already authenticated
     try:
         from services.screener_data import _login
@@ -135,16 +170,19 @@ async def lifespan(app: FastAPI):
         print(f"[startup] screener.in login {'succeeded' if result else 'failed (check SCREENER_EMAIL/SCREENER_PASSWORD)'}")
     except Exception as e:
         print(f"[startup] screener.in login error: {e}")
+
     task = asyncio.create_task(_weekly_refresh_loop())
     keepalive = asyncio.create_task(_keepalive_loop())
     outcome_task = asyncio.create_task(_outcome_resolver_loop())
     warmup_task = asyncio.create_task(_warmup_loop())
+    crumb_task = asyncio.create_task(_yfinance_crumb_loop())
     yield
     task.cancel()
     keepalive.cancel()
     outcome_task.cancel()
     warmup_task.cancel()
-    for t in (task, keepalive, outcome_task, warmup_task):
+    crumb_task.cancel()
+    for t in (task, keepalive, outcome_task, warmup_task, crumb_task):
         try:
             await t
         except asyncio.CancelledError:
