@@ -7,7 +7,7 @@ import { TrendingUp } from "lucide-react";
 import { MobileNav } from "@/components/MobileNav";
 import { NavLinks } from "@/components/NavLinks";
 import { UserMenu } from "@/components/UserMenu";
-import { MarketStatusBar } from "@/components/MarketStatusBar";
+import { MarketStatusInline } from "@/components/MarketStatusBar";
 import { LiveClock } from "@/components/LiveClock";
 
 export const metadata: Metadata = {
@@ -39,14 +39,18 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="bg-dark-bg text-white min-h-screen font-sans antialiased">
         <Providers>
           <nav className="sticky top-0 z-10 border-b border-dark-border bg-dark-bg/90 backdrop-blur-md">
-            {/* Row 1: Logo · Search · Sign In */}
+            {/* Row 1: Logo · Search · Clock · Market Status · Sign In */}
             <div className="max-w-7xl mx-auto px-4 pt-3 pb-2 flex items-center gap-4">
               <Link href="/" className="flex items-center gap-2 text-brand-500 font-bold text-lg shrink-0">
                 <TrendingUp size={22} />
                 StockSense
               </Link>
               <div className="flex-1 max-w-sm"><SearchBar /></div>
-              <div className="hidden md:block"><LiveClock inline /></div>
+              <div className="hidden md:flex items-center gap-4 shrink-0">
+                <LiveClock inline />
+                <span className="text-dark-border text-xs">|</span>
+                <MarketStatusInline />
+              </div>
               <div className="ml-auto flex items-center gap-2">
                 <UserMenu />
                 <div className="lg:hidden">
@@ -54,11 +58,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 </div>
               </div>
             </div>
-            {/* Row 2: Market status bar (hidden on small mobile) */}
-            <div className="hidden sm:block">
-              <MarketStatusBar />
-            </div>
-            {/* Row 3: Nav links (desktop only) */}
+            {/* Row 2: Nav links (desktop only) */}
             <div className="hidden lg:block border-t border-dark-border/60">
               <div className="max-w-7xl mx-auto px-4">
                 <NavLinks links={NAV_LINKS} />
