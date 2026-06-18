@@ -85,8 +85,14 @@ function OpenTradeRow({ trade, onSell, sessionId }: { trade: PaperTrade; onSell:
             )}>
               {currency}{fmt(livePrice)}
             </span>
-            {nearStopLoss && <p className="text-[10px] text-red-400 mt-0.5">⚠ Near stop loss</p>}
-            {nearTarget   && <p className="text-[10px] text-bull mt-0.5">🎯 Near target</p>}
+            {/* Day change — helps user understand why price differs from entry */}
+            {quote?.change_pct != null && (
+              <p className={clsx("text-[10px] font-medium", quote.change_pct >= 0 ? "text-bull/70" : "text-bear/70")}>
+                {quote.change_pct >= 0 ? "▲" : "▼"} {Math.abs(quote.change_pct).toFixed(2)}% today
+              </p>
+            )}
+            {nearStopLoss && <p className="text-[10px] text-red-400">⚠ Near stop loss</p>}
+            {nearTarget   && <p className="text-[10px] text-bull">🎯 Near target</p>}
           </div>
         ) : (
           <span className="text-xs text-gray-600">Loading…</span>
@@ -437,7 +443,7 @@ export default function PaperTradingPage() {
                     <th className="px-4 py-2.5 text-left">Stock</th>
                     <th className="px-4 py-2.5 text-left">Qty</th>
                     <th className="px-4 py-2.5 text-left">Entry</th>
-                    <th className="px-4 py-2.5 text-left">Live Price</th>
+                    <th className="px-4 py-2.5 text-left">Mkt Price <span className="text-gray-600 font-normal">(last close when closed)</span></th>
                     <th className="px-4 py-2.5 text-left">Unr. P&L</th>
                     <th className="px-4 py-2.5 text-left">Signal</th>
                     <th className="px-4 py-2.5 text-left">Stop Loss</th>
