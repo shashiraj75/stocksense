@@ -54,8 +54,17 @@ export default function Dashboard() {
 
   const lastUpdated = market === "CRYPTO" ? cryptoUpdatedAt : moversUpdatedAt;
 
+  const { data: watchlistData } = useQuery({
+    queryKey: ["watchlist-quick"],
+    queryFn: () => api.get<{ items: { symbol: string; market: string }[] }>("/api/watchlist/default").then(r => r.data),
+    staleTime: 60_000,
+  });
+
   const currency = market === "IN" ? "₹" : "$";
-  const quickSymbols = market === "CRYPTO" ? POPULAR_CRYPTO : market === "IN" ? POPULAR_IN : POPULAR_US;
+  const fallbackSymbols = market === "CRYPTO" ? POPULAR_CRYPTO : market === "IN" ? POPULAR_IN : POPULAR_US;
+  const watchlistForMarket = watchlistData?.items?.filter(i => i.market === market).map(i => i.symbol) ?? [];
+  const quickSymbols = watchlistForMarket.length > 0 ? watchlistForMarket : fallbackSymbols;
+  const isUsingWatchlist = watchlistForMarket.length > 0;
 
   return (
     <div className="space-y-6">
@@ -100,7 +109,13 @@ export default function Dashboard() {
 
       {/* Quick Access */}
       <section>
-        <h2 className="text-sm font-semibold mb-2 text-gray-400 uppercase tracking-wide">Quick Access</h2>
+        <div className="flex items-center gap-2 mb-2">
+          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">Quick Access</h2>
+          {isUsingWatchlist
+            ? <span className="text-[10px] text-brand-500 font-medium bg-brand-500/10 px-2 py-0.5 rounded-full">From your watchlist</span>
+            : <span className="text-[10px] text-gray-600 font-medium bg-white/5 px-2 py-0.5 rounded-full">Popular · Add stocks to watchlist to personalise</span>
+          }
+        </div>
         <div className="flex flex-wrap gap-2">
           {quickSymbols.map((sym) => (
             <Link key={sym} href={`/stock/${sym}?market=${market}`}
