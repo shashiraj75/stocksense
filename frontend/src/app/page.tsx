@@ -7,7 +7,6 @@ import { LiveClock } from "@/components/LiveClock";
 import Link from "next/link";
 import clsx from "clsx";
 import { IndexBar } from "@/components/IndexBar";
-import { getMarketStatus } from "@/utils/marketHours";
 
 const POPULAR_US     = ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "JPM", "META", "AMZN"];
 const POPULAR_IN     = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "WIPRO", "BAJFINANCE", "ICICIBANK", "ADANIENT"];
@@ -37,14 +36,6 @@ const MARKET_TABS: { key: DashMarket; label: string }[] = [
 
 export default function Dashboard() {
   const [market, setMarket] = useState<DashMarket>("IN");
-
-  const [marketStatus, setMarketStatus] = useState(() => getMarketStatus(market));
-  useEffect(() => {
-    const update = () => setMarketStatus(getMarketStatus(market));
-    update();
-    const id = setInterval(update, 30_000);
-    return () => clearInterval(id);
-  }, [market]);
 
   const { data: movers, isLoading: moversLoading, dataUpdatedAt: moversUpdatedAt } = useQuery({
     queryKey: ["movers", market],
@@ -76,22 +67,6 @@ export default function Dashboard() {
           <div>
             <div className="flex items-center gap-2">
               <LiveClock inline />
-              {market !== "CRYPTO" && (
-                <div className="flex items-center gap-1.5">
-                  <span className="relative flex h-2 w-2">
-                    {marketStatus.isOpen && (
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                    )}
-                    <span className={clsx("relative inline-flex rounded-full h-2 w-2", marketStatus.isOpen ? "bg-green-500" : "bg-red-500")}></span>
-                  </span>
-                  <span className="text-sm text-gray-500">
-                    {marketStatus.isOpen ? "Live" : "Market Closed"}
-                    {marketStatus.nextEventLabel && (
-                      <span className="text-gray-600"> · {marketStatus.nextEventLabel}</span>
-                    )}
-                  </span>
-                </div>
-              )}
             </div>
             <div className="flex items-center gap-2">
               <Globe size={18} className="text-brand-500" />
