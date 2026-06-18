@@ -201,36 +201,42 @@ function OpenTradeRow({ trade, onSell, sessionId }: { trade: PaperTrade; onSell:
         </button>
       </td>
     </tr>
-    {/* Inline reminder row */}
-    {(trade.stop_loss || trade.target_price) && (
-      <tr className="border-b border-dark-border bg-dark-bg/40">
-        <td colSpan={11} className="px-4 py-2">
-          <div className="flex flex-wrap gap-2">
-            {trade.stop_loss && trade.stop_loss > 0 && (
-              <span className="flex items-center gap-1.5 text-[11px] text-yellow-300/80">
-                <ShieldAlert size={11} className="shrink-0" />
-                Stop Loss: <strong>{currency}{fmt(trade.stop_loss)}</strong>
-                <span className="text-yellow-300/50">
-                  (−{((trade.entry_price - trade.stop_loss) / trade.entry_price * 100).toFixed(1)}% from entry) · Close manually if price drops here
-                </span>
+    {/* Inline reminder row — always shown so all positions look consistent */}
+    <tr className="border-b border-dark-border bg-dark-bg/40">
+      <td colSpan={11} className="px-4 py-2">
+        <div className="flex flex-wrap gap-3">
+          {trade.stop_loss && trade.stop_loss > 0 ? (
+            <span className="flex items-center gap-1.5 text-[11px] text-yellow-300/80">
+              <ShieldAlert size={11} className="shrink-0" />
+              Stop Loss: <strong>{currency}{fmt(trade.stop_loss)}</strong>
+              <span className="text-yellow-300/50">
+                (−{((trade.entry_price - trade.stop_loss) / trade.entry_price * 100).toFixed(1)}% from entry) · Close manually if price drops here
               </span>
-            )}
-            {trade.stop_loss && trade.target_price && (
-              <span className="text-gray-700 text-[11px]">·</span>
-            )}
-            {trade.target_price && trade.target_price > 0 && (
-              <span className="flex items-center gap-1.5 text-[11px] text-green-300/80">
-                <Target size={11} className="shrink-0" />
-                Target: <strong>{currency}{fmt(trade.target_price)}</strong>
-                <span className="text-green-300/50">
-                  (+{((trade.target_price - trade.entry_price) / trade.entry_price * 100).toFixed(1)}% from entry) · Consider closing when price reaches here
-                </span>
+            </span>
+          ) : (
+            <span className="flex items-center gap-1.5 text-[11px] text-gray-600">
+              <ShieldAlert size={11} className="shrink-0" />
+              Stop Loss: <span className="italic">not set — click ✎ to add one</span>
+            </span>
+          )}
+          <span className="text-gray-700 text-[11px]">·</span>
+          {trade.target_price && trade.target_price > 0 ? (
+            <span className="flex items-center gap-1.5 text-[11px] text-green-300/80">
+              <Target size={11} className="shrink-0" />
+              Target: <strong>{currency}{fmt(trade.target_price)}</strong>
+              <span className="text-green-300/50">
+                (+{((trade.target_price - trade.entry_price) / trade.entry_price * 100).toFixed(1)}% from entry) · Consider closing when price reaches here
               </span>
-            )}
-          </div>
-        </td>
-      </tr>
-    )}
+            </span>
+          ) : (
+            <span className="flex items-center gap-1.5 text-[11px] text-gray-600">
+              <Target size={11} className="shrink-0" />
+              Target: <span className="italic">not set — click ✎ to add one</span>
+            </span>
+          )}
+        </div>
+      </td>
+    </tr>
     </>
   );
 }
