@@ -167,8 +167,9 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     opened_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     closed_at    TIMESTAMPTZ
 );
--- Add stop_loss to existing tables (safe to run multiple times)
+-- Add columns to existing tables (safe to run multiple times)
 ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS stop_loss DOUBLE PRECISION;
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS target_price DOUBLE PRECISION;
 CREATE INDEX IF NOT EXISTS idx_paper_trades_session ON paper_trades(session_id, status);
 """
 

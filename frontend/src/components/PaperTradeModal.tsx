@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { X, TrendingUp, TrendingDown, Minus, AlertCircle, Loader2, ShieldAlert } from "lucide-react";
+import { X, TrendingUp, TrendingDown, Minus, AlertCircle, Loader2, ShieldAlert, Target } from "lucide-react";
 import clsx from "clsx";
 import { placePaperBuy, closePaperTrade, fetchPrediction, type Market, type Horizon } from "@/utils/api";
 import { useSessionId } from "@/hooks/useSessionId";
@@ -14,6 +14,7 @@ interface Props {
   horizon: string;
   currency: string;
   suggestedStopLoss?: number | null;
+  suggestedTargetPrice?: number | null;
   onClose: () => void;
   existingTradeId?: number;
   existingQuantity?: number;
@@ -28,7 +29,7 @@ const HORIZONS: { key: Horizon; label: string; desc: string }[] = [
 
 export function PaperTradeModal({
   symbol, market, currentPrice, signal: initialSignal, horizon: initialHorizon, currency,
-  suggestedStopLoss, onClose, existingTradeId, existingQuantity, existingEntryPrice,
+  suggestedStopLoss, suggestedTargetPrice, onClose, existingTradeId, existingQuantity, existingEntryPrice,
 }: Props) {
   const sessionId = useSessionId();
   const queryClient = useQueryClient();
@@ -38,6 +39,9 @@ export function PaperTradeModal({
   const [quantity, setQuantity] = useState(existingQuantity ?? 1);
   const [stopLoss, setStopLoss] = useState<string>(
     suggestedStopLoss ? suggestedStopLoss.toFixed(2) : ""
+  );
+  const [targetPrice, setTargetPrice] = useState<string>(
+    suggestedTargetPrice ? suggestedTargetPrice.toFixed(2) : ""
   );
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -63,12 +67,18 @@ export function PaperTradeModal({
     ? ((stopLossValue - currentPrice) / currentPrice * 100)
     : null;
 
+  const targetPriceValue = targetPrice ? parseFloat(targetPrice) : null;
+  const targetPricePct = targetPriceValue && targetPriceValue > 0
+    ? ((targetPriceValue - currentPrice) / currentPrice * 100)
+    : null;
+
   const buyMutation = useMutation({
     mutationFn: () =>
       placePaperBuy({
         session_id: sessionId, symbol, market, quantity,
         price: currentPrice, signal: activeSignal, horizon: selectedHorizon,
         stop_loss: stopLossValue && stopLossValue > 0 ? stopLossValue : null,
+        target_price: targetPriceValue && targetPriceValue > 0 ? targetPriceValue : null,
       }),
     onSuccess: () => {
       setSuccess(`Bought ${quantity} × ${symbol} @ ${currency}${currentPrice.toLocaleString()}`);
@@ -116,8 +126,8 @@ export function PaperTradeModal({
                   onClick={() => {
                 setSelectedHorizon(key);
                 setError(null);
-                // Reset stop loss to suggested when switching horizons
                 setStopLoss(suggestedStopLoss ? suggestedStopLoss.toFixed(2) : "");
+                setTargetPrice(suggestedTargetPrice ? suggestedTargetPrice.toFixed(2) : "");
               }}
                   className={clsx(
                     "rounded-xl px-3 py-2.5 text-center border transition-colors",
@@ -237,6 +247,43 @@ export function PaperTradeModal({
                 {stopLossPct < 0
                   ? `${stopLossPct.toFixed(1)}% below entry — triggers if price drops here`
                   : "Stop loss is above entry price — please check"}
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Target Price input */}
+        {!isSell && (
+          <div className="mb-4">
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs text-gray-400 flex items-center gap-1">
+                <Target size={12} className="text-green-400" />
+                Target Price
+                <span className="text-gray-600 ml-1">(optional)</span>
+              </label>
+              {suggestedTargetPrice && (
+                <button
+                  onClick={() => setTargetPrice(suggestedTargetPrice.toFixed(2))}
+                  className="text-[10px] text-brand-400 hover:text-brand-300 transition-colors"
+                >
+                  Use AI suggestion ({currency}{suggestedTargetPrice.toLocaleString(undefined, { maximumFractionDigits: 2 })})
+                </button>
+              )}
+            </div>
+            <input
+              type="number"
+              min={0}
+              step="0.01"
+              placeholder={suggestedTargetPrice ? `AI suggests ${currency}${suggestedTargetPrice.toFixed(2)}` : `e.g. ${currency}${(currentPrice * 1.1).toFixed(2)}`}
+              value={targetPrice}
+              onChange={e => setTargetPrice(e.target.value)}
+              className="w-full bg-dark-bg border border-dark-border rounded-lg px-3 py-2 font-mono text-sm text-white focus:outline-none focus:border-green-500/60 placeholder:text-gray-600"
+            />
+            {targetPricePct !== null && (
+              <p className={clsx("text-xs mt-1", targetPricePct > 0 ? "text-green-400" : "text-red-400")}>
+                {targetPricePct > 0
+                  ? `+${targetPricePct.toFixed(1)}% above entry — exit when price hits this level`
+                  : "Target is below entry price — please check"}
               </p>
             )}
           </div>

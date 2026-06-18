@@ -42,6 +42,7 @@ class BuyRequest(BaseModel):
     signal: str = "HOLD"
     horizon: str = "medium"
     stop_loss: float | None = None
+    target_price: float | None = None
 
 
 class SellRequest(BaseModel):
@@ -51,6 +52,7 @@ class SellRequest(BaseModel):
 class EditRequest(BaseModel):
     session_id: str
     stop_loss: float | None = None
+    target_price: float | None = None
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -61,7 +63,7 @@ def get_portfolio(session_id: str = Query(...)):
     with _conn() as conn:
         trades = conn.execute(
             """SELECT id, symbol, market, quantity, entry_price, exit_price,
-                      status, signal, horizon, opened_at, closed_at, stop_loss
+                      status, signal, horizon, opened_at, closed_at, stop_loss, target_price
                FROM paper_trades WHERE session_id = %s ORDER BY opened_at DESC""",
             (session_id,)
         ).fetchall()
@@ -71,7 +73,7 @@ def get_portfolio(session_id: str = Query(...)):
     total_realized = 0.0
 
     for t in trades:
-        tid, sym, mkt, qty, ep, xp, status, sig, hor, opened, closed, sl = t
+        tid, sym, mkt, qty, ep, xp, status, sig, hor, opened, closed, sl, tp = t
         trade = {
             "id": tid,
             "symbol": sym,
@@ -80,6 +82,7 @@ def get_portfolio(session_id: str = Query(...)):
             "entry_price": ep,
             "exit_price": xp,
             "stop_loss": sl,
+            "target_price": tp,
             "status": status,
             "signal": sig,
             "horizon": hor,
@@ -127,10 +130,10 @@ def paper_buy(req: BuyRequest):
             (cost, req.session_id)
         )
         row = conn.execute(
-            """INSERT INTO paper_trades (session_id, symbol, market, quantity, entry_price, signal, horizon, stop_loss)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+            """INSERT INTO paper_trades (session_id, symbol, market, quantity, entry_price, signal, horizon, stop_loss, target_price)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
             (req.session_id, req.symbol.upper(), req.market, req.quantity,
-             req.price, req.signal, req.horizon, req.stop_loss)
+             req.price, req.signal, req.horizon, req.stop_loss, req.target_price)
         ).fetchone()
 
     return {
@@ -204,10 +207,10 @@ def edit_trade(trade_id: int, req: EditRequest):
         if trade[1] != "OPEN":
             raise HTTPException(status_code=400, detail="Cannot edit a closed trade")
         conn.execute(
-            "UPDATE paper_trades SET stop_loss = %s WHERE id = %s",
-            (req.stop_loss, trade_id)
+            "UPDATE paper_trades SET stop_loss = %s, target_price = %s WHERE id = %s",
+            (req.stop_loss, req.target_price, trade_id)
         )
-    return {"message": "Trade updated", "trade_id": trade_id, "stop_loss": req.stop_loss}
+    return {"message": "Trade updated", "trade_id": trade_id, "stop_loss": req.stop_loss, "target_price": req.target_price}
 
 
 @router.post("/reset")

@@ -152,6 +152,7 @@ export interface PaperTrade {
   entry_price: number;
   exit_price: number | null;
   stop_loss: number | null;
+  target_price: number | null;
   status: "OPEN" | "CLOSED";
   signal: string;
   horizon: string;
@@ -175,7 +176,8 @@ export const fetchPaperPortfolio = (sessionId: string) =>
 
 export const placePaperBuy = (data: {
   session_id: string; symbol: string; market: Market;
-  quantity: number; price: number; signal?: string; horizon?: string; stop_loss?: number | null;
+  quantity: number; price: number; signal?: string; horizon?: string;
+  stop_loss?: number | null; target_price?: number | null;
 }) => api.post("/api/paper-trading/buy", data).then((r) => r.data);
 
 export const closePaperTrade = (tradeId: number, sessionId: string, price: number) =>
@@ -184,5 +186,5 @@ export const closePaperTrade = (tradeId: number, sessionId: string, price: numbe
 export const resetPaperPortfolio = (sessionId: string) =>
   api.post("/api/paper-trading/reset", null, { params: { session_id: sessionId } }).then((r) => r.data);
 
-export const editPaperTrade = (tradeId: number, sessionId: string, stopLoss: number | null) =>
-  api.patch(`/api/paper-trading/trade/${tradeId}`, { session_id: sessionId, stop_loss: stopLoss }).then((r) => r.data);
+export const editPaperTrade = (tradeId: number, sessionId: string, stopLoss: number | null, targetPrice: number | null) =>
+  api.patch(`/api/paper-trading/trade/${tradeId}`, { session_id: sessionId, stop_loss: stopLoss, target_price: targetPrice }).then((r) => r.data);

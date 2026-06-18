@@ -5,7 +5,7 @@ import Link from "next/link";
 import clsx from "clsx";
 import {
   TrendingUp, TrendingDown, RotateCcw, ExternalLink, Beaker,
-  BarChart2, AlertTriangle, CheckCircle2, ShieldAlert, Pencil, Check, X,
+  BarChart2, AlertTriangle, CheckCircle2, ShieldAlert, Pencil, Check, X, Target,
 } from "lucide-react";
 import {
   fetchPaperPortfolio, closePaperTrade, resetPaperPortfolio, editPaperTrade,
@@ -36,9 +36,14 @@ function OpenTradeRow({ trade, onSell, sessionId }: { trade: PaperTrade; onSell:
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [slInput, setSlInput] = useState(trade.stop_loss ? trade.stop_loss.toFixed(2) : "");
+  const [tpInput, setTpInput] = useState(trade.target_price ? trade.target_price.toFixed(2) : "");
 
   const editMutation = useMutation({
-    mutationFn: () => editPaperTrade(trade.id, sessionId, slInput ? parseFloat(slInput) : null),
+    mutationFn: () => editPaperTrade(
+      trade.id, sessionId,
+      slInput ? parseFloat(slInput) : null,
+      tpInput ? parseFloat(tpInput) : null,
+    ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["paper-portfolio"] });
       setEditing(false);
@@ -83,7 +88,11 @@ function OpenTradeRow({ trade, onSell, sessionId }: { trade: PaperTrade; onSell:
               <Check size={13} />
             </button>
             <button
-              onClick={() => { setEditing(false); setSlInput(trade.stop_loss ? trade.stop_loss.toFixed(2) : ""); }}
+              onClick={() => {
+                setEditing(false);
+                setSlInput(trade.stop_loss ? trade.stop_loss.toFixed(2) : "");
+                setTpInput(trade.target_price ? trade.target_price.toFixed(2) : "");
+              }}
               className="p-1 rounded text-gray-400 hover:bg-white/10 transition-colors"
             >
               <X size={13} />
@@ -105,6 +114,38 @@ function OpenTradeRow({ trade, onSell, sessionId }: { trade: PaperTrade; onSell:
             >
               <Pencil size={11} />
             </button>
+          </div>
+        )}
+      </td>
+      <td className="px-4 py-3">
+        {editing ? (
+          <input
+            type="number"
+            min={0}
+            step="0.01"
+            value={tpInput}
+            onChange={e => setTpInput(e.target.value)}
+            placeholder="Price"
+            className="w-24 bg-dark-bg border border-green-500/50 rounded-lg px-2 py-1 text-xs font-mono text-white focus:outline-none"
+          />
+        ) : (
+          <div className="flex items-center gap-1.5 group">
+            {trade.target_price ? (
+              <span className="font-mono text-xs text-green-400">
+                {currency}{fmt(trade.target_price)}
+              </span>
+            ) : (
+              <span className="text-xs text-gray-600">—</span>
+            )}
+            {!editing && (
+              <button
+                onClick={() => setEditing(true)}
+                className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded text-gray-500 hover:text-white"
+                title="Edit target"
+              >
+                <Pencil size={11} />
+              </button>
+            )}
           </div>
         )}
       </td>
@@ -148,6 +189,21 @@ function ClosedTradeRow({ trade }: { trade: PaperTrade }) {
             ({pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(2)}%)
           </span>
         </span>
+      </td>
+      <td className="px-4 py-3">
+        {trade.target_price && trade.exit_price ? (
+          trade.exit_price >= trade.target_price ? (
+            <span className="flex items-center gap-1 text-xs text-bull font-medium">
+              <Check size={12} /> Hit
+            </span>
+          ) : (
+            <span className="flex items-center gap-1 text-xs text-gray-500">
+              <X size={12} /> Missed
+            </span>
+          )
+        ) : (
+          <span className="text-xs text-gray-600">—</span>
+        )}
       </td>
       <td className="px-4 py-3 text-xs text-gray-500">
         {trade.closed_at ? new Date(trade.closed_at).toLocaleDateString("en-IN") : "—"}
@@ -289,22 +345,39 @@ export default function PaperTradingPage() {
             </span>
           )}
         </h2>
-          {/* Stop loss breach warnings */}
-        {openTrades.filter(t => t.stop_loss && t.entry_price > 0).length > 0 && (
+          {/* Stop loss + target reminders */}
+        {openTrades.filter(t => t.stop_loss || t.target_price).length > 0 && (
           <div className="mb-3 space-y-2">
             {openTrades
               .filter(t => t.stop_loss && t.stop_loss > 0)
               .map(t => {
-                const currency = t.market === "IN" ? "₹" : "$";
-                const pctFromSL = ((t.entry_price - t.stop_loss!) / t.entry_price * 100);
+                const cur = t.market === "IN" ? "₹" : "$";
+                const pct = ((t.entry_price - t.stop_loss!) / t.entry_price * 100);
                 return (
-                  <div key={t.id} className="flex items-center gap-2 bg-yellow-500/10 border border-yellow-500/30 rounded-xl px-4 py-2.5 text-xs text-yellow-300">
+                  <div key={`sl-${t.id}`} className="flex items-center gap-2 bg-yellow-500/10 border border-yellow-500/30 rounded-xl px-4 py-2.5 text-xs text-yellow-300">
                     <ShieldAlert size={14} className="shrink-0" />
                     <span>
-                      <strong>{t.symbol}</strong> — Stop Loss set at{" "}
-                      <strong>{currency}{fmt(t.stop_loss!)}</strong>
-                      {" "}({pctFromSL.toFixed(1)}% below entry).
-                      Close your position manually if the live price drops to this level.
+                      <strong>{t.symbol}</strong> — Stop Loss at{" "}
+                      <strong>{cur}{fmt(t.stop_loss!)}</strong>
+                      {" "}(−{pct.toFixed(1)}% from entry).
+                      Close manually if live price drops to this level.
+                    </span>
+                  </div>
+                );
+              })}
+            {openTrades
+              .filter(t => t.target_price && t.target_price > 0)
+              .map(t => {
+                const cur = t.market === "IN" ? "₹" : "$";
+                const pct = ((t.target_price! - t.entry_price) / t.entry_price * 100);
+                return (
+                  <div key={`tp-${t.id}`} className="flex items-center gap-2 bg-green-500/10 border border-green-500/30 rounded-xl px-4 py-2.5 text-xs text-green-300">
+                    <Target size={14} className="shrink-0" />
+                    <span>
+                      <strong>{t.symbol}</strong> — Target at{" "}
+                      <strong>{cur}{fmt(t.target_price!)}</strong>
+                      {" "}(+{pct.toFixed(1)}% from entry).
+                      Consider closing when live price reaches this level.
                     </span>
                   </div>
                 );
@@ -330,6 +403,7 @@ export default function PaperTradingPage() {
                     <th className="px-4 py-2.5 text-left">Invested</th>
                     <th className="px-4 py-2.5 text-left">Signal</th>
                     <th className="px-4 py-2.5 text-left">Stop Loss</th>
+                    <th className="px-4 py-2.5 text-left">Target</th>
                     <th className="px-4 py-2.5 text-left">Date</th>
                     <th className="px-4 py-2.5 text-right">Action</th>
                   </tr>
@@ -362,6 +436,7 @@ export default function PaperTradingPage() {
                     <th className="px-4 py-2.5 text-left">Entry</th>
                     <th className="px-4 py-2.5 text-left">Exit</th>
                     <th className="px-4 py-2.5 text-left">P&L</th>
+                    <th className="px-4 py-2.5 text-left">vs Target</th>
                     <th className="px-4 py-2.5 text-left">Closed</th>
                   </tr>
                 </thead>
