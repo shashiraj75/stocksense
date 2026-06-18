@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { Providers } from "./providers";
 import { SearchBar } from "@/components/SearchBar";
@@ -14,6 +14,11 @@ export const metadata: Metadata = {
   title: { default: "StockSense — AI Stock Predictor", template: "%s | StockSense" },
   description: "Free AI-powered stock predictions for US and Indian markets. Daily picks, heatmap, screener, and portfolio tracker.",
   icons: { icon: "/favicon.svg" },
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
 };
 
 export const NAV_LINKS = [
@@ -41,7 +46,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 StockSense
               </Link>
               <div className="flex-1 max-w-sm"><SearchBar /></div>
-              <LiveClock inline />
+              <div className="hidden md:block"><LiveClock inline /></div>
               <div className="ml-auto flex items-center gap-2">
                 <UserMenu />
                 <div className="lg:hidden">
@@ -49,8 +54,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 </div>
               </div>
             </div>
-            {/* Row 2: Market status bar */}
-            <MarketStatusBar />
+            {/* Row 2: Market status bar (hidden on small mobile) */}
+            <div className="hidden sm:block">
+              <MarketStatusBar />
+            </div>
             {/* Row 3: Nav links (desktop only) */}
             <div className="hidden lg:block border-t border-dark-border/60">
               <div className="max-w-7xl mx-auto px-4">
