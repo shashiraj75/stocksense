@@ -91,6 +91,27 @@ def _fetch_index(ticker_sym: str, name: str) -> dict:
         return {"symbol": ticker_sym, "name": name, "price": None, "change_pct": None, "change_pts": None}
 
 
+@router.get("/{symbol}/screener-fundamentals")
+async def get_screener_fundamentals(
+    symbol: str,
+    market: Literal["US", "IN"] = Query("IN"),
+):
+    """
+    Rich fundamental data for Indian stocks from screener.in:
+    key ratios, 10Y growth CAGRs, shareholding pattern, cash flows, quarterly results.
+    Returns {available: false} for US stocks (screener.in is India-only).
+    """
+    if market != "IN":
+        return {"available": False, "reason": "screener.in data is available for Indian stocks only"}
+    loop = asyncio.get_running_loop()
+    try:
+        from services.screener_data import fetch_screener_data
+        data = await loop.run_in_executor(None, fetch_screener_data, symbol.upper())
+        return data
+    except Exception as e:
+        return {"available": False, "reason": str(e)}
+
+
 @router.get("/{symbol}/factor-attribution")
 async def get_factor_attribution(
     symbol: str,

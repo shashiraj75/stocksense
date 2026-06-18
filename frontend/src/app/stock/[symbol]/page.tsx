@@ -12,17 +12,18 @@ import { ConfidenceBreakdown } from "@/components/ConfidenceBreakdown";
 import { BullBearCase } from "@/components/BullBearCase";
 import { ScoreHistoryChart } from "@/components/ScoreHistoryChart";
 import clsx from "clsx";
-import { ArrowUpRight, ArrowDownRight, FlaskConical, CheckCircle, XCircle, Loader2, Beaker } from "lucide-react";
+import { ArrowUpRight, ArrowDownRight, FlaskConical, CheckCircle, XCircle, Loader2, Beaker, BarChart2, TrendingUp, TrendingDown } from "lucide-react";
 import { PaperTradeModal } from "@/components/PaperTradeModal";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { TradeLevelVisualizer } from "@/components/TradeLevelVisualizer";
 
-type Tab = Horizon | "backtest" | "history";
+type Tab = Horizon | "backtest" | "history" | "fundamentals";
 
 const HORIZON_TABS: { key: Tab; label: string }[] = [
   { key: "short", label: "Short Term" },
   { key: "medium", label: "Medium Term" },
   { key: "long", label: "Long Term" },
+  { key: "fundamentals", label: "Fundamentals" },
   { key: "backtest", label: "Backtest" },
   { key: "history", label: "History" },
 ];
@@ -90,7 +91,7 @@ export default function StockPage() {
   const [computeSeconds, setComputeSeconds] = useState(0);
   const [showPaperModal, setShowPaperModal] = useState(false);
 
-  const horizon = tab === "backtest" ? "short" : tab === "history" ? "medium" : (tab as Horizon);
+  const horizon = (tab === "backtest" || tab === "history" || tab === "fundamentals") ? "medium" : (tab as Horizon);
 
   const { data: quote, dataUpdatedAt: quoteUpdatedAt } = useQuery({
     queryKey: ["quote", symbol, market],
@@ -183,7 +184,7 @@ export default function StockPage() {
   const { data: attribution } = useQuery({
     queryKey: ["factor-attribution", symbol, market, horizon],
     queryFn: () => fetchFactorAttribution(symbol, market, horizon),
-    enabled: tab !== "backtest" && tab !== "history" && !isCrypto && !!prediction?.signal,
+    enabled: tab !== "backtest" && tab !== "history" && tab !== "fundamentals" && !isCrypto && !!prediction?.signal,
     staleTime: 14 * 60_000,
     refetchOnWindowFocus: false,
   });
@@ -193,6 +194,14 @@ export default function StockPage() {
     queryFn: () => fetchScoreHistory(symbol, historyHorizon, 90),
     enabled: tab === "history" && !isCrypto,
     staleTime: 60 * 60_000,
+    refetchOnWindowFocus: false,
+  });
+
+  const { data: screenerFund, isLoading: screenerLoading } = useQuery({
+    queryKey: ["screener-fundamentals", symbol],
+    queryFn: () => api.get(`/api/stocks/${symbol}/screener-fundamentals?market=IN`).then(r => r.data),
+    enabled: tab === "fundamentals" && market === "IN",
+    staleTime: 4 * 60 * 60_000, // 4h — matches screener cache TTL
     refetchOnWindowFocus: false,
   });
 
@@ -520,6 +529,7 @@ export default function StockPage() {
                         : "bg-white/[0.04] border border-white/[0.07] text-gray-400 hover:text-white hover:bg-white/[0.08]"
                     )}>
                     {key === "backtest" && <FlaskConical size={13} />}
+                    {key === "fundamentals" && <BarChart2 size={13} />}
                     {label}
                   </button>
                 ))}
@@ -530,7 +540,7 @@ export default function StockPage() {
       })()}
 
       {/* ── PREDICTION VIEW ── */}
-      {tab !== "backtest" && tab !== "history" && (
+      {tab !== "backtest" && tab !== "history" && tab !== "fundamentals" && (
         <>
           {/* Trade Levels — shown above prediction panels */}
           {prediction?.signal && (() => {
@@ -830,6 +840,211 @@ export default function StockPage() {
             </div>
           </div>
         </>
+      )}
+
+      {/* ── FUNDAMENTALS VIEW (screener.in data) ── */}
+      {tab === "fundamentals" && (
+        <div className="space-y-5">
+          {market !== "IN" ? (
+            <div className="bg-dark-card border border-dark-border rounded-2xl p-8 text-center text-gray-500 text-sm">
+              Detailed fundamentals from screener.in are available for Indian (NSE) stocks only.
+            </div>
+          ) : screenerLoading ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="bg-dark-card border border-dark-border rounded-2xl p-5 animate-pulse h-40" />
+              ))}
+            </div>
+          ) : !screenerFund?.available ? (
+            <div className="bg-dark-card border border-dark-border rounded-2xl p-8 text-center text-gray-500 text-sm">
+              Fundamental data not available for {symbol} on screener.in.
+              {screenerFund?.reason && <p className="text-xs text-gray-600 mt-1">{screenerFund.reason}</p>}
+            </div>
+          ) : (
+            <>
+              {/* Key Ratios */}
+              <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
+                <h3 className="font-bold text-white mb-4">Key Ratios</h3>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                  {[
+                    { label: "P/E Ratio",      val: screenerFund.pe_ratio,           fmt: (v: number) => v.toFixed(1) + "×" },
+                    { label: "ROE",            val: screenerFund.roe_pct,            fmt: (v: number) => v.toFixed(1) + "%" },
+                    { label: "ROCE",           val: screenerFund.roce_pct,           fmt: (v: number) => v.toFixed(1) + "%" },
+                    { label: "Book Value",     val: screenerFund.book_value,         fmt: (v: number) => "₹" + v.toLocaleString() },
+                    { label: "Dividend Yield", val: screenerFund.dividend_yield_pct, fmt: (v: number) => v.toFixed(2) + "%" },
+                    { label: "Market Cap",     val: screenerFund.market_cap_cr,      fmt: (v: number) => "₹" + v.toLocaleString() + " Cr" },
+                    { label: "Face Value",     val: screenerFund.face_value,         fmt: (v: number) => "₹" + v },
+                    // Banking-specific
+                    { label: "Net NPA",        val: screenerFund.net_npa_pct,        fmt: (v: number) => v.toFixed(2) + "%" },
+                    { label: "Gross NPA",      val: screenerFund.gross_npa_pct,      fmt: (v: number) => v.toFixed(2) + "%" },
+                    { label: "NIM",            val: screenerFund.nim_pct,            fmt: (v: number) => v.toFixed(2) + "%" },
+                    { label: "CASA Ratio",     val: screenerFund.casa_ratio_pct,     fmt: (v: number) => v.toFixed(1) + "%" },
+                    { label: "CAR",            val: screenerFund.capital_adequacy_ratio_pct, fmt: (v: number) => v.toFixed(1) + "%" },
+                  ].filter(r => r.val != null).map(({ label, val, fmt }) => (
+                    <div key={label} className="bg-dark-bg rounded-xl p-3">
+                      <p className="text-[11px] text-gray-500 mb-1">{label}</p>
+                      <p className="text-white font-bold text-sm tabular-nums">{fmt(val as number)}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Compounded Growth Rates */}
+              {(screenerFund.sales_growth_3y_pct != null || screenerFund.profit_growth_3y_pct != null) && (
+                <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
+                  <h3 className="font-bold text-white mb-4">Compounded Growth Rates</h3>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-gray-500 text-xs">
+                          <th className="text-left pb-2 font-medium">Metric</th>
+                          <th className="text-right pb-2 font-medium">3Y CAGR</th>
+                          <th className="text-right pb-2 font-medium">5Y CAGR</th>
+                          <th className="text-right pb-2 font-medium">TTM</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-dark-border">
+                        {[
+                          { label: "Sales Growth",  k3: "sales_growth_3y_pct",  k5: "sales_growth_5y_pct",  kt: "sales_growth_ttm_pct" },
+                          { label: "Profit Growth", k3: "profit_growth_3y_pct", k5: "profit_growth_5y_pct", kt: "profit_growth_ttm_pct" },
+                          { label: "Price CAGR",    k3: null,                   k5: "price_cagr_5y_pct",    kt: null },
+                        ].map(({ label, k3, k5, kt }) => {
+                          const v3 = k3 ? screenerFund[k3] : null;
+                          const v5 = k5 ? screenerFund[k5] : null;
+                          const vt = kt ? screenerFund[kt] : null;
+                          if (v3 == null && v5 == null && vt == null) return null;
+                          const color = (v: number | null) => v == null ? "text-gray-600" : v >= 0 ? "text-green-400" : "text-red-400";
+                          const fmt = (v: number | null) => v == null ? "—" : (v >= 0 ? "+" : "") + v.toFixed(1) + "%";
+                          return (
+                            <tr key={label}>
+                              <td className="py-2 text-gray-300 font-medium">{label}</td>
+                              <td className={clsx("py-2 text-right font-mono font-bold tabular-nums", color(v3))}>{fmt(v3)}</td>
+                              <td className={clsx("py-2 text-right font-mono font-bold tabular-nums", color(v5))}>{fmt(v5)}</td>
+                              <td className={clsx("py-2 text-right font-mono font-bold tabular-nums", color(vt))}>{fmt(vt)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Shareholding Pattern */}
+              {(screenerFund.promoter_holding_pct != null || screenerFund.fii_holding_pct != null) && (
+                <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
+                  <h3 className="font-bold text-white mb-4">Shareholding Pattern <span className="text-xs text-gray-500 font-normal ml-1">(Latest Quarter)</span></h3>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                    {[
+                      { label: "Promoters",   val: screenerFund.promoter_holding_pct, warn: (v: number) => v < 25, warnMsg: "Low" },
+                      { label: "FII",         val: screenerFund.fii_holding_pct },
+                      { label: "DII / MF",    val: screenerFund.dii_holding_pct },
+                      { label: "Public",      val: screenerFund.public_holding_pct },
+                      { label: "Pledge %",    val: screenerFund.promoter_pledge_pct, warn: (v: number) => v > 10, warnMsg: "High" },
+                    ].filter(r => r.val != null).map(({ label, val, warn, warnMsg }) => {
+                      const isWarn = warn && val != null && warn(val as number);
+                      return (
+                        <div key={label} className="bg-dark-bg rounded-xl p-3">
+                          <p className="text-[11px] text-gray-500 mb-1">{label}</p>
+                          <p className={clsx("font-bold text-sm tabular-nums", isWarn ? "text-yellow-400" : "text-white")}>
+                            {(val as number).toFixed(1)}%
+                            {isWarn && <span className="text-[10px] ml-1 text-yellow-400">⚠ {warnMsg}</span>}
+                          </p>
+                          {/* Mini bar */}
+                          <div className="mt-1.5 h-1 rounded-full bg-dark-border overflow-hidden">
+                            <div className="h-full rounded-full bg-brand-500" style={{ width: `${Math.min(val as number, 100)}%` }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Quarterly Results */}
+              {screenerFund.quarterly_revenue_cr && screenerFund.quarterly_revenue_cr.length > 0 && (
+                <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
+                  <h3 className="font-bold text-white mb-4">Quarterly Results <span className="text-xs text-gray-500 font-normal ml-1">(₹ Crore · newest → oldest)</span></h3>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-gray-500 text-xs">
+                          <th className="text-left pb-2 font-medium">Quarter</th>
+                          {[...(screenerFund.quarterly_revenue_cr ?? [])].reverse().map((_: number, i: number) => (
+                            <th key={i} className="text-right pb-2 font-medium">Q{i + 1}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-dark-border">
+                        <tr>
+                          <td className="py-2 text-gray-400">Revenue</td>
+                          {[...(screenerFund.quarterly_revenue_cr ?? [])].reverse().map((v: number, i: number) => (
+                            <td key={i} className="py-2 text-right font-mono text-white tabular-nums">
+                              {v != null ? v.toLocaleString() : "—"}
+                            </td>
+                          ))}
+                        </tr>
+                        {screenerFund.quarterly_pat_cr && (
+                          <tr>
+                            <td className="py-2 text-gray-400">Net Profit</td>
+                            {[...(screenerFund.quarterly_pat_cr ?? [])].reverse().map((v: number, i: number) => (
+                              <td key={i} className={clsx("py-2 text-right font-mono tabular-nums font-bold", v >= 0 ? "text-green-400" : "text-red-400")}>
+                                {v != null ? v.toLocaleString() : "—"}
+                              </td>
+                            ))}
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Cash Flow */}
+              {screenerFund.operating_cf_annual_cr && screenerFund.operating_cf_annual_cr.length > 0 && (
+                <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
+                  <h3 className="font-bold text-white mb-4">Annual Cash Flow <span className="text-xs text-gray-500 font-normal ml-1">(₹ Crore · oldest → newest)</span></h3>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-gray-500 text-xs">
+                          <th className="text-left pb-2 font-medium">Type</th>
+                          {(screenerFund.operating_cf_annual_cr ?? []).map((_: number, i: number) => (
+                            <th key={i} className="text-right pb-2 font-medium">FY{i + 1}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-dark-border">
+                        <tr>
+                          <td className="py-2 text-gray-400">Operating CF</td>
+                          {(screenerFund.operating_cf_annual_cr ?? []).map((v: number, i: number) => (
+                            <td key={i} className={clsx("py-2 text-right font-mono tabular-nums font-bold", v >= 0 ? "text-green-400" : "text-red-400")}>
+                              {v != null ? v.toLocaleString() : "—"}
+                            </td>
+                          ))}
+                        </tr>
+                        {screenerFund.investing_cf_annual_cr && (
+                          <tr>
+                            <td className="py-2 text-gray-400">Investing CF</td>
+                            {(screenerFund.investing_cf_annual_cr ?? []).map((v: number, i: number) => (
+                              <td key={i} className={clsx("py-2 text-right font-mono tabular-nums font-bold", v >= 0 ? "text-green-400" : "text-red-400")}>
+                                {v != null ? v.toLocaleString() : "—"}
+                              </td>
+                            ))}
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              <p className="text-xs text-gray-600 text-center">
+                Data sourced from screener.in · Cached 4 hours · All figures in ₹ Crore unless noted
+              </p>
+            </>
+          )}
+        </div>
       )}
 
       {/* ── HISTORY VIEW ── */}
