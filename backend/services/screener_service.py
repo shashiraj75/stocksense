@@ -23,12 +23,22 @@ def _is_market_open(market: str) -> bool:
         return open_t <= now <= close_t
     return False
 
-# Fallback universes used only if live screener fails
-US_UNIVERSE = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "JPM", "BAC", "XOM",
-               "WMT", "JNJ", "V", "PG", "MA", "HD", "CVX", "MRK", "ABBV", "PEP"]
-IN_UNIVERSE = ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS",
-               "WIPRO.NS", "SBIN.NS", "LT.NS", "BAJFINANCE.NS", "HINDUNILVR.NS",
-               "ADANIENT.NS", "TATAMOTORS.NS", "SUNPHARMA.NS", "HCLTECH.NS", "AXISBANK.NS"]
+# Broad universes used when market is closed (same as heatmap — ~130 IN, ~120 US stocks)
+from services.heatmap_service import INDIA_SECTORS, US_SECTORS  # noqa: E402
+
+def _universe_from_sectors(sectors: dict, suffix: str = "") -> list[str]:
+    seen = set()
+    result = []
+    for stocks in sectors.values():
+        for s in stocks:
+            key = s + suffix
+            if key not in seen:
+                seen.add(key)
+                result.append(key)
+    return result
+
+IN_UNIVERSE = _universe_from_sectors(INDIA_SECTORS, ".NS")
+US_UNIVERSE = _universe_from_sectors(US_SECTORS)
 
 # TTL cache: { market -> (timestamp, result) }
 _movers_cache: dict[str, tuple[float, dict]] = {}
@@ -56,7 +66,7 @@ MIN_MCAP_IN = 1_000_000_000  # ~100 Cr INR — filters out illiquid micro-caps
 
 
 def _live_gainers_losers_in() -> tuple[list, list]:
-    """Fetch top 10 NSE gainers and top 10 NSE losers from the full exchange."""
+    """Fetch top 10 NSE gainers and losers from the full exchange (market open only)."""
     gainers_q = yf.EquityQuery("and", [
         yf.EquityQuery("eq", ["exchange", "NSI"]),
         yf.EquityQuery("gt", ["intradaymarketcap", MIN_MCAP_IN]),
@@ -67,16 +77,30 @@ def _live_gainers_losers_in() -> tuple[list, list]:
         yf.EquityQuery("gt", ["intradaymarketcap", MIN_MCAP_IN]),
         yf.EquityQuery("lt", ["percentchange", 0]),
     ])
-    gainers = _quotes_to_movers(yf.screen(gainers_q, sortField="percentchange", sortAsc=False, count=10).get("quotes", []))
-    losers  = _quotes_to_movers(yf.screen(losers_q,  sortField="percentchange", sortAsc=True,  count=10).get("quotes", []))
+    gainers = _quotes_to_movers(yf.screen(gainers_q, sortField="percentchange", sortAsc=False, count=25).get("quotes", []))
+    losers  = _quotes_to_movers(yf.screen(losers_q,  sortField="percentchange", sortAsc=True,  count=25).get("quotes", []))
     return gainers[:10], losers[:10]
 
 
 def _live_gainers_losers_us() -> tuple[list, list]:
-    """Fetch top 10 US gainers and top 10 US losers via predefined screeners."""
-    gainers = _quotes_to_movers(yf.screen("day_gainers", count=10).get("quotes", []))
-    losers  = _quotes_to_movers(yf.screen("day_losers",  count=10).get("quotes", []))
+    """Fetch top 10 US gainers and losers via predefined screeners (market open only)."""
+    gainers = _quotes_to_movers(yf.screen("day_gainers", count=25).get("quotes", []))
+    losers  = _quotes_to_movers(yf.screen("day_losers",  count=25).get("quotes", []))
     return gainers[:10], losers[:10]
+
+
+def _closed_gainers_losers(universe: list[str]) -> tuple[list, list]:
+    """When market is closed, rank the broad universe by last session's % change."""
+    all_movers = []
+    with ThreadPoolExecutor(max_workers=30) as pool:
+        futures = {pool.submit(_fetch_mover, sym): sym for sym in universe}
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                all_movers.append(result)
+    gainers = sorted([m for m in all_movers if m["change_pct"] > 0],  key=lambda x: x["change_pct"], reverse=True)[:10]
+    losers  = sorted([m for m in all_movers if m["change_pct"] <= 0], key=lambda x: x["change_pct"])[:10]
+    return gainers, losers
 
 
 def _fetch_mover(sym: str) -> dict | None:
@@ -103,30 +127,25 @@ class ScreenerService:
             return cached[1]
 
         is_open = _is_market_open(market)
+        universe = IN_UNIVERSE if market == "IN" else US_UNIVERSE
         gainers, losers = [], []
-        try:
-            if market == "IN":
-                gainers, losers = _live_gainers_losers_in()
-            elif market == "US":
-                gainers, losers = _live_gainers_losers_us()
-        except Exception:
-            pass
 
-        # Fallback to fixed universe only if screener returns nothing at all
+        if is_open:
+            try:
+                if market == "IN":
+                    gainers, losers = _live_gainers_losers_in()
+                elif market == "US":
+                    gainers, losers = _live_gainers_losers_us()
+            except Exception:
+                pass
+
+        # Market closed or live screener failed — rank the full heatmap universe
         if not gainers and not losers:
-            universe = US_UNIVERSE if market == "US" else IN_UNIVERSE
-            all_movers = []
-            with ThreadPoolExecutor(max_workers=20) as pool:
-                futures = {pool.submit(_fetch_mover, sym): sym for sym in universe}
-                for future in as_completed(futures):
-                    result = future.result()
-                    if result:
-                        all_movers.append(result)
-            gainers = sorted([m for m in all_movers if m["change_pct"] >= 0], key=lambda x: x["change_pct"], reverse=True)[:10]
-            losers  = sorted([m for m in all_movers if m["change_pct"] < 0],  key=lambda x: x["change_pct"])[:10]
+            gainers, losers = _closed_gainers_losers(universe)
 
         response = {"market": market, "market_open": is_open, "gainers": gainers, "losers": losers, "movers": gainers + losers}
-        _movers_cache[market] = (time.time(), response)
+        ttl = _MOVERS_TTL if is_open else 300  # cache 5 min when closed, 2 min when live
+        _movers_cache[market] = (time.time() - _MOVERS_TTL + ttl, response)
         return response
 
     async def filter_stocks(
