@@ -603,11 +603,6 @@ export default function StockPage() {
           })()}
 
 
-          {/* TradingView Chart — high up for visual weight */}
-          <div className="rounded-2xl border border-dark-border overflow-hidden">
-            <TradingViewWidget symbol={symbol} market={isCrypto ? "CRYPTO" : market} height={460} />
-          </div>
-
           <div className="grid md:grid-cols-2 gap-6">
             <div className="bg-dark-card border border-dark-border rounded-2xl p-6 space-y-3">
               <div className="flex items-baseline justify-between gap-2">
@@ -818,6 +813,14 @@ export default function StockPage() {
               )}
             </div>
           </section>
+
+          {/* TradingView Chart — reference tool, at the bottom */}
+          <div>
+            <h2 className="text-lg font-semibold mb-3 text-gray-400">Price Chart <span className="text-sm font-normal text-gray-600">(TradingView · reference only)</span></h2>
+            <div className="rounded-2xl border border-dark-border overflow-hidden">
+              <TradingViewWidget symbol={symbol} market={isCrypto ? "CRYPTO" : market} height={460} />
+            </div>
+          </div>
         </>
       )}
 
