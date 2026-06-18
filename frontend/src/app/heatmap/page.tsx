@@ -37,8 +37,8 @@ export default function HeatmapPage() {
   const { data, isLoading, isFetching, isError, dataUpdatedAt } = useQuery({
     queryKey: ["heatmap", market],
     queryFn: () => api.get<{ sectors: Sector[] }>(`/api/screener/heatmap?market=${market}`).then(r => r.data),
-    refetchInterval: 3 * 60_000,
-    staleTime: 2.5 * 60_000,
+    refetchInterval: 5 * 60_000,  // backend cache is 3min; poll at 5min to always hit cache
+    staleTime: 4.5 * 60_000,
     refetchOnWindowFocus: false,
   });
 

@@ -40,16 +40,18 @@ export default function Dashboard() {
     queryKey: ["movers", market],
     queryFn: () => fetchTopMovers(market as any),
     enabled: market !== "CRYPTO",
-    refetchInterval: 60_000,   // backend caches 60s — no point polling faster
-    staleTime: 55_000,
+    refetchInterval: 120_000,  // backend open=2min / closed=5min cache; poll at 2min
+    staleTime: 115_000,
+    refetchOnWindowFocus: false,
   });
 
   const { data: cryptoMovers, isLoading: cryptoLoading, dataUpdatedAt: cryptoUpdatedAt } = useQuery({
     queryKey: ["crypto-movers"],
     queryFn: () => api.get<{ movers: { symbol: string; name: string; price: number | null; change_pct: number }[] }>("/api/screener/crypto-movers").then(r => r.data),
     enabled: market === "CRYPTO",
-    refetchInterval: 60_000,
-    staleTime: 55_000,
+    refetchInterval: 120_000,
+    staleTime: 115_000,
+    refetchOnWindowFocus: false,
   });
 
   const lastUpdated = market === "CRYPTO" ? cryptoUpdatedAt : moversUpdatedAt;

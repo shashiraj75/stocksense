@@ -1,6 +1,6 @@
+import asyncio
 import logging
 import time
-import random
 import yfinance as yf
 from typing import Optional
 from services import finnhub_client
@@ -9,9 +9,15 @@ log = logging.getLogger(__name__)
 
 MARKET_SUFFIX = {"US": "", "IN": ".NS"}
 
-# Quote cache: { "SYMBOL:MARKET" -> (timestamp, result) }
+# ── In-process caches ──────────────────────────────────────────────────────────
 _quote_cache: dict[str, tuple[float, dict]] = {}
 _QUOTE_TTL = 60  # 1 min
+
+_fundamentals_cache: dict[str, tuple[float, dict]] = {}
+_FUND_TTL = 12 * 3600  # 12 hours — fundamentals change infrequently
+
+_ohlcv_cache: dict[str, tuple[float, dict]] = {}
+_OHLCV_TTL = 5 * 60  # 5 min — chart data doesn't need to be real-time
 
 
 class MarketDataService:
@@ -24,88 +30,123 @@ class MarketDataService:
         if cached and (time.time() - cached[0]) < _QUOTE_TTL:
             return cached[1]
 
-        # Try Finnhub first (reliable from cloud IPs)
+        # 1. Try Finnhub first (fast, reliable from cloud IPs, 60s internal cache)
         result = finnhub_client.get_quote(symbol, market)
 
-        # Fallback to yfinance if Finnhub unavailable or key not set
+        # 2. Fallback to yfinance fast_info (one call only)
         if not result:
             try:
-                t = yf.Ticker(self._sym(symbol, market))
-                fi = t.fast_info
+                fi = yf.Ticker(self._sym(symbol, market)).fast_info
                 price = fi.last_price
-                prev = fi.previous_close
-                result = {
-                    "symbol": symbol,
-                    "market": market,
-                    "price": round(price, 2),
-                    "prev_close": round(prev, 2),
-                    "change": round(price - prev, 2),
-                    "change_pct": round((price - prev) / prev * 100, 2),
-                    "high": fi.day_high,
-                    "low": fi.day_low,
-                    "open": fi.open,
-                }
+                prev  = fi.previous_close
+                if price and prev:
+                    result = {
+                        "symbol":     symbol,
+                        "market":     market,
+                        "price":      round(float(price), 2),
+                        "prev_close": round(float(prev), 2),
+                        "change":     round(float(price - prev), 2),
+                        "change_pct": round(float((price - prev) / prev * 100), 2),
+                        "high":       fi.day_high,
+                        "low":        fi.day_low,
+                        "open":       fi.open,
+                        "volume":     int(fi.three_month_average_volume or 0),
+                        "market_cap": fi.market_cap,
+                        "fifty_two_week_high": fi.year_high,
+                        "fifty_two_week_low":  fi.year_low,
+                    }
             except Exception as e:
-                log.warning("get_quote failed for %s/%s: %s", symbol, market, e)
+                log.warning("get_quote yfinance fallback failed %s/%s: %s", symbol, market, e)
                 return None
 
-        # Enrich with extra fields from yfinance fast_info (non-critical)
-        try:
-            fi = yf.Ticker(self._sym(symbol, market)).fast_info
-            result["volume"] = int(fi.three_month_average_volume or 0)
-            result["market_cap"] = fi.market_cap
-            result["fifty_two_week_high"] = fi.year_high
-            result["fifty_two_week_low"] = fi.year_low
-        except Exception:
-            pass
+        # 3. Enrich Finnhub result with fast_info extras (non-blocking best-effort)
+        #    Only if the fields are missing — avoids the redundant second yfinance call
+        #    that was happening on every request before.
+        if result and not result.get("market_cap"):
+            try:
+                fi = yf.Ticker(self._sym(symbol, market)).fast_info
+                result.setdefault("volume",              int(fi.three_month_average_volume or 0))
+                result.setdefault("market_cap",          fi.market_cap)
+                result.setdefault("fifty_two_week_high", fi.year_high)
+                result.setdefault("fifty_two_week_low",  fi.year_low)
+            except Exception:
+                pass  # extras are non-critical
 
-        _quote_cache[key] = (time.time(), result)
+        if result:
+            _quote_cache[key] = (time.time(), result)
         return result
 
     async def get_ohlcv(self, symbol: str, market: str, period: str, interval: str) -> dict:
-        t = yf.Ticker(self._sym(symbol, market))
-        df = t.history(period=period, interval=interval)
-        df.reset_index(inplace=True)
-        return {
-            "symbol": symbol,
-            "market": market,
-            "data": [
-                {
-                    "date": str(row["Date"])[:10],
-                    "open": round(row["Open"], 2),
-                    "high": round(row["High"], 2),
-                    "low": round(row["Low"], 2),
-                    "close": round(row["Close"], 2),
-                    "volume": int(row["Volume"]),
-                }
-                for _, row in df.iterrows()
-            ],
-        }
+        key = f"{symbol}:{market}:{period}:{interval}"
+        cached = _ohlcv_cache.get(key)
+        if cached and (time.time() - cached[0]) < _OHLCV_TTL:
+            return cached[1]
+
+        try:
+            df = yf.Ticker(self._sym(symbol, market)).history(period=period, interval=interval)
+            df.reset_index(inplace=True)
+            result = {
+                "symbol": symbol,
+                "market": market,
+                "data": [
+                    {
+                        "date":   str(row["Date"])[:10],
+                        "open":   round(row["Open"],   2),
+                        "high":   round(row["High"],   2),
+                        "low":    round(row["Low"],    2),
+                        "close":  round(row["Close"],  2),
+                        "volume": int(row["Volume"]),
+                    }
+                    for _, row in df.iterrows()
+                ],
+            }
+        except Exception as e:
+            log.warning("get_ohlcv failed %s/%s: %s", symbol, market, e)
+            result = {"symbol": symbol, "market": market, "data": []}
+
+        _ohlcv_cache[key] = (time.time(), result)
+        return result
 
     async def get_fundamentals(self, symbol: str, market: str) -> dict:
-        for attempt in range(3):
-            try:
-                info = yf.Ticker(self._sym(symbol, market)).info
-                break
-            except Exception as e:
-                if attempt < 2:
-                    time.sleep(3 * (attempt + 1) + random.uniform(0, 1))
-                else:
-                    log.warning("get_fundamentals failed for %s/%s: %s", symbol, market, e)
-                    info = {}
-        return {
-            "symbol": symbol,
-            "pe_ratio": info.get("trailingPE"),
-            "pb_ratio": info.get("priceToBook"),
-            "roe": info.get("returnOnEquity"),
-            "debt_to_equity": info.get("debtToEquity"),
-            "revenue_growth": info.get("revenueGrowth"),
+        key = f"{symbol}:{market}"
+        cached = _fundamentals_cache.get(key)
+        if cached and (time.time() - cached[0]) < _FUND_TTL:
+            return cached[1]
+
+        info: dict = {}
+        try:
+            # Single attempt with a short timeout via a thread — no sleep retry loop
+            loop = asyncio.get_event_loop()
+            info = await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: yf.Ticker(self._sym(symbol, market)).info),
+                timeout=8.0,
+            )
+        except asyncio.TimeoutError:
+            log.warning("get_fundamentals timeout for %s/%s — returning partial data", symbol, market)
+        except Exception as e:
+            log.warning("get_fundamentals failed for %s/%s: %s", symbol, market, e)
+
+        result = {
+            "symbol":          symbol,
+            "pe_ratio":        info.get("trailingPE"),
+            "pb_ratio":        info.get("priceToBook"),
+            "roe":             info.get("returnOnEquity"),
+            "debt_to_equity":  info.get("debtToEquity"),
+            "revenue_growth":  info.get("revenueGrowth"),
             "earnings_growth": info.get("earningsGrowth"),
-            "dividend_yield": info.get("dividendYield"),
-            "sector": info.get("sector"),
-            "industry": info.get("industry"),
-            "description": info.get("longBusinessSummary", "")[:500],
+            "dividend_yield":  info.get("dividendYield"),
+            "sector":          info.get("sector"),
+            "industry":        info.get("industry"),
+            "description":     info.get("longBusinessSummary", "")[:500],
         }
+
+        # Cache even partial results — better to return fast with partial data
+        # than block for 9s on retries. Cache for 1 hour if partial, 12h if full.
+        has_data = any(v is not None for v in [result["pe_ratio"], result["roe"], result["sector"]])
+        ttl = _FUND_TTL if has_data else 3600
+        _fundamentals_cache[key] = (time.time() - (_FUND_TTL - ttl), result)
+
+        return result
 
     async def search(self, query: str, market: str) -> list:
         from services.stock_universe import search_universe

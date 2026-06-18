@@ -96,8 +96,8 @@ export default function StockPage() {
     queryKey: ["quote", symbol, market],
     queryFn: () => fetchQuote(symbol, market),
     enabled: !isCrypto,
-    refetchInterval: 30_000,   // matches backend quote cache TTL (30s)
-    staleTime: 25_000,
+    refetchInterval: 60_000,   // backend Finnhub cache is 60s — no point polling faster
+    staleTime: 55_000,
     refetchOnWindowFocus: false,
   });
 
@@ -166,6 +166,8 @@ export default function StockPage() {
   const { data: news } = useQuery({
     queryKey: ["news", symbol, isCrypto ? "US" : market],
     queryFn: () => fetchNews(symbol, isCrypto ? "US" : market),
+    staleTime: 10 * 60_000,   // news doesn't change every second
+    refetchOnWindowFocus: false,
   });
 
   const { data: stockAccuracy } = useQuery({

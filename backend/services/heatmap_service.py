@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # TTL cache: { market -> (timestamp, result) }
 _heatmap_cache: dict[str, tuple[float, list]] = {}
-_HEATMAP_TTL = 180  # 3 minutes — market tiles don't need faster than this
+_HEATMAP_TTL = 300  # 5 minutes — market tiles don't need faster than this
 
 INDIA_SECTORS = {
     "Banking":    ["HDFCBANK", "ICICIBANK", "SBIN", "KOTAKBANK", "AXISBANK", "INDUSINDBK", "BANKBARODA", "PNB", "CANBK", "UNIONBANK", "FEDERALBNK", "IDFCFIRSTB", "INDIANB"],
