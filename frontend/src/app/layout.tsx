@@ -8,6 +8,7 @@ import { MobileNav } from "@/components/MobileNav";
 import { NavLinks } from "@/components/NavLinks";
 import { UserMenu } from "@/components/UserMenu";
 import { MarketStatusBar } from "@/components/MarketStatusBar";
+import { LiveClock } from "@/components/LiveClock";
 
 export const metadata: Metadata = {
   title: { default: "StockSense — AI Stock Predictor", template: "%s | StockSense" },
@@ -40,6 +41,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 StockSense
               </Link>
               <div className="flex-1 max-w-sm"><SearchBar /></div>
+              <LiveClock inline />
               <div className="ml-auto flex items-center gap-2">
                 <UserMenu />
                 <div className="lg:hidden">

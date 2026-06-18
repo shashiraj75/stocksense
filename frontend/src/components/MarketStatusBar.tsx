@@ -1,7 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
 import { getMarketStatus } from "@/utils/marketHours";
-import { LiveClock } from "@/components/LiveClock";
 import clsx from "clsx";
 
 const MARKETS = [
@@ -25,8 +24,6 @@ export function MarketStatusBar() {
   return (
     <div className="border-t border-dark-border/40 bg-dark-bg/60">
       <div className="max-w-7xl mx-auto px-4 py-1.5 flex flex-nowrap items-center gap-5 overflow-x-auto whitespace-nowrap">
-        <LiveClock inline />
-        <span className="text-gray-700 text-xs shrink-0">|</span>
         {statuses.map(({ key, label, flag, status }) => (
           <div key={key} className="flex items-center gap-1.5 shrink-0">
             <span className="text-sm leading-none">{flag}</span>
