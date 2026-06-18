@@ -5,10 +5,10 @@ import Link from "next/link";
 import clsx from "clsx";
 import {
   TrendingUp, TrendingDown, RotateCcw, ExternalLink, Beaker,
-  DollarSign, BarChart2, AlertTriangle, CheckCircle2, ShieldAlert,
+  BarChart2, AlertTriangle, CheckCircle2, ShieldAlert, Pencil, Check, X,
 } from "lucide-react";
 import {
-  fetchPaperPortfolio, closePaperTrade, resetPaperPortfolio,
+  fetchPaperPortfolio, closePaperTrade, resetPaperPortfolio, editPaperTrade,
   type PaperTrade,
 } from "@/utils/api";
 import { useSessionId } from "@/hooks/useSessionId";
@@ -31,8 +31,20 @@ function StatCard({ label, value, sub, positive }: { label: string; value: strin
   );
 }
 
-function OpenTradeRow({ trade, onSell }: { trade: PaperTrade; onSell: (t: PaperTrade) => void }) {
+function OpenTradeRow({ trade, onSell, sessionId }: { trade: PaperTrade; onSell: (t: PaperTrade) => void; sessionId: string }) {
   const currency = trade.market === "IN" ? "₹" : "$";
+  const queryClient = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [slInput, setSlInput] = useState(trade.stop_loss ? trade.stop_loss.toFixed(2) : "");
+
+  const editMutation = useMutation({
+    mutationFn: () => editPaperTrade(trade.id, sessionId, slInput ? parseFloat(slInput) : null),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["paper-portfolio"] });
+      setEditing(false);
+    },
+  });
+
   return (
     <tr className="border-b border-dark-border last:border-0 hover:bg-white/[0.02] transition-colors">
       <td className="px-4 py-3">
@@ -51,14 +63,49 @@ function OpenTradeRow({ trade, onSell }: { trade: PaperTrade; onSell: (t: PaperT
         <SignalBadge signal={trade.signal as any} size="sm" />
       </td>
       <td className="px-4 py-3">
-        {trade.stop_loss ? (
+        {editing ? (
           <div className="flex items-center gap-1">
-            <span className="font-mono text-xs text-yellow-400">
-              {currency}{fmt(trade.stop_loss)}
-            </span>
+            <input
+              type="number"
+              min={0}
+              step="0.01"
+              value={slInput}
+              onChange={e => setSlInput(e.target.value)}
+              placeholder="Price"
+              autoFocus
+              className="w-24 bg-dark-bg border border-yellow-500/50 rounded-lg px-2 py-1 text-xs font-mono text-white focus:outline-none"
+            />
+            <button
+              onClick={() => editMutation.mutate()}
+              disabled={editMutation.isPending}
+              className="p-1 rounded text-bull hover:bg-bull/10 transition-colors"
+            >
+              <Check size={13} />
+            </button>
+            <button
+              onClick={() => { setEditing(false); setSlInput(trade.stop_loss ? trade.stop_loss.toFixed(2) : ""); }}
+              className="p-1 rounded text-gray-400 hover:bg-white/10 transition-colors"
+            >
+              <X size={13} />
+            </button>
           </div>
         ) : (
-          <span className="text-xs text-gray-600">—</span>
+          <div className="flex items-center gap-1.5 group">
+            {trade.stop_loss ? (
+              <span className="font-mono text-xs text-yellow-400">
+                {currency}{fmt(trade.stop_loss)}
+              </span>
+            ) : (
+              <span className="text-xs text-gray-600">—</span>
+            )}
+            <button
+              onClick={() => setEditing(true)}
+              className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded text-gray-500 hover:text-white"
+              title="Edit stop loss"
+            >
+              <Pencil size={11} />
+            </button>
+          </div>
         )}
       </td>
       <td className="px-4 py-3 text-xs text-gray-500">
@@ -289,7 +336,7 @@ export default function PaperTradingPage() {
                 </thead>
                 <tbody>
                   {openTrades.map(t => (
-                    <OpenTradeRow key={t.id} trade={t} onSell={setSellTarget} />
+                    <OpenTradeRow key={t.id} trade={t} onSell={setSellTarget} sessionId={sessionId} />
                   ))}
                 </tbody>
               </table>

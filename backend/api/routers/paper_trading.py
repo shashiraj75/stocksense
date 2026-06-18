@@ -48,6 +48,10 @@ class SellRequest(BaseModel):
     session_id: str
     price: float          # current live price passed from frontend
 
+class EditRequest(BaseModel):
+    session_id: str
+    stop_loss: float | None = None
+
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
@@ -185,6 +189,25 @@ def paper_sell(trade_id: int, req: SellRequest):
         "pnl_pct": round((req.price - ep) / ep * 100, 2),
         "proceeds": round(proceeds, 2),
     }
+
+
+@router.patch("/trade/{trade_id}")
+def edit_trade(trade_id: int, req: EditRequest):
+    with _conn() as conn:
+        trade = conn.execute(
+            "SELECT session_id, status FROM paper_trades WHERE id = %s", (trade_id,)
+        ).fetchone()
+        if trade is None:
+            raise HTTPException(status_code=404, detail="Trade not found")
+        if trade[0] != req.session_id:
+            raise HTTPException(status_code=403, detail="Not your trade")
+        if trade[1] != "OPEN":
+            raise HTTPException(status_code=400, detail="Cannot edit a closed trade")
+        conn.execute(
+            "UPDATE paper_trades SET stop_loss = %s WHERE id = %s",
+            (req.stop_loss, trade_id)
+        )
+    return {"message": "Trade updated", "trade_id": trade_id, "stop_loss": req.stop_loss}
 
 
 @router.post("/reset")
