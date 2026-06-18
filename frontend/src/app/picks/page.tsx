@@ -3,7 +3,8 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { api } from "@/utils/api";
-import { TrendingUp, Clock, AlertCircle, ChevronDown, ChevronUp, Loader2 } from "lucide-react";
+import { TrendingUp, Clock, AlertCircle, ChevronDown, ChevronUp, Loader2, Target, ShieldAlert, Zap } from "lucide-react";
+import clsx from "clsx";
 
 type ReasonItem = { indicator: string; signal: string; reason: string };
 
@@ -81,6 +82,12 @@ const SIGNAL_COLOR: Record<string, string> = {
   HOLD: "text-yellow-400", NEUTRAL: "text-gray-400", INFO: "text-blue-400",
 };
 
+const SIGNAL_ICON: Record<string, string> = {
+  BUY: "▲", BULLISH: "▲",
+  SELL: "▼", BEARISH: "▼",
+  HOLD: "→", NEUTRAL: "→", INFO: "·",
+};
+
 const INDICATOR_GROUP: Record<string, string> = {
   RSI: "Technical", MACD: "Technical", EMA: "Technical", SMA: "Technical",
   Momentum: "Technical", Volume: "Technical", Candlestick: "Technical",
@@ -93,6 +100,14 @@ const INDICATOR_GROUP: Record<string, string> = {
   Sector: "Quality Factors", Valuation: "Quality Factors",
   Risk: "Quality Factors", Liquidity: "Quality Factors",
   "Corp. Actions": "Quality Factors", Quality: "Quality Factors",
+};
+
+const GROUP_ORDER = ["Technical", "Fundamental", "Market", "Global Macro", "Sentiment", "Quality Factors", "Other"];
+
+const SCORE_BAND_STYLE: Record<string, string> = {
+  "STRONG BUY": "bg-green-500/20 text-green-300 border-green-500/40",
+  "BUY":        "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
+  "HOLD":       "bg-yellow-500/15 text-yellow-400 border-yellow-500/30",
 };
 
 function ScoreBar({ label, value, color }: { label: string; value: number; color: string }) {
@@ -109,7 +124,28 @@ function ScoreBar({ label, value, color }: { label: string; value: number; color
   );
 }
 
-function PickCard({ pick }: { pick: Pick }) {
+// Top 3 most impactful reason items — shown inline on the card
+function TopReasons({ reasoning }: { reasoning: ReasonItem[] }) {
+  // Prefer BULLISH/BUY signals first, then INFO, skip NEUTRAL fillers
+  const priority = reasoning.filter(r => ["BUY", "BULLISH", "BEARISH", "SELL"].includes(r.signal));
+  const rest = reasoning.filter(r => !["BUY", "BULLISH", "BEARISH", "SELL"].includes(r.signal));
+  const top = [...priority, ...rest].slice(0, 3);
+  if (!top.length) return null;
+  return (
+    <div className="space-y-1.5 mb-3">
+      {top.map((r, i) => (
+        <div key={i} className="flex items-start gap-2">
+          <span className={clsx("text-xs font-bold mt-0.5 flex-shrink-0 tabular-nums", SIGNAL_COLOR[r.signal] ?? "text-gray-400")}>
+            {SIGNAL_ICON[r.signal] ?? "·"}
+          </span>
+          <p className="text-xs text-gray-300 leading-relaxed">{r.reason}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PickCard({ pick, rank }: { pick: Pick; rank: number }) {
   const router = useRouter();
   const [expanded, setExpanded] = useState(false);
 
@@ -117,37 +153,54 @@ function PickCard({ pick }: { pick: Pick }) {
     ? (((pick.target - pick.price) / pick.price) * 100).toFixed(1)
     : null;
 
-  // Group reasoning by category
+  const sector = pick.quality_factors?.sector;
+  const piotroski = pick.quality_factors?.piotroski;
+
+  // Group reasoning by category for expanded section
   const grouped: Record<string, ReasonItem[]> = {};
   for (const r of pick.reasoning ?? []) {
     const group = INDICATOR_GROUP[r.indicator] ?? "Other";
     if (!grouped[group]) grouped[group] = [];
     grouped[group].push(r);
   }
+  const orderedGroups = GROUP_ORDER.filter(g => grouped[g]?.length);
 
   return (
-    <div className="bg-dark-card border border-dark-border rounded-xl overflow-hidden hover:border-green-500/50 transition-all hover:shadow-lg hover:shadow-green-500/5 group">
-      {/* Clickable header — navigates to stock page */}
+    <div className="bg-dark-card border border-dark-border rounded-xl overflow-hidden hover:border-green-500/40 transition-all hover:shadow-lg hover:shadow-green-500/5 group flex flex-col">
+
+      {/* Rank ribbon */}
+      <div className="flex items-center gap-3 px-4 pt-3 pb-0">
+        <span className="text-xs font-bold text-gray-600">#{rank}</span>
+        {/* Score band */}
+        {pick.score_band && (
+          <span className={clsx("text-xs font-bold px-2 py-0.5 rounded border tracking-wide", SCORE_BAND_STYLE[pick.score_band] ?? "bg-gray-500/20 text-gray-400 border-gray-500/30")}>
+            {pick.score_band}
+          </span>
+        )}
+        {/* Sector tag */}
+        {sector && (
+          <span className="text-xs px-2 py-0.5 rounded bg-dark-border text-gray-400">{sector}</span>
+        )}
+        {/* Sentiment badge */}
+        {pick.sentiment && pick.sentiment !== "NEUTRAL" && (
+          <span className={clsx("text-xs px-1.5 py-0.5 rounded border ml-auto",
+            pick.sentiment === "BULLISH" ? "bg-green-500/10 text-green-400 border-green-500/20" : "bg-red-500/10 text-red-400 border-red-500/20")}>
+            📰 {pick.sentiment === "BULLISH" ? "Bullish News" : "Bearish News"}
+          </span>
+        )}
+      </div>
+
+      {/* Main card body — clickable */}
       <div
         onClick={() => router.push(`/stock/${pick.symbol}?market=IN`)}
-        className="p-4 cursor-pointer"
+        className="p-4 cursor-pointer flex-1"
       >
-        {/* Top row: symbol + price */}
-        <div className="flex items-start justify-between mb-3">
+        {/* Symbol + price row */}
+        <div className="flex items-start justify-between mb-2">
           <div>
-            <div className="flex items-center gap-2">
-              <span className="font-mono font-bold text-white text-lg group-hover:text-green-400 transition-colors">
-                {pick.symbol}
-              </span>
-              <span className="text-xs px-2 py-0.5 rounded-full bg-green-500/15 text-green-400 font-semibold border border-green-500/30">
-                BUY
-              </span>
-              {pick.sentiment && pick.sentiment !== "NEUTRAL" && (
-                <span className={`text-xs px-1.5 py-0.5 rounded border ${pick.sentiment === "BULLISH" ? "bg-green-500/10 text-green-400 border-green-500/20" : "bg-red-500/10 text-red-400 border-red-500/20"}`}>
-                  {pick.sentiment === "BULLISH" ? "📰 Bullish News" : "📰 Bearish News"}
-                </span>
-              )}
-            </div>
+            <span className="font-mono font-bold text-white text-lg group-hover:text-green-400 transition-colors">
+              {pick.symbol}
+            </span>
             <p className="text-xs text-gray-500 mt-0.5 truncate max-w-[200px]">{pick.name}</p>
           </div>
           <div className="text-right">
@@ -156,38 +209,22 @@ function PickCard({ pick }: { pick: Pick }) {
           </div>
         </div>
 
-        {/* AI Confidence + portfolio weight row */}
-        <div className="mb-3 space-y-2">
-          <div>
-            <div className="flex justify-between text-xs text-gray-500 mb-1">
-              <span>AI Confidence</span>
-              <span className="text-white font-medium">{pick.confidence}%</span>
-            </div>
-            <div className="h-1.5 bg-dark-border rounded-full overflow-hidden">
-              <div className="h-full bg-gradient-to-r from-green-500 to-emerald-400 rounded-full"
-                style={{ width: `${pick.confidence}%` }} />
-            </div>
+        {/* AI Confidence bar */}
+        <div className="mb-3">
+          <div className="flex justify-between text-xs text-gray-500 mb-1">
+            <span>AI Confidence</span>
+            <span className="text-white font-medium">{pick.confidence}%</span>
           </div>
-          {pick.portfolio_weight != null && (
-            <div>
-              <div className="flex justify-between text-xs text-gray-500 mb-1">
-                <span>Suggested Allocation</span>
-                <span className={`font-semibold ${pick.portfolio_weight >= 0.30 ? "text-green-400" : "text-yellow-400"}`}>
-                  {Math.round(pick.portfolio_weight * 100)}%
-                </span>
-              </div>
-              <div className="h-1.5 bg-dark-border rounded-full overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-blue-500 to-indigo-400 rounded-full"
-                  style={{ width: `${Math.round(pick.portfolio_weight * 100)}%` }} />
-              </div>
-            </div>
-          )}
+          <div className="h-1.5 bg-dark-border rounded-full overflow-hidden">
+            <div className="h-full bg-gradient-to-r from-green-500 to-emerald-400 rounded-full"
+              style={{ width: `${pick.confidence}%` }} />
+          </div>
         </div>
 
         {/* Price targets row */}
         <div className="grid grid-cols-3 gap-2 mb-3">
           <div className="bg-dark-border/40 rounded-lg p-2 text-center">
-            <p className="text-xs text-gray-500 mb-0.5">Entry Zone</p>
+            <p className="text-[10px] text-gray-500 mb-0.5">Entry Zone</p>
             <p className="text-xs text-white font-mono">
               {pick.entry_low && pick.entry_high
                 ? `₹${pick.entry_low.toLocaleString("en-IN")}–${pick.entry_high.toLocaleString("en-IN")}`
@@ -195,64 +232,81 @@ function PickCard({ pick }: { pick: Pick }) {
             </p>
           </div>
           <div className="bg-green-500/10 rounded-lg p-2 text-center border border-green-500/20">
-            <p className="text-xs text-gray-500 mb-0.5">Target</p>
+            <p className="text-[10px] text-gray-500 mb-0.5 flex items-center justify-center gap-1"><Target size={9} />Target</p>
             <p className="text-xs text-green-400 font-mono font-semibold">₹{pick.target?.toLocaleString("en-IN")}</p>
           </div>
           <div className="bg-red-500/10 rounded-lg p-2 text-center border border-red-500/20">
-            <p className="text-xs text-gray-500 mb-0.5">Stop Loss</p>
+            <p className="text-[10px] text-gray-500 mb-0.5 flex items-center justify-center gap-1"><ShieldAlert size={9} />Stop Loss</p>
             <p className="text-xs text-red-400 font-mono font-semibold">
               {pick.stop_loss ? `₹${pick.stop_loss.toLocaleString("en-IN")}` : "—"}
             </p>
           </div>
         </div>
 
-        {pick.risk_reward && (
-          <div className="flex items-center gap-1 text-xs text-gray-500 mb-3">
-            <span>Risk:Reward</span>
-            <span className="text-white font-semibold">1 : {pick.risk_reward.toFixed(1)}</span>
-          </div>
-        )}
+        {/* Risk:reward + Piotroski inline */}
+        <div className="flex items-center gap-3 text-xs text-gray-500 mb-3">
+          {pick.risk_reward && (
+            <span>R:R <span className="text-white font-semibold">1:{pick.risk_reward.toFixed(1)}</span></span>
+          )}
+          {piotroski != null && (
+            <span className={clsx("px-1.5 py-0.5 rounded font-semibold",
+              piotroski >= 7 ? "bg-green-500/20 text-green-400" : piotroski <= 3 ? "bg-red-500/20 text-red-400" : "bg-yellow-500/20 text-yellow-400")}>
+              Piotroski {piotroski}/9
+            </span>
+          )}
+          {pick.portfolio_weight != null && (
+            <span className="ml-auto">
+              Allocation <span className={clsx("font-semibold", pick.portfolio_weight >= 0.30 ? "text-green-400" : "text-yellow-400")}>
+                {Math.round(pick.portfolio_weight * 100)}%
+              </span>
+            </span>
+          )}
+        </div>
 
-        {/* Smart Summary */}
+        {/* Top 3 key reasons — visible without expanding */}
+        <TopReasons reasoning={pick.reasoning ?? []} />
+
+        {/* AI Summary */}
         {pick.summary && (
-          <div className="bg-dark-border/30 rounded-lg p-3 mb-1 border border-dark-border">
-            <p className="text-xs text-gray-300 leading-relaxed">{pick.summary}</p>
+          <div className="bg-dark-border/30 rounded-lg p-3 border border-dark-border">
+            <p className="text-xs text-gray-400 leading-relaxed">{pick.summary}</p>
           </div>
         )}
       </div>
 
-      {/* Expandable deep reasoning */}
+      {/* Expand toggle */}
       <button
         onClick={() => setExpanded(e => !e)}
         className="w-full flex items-center justify-between px-4 py-2.5 border-t border-dark-border text-xs text-gray-500 hover:text-white hover:bg-dark-border/20 transition-colors"
       >
-        <span className="font-medium">View detailed analysis</span>
+        <span className="font-medium flex items-center gap-1.5"><Zap size={11} /> Full factor analysis</span>
         {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
       </button>
 
       {expanded && (
         <div className="px-4 pb-4 space-y-4 border-t border-dark-border bg-black/20">
-          {/* Cross-sectional ranking (z-scores) */}
+
+          {/* Universe rank z-scores */}
           {pick.factor_zscores && (
             <div className="pt-3 space-y-2">
               <div className="flex items-center justify-between">
-                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Universe Rank (vs Nifty 100)</p>
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Universe Rank vs Nifty 100</p>
                 {pick.combined_alpha != null && (
-                  <span className={`text-xs font-semibold px-2 py-0.5 rounded ${pick.combined_alpha > 0.5 ? "bg-green-500/20 text-green-400" : pick.combined_alpha < -0.3 ? "bg-red-500/20 text-red-400" : "bg-yellow-500/20 text-yellow-400"}`}>
+                  <span className={clsx("text-xs font-semibold px-2 py-0.5 rounded",
+                    pick.combined_alpha > 0.5 ? "bg-green-500/20 text-green-400" : pick.combined_alpha < -0.3 ? "bg-red-500/20 text-red-400" : "bg-yellow-500/20 text-yellow-400")}>
                     α {pick.combined_alpha > 0 ? "+" : ""}{pick.combined_alpha.toFixed(2)}
                   </span>
                 )}
               </div>
-              <p className="text-xs text-gray-500">How this stock ranks vs the full Nifty 100 universe on each factor (σ = standard deviations above/below average)</p>
+              <p className="text-xs text-gray-500">Standard deviations (σ) above/below the Nifty 100 average</p>
               {([
                 ["tech",      "Technical Momentum", "text-blue-400"],
-                ["fund",      "Fundamentals",        "text-purple-400"],
-                ["sentiment", "News Sentiment",      "text-yellow-400"],
-                ["quality",   "Quality / ROIC",      "text-green-400"],
+                ["fund",      "Fundamentals",       "text-purple-400"],
+                ["sentiment", "News Sentiment",     "text-yellow-400"],
+                ["quality",   "Quality / ROIC",     "text-green-400"],
               ] as [keyof FactorZScores, string, string][]).map(([key, label, color]) => {
                 const z = pick.factor_zscores?.[key];
                 if (z == null) return null;
-                // Map z-score (-3 to +3) → 0–100 for bar display
                 const pct = Math.round(Math.min(100, Math.max(0, (z + 3) / 6 * 100)));
                 const zColor = z > 0.5 ? "text-green-400" : z < -0.5 ? "text-red-400" : "text-yellow-400";
                 return (
@@ -262,7 +316,8 @@ function PickCard({ pick }: { pick: Pick }) {
                       <span className={`font-mono font-semibold ${zColor}`}>{z > 0 ? "+" : ""}{z.toFixed(2)}σ</span>
                     </div>
                     <div className="h-1.5 bg-dark-border rounded-full overflow-hidden">
-                      <div className={`h-full rounded-full transition-all ${z > 0.5 ? "bg-green-500" : z < -0.5 ? "bg-red-500" : "bg-yellow-500"}`} style={{ width: `${pct}%` }} />
+                      <div className={clsx("h-full rounded-full transition-all", z > 0.5 ? "bg-green-500" : z < -0.5 ? "bg-red-500" : "bg-yellow-500")}
+                        style={{ width: `${pct}%` }} />
                     </div>
                   </div>
                 );
@@ -272,28 +327,16 @@ function PickCard({ pick }: { pick: Pick }) {
 
           {/* Core signal scores */}
           <div className={pick.factor_zscores ? "space-y-2" : "pt-3 space-y-2"}>
-            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Core Signal Scores (Absolute)</p>
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Absolute Signal Scores</p>
             {pick.tech_score != null && <ScoreBar label="Technical" value={pick.tech_score} color="text-blue-400" />}
             {pick.fund_score != null && <ScoreBar label="Fundamental" value={pick.fund_score} color="text-purple-400" />}
             <ScoreBar label="AI Confidence" value={pick.confidence} color="text-green-400" />
           </div>
 
-          {/* Quality Factor Radar */}
+          {/* Quality factors breakdown */}
           {pick.quality_factors?.breakdown && Object.keys(pick.quality_factors.breakdown).length > 0 && (
             <div className="space-y-2">
-              <div className="flex items-center justify-between flex-wrap gap-2">
-                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Professional Quality Factors</p>
-                <div className="flex items-center gap-2 text-xs">
-                  {pick.quality_factors.sector && (
-                    <span className="px-1.5 py-0.5 bg-dark-border rounded text-gray-400">{pick.quality_factors.sector}</span>
-                  )}
-                  {pick.quality_factors.piotroski != null && (
-                    <span className={`px-1.5 py-0.5 rounded font-semibold ${pick.quality_factors.piotroski >= 7 ? "bg-green-500/20 text-green-400" : pick.quality_factors.piotroski <= 3 ? "bg-red-500/20 text-red-400" : "bg-yellow-500/20 text-yellow-400"}`}>
-                      Piotroski {pick.quality_factors.piotroski}/9
-                    </span>
-                  )}
-                </div>
-              </div>
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Quality Factors</p>
               {([
                 ["earnings_revision", "Earnings Revisions"],
                 ["institutional",     "Institutional Ownership"],
@@ -314,22 +357,30 @@ function PickCard({ pick }: { pick: Pick }) {
             </div>
           )}
 
-          {/* Grouped reasoning */}
-          {Object.entries(grouped).map(([group, items]) => (
-            <div key={group}>
-              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1.5">{group}</p>
-              <div className="space-y-1.5">
-                {items.map((r, i) => (
-                  <div key={i} className="flex items-start gap-2">
-                    <span className={`text-xs font-semibold mt-0.5 flex-shrink-0 w-16 ${SIGNAL_COLOR[r.signal] ?? "text-gray-400"}`}>
-                      {r.signal}
-                    </span>
-                    <p className="text-xs text-gray-300 leading-relaxed">{r.reason}</p>
+          {/* Full grouped reasoning — all signals */}
+          {orderedGroups.length > 0 && (
+            <div className="space-y-3">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">All Signals</p>
+              {orderedGroups.map(group => (
+                <div key={group}>
+                  <p className="text-xs font-semibold text-gray-600 mb-1.5">{group}</p>
+                  <div className="space-y-1.5">
+                    {grouped[group].map((r, i) => (
+                      <div key={i} className="flex items-start gap-2">
+                        <span className={clsx("text-xs font-bold mt-0.5 flex-shrink-0", SIGNAL_COLOR[r.signal] ?? "text-gray-400")}>
+                          {SIGNAL_ICON[r.signal] ?? "·"}
+                        </span>
+                        <div className="min-w-0">
+                          <span className="text-[10px] text-gray-600 mr-1">{r.indicator}</span>
+                          <span className="text-xs text-gray-300 leading-relaxed">{r.reason}</span>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
       )}
     </div>
@@ -357,10 +408,13 @@ export default function DailyPicksPage() {
       })
     : null;
 
+  const alphaForHorizon = data?.alpha_engine?.[horizon];
+
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
+
       {/* Header */}
-      <div className="flex items-start justify-between">
+      <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <div className="flex items-center gap-3 mb-1">
             <TrendingUp size={24} className="text-green-400" />
@@ -378,15 +432,53 @@ export default function DailyPicksPage() {
           const ageHours = genMs ? Math.floor((Date.now() - genMs) / 3_600_000) : 0;
           const isStale = ageHours >= 4;
           return (
-            <div className={`flex items-center gap-1.5 text-xs bg-dark-card border rounded-lg px-3 py-2 flex-shrink-0 ${isStale ? "border-yellow-500/40 text-yellow-400" : "border-dark-border text-gray-500"}`}>
+            <div className={clsx("flex items-center gap-1.5 text-xs bg-dark-card border rounded-lg px-3 py-2 flex-shrink-0",
+              isStale ? "border-yellow-500/40 text-yellow-400" : "border-dark-border text-gray-500")}>
               <Clock size={12} />
-              <span>Updated {generatedAt}{isStale ? ` (${ageHours}h ago — may be stale)` : ""}</span>
+              <span>Updated {generatedAt}{isStale ? ` · ${ageHours}h ago` : ""}</span>
             </div>
           );
         })()}
       </div>
 
-      {/* Global Macro Snapshot — sourced from first pick's global_context */}
+      {/* Market regime + alpha engine — compact single row */}
+      {(data?.regime || alphaForHorizon) && (
+        <div className="bg-dark-card border border-dark-border rounded-xl px-4 py-3 flex flex-wrap items-center gap-3 text-xs">
+          {data?.regime && (() => {
+            const regimeColors: Record<string, string> = {
+              BULL_CALM:     "bg-green-500/20 text-green-400 border-green-500/30",
+              BULL_VOLATILE: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30",
+              BEAR_CALM:     "bg-orange-500/20 text-orange-400 border-orange-500/30",
+              BEAR_PANIC:    "bg-red-500/20 text-red-400 border-red-500/30",
+            };
+            const cls = regimeColors[data.regime.label] || "bg-gray-500/20 text-gray-400 border-gray-500/30";
+            return (
+              <>
+                <span className="text-gray-500 font-medium">Market Regime</span>
+                <span className={clsx("px-2 py-0.5 rounded-full border font-semibold", cls)}>
+                  {data.regime.label.replace("_", " ")}
+                </span>
+                <span className="text-gray-600 hidden sm:inline">{data.regime.description}</span>
+              </>
+            );
+          })()}
+          {alphaForHorizon && (
+            <>
+              <span className="h-4 w-px bg-dark-border hidden sm:block" />
+              <span className="text-gray-500 font-medium">AI Engine</span>
+              <span className={clsx("px-2 py-0.5 rounded font-semibold",
+                alphaForHorizon.meta_model ? "text-green-400 bg-green-500/10" : "text-gray-400 bg-dark-border")}>
+                {alphaForHorizon.meta_model ? "✓ Meta-model active" : "Learning…"}
+              </span>
+              {alphaForHorizon.n_buy != null && alphaForHorizon.n_scored != null && (
+                <span className="text-gray-600">{alphaForHorizon.n_buy} BUY signals from {alphaForHorizon.n_scored} stocks scored</span>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Global Macro Snapshot */}
       {(() => {
         const allPicks = [...(data?.picks?.short ?? []), ...(data?.picks?.medium ?? []), ...(data?.picks?.long ?? [])];
         const ctx = (allPicks[0] as any)?.global_context as GlobalContext | undefined;
@@ -394,93 +486,37 @@ export default function DailyPicksPage() {
         const l = ctx.levels ?? {};
         const c = ctx.changes ?? {};
         const macroItems = [
-          { label: "S&P 500", value: c.sp500 != null ? `${c.sp500 > 0 ? "+" : ""}${c.sp500.toFixed(1)}%` : null, positive: (c.sp500 ?? 0) >= 0 },
-          { label: "NASDAQ", value: c.nasdaq != null ? `${c.nasdaq > 0 ? "+" : ""}${c.nasdaq.toFixed(1)}%` : null, positive: (c.nasdaq ?? 0) >= 0 },
-          { label: "Brent Crude", value: c.crude_brent != null ? `${c.crude_brent > 0 ? "+" : ""}${c.crude_brent.toFixed(1)}%` : null, positive: (c.crude_brent ?? 0) <= 0 },
-          { label: "Gold", value: c.gold != null ? `${c.gold > 0 ? "+" : ""}${c.gold.toFixed(1)}%` : null, positive: true },
-          { label: "USD/INR", value: l.usdinr != null ? `₹${l.usdinr.toFixed(1)}` : null, positive: true },
-          { label: "VIX", value: l.vix != null ? l.vix.toFixed(1) : null, positive: (l.vix ?? 99) < 20 },
-          { label: "DXY", value: l.dxy != null ? l.dxy.toFixed(1) : null, positive: (l.dxy ?? 999) < 102 },
-          { label: "US 10Y", value: l.us10y != null ? `${l.us10y.toFixed(2)}%` : null, positive: (l.us10y ?? 99) < 4.5 },
+          { label: "S&P 500",    value: c.sp500 != null      ? `${c.sp500 > 0 ? "+" : ""}${c.sp500.toFixed(1)}%`       : null, pos: (c.sp500 ?? 0) >= 0 },
+          { label: "NASDAQ",     value: c.nasdaq != null     ? `${c.nasdaq > 0 ? "+" : ""}${c.nasdaq.toFixed(1)}%`     : null, pos: (c.nasdaq ?? 0) >= 0 },
+          { label: "Brent",      value: c.crude_brent != null ? `${c.crude_brent > 0 ? "+" : ""}${c.crude_brent.toFixed(1)}%` : null, pos: (c.crude_brent ?? 0) <= 0 },
+          { label: "Gold",       value: c.gold != null       ? `${c.gold > 0 ? "+" : ""}${c.gold.toFixed(1)}%`         : null, pos: true },
+          { label: "USD/INR",    value: l.usdinr != null     ? `₹${l.usdinr.toFixed(1)}`                               : null, pos: true },
+          { label: "VIX",        value: l.vix != null        ? l.vix.toFixed(1)                                        : null, pos: (l.vix ?? 99) < 20 },
+          { label: "US 10Y",     value: l.us10y != null      ? `${l.us10y.toFixed(2)}%`                                : null, pos: (l.us10y ?? 99) < 4.5 },
         ].filter(i => i.value !== null);
         if (!macroItems.length) return null;
         return (
           <div className="bg-dark-card border border-dark-border rounded-xl p-4">
-            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">🌍 Global Macro Snapshot (at time of pick generation)</p>
-            <div className="flex flex-wrap gap-3">
-              {macroItems.map(({ label, value, positive }) => (
-                <div key={label} className="flex flex-col items-center bg-dark-border/40 rounded-lg px-3 py-2 min-w-[70px]">
-                  <span className="text-xs text-gray-500 mb-0.5">{label}</span>
-                  <span className={`text-xs font-bold font-mono ${positive ? "text-green-400" : "text-red-400"}`}>{value}</span>
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">🌍 Global Macro at Pick Generation</p>
+            <div className="flex flex-wrap gap-2">
+              {macroItems.map(({ label, value, pos }) => (
+                <div key={label} className="flex items-center gap-1.5 bg-dark-border/50 rounded-lg px-3 py-1.5">
+                  <span className="text-xs text-gray-500">{label}</span>
+                  <span className={clsx("text-xs font-bold font-mono", pos ? "text-green-400" : "text-red-400")}>{value}</span>
                 </div>
               ))}
-            </div>
-            {ctx.score != null && (
-              <div className="mt-3 flex items-center gap-2">
-                <span className="text-xs text-gray-500">Global Macro Score</span>
-                <div className="flex-1 h-1.5 bg-dark-border rounded-full overflow-hidden max-w-[120px]">
-                  <div className={`h-full rounded-full ${ctx.score >= 55 ? "bg-green-500" : ctx.score <= 45 ? "bg-red-500" : "bg-yellow-500"}`}
-                    style={{ width: `${ctx.score}%` }} />
+              {ctx.score != null && (
+                <div className="flex items-center gap-1.5 bg-dark-border/50 rounded-lg px-3 py-1.5">
+                  <span className="text-xs text-gray-500">Macro</span>
+                  <span className={clsx("text-xs font-bold", ctx.score >= 55 ? "text-green-400" : ctx.score <= 45 ? "text-red-400" : "text-yellow-400")}>
+                    {ctx.score >= 55 ? "Supportive" : ctx.score <= 45 ? "Headwind" : "Neutral"}
+                  </span>
                 </div>
-                <span className={`text-xs font-semibold ${ctx.score >= 55 ? "text-green-400" : ctx.score <= 45 ? "text-red-400" : "text-yellow-400"}`}>
-                  {ctx.score >= 55 ? "Supportive" : ctx.score <= 45 ? "Headwind" : "Neutral"} ({ctx.score}/100)
-                </span>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         );
       })()}
-
-      {/* Alpha Engine Status Banner */}
-      {data?.alpha_engine && data?.regime && (
-        <div className="bg-dark-card border border-dark-border rounded-xl p-4 space-y-3">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">🧠 Learning Alpha Engine</p>
-            <div className="flex items-center gap-2">
-              {(() => {
-                const regimeColors: Record<string, string> = {
-                  BULL_CALM:     "bg-green-500/20 text-green-400 border-green-500/30",
-                  BULL_VOLATILE: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30",
-                  BEAR_CALM:     "bg-orange-500/20 text-orange-400 border-orange-500/30",
-                  BEAR_PANIC:    "bg-red-500/20 text-red-400 border-red-500/30",
-                };
-                const label = data.regime!.label;
-                const cls = regimeColors[label] || "bg-gray-500/20 text-gray-400 border-gray-500/30";
-                return (
-                  <span className={`text-xs px-2 py-0.5 rounded-full border font-semibold ${cls}`}>
-                    {label.replace("_", " ")}
-                  </span>
-                );
-              })()}
-            </div>
-          </div>
-          <p className="text-xs text-gray-500">{data.regime.description}</p>
-          <div className="flex flex-wrap gap-4">
-            {(["short", "medium", "long"] as const).map(h => {
-              const meta = data.alpha_engine![h];
-              if (!meta) return null;
-              const hasMetaModel = meta.meta_model;
-              return (
-                <div key={h} className="space-y-1.5 min-w-[140px]">
-                  <p className="text-xs font-semibold text-gray-400 capitalize">{h}-term IC weights</p>
-                  {Object.entries(meta.ic_weights ?? {}).map(([factor, weight]) => (
-                    <div key={factor} className="flex items-center gap-2">
-                      <span className="text-xs text-gray-500 w-16 capitalize">{factor}</span>
-                      <div className="flex-1 h-1 bg-dark-border rounded-full overflow-hidden">
-                        <div className="h-full bg-blue-500 rounded-full" style={{ width: `${Math.round((weight as number) * 100)}%` }} />
-                      </div>
-                      <span className="text-xs text-gray-400 font-mono w-8 text-right">{Math.round((weight as number) * 100)}%</span>
-                    </div>
-                  ))}
-                  <p className={`text-xs mt-1 ${hasMetaModel ? "text-green-400" : "text-gray-500"}`}>
-                    {hasMetaModel ? "✓ Meta-model active" : "◻ IC-alpha (learning…)"}
-                  </p>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
 
       {/* Horizon tabs */}
       <div className="flex gap-2">
@@ -488,21 +524,21 @@ export default function DailyPicksPage() {
           <button
             key={key}
             onClick={() => setHorizon(key)}
-            className={`px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
+            className={clsx("px-4 py-2.5 rounded-xl text-sm font-medium transition-all",
               horizon === key
                 ? "bg-brand-500 text-white shadow-lg shadow-brand-500/20"
                 : "bg-dark-card border border-dark-border text-gray-400 hover:text-white"
-            }`}
+            )}
           >
             {label}
-            <span className={`ml-1.5 text-xs ${horizon === key ? "text-blue-200" : "text-gray-600"}`}>
+            <span className={clsx("ml-1.5 text-xs", horizon === key ? "text-blue-200" : "text-gray-600")}>
               ({sub})
             </span>
           </button>
         ))}
       </div>
 
-      {/* Cold-start banner */}
+      {/* Loading state */}
       {isLoading && (
         <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4 flex items-start gap-3">
           <Loader2 size={18} className="text-blue-400 mt-0.5 animate-spin shrink-0" />
@@ -515,7 +551,7 @@ export default function DailyPicksPage() {
         </div>
       )}
 
-      {/* Server error */}
+      {/* Error */}
       {queryError && !isLoading && (
         <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 flex items-start gap-3">
           <AlertCircle size={18} className="text-red-400 mt-0.5 shrink-0" />
@@ -526,17 +562,17 @@ export default function DailyPicksPage() {
         </div>
       )}
 
-      {/* Content */}
+      {/* Picks grid */}
       {isLoading ? (
         <div className="grid md:grid-cols-2 gap-4">
           {[...Array(5)].map((_, i) => (
-            <div key={i} className="bg-dark-card border border-dark-border rounded-xl p-4 animate-pulse h-64" />
+            <div key={i} className="bg-dark-card border border-dark-border rounded-xl p-4 animate-pulse h-72" />
           ))}
         </div>
       ) : picks.length > 0 ? (
         <div className="grid md:grid-cols-2 gap-4">
-          {picks.map((pick) => (
-            <PickCard key={pick.symbol} pick={pick} />
+          {picks.map((pick, i) => (
+            <PickCard key={pick.symbol} pick={pick} rank={i + 1} />
           ))}
         </div>
       ) : (
