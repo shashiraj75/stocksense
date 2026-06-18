@@ -45,7 +45,7 @@ export function MarketStatusInline() {
             </span>
           </div>
           {status.nextEventLabel && (
-            <span className="text-[10px] text-gray-600 leading-tight mt-0.5 pl-5">
+            <span className="text-[10px] text-gray-400 leading-tight mt-0.5 pl-5">
               {status.nextEventLabel}
             </span>
           )}
