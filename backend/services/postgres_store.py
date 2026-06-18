@@ -144,6 +144,29 @@ CREATE TABLE IF NOT EXISTS factor_ic_history (
     is_live       BOOLEAN NOT NULL DEFAULT FALSE
 );
 CREATE INDEX IF NOT EXISTS idx_factor_ic_lookup ON factor_ic_history(horizon, factor, window_days, computed_at DESC);
+
+CREATE TABLE IF NOT EXISTS paper_portfolio (
+    session_id   TEXT PRIMARY KEY,
+    cash         DOUBLE PRECISION NOT NULL DEFAULT 1000000.0,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS paper_trades (
+    id           BIGSERIAL PRIMARY KEY,
+    session_id   TEXT NOT NULL,
+    symbol       TEXT NOT NULL,
+    market       TEXT NOT NULL,
+    quantity     INTEGER NOT NULL,
+    entry_price  DOUBLE PRECISION NOT NULL,
+    exit_price   DOUBLE PRECISION,
+    status       TEXT NOT NULL DEFAULT 'OPEN',
+    signal       TEXT,
+    horizon      TEXT,
+    opened_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    closed_at    TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_paper_trades_session ON paper_trades(session_id, status);
 """
 
 

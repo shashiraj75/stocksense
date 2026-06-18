@@ -12,7 +12,8 @@ import { ConfidenceBreakdown } from "@/components/ConfidenceBreakdown";
 import { BullBearCase } from "@/components/BullBearCase";
 import { ScoreHistoryChart } from "@/components/ScoreHistoryChart";
 import clsx from "clsx";
-import { ArrowUpRight, ArrowDownRight, FlaskConical, CheckCircle, XCircle, Loader2 } from "lucide-react";
+import { ArrowUpRight, ArrowDownRight, FlaskConical, CheckCircle, XCircle, Loader2, Beaker } from "lucide-react";
+import { PaperTradeModal } from "@/components/PaperTradeModal";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { TradeLevelVisualizer } from "@/components/TradeLevelVisualizer";
 import { getMarketStatus } from "@/utils/marketHours";
@@ -88,6 +89,7 @@ export default function StockPage() {
   const [btError, setBtError] = useState("");
   const [isComputing, setIsComputing] = useState(false);
   const [computeSeconds, setComputeSeconds] = useState(0);
+  const [showPaperModal, setShowPaperModal] = useState(false);
 
   const horizon = tab === "backtest" ? "short" : tab === "history" ? "medium" : (tab as Horizon);
 
@@ -283,9 +285,20 @@ export default function StockPage() {
             </div>
           </>)}
         </div>
-        {tab !== "backtest" && prediction && !predLoading && (
-          <SignalBadge signal={prediction.signal} confidence={prediction.confidence} size="lg" />
-        )}
+        <div className="flex flex-col items-end gap-2">
+          {tab !== "backtest" && prediction && !predLoading && (
+            <SignalBadge signal={prediction.signal} confidence={prediction.confidence} size="lg" />
+          )}
+          {prediction?.signal && !predLoading && !isCrypto && (
+            <button
+              onClick={() => setShowPaperModal(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-dark-card border border-dark-border text-gray-400 hover:text-white hover:border-white/30 transition-colors"
+            >
+              <Beaker size={13} />
+              Paper Trade
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Tabs — Short / Medium / Long / Backtest for all markets */}
@@ -829,6 +842,19 @@ export default function StockPage() {
             </div>
           )}
         </div>
+      )}
+
+      {/* Paper Trade Modal */}
+      {showPaperModal && prediction && (
+        <PaperTradeModal
+          symbol={symbol}
+          market={market as "IN" | "US"}
+          currentPrice={prediction.current_price ?? quote?.price ?? 0}
+          signal={prediction.signal}
+          horizon={horizon}
+          currency={market === "IN" ? "₹" : "$"}
+          onClose={() => setShowPaperModal(false)}
+        />
       )}
     </div>
   );

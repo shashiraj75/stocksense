@@ -22,7 +22,8 @@ export const NAV_LINKS = [
   { href: "/portfolio",  label: "Portfolio" },
   { href: "/alerts",     label: "Alerts" },
   { href: "/watchlist",  label: "Watchlist" },
-  { href: "/validation", label: "Validation" },
+  { href: "/validation",    label: "Validation" },
+  { href: "/paper-trading", label: "Paper Trade" },
 ];
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

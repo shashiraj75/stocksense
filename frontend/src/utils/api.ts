@@ -141,3 +141,44 @@ export const fetchScoreHistory = (symbol: string, horizon: Horizon, days = 90) =
       { params: { horizon, days } }
     )
     .then((r) => r.data);
+
+// ─── Paper Trading ────────────────────────────────────────────────────────────
+
+export interface PaperTrade {
+  id: number;
+  symbol: string;
+  market: Market;
+  quantity: number;
+  entry_price: number;
+  exit_price: number | null;
+  status: "OPEN" | "CLOSED";
+  signal: string;
+  horizon: string;
+  opened_at: string;
+  closed_at: string | null;
+  invested: number;
+  realized_pnl?: number;
+}
+
+export interface PaperPortfolio {
+  session_id: string;
+  cash: number;
+  starting_cash: number;
+  open_trades: PaperTrade[];
+  closed_trades: PaperTrade[];
+  total_realized_pnl: number;
+}
+
+export const fetchPaperPortfolio = (sessionId: string) =>
+  api.get<PaperPortfolio>("/api/paper-trading/portfolio", { params: { session_id: sessionId } }).then((r) => r.data);
+
+export const placePaperBuy = (data: {
+  session_id: string; symbol: string; market: Market;
+  quantity: number; price: number; signal?: string; horizon?: string;
+}) => api.post("/api/paper-trading/buy", data).then((r) => r.data);
+
+export const closePaperTrade = (tradeId: number, sessionId: string, price: number) =>
+  api.post(`/api/paper-trading/sell/${tradeId}`, { session_id: sessionId, price }).then((r) => r.data);
+
+export const resetPaperPortfolio = (sessionId: string) =>
+  api.post("/api/paper-trading/reset", null, { params: { session_id: sessionId } }).then((r) => r.data);
