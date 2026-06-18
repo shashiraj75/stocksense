@@ -40,7 +40,7 @@ export function NavLinks({ links }: { links: NavLink[] }) {
     href === "/" ? pathname === "/" : pathname?.startsWith(href) ?? false;
 
   return (
-    <div className="hidden lg:flex items-center gap-4 ml-2 text-sm text-gray-400">
+    <div className="flex items-center gap-1 py-1 text-sm text-gray-400">
       {links.map(({ href, label, accent }) => {
         const active = isActive(href);
         return (
@@ -48,20 +48,18 @@ export function NavLinks({ links }: { links: NavLink[] }) {
             key={href}
             href={href}
             className={clsx(
-              "transition-colors pb-0.5",
+              "px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap",
               active
-                ? "text-white font-bold border-b-2 border-white"
+                ? "text-white font-semibold bg-white/10"
                 : accent
-                ? "font-medium text-green-400 hover:text-green-300"
-                : "hover:text-white",
-              active && accent && "text-green-400 border-green-400"
+                ? "font-medium text-green-400 hover:text-green-300 hover:bg-white/5"
+                : "hover:text-white hover:bg-white/5"
             )}
           >
             {label}
           </Link>
         );
       })}
-      {/* Live accuracy badge — shows after 10+ resolved predictions */}
       <AccuracyBadge />
     </div>
   );

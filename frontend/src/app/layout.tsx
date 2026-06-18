@@ -31,19 +31,25 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className="dark">
       <body className="bg-dark-bg text-white min-h-screen font-sans antialiased">
         <Providers>
-          <nav className="sticky top-0 z-10 border-b border-dark-border bg-dark-bg/80 backdrop-blur-md">
-            <div className="max-w-7xl mx-auto px-4 py-3 flex items-center gap-4">
+          <nav className="sticky top-0 z-10 border-b border-dark-border bg-dark-bg/90 backdrop-blur-md">
+            {/* Row 1: Logo · Search · Sign In */}
+            <div className="max-w-7xl mx-auto px-4 pt-3 pb-2 flex items-center gap-4">
               <Link href="/" className="flex items-center gap-2 text-brand-500 font-bold text-lg shrink-0">
                 <TrendingUp size={22} />
                 StockSense
               </Link>
-              <div className="flex-1 min-w-0 max-w-[180px] sm:max-w-xs"><SearchBar /></div>
-              {/* Desktop nav */}
-              <NavLinks links={NAV_LINKS} />
-              <UserMenu />
-              {/* Mobile hamburger */}
-              <div className="lg:hidden">
-                <MobileNav links={NAV_LINKS} />
+              <div className="flex-1 max-w-sm"><SearchBar /></div>
+              <div className="ml-auto flex items-center gap-2">
+                <UserMenu />
+                <div className="lg:hidden">
+                  <MobileNav links={NAV_LINKS} />
+                </div>
+              </div>
+            </div>
+            {/* Row 2: Nav links (desktop only) */}
+            <div className="hidden lg:block border-t border-dark-border/60">
+              <div className="max-w-7xl mx-auto px-4">
+                <NavLinks links={NAV_LINKS} />
               </div>
             </div>
           </nav>
