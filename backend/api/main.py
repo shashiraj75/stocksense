@@ -260,12 +260,38 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[startup] movers pre-warm failed: {e}")
 
+    # Catch-up validation: if server restarted after 6 AM IST and today's run
+    # was missed (e.g. due to deployment), fire it in the background.
+    async def _catchup_validation():
+        from datetime import datetime, timezone, timedelta
+        await asyncio.sleep(300)  # wait 5 min for server to fully settle
+        try:
+            IST = timezone(timedelta(hours=5, minutes=30))
+            now = datetime.now(IST)
+            today_6am = now.replace(hour=6, minute=0, second=0, microsecond=0)
+            if now < today_6am:
+                return  # before today's scheduled window — nothing to catch up
+            # Check when the last medium run was
+            from services.validation_engine import get_last_run_time
+            last_run = get_last_run_time("medium")
+            if last_run and last_run >= today_6am:
+                print("[catchup] validation already ran today — skipping")
+                return
+            from services.validation_engine import run_validation
+            print("[catchup] missed today's 6 AM validation — running now…")
+            loop2 = asyncio.get_running_loop()
+            await loop2.run_in_executor(None, lambda: run_validation(horizon="medium"))
+            print("[catchup] catch-up validation complete")
+        except Exception as e:
+            print(f"[catchup] validation catch-up error: {e}")
+
     task = asyncio.create_task(_weekly_refresh_loop())
     keepalive = asyncio.create_task(_keepalive_loop())
     outcome_task = asyncio.create_task(_outcome_resolver_loop())
     warmup_task = asyncio.create_task(_warmup_loop())
     crumb_task = asyncio.create_task(_yfinance_crumb_loop())
     validation_task = asyncio.create_task(_validation_schedule_loop())
+    catchup_task = asyncio.create_task(_catchup_validation())
     yield
     task.cancel()
     keepalive.cancel()

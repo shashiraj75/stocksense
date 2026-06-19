@@ -836,6 +836,30 @@ def get_run_status() -> dict:
         return dict(_run_status)
 
 
+def get_last_run_time(horizon: str = "medium"):
+    """Return the datetime of the most recent completed run for this horizon, or None."""
+    from datetime import datetime, timezone
+    try:
+        _init_db()
+        rows = _fetchall(
+            "SELECT run_at FROM val_runs WHERE horizon = %s ORDER BY id DESC LIMIT 1",
+            "SELECT run_at FROM val_runs WHERE horizon = ? ORDER BY id DESC LIMIT 1",
+            (horizon,),
+        )
+        if not rows:
+            return None
+        run_at_raw = rows[0][0] if _USE_POSTGRES else rows[0]["run_at"]
+        if isinstance(run_at_raw, datetime):
+            return run_at_raw.astimezone(timezone.utc).replace(tzinfo=timezone.utc)
+        # Parse ISO string
+        s = str(run_at_raw)
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("get_last_run_time failed: %s", e)
+        return None
+
+
 def get_all_run_summaries() -> list[dict]:
     """List of all past validation runs with key metrics."""
     try:
