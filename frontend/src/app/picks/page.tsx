@@ -31,6 +31,9 @@ type DailyPicksResponse = {
   picks: { short: Pick[]; medium: Pick[]; long: Pick[] };
   alpha_engine?: Record<string, AlphaEngineMeta>;
   regime?: { label: string; description: string };
+  screened_from?: number;
+  candidates?: number;
+  generating?: boolean;
 };
 
 type ValidationResult = {
@@ -452,7 +455,7 @@ function PickCard({ pick, rank }: { pick: Pick; rank: number }) {
           {pick.factor_zscores && (
             <div className="pt-3 space-y-2">
               <div className="flex items-center justify-between">
-                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Universe Rank vs Nifty 100</p>
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Universe Rank vs All NSE</p>
                 {pick.combined_alpha != null && (
                   <span className={clsx("text-xs font-semibold px-2 py-0.5 rounded",
                     pick.combined_alpha > 0.5 ? "bg-green-500/20 text-green-400" : pick.combined_alpha < -0.3 ? "bg-red-500/20 text-red-400" : "bg-yellow-500/20 text-yellow-400")}>
@@ -574,7 +577,9 @@ export default function DailyPicksPage() {
               🇮🇳 NSE India
             </span>
           </div>
-          <p className="text-sm text-gray-400">Top 5 AI-selected BUY calls from Nifty 100 — refreshed every market day at 9 AM IST</p>
+          <p className="text-sm text-gray-400">
+            Top 5 AI-selected BUY calls from {data?.screened_from ? `all ${data.screened_from.toLocaleString()} NSE-listed stocks` : "all NSE-listed stocks"} — refreshed every market day at 9 AM IST
+          </p>
         </div>
         <div className="flex items-center gap-2">
           {/* Toggle truth panel */}
@@ -728,8 +733,8 @@ export default function DailyPicksPage() {
               <Loader2 size={40} className="text-brand-400 mb-4 animate-spin" />
               <h3 className="text-lg font-semibold text-gray-300 mb-2">Generating picks…</h3>
               <p className="text-sm text-gray-500 max-w-sm">
-                The AI is scanning Nifty 100 stocks right now. This takes about 10 minutes.
-                This page will auto-refresh every minute.
+                The AI is bulk-scanning all NSE-listed stocks, then running deep analysis on top momentum candidates.
+                This takes about 15 minutes. Page auto-refreshes every minute.
               </p>
             </>
           ) : (
@@ -740,7 +745,7 @@ export default function DailyPicksPage() {
               </h3>
               <p className="text-sm text-gray-500 max-w-sm">
                 {data?.generated_at
-                  ? "The AI didn't find strong BUY signals in Nifty 100 today. Market conditions may be weak — check back tomorrow."
+                  ? "The AI didn't find strong BUY signals across NSE today. Market conditions may be weak — check back tomorrow."
                   : "Daily picks are generated at 9 AM IST on market days. Check back after the market opens."}
               </p>
             </>

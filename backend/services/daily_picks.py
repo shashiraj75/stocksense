@@ -26,16 +26,19 @@ from services.prediction_engine import PredictionEngine
 
 CACHE_FILE = os.path.join(os.path.dirname(__file__), "../picks_cache.json")
 
-# Universe: pull from validation_engine's deduplicated Nifty 100 list.
-# PICKS_UNIVERSE_LIMIT env var caps the count for constrained environments
-# (e.g. Render free tier — set to 25 there, leave unset for full 98-stock run).
+# Full NSE universe for Phase-0 bulk screen
+from services.stock_universe import IN_STOCKS as _IN_STOCKS
+_ALL_NSE_SYMBOLS = [sym for sym, _ in _IN_STOCKS]   # 2 300+ NSE tickers
+
+# Nifty 100 as always-included anchor (liquid, index-level stocks)
 from services.validation_engine import NIFTY_100 as _NIFTY_100
-# Default 25 stocks: 25×3 horizons = 75 tasks ≈ 10 min on Render free tier.
-# Full 98-stock run takes ~40 min and gets killed. Set PICKS_UNIVERSE_LIMIT=98 to override.
-_universe_limit = int(os.getenv("PICKS_UNIVERSE_LIMIT", 25))
-NIFTY10T = _NIFTY_100[:_universe_limit]
-print(f"[picks] Universe: {len(NIFTY10T)}/{len(_NIFTY_100)} stocks "
-      f"(set PICKS_UNIVERSE_LIMIT to override; default 25 for reliability)")
+
+# PICKS_CANDIDATES env var: how many top-momentum stocks to deep-predict (default 50).
+# 50 × 3 horizons × ~8s = ~20 min — reliable on Render free tier.
+_N_CANDIDATES = int(os.getenv("PICKS_CANDIDATES", 50))
+
+print(f"[picks] NSE universe: {len(_ALL_NSE_SYMBOLS)} stocks → "
+      f"bulk-screen → top {_N_CANDIDATES} candidates for deep prediction")
 
 
 HORIZON_LABELS = {
@@ -168,6 +171,84 @@ def _build_summary(result: dict, horizon: str) -> str:
         f"Target ₹{target:,.2f} implies {upside}% upside within {period}."
     )
     return summary
+
+
+def _bulk_screen_nse(n_candidates: int = 50) -> list[str]:
+    """
+    Phase-0 screener: one yf.download() for all NSE stocks → momentum rank.
+
+    Returns top `n_candidates` symbols (plain, no .NS suffix) by a composite
+    score that blends last-session return, 5-day return, and volume surge.
+    Always includes the top Nifty-50 liquid names so the list is tradeable.
+    Falls back to Nifty 100 if the download fails.
+    """
+    import math
+    tickers = [s + ".NS" for s in _ALL_NSE_SYMBOLS]
+    print(f"[picks] Phase-0: bulk-downloading {len(tickers)} NSE tickers …")
+    t0 = time.time()
+    try:
+        df = yf.download(
+            tickers, period="6d", interval="1d",
+            progress=False, auto_adjust=True, threads=True,
+        )
+        if df.empty:
+            raise ValueError("empty DataFrame")
+
+        close  = df["Close"].dropna(how="all")
+        volume = df["Volume"].dropna(how="all") if "Volume" in df else None
+        close  = close.dropna(how="all")
+        if len(close) < 2:
+            raise ValueError("< 2 settled rows")
+
+        prev_row = close.iloc[-2]
+        last_row = close.iloc[-1]
+        # If today's row is mostly NaN (not yet settled) fall back one day
+        if last_row.dropna().shape[0] < len(tickers) * 0.3 and len(close) >= 3:
+            prev_row = close.iloc[-3]
+            last_row = close.iloc[-2]
+
+        first_row = close.iloc[0]
+
+        scores: dict[str, float] = {}
+        for ticker in tickers:
+            sym = ticker.replace(".NS", "")
+            try:
+                p_prev  = float(prev_row.get(ticker, float("nan")))
+                p_last  = float(last_row.get(ticker, float("nan")))
+                p_first = float(first_row.get(ticker, float("nan")))
+                if any(math.isnan(x) or x <= 0 for x in (p_prev, p_last, p_first)):
+                    continue
+
+                ret_1d = (p_last - p_prev) / p_prev     # last-session %
+                ret_5d = (p_last - p_first) / p_first   # 5-day %
+
+                # Volume surge vs average (optional — skip if unavailable)
+                vol_ratio = 0.0
+                if volume is not None and ticker in volume.columns:
+                    vols = volume[ticker].dropna()
+                    if len(vols) >= 3:
+                        avg = float(vols.iloc[:-1].mean())
+                        if avg > 0:
+                            vol_ratio = float(vols.iloc[-1]) / avg - 1.0
+
+                # Composite: favour recent momentum + 5-day trend + volume
+                score = 0.50 * ret_1d + 0.35 * ret_5d + 0.15 * min(vol_ratio, 2.0) * 0.05
+                scores[sym] = score
+            except Exception:
+                continue
+
+        elapsed = round(time.time() - t0, 1)
+        print(f"[picks] Phase-0 complete: scored {len(scores)} stocks in {elapsed}s")
+
+        # Sort by score descending; take top n_candidates
+        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        top_syms = [sym for sym, _ in ranked[:n_candidates]]
+        print(f"[picks] Top candidates: {top_syms[:10]} …")
+        return top_syms
+
+    except Exception as e:
+        print(f"[picks] Phase-0 bulk screen failed ({e}), falling back to Nifty 100")
+        return list(_NIFTY_100[:n_candidates])
 
 
 def _predict_stock(symbol: str, horizon: str) -> dict | None:
@@ -374,7 +455,8 @@ def generate_picks() -> dict:
     Learning Alpha Engine pipeline:
 
       Phase 0 — Resolve outcomes: log actual returns for past predictions
-      Phase 1 — Score universe: run prediction engine on all Nifty 100 stocks
+      Phase 0b— Bulk screen: one yf.download() for all 2 300+ NSE stocks → top N candidates
+      Phase 1 — Score candidates: run prediction engine on top N momentum stocks
       Phase 2 — Detect regime: classify current market with KMeans clustering
       Phase 3 — IC weights: get data-driven factor weights (academic priors until
                              enough real outcome data accumulates)
@@ -393,28 +475,28 @@ def generate_picks() -> dict:
     from services.alpha_engine.weight_adapter import run_adaptation
     from services.global_context import get_global_context
 
-    print(f"[picks] Starting Learning Alpha Engine for {len(NIFTY10T)} stocks × 3 horizons …")
     start = time.time()
 
     # ── Phase 0: Resolve outcomes from previous prediction runs ──────────────
     resolve_pending_outcomes()
 
     # ── Global crumb refresh — do this ONCE before bulk fetching ─────────────
-    # Running 100 stocks back-to-back expires Yahoo's session mid-run.
     try:
-        import yfinance as yf
-        # API varies by yfinance version
         if hasattr(yf.utils, "get_crumb"):
             yf.utils.get_crumb(force=True)
-        elif hasattr(yf, "download"):
-            # Force a lightweight download to refresh the session/crumb
+        else:
             yf.download("^NSEI", period="1d", progress=False, auto_adjust=True)
         print("[picks] Yahoo Finance session refreshed.")
     except Exception as e:
         print(f"[picks] Session refresh failed (non-fatal): {e}")
 
+    # ── Phase 0b: Bulk screen all NSE stocks → top N momentum candidates ─────
+    # One yf.download() call for all 2 300+ tickers (~60s) then rank by
+    # composite momentum score. Falls back to Nifty 100 if download fails.
+    candidates = _bulk_screen_nse(_N_CANDIDATES)
+    print(f"[picks] Starting deep prediction for {len(candidates)} candidates × 3 horizons …")
+
     # ── Phase 2: Detect market regime (done once, shared across all stocks) ──
-    # We need global context for regime features; use a proxy (no symbol)
     try:
         global_ctx_proxy = get_global_context("RELIANCE")
     except Exception:
@@ -425,10 +507,9 @@ def generate_picks() -> dict:
     regime_label = regime["label"]
     print(f"[picks] Regime: {regime_label} — {regime['description']}")
 
-    # ── Phase 1: Score all stocks ─────────────────────────────────────────────
+    # ── Phase 1: Deep-predict candidates ─────────────────────────────────────
     # max_workers=1 to avoid Yahoo Finance rate-limiting Render's IP.
-    # Two parallel workers fire 6+ simultaneous requests which triggers 401s.
-    tasks = [(sym, h) for sym in NIFTY10T for h in ("short", "medium", "long")]
+    tasks = [(sym, h) for sym in candidates for h in ("short", "medium", "long")]
     raw: dict[str, list] = {"short": [], "medium": [], "long": []}
 
     with ThreadPoolExecutor(max_workers=1) as pool:
@@ -520,11 +601,18 @@ def generate_picks() -> dict:
             except Exception as e:
                 print(f"[picks] Log error for {pick['symbol']}: {e}")
 
+    elapsed = round(time.time() - start, 1)
+    total = sum(len(v) for v in picks.values())
+    print(f"[picks] Done in {elapsed}s — {total} BUY picks found across "
+          f"{len(candidates)} candidates from {len(_ALL_NSE_SYMBOLS)} NSE stocks.")
+
     payload = {
         "generated_at":    datetime.now(timezone.utc).isoformat(),
         "picks":           picks,
         "alpha_engine":    alpha_engine_meta,
         "regime":          {"label": regime_label, "description": regime["description"]},
+        "screened_from":   len(_ALL_NSE_SYMBOLS),
+        "candidates":      len(candidates),
     }
 
     # Save to disk (best-effort — ephemeral on Render free tier)
@@ -542,10 +630,6 @@ def generate_picks() -> dict:
             print("[picks] Saved to Postgres.")
         except Exception as e:
             print(f"[picks] Postgres save failed: {e}")
-
-    elapsed = round(time.time() - start, 1)
-    total = sum(len(v) for v in picks.values())
-    print(f"[picks] Done in {elapsed}s — {total} BUY picks found.")
 
     # ── Phase 8: Adapt weights in background ─────────────────────────────────
     try:
