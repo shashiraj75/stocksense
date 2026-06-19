@@ -55,7 +55,8 @@ def init_db():
             pred_date    TEXT NOT NULL,
             return_1d    REAL,
             return_5d    REAL,
-            return_20d   REAL
+            return_20d   REAL,
+            return_60d   REAL
         );
 
         CREATE TABLE IF NOT EXISTS regime_log (
@@ -102,12 +103,12 @@ def log_prediction(symbol: str, horizon: str, factor_zscores: dict,
 
 def log_outcome(symbol: str, horizon: str, pred_date: str,
                 return_1d: float | None, return_5d: float | None,
-                return_20d: float | None, **kwargs):
+                return_20d: float | None, return_60d: float | None = None, **kwargs):
     if USE_POSTGRES:
-        return _pg.log_outcome(symbol, horizon, pred_date, return_1d, return_5d, return_20d, **kwargs)
+        return _pg.log_outcome(symbol, horizon, pred_date, return_1d, return_5d, return_20d,
+                                return_60d=return_60d, **kwargs)
     init_db()
     with _lock, _conn() as c:
-        # Avoid duplicate outcomes for the same prediction date
         existing = c.execute(
             "SELECT id FROM outcomes WHERE symbol=? AND horizon=? AND pred_date=?",
             (symbol, horizon, pred_date)
@@ -116,11 +117,11 @@ def log_outcome(symbol: str, horizon: str, pred_date: str,
             return
         c.execute("""
             INSERT INTO outcomes (resolved_at, symbol, horizon, pred_date,
-                                  return_1d, return_5d, return_20d)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                                  return_1d, return_5d, return_20d, return_60d)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             datetime.now(timezone.utc).isoformat(),
-            symbol, horizon, pred_date, return_1d, return_5d, return_20d,
+            symbol, horizon, pred_date, return_1d, return_5d, return_20d, return_60d,
         ))
 
 
@@ -144,7 +145,8 @@ def get_training_data(horizon: str, window_days: int | None = None) -> list[dict
     if USE_POSTGRES:
         return _pg.get_training_data(horizon, window_days=window_days)
     init_db()
-    fwd_col = {"short": "return_5d", "medium": "return_20d", "long": "return_20d"}[horizon]
+    # long horizon = 60D forward return (≈3 months), matching the stated holding period
+    fwd_col = {"short": "return_5d", "medium": "return_20d", "long": "return_60d"}[horizon]
     with _lock, _conn() as c:
         rows = c.execute(f"""
             SELECT p.tech_z, p.fund_z, p.sentiment_z, p.quality_z,

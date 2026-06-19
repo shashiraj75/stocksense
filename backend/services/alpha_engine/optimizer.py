@@ -100,10 +100,22 @@ def optimize(
     except Exception as e:
         print(f"[optimizer] SLSQP failed: {e}")
 
-    # Fallback: alpha-proportional weights (softmax-like, positive only)
+    # Fallback: alpha-proportional weights with iterative max_weight enforcement.
+    # The single-pass np.minimum approach fails when one alpha dominates (it caps
+    # using pre-cap sum, leaving a single stock at 100% after normalisation).
     pos = np.maximum(a - a.min(), 0)
     if pos.sum() == 0:
         pos = np.ones(n)
-    pos = np.minimum(pos, pos.sum() * max_weight)
+    pos = pos / pos.sum()
+    # Iterative clipping: redistribute excess weight until all positions respect cap
+    for _ in range(20):
+        excess = np.maximum(pos - max_weight, 0).sum()
+        if excess < 1e-9:
+            break
+        pos = np.minimum(pos, max_weight)
+        uncapped = pos < max_weight
+        if uncapped.sum() == 0:
+            break
+        pos[uncapped] += excess / uncapped.sum()
     pos /= pos.sum()
     return [round(float(x), 4) for x in pos]

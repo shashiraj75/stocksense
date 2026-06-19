@@ -269,7 +269,7 @@ def get_training_data(horizon: str, window_days: int | None = None) -> list[dict
     window_days: if set, only include predictions logged within the last N days
                  (used by the multi-window IC engine).
     """
-    fwd_col = {"short": "return_5d", "medium": "return_20d", "long": "return_20d"}[horizon]
+    fwd_col = {"short": "return_5d", "medium": "return_20d", "long": "return_60d"}[horizon]
     window_clause = "AND p.logged_at >= now() - interval '%s days'" % window_days if window_days else ""
     with _get_pool().connection() as conn:
         rows = conn.execute(f"""

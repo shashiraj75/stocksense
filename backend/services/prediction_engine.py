@@ -782,173 +782,34 @@ class PredictionEngine:
         return {"score": max(0, min(100, score)), "reasons": reasons, "available": True}
 
     def _fundamental_score(self, info: dict, horizon: str, market: str = "US") -> dict:
-        score = 50
+        # Per-category buckets prevent any single dimension from dominating.
+        # Each bucket has its own ±cap; the total score is assembled at the end.
+        # Base = 50; each bucket contributes [-cap, +cap] around zero.
+        valuation_pts  = 0   # cap ±15: PE, P/B, EV/EBITDA
+        profitability  = 0   # cap ±15: ROE, ROCE, margins
+        growth_pts     = 0   # cap ±15: revenue growth + earnings growth (combined, not additive)
+        balance_sheet  = 0   # cap ±10: D/E, OCF, Altman, Sloan
+        governance     = 0   # cap ±10: promoter, FII/DII, pledge
+        banking_pts    = 0   # cap ±10: NPA, NIM (banks only)
         reasons = []
 
+        # ── VALUATION bucket (cap ±15) ────────────────────────────────────────
         pe = info.get("trailingPE")
         if pe is not None:
-            # Indian markets structurally trade at higher multiples (Nifty avg ~22-24x)
             pe_cheap   = 18 if market == "IN" else 15
             pe_fair    = 30 if market == "IN" else 25
             pe_stretch = 55 if market == "IN" else 50
             if pe < pe_cheap:
-                score += 12
+                valuation_pts += 8
                 reasons.append(f"Low P/E ({pe:.1f}) — attractively valued")
             elif pe < pe_fair:
-                score += 5
+                valuation_pts += 3
                 reasons.append(f"Reasonable P/E ({pe:.1f})")
             elif pe > pe_stretch:
-                score -= 12
+                valuation_pts -= 8
                 reasons.append(f"High P/E ({pe:.1f}) — stretched valuation")
 
-        roe = info.get("returnOnEquity")
-        if roe is not None:
-            if roe > 0.20:
-                score += 12
-                reasons.append(f"Strong ROE ({roe*100:.1f}%)")
-            elif roe > 0.10:
-                score += 5
-                reasons.append(f"Decent ROE ({roe*100:.1f}%)")
-            elif roe < 0:
-                score -= 10
-                reasons.append("Negative ROE — unprofitable")
-
-        rev_growth = info.get("revenueGrowth")
-        if rev_growth is not None:
-            if rev_growth > 0.20:
-                score += 12
-                reasons.append(f"Strong revenue growth ({rev_growth*100:.1f}% YoY)")
-            elif rev_growth > 0.05:
-                score += 5
-                reasons.append(f"Moderate revenue growth ({rev_growth*100:.1f}% YoY)")
-            elif rev_growth < -0.05:
-                score -= 10
-                reasons.append(f"Revenue declining ({rev_growth*100:.1f}% YoY)")
-
-        de = info.get("debtToEquity")
-        if de is not None:
-            if de > 300:
-                score -= 12
-                reasons.append(f"Very high debt-to-equity ({de:.0f}%)")
-            elif de > 150:
-                score -= 5
-                reasons.append(f"Elevated debt-to-equity ({de:.0f}%)")
-            elif de < 50:
-                score += 5
-                reasons.append("Low debt — strong balance sheet")
-
-        profit_margin = info.get("profitMargins")
-        if profit_margin is not None:
-            if profit_margin > 0.20:
-                score += 8
-                reasons.append(f"High profit margins ({profit_margin*100:.1f}%)")
-            elif profit_margin < 0:
-                score -= 8
-                reasons.append("Negative profit margins")
-
-        # Earnings per share growth
-        eps_growth = info.get("earningsGrowth")
-        if eps_growth is not None:
-            if eps_growth > 0.20:
-                score += 8
-                reasons.append(f"Strong EPS growth ({eps_growth*100:.1f}%)")
-            elif eps_growth < -0.10:
-                score -= 8
-                reasons.append(f"EPS declining ({eps_growth*100:.1f}%)")
-
-        # ── Screener.in exclusive fields (India only) ─────────────────────────
         screener_d = info.get("_screener_data", {}) or {}
-
-        # ROCE — more reliable capital efficiency metric than ROE alone for Indian cos
-        roce = info.get("returnOnCapitalEmployed")
-        if roce is not None:
-            if roce > 0.20:
-                score += 10
-                reasons.append(f"High ROCE ({roce*100:.1f}%) — excellent capital efficiency")
-            elif roce > 0.12:
-                score += 4
-                reasons.append(f"Decent ROCE ({roce*100:.1f}%)")
-            elif roce < 0.06:
-                score -= 6
-                reasons.append(f"Low ROCE ({roce*100:.1f}%) — poor capital allocation")
-
-        # 3-year revenue CAGR — filters out one-off beats vs sustained growth
-        rev_3y = screener_d.get("sales_growth_3y_pct")
-        if rev_3y is not None:
-            if rev_3y > 15:
-                score += 8
-                reasons.append(f"3Y revenue CAGR {rev_3y:.1f}% — consistent top-line growth")
-            elif rev_3y > 8:
-                score += 4
-                reasons.append(f"3Y revenue CAGR {rev_3y:.1f}% — steady growth")
-            elif rev_3y < 0:
-                score -= 6
-                reasons.append(f"3Y revenue CAGR {rev_3y:.1f}% — sustained revenue decline")
-
-        # 3-year profit CAGR
-        pat_3y = screener_d.get("profit_growth_3y_pct")
-        if pat_3y is not None:
-            if pat_3y > 20:
-                score += 10
-                reasons.append(f"3Y profit CAGR {pat_3y:.1f}% — strong compounding earnings")
-            elif pat_3y > 10:
-                score += 5
-                reasons.append(f"3Y profit CAGR {pat_3y:.1f}% — sustained earnings growth")
-            elif pat_3y < -10:
-                score -= 8
-                reasons.append(f"3Y profit CAGR {pat_3y:.1f}% — eroding profitability")
-
-        # 5-year profit CAGR (long-term horizon gets extra weight)
-        pat_5y = screener_d.get("profit_growth_5y_pct")
-        if pat_5y is not None and horizon == "long":
-            if pat_5y > 18:
-                score += 8
-                reasons.append(f"5Y profit CAGR {pat_5y:.1f}% — proven long-term compounder")
-            elif pat_5y > 10:
-                score += 4
-                reasons.append(f"5Y profit CAGR {pat_5y:.1f}% — consistent long-term growth")
-            elif pat_5y < 0:
-                score -= 6
-                reasons.append(f"5Y profit CAGR {pat_5y:.1f}% — declining earnings over 5 years")
-
-        # Quarterly PAT trend — earnings acceleration is a leading signal
-        eps_trend = screener_d.get("eps_trend")
-        if eps_trend == "accelerating":
-            score += 8
-            reasons.append("Quarterly PAT accelerating — 3 of 3 QoQ improvements")
-        elif eps_trend == "mixed_positive":
-            score += 3
-            reasons.append("Quarterly PAT trend broadly improving")
-        elif eps_trend == "mixed_negative":
-            score -= 3
-            reasons.append("Quarterly PAT trend mostly declining")
-        elif eps_trend == "decelerating":
-            score -= 8
-            reasons.append("Quarterly PAT declining 3 consecutive quarters")
-
-        # Operating cash flow quality — positive and growing = real earnings
-        op_cf = screener_d.get("operating_cf_annual_cr") or []
-        op_cf_latest = screener_d.get("operating_cf_latest_cr")
-        if op_cf_latest is not None:
-            if op_cf_latest < 0:
-                score -= 8
-                reasons.append(f"Negative operating cash flow (₹{op_cf_latest:.0f} Cr) — earnings not converting to cash")
-            elif len(op_cf) >= 3:
-                # Check if operating CF has been growing over last 3 years
-                recent_cf = [v for v in op_cf[-3:] if v is not None]
-                if len(recent_cf) == 3 and recent_cf[0] > 0:
-                    cf_growth = (recent_cf[-1] - recent_cf[0]) / abs(recent_cf[0]) * 100
-                    if cf_growth > 30:
-                        score += 7
-                        reasons.append(f"Operating cash flow grew {cf_growth:.0f}% over 3Y — strong cash generation")
-                    elif cf_growth > 0:
-                        score += 3
-                        reasons.append("Operating cash flow consistently positive and growing")
-                    elif recent_cf[-1] < recent_cf[0] * 0.5:
-                        score -= 5
-                        reasons.append("Operating cash flow declining significantly — watch earnings quality")
-
-        # Price-to-Book (book_value from screener + current price from info)
         book_value = screener_d.get("book_value") or info.get("bookValue")
         current_price = info.get("currentPrice") or info.get("regularMarketPrice")
         if book_value and current_price and book_value > 0:
@@ -956,96 +817,246 @@ class PredictionEngine:
             pb_cheap = 2.5 if market == "IN" else 2.0
             pb_rich  = 8.0 if market == "IN" else 6.0
             if pb < pb_cheap:
-                score += 6
+                valuation_pts += 4
                 reasons.append(f"Low P/B ratio ({pb:.1f}x) — trading below asset value")
             elif pb > pb_rich:
-                score -= 6
+                valuation_pts -= 4
                 reasons.append(f"High P/B ratio ({pb:.1f}x) — premium to book")
+        valuation_pts = max(-15, min(15, valuation_pts))
 
-        # FII + DII institutional ownership — high = quality signal for India
+        # ── PROFITABILITY bucket (cap ±15) ────────────────────────────────────
+        roe = info.get("returnOnEquity")
+        if roe is not None:
+            if roe > 0.20:
+                profitability += 7
+                reasons.append(f"Strong ROE ({roe*100:.1f}%)")
+            elif roe > 0.10:
+                profitability += 3
+                reasons.append(f"Decent ROE ({roe*100:.1f}%)")
+            elif roe < 0:
+                profitability -= 7
+                reasons.append("Negative ROE — unprofitable")
+
+        profit_margin = info.get("profitMargins")
+        if profit_margin is not None:
+            if profit_margin > 0.20:
+                profitability += 5
+                reasons.append(f"High profit margins ({profit_margin*100:.1f}%)")
+            elif profit_margin < 0:
+                profitability -= 5
+                reasons.append("Negative profit margins")
+
+        roce = info.get("returnOnCapitalEmployed")
+        if roce is not None:
+            if roce > 0.20:
+                profitability += 6
+                reasons.append(f"High ROCE ({roce*100:.1f}%) — excellent capital efficiency")
+            elif roce > 0.12:
+                profitability += 2
+                reasons.append(f"Decent ROCE ({roce*100:.1f}%)")
+            elif roce < 0.06:
+                profitability -= 4
+                reasons.append(f"Low ROCE ({roce*100:.1f}%) — poor capital allocation")
+        profitability = max(-15, min(15, profitability))
+
+        # ── GROWTH bucket (cap ±15) — revenue and earnings scored once each ──
+        # Revenue: use 3Y CAGR if available (more reliable), else TTM YoY
+        rev_3y = screener_d.get("sales_growth_3y_pct")
+        rev_growth = info.get("revenueGrowth")
+        if rev_3y is not None:
+            if rev_3y > 15:
+                growth_pts += 7
+                reasons.append(f"3Y revenue CAGR {rev_3y:.1f}% — consistent top-line growth")
+            elif rev_3y > 8:
+                growth_pts += 3
+                reasons.append(f"3Y revenue CAGR {rev_3y:.1f}% — steady growth")
+            elif rev_3y < 0:
+                growth_pts -= 5
+                reasons.append(f"3Y revenue CAGR {rev_3y:.1f}% — sustained revenue decline")
+        elif rev_growth is not None:
+            if rev_growth > 0.20:
+                growth_pts += 7
+                reasons.append(f"Strong revenue growth ({rev_growth*100:.1f}% YoY)")
+            elif rev_growth > 0.05:
+                growth_pts += 3
+                reasons.append(f"Moderate revenue growth ({rev_growth*100:.1f}% YoY)")
+            elif rev_growth < -0.05:
+                growth_pts -= 5
+                reasons.append(f"Revenue declining ({rev_growth*100:.1f}% YoY)")
+
+        # Earnings: use longest available CAGR, supplemented by trend signal
+        pat_5y = screener_d.get("profit_growth_5y_pct")
+        pat_3y = screener_d.get("profit_growth_3y_pct")
+        eps_growth = info.get("earningsGrowth")
+        if pat_5y is not None and horizon == "long":
+            if pat_5y > 18:
+                growth_pts += 6
+                reasons.append(f"5Y profit CAGR {pat_5y:.1f}% — proven long-term compounder")
+            elif pat_5y > 10:
+                growth_pts += 3
+                reasons.append(f"5Y profit CAGR {pat_5y:.1f}% — consistent long-term growth")
+            elif pat_5y < 0:
+                growth_pts -= 5
+                reasons.append(f"5Y profit CAGR {pat_5y:.1f}% — declining earnings over 5 years")
+        elif pat_3y is not None:
+            if pat_3y > 20:
+                growth_pts += 6
+                reasons.append(f"3Y profit CAGR {pat_3y:.1f}% — strong compounding earnings")
+            elif pat_3y > 10:
+                growth_pts += 3
+                reasons.append(f"3Y profit CAGR {pat_3y:.1f}% — sustained earnings growth")
+            elif pat_3y < -10:
+                growth_pts -= 5
+                reasons.append(f"3Y profit CAGR {pat_3y:.1f}% — eroding profitability")
+        elif eps_growth is not None:
+            if eps_growth > 0.20:
+                growth_pts += 5
+                reasons.append(f"Strong EPS growth ({eps_growth*100:.1f}%)")
+            elif eps_growth < -0.10:
+                growth_pts -= 5
+                reasons.append(f"EPS declining ({eps_growth*100:.1f}%)")
+
+        # Quarterly trend supplements CAGR — capped separately so it can't double
+        eps_trend = screener_d.get("eps_trend")
+        trend_bonus = 0
+        if eps_trend == "accelerating":
+            trend_bonus = 3
+            reasons.append("Quarterly PAT accelerating — 3 of 3 QoQ improvements")
+        elif eps_trend == "mixed_positive":
+            trend_bonus = 1
+            reasons.append("Quarterly PAT trend broadly improving")
+        elif eps_trend == "mixed_negative":
+            trend_bonus = -1
+            reasons.append("Quarterly PAT trend mostly declining")
+        elif eps_trend == "decelerating":
+            trend_bonus = -3
+            reasons.append("Quarterly PAT declining 3 consecutive quarters")
+        growth_pts = max(-15, min(15, growth_pts + trend_bonus))
+
+        # ── BALANCE SHEET bucket (cap ±10) ────────────────────────────────────
+        de = info.get("debtToEquity")
+        if de is not None:
+            if de > 300:
+                balance_sheet -= 7
+                reasons.append(f"Very high debt-to-equity ({de:.0f}%)")
+            elif de > 150:
+                balance_sheet -= 3
+                reasons.append(f"Elevated debt-to-equity ({de:.0f}%)")
+            elif de < 50:
+                balance_sheet += 3
+                reasons.append("Low debt — strong balance sheet")
+
+        op_cf_series = screener_d.get("operating_cf_annual_cr") or []
+        op_cf_latest = screener_d.get("operating_cf_latest_cr")
+        if op_cf_latest is not None:
+            if op_cf_latest < 0:
+                balance_sheet -= 5
+                reasons.append(f"Negative operating cash flow (₹{op_cf_latest:.0f} Cr) — earnings not converting to cash")
+            elif len(op_cf_series) >= 3:
+                recent_cf = [v for v in op_cf_series[-3:] if v is not None]
+                if len(recent_cf) == 3 and recent_cf[0] > 0:
+                    cf_growth = (recent_cf[-1] - recent_cf[0]) / abs(recent_cf[0]) * 100
+                    if cf_growth > 30:
+                        balance_sheet += 4
+                        reasons.append(f"Operating cash flow grew {cf_growth:.0f}% over 3Y — strong cash generation")
+                    elif cf_growth > 0:
+                        balance_sheet += 2
+                        reasons.append("Operating cash flow consistently positive and growing")
+                    elif recent_cf[-1] < recent_cf[0] * 0.5:
+                        balance_sheet -= 3
+                        reasons.append("Operating cash flow declining significantly — watch earnings quality")
+
+        try:
+            from services.quality_factors import altman_zscore_signal, sloan_accruals_signal
+            info_with_market = dict(info)
+            info_with_market.setdefault("market", market)
+
+            altman = altman_zscore_signal(info_with_market)
+            z_zone = altman.get("z_zone", "unavailable")
+            z      = altman.get("z_score")
+            if z_zone == "distress":
+                balance_sheet -= 8
+                reasons.append(f"Altman Z-Score {z} — Distress Zone: balance sheet at risk")
+            elif z_zone == "grey":
+                balance_sheet -= 4
+                reasons.append(f"Altman Z-Score {z} — Grey Zone: financial stress; monitor leverage")
+            elif z_zone == "safe" and horizon in ("medium", "long"):
+                balance_sheet += 3
+                reasons.append(f"Altman Z-Score {z} — Safe Zone: strong balance sheet")
+
+            accruals = sloan_accruals_signal(info_with_market)
+            ar = accruals.get("accruals_ratio")
+            if ar is not None:
+                if ar < -5:
+                    balance_sheet += 3
+                    reasons.append(f"Low accruals ({ar}%) — earnings are cash-backed (Sloan 1996)")
+                elif ar > 10:
+                    balance_sheet -= 5
+                    reasons.append(f"High accruals ({ar}%) — earnings outpacing cash flow; manipulation risk")
+                elif ar > 5:
+                    balance_sheet -= 3
+                    reasons.append(f"Elevated accruals ({ar}%) — verify earnings quality")
+        except Exception:
+            pass
+        balance_sheet = max(-10, min(10, balance_sheet))
+
+        # ── GOVERNANCE bucket (cap ±10) ───────────────────────────────────────
         fii = screener_d.get("fii_holding_pct") or 0
         dii = screener_d.get("dii_holding_pct") or 0
         inst_total = fii + dii
-        if inst_total > 0:
-            if inst_total > 50:
-                score += 6
-                reasons.append(f"High institutional ownership (FII {fii:.1f}% + DII {dii:.1f}%) — strong smart-money conviction")
-            elif inst_total > 25:
-                score += 3
-                reasons.append(f"Solid institutional ownership (FII {fii:.1f}% + DII {dii:.1f}%)")
+        if inst_total > 50:
+            governance += 4
+            reasons.append(f"High institutional ownership (FII {fii:.1f}% + DII {dii:.1f}%) — strong smart-money conviction")
+        elif inst_total > 25:
+            governance += 2
+            reasons.append(f"Solid institutional ownership (FII {fii:.1f}% + DII {dii:.1f}%)")
 
-        # DII holding trend — mutual fund accumulation is a strong bullish signal
         dii_trend = screener_d.get("dii_quarterly_pct") or []
         if len(dii_trend) >= 4:
             dii_change = dii_trend[-1] - dii_trend[-4]
             if dii_change > 3:
-                score += 6
+                governance += 3
                 reasons.append(f"DII (MF) stake up {dii_change:.1f}% in last 4 quarters — active accumulation")
             elif dii_change > 1:
-                score += 3
+                governance += 1
                 reasons.append(f"DII (MF) stake rising (+{dii_change:.1f}%) — gradual accumulation")
             elif dii_change < -3:
-                score -= 5
+                governance -= 3
                 reasons.append(f"DII (MF) stake fell {dii_change:.1f}% in last 4 quarters — institutional selling")
 
-        # FII trend — foreign capital flow signal
         fii_trend = screener_d.get("fii_quarterly_pct") or []
         if len(fii_trend) >= 4:
             fii_change = fii_trend[-1] - fii_trend[-4]
             if fii_change > 3:
-                score += 4
-                reasons.append(f"FII stake up {fii_change:.1f}% in last 4 quarters — foreign investor conviction")
+                governance += 2
+                reasons.append(f"FII stake up {fii_change:.1f}% — foreign investor conviction")
             elif fii_change < -3:
-                score -= 4
+                governance -= 2
                 reasons.append(f"FII stake fell {fii_change:.1f}% — foreign capital exiting")
 
-        # Promoter holding — high & stable = alignment; declining = concern
         promoter = screener_d.get("promoter_holding_pct")
         if promoter is not None:
             if promoter > 55:
-                score += 5
+                governance += 2
                 reasons.append(f"High promoter holding ({promoter:.1f}%) — founder skin-in-the-game")
             elif promoter < 25:
-                score -= 5
+                governance -= 2
                 reasons.append(f"Low promoter holding ({promoter:.1f}%) — limited insider conviction")
 
-        # Promoter holding trend — declining promoter = red flag
         promoter_trend = screener_d.get("promoter_quarterly_pct") or []
         if len(promoter_trend) >= 4:
             promoter_change = promoter_trend[-1] - promoter_trend[-4]
             if promoter_change < -3:
-                score -= 7
+                governance -= 4
                 reasons.append(f"Promoter stake fell {abs(promoter_change):.1f}% over last 4 quarters — insider offloading")
             elif promoter_change < -1:
-                score -= 3
+                governance -= 2
                 reasons.append(f"Promoter stake slightly declining ({promoter_change:.1f}%) — monitor")
             elif promoter_change > 2:
-                score += 5
+                governance += 3
                 reasons.append(f"Promoter stake increased {promoter_change:.1f}% — insider buying conviction")
 
-        # Banking-specific: NPA quality and NIM (only when screener has these fields)
-        net_npa = screener_d.get("net_npa_pct")
-        nim = screener_d.get("nim_pct")
-        if net_npa is not None:
-            if net_npa > 3:
-                score -= 10
-                reasons.append(f"High Net NPA ({net_npa:.1f}%) — asset quality concern")
-            elif net_npa > 1.5:
-                score -= 4
-                reasons.append(f"Elevated Net NPA ({net_npa:.1f}%) — watch credit quality")
-            elif net_npa < 0.5:
-                score += 5
-                reasons.append(f"Clean book — Net NPA {net_npa:.1f}%")
-        if nim is not None:
-            if nim > 4:
-                score += 5
-                reasons.append(f"Strong NIM ({nim:.1f}%) — healthy lending spread")
-            elif nim < 2:
-                score -= 4
-                reasons.append(f"Thin NIM ({nim:.1f}%) — margin pressure")
-
-        # Promoter pledge — fetch from NSE (real-time quarterly disclosure)
-        pledge = screener_d.get("promoter_pledge_pct")  # fallback if NSE fails
+        pledge = screener_d.get("promoter_pledge_pct")
         if market == "IN":
             try:
                 from services.nse_pledge import get_promoter_pledge_pct
@@ -1056,60 +1067,43 @@ class PredictionEngine:
                 pass
         if pledge is not None:
             if pledge > 50:
-                score -= 15
+                governance -= 8
                 reasons.append(f"High promoter pledge ({pledge:.1f}%) — severe margin call risk; avoid")
             elif pledge > 25:
-                score -= 8
+                governance -= 5
                 reasons.append(f"Elevated promoter pledge ({pledge:.1f}%) — forced selling risk if stock falls")
             elif pledge > 10:
-                score -= 3
+                governance -= 2
                 reasons.append(f"Moderate promoter pledge ({pledge:.1f}%) — watch for increase")
             elif pledge == 0:
-                score += 3
+                governance += 2
                 reasons.append("Zero promoter pledge — no forced selling risk")
+        governance = max(-10, min(10, governance))
 
-        # ── Academic hard gates — apply to ALL markets (US + India) ─────────────
-        # These run inside _fundamental_score so they carry full fundamental weight
-        # (~25–40% of composite) rather than the limited 12% quality-block weight.
+        # ── BANKING bucket (cap ±10, only fires for banks/NBFCs) ─────────────
+        net_npa = screener_d.get("net_npa_pct")
+        nim = screener_d.get("nim_pct")
+        if net_npa is not None:
+            if net_npa > 3:
+                banking_pts -= 7
+                reasons.append(f"High Net NPA ({net_npa:.1f}%) — asset quality concern")
+            elif net_npa > 1.5:
+                banking_pts -= 3
+                reasons.append(f"Elevated Net NPA ({net_npa:.1f}%) — watch credit quality")
+            elif net_npa < 0.5:
+                banking_pts += 4
+                reasons.append(f"Clean book — Net NPA {net_npa:.1f}%")
+        if nim is not None:
+            if nim > 4:
+                banking_pts += 4
+                reasons.append(f"Strong NIM ({nim:.1f}%) — healthy lending spread")
+            elif nim < 2:
+                banking_pts -= 3
+                reasons.append(f"Thin NIM ({nim:.1f}%) — margin pressure")
+        banking_pts = max(-10, min(10, banking_pts))
 
-        try:
-            from services.quality_factors import altman_zscore_signal, sloan_accruals_signal
-            info_with_market = dict(info)
-            info_with_market.setdefault("market", market)
-
-            # ── Altman Z-Score ────────────────────────────────────────────────
-            altman = altman_zscore_signal(info_with_market)
-            z_zone = altman.get("z_zone", "unavailable")
-            z      = altman.get("z_score")
-            if z_zone == "distress":
-                score -= 25
-                reasons.append(f"Altman Z-Score {z} — Distress Zone: balance sheet at risk; strong avoid signal")
-            elif z_zone == "grey":
-                score -= 10
-                reasons.append(f"Altman Z-Score {z} — Grey Zone: financial stress; monitor leverage closely")
-            elif z_zone == "safe":
-                # Reward only for medium/long horizons — short-term doesn't care about Z-Score
-                if horizon in ("medium", "long"):
-                    score += 8
-                    reasons.append(f"Altman Z-Score {z} — Safe Zone: strong balance sheet; low financial risk")
-
-            # ── Sloan Accruals (earnings quality) ─────────────────────────────
-            accruals = sloan_accruals_signal(info_with_market)
-            ar = accruals.get("accruals_ratio")
-            if ar is not None:
-                if ar < -5:
-                    score += 8
-                    reasons.append(f"Low accruals ({ar}%) — earnings are cash-backed; high earnings quality (Sloan 1996)")
-                elif ar > 10:
-                    score -= 15
-                    reasons.append(f"High accruals ({ar}%) — earnings outpacing cash flow; manipulation risk (Sloan 1996)")
-                elif ar > 5:
-                    score -= 7
-                    reasons.append(f"Elevated accruals ({ar}%) — portion of earnings not yet cash; verify quality")
-
-        except Exception:
-            pass  # never let academic signals break predictions
-
+        # ── Assemble: base 50 + capped buckets ───────────────────────────────
+        score = 50 + valuation_pts + profitability + growth_pts + balance_sheet + governance + banking_pts
         return {"score": max(0, min(100, score)), "reasons": reasons}
 
     def _analyst_score(self, info: dict, market: str = "US") -> dict:
@@ -1195,8 +1189,13 @@ class PredictionEngine:
             return {"score": 50, "label": "NEUTRAL", "bullish": 0, "bearish": 0, "data_available": False}
         bullish = sum(1 for a in articles if a.get("sentiment", {}).get("label") == "BULLISH")
         bearish = sum(1 for a in articles if a.get("sentiment", {}).get("label") == "BEARISH")
-        total = len(articles)
-        score = int(50 + (bullish - bearish) / total * 50)
+        labeled = bullish + bearish
+        # Use only labeled articles in the denominator — neutral articles should not
+        # dilute bullish signal (5 bullish + 5 neutral ≠ 5 bullish + 5 bearish)
+        if labeled > 0:
+            score = int(50 + (bullish - bearish) / labeled * 50)
+        else:
+            score = 50  # all neutral — genuine neutral signal
         label = "BULLISH" if score > 60 else "BEARISH" if score < 40 else "NEUTRAL"
         return {"score": score, "label": label, "bullish": bullish, "bearish": bearish, "data_available": True}
 
@@ -1212,17 +1211,20 @@ class PredictionEngine:
             # Loss-making with negative operating cash flows
             roe = info.get("returnOnEquity")
             profit_margin = info.get("profitMargins")
-            op_cf = info.get("operatingCashflow") or info.get("operatingCashflows")
+            # Use explicit None check so zero cash flow is correctly treated as non-positive
+            op_cf = info.get("operatingCashflow")
+            if op_cf is None:
+                op_cf = info.get("operatingCashflows")
 
-            if (roe is not None and roe < -0.10
-                    and profit_margin is not None and profit_margin < -0.05):
-                rejections.append(
-                    f"Severely loss-making: ROE {roe*100:.1f}%, margins {profit_margin*100:.1f}%"
-                )
+            # Reject if EITHER metric is severely negative (was: AND — too strict)
+            if roe is not None and roe < -0.10:
+                rejections.append(f"Severely negative ROE ({roe*100:.1f}%) — destroying shareholder value")
+            elif profit_margin is not None and profit_margin < -0.15:
+                rejections.append(f"Deeply loss-making: profit margins {profit_margin*100:.1f}%")
 
             # OCF gate only applies to medium/long — growth stocks may have negative OCF short-term
-            if horizon != "short" and op_cf is not None and op_cf < 0:
-                rejections.append("Negative operating cash flows — core business not generating cash")
+            if horizon != "short" and op_cf is not None and op_cf <= 0:
+                rejections.append("Non-positive operating cash flows — core business not generating cash")
 
             # Extreme leverage — exclude NBFC/banks by checking sector
             sector = (info.get("sector") or "").lower()

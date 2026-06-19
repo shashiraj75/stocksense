@@ -59,15 +59,17 @@ def trigger_generation(background_tasks: BackgroundTasks, x_secret: str = Header
         raise HTTPException(status_code=401, detail="Invalid secret")
 
     import services.daily_picks as _dp
-    if _dp._generating:
-        return {"status": "already running", "message": "Picks generation is already in progress."}
+    with _dp._generating_lock:
+        if _dp._generating:
+            return {"status": "already running", "message": "Picks generation is already in progress."}
+        _dp._generating = True
 
     def _run():
-        _dp._generating = True
         try:
             _dp.generate_picks()
         finally:
-            _dp._generating = False
+            with _dp._generating_lock:
+                _dp._generating = False
 
     background_tasks.add_task(_run)
     return {"status": "generation started", "message": "Picks will be ready in ~10 minutes."}

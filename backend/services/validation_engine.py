@@ -132,8 +132,9 @@ HORIZON_PERIOD = {"short": "3y", "medium": "5y", "long": "7y"}
 # Per-horizon thresholds — long horizon covers 7 years of data including bear markets
 # where regime_adj is often 0 or -5, so the composite ceiling is lower. Keeping a
 # single 65 threshold produced 0 BUY signals for long horizon.
-BUY_THRESHOLD  = {"short": 65, "medium": 65, "long": 60}
-SELL_THRESHOLD = {"short": 42, "medium": 42, "long": 44}
+# Must match prediction_engine.py thresholds exactly — validation measures the live model
+BUY_THRESHOLD  = {"short": 60, "medium": 60, "long": 60}
+SELL_THRESHOLD = {"short": 45, "medium": 45, "long": 45}
 
 
 # ── Database ──────────────────────────────────────────────────────────────────

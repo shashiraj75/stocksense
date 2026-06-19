@@ -760,4 +760,8 @@ def picks_generated_today() -> bool:
 
 
 # Guard to prevent concurrent generation runs (module-level, shared across threads)
+# Lock makes the check-then-set atomic — plain bool had a TOCTOU race where two
+# concurrent POST /picks/generate requests both passed the guard simultaneously.
+import threading as _threading
 _generating = False
+_generating_lock = _threading.Lock()

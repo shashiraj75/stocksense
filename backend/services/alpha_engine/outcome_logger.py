@@ -1,12 +1,12 @@
 """
 Outcome Logger — resolves pending predictions against actual price returns.
 
-Called at the start of each daily picks run.
+Called periodically (every 6 hours via main.py).
 For each unresolved prediction, fetches current price from yfinance and
-computes 1D / 5D / 20D actual returns.
+computes 1D / 5D / 20D / 60D actual returns.
 
-This is the data pipeline that feeds the IC engine and meta-model.
-Without outcomes, neither IC nor the meta-model can learn.
+Only logs outcomes when the full forward window has elapsed — partial returns
+were previously logged silently and corrupted IC training data.
 """
 
 from datetime import datetime, timezone
@@ -16,31 +16,28 @@ import yfinance as yf
 
 def _fetch_return(symbol: str, pred_date_str: str, days: int) -> float | None:
     """
-    Compute the actual return from pred_date to pred_date + days.
-    pred_date_str is ISO date string (YYYY-MM-DD).
+    Compute the actual return from pred_date to pred_date + `days` trading days.
+    Returns None if fewer than `days` trading days have elapsed since pred_date
+    (avoids logging partial returns that corrupt IC calculations).
     """
     try:
-        from pandas import Timestamp, tseries
+        from pandas import Timestamp
         pred_date = Timestamp(pred_date_str)
         ticker = yf.Ticker(symbol + ".NS")
-        hist = ticker.history(start=pred_date_str, period="2mo")
+        # Fetch enough history: 60 trading days ≈ 90 calendar days
+        hist = ticker.history(start=pred_date_str, period="4mo")
         if hist.empty or len(hist) < 2:
             return None
-        # Price on prediction date (or closest trading day after)
         hist.index = hist.index.tz_localize(None)
         avail = hist.index[hist.index >= pred_date]
         if len(avail) == 0:
             return None
         entry_price = float(hist.loc[avail[0], "Close"])
-        # Forward return: find price at entry_date + days trading days
         future_rows = hist.index[hist.index >= avail[0]]
+        # Require the full window to have elapsed — never use partial returns
         if len(future_rows) <= days:
-            # Use last available if not enough rows yet
-            if len(future_rows) < 2:
-                return None
-            exit_price = float(hist.loc[future_rows[-1], "Close"])
-        else:
-            exit_price = float(hist.loc[future_rows[days], "Close"])
+            return None
+        exit_price = float(hist.loc[future_rows[days], "Close"])
         return round((exit_price - entry_price) / entry_price * 100, 4)
     except Exception:
         return None
@@ -48,34 +45,38 @@ def _fetch_return(symbol: str, pred_date_str: str, days: int) -> float | None:
 
 def resolve_pending_outcomes():
     """
-    Main entry point — called at the start of each generate_picks() run.
+    Main entry point — called every 6 hours via outcome_resolver_loop in main.py.
 
-    For each horizon, finds predictions old enough that the forward return
-    period has elapsed, fetches actual returns, and logs them.
+    For each horizon, finds predictions old enough that the full forward return
+    window has elapsed, fetches actual returns, and logs them.
+    Never logs partial returns — a None from _fetch_return means "not ready yet".
     """
     try:
         from services.alpha_engine.store import get_unresolved_predictions, log_outcome
 
-        # Days to wait before resolving, per horizon
+        # (horizon, min_calendar_days_old, compute_1d, compute_5d, compute_20d, compute_60d)
+        # min_days is calendar days to wait before attempting resolution.
+        # _fetch_return enforces the trading-day window independently.
         horizon_config = [
-            ("short",  2,  1,  5,  None),   # resolve after 2 days; compute 1D+5D
-            ("medium", 22, None, 5, 20),     # resolve after 22 days; compute 5D+20D
-            ("long",   22, None, None, 20),  # resolve after 22 days; compute 20D
+            ("short",   3,  True,  True,  False, False),  # 1D+5D; wait 3 cal days
+            ("medium", 30,  False, True,  True,  False),  # 5D+20D; wait 30 cal days
+            ("long",   90,  False, False, False, True),   # 60D only; wait 90 cal days
         ]
 
         total_resolved = 0
-        for horizon, min_days, d1, d5, d20 in horizon_config:
+        for horizon, min_days, d1, d5, d20, d60 in horizon_config:
             pending = get_unresolved_predictions(horizon, min_days_old=min_days)
             for row in pending:
-                symbol   = row["symbol"]
+                symbol    = row["symbol"]
                 pred_date = row["pred_date"]
 
                 r1  = _fetch_return(symbol, pred_date, 1)  if d1  else None
                 r5  = _fetch_return(symbol, pred_date, 5)  if d5  else None
                 r20 = _fetch_return(symbol, pred_date, 20) if d20 else None
+                r60 = _fetch_return(symbol, pred_date, 60) if d60 else None
 
-                if any(x is not None for x in (r1, r5, r20)):
-                    log_outcome(symbol, horizon, pred_date, r1, r5, r20)
+                if any(x is not None for x in (r1, r5, r20, r60)):
+                    log_outcome(symbol, horizon, pred_date, r1, r5, r20, return_60d=r60)
                     total_resolved += 1
 
         if total_resolved:
