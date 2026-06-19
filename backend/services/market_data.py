@@ -19,6 +19,9 @@ _FUND_TTL = 12 * 3600  # 12 hours — fundamentals change infrequently
 _ohlcv_cache: dict[str, tuple[float, dict]] = {}
 _OHLCV_TTL = 5 * 60  # 5 min — chart data doesn't need to be real-time
 
+_name_cache: dict[str, tuple[float, str]] = {}
+_NAME_TTL = 24 * 3600  # company names change rarely — cache for 24 hours
+
 
 class MarketDataService:
     def _sym(self, symbol: str, market: str) -> str:
@@ -72,15 +75,26 @@ class MarketDataService:
             except Exception:
                 pass  # extras are non-critical
 
-        # Add company name from yfinance info (best-effort, non-blocking)
-        if result and not result.get("company_name"):
-            try:
-                info = yf.Ticker(self._sym(symbol, market)).info
-                name = info.get("longName") or info.get("shortName")
-                if name:
-                    result["company_name"] = name
-            except Exception:
-                pass
+        # Add company name — separate 24h cache so the heavy .info call
+        # is made at most once per day per symbol, not on every quote miss.
+        if result:
+            cached_name = _name_cache.get(key)
+            if cached_name and (time.time() - cached_name[0]) < _NAME_TTL:
+                result["company_name"] = cached_name[1]
+            elif not result.get("company_name"):
+                # Fire in background — don't block the quote response
+                import asyncio
+                loop = asyncio.get_event_loop()
+                sym_key = self._sym(symbol, market)
+                def _fetch_name():
+                    try:
+                        info = yf.Ticker(sym_key).info
+                        name = info.get("longName") or info.get("shortName")
+                        if name:
+                            _name_cache[key] = (time.time(), name)
+                    except Exception:
+                        pass
+                loop.run_in_executor(None, _fetch_name)
 
         if result:
             _quote_cache[key] = (time.time(), result)

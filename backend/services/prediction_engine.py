@@ -295,31 +295,32 @@ class PredictionEngine:
             return yf.Ticker(symbol + suffix).history(period=period)  # final attempt, let it fail naturally
 
         def _fetch_info():
-            for attempt in range(3):
+            for attempt in range(2):  # max 2 attempts — screener fills gaps anyway
                 try:
                     info = yf.Ticker(symbol + suffix).info
-                    if info and len(info) > 5:  # valid info has many fields
+                    # Guard against None or non-dict (yfinance NoneType bug)
+                    if not isinstance(info, dict):
+                        info = {}
+                    if len(info) > 5:  # valid info has many fields
                         return info
-                    # Sparse info — crumb/session issue
-                    if attempt < 2:
+                    # Sparse info — crumb/session issue, refresh and retry once
+                    if attempt == 0:
                         try:
                             yf.utils.get_crumb(force=True) if hasattr(yf.utils, "get_crumb") else None
                         except Exception:
                             pass
-                        time.sleep(2 + attempt * 2)
+                        time.sleep(2)
                 except Exception as e:
                     err_str = str(e).lower()
-                    if attempt < 2:
-                        if "crumb" in err_str or "401" in err_str or "unauthorized" in err_str:
+                    if attempt == 0:
+                        if "crumb" in err_str or "401" in err_str or "unauthorized" in err_str or "nonetype" in err_str:
                             try:
                                 yf.utils.get_crumb(force=True) if hasattr(yf.utils, "get_crumb") else None
                             except Exception:
                                 pass
-                        # Keep retries short — if Yahoo is rate-limiting, long sleeps don't help;
-                        # screener.in / BSE fallbacks will fill the gaps instead.
-                        time.sleep(3 + attempt * 2)  # 3s, 5s max
+                        time.sleep(2)
                     else:
-                        log.warning("[predict] _fetch_info failed for %s%s after 3 attempts: %s", symbol, suffix, e)
+                        log.warning("[predict] _fetch_info failed for %s%s: %s", symbol, suffix, e)
                         return {}
             return {}
 
