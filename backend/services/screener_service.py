@@ -8,11 +8,23 @@ log = logging.getLogger(__name__)
 
 from services.heatmap_service import INDIA_SECTORS, US_SECTORS
 from services.stock_universe import IN_STOCKS, US_STOCKS
+from services import finnhub_client
 
 # Build symbol→name lookup from universe
 _NAME_MAP: dict[str, str] = {}
 for _sym, _name in (IN_STOCKS + US_STOCKS):
     _NAME_MAP[_sym.upper()] = _name
+
+# Curated Nifty 50 list for Finnhub-based screener (reliable from cloud IPs)
+NIFTY50_SYMBOLS = [
+    "RELIANCE","TCS","HDFCBANK","BHARTIARTL","ICICIBANK","INFOSYS","SBIN",
+    "HINDUNILVR","ITC","LT","KOTAKBANK","AXISBANK","MARUTI","TITAN","BAJFINANCE",
+    "ASIANPAINT","NESTLEIND","HCLTECH","SUNPHARMA","WIPRO","ULTRACEMCO","BAJAJFINSV",
+    "ONGC","NTPC","POWERGRID","COALINDIA","TECHM","TATAMOTORS","ADANIENT","JSWSTEEL",
+    "TATASTEEL","INDUSINDBK","CIPLA","BPCL","GRASIM","EICHERMOT","DRREDDY",
+    "BRITANNIA","APOLLOHOSP","DIVISLAB","HDFCLIFE","SBILIFE","BAJAJ-AUTO","ADANIPORTS",
+    "TRENT","SHRIRAMFIN","BEL","ETERNAL","HEROMOTOCO","M&M",
+]
 
 
 def _is_market_open(market: str) -> bool:
@@ -109,6 +121,32 @@ def _quotes_to_movers(quotes: list) -> list:
     return movers
 
 
+def _finnhub_gainers_losers(symbols: list[str], market: str) -> tuple[list, list]:
+    """
+    Fetch quotes via Finnhub (reliable from cloud IPs, no crumb issues).
+    Returns top 10 gainers and top 10 losers sorted by change_pct.
+    """
+    movers = []
+    # Finnhub free tier: 60 req/min — batch with small delay every 10
+    for i, sym in enumerate(symbols):
+        q = finnhub_client.get_quote(sym, market)
+        if q and q.get("price") and q.get("change_pct") is not None:
+            movers.append({
+                "symbol": sym,
+                "price": q["price"],
+                "change_pct": q["change_pct"],
+                "name": _NAME_MAP.get(sym.upper(), ""),
+            })
+        if (i + 1) % 10 == 0:
+            time.sleep(1)  # respect 60 req/min rate limit
+
+    gainers = sorted([m for m in movers if m["change_pct"] > 0],
+                     key=lambda x: x["change_pct"], reverse=True)[:10]
+    losers  = sorted([m for m in movers if m["change_pct"] <= 0],
+                     key=lambda x: x["change_pct"])[:10]
+    return gainers, losers
+
+
 MIN_MCAP_IN = 1_000_000_000  # ~100 Cr INR
 
 
@@ -157,8 +195,23 @@ class ScreenerService:
         is_open = _is_market_open(market)
         gainers, losers = [], []
 
-        # Run all blocking yfinance calls in executor — never block the event loop
-        if is_open:
+        # Primary: Finnhub (reliable from cloud IPs, no crumb issues)
+        if finnhub_client.FINNHUB_KEY:
+            try:
+                symbols = NIFTY50_SYMBOLS if market == "IN" else list({
+                    s for stocks in US_SECTORS.values() for s in stocks
+                })[:50]
+                gainers, losers = await asyncio.wait_for(
+                    loop.run_in_executor(None, _finnhub_gainers_losers, symbols, market),
+                    timeout=30.0,
+                )
+                log.info("screener: Finnhub returned %d gainers, %d losers for %s",
+                         len(gainers), len(losers), market)
+            except Exception as e:
+                log.warning("Finnhub movers failed for %s: %s", market, e)
+
+        # Fallback: yfinance live screen (market open only)
+        if not gainers and not losers and is_open:
             try:
                 if market == "IN":
                     gainers, losers = await asyncio.wait_for(
@@ -171,8 +224,9 @@ class ScreenerService:
                         timeout=15.0,
                     )
             except Exception as e:
-                log.warning("live movers failed for %s: %s", market, e)
+                log.warning("yf live movers failed for %s: %s", market, e)
 
+        # Last resort: yfinance bulk download
         if not gainers and not losers:
             try:
                 universe = IN_UNIVERSE if market == "IN" else US_UNIVERSE
@@ -181,7 +235,7 @@ class ScreenerService:
                     timeout=25.0,
                 )
             except Exception as e:
-                log.warning("closed movers fallback failed for %s: %s", market, e)
+                log.warning("yf bulk movers failed for %s: %s", market, e)
 
         response = {
             "market": market,
