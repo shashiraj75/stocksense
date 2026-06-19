@@ -467,6 +467,40 @@ def generate_picks() -> dict:
       Phase 7 — Log predictions: store factor z-scores for future IC computation
       Phase 8 — Adapt: retrain IC/meta-model/regime after picks are published
     """
+    import traceback
+    global _last_error
+    _last_error = None
+
+    try:
+        return _generate_picks_inner()
+    except Exception as e:
+        _last_error = traceback.format_exc()
+        print(f"[picks] generate_picks CRASHED: {e}\n{_last_error}")
+        # Save a minimal payload so the UI shows "no signals today" instead of spinning
+        payload = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "picks": {"short": [], "medium": [], "long": []},
+            "error": str(e),
+        }
+        try:
+            with open(CACHE_FILE, "w") as f:
+                json.dump(payload, f)
+        except Exception:
+            pass
+        if os.getenv("USE_POSTGRES") == "1":
+            try:
+                from services.postgres_store import save_picks_to_db
+                save_picks_to_db(payload)
+            except Exception:
+                pass
+        return payload
+
+
+# Module-level last error (exposed via /api/picks/status)
+_last_error: str | None = None
+
+
+def _generate_picks_inner() -> dict:
     from services.alpha_engine.outcome_logger import resolve_pending_outcomes
     from services.alpha_engine.ic_engine import get_ic_weights
     from services.alpha_engine.regime_cluster import detect_regime

@@ -33,6 +33,7 @@ def picks_status():
     return {
         "generating": _dp._generating,
         "has_today": _dp.picks_generated_today(),
+        "last_error": _dp._last_error,
     }
 
 
