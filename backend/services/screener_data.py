@@ -369,6 +369,13 @@ def _parse_screener_page(soup: BeautifulSoup, symbol: str) -> dict:
         table = cf_section.find("table")
         if table:
             rows = table.find_all("tr")
+            # Extract fiscal year labels from header row
+            header_row = table.find("tr")
+            if header_row:
+                ths = header_row.find_all("th")
+                cf_labels = [th.get_text(strip=True) for th in ths[1:]]
+                if cf_labels:
+                    data["cashflow_labels"] = cf_labels
             for row in rows:
                 cells = row.find_all("td")
                 if len(cells) < 2:
@@ -382,7 +389,6 @@ def _parse_screener_page(soup: BeautifulSoup, symbol: str) -> dict:
                     data["operating_cf_annual_cr"] = vals  # oldest → newest
                     data["operating_cf_latest_cr"] = vals[-1]
                 elif "investing" in label or "cash from investing" in label:
-                    # capex is typically the dominant investing outflow
                     data["investing_cf_annual_cr"] = vals
                     data["investing_cf_latest_cr"] = vals[-1]
 

@@ -1120,9 +1120,10 @@ export default function StockPage() {
                       <thead>
                         <tr className="text-gray-500 text-xs">
                           <th className="text-left pb-2 font-medium">Type</th>
-                          {(screenerFund.operating_cf_annual_cr ?? []).map((_: number, i: number) => (
-                            <th key={i} className="text-right pb-2 font-medium">FY{i + 1}</th>
-                          ))}
+                          {(screenerFund.operating_cf_annual_cr ?? []).map((_: number, i: number) => {
+                            const label = (screenerFund.cashflow_labels ?? [])[i] ?? `FY${i + 1}`;
+                            return <th key={i} className="text-right pb-2 font-medium whitespace-nowrap">{label}</th>;
+                          })}
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-dark-border">
