@@ -1673,17 +1673,34 @@ class PredictionEngine:
 
         else:  # long
             pe = info.get("trailingPE") or info.get("forwardPE")
-            eps_growth = info.get("earningsGrowth") or info.get("revenueGrowth") or 0.08
+            # Use explicit None check — earningsGrowth=0.0 is valid and must not fall
+            # through to revenueGrowth (Python's `or` treats 0.0 as falsy)
+            eps_growth_raw = info.get("earningsGrowth")
+            if eps_growth_raw is None:
+                eps_growth_raw = info.get("revenueGrowth")
+            if eps_growth_raw is None:
+                eps_growth_raw = 0.08
+            # Cap to a realistic sustainable annual CAGR for a 2-3 year horizon.
+            # yfinance returns trailing TTM growth which spikes wildly on one-time events.
+            eps_growth = max(-0.30, min(float(eps_growth_raw), 0.35))
+
             analyst_target = info.get("targetMeanPrice")
 
             if analyst_target and analyst_target > 0:
-                long_target = analyst_target * ((1 + max(eps_growth, 0.05)) ** 2)
+                # Analyst targets are 12-18 month forward prices — don't compound them
+                # again. Just extrapolate one additional year at the capped growth rate.
+                long_target = analyst_target * (1 + max(eps_growth, 0.05))
             elif pe and pe > 0:
                 eps_est = price / pe
                 eps_future = eps_est * ((1 + max(eps_growth, 0.05)) ** 3)
                 long_target = eps_future * pe
             else:
                 long_target = price * ((1 + max(eps_growth, 0.05)) ** 3)
+
+            # Hard ceiling: long-term target must stay within ±150% of current price.
+            # A prediction of >2.5x is speculative fantasy, not a useful trade level.
+            long_target = min(long_target, price * 2.5)
+            long_target = max(long_target, price * 0.40)
 
             if signal == "BUY":
                 return round(max(long_target, price * 1.15), 2)
