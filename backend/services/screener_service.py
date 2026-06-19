@@ -286,32 +286,41 @@ class ScreenerService:
         sector: Optional[str],
         signal: Optional[str],
     ) -> dict:
+        import asyncio
         universe = US_UNIVERSE if market == "US" else IN_UNIVERSE
-        results = []
-        for sym in universe:
-            try:
-                info = yf.Ticker(sym).info
-                pe = info.get("trailingPE") or 0
-                roe = info.get("returnOnEquity") or 0
-                mcap = info.get("marketCap") or 0
-                sec = info.get("sector", "")
-                passes = True
-                if min_market_cap and mcap < min_market_cap:
-                    passes = False
-                if max_pe and pe and pe > max_pe:
-                    passes = False
-                if min_roe and roe < min_roe:
-                    passes = False
-                if sector and sector.lower() not in sec.lower():
-                    passes = False
-                if passes:
-                    results.append({
-                        "symbol": sym.replace(".NS", "").replace(".BO", ""),
-                        "sector": sec,
-                        "pe": round(pe, 2) if pe else None,
-                        "roe": round(roe * 100, 2) if roe else None,
-                        "market_cap": mcap,
-                    })
-            except Exception:
-                pass
+
+        def _run_filter():
+            results = []
+            for sym in universe:
+                try:
+                    info = yf.Ticker(sym).info
+                    pe   = info.get("trailingPE")
+                    roe  = info.get("returnOnEquity")
+                    mcap = info.get("marketCap") or 0
+                    sec  = info.get("sector", "")
+                    passes = True
+                    if min_market_cap is not None and mcap < min_market_cap:
+                        passes = False
+                    if max_pe is not None and pe is not None and pe > max_pe:
+                        passes = False
+                    if min_roe is not None and (roe is None or roe < min_roe):
+                        passes = False
+                    if sector and sector.lower() not in sec.lower():
+                        passes = False
+                    if passes:
+                        results.append({
+                            "symbol":     sym.replace(".NS", "").replace(".BO", ""),
+                            "sector":     sec,
+                            "pe":         round(pe, 2) if pe is not None else None,
+                            "roe":        round(roe * 100, 2) if roe is not None else None,
+                            "market_cap": mcap,
+                        })
+                except Exception:
+                    pass
+            return results
+
+        loop = asyncio.get_running_loop()
+        results = await asyncio.wait_for(
+            loop.run_in_executor(None, _run_filter), timeout=60.0
+        )
         return {"market": market, "results": results}

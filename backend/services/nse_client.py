@@ -202,8 +202,11 @@ def get_quote(symbol: str) -> Optional[dict]:
             "low":                 info.get("intraDayHighLow", {}).get("min"),
             "fifty_two_week_high": info.get("weekHighLow", {}).get("max"),
             "fifty_two_week_low":  info.get("weekHighLow", {}).get("min"),
-            "volume":              int(data.get("marketDeptOrderBook", {})
-                                       .get("totalSellQuantity") or 0),
+            "volume":              int(
+                                       (data.get("marketDeptOrderBook", {}) or {})
+                                           .get("tradeInfo", {}).get("totalTradedVolume")
+                                       or 0
+                                   ),
         }
         _quote_cache[sym] = (time.time(), result)
         return result
@@ -236,10 +239,15 @@ def get_gainers_losers(index: str = "NIFTY") -> tuple[list[dict], list[dict]]:
         )
 
         def _parse(payload: dict, want_index: str) -> list[dict]:
-            # Try the requested index first, fall back to any available key
-            data = payload.get(want_index, {}).get("data")
-            if not data:
-                for key, val in payload.items():
+            # NSE uses "NIFTY 50" (with space), not "NIFTY" — try both, then any key
+            for key in (want_index, want_index + " 50", "NIFTY 50"):
+                candidate = payload.get(key, {})
+                if isinstance(candidate, dict) and candidate.get("data"):
+                    data = candidate["data"]
+                    break
+            else:
+                data = None
+                for val in payload.values():
                     if isinstance(val, dict) and val.get("data"):
                         data = val["data"]
                         break
@@ -248,10 +256,10 @@ def get_gainers_losers(index: str = "NIFTY") -> tuple[list[dict], list[dict]]:
             result = []
             for row in data:
                 sym = row.get("symbol", "")
-                ltp  = row.get("ltp") or row.get("lastPrice") or 0
-                prev = row.get("previousPrice") or row.get("prev_price") or 0
-                chg  = row.get("perChange") or row.get("pChange") or 0
-                if not sym or not ltp:
+                ltp  = row.get("ltp") if row.get("ltp") is not None else row.get("lastPrice")
+                prev = row.get("previousPrice") if row.get("previousPrice") is not None else row.get("prev_price")
+                chg  = row.get("perChange") if row.get("perChange") is not None else row.get("pChange") or 0
+                if not sym or ltp is None:
                     continue
                 result.append({
                     "symbol":       sym,

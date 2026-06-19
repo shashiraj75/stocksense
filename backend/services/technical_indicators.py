@@ -44,8 +44,8 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["obv"] = ta.volume.OnBalanceVolumeIndicator(close, volume).on_balance_volume()
     df["vol_sma_20"] = volume.rolling(20).mean()
 
-    # VWAP (rolling daily approximation)
-    df["vwap"] = (close * volume).rolling(20).sum() / volume.rolling(20).sum()
+    # VWMA-20 (Volume-Weighted Moving Average, 20 bars) — often labelled VWAP in UI
+    df["vwap"] = (close * volume).rolling(20).sum() / volume.rolling(20).sum().replace(0, float("nan"))
 
     return df
 
@@ -184,7 +184,7 @@ def get_signal_summary(df: pd.DataFrame) -> dict:
         score -= 7
 
     # --- MACD ---
-    if last["macd_diff"] > 0:
+    if _safe(last.get("macd_diff"), 0) > 0:
         signals.append({"indicator": "MACD", "signal": "BUY", "reason": "MACD above signal line"})
         score += 12
     else:

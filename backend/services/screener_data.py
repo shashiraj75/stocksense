@@ -375,17 +375,20 @@ def _parse_screener_page(soup: BeautifulSoup, symbol: str) -> dict:
                     vals = [_parse_number(c.get_text(strip=True)) for c in cells[1:]]
                     vals = [v for v in vals if v is not None]
                     if ("revenue" in label or "sales" in label) and len(vals) >= 4 and not data.get("sales_growth_3y_pct"):
-                        oldest, latest = vals[0], vals[-1]
-                        n = len(vals) - 1
-                        if oldest is not None and float(oldest) > 0 and n > 0:
-                            cagr = ((latest / oldest) ** (1 / n) - 1) * 100
+                        # Use last 4 values (3 periods) to compute a true 3Y CAGR
+                        slice3 = vals[-4:] if len(vals) >= 4 else vals
+                        oldest, latest = slice3[0], slice3[-1]
+                        n = len(slice3) - 1
+                        if oldest is not None and float(oldest) > 0 and latest is not None and n > 0:
+                            cagr = ((float(latest) / float(oldest)) ** (1 / n) - 1) * 100
                             data["sales_growth_3y_pct"] = round(cagr, 2)
                             data["sales_growth_ttm_pct"] = round(cagr, 2)
                     elif ("net profit" in label or ("profit" in label and "tax" not in label and "before" not in label)) and len(vals) >= 4 and not data.get("profit_growth_3y_pct"):
-                        oldest, latest = vals[0], vals[-1]
-                        n = len(vals) - 1
+                        slice3 = vals[-4:] if len(vals) >= 4 else vals
+                        oldest, latest = slice3[0], slice3[-1]
+                        n = len(slice3) - 1
                         if oldest is not None and float(oldest) > 0 and latest is not None and n > 0:
-                            cagr = ((latest / oldest) ** (1 / n) - 1) * 100
+                            cagr = ((float(latest) / float(oldest)) ** (1 / n) - 1) * 100
                             data["profit_growth_3y_pct"] = round(cagr, 2)
                             data["profit_growth_ttm_pct"] = round(cagr, 2)
 

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 import threading
@@ -139,7 +140,8 @@ class NewsSentimentService:
             if cached and (time.time() - cached[0]) < _NEWS_TTL:
                 return cached[1]
 
-        articles = self._fetch_rss(symbol, market, limit)
+        loop = asyncio.get_running_loop()
+        articles = await loop.run_in_executor(None, self._fetch_rss, symbol, market, limit)
         for a in articles:
             a["sentiment"] = score_sentiment(a["title"], a.get("description", ""))
         result = {"symbol": symbol, "market": market, "articles": articles}

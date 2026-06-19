@@ -193,19 +193,19 @@ def _compute_risk_penalty(info: dict, df: pd.DataFrame, quality: dict | None = N
     try:
         # High debt
         de = info.get("debtToEquity")
-        if de and de > 300:
+        if de is not None and de > 300:
             penalty += 8
             reasons.append(f"High debt-to-equity ({de:.0f}%) — financial fragility risk")
-        elif de and de > 200:
+        elif de is not None and de > 200:
             penalty += 4
             reasons.append(f"Elevated debt-to-equity ({de:.0f}%) — leverage risk")
 
         # High beta
         beta = info.get("beta")
-        if beta and beta > 2.0:
+        if beta is not None and beta > 2.0:
             penalty += 6
             reasons.append(f"High beta ({beta:.2f}) — amplified downside in market corrections")
-        elif beta and beta > 1.6:
+        elif beta is not None and beta > 1.6:
             penalty += 3
             reasons.append(f"Above-average beta ({beta:.2f}) — sensitive to market swings")
 
@@ -217,7 +217,7 @@ def _compute_risk_penalty(info: dict, df: pd.DataFrame, quality: dict | None = N
 
         # Negative ROE (loss-making)
         roe = info.get("returnOnEquity")
-        if roe and roe < -0.05:
+        if roe is not None and roe < -0.05:
             penalty += 5
             reasons.append(f"Negative ROE ({roe*100:.1f}%) — destroying shareholder value")
 
@@ -786,7 +786,7 @@ class PredictionEngine:
         reasons = []
 
         pe = info.get("trailingPE")
-        if pe:
+        if pe is not None:
             # Indian markets structurally trade at higher multiples (Nifty avg ~22-24x)
             pe_cheap   = 18 if market == "IN" else 15
             pe_fair    = 30 if market == "IN" else 25
@@ -802,7 +802,7 @@ class PredictionEngine:
                 reasons.append(f"High P/E ({pe:.1f}) — stretched valuation")
 
         roe = info.get("returnOnEquity")
-        if roe:
+        if roe is not None:
             if roe > 0.20:
                 score += 12
                 reasons.append(f"Strong ROE ({roe*100:.1f}%)")
@@ -814,7 +814,7 @@ class PredictionEngine:
                 reasons.append("Negative ROE — unprofitable")
 
         rev_growth = info.get("revenueGrowth")
-        if rev_growth:
+        if rev_growth is not None:
             if rev_growth > 0.20:
                 score += 12
                 reasons.append(f"Strong revenue growth ({rev_growth*100:.1f}% YoY)")
@@ -826,7 +826,7 @@ class PredictionEngine:
                 reasons.append(f"Revenue declining ({rev_growth*100:.1f}% YoY)")
 
         de = info.get("debtToEquity")
-        if de:
+        if de is not None:
             if de > 300:
                 score -= 12
                 reasons.append(f"Very high debt-to-equity ({de:.0f}%)")
@@ -838,7 +838,7 @@ class PredictionEngine:
                 reasons.append("Low debt — strong balance sheet")
 
         profit_margin = info.get("profitMargins")
-        if profit_margin:
+        if profit_margin is not None:
             if profit_margin > 0.20:
                 score += 8
                 reasons.append(f"High profit margins ({profit_margin*100:.1f}%)")
@@ -848,7 +848,7 @@ class PredictionEngine:
 
         # Earnings per share growth
         eps_growth = info.get("earningsGrowth")
-        if eps_growth:
+        if eps_growth is not None:
             if eps_growth > 0.20:
                 score += 8
                 reasons.append(f"Strong EPS growth ({eps_growth*100:.1f}%)")
@@ -1212,7 +1212,7 @@ class PredictionEngine:
             # Loss-making with negative operating cash flows
             roe = info.get("returnOnEquity")
             profit_margin = info.get("profitMargins")
-            op_cf = info.get("operatingCashflows")
+            op_cf = info.get("operatingCashflow") or info.get("operatingCashflows")
 
             if (roe is not None and roe < -0.10
                     and profit_margin is not None and profit_margin < -0.05):

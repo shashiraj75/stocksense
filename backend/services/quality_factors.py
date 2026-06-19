@@ -840,7 +840,10 @@ def altman_zscore_signal(info: dict) -> dict:
         x5 = (total_revenue    / total_assets) if total_revenue   is not None else 0
 
         # Detect Indian stock: use Z' model (no x5, different weights + thresholds)
-        is_india = "IN" in (info.get("market") or info.get("exchange") or info.get("country") or "")
+        _exch = (info.get("exchange") or "").upper()
+        is_india = (info.get("market") == "IN"
+                    or _exch in ("NSE", "BSE", "NSI", "BOM")
+                    or info.get("country") == "India")
         if is_india:
             z = 6.56*x1 + 3.26*x2 + 6.72*x3 + 1.05*x4
             safe_thresh, grey_thresh = 2.6, 1.1
@@ -891,7 +894,7 @@ def sloan_accruals_signal(info: dict) -> dict:
     reasons: list[str] = []
 
     try:
-        net_income   = info.get("netIncome")
+        net_income   = info.get("netIncome") or info.get("netIncomeToCommon")
         op_cf        = info.get("operatingCashflow") or info.get("operatingCashflows")
         total_assets = info.get("totalAssets")
 

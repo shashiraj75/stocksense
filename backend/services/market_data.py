@@ -81,7 +81,7 @@ class MarketDataService:
         # 1. India: NSE official API — live, includes company name, no rate limits
         if market == "IN":
             try:
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 nse_q = await asyncio.wait_for(
                     loop.run_in_executor(None, nse_client.get_quote, symbol),
                     timeout=6.0,
@@ -104,7 +104,7 @@ class MarketDataService:
                 fi = yf.Ticker(self._sym(symbol, market)).fast_info
                 price = fi.last_price
                 prev  = fi.previous_close
-                if price and prev:
+                if price is not None and prev is not None:
                     result = {
                         "symbol":     symbol,
                         "market":     market,
@@ -148,7 +148,7 @@ class MarketDataService:
                 # US stock or NSE didn't return name — try Finnhub profile inline
                 sym_yf = self._sym(symbol, market)
                 sym_fh = self._fh_sym(symbol, market)
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 name: Optional[str] = None
                 if finnhub_client.FINNHUB_KEY:
                     try:
@@ -235,7 +235,7 @@ class MarketDataService:
 
         info: dict = {}
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             info = await asyncio.wait_for(
                 loop.run_in_executor(None, lambda: yf.Ticker(self._sym(symbol, market)).info),
                 timeout=8.0,
