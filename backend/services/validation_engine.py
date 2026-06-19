@@ -86,26 +86,42 @@ CREATE INDEX IF NOT EXISTS idx_val_signals_sym   ON val_signals(symbol, horizon)
 CREATE INDEX IF NOT EXISTS idx_val_signals_score ON val_signals(composite_score);
 """
 
+# Synced with official NSE Nifty 100 index (June 2026) + popular large-caps
+# removed from the index that are still worth validating.
 NIFTY_100 = [
+    # ── Core Nifty 100 (official, June 2026) ─────────────────────────────────
     "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY", "HINDUNILVR", "ITC",
     "SBIN", "BHARTIARTL", "BAJFINANCE", "KOTAKBANK", "LT", "AXISBANK",
     "MARUTI", "HCLTECH", "SUNPHARMA", "TITAN", "WIPRO", "ULTRACEMCO",
-    "NTPC", "POWERGRID", "ONGC", "TATAMOTORS", "M&M", "ASIANPAINT",
+    "NTPC", "POWERGRID", "ONGC", "M&M", "ASIANPAINT",
     "NESTLEIND", "BAJAJFINSV", "TECHM", "DRREDDY", "CIPLA",
     "JSWSTEEL", "TATASTEEL", "HINDALCO", "DIVISLAB", "BRITANNIA",
-    "DABUR", "GODREJCP", "MARICO", "TATACONSUM", "EICHERMOT",
-    "BAJAJ-AUTO", "HEROMOTOCO", "TVSMOTOR", "ADANIENT", "ADANIPORTS",
-    "SIEMENS", "HAL", "BHEL", "DLF", "OBEROIRLTY",
-    "HDFCLIFE", "SBILIFE", "ICICIPRULI", "CHOLAFIN", "MUTHOOTFIN",
-    "LUPIN", "TORNTPHARM", "APOLLOHOSP", "SRF", "PIIND",
-    "ETERNAL", "DMART", "IRCTC", "INDHOTEL", "TRENT",   # ZOMATO rebranded → ETERNAL
-    "PERSISTENT", "MPHASIS", "LTIM", "OFSS", "NAUKRI",
-    "COALINDIA", "GAIL", "BPCL", "IOC", "HINDPETRO",
-    "BANKBARODA", "INDUSINDBK", "FEDERALBNK", "IDFCFIRSTB", "BANDHANBNK",
-    "VEDL", "NMDC", "SAIL", "HAVELLS", "VOLTAS",
-    "PIDILITIND", "SUPREMEIND", "RECLTD", "LICHSGFIN", "CONCOR",
+    "GODREJCP", "TATACONSUM", "EICHERMOT",
+    "BAJAJ-AUTO", "TVSMOTOR", "ADANIENT", "ADANIPORTS",
+    "SIEMENS", "HAL", "DLF",
+    "HDFCLIFE", "SBILIFE", "CHOLAFIN", "MUTHOOTFIN",
+    "TORNTPHARM", "APOLLOHOSP",
+    "ETERNAL", "DMART", "INDHOTEL", "TRENT",
+    "COALINDIA", "GAIL", "BPCL", "IOC",
+    "BANKBARODA", "VEDL", "PIDILITIND", "RECLTD",
+    "SHREECEM", "GRASIM", "MOTHERSON",
+    # Newly added to Nifty 100
+    "ABB", "ADANIENSOL", "ADANIGREEN", "ADANIPOWER", "AMBUJACEM",
+    "BAJAJHLDNG", "BEL", "BOSCHLTD", "CANBK", "CGPOWER",
+    "CUMMINSIND", "ENRIN", "HDFCAMC", "HINDZINC", "HYUNDAI",
+    "INDIGO", "IRFC", "JINDALSTEL", "JIOFIN", "LODHA",
+    "LTM", "MAXHEALTH", "MAZDOCK", "PFC", "PNB",
+    "SHRIRAMFIN", "SOLARINDS", "TATACAP", "TATAPOWER",
+    "TMCV", "TMPV", "UNIONBANK", "UNITDSPR", "VAML",
+    "VBL", "VOGL", "ZYDUSLIFE",
+    # ── Removed from Nifty 100 but still large-cap & worth validating ────────
+    "HEROMOTOCO", "BHEL", "OBEROIRLTY", "ICICIPRULI", "LUPIN",
+    "SRF", "PIIND", "IRCTC", "PERSISTENT", "MPHASIS",
+    "LTIM", "OFSS", "NAUKRI", "HINDPETRO", "INDUSINDBK",
+    "FEDERALBNK", "IDFCFIRSTB", "BANDHANBNK", "NMDC", "SAIL",
+    "HAVELLS", "VOLTAS", "SUPREMEIND", "LICHSGFIN", "CONCOR",
     "DELHIVERY", "NYKAA", "PAYTM", "POLICYBZR", "DIXON",
-    "SHREECEM", "GRASIM", "MOTHERSON",   # removed duplicate ULTRACEMCO
+    "DABUR", "MARICO",
 ]
 
 HORIZON_DAYS  = {"short": 5,  "medium": 21, "long": 63}
