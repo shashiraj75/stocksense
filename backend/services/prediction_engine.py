@@ -280,9 +280,15 @@ class PredictionEngine:
                             yf.utils.get_crumb(force=True) if hasattr(yf.utils, "get_crumb") else None
                         except Exception:
                             pass
-                        time.sleep(2 + attempt * 2)  # 2s, 4s — enough to recover without blocking user
+                        time.sleep(2 + attempt * 2)
                 except Exception as e:
+                    err_str = str(e).lower()
                     if attempt < 2:
+                        if "crumb" in err_str or "401" in err_str or "unauthorized" in err_str:
+                            try:
+                                yf.utils.get_crumb(force=True) if hasattr(yf.utils, "get_crumb") else None
+                            except Exception:
+                                pass
                         time.sleep(2 + attempt * 2)
                     else:
                         raise

@@ -79,6 +79,14 @@ def _bulk_quotes(tickers: list[str]) -> dict[str, dict]:
                     "name": _NAME_MAP.get(sym.upper(), ""),
                 }
     except Exception as e:
+        err = str(e).lower()
+        if "crumb" in err or "401" in err or "unauthorized" in err:
+            try:
+                import yfinance as yf
+                yf.utils.get_crumb(force=True) if hasattr(yf.utils, "get_crumb") else None
+                log.info("bulk_quotes: crumb refreshed after 401")
+            except Exception:
+                pass
         log.warning("bulk_quotes failed: %s", e)
     return results
 

@@ -77,8 +77,9 @@ async def _keepalive_loop():
 
 
 async def _yfinance_crumb_loop():
-    """Refresh yfinance session crumb every 90 minutes — prevents 401 Invalid Crumb errors."""
-    await asyncio.sleep(90 * 60)  # first refresh after 90 min
+    """Refresh yfinance session crumb every 40 minutes — prevents 401 Invalid Crumb errors.
+    First refresh at 40 min (not 90) so a ~60-min Yahoo session TTL is always covered."""
+    await asyncio.sleep(40 * 60)
     while True:
         try:
             import yfinance as yf
@@ -86,12 +87,12 @@ async def _yfinance_crumb_loop():
             def _do():
                 if hasattr(yf.utils, "get_crumb"):
                     yf.utils.get_crumb(force=True)
-                yf.Ticker("AAPL").fast_info
+                yf.Ticker("RELIANCE.NS").fast_info  # warm with an IN ticker too
             await loop.run_in_executor(None, _do)
             print("[crumb] yfinance session refreshed")
         except Exception as e:
             print(f"[crumb] refresh failed (non-fatal): {e}")
-        await asyncio.sleep(90 * 60)
+        await asyncio.sleep(40 * 60)
 
 
 async def _outcome_resolver_loop():

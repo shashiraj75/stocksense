@@ -73,6 +73,13 @@ def _bulk_changes(symbols: list[str], suffix: str) -> dict[str, float | None]:
             if prev is not None and today is not None and float(prev) > 0:
                 changes[sym] = round((float(today) - float(prev)) / float(prev) * 100, 2)
     except Exception as e:
+        err = str(e).lower()
+        if "crumb" in err or "401" in err or "unauthorized" in err:
+            try:
+                yf.utils.get_crumb(force=True) if hasattr(yf.utils, "get_crumb") else None
+                log.info("bulk_changes: crumb refreshed after 401")
+            except Exception:
+                pass
         log.warning("bulk_changes download failed: %s", e)
     return changes
 
