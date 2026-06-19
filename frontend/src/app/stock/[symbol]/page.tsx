@@ -272,20 +272,25 @@ export default function StockPage() {
                 <div className="flex-1 min-w-0">
 
                   {/* Row 1: symbol + badges */}
-                  <div className="flex flex-wrap items-center gap-2 mb-2.5">
-                    <h1 className="text-2xl font-black font-mono tracking-tight">{symbol}</h1>
-                    <span className="text-[11px] bg-white/5 border border-white/10 px-2 py-0.5 rounded-md text-gray-400">
-                      {isCrypto ? `CRYPTO · ${CRYPTO_NAMES[symbol] ?? symbol}` : market === "US" ? "🇺🇸 NYSE / NASDAQ" : "🇮🇳 NSE India"}
-                    </span>
-                    {!isCrypto && (() => {
-                      const cap = getCapCategory(quote?.market_cap, market);
-                      if (!cap) return null;
-                      return (
-                        <span className={`text-[11px] border px-2 py-0.5 rounded-md font-medium ${cap.color} ${cap.bg}`}>
-                          {cap.label}
-                        </span>
-                      );
-                    })()}
+                  <div className="mb-2.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h1 className="text-2xl font-black font-mono tracking-tight">{symbol}</h1>
+                      <span className="text-[11px] bg-white/5 border border-white/10 px-2 py-0.5 rounded-md text-gray-400">
+                        {isCrypto ? `CRYPTO · ${CRYPTO_NAMES[symbol] ?? symbol}` : market === "US" ? "🇺🇸 NYSE / NASDAQ" : "🇮🇳 NSE India"}
+                      </span>
+                      {!isCrypto && (() => {
+                        const cap = getCapCategory(quote?.market_cap, market);
+                        if (!cap) return null;
+                        return (
+                          <span className={`text-[11px] border px-2 py-0.5 rounded-md font-medium ${cap.color} ${cap.bg}`}>
+                            {cap.label}
+                          </span>
+                        );
+                      })()}
+                    </div>
+                    {quote?.company_name && (
+                      <p className="text-sm text-gray-400 mt-0.5">{quote.company_name}</p>
+                    )}
                   </div>
 
                   {/* Row 2: price + change */}

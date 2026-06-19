@@ -72,6 +72,16 @@ class MarketDataService:
             except Exception:
                 pass  # extras are non-critical
 
+        # Add company name from yfinance info (best-effort, non-blocking)
+        if result and not result.get("company_name"):
+            try:
+                info = yf.Ticker(self._sym(symbol, market)).info
+                name = info.get("longName") or info.get("shortName")
+                if name:
+                    result["company_name"] = name
+            except Exception:
+                pass
+
         if result:
             _quote_cache[key] = (time.time(), result)
         return result

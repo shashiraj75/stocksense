@@ -20,6 +20,7 @@ export interface StockQuote {
   market_cap: number;
   fifty_two_week_high: number;
   fifty_two_week_low: number;
+  company_name?: string;
 }
 
 export interface OHLCVBar {
