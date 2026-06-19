@@ -75,7 +75,7 @@ export default function Dashboard() {
       {/* Market Overview card: tabs row + index bar row */}
       <div className="bg-dark-card border border-dark-border rounded-xl px-4 py-3 space-y-2">
         <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-sm font-bold text-white shrink-0">Market Overview</h1>
+          <h1 className="text-2xl font-bold text-white shrink-0">Market Overview</h1>
           <div className="flex gap-1.5">
             {MARKET_TABS.map(({ key, label }) => (
               <button key={key} onClick={() => setMarket(key)}
