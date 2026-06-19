@@ -192,7 +192,7 @@ class ScreenerService:
                 return data
 
         import asyncio
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         is_open = _is_market_open(market)
         gainers, losers = [], []
 

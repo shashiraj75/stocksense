@@ -6,6 +6,20 @@ from typing import Optional
 from services import finnhub_client
 from services import nse_client
 
+# Static symbol→name map built from the universe list — instant fallback,
+# no API call needed. Populated lazily on first use.
+_STATIC_NAMES: dict[str, str] = {}
+def _get_static_names() -> dict[str, str]:
+    global _STATIC_NAMES
+    if not _STATIC_NAMES:
+        try:
+            from services.stock_universe import IN_STOCKS, US_STOCKS
+            for sym, name in (IN_STOCKS + US_STOCKS):
+                _STATIC_NAMES[sym.upper().replace(".NS","").replace(".BO","")] = name
+        except Exception:
+            pass
+    return _STATIC_NAMES
+
 log = logging.getLogger(__name__)
 
 MARKET_SUFFIX = {"US": "", "IN": ".NS"}
@@ -135,62 +149,75 @@ class MarketDataService:
             except Exception:
                 pass
 
-        # 4. Company name — from NSE (India) or Finnhub profile (US/fallback).
-        #    NSE quotes already include companyName so no extra call needed for India.
+        # 4. Company name — priority:
+        #    a) 24h cache hit (instant)
+        #    b) NSE quote already included it
+        #    c) Static universe list (instant, zero-latency for all known stocks)
+        #    d) Finnhub profile inline (~200ms, for US or unknown stocks)
+        #    e) yfinance background fallback (slow, true last resort)
         if result:
             cached_name = _name_cache.get(key)
             if cached_name and (time.time() - cached_name[0]) < _NAME_TTL:
+                # (a) cache hit
                 result["company_name"] = cached_name[1]
             elif result.get("company_name"):
-                # Already populated by NSE quote — cache it
+                # (b) NSE quote returned it — persist to cache
                 _name_cache[key] = (time.time(), result["company_name"])
             else:
-                # US stock or NSE didn't return name — try Finnhub profile inline
-                sym_yf = self._sym(symbol, market)
-                sym_fh = self._fh_sym(symbol, market)
-                loop = asyncio.get_running_loop()
-                name: Optional[str] = None
-                if finnhub_client.FINNHUB_KEY:
-                    try:
-                        def _fh_name():
-                            r = finnhub_client._SESSION.get(
-                                f"{finnhub_client._BASE}/stock/profile2",
-                                params={"symbol": sym_fh},
-                                timeout=2,
-                            )
-                            if r.status_code == 200:
-                                return r.json().get("name")
-                            return None
-                        name = await asyncio.wait_for(
-                            loop.run_in_executor(None, _fh_name),
-                            timeout=2.5,
-                        )
-                    except Exception:
-                        pass
-
-                if name:
-                    _name_cache[key] = (time.time(), name)
-                    result["company_name"] = name
+                # (c) static universe list — instant, no network call
+                clean_sym = symbol.upper().replace(".NS", "").replace(".BO", "")
+                static_name = _get_static_names().get(clean_sym, "")
+                if static_name:
+                    result["company_name"] = static_name
+                    _name_cache[key] = (time.time(), static_name)
                 else:
-                    async def _bg_yf_name(k=key, yf_s=sym_yf):
+                    # (d) Finnhub profile inline for US or truly unknown symbols
+                    sym_yf = self._sym(symbol, market)
+                    sym_fh = self._fh_sym(symbol, market)
+                    loop = asyncio.get_running_loop()
+                    name: Optional[str] = None
+                    if finnhub_client.FINNHUB_KEY:
                         try:
-                            def _fetch():
-                                info = yf.Ticker(yf_s).info
-                                if isinstance(info, dict):
-                                    return info.get("longName") or info.get("shortName")
+                            def _fh_name():
+                                r = finnhub_client._SESSION.get(
+                                    f"{finnhub_client._BASE}/stock/profile2",
+                                    params={"symbol": sym_fh},
+                                    timeout=2,
+                                )
+                                if r.status_code == 200:
+                                    return r.json().get("name")
                                 return None
-                            n = await asyncio.wait_for(
-                                loop.run_in_executor(None, _fetch),
-                                timeout=5.0,
+                            name = await asyncio.wait_for(
+                                loop.run_in_executor(None, _fh_name),
+                                timeout=2.5,
                             )
-                            if n:
-                                _name_cache[k] = (time.time(), n)
-                                cached_q = _quote_cache.get(k)
-                                if cached_q:
-                                    cached_q[1]["company_name"] = n
                         except Exception:
                             pass
-                    asyncio.ensure_future(_bg_yf_name())
+
+                    if name:
+                        _name_cache[key] = (time.time(), name)
+                        result["company_name"] = name
+                    else:
+                        # (e) yfinance background — populates cache for next request
+                        async def _bg_yf_name(k=key, yf_s=sym_yf):
+                            try:
+                                def _fetch():
+                                    info = yf.Ticker(yf_s).info
+                                    if isinstance(info, dict):
+                                        return info.get("longName") or info.get("shortName")
+                                    return None
+                                n = await asyncio.wait_for(
+                                    loop.run_in_executor(None, _fetch),
+                                    timeout=5.0,
+                                )
+                                if n:
+                                    _name_cache[k] = (time.time(), n)
+                                    cached_q = _quote_cache.get(k)
+                                    if cached_q:
+                                        cached_q[1]["company_name"] = n
+                            except Exception:
+                                pass
+                        asyncio.ensure_future(_bg_yf_name())
 
         if result:
             _quote_cache[key] = (time.time(), result)
