@@ -27,11 +27,12 @@ export async function middleware(request: NextRequest) {
           return request.cookies.getAll();
         },
         setAll(cookiesToSet) {
-          // Must set on request AND reassign supabaseResponse so refreshed
-          // tokens are written back to the browser cookie jar
-          cookiesToSet.forEach(({ name, value, options }) =>
-            request.cookies.set(name, value, options)
+          // Set name+value on the request (options not supported on request cookies)
+          cookiesToSet.forEach(({ name, value }) =>
+            request.cookies.set(name, value)
           );
+          // Reassign supabaseResponse with the updated request so refreshed
+          // tokens are written back to the browser cookie jar
           supabaseResponse = NextResponse.next({ request });
           cookiesToSet.forEach(({ name, value, options }) =>
             supabaseResponse.cookies.set(name, value, options)
@@ -41,8 +42,8 @@ export async function middleware(request: NextRequest) {
     }
   );
 
-  // getUser() makes a server-side call to verify the token — getSession() is
-  // unreliable in middleware and can return stale data from the cookie
+  // getUser() makes a real server-side token verification — getSession() reads
+  // the raw cookie without verifying it and can return stale/invalid sessions
   const { data: { user } } = await supabase.auth.getUser();
 
   // No session → redirect to login, copying any refreshed Supabase cookies
@@ -68,8 +69,6 @@ export async function middleware(request: NextRequest) {
     return redirectResponse;
   }
 
-  // All good — return supabaseResponse (not a new NextResponse) so any
-  // refreshed session cookies are preserved in the browser
   return supabaseResponse;
 }
 
