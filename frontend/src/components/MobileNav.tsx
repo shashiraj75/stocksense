@@ -11,10 +11,10 @@ export function MobileNav({ links }: { links: NavLink[] }) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
   const { user } = useAuth();
-  const isPublicPage = pathname === "/" || pathname === "/login" || pathname?.startsWith("/auth");
-  if (isPublicPage || !user) return null;
-  const isActive = (href: string) => href === "/dashboard" ? pathname === "/dashboard" : pathname?.startsWith(href) ?? false;
   const ref = useRef<HTMLDivElement>(null);
+  const isPublicPage = pathname === "/" || pathname === "/login" || pathname?.startsWith("/auth");
+  const isActive = (href: string) => href === "/dashboard" ? pathname === "/dashboard" : pathname?.startsWith(href) ?? false;
+  if (isPublicPage || !user) return null;
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
