@@ -84,7 +84,12 @@ export default function AcceptTermsPage() {
         data: { terms_accepted: true, terms_version: TERMS_VERSION, terms_accepted_at: new Date().toISOString() },
       });
 
-      router.replace("/dashboard");
+      // Refresh session so the new metadata is reflected in the JWT cookie
+      // before middleware checks it on the next request
+      await supabase.auth.refreshSession();
+
+      // Hard navigation so the fresh cookie is sent with the request
+      window.location.href = "/dashboard";
     } catch (err: any) {
       setError("Failed to record acceptance. Please try again.");
       setLoading(false);
