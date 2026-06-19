@@ -329,6 +329,16 @@ export default function PaperTradingPage() {
     },
   });
 
+  // Must be called before any early return — hooks must always run in the same order
+  const quoteResults = useQueries({
+    queries: (portfolio?.open_trades ?? []).map(t => ({
+      queryKey: ["quote", t.symbol, t.market],
+      queryFn: () => fetchQuote(t.symbol, t.market as any),
+      staleTime: 25_000,
+      refetchInterval: 30_000,
+    })),
+  });
+
   if (isLoading || !portfolio) {
     return (
       <div className="flex items-center justify-center min-h-[40vh] text-gray-400">
@@ -342,16 +352,6 @@ export default function PaperTradingPage() {
 
   const openTrades = portfolio.open_trades;
   const closedTrades = portfolio.closed_trades;
-
-  // Fetch live quotes for all open positions to compute total unrealized P&L
-  const quoteResults = useQueries({
-    queries: openTrades.map(t => ({
-      queryKey: ["quote", t.symbol, t.market],
-      queryFn: () => fetchQuote(t.symbol, t.market as any),
-      staleTime: 25_000,
-      refetchInterval: 30_000,
-    })),
-  });
 
   const totalUnrealizedPnl = openTrades.reduce((sum, trade, i) => {
     const price = quoteResults[i]?.data?.price;
