@@ -216,72 +216,29 @@ def get_quote(symbol: str) -> Optional[dict]:
         return None
 
 
-def get_gainers_losers(index: str = "NIFTY") -> tuple[list[dict], list[dict]]:
+def get_gainers_losers(index: str = "NIFTY 50") -> tuple[list[dict], list[dict]]:
     """
-    Fetch top gainers and losers from NSE using /api/live-analysis-variations?index=gainers.
+    Fetch top gainers and losers by pulling the full Nifty 50 / Nifty 100
+    index via equity-stockIndices (same endpoint that powers the working heatmap).
+    Splits all 50/100 stocks by sign of change_pct to get gainers and losers.
 
-    NOTE: Only the ?index=gainers endpoint exists. NSE removed ?index=losers —
-    it returns {"data": "Missing index or key."}. We fetch gainers only and
-    split the full list by sign of perChange to get both gainers and losers.
-    Works without session cookies — reliable from Render cloud IPs.
-
-    index: "NIFTY" (Nifty 50), "NIFTYNEXT50", "allSec" (all NSE securities)
+    This is more reliable than live-analysis-variations which only returns
+    gainers (not losers) and behaves differently on Render cloud IPs.
     """
     try:
-        headers = {"Referer": "https://www.nseindia.com/market-data/live-market-indices"}
-        r = _SESSION.get(
-            "https://www.nseindia.com/api/live-analysis-variations?index=gainers",
-            headers=headers,
-            timeout=10,
-        )
-        if r.status_code != 200:
-            log.warning("NSE live-analysis-variations status %s", r.status_code)
+        # Try Nifty 100 first for more coverage, fall back to Nifty 50
+        stocks = fetch_index("NIFTY 100")
+        if not stocks:
+            stocks = fetch_index("NIFTY 50")
+        if not stocks:
             return [], []
-
-        payload = r.json()
-
-        # Find the right index bucket — real key is e.g. "NIFTY", "BANKNIFTY", "allSec"
-        data = None
-        for key in (index, "NIFTY", "allSec"):
-            candidate = payload.get(key)
-            if isinstance(candidate, dict) and isinstance(candidate.get("data"), list):
-                data = candidate["data"]
-                break
-        if not data:
-            # last resort: first key that has a list under "data"
-            for val in payload.values():
-                if isinstance(val, dict) and isinstance(val.get("data"), list):
-                    data = val["data"]
-                    break
-
-        if not data:
-            log.warning("NSE live-analysis-variations: no usable data in payload keys=%s", list(payload.keys()))
-            return [], []
-
-        stocks = []
-        for row in data:
-            sym  = row.get("symbol", "")
-            ltp  = row.get("ltp")
-            prev = row.get("prev_price")
-            chg  = row.get("perChange")
-            if not sym or ltp is None or prev is None or chg is None:
-                continue
-            stocks.append({
-                "symbol":     sym,
-                "company_name": "",   # not available in this endpoint; filled from _NAME_MAP in screener
-                "price":      round(float(ltp), 2),
-                "prev_close": round(float(prev), 2),
-                "change_pct": round(float(chg), 2),
-                "change":     round(float(ltp) - float(prev), 2),
-                "volume":     int(row.get("trade_quantity") or 0),
-            })
 
         gainers = sorted([s for s in stocks if s["change_pct"] > 0],
                          key=lambda x: x["change_pct"], reverse=True)[:10]
         losers  = sorted([s for s in stocks if s["change_pct"] < 0],
                          key=lambda x: x["change_pct"])[:10]
 
-        log.info("NSE live-analysis: %d stocks parsed → %d gainers, %d losers",
+        log.info("NSE gainers_losers (via index): %d total → %d gainers, %d losers",
                  len(stocks), len(gainers), len(losers))
         return gainers, losers
 
