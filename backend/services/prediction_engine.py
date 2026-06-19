@@ -91,9 +91,9 @@ def _market_regime(market: str) -> dict:
 
 SCORE_BANDS = [
     (90, "Exceptional Opportunity"),   # BUY — very high confidence
-    (80, "Strong Buy Candidate"),       # BUY — high confidence
-    (65, "Good Watchlist Stock"),       # BUY — moderate confidence
-    (55, "Neutral — Monitor"),          # HOLD
+    (75, "Strong Buy Candidate"),       # BUY — high confidence
+    (60, "Good Watchlist Stock"),       # BUY — moderate confidence (threshold: BUY ≥ 60)
+    (45, "Neutral — Monitor"),          # HOLD
     (0,  "Avoid"),                      # SELL
 ]
 
@@ -1329,28 +1329,22 @@ class PredictionEngine:
         # fold that drift in so contributions sum EXACTLY to composite_r.
         contributions["rounding_adjustment"] = composite_r - sum(contributions.values())
 
-        if composite_r >= 70:
+        if composite_r >= 60:
             signal = "BUY"
-        elif composite_r >= 55:
+        elif composite_r >= 45:
             signal = "HOLD"
         else:
             signal = "SELL"
 
         if signal == "BUY":
-            # Linear over the full BUY range [70,100] — 0% at the threshold,
-            # 100% only at the true extreme. (Old formula saturated at ~90,
-            # making most strong BUYs look identically "100% confident".)
-            confidence = round(max(0, min(100, (composite_r - 70) / 30 * 100)))
+            # Linear over the full BUY range [60,100]
+            confidence = round(max(0, min(100, (composite_r - 60) / 40 * 100)))
         elif signal == "SELL":
-            # Linear over the full SELL range [0,55) — 0% at the threshold,
-            # 100% only at composite=0. (Old formula saturated at ~27,
-            # so most "Avoid" scores showed a flat 100% regardless of how
-            # bad the score actually was — misleadingly contradicted the
-            # separate Model Confidence engine.)
-            confidence = round(max(0, min(100, (55 - composite_r) / 55 * 100)))
+            # Linear over the full SELL range [0,45)
+            confidence = round(max(0, min(100, (45 - composite_r) / 45 * 100)))
         else:
-            # HOLD confidence: highest near the midpoint (55), decays toward the thresholds
-            confidence = max(0, min(100, 50 - int(abs(composite_r - 55) * 2)))
+            # HOLD confidence: highest near the midpoint (52), decays toward the thresholds
+            confidence = max(0, min(100, 50 - int(abs(composite_r - 52) * 2)))
         score_band = _score_label(composite_r)
 
         confidence_score, confidence_band, confidence_components = self._confidence_engine(
