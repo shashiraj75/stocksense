@@ -115,26 +115,32 @@ class MarketDataService:
             except Exception:
                 pass
 
-        # 4. Company name — 24h cache. Fetched async (non-blocking) on cold cache,
-        #    returns immediately from cache on all subsequent requests.
+        # 4. Company name — 24h cache. Price is NEVER blocked by the name fetch.
+        #    Cache hit → attach instantly. Cache miss → fire background task and
+        #    return the quote immediately; name appears on the next quote refresh.
         if result:
             cached_name = _name_cache.get(key)
             if cached_name and (time.time() - cached_name[0]) < _NAME_TTL:
                 result["company_name"] = cached_name[1]
             else:
-                loop = asyncio.get_event_loop()
                 sym_yf = self._sym(symbol, market)
                 sym_fh = self._fh_sym(symbol, market)
-                try:
-                    name = await asyncio.wait_for(
-                        loop.run_in_executor(None, _fetch_name_sync, sym_yf, sym_fh, market),
-                        timeout=4.0,
-                    )
-                    if name:
-                        _name_cache[key] = (time.time(), name)
-                        result["company_name"] = name
-                except Exception:
-                    pass  # name is non-critical; page still loads without it
+                loop = asyncio.get_event_loop()
+                async def _bg_fetch_name(k=key, yf=sym_yf, fh=sym_fh, mkt=market):
+                    try:
+                        name = await asyncio.wait_for(
+                            loop.run_in_executor(None, _fetch_name_sync, yf, fh, mkt),
+                            timeout=5.0,
+                        )
+                        if name:
+                            _name_cache[k] = (time.time(), name)
+                            # Patch the cached quote so the next cache hit includes the name
+                            cached_q = _quote_cache.get(k)
+                            if cached_q:
+                                cached_q[1]["company_name"] = name
+                    except Exception:
+                        pass
+                asyncio.ensure_future(_bg_fetch_name())
 
         if result:
             _quote_cache[key] = (time.time(), result)
