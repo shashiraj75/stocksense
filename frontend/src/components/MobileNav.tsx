@@ -12,10 +12,8 @@ export function MobileNav({ links }: { links: NavLink[] }) {
   const pathname = usePathname();
   const { user } = useAuth();
   const ref = useRef<HTMLDivElement>(null);
-  const isPublicPage = pathname === "/" || pathname === "/login" || pathname?.startsWith("/auth");
-  const isActive = (href: string) => href === "/dashboard" ? pathname === "/dashboard" : pathname?.startsWith(href) ?? false;
-  if (isPublicPage || !user) return null;
 
+  // All hooks must come before any early return
   useEffect(() => {
     function handleClick(e: MouseEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
@@ -23,6 +21,10 @@ export function MobileNav({ links }: { links: NavLink[] }) {
     if (open) document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
   }, [open]);
+
+  const isPublicPage = pathname === "/" || pathname === "/login" || pathname?.startsWith("/auth");
+  const isActive = (href: string) => href === "/dashboard" ? pathname === "/dashboard" : pathname?.startsWith(href) ?? false;
+  if (isPublicPage || !user) return null;
 
   return (
     <div ref={ref} className="relative">
