@@ -50,8 +50,6 @@ def optimize(
     Returns:
         list[float] — portfolio weights summing to 1.0, length == len(alphas)
     """
-    from scipy.optimize import minimize
-
     n = len(alphas)
     if n == 0:
         return []
@@ -77,17 +75,19 @@ def optimize(
     else:
         Σ = np.eye(n) * 0.04   # 20% annual vol assumption
 
-    def neg_utility(w: np.ndarray) -> float:
-        return -(float(a @ w) - risk_aversion * float(w @ Σ @ w))
-
-    def neg_utility_grad(w: np.ndarray) -> np.ndarray:
-        return -(a - 2.0 * risk_aversion * Σ @ w)
-
-    w0 = np.ones(n) / n
-    bounds = [(0.0, max_weight)] * n
-    constraints = [{"type": "eq", "fun": lambda w: w.sum() - 1.0}]
-
     try:
+        from scipy.optimize import minimize
+
+        def neg_utility(w: np.ndarray) -> float:
+            return -(float(a @ w) - risk_aversion * float(w @ Σ @ w))
+
+        def neg_utility_grad(w: np.ndarray) -> np.ndarray:
+            return -(a - 2.0 * risk_aversion * Σ @ w)
+
+        w0 = np.ones(n) / n
+        bounds = [(0.0, max_weight)] * n
+        constraints = [{"type": "eq", "fun": lambda w: w.sum() - 1.0}]
+
         res = minimize(
             neg_utility, w0, jac=neg_utility_grad,
             method="SLSQP", bounds=bounds, constraints=constraints,
