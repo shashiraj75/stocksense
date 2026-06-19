@@ -128,6 +128,24 @@ _SCREENER_OVERRIDES: dict[str, str] = {
     "HCLTECH":      "/company/HCL-Technologies/consolidated/",
     "LTIM":         "",  # LTIMindtree merger not yet indexed on screener.in
     "NIFTY50":      "",  # index, not a company
+    # Real estate / mid-cap mismatches
+    "SUNTECK":      "/company/Sunteck-Realty/consolidated/",
+    "OBEROIRLTY":   "/company/Oberoi-Realty/consolidated/",
+    "GODREJPROP":   "/company/Godrej-Properties/consolidated/",
+    "PHOENIXLTD":   "/company/The-Phoenix-Mills/consolidated/",
+    "PRESTIGE":     "/company/Prestige-Estates-Projects/consolidated/",
+    "EMBDL":        "/company/Embassy-Developments/consolidated/",
+    # Other common mismatches
+    "TATACOMM":     "/company/Tata-Communications/consolidated/",
+    "TATAELXSI":    "/company/Tata-Elxsi/consolidated/",
+    "MCDOWELL-N":   "/company/United-Spirits/consolidated/",
+    "WELSPUNLIV":   "/company/Welspun-Living/consolidated/",
+    "CANBK":        "/company/Canara-Bank/consolidated/",
+    "BANDHANBNK":   "/company/Bandhan-Bank/consolidated/",
+    "INDUSTOWER":   "/company/Indus-Towers/consolidated/",
+    "NYKAA":        "/company/FSN-E-Commerce-Ventures/consolidated/",
+    "PAYTM":        "/company/One-97-Communications/consolidated/",
+    "ZOMATO":       "/company/Zomato/consolidated/",
 }
 
 
@@ -192,11 +210,20 @@ def fetch_screener_data(symbol: str) -> dict:
 
     result: dict = {"symbol": sym, "source": "screener.in", "available": False}
 
-    # Build URL candidates: direct match first, then search-resolved URL
-    paths = [f"/company/{sym}/consolidated/", f"/company/{sym}/"]
+    # Build URL candidates: search/override first, then direct guesses
+    paths = []
     resolved = _resolve_screener_url(sym)
-    if resolved and resolved not in paths:
-        paths.insert(0, resolved)
+    if resolved:
+        paths.append(resolved)
+    paths += [
+        f"/company/{sym}/consolidated/",
+        f"/company/{sym}/",
+        f"/company/{sym.title()}/consolidated/",
+        f"/company/{sym.title()}/",
+    ]
+    # deduplicate preserving order
+    seen: set[str] = set()
+    paths = [p for p in paths if not (p in seen or seen.add(p))]
 
     for path in paths:
         url = f"https://www.screener.in{path}"
