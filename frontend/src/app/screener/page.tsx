@@ -78,6 +78,14 @@ export default function ScreenerPage() {
                     </td>
                   </tr>
                 ))
+              : (!data?.movers?.length)
+              ? (
+                  <tr>
+                    <td colSpan={4} className="px-6 py-12 text-center text-gray-500 text-sm">
+                      {(data as any)?.error ?? "No data available — market data is refreshing, please wait a moment."}
+                    </td>
+                  </tr>
+                )
               : data?.movers.map((stock) => (
                   <StockContextMenu key={stock.symbol} symbol={stock.symbol} market={market} className="contents">
                     <tr className="border-b border-dark-border hover:bg-dark-border/30 transition-colors">

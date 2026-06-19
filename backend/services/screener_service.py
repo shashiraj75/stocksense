@@ -152,24 +152,47 @@ class ScreenerService:
             if (time.time() - stored_at) < ttl:
                 return data
 
+        import asyncio
+        loop = asyncio.get_event_loop()
         is_open = _is_market_open(market)
         gainers, losers = [], []
 
+        # Run all blocking yfinance calls in executor — never block the event loop
         if is_open:
             try:
                 if market == "IN":
-                    gainers, losers = _live_gainers_losers_in()
+                    gainers, losers = await asyncio.wait_for(
+                        loop.run_in_executor(None, _live_gainers_losers_in),
+                        timeout=15.0,
+                    )
                 elif market == "US":
-                    gainers, losers = _live_gainers_losers_us()
-            except Exception:
-                pass
+                    gainers, losers = await asyncio.wait_for(
+                        loop.run_in_executor(None, _live_gainers_losers_us),
+                        timeout=15.0,
+                    )
+            except Exception as e:
+                log.warning("live movers failed for %s: %s", market, e)
 
         if not gainers and not losers:
-            universe = IN_UNIVERSE if market == "IN" else US_UNIVERSE
-            gainers, losers = _closed_gainers_losers(universe)
+            try:
+                universe = IN_UNIVERSE if market == "IN" else US_UNIVERSE
+                gainers, losers = await asyncio.wait_for(
+                    loop.run_in_executor(None, _closed_gainers_losers, universe),
+                    timeout=25.0,
+                )
+            except Exception as e:
+                log.warning("closed movers fallback failed for %s: %s", market, e)
 
-        response = {"market": market, "market_open": is_open, "gainers": gainers, "losers": losers, "movers": gainers + losers}
-        _movers_cache[market] = (time.time(), response)
+        response = {
+            "market": market,
+            "market_open": is_open,
+            "gainers": gainers,
+            "losers": losers,
+            "movers": gainers + losers,
+            "error": "Data temporarily unavailable" if not gainers and not losers else None,
+        }
+        if gainers or losers:
+            _movers_cache[market] = (time.time(), response)
         return response
 
     async def filter_stocks(
