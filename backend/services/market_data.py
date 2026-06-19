@@ -115,32 +115,64 @@ class MarketDataService:
             except Exception:
                 pass
 
-        # 4. Company name — 24h cache. Price is NEVER blocked by the name fetch.
-        #    Cache hit → attach instantly. Cache miss → fire background task and
-        #    return the quote immediately; name appears on the next quote refresh.
+        # 4. Company name — 24h cache.
+        #    Strategy: Finnhub profile is fast (<200ms) so we await it inline —
+        #    name is always present in the first response. yfinance (.info) is slow
+        #    so it only runs as a background fallback if Finnhub doesn't have the name.
         if result:
             cached_name = _name_cache.get(key)
             if cached_name and (time.time() - cached_name[0]) < _NAME_TTL:
+                # Cache hit — instant
                 result["company_name"] = cached_name[1]
             else:
                 sym_yf = self._sym(symbol, market)
                 sym_fh = self._fh_sym(symbol, market)
                 loop = asyncio.get_event_loop()
-                async def _bg_fetch_name(k=key, yf=sym_yf, fh=sym_fh, mkt=market):
+
+                # Try Finnhub profile inline (fast, no crumb) — adds ~200ms max
+                name: Optional[str] = None
+                if finnhub_client.FINNHUB_KEY:
                     try:
+                        def _fh_name():
+                            r = finnhub_client._SESSION.get(
+                                f"{finnhub_client._BASE}/stock/profile2",
+                                params={"symbol": sym_fh},
+                                timeout=2,
+                            )
+                            if r.status_code == 200:
+                                return r.json().get("name")
+                            return None
                         name = await asyncio.wait_for(
-                            loop.run_in_executor(None, _fetch_name_sync, yf, fh, mkt),
-                            timeout=5.0,
+                            loop.run_in_executor(None, _fh_name),
+                            timeout=2.5,
                         )
-                        if name:
-                            _name_cache[k] = (time.time(), name)
-                            # Patch the cached quote so the next cache hit includes the name
-                            cached_q = _quote_cache.get(k)
-                            if cached_q:
-                                cached_q[1]["company_name"] = name
                     except Exception:
                         pass
-                asyncio.ensure_future(_bg_fetch_name())
+
+                if name:
+                    _name_cache[key] = (time.time(), name)
+                    result["company_name"] = name
+                else:
+                    # Finnhub had no name — fire yfinance as background fallback
+                    async def _bg_yf_name(k=key, yf_s=sym_yf):
+                        try:
+                            def _fetch():
+                                info = yf.Ticker(yf_s).info
+                                if isinstance(info, dict):
+                                    return info.get("longName") or info.get("shortName")
+                                return None
+                            n = await asyncio.wait_for(
+                                loop.run_in_executor(None, _fetch),
+                                timeout=5.0,
+                            )
+                            if n:
+                                _name_cache[k] = (time.time(), n)
+                                cached_q = _quote_cache.get(k)
+                                if cached_q:
+                                    cached_q[1]["company_name"] = n
+                        except Exception:
+                            pass
+                    asyncio.ensure_future(_bg_yf_name())
 
         if result:
             _quote_cache[key] = (time.time(), result)
