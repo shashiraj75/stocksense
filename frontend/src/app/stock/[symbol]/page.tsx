@@ -1121,14 +1121,19 @@ export default function StockPage() {
               {/* Cash Flow */}
               {screenerFund.operating_cf_annual_cr && screenerFund.operating_cf_annual_cr.length > 0 && (
                 <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
-                  <h3 className="font-bold text-white mb-4">Annual Cash Flow <span className="text-xs text-gray-500 font-normal ml-1">(₹ Crore · oldest → newest)</span></h3>
+                  <h3 className="font-bold text-white mb-4">Annual Cash Flow <span className="text-xs text-gray-500 font-normal ml-1">(₹ Crore · newest → oldest)</span></h3>
+                  {(() => {
+                    const cfLabels = [...(screenerFund.cashflow_labels ?? [])].reverse();
+                    const opCf = [...(screenerFund.operating_cf_annual_cr ?? [])].reverse();
+                    const invCf = screenerFund.investing_cf_annual_cr ? [...screenerFund.investing_cf_annual_cr].reverse() : null;
+                    return (
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="text-gray-500 text-xs">
                           <th className="text-left pb-2 font-medium">Type</th>
-                          {(screenerFund.operating_cf_annual_cr ?? []).map((_: number, i: number) => {
-                            const label = (screenerFund.cashflow_labels ?? [])[i] ?? `FY${i + 1}`;
+                          {opCf.map((_: number, i: number) => {
+                            const label = cfLabels[i] ?? `FY${i + 1}`;
                             return <th key={i} className="text-right pb-2 font-medium whitespace-nowrap">{label}</th>;
                           })}
                         </tr>
@@ -1136,16 +1141,16 @@ export default function StockPage() {
                       <tbody className="divide-y divide-dark-border">
                         <tr>
                           <td className="py-2 text-gray-400">Operating CF</td>
-                          {(screenerFund.operating_cf_annual_cr ?? []).map((v: number, i: number) => (
+                          {opCf.map((v: number, i: number) => (
                             <td key={i} className={clsx("py-2 text-right font-mono tabular-nums font-bold", v >= 0 ? "text-green-400" : "text-red-400")}>
                               {v != null ? v.toLocaleString() : "—"}
                             </td>
                           ))}
                         </tr>
-                        {screenerFund.investing_cf_annual_cr && (
+                        {invCf && (
                           <tr>
                             <td className="py-2 text-gray-400">Investing CF</td>
-                            {(screenerFund.investing_cf_annual_cr ?? []).map((v: number, i: number) => (
+                            {invCf.map((v: number, i: number) => (
                               <td key={i} className={clsx("py-2 text-right font-mono tabular-nums font-bold", v >= 0 ? "text-green-400" : "text-red-400")}>
                                 {v != null ? v.toLocaleString() : "—"}
                               </td>
@@ -1155,6 +1160,8 @@ export default function StockPage() {
                       </tbody>
                     </table>
                   </div>
+                    );
+                  })()}
                 </div>
               )}
 
