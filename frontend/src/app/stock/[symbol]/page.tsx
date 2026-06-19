@@ -288,7 +288,7 @@ export default function StockPage() {
                         );
                       })()}
                       {(screenerFund?.company_name || quote?.company_name) && (
-                        <span className="text-[11px] text-gray-400">
+                        <span className="text-2xl font-bold text-gray-400">
                           {screenerFund?.company_name || quote?.company_name}
                         </span>
                       )}
