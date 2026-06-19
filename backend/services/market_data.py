@@ -31,7 +31,14 @@ class MarketDataService:
         key = f"{symbol}:{market}"
         cached = _quote_cache.get(key)
         if cached and (time.time() - cached[0]) < _QUOTE_TTL:
-            return cached[1]
+            result = cached[1]
+            # Inject name from name-cache even on quote cache hits so the name
+            # appears as soon as the background fetch completes (not after 60s)
+            if not result.get("company_name"):
+                cn = _name_cache.get(key)
+                if cn and (time.time() - cn[0]) < _NAME_TTL:
+                    result["company_name"] = cn[1]
+            return result
 
         # 1. Try Finnhub first (fast, reliable from cloud IPs, 60s internal cache)
         result = finnhub_client.get_quote(symbol, market)
