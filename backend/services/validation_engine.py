@@ -98,16 +98,15 @@ NIFTY_100 = [
     "SIEMENS", "HAL", "BHEL", "DLF", "OBEROIRLTY",
     "HDFCLIFE", "SBILIFE", "ICICIPRULI", "CHOLAFIN", "MUTHOOTFIN",
     "LUPIN", "TORNTPHARM", "APOLLOHOSP", "SRF", "PIIND",
-    "ZOMATO", "DMART", "IRCTC", "INDHOTEL", "TRENT",
+    "ETERNAL", "DMART", "IRCTC", "INDHOTEL", "TRENT",   # ZOMATO rebranded → ETERNAL
     "PERSISTENT", "MPHASIS", "LTIM", "OFSS", "NAUKRI",
     "COALINDIA", "GAIL", "BPCL", "IOC", "HINDPETRO",
     "BANKBARODA", "INDUSINDBK", "FEDERALBNK", "IDFCFIRSTB", "BANDHANBNK",
     "VEDL", "NMDC", "SAIL", "HAVELLS", "VOLTAS",
     "PIDILITIND", "SUPREMEIND", "RECLTD", "LICHSGFIN", "CONCOR",
     "DELHIVERY", "NYKAA", "PAYTM", "POLICYBZR", "DIXON",
-    "ULTRACEMCO", "SHREECEM", "GRASIM", "MOTHERSON",
+    "SHREECEM", "GRASIM", "MOTHERSON",   # removed duplicate ULTRACEMCO
 ]
-NIFTY_100 = list(dict.fromkeys(NIFTY_100))  # deduplicate, preserve order
 
 HORIZON_DAYS  = {"short": 5,  "medium": 21, "long": 63}
 HORIZON_STEP  = {"short": 5,  "medium": 10, "long": 21}

@@ -108,7 +108,7 @@ STOCK_SECTOR: dict[str, str] = {
     # Consumer Discretionary / Paints / Others
     "TITAN": "Consumer", "ASIANPAINT": "FMCG", "PIDILITIND": "FMCG",
     # New-age tech/consumer — NOT Finance; classified by primary business
-    "NAUKRI": "IT", "ZOMATO": "Consumer", "PAYTM": "Finance",
+    "NAUKRI": "IT", "ZOMATO": "Consumer", "ETERNAL": "Consumer", "PAYTM": "Finance",
     "NYKAA": "Consumer", "POLICYBZR": "Finance",
     "DELHIVERY": "Infra", "IRCTC": "Infra",
     "INDHOTEL": "Consumer", "TRENT": "Consumer", "VOLTAS": "FMCG", "HAVELLS": "FMCG",

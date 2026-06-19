@@ -135,7 +135,8 @@ STOCK_MACRO_SENSITIVITY: dict[str, dict[str, str]] = {
     "POWERGRID":  {},
     "NTPC":       {"crude_brent": "neutral"},
     # E-commerce / New-age
-    "ZOMATO":     {"vix": "headwind"},
+    "ZOMATO":     {"vix": "headwind"},   # legacy — symbol now ETERNAL
+    "ETERNAL":    {"vix": "headwind"},
     "PAYTM":      {"vix": "headwind", "nasdaq": "tailwind"},
     "NYKAA":      {"vix": "headwind"},
     "POLICYBZR":  {"vix": "headwind"},
