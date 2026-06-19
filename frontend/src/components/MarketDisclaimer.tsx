@@ -8,7 +8,7 @@ const DISCLAIMERS: Record<Market, { title: string; regulator: string; points: st
     title: "US Market — Important Disclaimer",
     regulator: "SEC (U.S. Securities and Exchange Commission)",
     points: [
-      "StockSense is an AI-powered research tool and is NOT a registered investment adviser under the Investment Advisers Act of 1940.",
+      "StockSense360 is an AI-powered research tool and is NOT a registered investment adviser under the Investment Advisers Act of 1940.",
       "Signals, predictions, and target prices are generated algorithmically from public data and do NOT constitute financial, investment, or trading advice.",
       "Past backtest performance does not guarantee future results. Markets can and do behave differently from historical patterns.",
       "Always consult a licensed financial advisor or broker before making investment decisions.",
@@ -20,7 +20,7 @@ const DISCLAIMERS: Record<Market, { title: string; regulator: string; points: st
     title: "Indian Market — Important Disclaimer",
     regulator: "SEBI (Securities and Exchange Board of India)",
     points: [
-      "StockSense is an AI-powered research tool and is NOT registered with SEBI as an Investment Adviser under the SEBI (Investment Advisers) Regulations, 2013.",
+      "StockSense360 is an AI-powered research tool and is NOT registered with SEBI as an Investment Adviser under the SEBI (Investment Advisers) Regulations, 2013.",
       "Signals, predictions, and target prices are generated algorithmically from public data and do NOT constitute financial, investment, or trading advice.",
       "Past backtest performance does not guarantee future results. NSE/BSE markets are subject to volatility, regulatory changes, and macroeconomic factors.",
       "Always consult a SEBI-registered investment adviser or stockbroker before making investment decisions.",
@@ -80,7 +80,7 @@ export function MarketDisclaimer({ market }: Props) {
           </ul>
           <div className="bg-yellow-400/10 border border-yellow-400/30 rounded-xl p-4 mt-2">
             <p className="text-yellow-300 text-xs font-medium">
-              By clicking "I Understand", you acknowledge that StockSense provides informational content only
+              By clicking "I Understand", you acknowledge that StockSense360 provides informational content only
               and you take full responsibility for any investment decisions you make.
             </p>
           </div>

@@ -68,7 +68,7 @@ export default function LoginPage() {
         <div className="text-center space-y-1">
           <Link href="/" className="inline-flex items-center gap-2 text-brand-500">
             <TrendingUp size={28} />
-            <span className="text-2xl font-bold text-white">StockSense</span>
+            <span className="text-2xl font-bold text-white">StockSense360</span>
           </Link>
           <p className="text-gray-400 text-sm">AI-powered stock intelligence · Invite only</p>
         </div>

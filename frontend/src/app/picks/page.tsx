@@ -756,7 +756,7 @@ export default function DailyPicksPage() {
       <div className="bg-dark-card border border-dark-border rounded-xl p-4 text-center space-y-1">
         <p className="text-xs font-semibold text-gray-400">Disclaimer</p>
         <p className="text-xs text-gray-500">
-          StockSense picks are AI-generated signals for <strong className="text-gray-400">educational and research purposes only</strong>.
+          StockSense360 picks are AI-generated signals for <strong className="text-gray-400">educational and research purposes only</strong>.
           They do not constitute financial advice. Past accuracy is not a guarantee of future results.
           Always consult a SEBI-registered investment advisor before trading.
         </p>

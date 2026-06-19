@@ -15,7 +15,7 @@ const COUNTRIES = [
 const DISCLAIMER_SECTIONS = [
   {
     title: "1. Not financial advice",
-    body: "StockSense is an AI-powered information and research tool. All content, signals, scores, picks, alerts, and analysis — including BUY, HOLD, and SELL signals — are provided for informational and educational purposes only. Nothing on this platform constitutes financial advice or investment advice regulated under the SEBI Act, 1992 or any other applicable law. StockSense is not a SEBI-registered investment adviser, research analyst, or portfolio manager.",
+    body: "StockSense360 is an AI-powered information and research tool. All content, signals, scores, picks, alerts, and analysis — including BUY, HOLD, and SELL signals — are provided for informational and educational purposes only. Nothing on this platform constitutes financial advice or investment advice regulated under the SEBI Act, 1992 or any other applicable law. StockSense360 is not a SEBI-registered investment adviser, research analyst, or portfolio manager.",
   },
   {
     title: "2. Investment risk disclosure",
@@ -23,11 +23,11 @@ const DISCLAIMER_SECTIONS = [
   },
   {
     title: "3. User responsibility & independent judgement",
-    body: "Any investment or trading decision you make is entirely your own responsibility. You must conduct your own independent research and consult a qualified SEBI-registered investment adviser before making financial decisions. You must not rely solely on StockSense signals, picks, or scores.",
+    body: "Any investment or trading decision you make is entirely your own responsibility. You must conduct your own independent research and consult a qualified SEBI-registered investment adviser before making financial decisions. You must not rely solely on StockSense360 signals, picks, or scores.",
   },
   {
     title: "4. Data accuracy & reliability",
-    body: "StockSense sources data from third-party providers including Yahoo Finance, screener.in, NSE India, and public news feeds. We make no warranty that any data, price, or market information is accurate, complete, or up-to-date. Data may be delayed or unavailable. You must not treat any data shown as real-time or authoritative for the purpose of executing trades.",
+    body: "StockSense360 sources data from third-party providers including Yahoo Finance, screener.in, NSE India, and public news feeds. We make no warranty that any data, price, or market information is accurate, complete, or up-to-date. Data may be delayed or unavailable. You must not treat any data shown as real-time or authoritative for the purpose of executing trades.",
   },
   {
     title: "5. AI & algorithmic limitations",
@@ -39,11 +39,11 @@ const DISCLAIMER_SECTIONS = [
   },
   {
     title: "7. No liability",
-    body: "To the maximum extent permitted by applicable law, StockSense and its creators shall not be liable for any financial loss, trading loss, or loss of profits arising from reliance on any signal, pick, score, or analysis on this platform, including losses arising from data inaccuracies, system downtime, or errors in the AI engine.",
+    body: "To the maximum extent permitted by applicable law, StockSense360 and its creators shall not be liable for any financial loss, trading loss, or loss of profits arising from reliance on any signal, pick, score, or analysis on this platform, including losses arising from data inaccuracies, system downtime, or errors in the AI engine.",
   },
   {
     title: "8. Regulatory compliance",
-    body: "StockSense does not guarantee that using this platform will comply with any applicable securities laws. You are solely responsible for ensuring your investment activities comply with all laws applicable to you, including SEBI regulations, FEMA, and income tax obligations on capital gains.",
+    body: "StockSense360 does not guarantee that using this platform will comply with any applicable securities laws. You are solely responsible for ensuring your investment activities comply with all laws applicable to you, including SEBI regulations, FEMA, and income tax obligations on capital gains.",
   },
   {
     title: "9. Governing law",
@@ -51,7 +51,7 @@ const DISCLAIMER_SECTIONS = [
   },
   {
     title: "10. Amendments",
-    body: "StockSense reserves the right to update these Terms at any time. If material changes are made, you will be required to re-accept the updated Terms before continuing to use the platform.",
+    body: "StockSense360 reserves the right to update these Terms at any time. If material changes are made, you will be required to re-accept the updated Terms before continuing to use the platform.",
   },
 ];
 
@@ -137,7 +137,7 @@ export default function AcceptTermsPage() {
       <div className="text-center space-y-2">
         <div className="flex items-center justify-center gap-2 text-brand-500">
           <TrendingUp size={24} />
-          <span className="text-xl font-bold text-white">StockSense</span>
+          <span className="text-xl font-bold text-white">StockSense360</span>
         </div>
         <h1 className="text-2xl font-bold text-white">Terms of Use & Legal Disclaimer</h1>
         <p className="text-sm text-gray-400">Version 1.0 · Effective 19 June 2026 · Governing jurisdiction: Mumbai, India</p>
@@ -223,7 +223,7 @@ export default function AcceptTermsPage() {
           {agreed && <CheckCircle size={14} className="text-white" />}
         </div>
         <span className="text-sm text-gray-300 leading-relaxed">
-          I have read and understood the Terms of Use & Legal Disclaimer in full. I acknowledge that StockSense does not provide financial advice, that investing involves risk of loss, and that I am solely responsible for my investment decisions.
+          I have read and understood the Terms of Use & Legal Disclaimer in full. I acknowledge that StockSense360 does not provide financial advice, that investing involves risk of loss, and that I am solely responsible for my investment decisions.
         </span>
       </label>
 
@@ -237,7 +237,7 @@ export default function AcceptTermsPage() {
         disabled={!agreed || loading}
         className="w-full py-3 rounded-xl bg-brand-500 hover:bg-brand-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold transition-colors"
       >
-        {loading ? "Recording acceptance…" : "I Agree — Enter StockSense"}
+        {loading ? "Recording acceptance…" : "I Agree — Enter StockSense360"}
       </button>
 
       <p className="text-center text-xs text-gray-600">

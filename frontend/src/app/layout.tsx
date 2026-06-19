@@ -11,7 +11,7 @@ import { MarketStatusInline, MobileMarketStrip } from "@/components/MarketStatus
 import { LiveClock } from "@/components/LiveClock";
 
 export const metadata: Metadata = {
-  title: { default: "StockSense — AI Stock Predictor", template: "%s | StockSense" },
+  title: { default: "StockSense360 — AI Stock Predictor", template: "%s | StockSense360" },
   description: "Free AI-powered stock predictions for US and Indian markets. Daily picks, heatmap, screener, and portfolio tracker.",
   icons: { icon: "/favicon.svg" },
 };
@@ -44,7 +44,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               {/* Logo */}
               <Link href="/" className="flex items-center gap-1.5 text-brand-500 font-bold text-base sm:text-lg shrink-0">
                 <TrendingUp size={20} />
-                <span className="hidden sm:inline">StockSense</span>
+                <span className="hidden sm:inline">StockSense360</span>
               </Link>
 
               {/* Search — fills remaining space */}
