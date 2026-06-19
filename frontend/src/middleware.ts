@@ -6,7 +6,7 @@ const PUBLIC_PATHS = ["/", "/login", "/auth"];
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // Allow public paths and static assets
+  // Allow public paths and static assets without touching Supabase at all
   if (
     PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + "/")) ||
     pathname.startsWith("/_next") ||
@@ -15,7 +15,8 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const response = NextResponse.next();
+  // Must be `let` — Supabase SSR's setAll reassigns this when refreshing tokens
+  let supabaseResponse = NextResponse.next({ request });
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -25,29 +26,51 @@ export async function middleware(request: NextRequest) {
         getAll() {
           return request.cookies.getAll();
         },
-        setAll(toSet) {
-          toSet.forEach(({ name, value, options }) =>
-            response.cookies.set(name, value, options)
+        setAll(cookiesToSet) {
+          // Must set on request AND reassign supabaseResponse so refreshed
+          // tokens are written back to the browser cookie jar
+          cookiesToSet.forEach(({ name, value, options }) =>
+            request.cookies.set(name, value, options)
+          );
+          supabaseResponse = NextResponse.next({ request });
+          cookiesToSet.forEach(({ name, value, options }) =>
+            supabaseResponse.cookies.set(name, value, options)
           );
         },
       },
     }
   );
 
-  const { data: { session } } = await supabase.auth.getSession();
+  // getUser() makes a server-side call to verify the token — getSession() is
+  // unreliable in middleware and can return stale data from the cookie
+  const { data: { user } } = await supabase.auth.getUser();
 
-  // No session → login
-  if (!session) {
-    return NextResponse.redirect(new URL("/login", request.url));
+  // No session → redirect to login, copying any refreshed Supabase cookies
+  if (!user) {
+    const url = request.nextUrl.clone();
+    url.pathname = "/login";
+    const redirectResponse = NextResponse.redirect(url);
+    supabaseResponse.cookies.getAll().forEach((c) =>
+      redirectResponse.cookies.set(c.name, c.value, { path: "/" })
+    );
+    return redirectResponse;
   }
 
-  // Session but terms not accepted → accept-terms page
-  const termsAccepted = session.user?.user_metadata?.terms_accepted === true;
+  // Logged in but terms not yet accepted → redirect to accept-terms
+  const termsAccepted = user.user_metadata?.terms_accepted === true;
   if (!termsAccepted && pathname !== "/accept-terms") {
-    return NextResponse.redirect(new URL("/accept-terms", request.url));
+    const url = request.nextUrl.clone();
+    url.pathname = "/accept-terms";
+    const redirectResponse = NextResponse.redirect(url);
+    supabaseResponse.cookies.getAll().forEach((c) =>
+      redirectResponse.cookies.set(c.name, c.value, { path: "/" })
+    );
+    return redirectResponse;
   }
 
-  return response;
+  // All good — return supabaseResponse (not a new NextResponse) so any
+  // refreshed session cookies are preserved in the browser
+  return supabaseResponse;
 }
 
 export const config = {
