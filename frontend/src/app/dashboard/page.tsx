@@ -7,7 +7,7 @@ import Link from "next/link";
 import clsx from "clsx";
 import { IndexBar } from "@/components/IndexBar";
 import { StockContextMenu } from "@/components/StockContextMenu";
-
+import { useAuthGuard } from "@/hooks/useAuthGuard";
 const POPULAR_US     = ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "JPM", "META", "AMZN"];
 const POPULAR_IN     = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "WIPRO", "BAJFINANCE", "ICICIBANK", "ADANIENT"];
 const POPULAR_CRYPTO = ["BTC", "ETH", "BNB", "SOL", "XRP", "DOGE"];
@@ -35,6 +35,7 @@ const MARKET_TABS: { key: DashMarket; label: string }[] = [
 ];
 
 export default function Dashboard() {
+  useAuthGuard();
   const [market, setMarket] = useState<DashMarket>("IN");
 
   const { data: movers, isLoading: moversLoading, dataUpdatedAt: moversUpdatedAt } = useQuery({
