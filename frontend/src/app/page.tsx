@@ -1,249 +1,269 @@
 "use client";
-import { useState, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { fetchTopMovers, api } from "@/utils/api";
-import { TrendingUp, TrendingDown } from "lucide-react";
 import Link from "next/link";
-import clsx from "clsx";
-import { IndexBar } from "@/components/IndexBar";
-import { StockContextMenu } from "@/components/StockContextMenu";
+import {
+  TrendingUp, TrendingDown, BarChart2, Bell, ShieldCheck,
+  Brain, LineChart, Zap, Star, ArrowRight, Lock, Globe,
+  BookOpen, RefreshCw, Target,
+} from "lucide-react";
 
-const POPULAR_US     = ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "JPM", "META", "AMZN"];
-const POPULAR_IN     = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "WIPRO", "BAJFINANCE", "ICICIBANK", "ADANIENT"];
-const POPULAR_CRYPTO = ["BTC", "ETH", "BNB", "SOL", "XRP", "DOGE"];
-
-// Static crypto "movers" — prices fetched on the stock page when clicked
-const CRYPTO_CARDS = [
-  { symbol: "BTC",  name: "Bitcoin" },
-  { symbol: "ETH",  name: "Ethereum" },
-  { symbol: "BNB",  name: "BNB" },
-  { symbol: "SOL",  name: "Solana" },
-  { symbol: "XRP",  name: "XRP" },
-  { symbol: "DOGE", name: "Dogecoin" },
-  { symbol: "ADA",  name: "Cardano" },
-  { symbol: "AVAX", name: "Avalanche" },
-  { symbol: "LINK", name: "Chainlink" },
-  { symbol: "DOT",  name: "Polkadot" },
+const FEATURES = [
+  {
+    icon: Brain,
+    title: "AI-Powered Signals",
+    desc: "BUY / HOLD / SELL signals with confidence scores, target prices, and stop-losses — for every NSE and US stock.",
+    color: "text-purple-400",
+    bg: "bg-purple-500/10",
+    border: "border-purple-500/20",
+  },
+  {
+    icon: Zap,
+    title: "Daily Picks",
+    desc: "Every morning at 9 AM IST, the AI ranks the entire NSE universe and surfaces the top 5 BUY ideas per time horizon.",
+    color: "text-yellow-400",
+    bg: "bg-yellow-500/10",
+    border: "border-yellow-500/20",
+  },
+  {
+    icon: BarChart2,
+    title: "Full Explainability",
+    desc: "Not a black box. See exactly why a signal was generated — factor breakdown, bull/bear thesis, and sentiment drivers.",
+    color: "text-brand-400",
+    bg: "bg-brand-500/10",
+    border: "border-brand-500/20",
+  },
+  {
+    icon: RefreshCw,
+    title: "Self-Learning Engine",
+    desc: "Tracks every prediction outcome. Factor weights auto-update weekly via Information Coefficient — the model gets smarter over time.",
+    color: "text-teal-400",
+    bg: "bg-teal-500/10",
+    border: "border-teal-500/20",
+  },
+  {
+    icon: Target,
+    title: "Paper Trading",
+    desc: "Test signals with virtual money, track P&L in real time, set stop-losses and target prices — zero real capital at risk.",
+    color: "text-green-400",
+    bg: "bg-green-500/10",
+    border: "border-green-500/20",
+  },
+  {
+    icon: Bell,
+    title: "Price Alerts",
+    desc: "Set target price alerts on any stock. Get notified the moment a price crosses your threshold.",
+    color: "text-orange-400",
+    bg: "bg-orange-500/10",
+    border: "border-orange-500/20",
+  },
+  {
+    icon: LineChart,
+    title: "Screener & Heatmap",
+    desc: "Filter the NSE and S&P 500 universe by PE, ROE, signal type, and sector. Colour-coded heatmap for instant market overview.",
+    color: "text-cyan-400",
+    bg: "bg-cyan-500/10",
+    border: "border-cyan-500/20",
+  },
+  {
+    icon: BookOpen,
+    title: "Walk-Forward Validation",
+    desc: "Live backtesting results — real hit rates, Sharpe ratios, and alpha vs Nifty benchmark. No cherry-picked back-tests.",
+    color: "text-rose-400",
+    bg: "bg-rose-500/10",
+    border: "border-rose-500/20",
+  },
 ];
 
-type DashMarket = "US" | "IN" | "CRYPTO";
-
-const MARKET_TABS: { key: DashMarket; label: string }[] = [
-  { key: "IN",     label: "🇮🇳 India" },
-  { key: "US",     label: "🇺🇸 USA" },
-  { key: "CRYPTO", label: "₿ Crypto" },
+const HOW_IT_WORKS = [
+  {
+    step: "01",
+    title: "Universe Screening",
+    desc: "The AI scans the entire NSE universe (1,800+ stocks, ₹100 Cr+ market cap) every morning, scoring each stock across 6 fundamental dimensions.",
+  },
+  {
+    step: "02",
+    title: "Multi-Factor Scoring",
+    desc: "Technical indicators, fundamental quality, sentiment analysis, macro regime, and institutional flows are blended into a single 0–100 composite score.",
+  },
+  {
+    step: "03",
+    title: "Signal & Trade Levels",
+    desc: "Score ≥ 60 → BUY with target price and stop-loss. Every signal comes with a confidence score and full factor breakdown.",
+  },
 ];
 
-export default function Dashboard() {
-  const [market, setMarket] = useState<DashMarket>("IN");
+const HORIZONS = [
+  { label: "Short Term", period: "1–10 days", desc: "Technicals, momentum, volume, news sentiment", color: "text-green-400", border: "border-green-500/40" },
+  { label: "Medium Term", period: "1–3 months", desc: "Earnings, sector rotation, macro trends", color: "text-yellow-400", border: "border-yellow-500/40" },
+  { label: "Long Term", period: "3–6 months", desc: "Fundamentals, management quality, growth", color: "text-purple-400", border: "border-purple-500/40" },
+];
 
-  const { data: movers, isLoading: moversLoading, dataUpdatedAt: moversUpdatedAt } = useQuery({
-    queryKey: ["movers", market],
-    queryFn: () => fetchTopMovers(market as any),
-    enabled: market !== "CRYPTO",
-    refetchInterval: 120_000,  // backend open=2min / closed=5min cache; poll at 2min
-    staleTime: 115_000,
-    refetchOnWindowFocus: false,
-  });
-
-  const { data: cryptoMovers, isLoading: cryptoLoading, dataUpdatedAt: cryptoUpdatedAt } = useQuery({
-    queryKey: ["crypto-movers"],
-    queryFn: () => api.get<{ movers: { symbol: string; name: string; price: number | null; change_pct: number }[] }>("/api/screener/crypto-movers").then(r => r.data),
-    enabled: market === "CRYPTO",
-    refetchInterval: 120_000,
-    staleTime: 115_000,
-    refetchOnWindowFocus: false,
-  });
-
-  const lastUpdated = market === "CRYPTO" ? cryptoUpdatedAt : moversUpdatedAt;
-
-  const { data: watchlistData } = useQuery({
-    queryKey: ["watchlist-quick"],
-    queryFn: () => api.get<{ items: { symbol: string; market: string }[] }>("/api/watchlist/default").then(r => r.data),
-    staleTime: 60_000,
-  });
-
-  const currency = market === "IN" ? "₹" : "$";
-  const fallbackSymbols = market === "CRYPTO" ? POPULAR_CRYPTO : market === "IN" ? POPULAR_IN : POPULAR_US;
-  const watchlistForMarket = watchlistData?.items?.filter(i => i.market === market).map(i => i.symbol) ?? [];
-  const quickSymbols = watchlistForMarket.length > 0 ? watchlistForMarket : fallbackSymbols;
-  const isUsingWatchlist = watchlistForMarket.length > 0;
-
+export default function LandingPage() {
   return (
-    <div className="space-y-6">
+    <div className="-mx-3 sm:-mx-4 -my-4 sm:-my-6">
 
-      {/* Market Overview — layout matches Market Heatmap header style */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between flex-wrap gap-4">
-          <div>
-            <h1 className="text-2xl font-bold text-white">Market Overview</h1>
-            <p className="text-sm text-gray-400 mt-1">Live indices, top movers &amp; market sentiment</p>
+      {/* ── Hero ── */}
+      <section className="relative overflow-hidden px-4 pt-16 pb-20 text-center">
+        {/* Background glow */}
+        <div className="pointer-events-none absolute inset-0 flex items-start justify-center">
+          <div className="h-72 w-72 rounded-full bg-brand-500/10 blur-3xl mt-8" />
+        </div>
+
+        <div className="relative max-w-3xl mx-auto space-y-6">
+          <div className="inline-flex items-center gap-2 rounded-full border border-brand-500/30 bg-brand-500/10 px-4 py-1.5 text-xs font-medium text-brand-400">
+            <Lock size={12} /> Invite-only access · Beta
           </div>
-          <div className="flex gap-2">
-            {MARKET_TABS.map(({ key, label }) => (
-              <button key={key} onClick={() => setMarket(key)}
-                className={clsx("px-4 py-2 rounded-xl text-sm font-medium transition-colors border",
-                  market === key
-                    ? "bg-brand-500 text-white border-brand-500"
-                    : "bg-dark-card border-dark-border text-gray-400 hover:text-white")}>
-                {label}
-              </button>
+
+          <h1 className="text-4xl sm:text-5xl font-bold text-white leading-tight">
+            AI Stock Intelligence<br />
+            <span className="text-brand-500">for Indian & US Markets</span>
+          </h1>
+
+          <p className="text-lg text-gray-400 max-w-xl mx-auto">
+            Institutional-grade AI signals, daily picks, self-learning factor weights, and full explainability — completely free.
+          </p>
+
+          {/* Live signal demo */}
+          <div className="flex flex-wrap justify-center gap-3 pt-2">
+            {[
+              { symbol: "RELIANCE", signal: "BUY",  score: 72, change: "+1.8%" },
+              { symbol: "TCS",      signal: "BUY",  score: 68, change: "+0.9%" },
+              { symbol: "HDFC",     signal: "HOLD", score: 55, change: "-0.3%" },
+            ].map(({ symbol, signal, score, change }) => (
+              <div key={symbol} className="flex items-center gap-3 rounded-xl bg-dark-card border border-dark-border px-4 py-2.5">
+                <span className="font-mono font-bold text-white text-sm">{symbol}</span>
+                <span className={`text-xs font-bold px-2 py-0.5 rounded-lg ${signal === "BUY" ? "bg-green-500/20 text-green-400" : "bg-yellow-500/20 text-yellow-400"}`}>
+                  {signal}
+                </span>
+                <span className="text-xs text-gray-400">Score {score}</span>
+                <span className={`text-xs font-medium ${change.startsWith("+") ? "text-green-400" : "text-red-400"}`}>{change}</span>
+              </div>
             ))}
           </div>
-        </div>
-        {/* Index bar */}
-        <div className="bg-dark-card border border-dark-border rounded-xl px-4 overflow-x-auto scrollbar-hide">
-          {market !== "CRYPTO"
-            ? <IndexBar market={market as any} />
-            : <p className="text-xs text-gray-500 py-3">Live index data unavailable for crypto</p>
-          }
-        </div>
-      </div>
 
-      {/* Horizon info cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        {[
-          { label: "Short Term",  period: "1–10 Days",      desc: "Technicals, momentum, volume, news sentiment",              border: "border-green-500/40",  text: "text-green-400" },
-          { label: "Medium Term", period: "1–3 Months",     desc: "Earnings, sector rotation, macro trends",                   border: "border-yellow-500/40", text: "text-yellow-400" },
-          { label: "Long Term",   period: "6M – 3 Years",   desc: "Fundamentals, management quality, government policy",       border: "border-purple-500/40", text: "text-purple-400" },
-        ].map(({ label, period, desc, border, text }) => (
-          <div key={label} className={`bg-dark-card border ${border} rounded-xl p-4`}>
-            <div className="flex items-baseline gap-2 mb-1.5">
-              <p className={`text-sm font-bold ${text}`}>{label}</p>
-              <p className="text-xs text-gray-500">{period}</p>
-            </div>
-            <p className="text-xs text-gray-300">{desc}</p>
-          </div>
-        ))}
-      </div>
-
-      {/* Quick Access */}
-      <section>
-        <div className="mb-2 space-y-0.5">
-          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">Quick Access</h2>
-          {isUsingWatchlist
-            ? <span className="text-[10px] text-brand-500 font-medium">From your watchlist</span>
-            : <span className="text-[10px] text-gray-500">Popular · Add to watchlist to personalise</span>
-          }
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {quickSymbols.map((sym) => (
-            <Link key={sym} href={`/stock/${sym}?market=${market}`}
-              className="px-4 py-2 rounded-xl bg-dark-card border border-dark-border hover:border-brand-500/60 text-sm font-mono font-bold text-white transition-colors">
-              {sym}
+          <div className="flex flex-col sm:flex-row gap-3 justify-center pt-2">
+            <Link
+              href="/login"
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-brand-500 hover:bg-brand-600 px-6 py-3 text-sm font-semibold text-white transition-colors"
+            >
+              Sign In <ArrowRight size={16} />
             </Link>
-          ))}
+            <a
+              href="#features"
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-dark-border bg-dark-card hover:border-brand-500/40 px-6 py-3 text-sm font-semibold text-gray-300 transition-colors"
+            >
+              See Features
+            </a>
+          </div>
         </div>
       </section>
 
-      {/* Top Movers / Crypto grid */}
-      {market === "CRYPTO" ? (
-        <section>
-          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">Top Cryptocurrencies</h2>
-          {cryptoLoading ? (
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-              {Array.from({ length: 10 }).map((_, i) => (
-                <div key={i} className="h-24 rounded-xl bg-dark-card animate-pulse" />
-              ))}
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-              {(cryptoMovers?.movers ?? CRYPTO_CARDS).map((c) => (
-                <Link key={c.symbol} href={`/stock/${c.symbol}?market=CRYPTO`}
-                  className="p-4 rounded-xl bg-dark-card border border-dark-border hover:border-brand-500/50 transition-colors">
-                  <p className="font-mono font-bold text-white">{c.symbol}</p>
-                  <p className="text-xs text-gray-400 mt-0.5">{"name" in c ? (c as any).name : ""}</p>
-                  {"price" in c && (c as any).price ? (
-                    <>
-                      <p className="text-base font-bold mt-1">
-                        ${Number((c as any).price).toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                      </p>
-                      <div className={clsx("flex items-center gap-1 text-xs font-medium mt-0.5",
-                        (c as any).change_pct >= 0 ? "text-bull" : "text-bear")}>
-                        {(c as any).change_pct >= 0 ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
-                        {(c as any).change_pct >= 0 ? "+" : ""}{(c as any).change_pct}%
-                      </div>
-                    </>
-                  ) : (
-                    <p className="text-xs text-gray-500 mt-2">Loading…</p>
-                  )}
-                </Link>
-              ))}
-            </div>
-          )}
-        </section>
-      ) : moversLoading ? (
-        <div className="space-y-6">
-          {["Top Gainers", "Top Losers"].map((label) => (
-            <section key={label}>
-              <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">{label}</h2>
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                {Array.from({ length: 10 }).map((_, i) => (
-                  <div key={i} className="h-24 rounded-xl bg-dark-card animate-pulse" />
-                ))}
+      {/* ── How it works ── */}
+      <section className="px-4 py-16 border-t border-dark-border">
+        <div className="max-w-4xl mx-auto">
+          <div className="text-center mb-10">
+            <h2 className="text-2xl font-bold text-white">How it works</h2>
+            <p className="text-gray-400 text-sm mt-2">From raw market data to an actionable signal in 3 steps</p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {HOW_IT_WORKS.map(({ step, title, desc }) => (
+              <div key={step} className="relative bg-dark-card border border-dark-border rounded-2xl p-6 space-y-3">
+                <span className="text-4xl font-black text-dark-border select-none">{step}</span>
+                <h3 className="text-base font-semibold text-white">{title}</h3>
+                <p className="text-sm text-gray-400 leading-relaxed">{desc}</p>
               </div>
-            </section>
-          ))}
+            ))}
+          </div>
         </div>
-      ) : (
-        <div className="space-y-6">
-          {/* Top Gainers */}
-          <section>
-            <div className="flex items-center gap-2 mb-3">
-              <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">
-                Top Gainers · {market === "IN" ? "NSE" : "NYSE / NASDAQ"}
-              </h2>
-              {movers?.market_open
-                ? <span className="text-[10px] text-bull font-medium bg-bull/10 px-2 py-0.5 rounded-full">Live</span>
-                : <span className="text-[10px] text-gray-400 font-medium bg-white/5 px-2 py-0.5 rounded-full">Market Closed · Last Session</span>
-              }
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-              {[...(movers?.gainers ?? [])].map((m: any) => (
-                <StockContextMenu key={m.symbol} symbol={m.symbol} market={market}>
-                  <Link href={`/stock/${m.symbol}?market=${market}`}
-                    className="block p-4 rounded-xl bg-dark-card border border-bull/20 hover:border-bull/50 transition-colors">
-                    <p className="font-mono font-bold text-white text-sm">{m.symbol}</p>
-                    {m.name && <p className="text-[10px] text-gray-500 mt-0.5 truncate">{m.name}</p>}
-                    <p className="text-base font-bold mt-1.5">{currency}{m.price?.toLocaleString() ?? "—"}</p>
-                    <div className="flex items-center gap-1 text-sm font-medium mt-1 text-bull">
-                      <TrendingUp size={14} />+{m.change_pct ?? 0}%
-                    </div>
-                  </Link>
-                </StockContextMenu>
-              ))}
-            </div>
-          </section>
+      </section>
 
-          {/* Top Losers */}
-          <section>
-            <div className="flex items-center gap-2 mb-3">
-              <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">
-                Top Losers · {market === "IN" ? "NSE" : "NYSE / NASDAQ"}
-              </h2>
-              {movers?.market_open
-                ? <span className="text-[10px] text-bear font-medium bg-bear/10 px-2 py-0.5 rounded-full">Live</span>
-                : <span className="text-[10px] text-gray-400 font-medium bg-white/5 px-2 py-0.5 rounded-full">Market Closed · Last Session</span>
-              }
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-              {[...(movers?.losers ?? [])].map((m: any) => (
-                <StockContextMenu key={m.symbol} symbol={m.symbol} market={market}>
-                  <Link href={`/stock/${m.symbol}?market=${market}`}
-                    className="block p-4 rounded-xl bg-dark-card border border-bear/20 hover:border-bear/50 transition-colors">
-                    <p className="font-mono font-bold text-white text-sm">{m.symbol}</p>
-                    {m.name && <p className="text-[10px] text-gray-500 mt-0.5 truncate">{m.name}</p>}
-                    <p className="text-base font-bold mt-1.5">{currency}{m.price?.toLocaleString() ?? "—"}</p>
-                    <div className="flex items-center gap-1 text-sm font-medium mt-1 text-bear">
-                      <TrendingDown size={14} />{m.change_pct ?? 0}%
-                    </div>
-                  </Link>
-                </StockContextMenu>
-              ))}
-            </div>
-          </section>
+      {/* ── Horizons ── */}
+      <section className="px-4 py-10 bg-dark-card/40 border-y border-dark-border">
+        <div className="max-w-4xl mx-auto">
+          <p className="text-center text-xs text-gray-500 uppercase tracking-widest mb-6">Three prediction horizons</p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {HORIZONS.map(({ label, period, desc, color, border }) => (
+              <div key={label} className={`bg-dark-card border ${border} rounded-xl p-5 space-y-2`}>
+                <div className="flex items-baseline gap-2">
+                  <p className={`text-sm font-bold ${color}`}>{label}</p>
+                  <p className="text-xs text-gray-500">{period}</p>
+                </div>
+                <p className="text-xs text-gray-400">{desc}</p>
+              </div>
+            ))}
+          </div>
         </div>
-      )}
+      </section>
+
+      {/* ── Features ── */}
+      <section id="features" className="px-4 py-16 border-b border-dark-border">
+        <div className="max-w-5xl mx-auto">
+          <div className="text-center mb-10">
+            <h2 className="text-2xl font-bold text-white">Everything you need</h2>
+            <p className="text-gray-400 text-sm mt-2">A complete AI research platform — not just a screener</p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {FEATURES.map(({ icon: Icon, title, desc, color, bg, border }) => (
+              <div key={title} className={`bg-dark-card border ${border} rounded-2xl p-5 space-y-3 hover:border-opacity-50 transition-colors`}>
+                <div className={`w-9 h-9 rounded-xl ${bg} flex items-center justify-center`}>
+                  <Icon size={18} className={color} />
+                </div>
+                <h3 className="text-sm font-semibold text-white">{title}</h3>
+                <p className="text-xs text-gray-400 leading-relaxed">{desc}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── Data sources ── */}
+      <section className="px-4 py-12 border-b border-dark-border">
+        <div className="max-w-3xl mx-auto text-center space-y-6">
+          <p className="text-xs text-gray-500 uppercase tracking-widest">Powered by</p>
+          <div className="flex flex-wrap justify-center gap-4 text-sm text-gray-400">
+            {["Yahoo Finance", "screener.in", "NSE India", "VADER NLP", "XGBoost / Ridge", "Ledoit-Wolf Optimizer"].map(s => (
+              <span key={s} className="flex items-center gap-1.5 bg-dark-card border border-dark-border rounded-lg px-4 py-2">
+                <Globe size={12} className="text-brand-500" /> {s}
+              </span>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── Disclaimer strip ── */}
+      <section className="px-4 py-8 bg-dark-card/40 border-b border-dark-border">
+        <div className="max-w-3xl mx-auto text-center space-y-3">
+          <div className="flex justify-center">
+            <ShieldCheck size={20} className="text-amber-400" />
+          </div>
+          <p className="text-xs text-gray-500 leading-relaxed">
+            <strong className="text-gray-400">Important disclaimer:</strong> StockSense is an AI research tool for informational purposes only. It is not a SEBI-registered investment adviser and does not provide financial advice. All signals and picks are generated by machine learning models and may be inaccurate. Investing involves risk of loss. Always conduct your own research and consult a qualified financial adviser before making investment decisions.
+          </p>
+          <Link href="/accept-terms" className="text-xs text-brand-500 hover:underline">
+            Read full Terms of Use & Legal Disclaimer →
+          </Link>
+        </div>
+      </section>
+
+      {/* ── CTA footer ── */}
+      <section className="px-4 py-16 text-center">
+        <div className="max-w-xl mx-auto space-y-5">
+          <div className="flex items-center justify-center gap-2 text-brand-500">
+            <TrendingUp size={24} />
+            <span className="text-xl font-bold text-white">StockSense</span>
+          </div>
+          <h2 className="text-2xl font-bold text-white">Ready to trade smarter?</h2>
+          <p className="text-gray-400 text-sm">Access is by invitation only during beta. Sign in if you have been invited.</p>
+          <Link
+            href="/login"
+            className="inline-flex items-center justify-center gap-2 rounded-xl bg-brand-500 hover:bg-brand-600 px-8 py-3 text-sm font-semibold text-white transition-colors"
+          >
+            Sign In <ArrowRight size={16} />
+          </Link>
+          <p className="text-xs text-gray-600 pt-2">
+            © {new Date().getFullYear()} StockSense · <Link href="/accept-terms" className="hover:text-gray-400">Terms & Disclaimer</Link>
+          </p>
+        </div>
+      </section>
 
     </div>
   );

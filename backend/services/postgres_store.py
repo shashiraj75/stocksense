@@ -181,6 +181,17 @@ CREATE TABLE IF NOT EXISTS watchlist (
     UNIQUE (user_id, symbol, market)
 );
 CREATE INDEX IF NOT EXISTS idx_watchlist_user ON watchlist(user_id);
+
+CREATE TABLE IF NOT EXISTS terms_acceptance (
+    id            BIGSERIAL PRIMARY KEY,
+    user_id       TEXT NOT NULL,
+    email         TEXT NOT NULL,
+    accepted_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    ip_address    TEXT,
+    terms_version TEXT NOT NULL DEFAULT 'v1.0',
+    UNIQUE (user_id, terms_version)
+);
+CREATE INDEX IF NOT EXISTS idx_terms_acceptance_user ON terms_acceptance(user_id);
 """
 
 

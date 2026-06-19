@@ -3,6 +3,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/utils/api";
+import { useAuth } from "@/lib/AuthContext";
 import clsx from "clsx";
 
 interface NavLink { href: string; label: string; accent?: boolean }
@@ -35,9 +36,14 @@ function AccuracyBadge() {
 
 export function NavLinks({ links }: { links: NavLink[] }) {
   const pathname = usePathname();
+  const { user } = useAuth();
+
+  // Hide app nav links on the public landing page or login pages
+  const isPublicPage = pathname === "/" || pathname === "/login" || pathname?.startsWith("/auth");
+  if (isPublicPage || !user) return null;
 
   const isActive = (href: string) =>
-    href === "/" ? pathname === "/" : pathname?.startsWith(href) ?? false;
+    href === "/dashboard" ? pathname === "/dashboard" : pathname?.startsWith(href) ?? false;
 
   return (
     <div className="flex items-center gap-1 py-1 text-sm text-gray-400">

@@ -53,7 +53,7 @@ export function UserMenu() {
             <p className="text-sm font-medium text-white truncate">{user.email}</p>
           </div>
           <button
-            onClick={async () => { await signOut(); setOpen(false); router.push("/login"); }}
+            onClick={async () => { await signOut(); setOpen(false); router.push("/"); }}
             className="w-full flex items-center gap-2 px-4 py-3 text-sm text-red-400 hover:bg-dark-border/50 transition-colors"
           >
             <LogOut size={14} />

@@ -23,7 +23,7 @@ export const viewport: Viewport = {
 
 export const NAV_LINKS = [
   { href: "/picks",      label: "Daily Picks", accent: true },
-  { href: "/",           label: "Dashboard" },
+  { href: "/dashboard",  label: "Dashboard" },
   { href: "/heatmap",    label: "Heatmap" },
   { href: "/screener",   label: "Screener" },
   { href: "/portfolio",  label: "Portfolio" },

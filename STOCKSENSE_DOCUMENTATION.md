@@ -108,18 +108,18 @@
 
 ## 3. Data Sources
 
-| Source | Data Provided | Update Frequency | Used For |
-|--------|--------------|-----------------|----------|
-| **yfinance** | Price, volume, P/E, ROE, margins, FCF, beta, analyst targets | Real-time (15–60s lag) | All markets |
-| **screener.in** | 10-year financials, ROCE, 3Y/5Y CAGR, Piotroski fields, promoter %, pledge %, cashflow | Daily (4h cache) | India only |
-| **BSE API** | Current fundamentals for renamed/merged stocks | Daily (1h cache) | India fallback |
-| **NSE FII/DII API** | Daily institutional flows (₹ Cr) | Daily (30min cache) | India quality signal |
-| **NSE Pledge API** | Promoter pledge %, quarterly | Quarterly | India risk signal |
-| **Yahoo Finance RSS** | News headlines per symbol | Real-time (10min cache) | Sentiment |
-| **Google News RSS** | "{symbol} stock India" search | Real-time (10min cache) | Sentiment fallback |
-| **Economic Times RSS** | India economy & stock news | Real-time | India sentiment |
+| Source | Data Provided | Frequency | Used For |
+|--------|--------------|-----------|----------|
+| **yfinance** | Price, OHLCV, P/E, ROE, FCF, beta, analyst targets | Real-time | All markets |
+| **screener.in** | 10-year financials, ROCE, CAGR, promoter %, pledge % | Daily | India fundamentals |
+| **BSE API** | Fundamentals for renamed / merged stocks | Daily | India fallback |
+| **NSE FII/DII API** | Daily institutional flows (₹ Cr) | Daily | India quality signal |
+| **NSE Pledge API** | Promoter pledge % (quarterly disclosure) | Quarterly | India risk signal |
+| **Yahoo Finance RSS** | News headlines per symbol | Real-time | Sentiment |
+| **Google News RSS** | `{symbol} stock India` search results | Real-time | Sentiment fallback |
+| **Economic Times RSS** | India economy & market news | Real-time | India sentiment |
 | **MoneyControl RSS** | Stock & sector news | Real-time | India sentiment |
-| **yfinance macro tickers** | S&P 500, VIX, Crude, Gold, USD/INR, Nifty IT, Nifty Bank | Real-time (15min cache) | Global macro |
+| **yfinance macro** | S&P 500, VIX, Crude, Gold, USD/INR, Nifty IT/Bank | 15-min cache | Global macro |
 
 ### Data Fallback Chain (India)
 ```
@@ -610,8 +610,8 @@ Answers: **"How much should you trust this signal?"**
 | Data Completeness | % of key fundamental fields present | 25% | 31.25% |
 | Factor Agreement | % of factors agreeing with signal direction | 25% | 31.25% |
 | Earnings Stability | Quality earnings_revision sub-score | 15% | 18.75% |
-| Regime Certainty | Strength of current market trend (BULL/BEAR vs SIDEWAYS) | 15% | 18.75% |
-| Historical Factor Reliability | Live IC values from outcome logger (requires 60+ resolved predictions) | 20% | 0% (falls back to 50) |
+| Regime Certainty | BULL/BEAR vs SIDEWAYS trend strength | 15% | 18.75% |
+| Historical Factor Reliability | Live IC values (needs 60+ outcomes) | 20% | 0% → fallback 50 |
 
 ### Sector-Aware Field Sets
 
@@ -651,8 +651,8 @@ Answers: **"How much should you trust this signal?"**
 | Horizon | Method |
 |---------|--------|
 | **Short** | ATR × 2.5 × confidence factor — moves 1–5 day magnitude |
-| **Medium** | Analyst mean target (70%) + price-based projection (30%); BUY floor: `max(blend, price × 1.05)` |
-| **Long** | `analyst_target × (1 + EPS_growth)^2`; BUY floor: `max(target, price × 1.15)` |
+| **Medium** | Analyst target (70%) + price projection (30%); BUY floor: `max(blend, price×1.05)` |
+| **Long** | `analyst_target × (1+EPS_growth)²`; BUY floor: `max(target, price×1.15)` |
 
 ### Trade Levels
 
@@ -1010,34 +1010,34 @@ price_alerts (id TEXT PK, user_id TEXT, symbol TEXT, market TEXT,
 
 | Page | Route | Description |
 |------|-------|-------------|
-| Dashboard | `/` | Top movers (US/IN/Crypto), market status, quick access, live index bar |
-| Stock Detail | `/stock/:symbol` | Full prediction, trade levels, factor breakdown, news, charts |
-| Daily Picks | `/picks` | Today's top BUY ideas by horizon, portfolio weights, trust layer |
+| Dashboard | `/` | Movers (US/IN/Crypto), market status, live index bar |
+| Stock Detail | `/stock/:symbol` | Prediction, trade levels, factor breakdown, news, chart |
+| Daily Picks | `/picks` | Top BUY ideas by horizon, portfolio weights, trust layer |
 | Screener | `/screener` | Filter and explore the universe |
 | Backtest | `/backtest` | Single-stock historical walk-forward test |
-| Heatmap | `/heatmap` | Sector-wise colour-coded market snapshot (IN / US) |
-| Watchlist | `/watchlist` | Saved stocks with live prices and change% (Postgres-backed) |
-| Alerts | `/alerts` | Price alerts with live trigger detection (Postgres-backed) |
-| Portfolio | `/portfolio` | Holdings with BUY/HOLD/SELL per position + history tab |
-| Paper Trade | `/paper-trading` | Simulated trading — open/close positions, track P&L (Postgres-backed) |
-| Validation | `/validation` | Walk-forward validation results — hit rate, Sharpe, alpha vs benchmark |
+| Heatmap | `/heatmap` | Sector colour-coded snapshot (IN / US) |
+| Watchlist | `/watchlist` | Saved stocks with live prices and change% |
+| Alerts | `/alerts` | Price alerts with live trigger detection |
+| Portfolio | `/portfolio` | Holdings with BUY/HOLD/SELL per position |
+| Paper Trade | `/paper-trading` | Simulated trading — open/close positions, P&L |
+| Validation | `/validation` | Hit rate, Sharpe, alpha vs benchmark |
 
 ### Key Components
 
 | Component | Description |
 |-----------|-------------|
-| `FactorAttributionWaterfall` | Horizontal bar chart showing composite score decomposition; click any bar to see underlying metrics |
+| `FactorAttributionWaterfall` | Score decomposition bar chart; click to drill down |
 | `ConfidenceMeter` | Colour-coded progress bar (0–100) |
-| `ConfidenceBreakdown` | SVG gauge + 5-component confidence bars with tooltips |
-| `BullBearCase` | Generated analyst-style bull/bear thesis bullets |
-| `TradingViewWidget` | Embedded TradingView advanced chart (visual only; not connected to prediction engine) |
-| `IndexBar` | Live NIFTY 50, SENSEX, VIX ticker strip (inline or full bar mode) |
-| `SignalBadge` | BUY / HOLD / SELL badge with colour coding |
+| `ConfidenceBreakdown` | SVG gauge + 5 confidence bars with tooltips |
+| `BullBearCase` | Analyst-style bull/bear thesis bullets |
+| `TradingViewWidget` | Embedded chart (visual only; not wired to engine) |
+| `IndexBar` | NIFTY 50, SENSEX, VIX live strip |
+| `SignalBadge` | BUY / HOLD / SELL badge with colour |
 | `ScoreHistoryChart` | Composite score trend over time |
-| `NewsCard` | Sentiment-tagged news article card |
-| `BacktestPanel` | Real walk-forward results per horizon on Daily Picks page |
-| `LivePerformanceTracker` | Per-pick P&L table showing entry, current return, alpha vs Nifty |
-| `PaperTradeModal` | Trade entry form (qty, horizon, pre-filled SL/target from engine) |
+| `NewsCard` | Sentiment-tagged news card |
+| `BacktestPanel` | Walk-forward results per horizon on Picks page |
+| `LivePerformanceTracker` | Per-pick P&L — entry, return%, alpha vs Nifty |
+| `PaperTradeModal` | Trade form (qty, horizon, pre-filled SL/target) |
 
 ### Daily Picks Trust Layer
 
@@ -1076,12 +1076,12 @@ The Picks page has a collapsible **"Show Real Accuracy"** panel with three layer
 | `DATABASE_URL` | PostgreSQL connection string | SQLite fallback |
 | `USE_POSTGRES` | `1` = Postgres, `0` = SQLite | `0` |
 | `PICKS_SECRET` | Secret header for `/api/picks/generate` | Required in prod |
-| `PICKS_UNIVERSE_LIMIT` | Cap stock count (set < 25 on constrained hosts) | 25 (set higher to expand NSE universe) |
-| `PICKS_CANDIDATES` | Top N stocks from Phase-0 momentum screen for deep prediction | 50 |
-| `SCREEN_BATCH_SIZE` | Batch size for NSE bulk download (memory safety) | 300 |
-| `MIN_MCAP_CR` | Minimum market cap in ₹ Cr for NSE picks universe | 100 |
-| `SCREENER_EMAIL` | screener.in login email | Required for Indian fundamental data |
-| `SCREENER_PASSWORD` | screener.in login password | Required for Indian fundamental data |
+| `PICKS_UNIVERSE_LIMIT` | Cap stock count for picks run | 25 |
+| `PICKS_CANDIDATES` | Top N from Phase-0 momentum screen for deep prediction | 50 |
+| `SCREEN_BATCH_SIZE` | NSE bulk download batch size (memory safety) | 300 |
+| `MIN_MCAP_CR` | Min market cap in ₹ Cr for NSE universe | 100 |
+| `SCREENER_EMAIL` | screener.in login (Indian fundamentals) | Required |
+| `SCREENER_PASSWORD` | screener.in password | Required |
 | `FRONTEND_URL` | Vercel frontend URL for CORS | Must be set in prod |
 | `RENDER_EXTERNAL_URL` | Auto-set by Render — used for self-ping keepalive | Auto |
 
@@ -1158,7 +1158,7 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 
 | Data | Storage | Why Acceptable |
 |------|---------|---------------|
-| Trained ML models (`meta_model_*.pkl`, `regime_kmeans.pkl`) | Local file | Auto-retrains from Postgres data on next picks run — no user data lost, just one cycle of degraded weights |
+| Trained ML models (`meta_model_*.pkl`, `regime_kmeans.pkl`) | Local file | Auto-retrains from Postgres on next run — one cycle of degraded weights, no user data lost |
 | API response caches (quotes, heatmap, movers) | In-memory (TTL) | Market data; freshly fetched anyway |
 
 ### screener.in Session

@@ -3,13 +3,17 @@ import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Menu, X } from "lucide-react";
+import { useAuth } from "@/lib/AuthContext";
 
 interface NavLink { href: string; label: string; accent?: boolean }
 
 export function MobileNav({ links }: { links: NavLink[] }) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
-  const isActive = (href: string) => href === "/" ? pathname === "/" : pathname?.startsWith(href) ?? false;
+  const { user } = useAuth();
+  const isPublicPage = pathname === "/" || pathname === "/login" || pathname?.startsWith("/auth");
+  if (isPublicPage || !user) return null;
+  const isActive = (href: string) => href === "/dashboard" ? pathname === "/dashboard" : pathname?.startsWith(href) ?? false;
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
