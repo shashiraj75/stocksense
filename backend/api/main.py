@@ -107,6 +107,56 @@ async def _outcome_resolver_loop():
         await asyncio.sleep(6 * 3600)
 
 
+async def _validation_schedule_loop():
+    """
+    Run walk-forward validation on a schedule (IST = UTC+5:30):
+      - Medium horizon: daily at 06:00 IST (00:30 UTC)
+      - Long horizon:   every Sunday at 06:00 IST (00:30 UTC)
+    Sleeps until the next scheduled window, then fires in a thread pool
+    so it never blocks the event loop.
+    """
+    from datetime import datetime, timezone, timedelta
+    await asyncio.sleep(180)  # let server fully settle first
+    print("[validation_scheduler] started")
+    IST = timezone(timedelta(hours=5, minutes=30))
+    TARGET_HOUR = 6  # 6:00 AM IST
+
+    while True:
+        try:
+            now_ist = datetime.now(IST)
+            # Next 06:00 IST
+            next_run = now_ist.replace(hour=TARGET_HOUR, minute=0, second=0, microsecond=0)
+            if now_ist >= next_run:
+                next_run += timedelta(days=1)
+            sleep_secs = (next_run - now_ist).total_seconds()
+            print(f"[validation_scheduler] next medium run at {next_run.isoformat()} IST (in {sleep_secs/3600:.1f}h)")
+            await asyncio.sleep(sleep_secs)
+
+            # Run medium every day
+            try:
+                loop = asyncio.get_event_loop()
+                from services.validation_engine import run_validation
+                print("[validation_scheduler] starting medium horizon run…")
+                await loop.run_in_executor(None, lambda: run_validation(horizon="medium"))
+                print("[validation_scheduler] medium run complete")
+            except Exception as e:
+                print(f"[validation_scheduler] medium run error: {e}")
+
+            # Run long only on Sundays (weekday 6)
+            if datetime.now(IST).weekday() == 6:
+                try:
+                    loop = asyncio.get_event_loop()
+                    print("[validation_scheduler] Sunday — starting long horizon run…")
+                    await loop.run_in_executor(None, lambda: run_validation(horizon="long"))
+                    print("[validation_scheduler] long run complete")
+                except Exception as e:
+                    print(f"[validation_scheduler] long run error: {e}")
+
+        except Exception as e:
+            print(f"[validation_scheduler] scheduler error: {e}")
+            await asyncio.sleep(3600)  # back off 1h on unexpected error
+
+
 async def _warmup_loop():
     """
     Pre-warm 2 top-traffic stocks after startup so first user hit is a cache hit.
@@ -176,13 +226,15 @@ async def lifespan(app: FastAPI):
     outcome_task = asyncio.create_task(_outcome_resolver_loop())
     warmup_task = asyncio.create_task(_warmup_loop())
     crumb_task = asyncio.create_task(_yfinance_crumb_loop())
+    validation_task = asyncio.create_task(_validation_schedule_loop())
     yield
     task.cancel()
     keepalive.cancel()
     outcome_task.cancel()
     warmup_task.cancel()
     crumb_task.cancel()
-    for t in (task, keepalive, outcome_task, warmup_task, crumb_task):
+    validation_task.cancel()
+    for t in (task, keepalive, outcome_task, warmup_task, crumb_task, validation_task):
         try:
             await t
         except asyncio.CancelledError:
