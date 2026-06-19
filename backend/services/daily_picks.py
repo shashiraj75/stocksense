@@ -173,82 +173,84 @@ def _build_summary(result: dict, horizon: str) -> str:
     return summary
 
 
+_SCREEN_BATCH_SIZE = int(os.getenv("SCREEN_BATCH_SIZE", 300))  # tickers per download batch
+
+
 def _bulk_screen_nse(n_candidates: int = 50) -> list[str]:
     """
-    Phase-0 screener: one yf.download() for all NSE stocks → momentum rank.
+    Phase-0 screener: batched yf.download() for all NSE stocks → momentum rank.
 
-    Returns top `n_candidates` symbols (plain, no .NS suffix) by a composite
-    score that blends last-session return, 5-day return, and volume surge.
-    Always includes the top Nifty-50 liquid names so the list is tradeable.
-    Falls back to Nifty 100 if the download fails.
+    Downloads in batches of SCREEN_BATCH_SIZE (default 300) to avoid OOM on
+    Render free tier (512 MB). Each batch is processed and discarded before
+    the next is downloaded.
+
+    Returns top `n_candidates` symbols by composite momentum score.
+    Falls back to Nifty 100 if all batches fail.
     """
     import math
-    tickers = [s + ".NS" for s in _ALL_NSE_SYMBOLS]
-    print(f"[picks] Phase-0: bulk-downloading {len(tickers)} NSE tickers …")
+    all_tickers = [s + ".NS" for s in _ALL_NSE_SYMBOLS]
+    batches = [all_tickers[i:i + _SCREEN_BATCH_SIZE]
+               for i in range(0, len(all_tickers), _SCREEN_BATCH_SIZE)]
+    print(f"[picks] Phase-0: screening {len(all_tickers)} NSE tickers "
+          f"in {len(batches)} batches of {_SCREEN_BATCH_SIZE} …")
     t0 = time.time()
-    try:
-        df = yf.download(
-            tickers, period="6d", interval="1d",
-            progress=False, auto_adjust=True, threads=True,
-        )
-        if df.empty:
-            raise ValueError("empty DataFrame")
+    scores: dict[str, float] = {}
 
-        close  = df["Close"].dropna(how="all")
-        volume = df["Volume"].dropna(how="all") if "Volume" in df else None
-        close  = close.dropna(how="all")
-        if len(close) < 2:
-            raise ValueError("< 2 settled rows")
-
-        prev_row = close.iloc[-2]
-        last_row = close.iloc[-1]
-        # If today's row is mostly NaN (not yet settled) fall back one day
-        if last_row.dropna().shape[0] < len(tickers) * 0.3 and len(close) >= 3:
-            prev_row = close.iloc[-3]
-            last_row = close.iloc[-2]
-
-        first_row = close.iloc[0]
-
-        scores: dict[str, float] = {}
-        for ticker in tickers:
-            sym = ticker.replace(".NS", "")
-            try:
-                p_prev  = float(prev_row.get(ticker, float("nan")))
-                p_last  = float(last_row.get(ticker, float("nan")))
-                p_first = float(first_row.get(ticker, float("nan")))
-                if any(math.isnan(x) or x <= 0 for x in (p_prev, p_last, p_first)):
-                    continue
-
-                ret_1d = (p_last - p_prev) / p_prev     # last-session %
-                ret_5d = (p_last - p_first) / p_first   # 5-day %
-
-                # Volume surge vs average (optional — skip if unavailable)
-                vol_ratio = 0.0
-                if volume is not None and ticker in volume.columns:
-                    vols = volume[ticker].dropna()
-                    if len(vols) >= 3:
-                        avg = float(vols.iloc[:-1].mean())
-                        if avg > 0:
-                            vol_ratio = float(vols.iloc[-1]) / avg - 1.0
-
-                # Composite: favour recent momentum + 5-day trend + volume
-                score = 0.50 * ret_1d + 0.35 * ret_5d + 0.15 * min(vol_ratio, 2.0) * 0.05
-                scores[sym] = score
-            except Exception:
+    for batch_idx, tickers in enumerate(batches):
+        try:
+            df = yf.download(
+                tickers, period="6d", interval="1d",
+                progress=False, auto_adjust=True, threads=False,  # threads=False saves memory
+            )
+            if df.empty:
                 continue
 
-        elapsed = round(time.time() - t0, 1)
-        print(f"[picks] Phase-0 complete: scored {len(scores)} stocks in {elapsed}s")
+            close = df["Close"] if "Close" in df.columns.get_level_values(0) else None
+            if close is None:
+                continue
+            close = close.dropna(how="all")
+            if len(close) < 2:
+                continue
 
-        # Sort by score descending; take top n_candidates
-        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-        top_syms = [sym for sym, _ in ranked[:n_candidates]]
-        print(f"[picks] Top candidates: {top_syms[:10]} …")
-        return top_syms
+            prev_row = close.iloc[-2]
+            last_row = close.iloc[-1]
+            if last_row.dropna().shape[0] < len(tickers) * 0.3 and len(close) >= 3:
+                prev_row = close.iloc[-3]
+                last_row = close.iloc[-2]
+            first_row = close.iloc[0]
 
-    except Exception as e:
-        print(f"[picks] Phase-0 bulk screen failed ({e}), falling back to Nifty 100")
+            for ticker in tickers:
+                sym = ticker.replace(".NS", "")
+                try:
+                    p_prev  = float(prev_row.get(ticker, float("nan")))
+                    p_last  = float(last_row.get(ticker, float("nan")))
+                    p_first = float(first_row.get(ticker, float("nan")))
+                    if any(math.isnan(x) or x <= 0 for x in (p_prev, p_last, p_first)):
+                        continue
+                    ret_1d = (p_last - p_prev) / p_prev
+                    ret_5d = (p_last - p_first) / p_first
+                    score = 0.60 * ret_1d + 0.40 * ret_5d
+                    scores[sym] = score
+                except Exception:
+                    continue
+
+            del df  # free memory immediately
+            print(f"[picks] Phase-0 batch {batch_idx+1}/{len(batches)}: "
+                  f"{len(scores)} scored so far")
+        except Exception as e:
+            print(f"[picks] Phase-0 batch {batch_idx+1} failed: {e}")
+            continue
+
+    elapsed = round(time.time() - t0, 1)
+    if not scores:
+        print(f"[picks] Phase-0: no stocks scored — falling back to Nifty 100")
         return list(_NIFTY_100[:n_candidates])
+
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    top_syms = [sym for sym, _ in ranked[:n_candidates]]
+    print(f"[picks] Phase-0 complete in {elapsed}s: {len(scores)} scored, "
+          f"top candidates: {top_syms[:10]} …")
+    return top_syms
 
 
 def _predict_stock(symbol: str, horizon: str) -> dict | None:
