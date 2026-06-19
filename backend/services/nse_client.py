@@ -51,13 +51,15 @@ def _ensure_session():
     with _session_lock:
         if (time.time() - _session_init_at) < _SESSION_TTL:
             return
+        # Always update timestamp to avoid retry storms on cloud IPs where
+        # the homepage may return 403 — callers must degrade gracefully.
+        _session_init_at = time.time()
         try:
             r = _SESSION.get("https://www.nseindia.com/", timeout=12)
             if r.status_code == 200:
-                _session_init_at = time.time()
                 log.info("NSE session initialised (cookies: %d)", len(_SESSION.cookies))
             else:
-                log.warning("NSE homepage returned %s", r.status_code)
+                log.warning("NSE homepage returned %s — API calls may be unauthenticated", r.status_code)
         except Exception as e:
             log.warning("NSE session init failed: %s", e)
 
@@ -209,6 +211,68 @@ def get_quote(symbol: str) -> Optional[dict]:
     except Exception as e:
         log.warning("NSE get_quote(%s) failed: %s", sym, e)
         return None
+
+
+def get_gainers_losers(index: str = "NIFTY") -> tuple[list[dict], list[dict]]:
+    """
+    Fetch top gainers and losers from NSE using /api/live-analysis-variations.
+    This endpoint works WITHOUT session cookies — no homepage hit required,
+    reliable from cloud IPs (Render). Returns top 10 each.
+
+    index: "NIFTY" (Nifty 50), "NIFTYNEXT50", "allSec" (all NSE securities)
+    """
+    try:
+        headers = {"Referer": "https://www.nseindia.com/market-data/live-market-indices"}
+
+        r_g = _SESSION.get(
+            "https://www.nseindia.com/api/live-analysis-variations?index=gainers",
+            headers=headers,
+            timeout=10,
+        )
+        r_l = _SESSION.get(
+            "https://www.nseindia.com/api/live-analysis-variations?index=losers",
+            headers=headers,
+            timeout=10,
+        )
+
+        def _parse(payload: dict, want_index: str) -> list[dict]:
+            # Try the requested index first, fall back to any available key
+            data = payload.get(want_index, {}).get("data")
+            if not data:
+                for key, val in payload.items():
+                    if isinstance(val, dict) and val.get("data"):
+                        data = val["data"]
+                        break
+            if not data:
+                return []
+            result = []
+            for row in data:
+                sym = row.get("symbol", "")
+                ltp  = row.get("ltp") or row.get("lastPrice") or 0
+                prev = row.get("previousPrice") or row.get("prev_price") or 0
+                chg  = row.get("perChange") or row.get("pChange") or 0
+                if not sym or not ltp:
+                    continue
+                result.append({
+                    "symbol":       sym,
+                    "company_name": row.get("meta", {}).get("companyName", "") if isinstance(row.get("meta"), dict) else "",
+                    "price":        round(float(ltp), 2),
+                    "prev_close":   round(float(prev), 2),
+                    "change_pct":   round(float(chg), 2),
+                    "change":       round(float(ltp) - float(prev), 2),
+                    "volume":       int(row.get("totalTradedVolume") or row.get("trade_quantity") or 0),
+                })
+            return result
+
+        gainers = _parse(r_g.json(), index)[:10] if r_g.status_code == 200 else []
+        losers  = _parse(r_l.json(), index)[:10] if r_l.status_code == 200 else []
+
+        log.info("NSE live-analysis-variations: %d gainers, %d losers", len(gainers), len(losers))
+        return gainers, losers
+
+    except Exception as e:
+        log.warning("NSE get_gainers_losers failed: %s", e)
+        return [], []
 
 
 def get_sector_changes(sector: str) -> Optional[dict[str, float]]:

@@ -196,18 +196,16 @@ class ScreenerService:
         is_open = _is_market_open(market)
         gainers, losers = [], []
 
-        # PRIMARY for India: NSE official API — one call, all 50 stocks, no rate limits
+        # PRIMARY for India: NSE live-analysis-variations — no cookies needed,
+        # works from Render cloud IPs, returns top movers in 2 HTTP calls
         if market == "IN":
             try:
                 def _nse_movers():
-                    stocks = nse_client.get_nifty100_quotes()
-                    if not stocks:
-                        stocks = nse_client.get_nifty50_quotes()
-                    g = sorted([s for s in stocks if s["change_pct"] > 0],
-                               key=lambda x: x["change_pct"], reverse=True)[:10]
-                    l = sorted([s for s in stocks if s["change_pct"] <= 0],
-                               key=lambda x: x["change_pct"])[:10]
-                    # normalise to expected screener shape
+                    g, l = nse_client.get_gainers_losers("NIFTY")
+                    # If NIFTY index key not found, get_gainers_losers tries other keys
+                    if not g and not l:
+                        # Try all-securities fallback
+                        g, l = nse_client.get_gainers_losers("allSec")
                     def _norm(s):
                         return {
                             "symbol":     s["symbol"],
@@ -221,7 +219,7 @@ class ScreenerService:
                     loop.run_in_executor(None, _nse_movers),
                     timeout=15.0,
                 )
-                log.info("screener: NSE API returned %d gainers, %d losers", len(gainers), len(losers))
+                log.info("screener: NSE live-analysis returned %d gainers, %d losers", len(gainers), len(losers))
             except Exception as e:
                 log.warning("NSE movers failed: %s", e)
 

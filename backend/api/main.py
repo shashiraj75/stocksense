@@ -204,14 +204,23 @@ async def lifespan(app: FastAPI):
             try:
                 if hasattr(yf.utils, "get_crumb"):
                     yf.utils.get_crumb(force=True)
-                # Warm a lightweight ticker to establish session cookies
                 yf.Ticker("AAPL").fast_info
+                yf.Ticker("RELIANCE.NS").fast_info   # warm Indian session too
                 print("[startup] yfinance session initialised")
             except Exception as e:
                 print(f"[startup] yfinance crumb refresh failed (non-fatal): {e}")
         await asyncio.wait_for(loop.run_in_executor(None, _refresh_crumb), timeout=15.0)
     except asyncio.TimeoutError:
         print("[startup] yfinance init timed out after 15s — continuing without pre-warm")
+    # Warm NSE session (non-blocking — homepage may return 403 on Render, that's ok)
+    try:
+        from services import nse_client
+        loop = asyncio.get_running_loop()
+        await asyncio.wait_for(
+            loop.run_in_executor(None, nse_client._ensure_session), timeout=10.0
+        )
+    except Exception:
+        pass
     except Exception as e:
         print(f"[startup] yfinance init error: {e}")
 

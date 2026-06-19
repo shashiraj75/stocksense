@@ -129,7 +129,7 @@ _SCREENER_OVERRIDES: dict[str, str] = {
     "LTIM":         "",  # LTIMindtree merger not yet indexed on screener.in
     "NIFTY50":      "",  # index, not a company
     # Real estate / mid-cap mismatches
-    "SUNTECK":      "/company/Sunteck-Realty/consolidated/",
+    "SUNTECK":      "/company/SUNTECK/consolidated/",
     "OBEROIRLTY":   "/company/Oberoi-Realty/consolidated/",
     "GODREJPROP":   "/company/Godrej-Properties/consolidated/",
     "PHOENIXLTD":   "/company/The-Phoenix-Mills/consolidated/",
