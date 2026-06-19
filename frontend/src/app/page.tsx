@@ -72,27 +72,30 @@ export default function Dashboard() {
   return (
     <div className="space-y-6">
 
-      {/* Market Overview card: tabs row + index bar row */}
-      <div className="bg-dark-card border border-dark-border rounded-xl px-4 py-3 space-y-2">
-        <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-2xl font-bold text-white shrink-0">Market Overview</h1>
-          <div className="flex gap-1.5">
+      {/* Market Overview — layout matches Market Heatmap header style */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between flex-wrap gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-white">Market Overview</h1>
+            <p className="text-sm text-gray-400 mt-1">Live indices, top movers &amp; market sentiment</p>
+          </div>
+          <div className="flex gap-2">
             {MARKET_TABS.map(({ key, label }) => (
               <button key={key} onClick={() => setMarket(key)}
-                className={clsx("px-3 py-1 rounded-lg text-xs font-medium transition-colors",
+                className={clsx("px-4 py-2 rounded-xl text-sm font-medium transition-colors border",
                   market === key
-                    ? "bg-brand-500 text-white"
-                    : "bg-dark-bg border border-dark-border text-gray-400 hover:text-white")}>
+                    ? "bg-brand-500 text-white border-brand-500"
+                    : "bg-dark-card border-dark-border text-gray-400 hover:text-white")}>
                 {label}
               </button>
             ))}
           </div>
         </div>
-        {/* Index bar — scrollable on mobile */}
-        <div className="overflow-x-auto scrollbar-hide -mx-1 px-1">
+        {/* Index bar */}
+        <div className="bg-dark-card border border-dark-border rounded-xl px-4 overflow-x-auto scrollbar-hide">
           {market !== "CRYPTO"
-            ? <IndexBar market={market} inline />
-            : <span className="text-xs text-gray-500">Live index data unavailable for crypto</span>
+            ? <IndexBar market={market as any} />
+            : <p className="text-xs text-gray-500 py-3">Live index data unavailable for crypto</p>
           }
         </div>
       </div>
