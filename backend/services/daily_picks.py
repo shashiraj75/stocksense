@@ -174,24 +174,52 @@ def _build_summary(result: dict, horizon: str) -> str:
 
 
 _SCREEN_BATCH_SIZE = int(os.getenv("SCREEN_BATCH_SIZE", 300))  # tickers per download batch
+_MIN_MCAP_CR = int(os.getenv("MIN_MCAP_CR", 100))   # minimum market cap in crores INR
+
+
+def _get_nse_universe_by_mcap(min_mcap_cr: int = 100) -> list[str]:
+    """
+    Use yfinance equity screener to get NSE stocks above a market-cap floor.
+    1 crore INR = 10,000,000 INR. 100 Cr = 1,000,000,000 INR.
+    Falls back to full _ALL_NSE_SYMBOLS list if screener fails.
+    """
+    min_mcap_inr = min_mcap_cr * 10_000_000
+    try:
+        query = yf.EquityQuery("and", [
+            yf.EquityQuery("eq", ["exchange", "NSI"]),
+            yf.EquityQuery("gt", ["intradaymarketcap", min_mcap_inr]),
+        ])
+        result = yf.screen(
+            query, sortField="intradaymarketcap", sortAsc=False, count=1000
+        )
+        quotes = result.get("quotes", [])
+        syms = [q["symbol"].replace(".NS", "") for q in quotes if q.get("symbol")]
+        if syms:
+            print(f"[picks] mcap filter ≥{min_mcap_cr}Cr: {len(syms)} NSE stocks qualify")
+            return syms
+    except Exception as e:
+        print(f"[picks] mcap screener failed ({e}), using full universe")
+    return _ALL_NSE_SYMBOLS
 
 
 def _bulk_screen_nse(n_candidates: int = 50) -> list[str]:
     """
-    Phase-0 screener: batched yf.download() for all NSE stocks → momentum rank.
+    Phase-0 screener: batched yf.download() → momentum rank.
 
-    Downloads in batches of SCREEN_BATCH_SIZE (default 300) to avoid OOM on
-    Render free tier (512 MB). Each batch is processed and discarded before
-    the next is downloaded.
+    1. Filter to NSE stocks with market cap ≥ MIN_MCAP_CR crores (default 100Cr)
+       using yfinance equity screener — removes illiquid micro-caps.
+    2. Batch-download in groups of SCREEN_BATCH_SIZE to avoid OOM on Render
+       (512 MB RAM). Free each batch's DataFrame immediately after processing.
+    3. Rank by composite momentum and return top n_candidates.
 
-    Returns top `n_candidates` symbols by composite momentum score.
-    Falls back to Nifty 100 if all batches fail.
+    Falls back to Nifty 100 if all else fails.
     """
     import math
-    all_tickers = [s + ".NS" for s in _ALL_NSE_SYMBOLS]
+    universe = _get_nse_universe_by_mcap(_MIN_MCAP_CR)
+    all_tickers = [s + ".NS" for s in universe]
     batches = [all_tickers[i:i + _SCREEN_BATCH_SIZE]
                for i in range(0, len(all_tickers), _SCREEN_BATCH_SIZE)]
-    print(f"[picks] Phase-0: screening {len(all_tickers)} NSE tickers "
+    print(f"[picks] Phase-0: downloading {len(all_tickers)} tickers "
           f"in {len(batches)} batches of {_SCREEN_BATCH_SIZE} …")
     t0 = time.time()
     scores: dict[str, float] = {}
