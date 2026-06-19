@@ -350,14 +350,14 @@ def _parse_screener_page(soup: BeautifulSoup, symbol: str) -> dict:
                     if ("revenue" in label or "sales" in label) and len(vals) >= 4 and not data.get("sales_growth_3y_pct"):
                         oldest, latest = vals[0], vals[-1]
                         n = len(vals) - 1
-                        if oldest and oldest > 0 and n > 0:
+                        if oldest is not None and float(oldest) > 0 and n > 0:
                             cagr = ((latest / oldest) ** (1 / n) - 1) * 100
                             data["sales_growth_3y_pct"] = round(cagr, 2)
                             data["sales_growth_ttm_pct"] = round(cagr, 2)
                     elif ("net profit" in label or ("profit" in label and "tax" not in label and "before" not in label)) and len(vals) >= 4 and not data.get("profit_growth_3y_pct"):
                         oldest, latest = vals[0], vals[-1]
                         n = len(vals) - 1
-                        if oldest and oldest > 0 and latest and n > 0:
+                        if oldest is not None and float(oldest) > 0 and latest is not None and n > 0:
                             cagr = ((latest / oldest) ** (1 / n) - 1) * 100
                             data["profit_growth_3y_pct"] = round(cagr, 2)
                             data["profit_growth_ttm_pct"] = round(cagr, 2)

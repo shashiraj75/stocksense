@@ -262,14 +262,6 @@ def get_signal_summary(df: pd.DataFrame) -> dict:
     # Clamp score
     score = max(0, min(100, score))
 
-    # Score → signal with wider thresholds to reduce HOLD bias
-    if score >= 58:
-        overall = "BUY"
-    elif score <= 42:
-        overall = "SELL"
-    else:
-        overall = "HOLD"
-
     # Candlestick patterns
     candle = detect_candlestick_patterns(df)
     if candle["signal"] == "BULLISH":
@@ -290,6 +282,15 @@ def get_signal_summary(df: pd.DataFrame) -> dict:
             signals.append({"indicator": "Volume", "signal": "SELL", "reason": vol_sig["reason"]})
     else:
         signals.append({"indicator": "Volume", "signal": "HOLD", "reason": vol_sig["reason"]})
+
+    # Score → signal with wider thresholds to reduce HOLD bias
+    # Determined AFTER all score adjustments (candlestick + volume)
+    if score >= 58:
+        overall = "BUY"
+    elif score <= 42:
+        overall = "SELL"
+    else:
+        overall = "HOLD"
 
     return {
         "overall": overall,

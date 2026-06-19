@@ -374,8 +374,8 @@ class PredictionEngine:
 
         # Drop incomplete rows (NaN close) — last bar may be partial on live market
         df = df.dropna(subset=["Close"])
-        if df.empty:
-            err = {"error": "No valid price data for symbol"}
+        if df.empty or len(df) < 20:
+            err = {"error": "Insufficient price history (need at least 20 days)"}
             _cache_set(_pred_cache, cache_key, (_SHORT_TTL_TS(), err))
             return err
 
@@ -1349,7 +1349,8 @@ class PredictionEngine:
             # separate Model Confidence engine.)
             confidence = round(max(0, min(100, (55 - composite_r) / 55 * 100)))
         else:
-            confidence = min(25, int(abs(composite_r - 62) * 3))
+            # HOLD confidence: highest near the midpoint (55), decays toward the thresholds
+            confidence = max(0, min(100, 50 - int(abs(composite_r - 55) * 2)))
         score_band = _score_label(composite_r)
 
         confidence_score, confidence_band, confidence_components = self._confidence_engine(

@@ -83,6 +83,8 @@ export const fetchPrediction = async (
       },
     );
     if (res.status === 200) return res.data as Prediction;
+    // Check for error field returned in a 202 response body
+    if ((res.data as any)?.error) throw new Error((res.data as any).error);
     // 202 = computing in background — notify caller and wait
     if (attempt === 0) onComputing?.();
     const delay = ((res.data as { retry_after?: number }).retry_after ?? 5) * 1000;

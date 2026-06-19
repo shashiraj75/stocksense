@@ -176,7 +176,7 @@ class MarketDataService:
 
         if result:
             _quote_cache[key] = (time.time(), result)
-        return result
+        return dict(result) if result else result
 
     async def get_ohlcv(self, symbol: str, market: str, period: str, interval: str) -> dict:
         key = f"{symbol}:{market}:{period}:{interval}"

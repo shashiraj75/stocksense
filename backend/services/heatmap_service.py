@@ -4,6 +4,7 @@ Returns sector-wise % change for Indian and US markets.
 """
 import time
 import logging
+import pandas as pd
 import yfinance as yf
 
 log = logging.getLogger(__name__)
@@ -55,7 +56,7 @@ def _bulk_changes(symbols: list[str], suffix: str) -> dict[str, float | None]:
         df = yf.download(tickers, period="5d", interval="1d", progress=False)
         if df.empty:
             return changes
-        if isinstance(df.columns, type(df.columns)) and hasattr(df.columns, "levels"):
+        if isinstance(df.columns, pd.MultiIndex):
             # MultiIndex: ("Close", ticker)
             close = df["Close"] if "Close" in df.columns.get_level_values(0) else None
         else:
