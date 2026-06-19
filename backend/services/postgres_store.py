@@ -186,12 +186,21 @@ CREATE TABLE IF NOT EXISTS terms_acceptance (
     id            BIGSERIAL PRIMARY KEY,
     user_id       TEXT NOT NULL,
     email         TEXT NOT NULL,
+    first_name    TEXT,
+    last_name     TEXT,
+    mobile        TEXT,
+    country       TEXT,
     accepted_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     ip_address    TEXT,
     terms_version TEXT NOT NULL DEFAULT 'v1.0',
     UNIQUE (user_id, terms_version)
 );
 CREATE INDEX IF NOT EXISTS idx_terms_acceptance_user ON terms_acceptance(user_id);
+-- Add columns if table already exists (safe on re-run)
+ALTER TABLE terms_acceptance ADD COLUMN IF NOT EXISTS first_name TEXT;
+ALTER TABLE terms_acceptance ADD COLUMN IF NOT EXISTS last_name  TEXT;
+ALTER TABLE terms_acceptance ADD COLUMN IF NOT EXISTS mobile     TEXT;
+ALTER TABLE terms_acceptance ADD COLUMN IF NOT EXISTS country    TEXT;
 """
 
 

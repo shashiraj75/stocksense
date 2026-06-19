@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
+from typing import Optional
 
 router = APIRouter()
 
@@ -7,6 +8,10 @@ router = APIRouter()
 class TermsAcceptance(BaseModel):
     user_id: str
     email: str
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    mobile: Optional[str] = None
+    country: Optional[str] = None
     terms_version: str = "v1.0"
 
 
@@ -23,13 +28,19 @@ async def accept_terms(body: TermsAcceptance, request: Request):
             with _get_pool().connection() as conn:
                 conn.execute(
                     """
-                    INSERT INTO terms_acceptance (user_id, email, ip_address, terms_version, accepted_at)
-                    VALUES (%s, %s, %s, %s, %s)
+                    INSERT INTO terms_acceptance
+                        (user_id, email, first_name, last_name, mobile, country, ip_address, terms_version, accepted_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (user_id, terms_version) DO UPDATE
                         SET accepted_at = EXCLUDED.accepted_at,
-                            ip_address  = EXCLUDED.ip_address
+                            ip_address  = EXCLUDED.ip_address,
+                            first_name  = EXCLUDED.first_name,
+                            last_name   = EXCLUDED.last_name,
+                            mobile      = EXCLUDED.mobile,
+                            country     = EXCLUDED.country
                     """,
-                    (body.user_id, body.email, ip, body.terms_version,
+                    (body.user_id, body.email, body.first_name, body.last_name,
+                     body.mobile, body.country, ip, body.terms_version,
                      datetime.now(timezone.utc).isoformat()),
                 )
             return {"status": "accepted", "terms_version": body.terms_version}
@@ -47,11 +58,20 @@ async def terms_status(user_id: str):
             from services.postgres_store import _get_pool
             with _get_pool().connection() as conn:
                 row = conn.execute(
-                    "SELECT terms_version, accepted_at FROM terms_acceptance WHERE user_id = %s ORDER BY accepted_at DESC LIMIT 1",
+                    """SELECT terms_version, accepted_at, first_name, last_name, mobile, country
+                       FROM terms_acceptance WHERE user_id = %s ORDER BY accepted_at DESC LIMIT 1""",
                     (user_id,)
                 ).fetchone()
             if row:
-                return {"accepted": True, "terms_version": row[0], "accepted_at": str(row[1])}
+                return {
+                    "accepted": True,
+                    "terms_version": row[0],
+                    "accepted_at": str(row[1]),
+                    "first_name": row[2],
+                    "last_name": row[3],
+                    "mobile": row[4],
+                    "country": row[5],
+                }
         except Exception:
             pass
     return {"accepted": False}

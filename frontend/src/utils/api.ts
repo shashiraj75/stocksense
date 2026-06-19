@@ -193,8 +193,11 @@ export const resetPaperPortfolio = (sessionId: string) =>
 export const editPaperTrade = (tradeId: number, sessionId: string, stopLoss: number | null, targetPrice: number | null, entryPrice?: number | null) =>
   api.patch(`/api/paper-trading/trade/${tradeId}`, { session_id: sessionId, stop_loss: stopLoss, target_price: targetPrice, entry_price: entryPrice ?? null }).then((r) => r.data);
 
-export const acceptTerms = (userId: string, email: string) =>
-  api.post("/api/auth/accept-terms", { user_id: userId, email, terms_version: "v1.0" }).then((r) => r.data);
+export const acceptTerms = (
+  userId: string, email: string,
+  profile: { first_name: string; last_name: string; mobile: string; country: string }
+) =>
+  api.post("/api/auth/accept-terms", { user_id: userId, email, terms_version: "v1.0", ...profile }).then((r) => r.data);
 
 export const getTermsStatus = (userId: string) =>
-  api.get<{ accepted: boolean; terms_version?: string; accepted_at?: string }>(`/api/auth/terms-status/${userId}`).then((r) => r.data);
+  api.get<{ accepted: boolean; terms_version?: string; accepted_at?: string; first_name?: string; last_name?: string; mobile?: string; country?: string }>(`/api/auth/terms-status/${userId}`).then((r) => r.data);

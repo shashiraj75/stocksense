@@ -7,6 +7,11 @@ import { TrendingUp, CheckCircle } from "lucide-react";
 
 const TERMS_VERSION = "v1.0";
 
+const COUNTRIES = [
+  "India", "United States", "United Kingdom", "United Arab Emirates", "Singapore",
+  "Australia", "Canada", "Germany", "France", "Japan", "China", "Other",
+];
+
 const DISCLAIMER_SECTIONS = [
   {
     title: "1. Not financial advice",
@@ -50,21 +55,28 @@ const DISCLAIMER_SECTIONS = [
   },
 ];
 
+const inputCls = "w-full bg-dark-bg border border-dark-border rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-gray-500 outline-none focus:border-brand-500 transition-colors";
+
 export default function AcceptTermsPage() {
-  const [user, setUser]         = useState<any>(null);
-  const [agreed, setAgreed]     = useState(false);
-  const [loading, setLoading]   = useState(false);
-  const [checking, setChecking] = useState(true);
-  const [error, setError]       = useState<string | null>(null);
+  const [user, setUser]           = useState<any>(null);
+  const [agreed, setAgreed]       = useState(false);
+  const [loading, setLoading]     = useState(false);
+  const [checking, setChecking]   = useState(true);
+  const [error, setError]         = useState<string | null>(null);
+
+  // Profile fields
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName]   = useState("");
+  const [mobile, setMobile]       = useState("");
+  const [country, setCountry]     = useState("India");
+
   const router = useRouter();
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
       if (!data.user) { router.replace("/login"); return; }
-      // Already accepted — check cookie first (fast), then metadata
       const cookieAccepted = document.cookie.includes("ss_terms=v1.0");
       if (cookieAccepted || data.user.user_metadata?.terms_accepted === true) {
-        // Ensure cookie is set even if user accepted in a previous session
         if (!cookieAccepted) {
           document.cookie = "ss_terms=v1.0; path=/; max-age=31536000; SameSite=Lax";
         }
@@ -78,21 +90,31 @@ export default function AcceptTermsPage() {
 
   const handleAccept = async () => {
     if (!agreed || !user) return;
+    if (!firstName.trim() || !lastName.trim() || !mobile.trim() || !country) {
+      setError("Please fill in all profile fields before accepting.");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
-      // Store acceptance server-side in Postgres
-      await acceptTerms(user.id, user.email ?? "");
-
-      // Store flag in Supabase user metadata for middleware to read
-      await supabase.auth.updateUser({
-        data: { terms_accepted: true, terms_version: TERMS_VERSION, terms_accepted_at: new Date().toISOString() },
+      await acceptTerms(user.id, user.email ?? "", {
+        first_name: firstName.trim(),
+        last_name: lastName.trim(),
+        mobile: mobile.trim(),
+        country,
       });
 
-      // Set a persistent cookie that middleware reads directly — avoids JWT
-      // synchronization issues with user_metadata on the edge
-      document.cookie = "ss_terms=v1.0; path=/; max-age=31536000; SameSite=Lax";
+      await supabase.auth.updateUser({
+        data: {
+          terms_accepted: true,
+          terms_version: TERMS_VERSION,
+          terms_accepted_at: new Date().toISOString(),
+          first_name: firstName.trim(),
+          last_name: lastName.trim(),
+        },
+      });
 
+      document.cookie = "ss_terms=v1.0; path=/; max-age=31536000; SameSite=Lax";
       window.location.href = "/dashboard";
     } catch (err: any) {
       setError("Failed to record acceptance. Please try again.");
@@ -123,22 +145,70 @@ export default function AcceptTermsPage() {
 
       {/* Welcome */}
       <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 text-sm text-amber-300">
-        <strong>Welcome, {user?.email}</strong> — before you access StockSense, please read and accept the full disclaimer below. Your acceptance is recorded securely with a timestamp and your IP address.
+        <strong>Welcome, {user?.email}</strong> — please complete your profile and accept the disclaimer below. Your details are stored securely with a timestamp and IP address.
+      </div>
+
+      {/* Profile fields */}
+      <div className="bg-dark-card border border-dark-border rounded-2xl p-5 space-y-4">
+        <h2 className="text-sm font-semibold text-white">Your Profile</h2>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs text-gray-400 mb-1 block">First Name *</label>
+            <input
+              type="text" placeholder="e.g. Rahul" value={firstName}
+              onChange={e => setFirstName(e.target.value)}
+              className={inputCls}
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-400 mb-1 block">Last Name *</label>
+            <input
+              type="text" placeholder="e.g. Sharma" value={lastName}
+              onChange={e => setLastName(e.target.value)}
+              className={inputCls}
+            />
+          </div>
+        </div>
+        <div>
+          <label className="text-xs text-gray-400 mb-1 block">Email</label>
+          <input
+            type="email" value={user?.email ?? ""} disabled
+            className={inputCls + " opacity-50 cursor-not-allowed"}
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs text-gray-400 mb-1 block">Mobile Number *</label>
+            <input
+              type="tel" placeholder="+91 98765 43210" value={mobile}
+              onChange={e => setMobile(e.target.value)}
+              className={inputCls}
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-400 mb-1 block">Country *</label>
+            <select
+              value={country} onChange={e => setCountry(e.target.value)}
+              className={inputCls + " cursor-pointer"}
+            >
+              {COUNTRIES.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+        </div>
       </div>
 
       {/* Scrollable terms */}
       <div className="bg-dark-card border border-dark-border rounded-2xl overflow-hidden">
-        <div className="h-96 overflow-y-auto p-5 space-y-5 scrollbar-thin scrollbar-thumb-dark-border">
+        <div className="h-80 overflow-y-auto p-5 space-y-5 scrollbar-thin scrollbar-thumb-dark-border">
           {DISCLAIMER_SECTIONS.map((s) => (
             <div key={s.title}>
               <h3 className="text-sm font-semibold text-white mb-1.5">{s.title}</h3>
               <p className="text-sm text-gray-400 leading-relaxed">{s.body}</p>
             </div>
           ))}
-
           <div className="border-t border-dark-border pt-4">
             <p className="text-xs text-gray-500 leading-relaxed">
-              <strong className="text-gray-400">Full disclaimer:</strong> By clicking "I Agree", you confirm that you are at least 18 years of age, that you have read and understood these Terms in full, and that you agree to be legally bound by them. Your acceptance is recorded with a timestamp, your user ID, and your IP address. If you update these Terms later, you will be asked to re-accept.
+              <strong className="text-gray-400">Full disclaimer:</strong> By clicking "I Agree", you confirm that you are at least 18 years of age, that you have read and understood these Terms in full, and that you agree to be legally bound by them. Your acceptance is recorded with a timestamp, your user ID, and your IP address.
             </p>
           </div>
         </div>
