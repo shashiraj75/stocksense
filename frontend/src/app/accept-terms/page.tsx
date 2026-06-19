@@ -61,8 +61,13 @@ export default function AcceptTermsPage() {
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
       if (!data.user) { router.replace("/login"); return; }
-      // Already accepted — send to dashboard
-      if (data.user.user_metadata?.terms_accepted === true) {
+      // Already accepted — check cookie first (fast), then metadata
+      const cookieAccepted = document.cookie.includes("ss_terms=v1.0");
+      if (cookieAccepted || data.user.user_metadata?.terms_accepted === true) {
+        // Ensure cookie is set even if user accepted in a previous session
+        if (!cookieAccepted) {
+          document.cookie = "ss_terms=v1.0; path=/; max-age=31536000; SameSite=Lax";
+        }
         router.replace("/dashboard");
         return;
       }
@@ -84,11 +89,10 @@ export default function AcceptTermsPage() {
         data: { terms_accepted: true, terms_version: TERMS_VERSION, terms_accepted_at: new Date().toISOString() },
       });
 
-      // Refresh session so the new metadata is reflected in the JWT cookie
-      // before middleware checks it on the next request
-      await supabase.auth.refreshSession();
+      // Set a persistent cookie that middleware reads directly — avoids JWT
+      // synchronization issues with user_metadata on the edge
+      document.cookie = "ss_terms=v1.0; path=/; max-age=31536000; SameSite=Lax";
 
-      // Hard navigation so the fresh cookie is sent with the request
       window.location.href = "/dashboard";
     } catch (err: any) {
       setError("Failed to record acceptance. Please try again.");
