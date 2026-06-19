@@ -1126,6 +1126,11 @@ export default function StockPage() {
                     const cfLabels = [...(screenerFund.cashflow_labels ?? [])].reverse();
                     const opCf = [...(screenerFund.operating_cf_annual_cr ?? [])].reverse();
                     const invCf = screenerFund.investing_cf_annual_cr ? [...screenerFund.investing_cf_annual_cr].reverse() : null;
+                    // Convert "Mar 2026" → "FY26", "Mar 2025" → "FY25", etc.
+                    const toFY = (raw: string) => {
+                      const m = raw.match(/(\d{4})$/);
+                      return m ? `FY${m[1].slice(2)}` : raw;
+                    };
                     return (
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
@@ -1133,7 +1138,7 @@ export default function StockPage() {
                         <tr className="text-gray-500 text-xs">
                           <th className="text-left pb-2 font-medium">Type</th>
                           {opCf.map((_: number, i: number) => {
-                            const label = cfLabels[i] ?? `FY${i + 1}`;
+                            const label = toFY(cfLabels[i] ?? `FY${i + 1}`);
                             return <th key={i} className="text-right pb-2 font-medium whitespace-nowrap">{label}</th>;
                           })}
                         </tr>
