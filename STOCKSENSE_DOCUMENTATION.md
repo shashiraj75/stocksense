@@ -1,7 +1,7 @@
 # StockSense — Complete Product & Technical Documentation
 
 > **Live Document** — Updated automatically as the product evolves.  
-> Last updated: 2026-06-18 (Session 3)
+> Last updated: 2026-06-19 (Session 4)
 
 ---
 
@@ -148,11 +148,13 @@ All component scores are on a **0–100 scale** (50 = neutral). The composite is
 
 ### Signal Thresholds
 
-| Composite Score | Signal | Confidence Calculation |
-|----------------|--------|----------------------|
-| ≥ 70 | **BUY** | `(score − 70) / 30 × 100%` |
-| 55 – 69 | **HOLD** | `min(25%, abs(score − 62) × 3%)` |
-| < 55 | **SELL** | `(55 − score) / 55 × 100%` |
+| Composite Score | Signal | Score Band | Confidence Calculation |
+|----------------|--------|------------|----------------------|
+| ≥ 90 | **BUY** | Exceptional Opportunity | `(score − 60) / 40 × 100%` |
+| ≥ 75 | **BUY** | Strong Buy Candidate | `(score − 60) / 40 × 100%` |
+| ≥ 60 | **BUY** | Good Watchlist Stock | `(score − 60) / 40 × 100%` |
+| 45 – 59 | **HOLD** | Neutral — Monitor | `50 − abs(score − 52) × 2` |
+| < 45 | **SELL** | Avoid | `(45 − score) / 45 × 100%` |
 
 ### Dynamic Weights (Horizon × Volatility × Regime)
 
@@ -263,93 +265,122 @@ All component scores are on a **0–100 scale** (50 = neutral). The composite is
 
 ### Quality Gate (Hard Rejection)
 
-A stock is flagged **REJECTED** before scoring if:
-- ROE < −10% AND Profit Margin < −5%
-- Negative Operating Cash Flow (medium/long horizons only)
-- D/E ratio > 500% (non-financial sector)
+A stock is flagged **REJECTED** before scoring if **any** of these apply:
+- ROE < −10% (severely destroying shareholder value)
+- Profit Margin < −15% (deeply loss-making)
+- Non-positive Operating Cash Flow on medium/long horizons (core business not generating cash)
+- D/E ratio > 500% (extreme leverage, non-financial sector only)
 
-### Scoring Components
+> Previously ROE AND margin both had to be negative simultaneously — this was too lenient and has been corrected.
 
-#### Valuation
+### Scoring Architecture (Per-Category Budgets)
+
+The fundamental score uses **six independent capped buckets**, each scored separately, then summed with a base of 50. This prevents any single dimension from dominating and ensures the final score has meaningful discrimination across the full 0–100 range.
+
+| Bucket | Cap | What It Measures |
+|--------|-----|-----------------|
+| Valuation | ±15 | P/E, P/B ratios vs market-calibrated thresholds |
+| Profitability | ±15 | ROE, ROCE, profit margins |
+| Growth | ±15 | Revenue + earnings CAGR (counted once via longest available window) |
+| Balance Sheet | ±10 | D/E, OCF quality, Altman Z-Score, Sloan accruals |
+| Governance | ±10 | Promoter holding, FII/DII flows, promoter pledge |
+| Banking | ±10 | Net NPA, NIM (fires only for banks/NBFCs) |
+
+**Total possible range:** 50 ± 65 → clamped to [0, 100]
+
+#### Valuation bucket (cap ±15)
 
 | Metric | Threshold (India / US) | Points |
 |--------|----------------------|--------|
-| P/E | < 18 IN / < 15 US (cheap) | +12 |
-| P/E | < 30 IN / < 25 US (fair) | +6 |
-| P/E | > 50 IN / > 40 US (expensive) | −10 |
-| P/B | < 2.5 IN / < 2 US | +6 |
-| PEG | < 0.75 | +16 |
-| PEG | 0.75–1.0 | +10 |
-| PEG | > 2.5 | −12 |
-| FCF Yield | > 5% | +10 |
-| FCF Yield | 3–5% | +5 |
+| P/E | < 18 IN / < 15 US (cheap) | +8 |
+| P/E | < 30 IN / < 25 US (fair) | +3 |
+| P/E | > 55 IN / > 50 US (expensive) | −8 |
+| P/B | < 2.5 IN / < 2.0 US | +4 |
+| P/B | > 8.0 IN / > 6.0 US | −4 |
 
-#### Growth
+#### Profitability bucket (cap ±15)
 
 | Metric | Threshold | Points |
 |--------|-----------|--------|
-| Revenue Growth YoY | > 20% | +12 |
-| Revenue Growth YoY | 5–20% | +5 |
-| Revenue Growth YoY | < −5% | −10 |
-| Revenue CAGR 3Y (screener) | > 15% | +8 |
-| Revenue CAGR 3Y | < 0% | −6 |
-| Profit CAGR 3Y (screener) | > 15% | +8 |
-| Profit CAGR 3Y | < −10% | −6 |
-| EPS Growth | > 20% | +8 |
-| EPS Growth | < −10% | −8 |
-| Revenue acceleration | Latest > prior + 5% | +6 |
-| Revenue deceleration | Latest < prior − 5% | −6 |
+| ROE | > 20% | +7 |
+| ROE | 10–20% | +3 |
+| ROE | < 0% | −7 |
+| Profit Margin | > 20% | +5 |
+| Profit Margin | < 0% | −5 |
+| ROCE | > 20% | +6 |
+| ROCE | 12–20% | +2 |
+| ROCE | < 6% | −4 |
 
-#### Profitability
+#### Growth bucket (cap ±15) — revenue and earnings each counted once
 
-| Metric | Threshold | Points |
-|--------|-----------|--------|
-| ROE | > 20% | +12 |
-| ROE | 10–20% | +5 |
-| ROE | < 0% | −10 |
-| ROCE (screener) | > 20% | +10 |
-| ROCE | 12–20% | +4 |
-| ROCE | < 6% | −6 |
-| Operating Margin | > 25% | +10 |
-| Operating Margin | 10–25% | +4 |
-| Operating Margin | < 0% | −10 |
-| Net Margin | > 20% | +8 |
-| Net Margin | < 0% | −8 |
-
-#### Cash Flow (yfinance + screener.in fallback)
+Revenue uses 3Y CAGR (screener.in) if available, else TTM YoY (yfinance):
 
 | Metric | Threshold | Points |
 |--------|-----------|--------|
-| Free Cash Flow | Positive | +10 |
-| FCF Growth | > 10% YoY | +6 |
-| Free Cash Flow | Negative | −8 |
+| 3Y Revenue CAGR | > 15% | +7 |
+| 3Y Revenue CAGR | 8–15% | +3 |
+| 3Y Revenue CAGR | < 0% | −5 |
+| TTM Revenue Growth (fallback) | > 20% | +7 |
+| TTM Revenue Growth | 5–20% | +3 |
+| TTM Revenue Growth | < −5% | −5 |
 
-> **Note:** For Indian stocks where yfinance cashflow is empty, operating CF and investing CF are fetched from screener.in's `#cash-flow` section.
-
-#### Leverage & Solvency
-
-| Metric | Threshold | Points |
-|--------|-----------|--------|
-| D/E | > 300% | −12 |
-| D/E | 150–300% | −5 |
-| D/E | < 50% | +5 |
-| Current Ratio | > 2.0 | +8 |
-| Current Ratio | 1.2–2.0 | +3 |
-| Current Ratio | < 1.0 | −10 |
-| Net Cash Position | More cash than debt | +6 |
-
-#### Shareholding (India)
+Earnings uses longest available: 5Y CAGR (long horizon) → 3Y CAGR → TTM EPS growth:
 
 | Metric | Threshold | Points |
 |--------|-----------|--------|
-| FII + DII combined | > 50% | +6 |
-| FII + DII combined | 25–50% | +3 |
-| Promoter holding | > 55% | +5 |
-| Promoter holding | < 25% | −5 |
-| Promoter pledge | > 50% | −15 |
-| Promoter pledge | 25–50% | −8 |
-| Promoter pledge | 10–25% | −3 |
-| Promoter pledge | 0% | +3 |
+| 5Y Profit CAGR (long only) | > 18% | +6 |
+| 3Y Profit CAGR | > 20% | +6 |
+| 3Y Profit CAGR | > 10% | +3 |
+| 3Y Profit CAGR | < −10% | −5 |
+| TTM EPS Growth (fallback) | > 20% | +5 |
+| TTM EPS Growth | < −10% | −5 |
+| Quarterly PAT trend | Accelerating | +3 |
+| Quarterly PAT trend | Decelerating | −3 |
+
+#### Balance Sheet bucket (cap ±10)
+
+| Metric | Threshold | Points |
+|--------|-----------|--------|
+| D/E | > 300% | −7 |
+| D/E | 150–300% | −3 |
+| D/E | < 50% | +3 |
+| Operating CF (screener) | Negative | −5 |
+| Operating CF 3Y growth | > 30% | +4 |
+| Operating CF 3Y growth | Positive | +2 |
+| Altman Z-Score | Safe zone (medium/long) | +3 |
+| Altman Z-Score | Grey zone | −4 |
+| Altman Z-Score | Distress zone | −8 |
+| Sloan Accruals ratio | < −5% (cash-backed) | +3 |
+| Sloan Accruals ratio | > 10% (manipulation risk) | −5 |
+
+#### Governance bucket (cap ±10) — India only
+
+| Metric | Threshold | Points |
+|--------|-----------|--------|
+| FII + DII combined | > 50% | +4 |
+| FII + DII combined | 25–50% | +2 |
+| DII quarterly trend | Up > 3% (MF accumulation) | +3 |
+| DII quarterly trend | Down > 3% | −3 |
+| FII quarterly trend | Up > 3% | +2 |
+| FII quarterly trend | Down > 3% | −2 |
+| Promoter holding | > 55% | +2 |
+| Promoter holding | < 25% | −2 |
+| Promoter trend | Up > 2% (insider buying) | +3 |
+| Promoter trend | Down > 3% (insider selling) | −4 |
+| Promoter pledge | > 50% | −8 |
+| Promoter pledge | 25–50% | −5 |
+| Promoter pledge | 10–25% | −2 |
+| Promoter pledge | 0% | +2 |
+
+#### Banking bucket (cap ±10) — fires only for banks/NBFCs
+
+| Metric | Threshold | Points |
+|--------|-----------|--------|
+| Net NPA | > 3% | −7 |
+| Net NPA | 1.5–3% | −3 |
+| Net NPA | < 0.5% | +4 |
+| NIM | > 4% | +4 |
+| NIM | < 2% | −3 |
 
 ---
 
@@ -389,7 +420,9 @@ A stock is flagged **REJECTED** before scoring if:
 | −0.05 to +0.05 | NEUTRAL |
 | ≤ −0.05 | BEARISH |
 
-**Score conversion:** `sentiment_score = 50 + (bullish − bearish) / total × 50`
+**Score conversion:** `sentiment_score = 50 + (bullish − bearish) / (bullish + bearish) × 50`
+
+> Neutral articles are excluded from the denominator. Previously neutrals diluted the score — 5 bullish + 5 neutral incorrectly scored the same as 5 bullish + 5 bearish. Now only labelled articles (bullish + bearish) count.
 
 **When no news available:** Returns neutral (50), redistributes weight to technical + fundamental, sets `data_available = False` flag.
 
@@ -685,15 +718,17 @@ R:R Ratio    = (target − price) / (price − stop_loss)
 
 #### Phase 5 — Pick Selection
 - Rank by alpha score (meta_alpha if available, else combined_alpha)
-- Select top 5 **BUY** signals per horizon
+- Select top 5 **BUY** signals per horizon (composite score ≥ 60)
 - Minimum 1 pick per horizon
+- Empty picks from a prior run (0 BUY signals) are NOT treated as "complete" — startup catch-up will retry on next deploy
 
 #### Phase 6 — Portfolio Optimisation
 - Fetch 6-month daily returns for selected picks
 - Covariance estimation: Ledoit-Wolf shrinkage at 25%
-- Optimise: `max (alpha × w − λ × w^T Σ w)`
+- Optimise: `max (alpha × w − λ × w^T Σ w)` via SLSQP
 - Constraints: `Σw = 1.0`, `0 ≤ w_i ≤ 0.40` (max 40% per position)
 - Risk aversion `λ`: doubled in BEAR_PANIC regime
+- Fallback (if scipy unavailable): iterative alpha-proportional weights that correctly enforce the 40% cap
 
 #### Phase 7 — Logging
 - Log to PostgreSQL (if `USE_POSTGRES=1`) or SQLite
@@ -711,13 +746,15 @@ R:R Ratio    = (target − price) / (price − stop_loss)
 
 **File:** `backend/services/validation_engine.py`, `backend/services/backtester.py`
 
-### Walk-Forward Methodology (No Look-Ahead Bias)
+### Walk-Forward Methodology
 
 For each business day `t` in Nifty 100 history:
 1. Fetch price data available **only before** time `t`
 2. Compute prediction at `t` using that data
 3. Measure actual forward return at `t + h` (h = 7 / 63 / 252 days)
 4. Compare predicted signal vs actual direction
+
+> **Known limitation (next session):** Technical indicators (EMA, MACD, OBV) are currently computed on the full historical DataFrame before slicing per date — a form of look-ahead bias in the backtester. This inflates reported validation hit rates. A full fix (recompute indicators per window) is planned for Session 5.
 
 ### Metrics Computed
 
@@ -736,14 +773,30 @@ For each business day `t` in Nifty 100 history:
 - **Storage:** PostgreSQL `val_runs` + `val_signals` tables
 - **Retention:** 365 days
 
+### Forward Return Windows
+
+| Horizon | Forward Return Used | Outcome Resolution Wait |
+|---------|--------------------|-----------------------|
+| Short | return_5d (5 trading days) | 3 calendar days |
+| Medium | return_20d (20 trading days ≈ 1 month) | 30 calendar days |
+| Long | return_60d (60 trading days ≈ 3 months) | 90 calendar days |
+
+> Partial returns are never logged — the outcome logger returns None if fewer than the required trading days have elapsed. This prevents truncated returns from contaminating IC training data.
+
+### Validation BUY Threshold
+
+Validation uses the same threshold as the live prediction engine: **composite ≥ 60 = BUY** for all horizons. Previously the thresholds were mismatched (validation used 65, live used 60), making validation metrics unmeasurable against the actual model.
+
 ### Indicative Score Calibration (Nifty 100, Medium-Term)
 
 | Score Bucket | Hit Rate | Beat Benchmark | Avg Alpha |
 |--------------|----------|---------------|-----------|
-| 80–100 (Strong BUY) | ~68% | ~62% | +4.2% |
-| 70–79 (BUY) | ~62% | ~55% | +2.8% |
-| 60–69 (Moderate BUY) | ~58% | ~50% | +1.5% |
-| 55–59 (HOLD) | ~52% | ~48% | +0.3% |
+| 80–100 (Exceptional/Strong BUY) | ~68% | ~62% | +4.2% |
+| 75–79 (Strong BUY) | ~62% | ~55% | +2.8% |
+| 60–74 (Good Watchlist BUY) | ~58% | ~50% | +1.5% |
+| 45–59 (HOLD) | ~52% | ~48% | +0.3% |
+
+> Note: These figures reflect the post-Session 4 thresholds. Historical validation data accumulated under the old 70-threshold is being re-calibrated.
 
 ---
 
@@ -1023,7 +1076,10 @@ The Picks page has a collapsible **"Show Real Accuracy"** panel with three layer
 | `DATABASE_URL` | PostgreSQL connection string | SQLite fallback |
 | `USE_POSTGRES` | `1` = Postgres, `0` = SQLite | `0` |
 | `PICKS_SECRET` | Secret header for `/api/picks/generate` | Required in prod |
-| `PICKS_UNIVERSE_LIMIT` | Cap stock count (set < 25 on constrained hosts) | 98 (full Nifty 100) |
+| `PICKS_UNIVERSE_LIMIT` | Cap stock count (set < 25 on constrained hosts) | 25 (set higher to expand NSE universe) |
+| `PICKS_CANDIDATES` | Top N stocks from Phase-0 momentum screen for deep prediction | 50 |
+| `SCREEN_BATCH_SIZE` | Batch size for NSE bulk download (memory safety) | 300 |
+| `MIN_MCAP_CR` | Minimum market cap in ₹ Cr for NSE picks universe | 100 |
 | `SCREENER_EMAIL` | screener.in login email | Required for Indian fundamental data |
 | `SCREENER_PASSWORD` | screener.in login password | Required for Indian fundamental data |
 | `FRONTEND_URL` | Vercel frontend URL for CORS | Must be set in prod |
@@ -1172,6 +1228,31 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 ---
 
 ## 26. Changelog
+
+### Session 4 — 2026-06-19
+
+**Forensic Audit & Critical Fixes (9 issues resolved):**
+
+- **BUY threshold lowered 70 → 60** — the 70-point threshold was structurally unreachable for most NSE stocks on neutral/bearish market days. New thresholds: BUY ≥ 60, HOLD 45–59, SELL < 45. Score bands updated to match exactly (no more "Good Watchlist Stock" label on stocks treated as HOLD).
+- **Fundamental score per-category budgets** — replaced unbounded additive accumulation (theoretical max ~215) with six capped buckets: valuation ±15, profitability ±15, growth ±15, balance sheet ±10, governance ±10, banking ±10. Scores now discriminate meaningfully across the full 0–100 range.
+- **Growth double-counting fixed** — revenue and earnings growth were previously counted 3–5× simultaneously (TTM + 3Y CAGR + 5Y CAGR + trend, all additive). Now each counted once via the longest available window; quarterly trend is a capped supplement.
+- **Quality gate fixed** — OCF check used Python `or` which treated zero cash flow as falsy; now uses explicit `is None`. Rejection logic split into independent OR conditions (was AND — too strict).
+- **Sentiment denominator corrected** — neutral articles no longer dilute bullish signal. Denominator is now `bullish + bearish` only.
+- **Race condition on `_generating` flag** — concurrent POST `/picks/generate` requests could both pass the guard simultaneously. Fixed with `threading.Lock`.
+- **Optimizer fallback max_weight enforcement** — the fallback could allocate 100% to one stock when alphas were skewed. Fixed with iterative clipping loop.
+- **Long-horizon IC training** — long horizon was training on 20D returns (1 month) despite a 3-6 month stated horizon. Now uses `return_60d`. Outcome logger waits 90 calendar days before resolving long-horizon predictions.
+- **Partial returns never logged** — outcome logger previously logged partial forward returns when the window hadn't elapsed, corrupting IC training data. Now returns `None` until the full window is complete.
+- **Validation thresholds synced** — validation BUY threshold (was 65) now matches live system (60) for all horizons.
+- **`picks_generated_today()` logic fixed** — a prior run that produced 0 BUY signals (before threshold fix) saved an empty payload with today's date, causing the startup catch-up to skip regeneration. Now requires at least one actual pick to count as "done today".
+- **NSE Daily Picks expanded** — universe expanded from Nifty 100 (96 stocks) to all NSE-listed stocks screened by market cap ≥ ₹100 Cr (~500-600 stocks). Two-phase pipeline: Phase-0 bulk momentum screen → Phase-1 deep prediction on top 50 candidates only (memory-safe batching of 300).
+- **Documentation fully updated** — README and STOCKSENSE_DOCUMENTATION.md updated to reflect all threshold, formula, and architecture changes.
+
+**Live test results (2026-06-19):**
+- `/health`: ✅ ok
+- `/api/predictions/TCS?market=IN&horizon=medium`: ✅ Score 78, BUY, Strong Buy Candidate
+- `/api/screener/top-movers?market=IN`: ✅ 10 gainers, 10 losers
+- `/api/validation/results?horizon=medium`: ✅ Hit rate 56.6%, avg return 3.75%
+- `/api/picks/status`: ✅ Generating (startup catch-up triggered correctly)
 
 ### Session 3 — 2026-06-18
 

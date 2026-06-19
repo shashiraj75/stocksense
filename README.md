@@ -83,7 +83,7 @@ Composite Score = (Technical × W_tech) + (Fundamental × W_fund) + (Sentiment �
                 + Macro Adjustment + Quality Factor + Analyst Consensus
                 - Risk Penalty
 ```
-All scores on 0–100 scale. Score ≥ 70 → BUY · 55–69 → HOLD · < 55 → SELL.
+All scores on 0–100 scale. Score ≥ 60 → BUY · 45–59 → HOLD · < 45 → SELL.
 
 ### Weights by Horizon
 
