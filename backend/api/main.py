@@ -209,7 +209,9 @@ async def lifespan(app: FastAPI):
                 print("[startup] yfinance session initialised")
             except Exception as e:
                 print(f"[startup] yfinance crumb refresh failed (non-fatal): {e}")
-        await loop.run_in_executor(None, _refresh_crumb)
+        await asyncio.wait_for(loop.run_in_executor(None, _refresh_crumb), timeout=15.0)
+    except asyncio.TimeoutError:
+        print("[startup] yfinance init timed out after 15s — continuing without pre-warm")
     except Exception as e:
         print(f"[startup] yfinance init error: {e}")
 
@@ -217,8 +219,10 @@ async def lifespan(app: FastAPI):
     try:
         from services.screener_data import _login
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(None, _login)
+        result = await asyncio.wait_for(loop.run_in_executor(None, _login), timeout=15.0)
         print(f"[startup] screener.in login {'succeeded' if result else 'failed (check SCREENER_EMAIL/SCREENER_PASSWORD)'}")
+    except asyncio.TimeoutError:
+        print("[startup] screener.in login timed out after 15s — will retry on first request")
     except Exception as e:
         print(f"[startup] screener.in login error: {e}")
 

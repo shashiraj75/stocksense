@@ -112,6 +112,9 @@ def _ensure_logged_in():
     global _last_login_at
     with _login_lock:
         if (time.time() - _last_login_at) > _LOGIN_TTL:
+            # Set timestamp BEFORE calling _login so that even a failed login
+            # doesn't cause a tight retry loop — next attempt is _LOGIN_TTL away.
+            _last_login_at = time.time()
             _login()
 
 

@@ -372,7 +372,7 @@ def _backtest_stock(symbol: str, horizon: str, nifty_df: pd.DataFrame | None) ->
         # Align nifty index to stock dates
         nifty_close = None
         if nifty_df is not None and not nifty_df.empty:
-            nifty_close = nifty_df["Close"].reindex(df.index, method="ffill").bfill()
+            nifty_close = nifty_df["Close"].reindex(df.index).ffill().bfill()
 
         # Precompute regime adjustments
         regime_adjs = []

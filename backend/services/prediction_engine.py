@@ -324,11 +324,17 @@ class PredictionEngine:
                         return {}
             return {}
 
-        df, info, regime = await asyncio.gather(
-            loop.run_in_executor(None, _fetch_history),
-            loop.run_in_executor(None, _fetch_info),
-            loop.run_in_executor(None, _market_regime, market),
-        )
+        try:
+            df, info, regime = await asyncio.wait_for(
+                asyncio.gather(
+                    loop.run_in_executor(None, _fetch_history),
+                    loop.run_in_executor(None, _fetch_info),
+                    loop.run_in_executor(None, _market_regime, market),
+                ),
+                timeout=45.0,
+            )
+        except asyncio.TimeoutError:
+            return {"error": "Data fetch timed out — Yahoo Finance took too long. Try again in a moment."}
 
         # ── Screener.in enrichment (India only) ──────────────────────────────
         # Fills missing ROE, ROCE, promoter holding, revenue/profit growth from
@@ -628,6 +634,7 @@ class PredictionEngine:
         try:
             # ── Revenue trend (P&L) ──────────────────────────────────────────
             rev_row = None
+            rev_vals: list = []  # initialize here so later references are always safe
             for label in ["Total Revenue", "Revenue"]:
                 if label in fin.index:
                     rev_row = fin.loc[label].dropna()
@@ -737,6 +744,15 @@ class PredictionEngine:
                         cash = bs.loc[label].dropna().sort_index().values[-1]
                         break
 
+                # Determine sector before applying current ratio penalty — banks/insurance
+                # structurally operate below 1.0 current ratio due to leverage model.
+                # info is referenced by existing code on this method (line 686), so we use same pattern.
+                try:
+                    _sector_str = (info.get("sector") or "").lower()
+                except Exception:
+                    _sector_str = ""
+                _is_financial = any(k in _sector_str for k in ("financial", "bank", "insurance"))
+
                 if curr_assets and curr_liab and curr_liab > 0:
                     current_ratio = curr_assets / curr_liab
                     if current_ratio > 2.0:
@@ -745,7 +761,7 @@ class PredictionEngine:
                     elif current_ratio > 1.2:
                         score += 3
                         reasons.append(f"Current ratio {current_ratio:.1f}x — adequate liquidity")
-                    elif current_ratio < 1.0:
+                    elif current_ratio < 1.0 and not _is_financial:
                         score -= 10
                         reasons.append(f"Current ratio {current_ratio:.1f}x — liquidity risk")
 
@@ -1257,7 +1273,7 @@ class PredictionEngine:
         contributions["sentiment"]   = sentiment["score"] * effective_weights["sentiment"]
 
         # Local market regime adjustment (±8)
-        contributions["regime"] = regime["score_adj"]
+        contributions["regime"] = (regime or {}).get("score_adj", 0)
 
         # Global macro adjustment — weighted by horizon (short term most sensitive)
         global_adj_weight = {"short": 0.15, "medium": 0.10, "long": 0.05}.get(horizon, 0.10)
@@ -1407,7 +1423,7 @@ class PredictionEngine:
         # ── Log prediction for track record / IC engine ──────────────────────
         try:
             from services.alpha_engine.store import log_prediction
-            current_price = float(info.get("currentPrice") or info.get("regularMarketPrice") or df["Close"].iloc[-1])
+            current_price = float(info.get("currentPrice") or info.get("regularMarketPrice") or (df["Close"].iloc[-1] if not df.empty else 0))
             log_prediction(
                 symbol=symbol,
                 horizon=horizon,
