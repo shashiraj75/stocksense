@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import clsx from "clsx";
 import {
@@ -343,8 +343,23 @@ export default function PaperTradingPage() {
   const openTrades = portfolio.open_trades;
   const closedTrades = portfolio.closed_trades;
 
-  // Calculate unrealized P&L — we don't have live prices here, but show "–" for now
-  // (accurate P&L shown in modal when selling)
+  // Fetch live quotes for all open positions to compute total unrealized P&L
+  const quoteResults = useQueries({
+    queries: openTrades.map(t => ({
+      queryKey: ["quote", t.symbol, t.market],
+      queryFn: () => fetchQuote(t.symbol, t.market as any),
+      staleTime: 25_000,
+      refetchInterval: 30_000,
+    })),
+  });
+
+  const totalUnrealizedPnl = openTrades.reduce((sum, trade, i) => {
+    const price = quoteResults[i]?.data?.price;
+    if (price == null) return sum;
+    return sum + (price - trade.entry_price) * trade.quantity;
+  }, 0);
+  const unrealizedLoaded = quoteResults.some(r => r.data != null);
+
   const totalInvested = openTrades.reduce((s, t) => s + t.invested, 0);
   const totalRealized = portfolio.total_realized_pnl;
   const portfolioValue = portfolio.cash + totalInvested;
@@ -398,7 +413,7 @@ export default function PaperTradingPage() {
       )}
 
       {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         <StatCard
           label="Virtual Cash"
           value={`₹${fmt(portfolio.cash, 0)}`}
@@ -408,6 +423,14 @@ export default function PaperTradingPage() {
           label="Invested"
           value={`₹${fmt(totalInvested, 0)}`}
           sub={`${openTrades.length} open position${openTrades.length !== 1 ? "s" : ""}`}
+        />
+        <StatCard
+          label="Unrealized P&L"
+          value={unrealizedLoaded
+            ? `${totalUnrealizedPnl >= 0 ? "+" : ""}₹${fmt(Math.abs(totalUnrealizedPnl), 0)}`
+            : "—"}
+          sub={unrealizedLoaded ? `across ${openTrades.length} open position${openTrades.length !== 1 ? "s" : ""}` : "Loading…"}
+          positive={unrealizedLoaded ? (totalUnrealizedPnl > 0 ? true : totalUnrealizedPnl < 0 ? false : undefined) : undefined}
         />
         <StatCard
           label="Realized P&L"
