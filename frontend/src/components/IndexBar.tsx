@@ -26,7 +26,10 @@ export function IndexBar({ market, inline }: { market: Market | "CRYPTO"; inline
             </span>
             {idx.change_pct !== null && (
               <span className={clsx("text-xs font-medium", up ? "text-bull" : "text-bear")}>
-                {up ? "▲" : "▼"} {Math.abs(idx.change_pct).toFixed(2)}%
+                {up ? "▲" : "▼"}{" "}
+                {idx.change_pts !== null && idx.change_pts !== undefined
+                  ? `${Math.abs(idx.change_pts).toLocaleString(undefined, { maximumFractionDigits: 2 })} (${Math.abs(idx.change_pct).toFixed(2)}%)`
+                  : `${Math.abs(idx.change_pct).toFixed(2)}%`}
               </span>
             )}
           </div>
