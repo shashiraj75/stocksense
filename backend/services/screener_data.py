@@ -291,13 +291,14 @@ def _parse_screener_page(soup: BeautifulSoup, symbol: str) -> dict:
             rows = table.find_all("tr")
             if not rows:
                 continue
-            # Build column index map from header row (th elements)
-            # Screener shows some subset of: 10 Years / 5 Years / 3 Years / TTM
-            col_map: dict[str, int] = {}  # "10y"/"5y"/"3y"/"ttm" -> 0-based index into data cells
+            # Build column index map from header row.
+            # Screener uses <th> or <td> for header cells depending on table type.
+            # Columns are some subset of: 10 Years / 5 Years / 3 Years / TTM
+            col_map: dict[str, int] = {}
             header_row = rows[0]
-            ths = header_row.find_all("th")
-            for i, th in enumerate(ths[1:], 0):  # skip first th (empty label column)
-                h = th.get_text(strip=True).lower()
+            header_cells = header_row.find_all("th") or header_row.find_all("td")
+            for i, cell in enumerate(header_cells[1:], 0):  # skip label column
+                h = cell.get_text(strip=True).lower()
                 if "10" in h:
                     col_map["10y"] = i
                 elif "5" in h:

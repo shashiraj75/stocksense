@@ -1126,10 +1126,12 @@ export default function StockPage() {
                     const cfLabels = [...(screenerFund.cashflow_labels ?? [])].reverse();
                     const opCf = [...(screenerFund.operating_cf_annual_cr ?? [])].reverse();
                     const invCf = screenerFund.investing_cf_annual_cr ? [...screenerFund.investing_cf_annual_cr].reverse() : null;
-                    // Convert "Mar 2026" → "FY26", "Mar 2025" → "FY25", etc.
+                    // Convert "Mar 2026" → "FY25-26", "Mar 2025" → "FY24-25", etc.
                     const toFY = (raw: string) => {
                       const m = raw.match(/(\d{4})$/);
-                      return m ? `FY${m[1].slice(2)}` : raw;
+                      if (!m) return raw;
+                      const y = parseInt(m[1]);
+                      return `FY${String(y - 1).slice(2)}-${String(y).slice(2)}`;
                     };
                     return (
                   <div className="overflow-x-auto">
