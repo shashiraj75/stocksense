@@ -223,6 +223,13 @@ def _parse_screener_page(soup: BeautifulSoup, symbol: str) -> dict:
     """Extract key ratios and growth metrics from a screener.in company page."""
     data: dict = {"symbol": symbol, "source": "screener.in", "available": True}
 
+    # ── Company name from page <h1> ────────────────────────────────────────────
+    h1 = soup.find("h1")
+    if h1:
+        name = h1.get_text(strip=True)
+        if name and name.upper() != symbol:
+            data["company_name"] = name
+
     # ── Top ratios (the pill-box numbers at the top of every screener page) ──
     ratios_section = soup.find("ul", id="top-ratios")
     if ratios_section:

@@ -288,8 +288,10 @@ export default function StockPage() {
                         );
                       })()}
                     </div>
-                    {quote?.company_name && (
-                      <p className="text-sm text-gray-400 mt-0.5">{quote.company_name}</p>
+                    {(screenerFund?.company_name || quote?.company_name) && (
+                      <p className="text-sm text-gray-400 mt-0.5">
+                        {screenerFund?.company_name || quote?.company_name}
+                      </p>
                     )}
                   </div>
 
