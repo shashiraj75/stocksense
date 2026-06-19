@@ -738,7 +738,7 @@ def get_cached_picks() -> dict | None:
 
 
 def picks_generated_today() -> bool:
-    """Return True if today's picks (IST date) are already in cache."""
+    """Return True if today's picks (IST date) exist and have at least one BUY pick."""
     from datetime import timedelta
     data = get_cached_picks()
     if not data or not data.get("generated_at"):
@@ -749,7 +749,12 @@ def picks_generated_today() -> bool:
             data["generated_at"].replace("Z", "+00:00")
         ).astimezone(IST)
         today_ist = datetime.now(IST).date()
-        return generated_at.date() >= today_ist
+        if generated_at.date() < today_ist:
+            return False
+        # Also require at least one actual pick — empty payload means a prior crash/0-signal run
+        picks = data.get("picks", {})
+        has_picks = any(len(v) > 0 for v in picks.values())
+        return has_picks
     except Exception:
         return False
 
