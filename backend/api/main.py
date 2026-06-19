@@ -260,6 +260,44 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[startup] movers pre-warm failed: {e}")
 
+    # Catch-up picks: if server restarted after 9 AM IST on a weekday and
+    # today's picks haven't been generated, run them now. This recovers
+    # from redeploys that killed a mid-run background task, and from
+    # GitHub Actions PICKS_SECRET mismatches.
+    async def _catchup_picks():
+        from datetime import datetime, timezone, timedelta
+        await asyncio.sleep(60)  # let server settle first
+        try:
+            IST = timezone(timedelta(hours=5, minutes=30))
+            now = datetime.now(IST)
+            today_9am = now.replace(hour=9, minute=0, second=0, microsecond=0)
+            if now < today_9am:
+                print("[picks_catchup] Before 9 AM IST — skipping")
+                return
+            if now.weekday() >= 5:
+                print("[picks_catchup] Weekend — skipping picks catchup")
+                return
+            from services.daily_picks import picks_generated_today, generate_picks, _generating
+            import services.daily_picks as _dp
+            if picks_generated_today():
+                print("[picks_catchup] Today's picks already exist — skipping")
+                return
+            if _dp._generating:
+                print("[picks_catchup] Generation already in progress — skipping")
+                return
+            print("[picks_catchup] No picks for today — generating now (this takes ~10 min)…")
+            _dp._generating = True
+            try:
+                loop2 = asyncio.get_running_loop()
+                await loop2.run_in_executor(None, generate_picks)
+                print("[picks_catchup] Picks generation complete")
+            finally:
+                _dp._generating = False
+        except Exception as e:
+            print(f"[picks_catchup] error: {e}")
+            import services.daily_picks as _dp2
+            _dp2._generating = False
+
     # Catch-up validation: if server restarted after 6 AM IST and today's run
     # was missed (e.g. due to deployment), fire it in the background.
     async def _catchup_validation():
@@ -292,6 +330,7 @@ async def lifespan(app: FastAPI):
     crumb_task = asyncio.create_task(_yfinance_crumb_loop())
     validation_task = asyncio.create_task(_validation_schedule_loop())
     catchup_task = asyncio.create_task(_catchup_validation())
+    picks_catchup_task = asyncio.create_task(_catchup_picks())
     yield
     task.cancel()
     keepalive.cancel()
@@ -299,7 +338,8 @@ async def lifespan(app: FastAPI):
     warmup_task.cancel()
     crumb_task.cancel()
     validation_task.cancel()
-    for t in (task, keepalive, outcome_task, warmup_task, crumb_task, validation_task):
+    picks_catchup_task.cancel()
+    for t in (task, keepalive, outcome_task, warmup_task, crumb_task, validation_task, picks_catchup_task):
         try:
             await t
         except asyncio.CancelledError:

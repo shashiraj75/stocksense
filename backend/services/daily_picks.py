@@ -30,10 +30,12 @@ CACHE_FILE = os.path.join(os.path.dirname(__file__), "../picks_cache.json")
 # PICKS_UNIVERSE_LIMIT env var caps the count for constrained environments
 # (e.g. Render free tier — set to 25 there, leave unset for full 98-stock run).
 from services.validation_engine import NIFTY_100 as _NIFTY_100
-_universe_limit = int(os.getenv("PICKS_UNIVERSE_LIMIT", len(_NIFTY_100)))
+# Default 25 stocks: 25×3 horizons = 75 tasks ≈ 10 min on Render free tier.
+# Full 98-stock run takes ~40 min and gets killed. Set PICKS_UNIVERSE_LIMIT=98 to override.
+_universe_limit = int(os.getenv("PICKS_UNIVERSE_LIMIT", 25))
 NIFTY10T = _NIFTY_100[:_universe_limit]
 print(f"[picks] Universe: {len(NIFTY10T)}/{len(_NIFTY_100)} stocks "
-      f"(set PICKS_UNIVERSE_LIMIT to cap on memory-constrained hosts)")
+      f"(set PICKS_UNIVERSE_LIMIT to override; default 25 for reliability)")
 
 
 HORIZON_LABELS = {
@@ -585,3 +587,24 @@ def get_cached_picks() -> dict | None:
         return None
     except Exception:
         return None
+
+
+def picks_generated_today() -> bool:
+    """Return True if today's picks (IST date) are already in cache."""
+    from datetime import timedelta
+    data = get_cached_picks()
+    if not data or not data.get("generated_at"):
+        return False
+    try:
+        IST = timezone(timedelta(hours=5, minutes=30))
+        generated_at = datetime.fromisoformat(
+            data["generated_at"].replace("Z", "+00:00")
+        ).astimezone(IST)
+        today_ist = datetime.now(IST).date()
+        return generated_at.date() >= today_ist
+    except Exception:
+        return False
+
+
+# Guard to prevent concurrent generation runs (module-level, shared across threads)
+_generating = False

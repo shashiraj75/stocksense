@@ -8,16 +8,32 @@ PICKS_SECRET = os.getenv("PICKS_SECRET", "")  # must be set in Render environmen
 
 @router.get("/daily")
 def daily_picks():
-    """Return today's cached BUY picks. Instant — reads from disk."""
-    from services.daily_picks import get_cached_picks
-    data = get_cached_picks()
+    """Return today's cached BUY picks. Instant — reads from disk/Postgres."""
+    import services.daily_picks as _dp
+    data = _dp.get_cached_picks()
     if not data:
+        generating = _dp._generating
         return {
             "generated_at": None,
             "picks": {"short": [], "medium": [], "long": []},
-            "message": "Picks not yet generated. Check back after 9 AM IST.",
+            "generating": generating,
+            "message": (
+                "Picks are being generated now — check back in a few minutes."
+                if generating else
+                "Picks not yet generated. Check back after 9 AM IST."
+            ),
         }
-    return data
+    return {**data, "generating": _dp._generating}
+
+
+@router.get("/status")
+def picks_status():
+    """Quick check: are picks available and/or is generation running?"""
+    import services.daily_picks as _dp
+    return {
+        "generating": _dp._generating,
+        "has_today": _dp.picks_generated_today(),
+    }
 
 
 @router.get("/performance")
@@ -41,6 +57,16 @@ def trigger_generation(background_tasks: BackgroundTasks, x_secret: str = Header
     if x_secret != PICKS_SECRET:
         raise HTTPException(status_code=401, detail="Invalid secret")
 
-    from services.daily_picks import generate_picks
-    background_tasks.add_task(generate_picks)
+    import services.daily_picks as _dp
+    if _dp._generating:
+        return {"status": "already running", "message": "Picks generation is already in progress."}
+
+    def _run():
+        _dp._generating = True
+        try:
+            _dp.generate_picks()
+        finally:
+            _dp._generating = False
+
+    background_tasks.add_task(_run)
     return {"status": "generation started", "message": "Picks will be ready in ~10 minutes."}

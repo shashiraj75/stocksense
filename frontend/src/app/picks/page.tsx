@@ -548,7 +548,9 @@ export default function DailyPicksPage() {
   const { data, isLoading, error: queryError } = useQuery<DailyPicksResponse>({
     queryKey: ["daily-picks"],
     queryFn: () => api.get("/api/picks/daily").then(r => r.data),
-    staleTime: 5 * 60_000, refetchOnWindowFocus: false, retry: 3, retryDelay: 8000,
+    // Poll every 60s when generating, every 5 min when idle
+    refetchInterval: (query) => (query.state.data as any)?.generating ? 60_000 : 5 * 60_000,
+    staleTime: 55_000, refetchOnWindowFocus: false, retry: 3, retryDelay: 8000,
   });
 
   const picks = data?.picks?.[horizon] ?? [];
@@ -721,15 +723,28 @@ export default function DailyPicksPage() {
         </div>
       ) : (
         <div className="flex flex-col items-center justify-center py-20 text-center">
-          <AlertCircle size={40} className="text-gray-600 mb-4" />
-          <h3 className="text-lg font-semibold text-gray-300 mb-2">
-            {data?.generated_at ? "No BUY signals found today" : "Picks not yet generated"}
-          </h3>
-          <p className="text-sm text-gray-500 max-w-sm">
-            {data?.generated_at
-              ? "The AI didn't find strong BUY signals in Nifty 100 today. Market conditions may be weak — check back tomorrow."
-              : "Daily picks are generated at 9 AM IST on market days. Check back after the market opens."}
-          </p>
+          {(data as any)?.generating ? (
+            <>
+              <Loader2 size={40} className="text-brand-400 mb-4 animate-spin" />
+              <h3 className="text-lg font-semibold text-gray-300 mb-2">Generating picks…</h3>
+              <p className="text-sm text-gray-500 max-w-sm">
+                The AI is scanning Nifty 100 stocks right now. This takes about 10 minutes.
+                This page will auto-refresh every minute.
+              </p>
+            </>
+          ) : (
+            <>
+              <AlertCircle size={40} className="text-gray-600 mb-4" />
+              <h3 className="text-lg font-semibold text-gray-300 mb-2">
+                {data?.generated_at ? "No BUY signals found today" : "Picks not yet generated"}
+              </h3>
+              <p className="text-sm text-gray-500 max-w-sm">
+                {data?.generated_at
+                  ? "The AI didn't find strong BUY signals in Nifty 100 today. Market conditions may be weak — check back tomorrow."
+                  : "Daily picks are generated at 9 AM IST on market days. Check back after the market opens."}
+              </p>
+            </>
+          )}
         </div>
       )}
 
