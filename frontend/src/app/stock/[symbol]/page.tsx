@@ -271,7 +271,7 @@ export default function StockPage() {
                 {/* ── Left column: all stock info ── */}
                 <div className="flex-1 min-w-0">
 
-                  {/* Row 1: symbol + badges */}
+                  {/* Row 1: symbol + badges + full name */}
                   <div className="mb-2.5">
                     <div className="flex flex-wrap items-center gap-2">
                       <h1 className="text-2xl font-black font-mono tracking-tight">{symbol}</h1>
@@ -287,12 +287,12 @@ export default function StockPage() {
                           </span>
                         );
                       })()}
+                      {(screenerFund?.company_name || quote?.company_name) && (
+                        <span className="text-[11px] text-gray-400">
+                          {screenerFund?.company_name || quote?.company_name}
+                        </span>
+                      )}
                     </div>
-                    {(screenerFund?.company_name || quote?.company_name) && (
-                      <p className="text-sm text-gray-400 mt-0.5">
-                        {screenerFund?.company_name || quote?.company_name}
-                      </p>
-                    )}
                   </div>
 
                   {/* Row 2: price + change */}
