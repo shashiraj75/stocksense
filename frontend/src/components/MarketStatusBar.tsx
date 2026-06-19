@@ -9,13 +9,15 @@ const MARKETS = [
   { key: "CRYPTO" as const, label: "Crypto",        flag: "₿"  },
 ];
 
+type MarketRow = (typeof MARKETS)[number] & { status: ReturnType<typeof getMarketStatus> };
+
 function useMarketStatuses() {
-  const [statuses, setStatuses] = useState(() =>
-    MARKETS.map(m => ({ ...m, status: getMarketStatus(m.key) }))
-  );
+  // Start null so server and client both render nothing on first pass — avoids hydration mismatch
+  const [statuses, setStatuses] = useState<MarketRow[] | null>(null);
   useEffect(() => {
     const update = () =>
       setStatuses(MARKETS.map(m => ({ ...m, status: getMarketStatus(m.key) })));
+    update();
     const id = setInterval(update, 30_000);
     return () => clearInterval(id);
   }, []);
@@ -25,6 +27,7 @@ function useMarketStatuses() {
 /** Compact strip for mobile — scrollable single row */
 export function MobileMarketStrip() {
   const statuses = useMarketStatuses();
+  if (!statuses) return null;
   return (
     <div className="flex items-center gap-4 w-max">
       {statuses.map(({ key, flag, label, status }) => (
@@ -49,6 +52,7 @@ export function MobileMarketStrip() {
 /** Inline version — sits inside the top navbar row */
 export function MarketStatusInline() {
   const statuses = useMarketStatuses();
+  if (!statuses) return null;
   return (
     <div className="flex items-center gap-4">
       {statuses.map(({ key, label, flag, status }) => (
