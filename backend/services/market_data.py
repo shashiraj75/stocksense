@@ -4,6 +4,7 @@ import time
 import yfinance as yf
 from typing import Optional
 from services import finnhub_client
+from services import nse_client
 
 log = logging.getLogger(__name__)
 
@@ -75,10 +76,29 @@ class MarketDataService:
         if cached and (time.time() - cached[0]) < _QUOTE_TTL:
             return cached[1]
 
-        # 1. Try Finnhub first (fast, reliable from cloud IPs, 60s internal cache)
-        result = finnhub_client.get_quote(symbol, market)
+        result = None
 
-        # 2. Fallback to yfinance fast_info (one call only)
+        # 1. India: NSE official API — live, includes company name, no rate limits
+        if market == "IN":
+            try:
+                loop = asyncio.get_event_loop()
+                nse_q = await asyncio.wait_for(
+                    loop.run_in_executor(None, nse_client.get_quote, symbol),
+                    timeout=6.0,
+                )
+                if nse_q and nse_q.get("price"):
+                    result = nse_q
+                    # Store company name in name cache immediately
+                    if nse_q.get("company_name"):
+                        _name_cache[key] = (time.time(), nse_q["company_name"])
+            except Exception as e:
+                log.debug("NSE quote failed for %s: %s", symbol, e)
+
+        # 2. Try Finnhub (fast, reliable from cloud IPs, works for US + India fallback)
+        if not result:
+            result = finnhub_client.get_quote(symbol, market)
+
+        # 3. Fallback to yfinance fast_info (one call only)
         if not result:
             try:
                 fi = yf.Ticker(self._sym(symbol, market)).fast_info
@@ -115,21 +135,20 @@ class MarketDataService:
             except Exception:
                 pass
 
-        # 4. Company name — 24h cache.
-        #    Strategy: Finnhub profile is fast (<200ms) so we await it inline —
-        #    name is always present in the first response. yfinance (.info) is slow
-        #    so it only runs as a background fallback if Finnhub doesn't have the name.
+        # 4. Company name — from NSE (India) or Finnhub profile (US/fallback).
+        #    NSE quotes already include companyName so no extra call needed for India.
         if result:
             cached_name = _name_cache.get(key)
             if cached_name and (time.time() - cached_name[0]) < _NAME_TTL:
-                # Cache hit — instant
                 result["company_name"] = cached_name[1]
+            elif result.get("company_name"):
+                # Already populated by NSE quote — cache it
+                _name_cache[key] = (time.time(), result["company_name"])
             else:
+                # US stock or NSE didn't return name — try Finnhub profile inline
                 sym_yf = self._sym(symbol, market)
                 sym_fh = self._fh_sym(symbol, market)
                 loop = asyncio.get_event_loop()
-
-                # Try Finnhub profile inline (fast, no crumb) — adds ~200ms max
                 name: Optional[str] = None
                 if finnhub_client.FINNHUB_KEY:
                     try:
@@ -153,7 +172,6 @@ class MarketDataService:
                     _name_cache[key] = (time.time(), name)
                     result["company_name"] = name
                 else:
-                    # Finnhub had no name — fire yfinance as background fallback
                     async def _bg_yf_name(k=key, yf_s=sym_yf):
                         try:
                             def _fetch():

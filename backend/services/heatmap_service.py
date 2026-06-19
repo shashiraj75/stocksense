@@ -1,11 +1,16 @@
 """
 Market Heatmap Service
 Returns sector-wise % change for Indian and US markets.
+
+India: Uses NSE official sector indices — one API call per sector, live data,
+no rate limits, no crumb issues. Falls back to yfinance bulk download.
+US: Uses yfinance bulk download (still reliable from Render for US equities).
 """
 import time
 import logging
 import pandas as pd
 import yfinance as yf
+from services import nse_client
 
 log = logging.getLogger(__name__)
 
@@ -85,53 +90,80 @@ def _bulk_changes(symbols: list[str], suffix: str) -> dict[str, float | None]:
     return changes
 
 
+def _nse_sector_changes() -> dict[str, dict[str, float | None]]:
+    """
+    Fetch per-stock change% for India using NSE sector index APIs.
+    Returns {sector: {symbol: change_pct}}.
+    Each sector index is one HTTP call — far faster than bulk yfinance download.
+    """
+    results: dict[str, dict[str, float | None]] = {}
+    for sector in INDIA_SECTORS:
+        nse_changes = nse_client.get_sector_changes(sector)
+        if nse_changes:
+            results[sector] = nse_changes
+        else:
+            results[sector] = {}
+    return results
+
+
+def _build_sector_output(sectors: dict, all_changes: dict[str, dict[str, float | None]]) -> list[dict]:
+    MAX_STOCKS = 10
+    output = []
+    for sector, stocks in sectors.items():
+        sector_changes = all_changes.get(sector, {})
+        stock_data = []
+        changes = []
+        for sym in stocks:
+            chg = sector_changes.get(sym)
+            stock_data.append({"symbol": sym, "change_pct": chg})
+            if chg is not None:
+                changes.append(chg)
+        sector_avg = round(sum(changes) / len(changes), 2) if changes else None
+        stock_data.sort(key=lambda s: abs(s["change_pct"]) if s["change_pct"] is not None else 0, reverse=True)
+        stock_data = stock_data[:MAX_STOCKS]
+        stock_data.sort(key=lambda s: s["change_pct"] if s["change_pct"] is not None else -999, reverse=True)
+        output.append({
+            "sector":     sector,
+            "avg_change": sector_avg,
+            "stocks":     stock_data,
+            "loaded":     len(changes),
+            "total":      len(stocks),
+        })
+    return sorted(output, key=lambda x: x["avg_change"] or 0, reverse=True)
+
+
 def get_heatmap(market: str) -> list[dict]:
     cached = _heatmap_cache.get(market)
     if cached and (time.time() - cached[0]) < _HEATMAP_TTL:
         return cached[1]
 
-    sectors = INDIA_SECTORS if market == "IN" else US_SECTORS
-    suffix  = ".NS" if market == "IN" else ""
+    if market == "IN":
+        # PRIMARY: NSE sector index APIs — live, reliable, no rate limits
+        try:
+            nse_results = _nse_sector_changes()
+            has_data = any(bool(v) for v in nse_results.values())
+            if has_data:
+                output = _build_sector_output(INDIA_SECTORS, nse_results)
+                _heatmap_cache[market] = (time.time(), output)
+                log.info("heatmap IN: NSE sector APIs returned data for %d sectors",
+                         sum(1 for v in nse_results.values() if v))
+                return output
+        except Exception as e:
+            log.warning("NSE heatmap failed, falling back to yfinance: %s", e)
 
-    # Collect all unique symbols across sectors
-    all_symbols = list({sym for stocks in sectors.values() for sym in stocks})
+        # FALLBACK: yfinance bulk download
+        all_symbols = list({sym for stocks in INDIA_SECTORS.values() for sym in stocks})
+        flat_changes = _bulk_changes(all_symbols, ".NS")
+        all_changes = {sector: {sym: flat_changes.get(sym) for sym in stocks}
+                       for sector, stocks in INDIA_SECTORS.items()}
+        output = _build_sector_output(INDIA_SECTORS, all_changes)
 
-    # Single bulk download — one request instead of 125 individual ones
-    all_changes = _bulk_changes(all_symbols, suffix)
+    else:  # US
+        all_symbols = list({sym for stocks in US_SECTORS.values() for sym in stocks})
+        flat_changes = _bulk_changes(all_symbols, "")
+        all_changes = {sector: {sym: flat_changes.get(sym) for sym in stocks}
+                       for sector, stocks in US_SECTORS.items()}
+        output = _build_sector_output(US_SECTORS, all_changes)
 
-    # Map back into sector structure
-    results: dict[str, dict[str, float | None]] = {s: {} for s in sectors}
-    for sector, stocks in sectors.items():
-        for sym in stocks:
-            results[sector][sym] = all_changes.get(sym)
-
-    # Build response: per sector, top 10 by absolute move, sorted descending
-    MAX_STOCKS = 10
-    output = []
-    for sector, stocks in sectors.items():
-        stock_data = []
-        changes = []
-        for sym in stocks:
-            chg = results[sector].get(sym)
-            stock_data.append({"symbol": sym, "change_pct": chg})
-            if chg is not None:
-                changes.append(chg)
-        sector_avg = round(sum(changes) / len(changes), 2) if changes else None
-
-        # Sort by absolute change descending, keep top 10 significant movers
-        stock_data.sort(key=lambda s: abs(s["change_pct"]) if s["change_pct"] is not None else 0, reverse=True)
-        stock_data = stock_data[:MAX_STOCKS]
-        # Then re-sort the top 10 descending by actual value (gainers first, losers last)
-        stock_data.sort(key=lambda s: s["change_pct"] if s["change_pct"] is not None else -999, reverse=True)
-
-        output.append({
-            "sector": sector,
-            "avg_change": sector_avg,
-            "stocks": stock_data,
-            "loaded": len(changes),
-            "total": len(stocks),
-        })
-
-    output = sorted(output, key=lambda x: x["avg_change"] or 0, reverse=True)
     _heatmap_cache[market] = (time.time(), output)
     return output

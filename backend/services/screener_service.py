@@ -9,6 +9,7 @@ log = logging.getLogger(__name__)
 from services.heatmap_service import INDIA_SECTORS, US_SECTORS
 from services.stock_universe import IN_STOCKS, US_STOCKS
 from services import finnhub_client
+from services import nse_client
 
 # Build symbol→name lookup from universe
 _NAME_MAP: dict[str, str] = {}
@@ -195,8 +196,37 @@ class ScreenerService:
         is_open = _is_market_open(market)
         gainers, losers = [], []
 
-        # Primary: Finnhub (reliable from cloud IPs, no crumb issues)
-        if finnhub_client.FINNHUB_KEY:
+        # PRIMARY for India: NSE official API — one call, all 50 stocks, no rate limits
+        if market == "IN":
+            try:
+                def _nse_movers():
+                    stocks = nse_client.get_nifty100_quotes()
+                    if not stocks:
+                        stocks = nse_client.get_nifty50_quotes()
+                    g = sorted([s for s in stocks if s["change_pct"] > 0],
+                               key=lambda x: x["change_pct"], reverse=True)[:10]
+                    l = sorted([s for s in stocks if s["change_pct"] <= 0],
+                               key=lambda x: x["change_pct"])[:10]
+                    # normalise to expected screener shape
+                    def _norm(s):
+                        return {
+                            "symbol":     s["symbol"],
+                            "price":      s["price"],
+                            "change_pct": s["change_pct"],
+                            "name":       s.get("company_name") or _NAME_MAP.get(s["symbol"].upper(), ""),
+                        }
+                    return [_norm(x) for x in g], [_norm(x) for x in l]
+
+                gainers, losers = await asyncio.wait_for(
+                    loop.run_in_executor(None, _nse_movers),
+                    timeout=15.0,
+                )
+                log.info("screener: NSE API returned %d gainers, %d losers", len(gainers), len(losers))
+            except Exception as e:
+                log.warning("NSE movers failed: %s", e)
+
+        # PRIMARY for US / fallback for India: Finnhub
+        if not gainers and not losers and finnhub_client.FINNHUB_KEY:
             try:
                 symbols = NIFTY50_SYMBOLS if market == "IN" else list({
                     s for stocks in US_SECTORS.values() for s in stocks
