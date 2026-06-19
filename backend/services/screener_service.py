@@ -1,3 +1,4 @@
+import math
 import time
 import logging
 import datetime
@@ -103,7 +104,6 @@ def _bulk_quotes(tickers: list[str]) -> dict[str, dict]:
                 today_f = float(today) if today is not None else None
             except (TypeError, ValueError):
                 continue
-            import math
             if prev_f and today_f and not math.isnan(prev_f) and not math.isnan(today_f) and prev_f > 0:
                 sym = ticker.replace(".NS", "").replace(".BO", "")
                 results[ticker] = {
@@ -116,8 +116,8 @@ def _bulk_quotes(tickers: list[str]) -> dict[str, dict]:
         err = str(e).lower()
         if "crumb" in err or "401" in err or "unauthorized" in err:
             try:
-                import yfinance as yf
-                yf.utils.get_crumb(force=True) if hasattr(yf.utils, "get_crumb") else None
+                if hasattr(yf.utils, "get_crumb"):
+                    yf.utils.get_crumb(force=True)
                 log.info("bulk_quotes: crumb refreshed after 401")
             except Exception:
                 pass
