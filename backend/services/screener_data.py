@@ -289,25 +289,45 @@ def _parse_screener_page(soup: BeautifulSoup, symbol: str) -> dict:
     if growth_section:
         for table in growth_section.find_all("table"):
             rows = table.find_all("tr")
-            for row in rows:
+            if not rows:
+                continue
+            # Build column index map from header row (th elements)
+            # Screener shows some subset of: 10 Years / 5 Years / 3 Years / TTM
+            col_map: dict[str, int] = {}  # "10y"/"5y"/"3y"/"ttm" -> 0-based index into data cells
+            header_row = rows[0]
+            ths = header_row.find_all("th")
+            for i, th in enumerate(ths[1:], 0):  # skip first th (empty label column)
+                h = th.get_text(strip=True).lower()
+                if "10" in h:
+                    col_map["10y"] = i
+                elif "5" in h:
+                    col_map["5y"] = i
+                elif "3" in h:
+                    col_map["3y"] = i
+                elif "ttm" in h or "trailing" in h:
+                    col_map["ttm"] = i
+
+            for row in rows[1:]:
                 cells = row.find_all("td")
                 if len(cells) < 2:
                     continue
                 label = cells[0].get_text(strip=True).lower()
+                vals = [_parse_number(c.get_text(strip=True)) for c in cells[1:]]
+
+                def _get(key: str):
+                    idx = col_map.get(key)
+                    return vals[idx] if idx is not None and idx < len(vals) else None
+
                 if "sales growth" in label:
-                    # columns: 10Y / 5Y / 3Y / TTM
-                    vals = [_parse_number(c.get_text(strip=True)) for c in cells[1:]]
-                    data["sales_growth_3y_pct"]  = vals[2] if len(vals) > 2 else None
-                    data["sales_growth_5y_pct"]  = vals[1] if len(vals) > 1 else None
-                    data["sales_growth_ttm_pct"] = vals[-1] if vals else None
+                    data["sales_growth_3y_pct"]  = _get("3y")
+                    data["sales_growth_5y_pct"]  = _get("5y")
+                    data["sales_growth_ttm_pct"] = _get("ttm")
                 elif "profit growth" in label:
-                    vals = [_parse_number(c.get_text(strip=True)) for c in cells[1:]]
-                    data["profit_growth_3y_pct"]  = vals[2] if len(vals) > 2 else None
-                    data["profit_growth_5y_pct"]  = vals[1] if len(vals) > 1 else None
-                    data["profit_growth_ttm_pct"] = vals[-1] if vals else None
+                    data["profit_growth_3y_pct"]  = _get("3y")
+                    data["profit_growth_5y_pct"]  = _get("5y")
+                    data["profit_growth_ttm_pct"] = _get("ttm")
                 elif "stock price cagr" in label or "price cagr" in label:
-                    vals = [_parse_number(c.get_text(strip=True)) for c in cells[1:]]
-                    data["price_cagr_5y_pct"] = vals[1] if len(vals) > 1 else None
+                    data["price_cagr_5y_pct"] = _get("5y")
 
     # ── Fallback growth from P&L annual data (banks lack #growth section) ───────
     # Banks on screener.in don't have the compounded growth table — calculate
