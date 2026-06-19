@@ -82,7 +82,19 @@ SECTOR_TO_NSE_INDEX: dict[str, str] = {
 }
 
 _index_cache: dict[str, tuple[float, list]] = {}
-_INDEX_TTL = 120  # 2 min — live during market hours
+_INDEX_TTL = 300         # 5 min live
+_INDEX_TTL_CLOSED = 3600  # 1 hour when market is closed — reuse last session data
+
+
+def _market_is_open_ist() -> bool:
+    """Quick check: is NSE currently trading?"""
+    import datetime
+    now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+    if now.weekday() >= 5:
+        return False
+    open_t  = now.replace(hour=9,  minute=15, second=0, microsecond=0)
+    close_t = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    return open_t <= now <= close_t
 
 
 def fetch_index(index_name: str) -> list[dict]:
@@ -93,8 +105,9 @@ def fetch_index(index_name: str) -> list[dict]:
       symbol, company_name, price, prev_close, change, change_pct,
       year_high, year_low, volume
     """
+    ttl = _INDEX_TTL if _market_is_open_ist() else _INDEX_TTL_CLOSED
     cached = _index_cache.get(index_name)
-    if cached and (time.time() - cached[0]) < _INDEX_TTL:
+    if cached and (time.time() - cached[0]) < ttl:
         return cached[1]
 
     _ensure_session()

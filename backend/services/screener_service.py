@@ -61,34 +61,55 @@ _movers_cache: dict[str, tuple[float, dict]] = {}
 _TTL_OPEN   = 120   # 2 min when live
 _TTL_CLOSED = 300   # 5 min when closed
 
+# Persistent last-known-good cache — never expires, replaced only when fresh data arrives.
+# Prevents empty dashboard after market close when all live sources fail.
+_last_good_movers: dict[str, dict] = {}
+
+# Compact universe for fallback — just Nifty 50 (.NS) for faster bulk download
+_IN_FALLBACK_UNIVERSE = [s + ".NS" for s in NIFTY50_SYMBOLS]
+
 
 def _bulk_quotes(tickers: list[str]) -> dict[str, dict]:
     """Bulk download last 5 days — ensures ≥2 settled trading rows even when today is all-NaN."""
     results = {}
     try:
-        df = yf.download(tickers, period="5d", interval="1d", progress=False)
+        df = yf.download(tickers, period="5d", interval="1d", progress=False, auto_adjust=True)
         if df.empty:
             return results
+        # Handle both multi-ticker (MultiIndex) and single-ticker DataFrames
         if hasattr(df.columns, "levels"):
-            close = df["Close"] if "Close" in df.columns.get_level_values(0) else None
+            lvl0 = df.columns.get_level_values(0)
+            close = df["Close"] if "Close" in lvl0 else None
         else:
             close = df[["Close"]] if "Close" in df.columns else None
         if close is None:
             return results
+        # Drop rows where ALL tickers have NaN (e.g. weekends)
         close = close.dropna(how="all")
         if len(close) < 2:
             return results
         prev_row  = close.iloc[-2]
         today_row = close.iloc[-1]
+        # If today's row is still mostly NaN (intra-day, not settled), use [-3] vs [-2]
+        today_valid = today_row.dropna()
+        if len(today_valid) < len(tickers) * 0.5 and len(close) >= 3:
+            prev_row  = close.iloc[-3]
+            today_row = close.iloc[-2]
         for ticker in tickers:
             prev  = prev_row.get(ticker)
             today = today_row.get(ticker)
-            if prev is not None and today is not None and float(prev) > 0:
+            try:
+                prev_f  = float(prev)  if prev  is not None else None
+                today_f = float(today) if today is not None else None
+            except (TypeError, ValueError):
+                continue
+            import math
+            if prev_f and today_f and not math.isnan(prev_f) and not math.isnan(today_f) and prev_f > 0:
                 sym = ticker.replace(".NS", "").replace(".BO", "")
                 results[ticker] = {
                     "symbol": sym,
-                    "price": round(float(today), 2),
-                    "change_pct": round((float(today) - float(prev)) / float(prev) * 100, 2),
+                    "price": round(today_f, 2),
+                    "change_pct": round((today_f - prev_f) / prev_f * 100, 2),
                     "name": _NAME_MAP.get(sym.upper(), ""),
                 }
     except Exception as e:
@@ -254,16 +275,28 @@ class ScreenerService:
             except Exception as e:
                 log.warning("yf live movers failed for %s: %s", market, e)
 
-        # Last resort: yfinance bulk download
+        # Last resort: yfinance bulk download (use compact Nifty50 list for speed)
         if not gainers and not losers:
             try:
-                universe = IN_UNIVERSE if market == "IN" else US_UNIVERSE
+                universe = _IN_FALLBACK_UNIVERSE if market == "IN" else US_UNIVERSE
                 gainers, losers = await asyncio.wait_for(
                     loop.run_in_executor(None, _closed_gainers_losers, universe),
-                    timeout=25.0,
+                    timeout=30.0,
                 )
+                log.info("screener: yf bulk returned %d gainers, %d losers for %s",
+                         len(gainers), len(losers), market)
             except Exception as e:
                 log.warning("yf bulk movers failed for %s: %s", market, e)
+
+        # If still empty, serve last known good data to avoid blank dashboard
+        if not gainers and not losers:
+            last_good = _last_good_movers.get(market)
+            if last_good:
+                log.info("screener: serving last-known-good movers for %s", market)
+                stale = dict(last_good)
+                stale["market_open"] = is_open
+                stale["stale"] = True
+                return stale
 
         response = {
             "market": market,
@@ -275,6 +308,7 @@ class ScreenerService:
         }
         if gainers or losers:
             _movers_cache[market] = (time.time(), response)
+            _last_good_movers[market] = response  # persist indefinitely
         return response
 
     async def filter_stocks(
