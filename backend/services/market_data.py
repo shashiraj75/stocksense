@@ -31,14 +31,7 @@ class MarketDataService:
         key = f"{symbol}:{market}"
         cached = _quote_cache.get(key)
         if cached and (time.time() - cached[0]) < _QUOTE_TTL:
-            result = cached[1]
-            # Inject name from name-cache even on quote cache hits so the name
-            # appears as soon as the background fetch completes (not after 60s)
-            if not result.get("company_name"):
-                cn = _name_cache.get(key)
-                if cn and (time.time() - cn[0]) < _NAME_TTL:
-                    result["company_name"] = cn[1]
-            return result
+            return cached[1]
 
         # 1. Try Finnhub first (fast, reliable from cloud IPs, 60s internal cache)
         result = finnhub_client.get_quote(symbol, market)
@@ -82,26 +75,28 @@ class MarketDataService:
             except Exception:
                 pass  # extras are non-critical
 
-        # Add company name — separate 24h cache so the heavy .info call
-        # is made at most once per day per symbol, not on every quote miss.
+        # Add company name — 24h cache so the .info call runs at most once per day.
+        # On cold cache: fetch synchronously (with 4s timeout) so the name is always
+        # present on first load. Subsequent requests for 24h are instant from cache.
         if result:
             cached_name = _name_cache.get(key)
             if cached_name and (time.time() - cached_name[0]) < _NAME_TTL:
                 result["company_name"] = cached_name[1]
             elif not result.get("company_name"):
-                # Fire in background — don't block the quote response
-                import asyncio
-                loop = asyncio.get_event_loop()
-                sym_key = self._sym(symbol, market)
-                def _fetch_name():
-                    try:
+                try:
+                    import concurrent.futures
+                    sym_key = self._sym(symbol, market)
+                    def _fetch_name():
                         info = yf.Ticker(sym_key).info
-                        name = info.get("longName") or info.get("shortName")
-                        if name:
-                            _name_cache[key] = (time.time(), name)
-                    except Exception:
-                        pass
-                loop.run_in_executor(None, _fetch_name)
+                        return (info.get("longName") or info.get("shortName")) if isinstance(info, dict) else None
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                        future = ex.submit(_fetch_name)
+                        name = future.result(timeout=4)
+                    if name:
+                        _name_cache[key] = (time.time(), name)
+                        result["company_name"] = name
+                except Exception:
+                    pass  # name is non-critical; page still loads without it
 
         if result:
             _quote_cache[key] = (time.time(), result)
