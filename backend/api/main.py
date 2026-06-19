@@ -235,6 +235,31 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[startup] screener.in login error: {e}")
 
+    # Pre-warm movers cache so dashboard is never blank on first load
+    try:
+        from services.screener_service import _closed_gainers_losers, _IN_FALLBACK_UNIVERSE, _movers_cache, _last_good_movers, _is_market_open
+        from services import screener_service as _ss
+
+        def _warmup_movers():
+            try:
+                g, l = _closed_gainers_losers(_IN_FALLBACK_UNIVERSE)
+                if g or l:
+                    is_open = _is_market_open("IN")
+                    resp = {"market": "IN", "market_open": is_open,
+                            "gainers": g, "losers": l, "movers": g + l, "error": None}
+                    import time as _t
+                    _movers_cache["IN"] = (_t.time(), resp)
+                    _last_good_movers["IN"] = resp
+                    print(f"[startup] movers pre-warm: {len(g)} gainers, {len(l)} losers")
+                else:
+                    print("[startup] movers pre-warm: no data returned")
+            except Exception as e:
+                print(f"[startup] movers pre-warm error: {e}")
+
+        await asyncio.wait_for(loop.run_in_executor(None, _warmup_movers), timeout=35.0)
+    except Exception as e:
+        print(f"[startup] movers pre-warm failed: {e}")
+
     task = asyncio.create_task(_weekly_refresh_loop())
     keepalive = asyncio.create_task(_keepalive_loop())
     outcome_task = asyncio.create_task(_outcome_resolver_loop())
