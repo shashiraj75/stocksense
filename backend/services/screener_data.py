@@ -392,6 +392,14 @@ def _parse_screener_page(soup: BeautifulSoup, symbol: str) -> dict:
         table = quarterly_section.find("table")
         if table:
             rows = table.find_all("tr")
+            # Extract quarter labels from the header row (th elements)
+            header_row = table.find("tr")
+            if header_row:
+                ths = header_row.find_all("th")
+                # First th is the row label ("Quarter"), rest are period labels
+                quarter_labels = [th.get_text(strip=True) for th in ths[1:]]
+                if quarter_labels:
+                    data["quarterly_labels"] = quarter_labels
             for row in rows:
                 cells = row.find_all("td")
                 if len(cells) < 2:

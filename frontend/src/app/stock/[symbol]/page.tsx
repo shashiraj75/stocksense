@@ -1076,9 +1076,14 @@ export default function StockPage() {
                       <thead>
                         <tr className="text-gray-500 text-xs">
                           <th className="text-left pb-2 font-medium">Quarter</th>
-                          {[...(screenerFund.quarterly_revenue_cr ?? [])].reverse().map((_: number, i: number) => (
-                            <th key={i} className="text-right pb-2 font-medium">Q{i + 1}</th>
-                          ))}
+                          {[...(screenerFund.quarterly_revenue_cr ?? [])].reverse().map((_: number, i: number) => {
+                            const labels: string[] = screenerFund.quarterly_labels ?? [];
+                            const reversed = [...labels].reverse();
+                            const label = reversed[i] ?? `Q${i + 1}`;
+                            return (
+                              <th key={i} className="text-right pb-2 font-medium whitespace-nowrap">{label}</th>
+                            );
+                          })}
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-dark-border">
