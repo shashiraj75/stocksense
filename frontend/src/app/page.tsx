@@ -205,9 +205,9 @@ export default function Dashboard() {
                     className="block p-4 rounded-xl bg-dark-card border border-bull/20 hover:border-bull/50 transition-colors">
                     <p className="font-mono font-bold text-white text-sm">{m.symbol}</p>
                     {m.name && <p className="text-[10px] text-gray-500 mt-0.5 truncate">{m.name}</p>}
-                    <p className="text-base font-bold mt-1.5">{currency}{m.price.toLocaleString()}</p>
+                    <p className="text-base font-bold mt-1.5">{currency}{m.price?.toLocaleString() ?? "—"}</p>
                     <div className="flex items-center gap-1 text-sm font-medium mt-1 text-bull">
-                      <TrendingUp size={14} />+{m.change_pct}%
+                      <TrendingUp size={14} />+{m.change_pct ?? 0}%
                     </div>
                   </Link>
                 </StockContextMenu>
@@ -233,9 +233,9 @@ export default function Dashboard() {
                     className="block p-4 rounded-xl bg-dark-card border border-bear/20 hover:border-bear/50 transition-colors">
                     <p className="font-mono font-bold text-white text-sm">{m.symbol}</p>
                     {m.name && <p className="text-[10px] text-gray-500 mt-0.5 truncate">{m.name}</p>}
-                    <p className="text-base font-bold mt-1.5">{currency}{m.price.toLocaleString()}</p>
+                    <p className="text-base font-bold mt-1.5">{currency}{m.price?.toLocaleString() ?? "—"}</p>
                     <div className="flex items-center gap-1 text-sm font-medium mt-1 text-bear">
-                      <TrendingDown size={14} />{m.change_pct}%
+                      <TrendingDown size={14} />{m.change_pct ?? 0}%
                     </div>
                   </Link>
                 </StockContextMenu>

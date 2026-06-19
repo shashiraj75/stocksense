@@ -300,7 +300,7 @@ export default function StockPage() {
                     <span className="text-4xl font-black font-mono tracking-tighter">
                       {isCrypto
                         ? `$${(cryptoQuote?.price ?? prediction?.current_price ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
-                        : quote ? `${currency}${quote.price.toLocaleString()}` : <span className="text-gray-600 text-2xl">Loading…</span>}
+                        : quote ? `${currency}${quote.price?.toLocaleString() ?? "—"}` : <span className="text-gray-600 text-2xl">Loading…</span>}
                     </span>
                     {!isCrypto && quote?.change != null && (
                       <span className={clsx(
@@ -308,7 +308,7 @@ export default function StockPage() {
                         priceUp ? "bg-bull/10 text-bull" : "bg-bear/10 text-bear"
                       )}>
                         {priceUp ? <ArrowUpRight size={14} /> : <ArrowDownRight size={14} />}
-                        {quote.change >= 0 ? "+" : ""}{quote.change} ({quote.change_pct}%)
+                        {(quote.change ?? 0) >= 0 ? "+" : ""}{quote.change} ({quote.change_pct ?? 0}%)
                       </span>
                     )}
                     {isCrypto && cryptoQuote?.change_pct != null && (

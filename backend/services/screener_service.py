@@ -223,18 +223,23 @@ class ScreenerService:
             try:
                 def _nse_movers():
                     g, l = nse_client.get_gainers_losers("NIFTY")
-                    # If NIFTY index key not found, get_gainers_losers tries other keys
                     if not g and not l:
-                        # Try all-securities fallback
                         g, l = nse_client.get_gainers_losers("allSec")
                     def _norm(s):
+                        sym = s.get("symbol", "")
+                        price = s.get("price")
+                        chg   = s.get("change_pct")
+                        if not sym or price is None or chg is None:
+                            return None
                         return {
-                            "symbol":     s["symbol"],
-                            "price":      s["price"],
-                            "change_pct": s["change_pct"],
-                            "name":       s.get("company_name") or _NAME_MAP.get(s["symbol"].upper(), ""),
+                            "symbol":     sym,
+                            "price":      price,
+                            "change_pct": chg,
+                            "name":       s.get("company_name") or _NAME_MAP.get(sym.upper(), ""),
                         }
-                    return [_norm(x) for x in g], [_norm(x) for x in l]
+                    def _safe_norm(items):
+                        return [r for x in items if (r := _norm(x)) is not None]
+                    return _safe_norm(g), _safe_norm(l)
 
                 gainers, losers = await asyncio.wait_for(
                     loop.run_in_executor(None, _nse_movers),

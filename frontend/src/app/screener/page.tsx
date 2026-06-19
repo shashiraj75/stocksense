@@ -91,13 +91,13 @@ export default function ScreenerPage() {
                     <tr className="border-b border-dark-border hover:bg-dark-border/30 transition-colors">
                       <td className="px-3 sm:px-6 py-3 sm:py-4 font-mono font-bold text-white">{stock.symbol}</td>
                       <td className="px-3 sm:px-6 py-3 sm:py-4 text-right font-mono">
-                        {currency}{stock.price.toLocaleString()}
+                        {currency}{stock.price?.toLocaleString() ?? "—"}
                       </td>
                       <td className={clsx("px-3 sm:px-6 py-3 sm:py-4 text-right font-medium",
-                        stock.change_pct >= 0 ? "text-bull" : "text-bear")}>
+                        (stock.change_pct ?? 0) >= 0 ? "text-bull" : "text-bear")}>
                         <span className="flex items-center justify-end gap-1">
-                          {stock.change_pct >= 0 ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
-                          {stock.change_pct >= 0 ? "+" : ""}{stock.change_pct}%
+                          {(stock.change_pct ?? 0) >= 0 ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
+                          {(stock.change_pct ?? 0) >= 0 ? "+" : ""}{stock.change_pct ?? 0}%
                         </span>
                       </td>
                       <td className="px-3 sm:px-6 py-3 sm:py-4 text-right">
