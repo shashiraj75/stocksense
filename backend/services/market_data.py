@@ -23,9 +23,51 @@ _name_cache: dict[str, tuple[float, str]] = {}
 _NAME_TTL = 24 * 3600  # company names change rarely — cache for 24 hours
 
 
+def _fetch_name_sync(sym_yf: str, sym_fh: str, market: str) -> Optional[str]:
+    """
+    Fetch company name. Tries Finnhub profile first (fast, <200ms),
+    falls back to yfinance .info. Runs in a thread via run_in_executor
+    so it never blocks the async event loop.
+    """
+    # 1. Finnhub /stock/profile2 — fast, no crumb issues
+    if finnhub_client.FINNHUB_KEY:
+        try:
+            r = finnhub_client._SESSION.get(
+                f"{finnhub_client._BASE}/stock/profile2",
+                params={"symbol": sym_fh},
+                timeout=3,
+            )
+            if r.status_code == 200:
+                d = r.json()
+                name = d.get("name")
+                if name:
+                    return name
+        except Exception:
+            pass
+
+    # 2. yfinance .info fallback
+    try:
+        info = yf.Ticker(sym_yf).info
+        if isinstance(info, dict):
+            return info.get("longName") or info.get("shortName")
+    except Exception:
+        pass
+
+    return None
+
+
 class MarketDataService:
     def _sym(self, symbol: str, market: str) -> str:
         return symbol + MARKET_SUFFIX.get(market, "")
+
+    def _fh_sym(self, symbol: str, market: str) -> str:
+        """Finnhub symbol format: NSE:SHALBY, AAPL etc."""
+        s = symbol.upper().replace(".NS", "").replace(".BO", "")
+        if market == "IN":
+            return f"NSE:{s}"
+        elif market == "CRYPTO":
+            return f"BINANCE:{s}USDT"
+        return s
 
     async def get_quote(self, symbol: str, market: str) -> Optional[dict]:
         key = f"{symbol}:{market}"
@@ -62,9 +104,7 @@ class MarketDataService:
                 log.warning("get_quote yfinance fallback failed %s/%s: %s", symbol, market, e)
                 return None
 
-        # 3. Enrich Finnhub result with fast_info extras (non-blocking best-effort)
-        #    Only if the fields are missing — avoids the redundant second yfinance call
-        #    that was happening on every request before.
+        # 3. Enrich Finnhub result with fast_info extras if missing
         if result and not result.get("market_cap"):
             try:
                 fi = yf.Ticker(self._sym(symbol, market)).fast_info
@@ -73,25 +113,23 @@ class MarketDataService:
                 result.setdefault("fifty_two_week_high", fi.year_high)
                 result.setdefault("fifty_two_week_low",  fi.year_low)
             except Exception:
-                pass  # extras are non-critical
+                pass
 
-        # Add company name — 24h cache so the .info call runs at most once per day.
-        # On cold cache: fetch synchronously (with 4s timeout) so the name is always
-        # present on first load. Subsequent requests for 24h are instant from cache.
+        # 4. Company name — 24h cache. Fetched async (non-blocking) on cold cache,
+        #    returns immediately from cache on all subsequent requests.
         if result:
             cached_name = _name_cache.get(key)
             if cached_name and (time.time() - cached_name[0]) < _NAME_TTL:
                 result["company_name"] = cached_name[1]
-            elif not result.get("company_name"):
+            else:
+                loop = asyncio.get_event_loop()
+                sym_yf = self._sym(symbol, market)
+                sym_fh = self._fh_sym(symbol, market)
                 try:
-                    import concurrent.futures
-                    sym_key = self._sym(symbol, market)
-                    def _fetch_name():
-                        info = yf.Ticker(sym_key).info
-                        return (info.get("longName") or info.get("shortName")) if isinstance(info, dict) else None
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                        future = ex.submit(_fetch_name)
-                        name = future.result(timeout=4)
+                    name = await asyncio.wait_for(
+                        loop.run_in_executor(None, _fetch_name_sync, sym_yf, sym_fh, market),
+                        timeout=4.0,
+                    )
                     if name:
                         _name_cache[key] = (time.time(), name)
                         result["company_name"] = name
@@ -141,7 +179,6 @@ class MarketDataService:
 
         info: dict = {}
         try:
-            # Single attempt with a short timeout via a thread — no sleep retry loop
             loop = asyncio.get_event_loop()
             info = await asyncio.wait_for(
                 loop.run_in_executor(None, lambda: yf.Ticker(self._sym(symbol, market)).info),
@@ -166,8 +203,6 @@ class MarketDataService:
             "description":     info.get("longBusinessSummary", "")[:500],
         }
 
-        # Cache even partial results — better to return fast with partial data
-        # than block for 9s on retries. Cache for 1 hour if partial, 12h if full.
         has_data = any(v is not None for v in [result["pe_ratio"], result["roe"], result["sector"]])
         ttl = _FUND_TTL if has_data else 3600
         _fundamentals_cache[key] = (time.time() - (_FUND_TTL - ttl), result)
