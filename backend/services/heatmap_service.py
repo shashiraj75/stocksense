@@ -135,6 +135,34 @@ def _build_sector_output(sectors: dict, all_changes: dict[str, dict[str, float |
 _last_good_heatmap: dict[str, list] = {}
 
 
+def _cache_and_persist(market: str, output: list) -> list:
+    _heatmap_cache[market] = (time.time(), output)
+    _last_good_heatmap[market] = output
+    try:
+        if __import__("os").getenv("USE_POSTGRES") == "1":
+            from services.postgres_store import save_market_cache
+            save_market_cache(f"heatmap_{market}", output)
+    except Exception:
+        pass
+    return output
+
+
+def _load_last_good(market: str) -> list | None:
+    last_good = _last_good_heatmap.get(market)
+    if last_good:
+        return last_good
+    try:
+        if __import__("os").getenv("USE_POSTGRES") == "1":
+            from services.postgres_store import load_market_cache
+            last_good = load_market_cache(f"heatmap_{market}")
+            if last_good:
+                _last_good_heatmap[market] = last_good
+                return last_good
+    except Exception:
+        pass
+    return None
+
+
 def get_heatmap(market: str) -> list[dict]:
     cached = _heatmap_cache.get(market)
     if cached and (time.time() - cached[0]) < _HEATMAP_TTL:
@@ -147,10 +175,9 @@ def get_heatmap(market: str) -> list[dict]:
             has_data = any(bool(v) for v in nse_results.values())
             if has_data:
                 output = _build_sector_output(INDIA_SECTORS, nse_results)
-                _heatmap_cache[market] = (time.time(), output)
                 log.info("heatmap IN: NSE sector APIs returned data for %d sectors",
                          sum(1 for v in nse_results.values() if v))
-                return output
+                return _cache_and_persist(market, output)
         except Exception as e:
             log.warning("NSE heatmap failed, falling back to yfinance: %s", e)
 
@@ -168,32 +195,9 @@ def get_heatmap(market: str) -> list[dict]:
                        for sector, stocks in US_SECTORS.items()}
         output = _build_sector_output(US_SECTORS, all_changes)
 
-    # Only cache if we got real data (at least some stocks have change_pct)
     has_data = any(s["loaded"] > 0 for s in output)
     if has_data:
-        _heatmap_cache[market] = (time.time(), output)
-        _last_good_heatmap[market] = output
-        try:
-            USE_POSTGRES = __import__("os").getenv("USE_POSTGRES") == "1"
-            if USE_POSTGRES:
-                from services.postgres_store import save_market_cache
-                save_market_cache(f"heatmap_{market}", output)
-        except Exception:
-            pass
-    else:
-        # No fresh data — serve last known good from memory or Postgres
-        last_good = _last_good_heatmap.get(market)
-        if not last_good:
-            try:
-                USE_POSTGRES = __import__("os").getenv("USE_POSTGRES") == "1"
-                if USE_POSTGRES:
-                    from services.postgres_store import load_market_cache
-                    last_good = load_market_cache(f"heatmap_{market}")
-                    if last_good:
-                        _last_good_heatmap[market] = last_good
-            except Exception:
-                pass
-        if last_good:
-            log.info("heatmap: serving last-known-good data for %s", market)
-            return last_good
-    return output
+        return _cache_and_persist(market, output)
+
+    # No fresh data — fall back to last known good (memory → Postgres → empty)
+    return _load_last_good(market) or output
