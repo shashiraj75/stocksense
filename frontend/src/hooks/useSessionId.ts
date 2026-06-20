@@ -1,5 +1,5 @@
 "use client";
-import { useMemo } from "react";
+import { useState, useEffect } from "react";
 
 function generateId(): string {
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
@@ -9,13 +9,14 @@ function generateId(): string {
 }
 
 export function useSessionId(): string {
-  return useMemo(() => {
-    if (typeof window === "undefined") return "ssr";
+  const [sessionId, setSessionId] = useState("ssr");
+  useEffect(() => {
     let id = localStorage.getItem("paper_session_id");
     if (!id) {
       id = generateId();
       localStorage.setItem("paper_session_id", id);
     }
-    return id;
+    setSessionId(id);
   }, []);
+  return sessionId;
 }
