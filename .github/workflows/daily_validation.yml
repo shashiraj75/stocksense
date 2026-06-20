@@ -14,7 +14,7 @@ jobs:
         run: |
           echo "Pinging backend..."
           for i in 1 2 3 4 5; do
-            CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 https://stocksense-api-12ii.onrender.com/health)
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 https://stocksense-production-7e0d.up.railway.app/health)
             echo "Attempt $i: HTTP $CODE"
             if [ "$CODE" = "200" ]; then echo "Backend alive."; break; fi
             sleep 20
@@ -23,14 +23,14 @@ jobs:
       - name: Run medium-horizon validation
         run: |
           echo "Starting medium-horizon validation..."
-          curl -sS -X POST "https://stocksense-api-12ii.onrender.com/api/validation/run?horizon=medium"
+          curl -sS -X POST "https://stocksense-production-7e0d.up.railway.app/api/validation/run?horizon=medium"
           echo ""
 
       - name: Wait for medium run to finish
         run: |
           for i in $(seq 1 40); do
             sleep 30
-            RESP=$(curl -s "https://stocksense-api-12ii.onrender.com/api/validation/status")
+            RESP=$(curl -s "https://stocksense-production-7e0d.up.railway.app/api/validation/status")
             echo "[$i] $RESP"
             DONE=$(echo "$RESP" | python3 -c "import sys,json,sys; d=json.load(sys.stdin); print('yes' if not d.get('running',True) and d.get('total',0)>0 else 'no')" 2>/dev/null || echo "no")
             if [ "$DONE" = "yes" ]; then echo "Medium run complete."; break; fi
@@ -39,7 +39,7 @@ jobs:
       - name: Print medium summary
         run: |
           echo "=== Medium-horizon results ==="
-          curl -s "https://stocksense-api-12ii.onrender.com/api/validation/results?horizon=medium"
+          curl -s "https://stocksense-production-7e0d.up.railway.app/api/validation/results?horizon=medium"
           echo ""
 
   run-long-validation:
@@ -53,14 +53,14 @@ jobs:
       - name: Run long-horizon validation
         run: |
           echo "Starting long-horizon validation..."
-          curl -sS -X POST "https://stocksense-api-12ii.onrender.com/api/validation/run?horizon=long"
+          curl -sS -X POST "https://stocksense-production-7e0d.up.railway.app/api/validation/run?horizon=long"
           echo ""
 
       - name: Wait for long run to finish
         run: |
           for i in $(seq 1 60); do
             sleep 30
-            RESP=$(curl -s "https://stocksense-api-12ii.onrender.com/api/validation/status")
+            RESP=$(curl -s "https://stocksense-production-7e0d.up.railway.app/api/validation/status")
             echo "[$i] $RESP"
             DONE=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print('yes' if not d.get('running',True) and d.get('total',0)>0 else 'no')" 2>/dev/null || echo "no")
             if [ "$DONE" = "yes" ]; then echo "Long run complete."; break; fi
@@ -69,5 +69,5 @@ jobs:
       - name: Print long summary
         run: |
           echo "=== Long-horizon results ==="
-          curl -s "https://stocksense-api-12ii.onrender.com/api/validation/results?horizon=long"
+          curl -s "https://stocksense-production-7e0d.up.railway.app/api/validation/results?horizon=long"
           echo ""

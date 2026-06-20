@@ -1,8 +1,8 @@
-name: Keep Server Alive (Market Hours)
+name: Keep Server Alive
 
 on:
   schedule:
-    # Every 10 min, 24/7 — covers India market (8AM-6PM IST) + US market (8PM-2:30AM IST)
+    # Every 10 min, 24/7 — Railway doesn't sleep but this acts as a health monitor
     - cron: "*/10 * * * *"
   workflow_dispatch:
 
@@ -10,9 +10,9 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping backend health endpoint
+      - name: Ping Railway backend health endpoint
         run: |
           curl -sS --max-time 30 \
-            https://stocksense-api-12ii.onrender.com/health \
+            https://stocksense-production-7e0d.up.railway.app/health \
             && echo "Server is alive" \
-            || echo "Ping failed (server may be starting up)"
+            || echo "Ping failed"

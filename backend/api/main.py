@@ -274,9 +274,9 @@ async def lifespan(app: FastAPI):
         try:
             IST = timezone(timedelta(hours=5, minutes=30))
             now = datetime.now(IST)
-            today_9am = now.replace(hour=9, minute=0, second=0, microsecond=0)
-            if now < today_9am:
-                print("[picks_catchup] Before 9 AM IST — skipping")
+            today_2am = now.replace(hour=2, minute=0, second=0, microsecond=0)
+            if now < today_2am:
+                print("[picks_catchup] Before 2 AM IST — skipping")
                 return
             if now.weekday() >= 5:
                 print("[picks_catchup] Weekend — skipping picks catchup")

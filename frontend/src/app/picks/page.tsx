@@ -603,7 +603,7 @@ export default function DailyPicksPage() {
             </span>
           </div>
           <p className="text-sm text-gray-400">
-            Top 5 AI-selected BUY calls from {data?.screened_from ? `all ${data.screened_from.toLocaleString()} NSE-listed stocks` : "all NSE-listed stocks"} — refreshed every market day at 9 AM IST
+            Top 5 AI-selected BUY calls from {data?.screened_from ? `all ${data.screened_from.toLocaleString()} NSE-listed stocks` : "all NSE-listed stocks"} — generated at 2 AM IST daily, scanning 750 stocks
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -771,7 +771,7 @@ export default function DailyPicksPage() {
               <p className="text-sm text-gray-500 max-w-sm">
                 {data?.generated_at
                   ? "The AI didn't find strong BUY signals across NSE today. Market conditions may be weak — check back tomorrow."
-                  : "Daily picks are generated at 9 AM IST on market days. Check back after the market opens."}
+                  : "Daily picks are generated at 2 AM IST on market days, scanning 750 NSE stocks. Check back after 2 AM IST."}
               </p>
             </>
           )}

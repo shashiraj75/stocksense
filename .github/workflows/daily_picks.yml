@@ -1,35 +1,35 @@
-name: Daily Stock Picks (9 AM IST)
+name: Daily Stock Picks (2 AM IST)
 
 on:
   schedule:
-    # 3:00 UTC = 8:30 AM IST — generation takes ~10 min, results ready by 9 AM IST
-    - cron: "0 3 * * 1-5"   # Monday–Friday only (market days)
+    # 20:30 UTC = 2:00 AM IST — 750 stocks × 3 horizons takes ~3.75 hrs, done by ~5:45 AM IST
+    - cron: "30 20 * * 0-4"   # Sun–Thu UTC = Mon–Fri IST (market days)
   workflow_dispatch:           # allow manual trigger from GitHub UI
 
 jobs:
   generate-picks:
     runs-on: ubuntu-latest
     steps:
-      - name: Wake up Render (wait until healthy)
+      - name: Check Railway backend is healthy
         run: |
-          echo "Waiting for Render server to be ready..."
-          for i in $(seq 1 10); do
+          echo "Checking Railway backend at $(date -u) UTC..."
+          for i in $(seq 1 5); do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
-              https://stocksense-api-12ii.onrender.com/health)
+              https://stocksense-production-7e0d.up.railway.app/health)
             echo "Attempt $i: HTTP $STATUS"
             if [ "$STATUS" = "200" ]; then
               echo "Server is ready!"
               break
             fi
-            sleep 30
+            sleep 10
           done
 
       - name: Trigger pick generation
         run: |
-          echo "Triggering daily picks generation at $(date -u)..."
+          echo "Triggering daily picks generation at $(date -u) UTC (2:00 AM IST)..."
           curl -sS --fail-with-body --max-time 30 \
             -X POST \
             -H "x-secret: ${{ secrets.PICKS_SECRET }}" \
-            https://stocksense-api-12ii.onrender.com/api/picks/generate
+            https://stocksense-production-7e0d.up.railway.app/api/picks/generate
           echo ""
-          echo "Generation started. Picks will be ready in ~10 minutes."
+          echo "Generation started. 750 stocks x 3 horizons — picks ready by ~5:45 AM IST."

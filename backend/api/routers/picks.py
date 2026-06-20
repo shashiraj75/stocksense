@@ -20,7 +20,7 @@ def daily_picks():
             "message": (
                 "Picks are being generated now — check back in a few minutes."
                 if generating else
-                "Picks not yet generated. Check back after 9 AM IST."
+                "Picks not yet generated. Generated at 2 AM IST daily — check back then."
             ),
         }
     return {**data, "generating": _dp._generating}
@@ -53,7 +53,7 @@ def trigger_generation(background_tasks: BackgroundTasks, x_secret: str = Header
     """
     Trigger a fresh pick generation run in the background.
     Protected by X-Secret header to prevent abuse.
-    Called by GitHub Actions cron at 3:30 UTC (9 AM IST) daily.
+    Called by GitHub Actions cron at 20:30 UTC (2 AM IST) daily.
     """
     if x_secret != PICKS_SECRET:
         raise HTTPException(status_code=401, detail="Invalid secret")
