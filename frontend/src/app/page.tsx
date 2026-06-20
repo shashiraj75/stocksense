@@ -3,8 +3,9 @@ import Link from "next/link";
 import {
   TrendingUp, TrendingDown, BarChart2, Bell, ShieldCheck,
   Brain, LineChart, Zap, Star, ArrowRight, Lock, Globe,
-  BookOpen, RefreshCw, Target,
+  BookOpen, RefreshCw, Target, LayoutDashboard,
 } from "lucide-react";
+import { useAuth } from "@/lib/AuthContext";
 
 const FEATURES = [
   {
@@ -98,6 +99,9 @@ const HORIZONS = [
 ];
 
 export default function LandingPage() {
+  const { user } = useAuth();
+  const isLoggedIn = !!user;
+
   return (
     <div className="-mx-3 sm:-mx-4 -my-4 sm:-my-6">
 
@@ -142,10 +146,10 @@ export default function LandingPage() {
 
           <div className="flex flex-col sm:flex-row gap-3 justify-center pt-2">
             <Link
-              href="/login"
+              href={isLoggedIn ? "/dashboard" : "/login"}
               className="inline-flex items-center justify-center gap-2 rounded-xl bg-brand-500 hover:bg-brand-600 px-6 py-3 text-sm font-semibold text-white transition-colors"
             >
-              Sign In <ArrowRight size={16} />
+              {isLoggedIn ? <><LayoutDashboard size={16} /> Go to Dashboard</> : <>Sign In <ArrowRight size={16} /></>}
             </Link>
             <a
               href="#features"
@@ -252,12 +256,14 @@ export default function LandingPage() {
             <span className="text-xl font-bold text-white">StockSense360</span>
           </div>
           <h2 className="text-2xl font-bold text-white">Ready to trade smarter?</h2>
-          <p className="text-gray-400 text-sm">Access is by invitation only during beta. Sign in if you have been invited.</p>
+          <p className="text-gray-400 text-sm">
+            {isLoggedIn ? `Welcome back, ${user?.email}` : "Access is by invitation only during beta. Sign in if you have been invited."}
+          </p>
           <Link
-            href="/login"
+            href={isLoggedIn ? "/dashboard" : "/login"}
             className="inline-flex items-center justify-center gap-2 rounded-xl bg-brand-500 hover:bg-brand-600 px-8 py-3 text-sm font-semibold text-white transition-colors"
           >
-            Sign In <ArrowRight size={16} />
+            {isLoggedIn ? <><LayoutDashboard size={16} /> Go to Dashboard</> : <>Sign In <ArrowRight size={16} /></>}
           </Link>
           <p className="text-xs text-gray-600 pt-2">
             © {new Date().getFullYear()} StockSense360 · <Link href="/accept-terms" className="hover:text-gray-400">Terms & Disclaimer</Link>
