@@ -53,11 +53,15 @@ async def _weekly_refresh_loop():
 async def _keepalive_loop():
     """
     Ping own /health every 14 minutes as a secondary keepalive fallback.
-    Uses asyncio-native HTTP so it never blocks the event loop.
-    Primary keepalive is UptimeRobot pinging /health every 5 min from outside.
+    Works on any platform — reads RAILWAY_PUBLIC_DOMAIN or SELF_URL env var.
+    Railway doesn't sleep so this is just a safety net.
     """
     await asyncio.sleep(60)
-    self_url = os.getenv("RENDER_EXTERNAL_URL", "")
+    self_url = os.getenv("SELF_URL", "")
+    if not self_url:
+        domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
+        if domain:
+            self_url = f"https://{domain}"
     if not self_url:
         return
     url = f"{self_url}/health"
