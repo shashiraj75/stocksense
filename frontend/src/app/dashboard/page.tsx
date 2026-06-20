@@ -2,12 +2,13 @@
 import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchTopMovers, api } from "@/utils/api";
-import { TrendingUp, TrendingDown } from "lucide-react";
+import { TrendingUp, TrendingDown, RefreshCw, Wifi } from "lucide-react";
 import Link from "next/link";
 import clsx from "clsx";
 import { IndexBar } from "@/components/IndexBar";
 import { StockContextMenu } from "@/components/StockContextMenu";
 import { useAuthGuard } from "@/hooks/useAuthGuard";
+import { useAuth } from "@/lib/AuthContext";
 const POPULAR_US     = ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "JPM", "META", "AMZN"];
 const POPULAR_IN     = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "WIPRO", "BAJFINANCE", "ICICIBANK", "ADANIENT"];
 const POPULAR_CRYPTO = ["BTC", "ETH", "BNB", "SOL", "XRP", "DOGE"];
@@ -36,18 +37,20 @@ const MARKET_TABS: { key: DashMarket; label: string }[] = [
 
 export default function Dashboard() {
   useAuthGuard();
+  const { user } = useAuth();
+  const userId = user?.id ?? "";
   const [market, setMarket] = useState<DashMarket>("IN");
 
-  const { data: movers, isLoading: moversLoading, dataUpdatedAt: moversUpdatedAt } = useQuery({
+  const { data: movers, isLoading: moversLoading, isFetching: moversFetching, dataUpdatedAt: moversUpdatedAt } = useQuery({
     queryKey: ["movers", market],
     queryFn: () => fetchTopMovers(market as any),
     enabled: market !== "CRYPTO",
-    refetchInterval: 120_000,  // backend open=2min / closed=5min cache; poll at 2min
+    refetchInterval: 120_000,
     staleTime: 115_000,
     refetchOnWindowFocus: false,
   });
 
-  const { data: cryptoMovers, isLoading: cryptoLoading, dataUpdatedAt: cryptoUpdatedAt } = useQuery({
+  const { data: cryptoMovers, isLoading: cryptoLoading, isFetching: cryptoFetching, dataUpdatedAt: cryptoUpdatedAt } = useQuery({
     queryKey: ["crypto-movers"],
     queryFn: () => api.get<{ movers: { symbol: string; name: string; price: number | null; change_pct: number }[] }>("/api/screener/crypto-movers").then(r => r.data),
     enabled: market === "CRYPTO",
@@ -57,10 +60,13 @@ export default function Dashboard() {
   });
 
   const lastUpdated = market === "CRYPTO" ? cryptoUpdatedAt : moversUpdatedAt;
+  const isFetching = market === "CRYPTO" ? cryptoFetching : moversFetching;
+  const isFirstLoad = (market === "CRYPTO" ? cryptoLoading : moversLoading) && !lastUpdated;
 
   const { data: watchlistData } = useQuery({
-    queryKey: ["watchlist-quick"],
-    queryFn: () => api.get<{ items: { symbol: string; market: string }[] }>("/api/watchlist/default").then(r => r.data),
+    queryKey: ["watchlist-quick", userId],
+    queryFn: () => api.get<{ items: { symbol: string; market: string }[] }>(`/api/watchlist/${userId}`).then(r => r.data),
+    enabled: !!userId,
     staleTime: 60_000,
   });
 
@@ -80,16 +86,40 @@ export default function Dashboard() {
             <h1 className="text-2xl font-bold text-white">Market Overview</h1>
             <p className="text-sm text-gray-400 mt-1">Live indices, top movers &amp; market sentiment</p>
           </div>
-          <div className="flex gap-2">
-            {MARKET_TABS.map(({ key, label }) => (
-              <button key={key} onClick={() => setMarket(key)}
-                className={clsx("px-4 py-2 rounded-xl text-sm font-medium transition-colors border",
-                  market === key
-                    ? "bg-brand-500 text-white border-brand-500"
-                    : "bg-dark-card border-dark-border text-gray-400 hover:text-white")}>
-                {label}
-              </button>
-            ))}
+          <div className="flex items-center gap-3">
+            {/* Live status / loading badge */}
+            <div className={clsx(
+              "flex items-center gap-1.5 text-xs rounded-lg px-3 py-1.5 border transition-all",
+              isFirstLoad
+                ? "bg-brand-500/10 border-brand-500/30 text-brand-400"
+                : isFetching
+                  ? "bg-yellow-500/10 border-yellow-500/30 text-yellow-400"
+                  : "bg-dark-card border-dark-border text-gray-500"
+            )}>
+              {isFirstLoad || isFetching
+                ? <RefreshCw size={11} className="animate-spin" />
+                : <Wifi size={11} className="text-green-500" />
+              }
+              {isFirstLoad
+                ? "Fetching market data…"
+                : isFetching
+                  ? "Refreshing…"
+                  : lastUpdated
+                    ? `Updated ${new Date(lastUpdated).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true })}`
+                    : "Live"
+              }
+            </div>
+            <div className="flex gap-2">
+              {MARKET_TABS.map(({ key, label }) => (
+                <button key={key} onClick={() => setMarket(key)}
+                  className={clsx("px-4 py-2 rounded-xl text-sm font-medium transition-colors border",
+                    market === key
+                      ? "bg-brand-500 text-white border-brand-500"
+                      : "bg-dark-card border-dark-border text-gray-400 hover:text-white")}>
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
         {/* Index bar */}

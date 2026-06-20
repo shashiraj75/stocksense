@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { api } from "@/utils/api";
 import clsx from "clsx";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, Wifi } from "lucide-react";
 import { IndexBar } from "@/components/IndexBar";
 import { StockContextMenu } from "@/components/StockContextMenu";
 
@@ -64,16 +64,28 @@ export default function HeatmapPage() {
           <p className="text-sm text-gray-400 mt-1">Sector-wise performance — green = up, red = down</p>
         </div>
         <div className="flex items-center gap-3">
-          {/* Last updated badge */}
-          {lastUpdated && (
-            <div className="flex items-center gap-1.5 text-xs text-gray-500 bg-dark-card border border-dark-border rounded-lg px-3 py-1.5">
-              {isFetching
-                ? <RefreshCw size={11} className="animate-spin text-brand-500" />
-                : <span className="w-2 h-2 rounded-full bg-green-500 inline-block" />
-              }
-              {isFetching ? "Refreshing…" : `Updated ${lastUpdated}`}
-            </div>
-          )}
+          {/* Live status / loading badge — always visible */}
+          <div className={clsx(
+            "flex items-center gap-1.5 text-xs rounded-lg px-3 py-1.5 border transition-all",
+            isLoading && !data
+              ? "bg-brand-500/10 border-brand-500/30 text-brand-400"
+              : isFetching
+                ? "bg-yellow-500/10 border-yellow-500/30 text-yellow-400"
+                : "bg-dark-card border-dark-border text-gray-500"
+          )}>
+            {(isLoading && !data) || isFetching
+              ? <RefreshCw size={11} className="animate-spin" />
+              : <Wifi size={11} className="text-green-500" />
+            }
+            {isLoading && !data
+              ? "Fetching heatmap data…"
+              : isFetching
+                ? "Refreshing…"
+                : lastUpdated
+                  ? `Updated ${lastUpdated}`
+                  : "Live"
+            }
+          </div>
           {/* Market toggle */}
           <div className="flex gap-2">
             {(["IN", "US"] as const).map(m => (
