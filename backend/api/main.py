@@ -137,25 +137,28 @@ async def _validation_schedule_loop():
             print(f"[validation_scheduler] next medium run at {next_run.isoformat()} IST (in {sleep_secs/3600:.1f}h)")
             await asyncio.sleep(sleep_secs)
 
-            # Run medium every day
-            try:
-                loop = asyncio.get_event_loop()
-                from services.validation_engine import run_validation
-                print("[validation_scheduler] starting medium horizon run…")
-                await loop.run_in_executor(None, lambda: run_validation(horizon="medium"))
-                print("[validation_scheduler] medium run complete")
-            except Exception as e:
-                print(f"[validation_scheduler] medium run error: {e}")
-
-            # Run long only on Sundays (weekday 6)
-            if datetime.now(IST).weekday() == 6:
+            # Run medium validation for all three universes — staggered by 5 min each
+            from services.validation_engine import run_validation
+            loop = asyncio.get_event_loop()
+            for univ in ("nifty100", "midcap", "us"):
                 try:
-                    loop = asyncio.get_event_loop()
-                    print("[validation_scheduler] Sunday — starting long horizon run…")
-                    await loop.run_in_executor(None, lambda: run_validation(horizon="long"))
-                    print("[validation_scheduler] long run complete")
+                    print(f"[validation_scheduler] starting medium/{univ} run…")
+                    await loop.run_in_executor(None, lambda u=univ: run_validation(horizon="medium", universe=u))
+                    print(f"[validation_scheduler] medium/{univ} complete")
                 except Exception as e:
-                    print(f"[validation_scheduler] long run error: {e}")
+                    print(f"[validation_scheduler] medium/{univ} error: {e}")
+                await asyncio.sleep(5 * 60)  # 5-min gap between universe runs
+
+            # Run long only on Sundays (weekday 6) — all three universes
+            if datetime.now(IST).weekday() == 6:
+                for univ in ("nifty100", "midcap", "us"):
+                    try:
+                        print(f"[validation_scheduler] Sunday — starting long/{univ} run…")
+                        await loop.run_in_executor(None, lambda u=univ: run_validation(horizon="long", universe=u))
+                        print(f"[validation_scheduler] long/{univ} complete")
+                    except Exception as e:
+                        print(f"[validation_scheduler] long/{univ} error: {e}")
+                    await asyncio.sleep(5 * 60)
 
         except Exception as e:
             print(f"[validation_scheduler] scheduler error: {e}")

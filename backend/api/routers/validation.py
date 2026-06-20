@@ -32,9 +32,11 @@ def _json_response(data: dict) -> JSONResponse:
 async def trigger_validation(
     background_tasks: BackgroundTasks,
     horizon: Literal["short", "medium", "long"] = Query("medium"),
+    universe: Literal["nifty100", "midcap", "us"] = Query("nifty100"),
 ):
     """
-    Trigger a walk-forward validation run across all Nifty 100 stocks.
+    Trigger a walk-forward validation run.
+    universe: nifty100 (default) | midcap | us
     Returns immediately — poll /status for progress, /results for output.
     """
     from services.validation_engine import run_validation, get_run_status
@@ -44,7 +46,7 @@ async def trigger_validation(
         return _json_response({"status": "already_running", "progress": status.get("progress"), "total": status.get("total")})
 
     def _run():
-        run_validation(horizon=horizon)
+        run_validation(horizon=horizon, universe=universe)
 
     background_tasks.add_task(_run)
     return _json_response({

@@ -124,6 +124,56 @@ NIFTY_100 = [
     "DABUR", "MARICO",
 ]
 
+# ── Mid-cap NSE (top 100 non-Nifty-100 stocks by market cap, June 2026) ──────
+NSE_MIDCAP = [
+    "KALYANKJIL", "LLOYDSME", "GSPL", "KPITTECH", "COFORGE", "LTTS", "ZENSARTECH",
+    "MPHASIS", "PERSISTENT", "DIXON", "TATAELXSI", "CYIENT", "MASTEK", "RATEGAIN",
+    "ANGELONE", "CDSL", "BSE", "MOTILALOFS", "IIFL", "MUTHOOTFIN",
+    "CANFINHOME", "AAVAS", "HOMEFIRST", "CREDITACC", "UGROCAP",
+    "APOLLOTYRE", "MRF", "BALKRISIND", "TIINDIA", "CEATLTD",
+    "APLAPOLLO", "RATNAMANI", "JINDALSAW", "SHYAMMETL", "WELSPUNLIV",
+    "DEEPAKNTR", "NAVINFLUOR", "AARTIIND", "VINATIORGA", "ROSSARI", "FINEORG",
+    "JKCEMENT", "RAMCOCEM", "HEIDELBERG", "DALBHARAT", "ORIENTCEM",
+    "ATGL", "GUJGASLTD", "IGL", "MGL", "PETRONET",
+    "ASTERDM", "NH", "RAINBOW", "METROPOLIS", "LALPATHLAB", "THYROCARE",
+    "HAL", "BEL", "MIDHANI", "MAZDOCK", "COCHINSHIP", "DATAPATTNS", "MTARTECH",
+    "GODREJPROP", "PRESTIGE", "SOBHA", "BRIGADE", "PHOENIXLTD",
+    "LEMONTREE", "CHALET", "INDHOTEL", "EIHOTEL",
+    "JUBLFOOD", "DEVYANI", "SAPPHIRE", "WESTLIFE",
+    "PVRINOX", "SAREGAMA", "NAZARA", "TIPSFILMS",
+    "PAGEIND", "TRIDENT", "VTL", "KPRMILL", "ARVIND",
+    "UPL", "PIIND", "DHANUKA", "BAYERCROP", "RALLIS", "SUMICHEM",
+    "DELHIVERY", "BLUEDART", "TCIEXP", "VRLLOG", "ALLCARGO", "CONCOR",
+    "ASIANPAINT", "BERGEPAINT", "KANSAINER", "INDIGOPNTS",
+    "KNRCON", "ASHOKA", "PNCINFRA", "HGINFRA", "IRB",
+    "GRINDWELL", "SCHAEFFLER", "TIMKEN", "ELGIEQUIP", "THERMAX",
+]
+
+# ── US validation basket — 50 stocks covering all major S&P 500 sectors ──────
+US_BASKET = [
+    # Mega-cap tech
+    "AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMZN",
+    # Semiconductors
+    "TSM", "AVGO", "AMD", "QCOM", "INTC",
+    # Cloud / SaaS
+    "CRM", "NOW", "SNOW", "DDOG",
+    # Fintech / Finance
+    "JPM", "BAC", "GS", "V", "MA", "PYPL",
+    # Healthcare / Pharma
+    "JNJ", "UNH", "PFE", "ABBV", "LLY", "MRK",
+    # Consumer
+    "AMZN", "TSLA", "HD", "MCD", "NKE", "COST",
+    # Energy
+    "XOM", "CVX", "COP",
+    # Industrials / Defence
+    "LMT", "RTX", "BA", "GE",
+    # Utilities / Realty
+    "NEE", "AMT", "PLD",
+    # ETF benchmarks (used for alpha calculation)
+]
+# deduplicate (AMZN appears in two sectors above)
+US_BASKET = list(dict.fromkeys(US_BASKET))
+
 HORIZON_DAYS  = {"short": 5,  "medium": 21, "long": 63}
 HORIZON_STEP  = {"short": 5,  "medium": 10, "long": 21}
 HORIZON_THRESHOLDS = {"short": 0.02, "medium": 0.04, "long": 0.10}
@@ -593,36 +643,55 @@ def _compute_metrics(signals: list[dict], nifty_return_pct: float, horizon: str 
 
 # ── Main runner ───────────────────────────────────────────────────────────────
 
-def run_validation(horizon: str = "medium", max_workers: int = 6) -> dict:
+def run_validation(horizon: str = "medium", universe: str = "nifty100", max_workers: int = 6) -> dict:
     """
-    Run a full walk-forward validation across all Nifty 100 stocks.
-    Stores results in SQLite and returns the summary metrics dict.
+    Run a full walk-forward validation.
+
+    universe options:
+      "nifty100"  — Nifty 100 large-cap India (default, ~125 stocks)
+      "midcap"    — Mid-cap NSE sample (~100 stocks beyond Nifty 100)
+      "us"        — US S&P 500 basket (~48 stocks, all major sectors)
+
+    Stores results in Postgres/SQLite and returns summary metrics.
     """
-    stocks = NIFTY_100
+    universe_map = {
+        "nifty100": NIFTY_100,
+        "midcap":   NSE_MIDCAP,
+        "us":       US_BASKET,
+    }
+    stocks   = universe_map.get(universe, NIFTY_100)
     n_stocks = len(stocks)
+    label    = f"{horizon}-{universe}"
+
     with _status_lock:
         if _run_status["running"]:
             return {"error": "A validation run is already in progress"}
-        _run_status.update({"running": True, "progress": 0, "total": n_stocks,
-                            "started_at": datetime.now(timezone.utc).isoformat(),
-                            "log": [f"Starting {horizon}-term validation on all {n_stocks} Nifty 100 stocks…"]})
+        _run_status.update({
+            "running": True, "progress": 0, "total": n_stocks,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "log": [f"Starting {horizon}-term validation on {universe} ({n_stocks} stocks)…"]
+        })
+
+    # Benchmark ticker: Nifty 50 for India universes, S&P 500 for US
+    benchmark_ticker = "^GSPC" if universe == "us" else "^NSEI"
+    # Yahoo Finance suffix for price lookup
+    yf_suffix = "" if universe == "us" else ".NS"
 
     try:
         _init_db()
-        stocks = NIFTY_100
 
-        # Fetch Nifty 50 benchmark once
+        # Fetch benchmark once
         try:
-            nifty_df = yf.Ticker("^NSEI").history(period=HORIZON_PERIOD[horizon])
-            # Benchmark: average forward return over the period
-            fwd_days = HORIZON_DAYS[horizon]
-            nifty_rets = []
-            for i in range(0, len(nifty_df) - fwd_days, HORIZON_STEP[horizon]):
-                e = float(nifty_df["Close"].iloc[i])
-                x = float(nifty_df["Close"].iloc[i + fwd_days])
+            bench_df  = yf.Ticker(benchmark_ticker).history(period=HORIZON_PERIOD[horizon])
+            fwd_days  = HORIZON_DAYS[horizon]
+            bench_rets = []
+            for i in range(0, len(bench_df) - fwd_days, HORIZON_STEP[horizon]):
+                e = float(bench_df["Close"].iloc[i])
+                x = float(bench_df["Close"].iloc[i + fwd_days])
                 if e != 0:
-                    nifty_rets.append((x - e) / e * 100)
-            nifty_avg_ret = float(np.mean(nifty_rets)) if nifty_rets else 0.0
+                    bench_rets.append((x - e) / e * 100)
+            nifty_avg_ret = float(np.mean(bench_rets)) if bench_rets else 0.0
+            nifty_df = bench_df  # reuse variable name — passed to _backtest_stock
         except Exception:
             nifty_df = pd.DataFrame()
             nifty_avg_ret = 0.0
@@ -648,10 +717,12 @@ def run_validation(horizon: str = "medium", max_workers: int = 6) -> dict:
                         _run_status["log"].append(f"[{done}/{n_stocks}] {sym}: ERROR {e}")
 
         metrics = _compute_metrics(all_signals, nifty_avg_ret, horizon)
-        metrics["horizon"] = horizon
+        metrics["horizon"]   = horizon
+        metrics["universe"]  = universe
         metrics["n_stocks_tested"] = n_stocks
         metrics["run_at"] = datetime.now(timezone.utc).isoformat()
-        metrics["nifty_avg_fwd_return_pct"] = round(nifty_avg_ret, 2)
+        metrics["benchmark_avg_fwd_return_pct"] = round(nifty_avg_ret, 2)
+        metrics["nifty_avg_fwd_return_pct"]     = round(nifty_avg_ret, 2)  # backward compat
 
         # Persist — convert numpy scalars to native Python first
         def _jsonify(obj):
