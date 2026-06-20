@@ -214,6 +214,31 @@ CREATE TABLE IF NOT EXISTS market_cache (
     data        JSONB NOT NULL,
     saved_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Signal feedback: thumbs up/down on BUY/HOLD/SELL signals
+CREATE TABLE IF NOT EXISTS signal_feedback (
+    id           BIGSERIAL PRIMARY KEY,
+    user_id      TEXT NOT NULL,
+    symbol       TEXT NOT NULL,
+    market       TEXT NOT NULL,
+    horizon      TEXT NOT NULL,
+    signal       TEXT NOT NULL,
+    vote         SMALLINT NOT NULL CHECK (vote IN (1, -1)),
+    submitted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (user_id, symbol, market, horizon)
+);
+CREATE INDEX IF NOT EXISTS idx_signal_feedback_user   ON signal_feedback(user_id);
+CREATE INDEX IF NOT EXISTS idx_signal_feedback_symbol ON signal_feedback(symbol, market, horizon);
+
+-- NPS survey responses: monthly 0-10 score + optional comment
+CREATE TABLE IF NOT EXISTS nps_responses (
+    id           BIGSERIAL PRIMARY KEY,
+    user_id      TEXT NOT NULL,
+    score        SMALLINT NOT NULL CHECK (score BETWEEN 0 AND 10),
+    comment      TEXT,
+    submitted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_nps_user ON nps_responses(user_id, submitted_at);
 """
 
 

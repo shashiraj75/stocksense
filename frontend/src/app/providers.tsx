@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState, useEffect } from "react";
 import { api } from "@/utils/api";
 import { AuthProvider } from "@/lib/AuthContext";
+import { NpsPopup } from "@/components/NpsPopup";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [qc] = useState(() => new QueryClient({
@@ -37,7 +38,10 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
   return (
     <QueryClientProvider client={qc}>
-      <AuthProvider>{children}</AuthProvider>
+      <AuthProvider>
+        {children}
+        <NpsPopup />
+      </AuthProvider>
     </QueryClientProvider>
   );
 }
