@@ -390,20 +390,31 @@ def _score_at(df: pd.DataFrame, i: int, nifty_close: pd.Series | None, fund_scor
 def _backtest_stock(symbol: str, horizon: str, nifty_df: pd.DataFrame | None) -> list[dict]:
     """
     Walk-forward backtest for one stock over HORIZON_PERIOD[horizon].
+
+    Look-ahead bias fix: indicators are recomputed on df.iloc[:i+1] at each
+    signal date i — exactly the data that would have been available in real-time.
+    No future prices leak into EMA, MACD, OBV, or any other indicator.
+
     Returns list of signal dicts, empty list on error.
     """
-    yf_sym = symbol + ".NS"
-    fwd_days = HORIZON_DAYS[horizon]
-    step     = HORIZON_STEP[horizon]
+    is_us   = not symbol.endswith(".NS") and "." not in symbol and len(symbol) <= 5
+    yf_sym  = symbol if is_us else symbol + ".NS"
+    fwd_days  = HORIZON_DAYS[horizon]
+    step      = HORIZON_STEP[horizon]
     threshold = HORIZON_THRESHOLDS[horizon]
+
+    # Need ≥200 rows for EMA-200 to be meaningful; start signal loop from row 200
+    MIN_WARMUP = 200
 
     try:
         df = yf.Ticker(yf_sym).history(period=HORIZON_PERIOD[horizon])
-        if len(df) < 100:
+        if len(df) < MIN_WARMUP + fwd_days:
             return []
-        df = compute_indicators(df)
+        # Do NOT call compute_indicators on full df — that causes look-ahead bias.
+        # Raw OHLCV df is kept clean; indicators are computed per window inside loop.
 
-        # Fixed fundamentals (snapshot; not time-varying in historical test)
+        # Fixed fundamentals — current snapshot (not time-varying; acceptable trade-off
+        # since fundamentals change slowly and historical quarterly data isn't in yfinance)
         try:
             info = yf.Ticker(yf_sym).info
         except Exception:
@@ -420,22 +431,21 @@ def _backtest_stock(symbol: str, horizon: str, nifty_df: pd.DataFrame | None) ->
             fund_score += 8 if rev_g > 0.10 else (-8 if rev_g < 0 else 0)
         fund_score = max(0.0, min(100.0, fund_score))
 
-        # Align nifty index to stock dates
+        # Align benchmark index to stock dates
         nifty_close = None
         if nifty_df is not None and not nifty_df.empty:
             nifty_close = nifty_df["Close"].reindex(df.index).ffill().bfill()
 
-        # Precompute regime adjustments
+        # Precompute regime adjustments from benchmark only (no stock data → no bias)
         regime_adjs = []
         if nifty_close is not None:
-            ema50 = nifty_close.ewm(span=50).mean()
+            ema50_bench = nifty_close.ewm(span=50).mean()
             for idx in range(len(df)):
                 try:
-                    cur = float(nifty_close.iloc[idx])
-                    e50 = float(ema50.iloc[idx])
-                    lookback = max(0, idx-63)
-                    base = float(nifty_close.iloc[lookback])
-                    r3m = (cur - base) / base if base != 0 else 0
+                    cur  = float(nifty_close.iloc[idx])
+                    e50  = float(ema50_bench.iloc[idx])
+                    base = float(nifty_close.iloc[max(0, idx - 63)])
+                    r3m  = (cur - base) / base if base != 0 else 0
                     if cur > e50 and r3m > 0.03:    regime_adjs.append(5.0)
                     elif cur < e50 and r3m < -0.03: regime_adjs.append(-5.0)
                     else:                            regime_adjs.append(0.0)
@@ -445,7 +455,7 @@ def _backtest_stock(symbol: str, horizon: str, nifty_df: pd.DataFrame | None) ->
             regime_adjs = [0.0] * len(df)
 
         signals = []
-        for i in range(50, len(df) - fwd_days, step):
+        for i in range(MIN_WARMUP, len(df) - fwd_days, step):
             try:
                 entry = float(df["Close"].iloc[i])
                 exit_ = float(df["Close"].iloc[i + fwd_days])
@@ -453,7 +463,7 @@ def _backtest_stock(symbol: str, horizon: str, nifty_df: pd.DataFrame | None) ->
                     continue
                 fwd_ret = (exit_ - entry) / entry * 100
 
-                # Nifty forward return over same window (benchmark-relative correctness)
+                # Nifty forward return over same window (for alpha calculation)
                 nifty_fwd_ret = 0.0
                 if nifty_close is not None and i + fwd_days < len(nifty_close):
                     n_entry = float(nifty_close.iloc[i])
@@ -461,7 +471,12 @@ def _backtest_stock(symbol: str, horizon: str, nifty_df: pd.DataFrame | None) ->
                     if n_entry != 0:
                         nifty_fwd_ret = (n_exit - n_entry) / n_entry * 100
 
-                sc = _score_at(df, i, nifty_close, fund_score, regime_adjs[i])
+                # ── Look-ahead-free indicator computation ──────────────────────
+                # Slice only rows 0..i (inclusive) — no future data visible
+                window = df.iloc[:i + 1].copy()
+                window = compute_indicators(window)
+                # Score uses the last row of the window (= day i)
+                sc = _score_at(window, len(window) - 1, nifty_close, fund_score, regime_adjs[i])
                 composite = sc["composite"]
 
                 buy_thr  = BUY_THRESHOLD[horizon]
