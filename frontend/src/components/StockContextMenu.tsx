@@ -3,6 +3,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { TrendingUp, BookmarkPlus, Check } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { api } from "@/utils/api";
+import { useAuth } from "@/lib/AuthContext";
 
 interface ContextMenuProps {
   symbol: string;
@@ -11,9 +12,9 @@ interface ContextMenuProps {
   className?: string;
 }
 
-const USER_ID = "default";
-
 export function StockContextMenu({ symbol, market, children, className }: ContextMenuProps) {
+  const { user } = useAuth();
+  const userId = user?.id ?? "";
   const [pos, setPos]         = useState<{ x: number; y: number } | null>(null);
   const [added, setAdded]     = useState(false);
   const [adding, setAdding]   = useState(false);
@@ -55,7 +56,7 @@ export function StockContextMenu({ symbol, market, children, className }: Contex
     if (adding || added) return;
     setAdding(true);
     try {
-      await api.post(`/api/watchlist/${USER_ID}`, { symbol, market, notes: "" });
+      await api.post(`/api/watchlist/${userId}`, { symbol, market, notes: "" });
       setAdded(true);
       setTimeout(close, 900);
     } catch {

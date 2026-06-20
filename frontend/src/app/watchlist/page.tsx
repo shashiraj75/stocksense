@@ -5,14 +5,9 @@ import { api, Market, fetchQuote } from "@/utils/api";
 import { Trash2, TrendingUp, TrendingDown, Minus, Search } from "lucide-react";
 import Link from "next/link";
 import clsx from "clsx";
-
-const USER_ID = "default";
+import { useAuth } from "@/lib/AuthContext";
 
 interface WatchlistItem { symbol: string; market: Market; notes: string; }
-
-const getWatchlist = () => api.get<{ items: WatchlistItem[] }>(`/api/watchlist/${USER_ID}`).then(r => r.data);
-const addToWatchlist = (item: WatchlistItem) => api.post(`/api/watchlist/${USER_ID}`, item).then(r => r.data);
-const removeFromWatchlist = (symbol: string) => api.delete(`/api/watchlist/${USER_ID}/${symbol}`).then(r => r.data);
 
 // ── Stock universe search (same logic as global SearchBar) ──────────────────
 type Stock = { symbol: string; name: string; market: string };
@@ -54,6 +49,8 @@ function searchLocal(universe: Universe, query: string, limit = 8): Stock[] {
 // ────────────────────────────────────────────────────────────────────────────
 
 export default function WatchlistPage() {
+  const { user } = useAuth();
+  const userId = user?.id ?? "";
   const qc = useQueryClient();
 
   // Search state
@@ -85,8 +82,9 @@ export default function WatchlistPage() {
   }, [universe]);
 
   const { data, isLoading } = useQuery({
-    queryKey: ["watchlist"],
-    queryFn: getWatchlist,
+    queryKey: ["watchlist", userId],
+    queryFn: () => api.get<{ items: WatchlistItem[] }>(`/api/watchlist/${userId}`).then(r => r.data),
+    enabled: !!userId,
     staleTime: 5 * 60_000,
     refetchOnWindowFocus: false,
   });
@@ -103,13 +101,13 @@ export default function WatchlistPage() {
   });
 
   const add = useMutation({
-    mutationFn: addToWatchlist,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["watchlist"] }),
+    mutationFn: (item: WatchlistItem) => api.post(`/api/watchlist/${userId}`, item).then(r => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["watchlist", userId] }),
   });
 
   const remove = useMutation({
-    mutationFn: removeFromWatchlist,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["watchlist"] }),
+    mutationFn: (symbol: string) => api.delete(`/api/watchlist/${userId}/${symbol}`).then(r => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["watchlist", userId] }),
   });
 
   const pickStock = (stock: Stock) => {

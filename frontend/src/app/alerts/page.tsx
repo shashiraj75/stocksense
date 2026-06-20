@@ -4,6 +4,7 @@ import { useQueries } from "@tanstack/react-query";
 import { fetchQuote, Market, api } from "@/utils/api";
 import { Bell, BellRing, PlusCircle, Trash2, CheckCircle } from "lucide-react";
 import clsx from "clsx";
+import { useAuth } from "@/lib/AuthContext";
 
 interface Alert {
   id: string;
@@ -15,24 +16,16 @@ interface Alert {
   createdAt: string;
 }
 
-const USER_ID = "default";
-const API_BASE = `/api/alerts/${USER_ID}`;
-
 // localStorage as fast-access cache (instant render before API responds)
 const STORAGE_KEY = "stocksense_alerts";
 function loadLocal(): Alert[] { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); } catch { return []; } }
 function saveLocal(a: Alert[]) { localStorage.setItem(STORAGE_KEY, JSON.stringify(a)); }
 
-async function fetchAlerts(): Promise<Alert[]> {
-  try {
-    const res = await api.get<{ items: Alert[] }>(API_BASE);
-    return res.data.items;
-  } catch {
-    return loadLocal();
-  }
-}
-
 export default function AlertsPage() {
+  const { user } = useAuth();
+  const userId = user?.id ?? "";
+  const apiBase = userId ? `/api/alerts/${userId}` : null;
+
   const [alerts, setAlerts] = useState<Alert[]>(() => loadLocal());
   const [sym, setSym] = useState("");
   const [market, setMarket] = useState<Market>("IN");
@@ -41,13 +34,13 @@ export default function AlertsPage() {
   const [error, setError] = useState("");
   const [syncing, setSyncing] = useState(false);
 
-  // Load from backend on mount
+  // Load from backend when user is ready
   useEffect(() => {
-    fetchAlerts().then(items => {
-      setAlerts(items);
-      saveLocal(items);
-    });
-  }, []);
+    if (!apiBase) return;
+    api.get<{ items: Alert[] }>(apiBase)
+      .then(res => { setAlerts(res.data.items); saveLocal(res.data.items); })
+      .catch(() => setAlerts(loadLocal()));
+  }, [apiBase]);
 
   const quoteQueries = useQueries({
     queries: alerts.map(a => ({
@@ -69,7 +62,7 @@ export default function AlertsPage() {
       if (hit) {
         changed = true;
         // persist trigger to backend
-        api.patch(`${API_BASE}/${a.id}`, { triggered: true }).catch(() => {});
+        if (apiBase) api.patch(`${apiBase}/${a.id}`, { triggered: true }).catch(() => {});
         return { ...a, triggered: true };
       }
       return a;
@@ -86,7 +79,8 @@ export default function AlertsPage() {
 
     setSyncing(true);
     try {
-      const res = await api.post<Alert>(API_BASE, {
+      if (!apiBase) throw new Error("Not logged in");
+      const res = await api.post<Alert>(apiBase, {
         symbol: sym.trim().toUpperCase(),
         market,
         target_price: +targetPrice,
@@ -117,14 +111,14 @@ export default function AlertsPage() {
     const updated = alerts.filter(a => a.id !== id);
     setAlerts(updated);
     saveLocal(updated);
-    api.delete(`${API_BASE}/${id}`).catch(() => {});
+    if (apiBase) api.delete(`${apiBase}/${id}`).catch(() => {});
   };
 
   const resetTrigger = async (id: string) => {
     const updated = alerts.map(a => a.id === id ? { ...a, triggered: false } : a);
     setAlerts(updated);
     saveLocal(updated);
-    api.patch(`${API_BASE}/${id}`, { triggered: false }).catch(() => {});
+    if (apiBase) api.patch(`${apiBase}/${id}`, { triggered: false }).catch(() => {});
   };
 
   const currency = (m: Market) => m === "US" ? "$" : "₹";
