@@ -1,7 +1,7 @@
 # StockSense — Complete Product & Technical Documentation
 
 > **Live Document** — Updated automatically as the product evolves.  
-> Last updated: 2026-06-20 (Session 5)
+> Last updated: 2026-06-20 (Session 6)
 
 ---
 
@@ -1240,6 +1240,37 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 ---
 
 ## 26. Changelog
+
+### Session 6 — 2026-06-20
+
+**User Feedback System:**
+
+- **Signal thumbs up/down** — users can rate each AI signal (BUY/HOLD/SELL) directly on the stock detail page. Widget renders below the Paper Trade button; shows current vote highlighted in bull/bear colour. Votes are upserted per `(user_id, symbol, market, horizon)` so toggling works cleanly.
+- **Monthly NPS survey** — `NpsPopup` component appears globally (bottom-right) after a user has voted on at least one signal and then every 30 days thereafter. 0–10 score card + optional free-text comment. Colour-coded (green ≥9, yellow 7–8, red ≤6).
+- **New backend router** (`backend/api/routers/feedback.py`) with 4 endpoints:
+  - `POST /api/feedback/signal` — upsert thumbs vote
+  - `GET /api/feedback/signal/{symbol}` — fetch user's existing vote
+  - `GET /api/feedback/signal/summary/{symbol}` — aggregate approval % across all users
+  - `POST /api/feedback/nps` — submit NPS score + comment
+  - `GET /api/feedback/nps/due` — returns `{due: bool}` based on 30-day cadence
+- **DB schema additions** (already in `postgres_store.py` SCHEMA_SQL):
+  - `signal_feedback` table: per-user signal votes with UNIQUE constraint and ON CONFLICT upsert
+  - `nps_responses` table: per-user NPS scores with timestamps for 30-day cadence check
+
+**Look-ahead Bias Fix (Validation Engine):**
+
+- `_backtest_stock()` now recomputes indicators on a rolling window (`df.iloc[:i+1]`) at each signal date instead of on the full historical DataFrame. This eliminates future-price leakage into EMA-200, MACD, and OBV at time t.
+- `MIN_WARMUP` raised 50 → 200 bars to ensure EMA-200 is valid before scoring begins.
+- US symbols detected via `is_us` flag (`.NS` suffix no longer blindly appended).
+- Validation hit rates will be modestly lower but accurately reflect real-time model performance.
+
+**Validation Coverage Expansion:**
+
+- Added `NSE_MIDCAP` universe (100 non-Nifty-100 NSE stocks) to `validation_engine.py`.
+- Added `US_BASKET` universe (48 S&P 500 stocks spanning all GICS sectors).
+- Railway cron (`_validation_schedule_loop` in `main.py`) now cycles all 3 universes (`nifty100`, `midcap`, `us`) back-to-back with 5-minute gaps between each.
+- Deleted `daily_validation.yml` GitHub Action (was double-running alongside Railway cron).
+- `/api/validation/run` endpoint accepts `universe` query param (`nifty100` | `midcap` | `us`).
 
 ### Session 5 — 2026-06-20
 
