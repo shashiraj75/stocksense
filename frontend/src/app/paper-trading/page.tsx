@@ -11,7 +11,7 @@ import {
   fetchPaperPortfolio, closePaperTrade, resetPaperPortfolio, editPaperTrade,
   fetchQuote, type PaperTrade,
 } from "@/utils/api";
-import { useSessionId } from "@/hooks/useSessionId";
+import { useAuth } from "@/lib/AuthContext";
 import { PaperTradeModal } from "@/components/PaperTradeModal";
 import { SignalBadge } from "@/components/SignalBadge";
 
@@ -31,7 +31,7 @@ function StatCard({ label, value, sub, positive }: { label: string; value: strin
   );
 }
 
-function OpenTradeRow({ trade, onSell, sessionId }: { trade: PaperTrade; onSell: (t: PaperTrade) => void; sessionId: string }) {
+function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t: PaperTrade) => void; userId: string }) {
   const currency = trade.market === "IN" ? "₹" : "$";
 
   const { data: quote } = useQuery({
@@ -54,7 +54,7 @@ function OpenTradeRow({ trade, onSell, sessionId }: { trade: PaperTrade; onSell:
 
   const editMutation = useMutation({
     mutationFn: () => editPaperTrade(
-      trade.id, sessionId,
+      trade.id, userId,
       slInput ? parseFloat(slInput) : null,
       tpInput ? parseFloat(tpInput) : null,
       epInput ? parseFloat(epInput) : null,
@@ -309,20 +309,21 @@ function ClosedTradeRow({ trade }: { trade: PaperTrade }) {
 }
 
 export default function PaperTradingPage() {
-  const sessionId = useSessionId();
+  const { user } = useAuth();
+  const userId = user?.id ?? "";
   const queryClient = useQueryClient();
   const [sellTarget, setSellTarget] = useState<PaperTrade | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   const { data: portfolio, isLoading } = useQuery({
-    queryKey: ["paper-portfolio", sessionId],
-    queryFn: () => fetchPaperPortfolio(sessionId),
-    enabled: sessionId !== "ssr",
+    queryKey: ["paper-portfolio", userId],
+    queryFn: () => fetchPaperPortfolio(userId),
+    enabled: !!userId,
     refetchInterval: 30_000,
   });
 
   const resetMutation = useMutation({
-    mutationFn: () => resetPaperPortfolio(sessionId),
+    mutationFn: () => resetPaperPortfolio(userId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["paper-portfolio"] });
       setShowResetConfirm(false);
@@ -490,7 +491,7 @@ export default function PaperTradingPage() {
                 </thead>
                 <tbody>
                   {openTrades.map(t => (
-                    <OpenTradeRow key={t.id} trade={t} onSell={setSellTarget} sessionId={sessionId} />
+                    <OpenTradeRow key={t.id} trade={t} onSell={setSellTarget} userId={userId} />
                   ))}
                 </tbody>
               </table>

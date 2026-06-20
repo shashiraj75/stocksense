@@ -171,6 +171,11 @@ CREATE TABLE IF NOT EXISTS paper_trades (
 ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS stop_loss DOUBLE PRECISION;
 ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS target_price DOUBLE PRECISION;
 CREATE INDEX IF NOT EXISTS idx_paper_trades_session ON paper_trades(session_id, status);
+-- Migrate paper trading from session-based to user-based (Supabase user_id)
+ALTER TABLE paper_portfolio ADD COLUMN IF NOT EXISTS user_id TEXT UNIQUE;
+ALTER TABLE paper_trades    ADD COLUMN IF NOT EXISTS user_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_paper_trades_user ON paper_trades(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_paper_portfolio_user ON paper_portfolio(user_id);
 CREATE TABLE IF NOT EXISTS watchlist (
     id         BIGSERIAL PRIMARY KEY,
     user_id    TEXT NOT NULL,

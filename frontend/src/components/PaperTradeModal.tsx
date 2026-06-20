@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { X, TrendingUp, TrendingDown, Minus, AlertCircle, Loader2, ShieldAlert, Target } from "lucide-react";
 import clsx from "clsx";
 import { placePaperBuy, closePaperTrade, fetchPrediction, type Market, type Horizon } from "@/utils/api";
-import { useSessionId } from "@/hooks/useSessionId";
+import { useAuth } from "@/lib/AuthContext";
 
 interface Props {
   symbol: string;
@@ -31,7 +31,8 @@ export function PaperTradeModal({
   symbol, market, currentPrice, signal: initialSignal, horizon: initialHorizon, currency,
   suggestedStopLoss, suggestedTargetPrice, onClose, existingTradeId, existingQuantity, existingEntryPrice,
 }: Props) {
-  const sessionId = useSessionId();
+  const { user } = useAuth();
+  const userId = user?.id ?? "";
   const queryClient = useQueryClient();
   const isSell = existingTradeId != null;
 
@@ -92,7 +93,7 @@ export function PaperTradeModal({
   const buyMutation = useMutation({
     mutationFn: () =>
       placePaperBuy({
-        session_id: sessionId, symbol, market, quantity,
+        user_id: userId, symbol, market, quantity,
         price: currentPrice, signal: activeSignal, horizon: selectedHorizon,
         stop_loss: stopLossValue && stopLossValue > 0 ? stopLossValue : null,
         target_price: targetPriceValue && targetPriceValue > 0 ? targetPriceValue : null,
@@ -106,7 +107,7 @@ export function PaperTradeModal({
   });
 
   const sellMutation = useMutation({
-    mutationFn: () => closePaperTrade(existingTradeId!, sessionId, currentPrice),
+    mutationFn: () => closePaperTrade(existingTradeId!, userId, currentPrice),
     onSuccess: () => {
       setSuccess(`Sold ${existingQuantity} × ${symbol} @ ${currency}${currentPrice.toLocaleString()}`);
       queryClient.invalidateQueries({ queryKey: ["paper-portfolio"] });

@@ -1,6 +1,5 @@
 import os
 import logging
-from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Literal
@@ -16,16 +15,16 @@ def _conn():
     return psycopg.connect(os.environ["DATABASE_URL"], autocommit=True, prepare_threshold=None)
 
 
-def _ensure_portfolio(session_id: str) -> dict:
+def _ensure_portfolio(user_id: str) -> dict:
     with _conn() as conn:
         row = conn.execute(
-            "SELECT cash, created_at FROM paper_portfolio WHERE session_id = %s",
-            (session_id,)
+            "SELECT cash FROM paper_portfolio WHERE user_id = %s",
+            (user_id,)
         ).fetchone()
         if row is None:
             conn.execute(
-                "INSERT INTO paper_portfolio (session_id, cash) VALUES (%s, %s)",
-                (session_id, STARTING_CASH)
+                "INSERT INTO paper_portfolio (session_id, user_id, cash) VALUES (%s, %s, %s)",
+                (user_id, user_id, STARTING_CASH)
             )
             return {"cash": STARTING_CASH}
         return {"cash": row[0]}
@@ -34,11 +33,11 @@ def _ensure_portfolio(session_id: str) -> dict:
 # ── Models ────────────────────────────────────────────────────────────────────
 
 class BuyRequest(BaseModel):
-    session_id: str
+    user_id: str
     symbol: str
     market: Literal["IN", "US"]
     quantity: int
-    price: float          # current live price passed from frontend
+    price: float
     signal: str = "HOLD"
     horizon: str = "medium"
     stop_loss: float | None = None
@@ -46,27 +45,27 @@ class BuyRequest(BaseModel):
 
 
 class SellRequest(BaseModel):
-    session_id: str
-    price: float          # current live price passed from frontend
+    user_id: str
+    price: float
 
 class EditRequest(BaseModel):
-    session_id: str
+    user_id: str
     stop_loss: float | None = None
     target_price: float | None = None
-    entry_price: float | None = None  # correction only — adjusts cash to reflect true entry
+    entry_price: float | None = None
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/portfolio")
-def get_portfolio(session_id: str = Query(...)):
-    portfolio = _ensure_portfolio(session_id)
+def get_portfolio(user_id: str = Query(...)):
+    portfolio = _ensure_portfolio(user_id)
     with _conn() as conn:
         trades = conn.execute(
             """SELECT id, symbol, market, quantity, entry_price, exit_price,
                       status, signal, horizon, opened_at, closed_at, stop_loss, target_price
-               FROM paper_trades WHERE session_id = %s ORDER BY opened_at DESC""",
-            (session_id,)
+               FROM paper_trades WHERE user_id = %s ORDER BY opened_at DESC""",
+            (user_id,)
         ).fetchall()
 
     open_trades = []
@@ -100,7 +99,7 @@ def get_portfolio(session_id: str = Query(...)):
             closed_trades.append(trade)
 
     return {
-        "session_id": session_id,
+        "user_id": user_id,
         "cash": round(portfolio["cash"], 2),
         "starting_cash": STARTING_CASH,
         "open_trades": open_trades,
@@ -117,7 +116,7 @@ def paper_buy(req: BuyRequest):
         raise HTTPException(status_code=400, detail="Price must be > 0")
 
     cost = req.price * req.quantity
-    portfolio = _ensure_portfolio(req.session_id)
+    portfolio = _ensure_portfolio(req.user_id)
 
     if portfolio["cash"] < cost:
         raise HTTPException(
@@ -127,13 +126,14 @@ def paper_buy(req: BuyRequest):
 
     with _conn() as conn:
         conn.execute(
-            "UPDATE paper_portfolio SET cash = cash - %s, updated_at = now() WHERE session_id = %s",
-            (cost, req.session_id)
+            "UPDATE paper_portfolio SET cash = cash - %s, updated_at = now() WHERE user_id = %s",
+            (cost, req.user_id)
         )
         row = conn.execute(
-            """INSERT INTO paper_trades (session_id, symbol, market, quantity, entry_price, signal, horizon, stop_loss, target_price)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-            (req.session_id, req.symbol.upper(), req.market, req.quantity,
+            """INSERT INTO paper_trades
+               (session_id, user_id, symbol, market, quantity, entry_price, signal, horizon, stop_loss, target_price)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+            (req.user_id, req.user_id, req.symbol.upper(), req.market, req.quantity,
              req.price, req.signal, req.horizon, req.stop_loss, req.target_price)
         ).fetchone()
 
@@ -155,15 +155,15 @@ def paper_sell(trade_id: int, req: SellRequest):
 
     with _conn() as conn:
         trade = conn.execute(
-            "SELECT session_id, symbol, quantity, entry_price, status FROM paper_trades WHERE id = %s",
+            "SELECT user_id, symbol, quantity, entry_price, status FROM paper_trades WHERE id = %s",
             (trade_id,)
         ).fetchone()
 
         if trade is None:
             raise HTTPException(status_code=404, detail="Trade not found")
 
-        sess, sym, qty, ep, status = trade
-        if sess != req.session_id:
+        owner, sym, qty, ep, status = trade
+        if owner != req.user_id:
             raise HTTPException(status_code=403, detail="Not your trade")
         if status != "OPEN":
             raise HTTPException(status_code=400, detail="Trade already closed")
@@ -172,14 +172,12 @@ def paper_sell(trade_id: int, req: SellRequest):
         pnl = (req.price - ep) * qty
 
         conn.execute(
-            """UPDATE paper_trades
-               SET exit_price = %s, status = 'CLOSED', closed_at = now()
-               WHERE id = %s""",
+            "UPDATE paper_trades SET exit_price = %s, status = 'CLOSED', closed_at = now() WHERE id = %s",
             (req.price, trade_id)
         )
         conn.execute(
-            "UPDATE paper_portfolio SET cash = cash + %s, updated_at = now() WHERE session_id = %s",
-            (proceeds, req.session_id)
+            "UPDATE paper_portfolio SET cash = cash + %s, updated_at = now() WHERE user_id = %s",
+            (proceeds, req.user_id)
         )
 
     return {
@@ -199,11 +197,12 @@ def paper_sell(trade_id: int, req: SellRequest):
 def edit_trade(trade_id: int, req: EditRequest):
     with _conn() as conn:
         trade = conn.execute(
-            "SELECT session_id, status, entry_price, quantity FROM paper_trades WHERE id = %s", (trade_id,)
+            "SELECT user_id, status, entry_price, quantity FROM paper_trades WHERE id = %s",
+            (trade_id,)
         ).fetchone()
         if trade is None:
             raise HTTPException(status_code=404, detail="Trade not found")
-        if trade[0] != req.session_id:
+        if trade[0] != req.user_id:
             raise HTTPException(status_code=403, detail="Not your trade")
         if trade[1] != "OPEN":
             raise HTTPException(status_code=400, detail="Cannot edit a closed trade")
@@ -215,28 +214,27 @@ def edit_trade(trade_id: int, req: EditRequest):
             (req.stop_loss, req.target_price, trade_id)
         )
 
-        # If entry price correction requested, adjust cash to reflect the difference
         if req.entry_price and req.entry_price > 0 and req.entry_price != old_entry:
-            cash_delta = (old_entry - req.entry_price) * qty  # positive = refund, negative = charge
+            cash_delta = (old_entry - req.entry_price) * qty
             conn.execute(
                 "UPDATE paper_trades SET entry_price = %s WHERE id = %s",
                 (req.entry_price, trade_id)
             )
             conn.execute(
-                "UPDATE paper_portfolio SET cash = cash + %s, updated_at = now() WHERE session_id = %s",
-                (cash_delta, req.session_id)
+                "UPDATE paper_portfolio SET cash = cash + %s, updated_at = now() WHERE user_id = %s",
+                (cash_delta, req.user_id)
             )
 
     return {"message": "Trade updated", "trade_id": trade_id}
 
 
 @router.post("/reset")
-def reset_portfolio(session_id: str = Query(...)):
+def reset_portfolio(user_id: str = Query(...)):
     with _conn() as conn:
-        conn.execute("DELETE FROM paper_trades WHERE session_id = %s", (session_id,))
+        conn.execute("DELETE FROM paper_trades WHERE user_id = %s", (user_id,))
         conn.execute(
-            """INSERT INTO paper_portfolio (session_id, cash) VALUES (%s, %s)
-               ON CONFLICT (session_id) DO UPDATE SET cash = %s, updated_at = now()""",
-            (session_id, STARTING_CASH, STARTING_CASH)
+            """INSERT INTO paper_portfolio (session_id, user_id, cash) VALUES (%s, %s, %s)
+               ON CONFLICT (user_id) DO UPDATE SET cash = %s, updated_at = now()""",
+            (user_id, user_id, STARTING_CASH, STARTING_CASH)
         )
     return {"message": "Portfolio reset", "cash": STARTING_CASH}

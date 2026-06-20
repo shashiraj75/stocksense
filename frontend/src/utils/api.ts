@@ -167,7 +167,7 @@ export interface PaperTrade {
 }
 
 export interface PaperPortfolio {
-  session_id: string;
+  user_id: string;
   cash: number;
   starting_cash: number;
   open_trades: PaperTrade[];
@@ -175,23 +175,23 @@ export interface PaperPortfolio {
   total_realized_pnl: number;
 }
 
-export const fetchPaperPortfolio = (sessionId: string) =>
-  api.get<PaperPortfolio>("/api/paper-trading/portfolio", { params: { session_id: sessionId } }).then((r) => r.data);
+export const fetchPaperPortfolio = (userId: string) =>
+  api.get<PaperPortfolio>("/api/paper-trading/portfolio", { params: { user_id: userId } }).then((r) => r.data);
 
 export const placePaperBuy = (data: {
-  session_id: string; symbol: string; market: Market;
+  user_id: string; symbol: string; market: Market;
   quantity: number; price: number; signal?: string; horizon?: string;
   stop_loss?: number | null; target_price?: number | null;
 }) => api.post("/api/paper-trading/buy", data).then((r) => r.data);
 
-export const closePaperTrade = (tradeId: number, sessionId: string, price: number) =>
-  api.post(`/api/paper-trading/sell/${tradeId}`, { session_id: sessionId, price }).then((r) => r.data);
+export const closePaperTrade = (tradeId: number, userId: string, price: number) =>
+  api.post(`/api/paper-trading/sell/${tradeId}`, { user_id: userId, price }).then((r) => r.data);
 
-export const resetPaperPortfolio = (sessionId: string) =>
-  api.post("/api/paper-trading/reset", null, { params: { session_id: sessionId } }).then((r) => r.data);
+export const resetPaperPortfolio = (userId: string) =>
+  api.post("/api/paper-trading/reset", null, { params: { user_id: userId } }).then((r) => r.data);
 
-export const editPaperTrade = (tradeId: number, sessionId: string, stopLoss: number | null, targetPrice: number | null, entryPrice?: number | null) =>
-  api.patch(`/api/paper-trading/trade/${tradeId}`, { session_id: sessionId, stop_loss: stopLoss, target_price: targetPrice, entry_price: entryPrice ?? null }).then((r) => r.data);
+export const editPaperTrade = (tradeId: number, userId: string, stopLoss: number | null, targetPrice: number | null, entryPrice?: number | null) =>
+  api.patch(`/api/paper-trading/trade/${tradeId}`, { user_id: userId, stop_loss: stopLoss, target_price: targetPrice, entry_price: entryPrice ?? null }).then((r) => r.data);
 
 export const acceptTerms = (
   userId: string, email: string,
