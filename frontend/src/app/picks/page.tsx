@@ -5,9 +5,10 @@ import { useRouter } from "next/navigation";
 import { api } from "@/utils/api";
 import {
   TrendingUp, Clock, AlertCircle, ChevronDown, ChevronUp,
-  Loader2, Target, ShieldAlert, Zap, CheckCircle, BarChart2, Activity,
+  Loader2, Target, ShieldAlert, Zap, CheckCircle, BarChart2, Activity, FlaskConical,
 } from "lucide-react";
 import clsx from "clsx";
+import { PaperTradeModal } from "@/components/PaperTradeModal";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type ReasonItem = { indicator: string; signal: string; reason: string };
@@ -345,6 +346,7 @@ function LivePerformanceTracker({ horizon }: { horizon: string }) {
 function PickCard({ pick, rank }: { pick: Pick; rank: number }) {
   const router = useRouter();
   const [expanded, setExpanded] = useState(false);
+  const [showPaperTrade, setShowPaperTrade] = useState(false);
   const upside = pick.price && pick.target
     ? (((pick.target - pick.price) / pick.price) * 100).toFixed(1) : null;
   const sector = pick.quality_factors?.sector;
@@ -444,11 +446,34 @@ function PickCard({ pick, rank }: { pick: Pick; rank: number }) {
         )}
       </div>
 
-      <button onClick={() => setExpanded(e => !e)}
-        className="w-full flex items-center justify-between px-4 py-2.5 border-t border-dark-border text-xs text-gray-500 hover:text-white hover:bg-dark-border/20 transition-colors">
-        <span className="font-medium flex items-center gap-1.5"><Zap size={11} /> Full factor analysis</span>
-        {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-      </button>
+      {/* Action bar */}
+      <div className="flex border-t border-dark-border">
+        <button
+          onClick={(e) => { e.stopPropagation(); setShowPaperTrade(true); }}
+          className="flex items-center gap-1.5 px-4 py-2.5 text-xs text-brand-400 hover:text-white hover:bg-brand-500/10 transition-colors border-r border-dark-border font-medium"
+        >
+          <FlaskConical size={11} /> Paper Trade
+        </button>
+        <button onClick={() => setExpanded(e => !e)}
+          className="flex-1 flex items-center justify-between px-4 py-2.5 text-xs text-gray-500 hover:text-white hover:bg-dark-border/20 transition-colors">
+          <span className="font-medium flex items-center gap-1.5"><Zap size={11} /> Full factor analysis</span>
+          {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        </button>
+      </div>
+
+      {showPaperTrade && pick.price && (
+        <PaperTradeModal
+          symbol={pick.symbol}
+          market="IN"
+          currentPrice={pick.price}
+          signal="BUY"
+          horizon={pick.horizon}
+          currency="₹"
+          suggestedStopLoss={pick.stop_loss}
+          suggestedTargetPrice={pick.target}
+          onClose={() => setShowPaperTrade(false)}
+        />
+      )}
 
       {expanded && (
         <div className="px-4 pb-4 space-y-4 border-t border-dark-border bg-black/20">
