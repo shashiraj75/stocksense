@@ -279,10 +279,10 @@ export function PaperTradeModal({
             </button>
             <button
               onClick={() => { setError(null); isSell ? sellMutation.mutate() : buyMutation.mutate(); }}
-              disabled={buyMutation.isPending || sellMutation.isPending || predLoading}
+              disabled={buyMutation.isPending || sellMutation.isPending}
               className={clsx("flex-1 px-4 py-2 rounded-xl font-semibold text-sm transition-colors",
                 isSell ? "bg-bear hover:bg-red-600 text-white disabled:opacity-50" : "bg-bull hover:bg-green-600 text-white disabled:opacity-50")}>
-              {buyMutation.isPending || sellMutation.isPending ? "Placing…" : predLoading ? "Loading…" : isSell ? `Sell ${existingQuantity} shares` : `Buy ${quantity} shares`}
+              {buyMutation.isPending || sellMutation.isPending ? "Placing…" : isSell ? `Sell ${existingQuantity} shares` : `Buy ${quantity} shares`}
             </button>
           </div>
         </div>
