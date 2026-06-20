@@ -67,18 +67,24 @@ def _ensure_session():
 # ── Index name map ────────────────────────────────────────────────────────────
 # Maps our internal sector names to NSE index slugs
 SECTOR_TO_NSE_INDEX: dict[str, str] = {
-    "Banking":   "NIFTY BANK",
-    "IT":        "NIFTY IT",
-    "Pharma":    "NIFTY PHARMA",
-    "Auto":      "NIFTY AUTO",
-    "FMCG":      "NIFTY FMCG",
-    "Metal":     "NIFTY METAL",
-    "Realty":    "NIFTY REALTY",
-    "Finance":   "NIFTY FINANCIAL SERVICES",
-    "Energy":    "NIFTY OIL AND GAS",
-    "Telecom":   "NIFTY MEDIA",          # closest available
-    "Consumer":  "NIFTY CONSUMER DURABLES",
-    "Infra":     "NIFTY INFRASTRUCTURE",
+    "Banking":       "NIFTY BANK",
+    "IT":            "NIFTY IT",
+    "Pharma":        "NIFTY PHARMA",
+    "Auto":          "NIFTY AUTO",
+    "FMCG":          "NIFTY FMCG",
+    "Metal":         "NIFTY METAL",
+    "Realty":        "NIFTY REALTY",
+    "Finance":       "NIFTY FINANCIAL SERVICES",
+    "Insurance":     "NIFTY FINANCIAL SERVICES",  # no dedicated NSE insurance index; use FS
+    "Energy":        "NIFTY OIL AND GAS",
+    "Telecom":       "NIFTY MEDIA",
+    "Consumer":      "NIFTY CONSUMER DURABLES",
+    "Healthcare":    "NIFTY HEALTHCARE INDEX",
+    "Chemicals":     "NIFTY CHEMICALS",
+    "Cement":        "NIFTY INFRASTRUCTURE",      # no dedicated cement index; use Infra
+    "Defence":       "NIFTY INDIA DEFENCE",
+    "Infra":         "NIFTY INFRASTRUCTURE",
+    "Capital Goods": "NIFTY INDIA MANUFACTURING",
 }
 
 _index_cache: dict[str, tuple[float, list]] = {}

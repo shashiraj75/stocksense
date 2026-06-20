@@ -19,31 +19,40 @@ _heatmap_cache: dict[str, tuple[float, list]] = {}
 _HEATMAP_TTL = 300  # 5 minutes — market tiles don't need faster than this
 
 INDIA_SECTORS = {
-    "Banking":    ["HDFCBANK", "ICICIBANK", "SBIN", "KOTAKBANK", "AXISBANK", "INDUSINDBK", "BANKBARODA", "PNB", "CANBK", "UNIONBANK", "FEDERALBNK", "IDFCFIRSTB", "INDIANB"],
-    "IT":         ["TCS", "INFY", "WIPRO", "HCLTECH", "TECHM", "TATAELXSI", "MPHASIS", "PERSISTENT", "COFORGE", "LTTS", "KPITTECH", "OFSS", "DIXON"],
-    "Energy":     ["RELIANCE", "ONGC", "BPCL", "IOC", "GAIL", "POWERGRID", "NTPC", "HINDPETRO", "ADANIGREEN", "TATAPOWER", "TORNTPOWER", "JSWENERGY"],
-    "Auto":       ["MARUTI", "TATATECH", "M&M", "BAJAJ-AUTO", "EICHERMOT", "HEROMOTOCO", "TVSMOTOR", "BOSCHLTD", "MOTHERSON", "APOLLOTYRE", "MRF", "TIINDIA", "CROMPTON"],
-    "Pharma":     ["SUNPHARMA", "DRREDDY", "CIPLA", "DIVISLAB", "LUPIN", "TORNTPHARM", "AUROPHARMA", "ALKEM", "BIOCON", "GLENMARK", "IPCALAB", "ZYDUSLIFE"],
-    "FMCG":       ["HINDUNILVR", "ITC", "NESTLEIND", "BRITANNIA", "DABUR", "GODREJCP", "MARICO", "COLPAL", "EMAMILTD", "TATACONSUM", "VBL", "PGHH"],
-    "Metal":      ["TATASTEEL", "JSWSTEEL", "HINDALCO", "VEDL", "SAIL", "NMDC", "COALINDIA", "JINDALSTEL", "NATIONALUM", "WELSPUNLIV", "POLYCAB"],
-    "Finance":    ["BAJFINANCE", "BAJAJFINSV", "CHOLAFIN", "MUTHOOTFIN", "LICHSGFIN", "SBICARD", "ABCAPITAL", "MANAPPURAM", "POONAWALLA", "SHRIRAMFIN"],
-    "Realty":     ["DLF", "OBEROIRLTY", "GODREJPROP", "PRESTIGE", "LODHA", "PHOENIXLTD", "SOBHA", "BRIGADE", "SUNTECK", "MAHLIFE"],
-    "Telecom":    ["BHARTIARTL", "IDEA", "TATACOMM", "HCLTECH"],
-    "Consumer":   ["TITAN", "TRENT", "DMART", "NYKAA", "ETERNAL", "INDHOTEL", "JUBLFOOD", "DEVYANI", "SAPPHIRE", "WESTLIFE"],
-    "Infra":      ["LT", "SIEMENS", "HAL", "BHEL", "ADANIPORTS", "IRCTC", "DELHIVERY", "CONCOR", "GMRAIRPORT", "IRB"],
+    "Banking":      ["HDFCBANK", "ICICIBANK", "SBIN", "KOTAKBANK", "AXISBANK", "INDUSINDBK", "BANKBARODA", "PNB", "CANBK", "UNIONBANK", "FEDERALBNK", "IDFCFIRSTB", "INDIANB", "BANKINDIA", "AUBANK", "RBLBANK", "DCBBANK", "KARURVYSYA"],
+    "IT":           ["TCS", "INFY", "WIPRO", "HCLTECH", "TECHM", "TATAELXSI", "MPHASIS", "PERSISTENT", "COFORGE", "LTTS", "KPITTECH", "OFSS", "DIXON", "CYIENT", "BIRLASOFT", "MASTEK", "NIITTECH", "ZENSAR"],
+    "Energy":       ["RELIANCE", "ONGC", "BPCL", "IOC", "GAIL", "POWERGRID", "NTPC", "HINDPETRO", "ADANIGREEN", "TATAPOWER", "TORNTPOWER", "JSWENERGY", "CESC", "ADANITRANS", "IGL", "MGL", "PETRONET"],
+    "Auto":         ["MARUTI", "TATATECH", "M&M", "BAJAJ-AUTO", "EICHERMOT", "HEROMOTOCO", "TVSMOTOR", "BOSCHLTD", "MOTHERSON", "APOLLOTYRE", "MRF", "TIINDIA", "CROMPTON", "TATAMOTORS", "ASHOKLEY", "ESCORTS", "FORCEMOT", "BALKRISIND"],
+    "Pharma":       ["SUNPHARMA", "DRREDDY", "CIPLA", "DIVISLAB", "LUPIN", "TORNTPHARM", "AUROPHARMA", "ALKEM", "BIOCON", "GLENMARK", "IPCALAB", "ZYDUSLIFE", "ABBOTINDIA", "PFIZER", "SANOFI", "NATCOPHARM", "GRANULES"],
+    "Healthcare":   ["APOLLOHOSP", "FORTIS", "MAXHEALTH", "NARAYANA", "METROPOLIS", "LALPATHLAB", "THYROCARE", "KRSNAA", "MEDANTA", "ASTER"],
+    "FMCG":         ["HINDUNILVR", "ITC", "NESTLEIND", "BRITANNIA", "DABUR", "GODREJCP", "MARICO", "COLPAL", "EMAMILTD", "TATACONSUM", "VBL", "PGHH", "BIKAJI", "PATANJALI", "JYOTHYLAB", "VENKEYS"],
+    "Finance":      ["BAJFINANCE", "BAJAJFINSV", "CHOLAFIN", "MUTHOOTFIN", "LICHSGFIN", "SBICARD", "ABCAPITAL", "MANAPPURAM", "POONAWALLA", "SHRIRAMFIN", "M&MFIN", "SUNDARMFIN", "AAVAS", "HOMEFIRST", "CREDITACC"],
+    "Insurance":    ["HDFCLIFE", "SBILIFE", "ICICIPRULIFE", "MAXFINSERV", "LICI", "GICRE", "NIACL", "STARHEALTH"],
+    "Metal":        ["TATASTEEL", "JSWSTEEL", "HINDALCO", "VEDL", "SAIL", "NMDC", "COALINDIA", "JINDALSTEL", "NATIONALUM", "POLYCAB", "HINDZINC", "APLAPOLLO", "RATNAMANI"],
+    "Chemicals":    ["PIDILITIND", "SRF", "DEEPAKNTR", "NAVINFLUOR", "AARTIIND", "ALKYLAMINE", "BALAJI-AMINES", "CLEAN", "FINEORG", "GALAXYSURF", "TATACHEM", "GHCL"],
+    "Cement":       ["ULTRACEMCO", "SHREECEM", "AMBUJACEM", "ACC", "JKCEMENT", "RAMCOCEM", "HEIDELBERG", "BIRLACORPN", "INDIACEM", "DALMIACEM"],
+    "Defence":      ["HAL", "BEL", "MIDHANI", "MAZDOCK", "COCHINSHIP", "BEML", "BHEL", "PARAS", "DATAPATTNS", "GRSE"],
+    "Realty":       ["DLF", "OBEROIRLTY", "GODREJPROP", "PRESTIGE", "LODHA", "PHOENIXLTD", "SOBHA", "BRIGADE", "SUNTECK", "MAHLIFE", "KOLTEPATIL", "SIGNATURE", "RAYMOND"],
+    "Telecom":      ["BHARTIARTL", "IDEA", "TATACOMM", "INDUSTOWER", "HFCL", "STLTECH"],
+    "Consumer":     ["TITAN", "TRENT", "DMART", "NYKAA", "ETERNAL", "INDHOTEL", "JUBLFOOD", "DEVYANI", "SAPPHIRE", "WESTLIFE", "KALYANKJIL", "SENCO", "PCJEWELLER", "MANYAVAR"],
+    "Infra":        ["LT", "SIEMENS", "ADANIPORTS", "IRCTC", "DELHIVERY", "CONCOR", "GMRAIRPORT", "IRB", "KNR", "ASHOKA", "PNCINFRA", "RITES", "IRCON", "AHLUCONT"],
+    "Capital Goods":["ABB", "CUMMINSIND", "THERMAX", "BHEL", "GRINDWELL", "SCHAEFFLER", "TIMKEN", "SKFINDIA", "ELGIEQUIP", "VOLTAMP"],
 }
 
 US_SECTORS = {
-    "Tech":        ["AAPL", "MSFT", "NVDA", "META", "GOOGL", "AMZN", "TSLA", "AMD", "INTC", "CRM", "ADBE", "ORCL"],
-    "Finance":     ["JPM", "BAC", "GS", "MS", "WFC", "AXP", "BLK", "C", "SCHW", "COF", "USB", "PNC"],
-    "Healthcare":  ["JNJ", "UNH", "PFE", "MRK", "ABT", "ABBV", "LLY", "BMY", "AMGN", "GILD", "CVS", "CI"],
-    "Energy":      ["XOM", "CVX", "COP", "SLB", "OXY", "EOG", "MPC", "PSX", "VLO", "HAL"],
-    "Consumer":    ["WMT", "TGT", "HD", "MCD", "NKE", "SBUX", "COST", "LOW", "AMZN", "BKNG"],
-    "Industrials": ["BA", "CAT", "GE", "MMM", "HON", "UPS", "RTX", "LMT", "NOC", "DE"],
-    "Telecom":     ["T", "VZ", "TMUS", "DISH", "LUMN"],
-    "Utilities":   ["NEE", "DUK", "SO", "AEP", "EXC", "SRE", "PCG", "XEL", "WEC", "ES"],
-    "Realty":      ["AMT", "PLD", "EQIX", "CCI", "SPG", "O", "WELL", "DLR", "PSA", "EXR"],
-    "Materials":   ["LIN", "APD", "ECL", "NEM", "FCX", "DOW", "DD", "PPG", "ALB", "CF"],
+    "Tech":          ["AAPL", "MSFT", "NVDA", "META", "GOOGL", "AMZN", "TSLA", "AMD", "INTC", "CRM", "ADBE", "ORCL", "NOW", "SNOW", "PLTR", "UBER", "LYFT", "ABNB"],
+    "Semiconductors":["NVDA", "TSM", "AVGO", "QCOM", "MU", "ASML", "AMAT", "LRCX", "KLAC", "MRVL", "MCHP", "SWKS", "ON", "TXN", "ADI"],
+    "Finance":       ["JPM", "BAC", "GS", "MS", "WFC", "AXP", "BLK", "C", "SCHW", "COF", "USB", "PNC", "TFC", "FITB", "KEY", "ALLY", "SYF"],
+    "Healthcare":    ["JNJ", "UNH", "PFE", "MRK", "ABT", "ABBV", "LLY", "BMY", "CVS", "CI", "HCA", "THC", "ELV", "CNC", "MOH"],
+    "Biotech":       ["AMGN", "GILD", "BIIB", "REGN", "VRTX", "MRNA", "BNTX", "SGEN", "ALNY", "INCY", "EXAS", "ILMN", "BEAM", "CRSP"],
+    "Energy":        ["XOM", "CVX", "COP", "SLB", "OXY", "EOG", "MPC", "PSX", "VLO", "HAL", "BKR", "DVN", "FANG", "MRO"],
+    "Consumer Disc": ["AMZN", "TSLA", "HD", "MCD", "NKE", "SBUX", "LOW", "BKNG", "TGT", "EBAY", "ETSY", "ROST", "TJX", "DG"],
+    "Consumer Stap": ["WMT", "COST", "PG", "KO", "PEP", "PM", "MO", "CL", "GIS", "K", "HSY", "CPB", "SJM"],
+    "Industrials":   ["BA", "CAT", "GE", "HON", "UPS", "RTX", "LMT", "NOC", "DE", "MMM", "FDX", "CSX", "NSC", "UNP", "EMR"],
+    "Telecom":       ["T", "VZ", "TMUS", "CHTR", "CMCSA", "DIS", "NFLX", "WBD"],
+    "Utilities":     ["NEE", "DUK", "SO", "AEP", "EXC", "SRE", "PCG", "XEL", "WEC", "ES", "D", "ETR"],
+    "Realty":        ["AMT", "PLD", "EQIX", "CCI", "SPG", "O", "WELL", "DLR", "PSA", "EXR", "VICI", "ARE", "SBA"],
+    "Materials":     ["LIN", "APD", "ECL", "NEM", "FCX", "DOW", "DD", "PPG", "ALB", "CF", "MOS", "IP", "PKG"],
 }
 
 
@@ -107,7 +116,7 @@ def _nse_sector_changes() -> dict[str, dict[str, float | None]]:
 
 
 def _build_sector_output(sectors: dict, all_changes: dict[str, dict[str, float | None]]) -> list[dict]:
-    MAX_STOCKS = 10
+    MAX_STOCKS = 15
     output = []
     for sector, stocks in sectors.items():
         sector_changes = all_changes.get(sector, {})
