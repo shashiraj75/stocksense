@@ -201,7 +201,42 @@ ALTER TABLE terms_acceptance ADD COLUMN IF NOT EXISTS first_name TEXT;
 ALTER TABLE terms_acceptance ADD COLUMN IF NOT EXISTS last_name  TEXT;
 ALTER TABLE terms_acceptance ADD COLUMN IF NOT EXISTS mobile     TEXT;
 ALTER TABLE terms_acceptance ADD COLUMN IF NOT EXISTS country    TEXT;
+
+-- Persistent market data cache — survives server restarts on Render free tier.
+-- Stores last-known-good movers and heatmap data so users never see blank pages.
+CREATE TABLE IF NOT EXISTS market_cache (
+    cache_key   TEXT PRIMARY KEY,
+    data        JSONB NOT NULL,
+    saved_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
+
+
+def save_market_cache(key: str, data: dict | list) -> None:
+    """Persist last-known-good market data to Postgres so it survives server restarts."""
+    try:
+        with _get_pool().connection() as conn:
+            conn.execute(
+                """INSERT INTO market_cache (cache_key, data, saved_at)
+                   VALUES (%s, %s::jsonb, now())
+                   ON CONFLICT (cache_key) DO UPDATE
+                       SET data = EXCLUDED.data, saved_at = EXCLUDED.saved_at""",
+                (key, json.dumps(data))
+            )
+    except Exception:
+        pass  # never block the main request path
+
+
+def load_market_cache(key: str) -> dict | list | None:
+    """Load last-known-good market data from Postgres."""
+    try:
+        with _get_pool().connection() as conn:
+            row = conn.execute(
+                "SELECT data FROM market_cache WHERE cache_key = %s", (key,)
+            ).fetchone()
+        return row[0] if row else None
+    except Exception:
+        return None
 
 
 def init_db():

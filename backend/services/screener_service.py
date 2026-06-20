@@ -293,9 +293,20 @@ class ScreenerService:
             except Exception as e:
                 log.warning("yf bulk movers failed for %s: %s", market, e)
 
-        # If still empty, serve last known good data to avoid blank dashboard
+        # If still empty, serve last known good data — check memory first, then Postgres
         if not gainers and not losers:
             last_good = _last_good_movers.get(market)
+            if not last_good:
+                # Try Postgres persistent cache (survives server restarts)
+                try:
+                    USE_POSTGRES = __import__("os").getenv("USE_POSTGRES") == "1"
+                    if USE_POSTGRES:
+                        from services.postgres_store import load_market_cache
+                        last_good = load_market_cache(f"movers_{market}")
+                        if last_good:
+                            _last_good_movers[market] = last_good
+                except Exception:
+                    pass
             if last_good:
                 log.info("screener: serving last-known-good movers for %s", market)
                 stale = dict(last_good)
@@ -313,7 +324,15 @@ class ScreenerService:
         }
         if gainers or losers:
             _movers_cache[market] = (time.time(), response)
-            _last_good_movers[market] = response  # persist indefinitely
+            _last_good_movers[market] = response
+            # Persist to Postgres so it survives server restarts
+            try:
+                USE_POSTGRES = __import__("os").getenv("USE_POSTGRES") == "1"
+                if USE_POSTGRES:
+                    from services.postgres_store import save_market_cache
+                    save_market_cache(f"movers_{market}", response)
+            except Exception:
+                pass
         return response
 
     async def filter_stocks(

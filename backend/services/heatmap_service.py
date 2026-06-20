@@ -132,6 +132,9 @@ def _build_sector_output(sectors: dict, all_changes: dict[str, dict[str, float |
     return sorted(output, key=lambda x: x["avg_change"] or 0, reverse=True)
 
 
+_last_good_heatmap: dict[str, list] = {}
+
+
 def get_heatmap(market: str) -> list[dict]:
     cached = _heatmap_cache.get(market)
     if cached and (time.time() - cached[0]) < _HEATMAP_TTL:
@@ -165,5 +168,32 @@ def get_heatmap(market: str) -> list[dict]:
                        for sector, stocks in US_SECTORS.items()}
         output = _build_sector_output(US_SECTORS, all_changes)
 
-    _heatmap_cache[market] = (time.time(), output)
+    # Only cache if we got real data (at least some stocks have change_pct)
+    has_data = any(s["loaded"] > 0 for s in output)
+    if has_data:
+        _heatmap_cache[market] = (time.time(), output)
+        _last_good_heatmap[market] = output
+        try:
+            USE_POSTGRES = __import__("os").getenv("USE_POSTGRES") == "1"
+            if USE_POSTGRES:
+                from services.postgres_store import save_market_cache
+                save_market_cache(f"heatmap_{market}", output)
+        except Exception:
+            pass
+    else:
+        # No fresh data — serve last known good from memory or Postgres
+        last_good = _last_good_heatmap.get(market)
+        if not last_good:
+            try:
+                USE_POSTGRES = __import__("os").getenv("USE_POSTGRES") == "1"
+                if USE_POSTGRES:
+                    from services.postgres_store import load_market_cache
+                    last_good = load_market_cache(f"heatmap_{market}")
+                    if last_good:
+                        _last_good_heatmap[market] = last_good
+            except Exception:
+                pass
+        if last_good:
+            log.info("heatmap: serving last-known-good data for %s", market)
+            return last_good
     return output

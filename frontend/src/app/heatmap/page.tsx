@@ -128,8 +128,8 @@ export default function HeatmapPage() {
         </div>
       ) : sectors.length === 0 ? (
         <div className="bg-dark-card border border-dark-border rounded-xl p-10 text-center text-gray-500">
-          <p className="text-sm">No heatmap data available — market may be closed or data is loading.</p>
-          <p className="text-xs mt-1 text-gray-600">Last session data will appear once the market opens.</p>
+          <p className="text-sm">Market closed · Loading last session data…</p>
+          <p className="text-xs mt-1 text-gray-600">Data will appear automatically once retrieved.</p>
         </div>
       ) : (
         <div className="space-y-4">

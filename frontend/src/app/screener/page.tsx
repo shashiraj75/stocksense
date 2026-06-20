@@ -59,6 +59,12 @@ export default function ScreenerPage() {
         ))}
       </div>
 
+      {(data as any)?.stale && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl px-4 py-2.5 text-xs text-amber-300">
+          Market closed · Showing last session data
+        </div>
+      )}
+
       <div className="bg-dark-card border border-dark-border rounded-2xl overflow-x-auto">
         <table className="w-full text-sm min-w-[320px]">
           <thead>
@@ -82,7 +88,7 @@ export default function ScreenerPage() {
               ? (
                   <tr>
                     <td colSpan={4} className="px-6 py-12 text-center text-gray-500 text-sm">
-                      {(data as any)?.error ?? "No data available — market data is refreshing, please wait a moment."}
+                      Market is closed — last session data will appear shortly.
                     </td>
                   </tr>
                 )
