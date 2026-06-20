@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { api } from "@/utils/api";
 import clsx from "clsx";
-import { RefreshCw, AlertCircle } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { IndexBar } from "@/components/IndexBar";
 import { StockContextMenu } from "@/components/StockContextMenu";
 
@@ -41,6 +41,8 @@ export default function HeatmapPage() {
     refetchInterval: 5 * 60_000,  // backend cache is 3min; poll at 5min to always hit cache
     staleTime: 4.5 * 60_000,
     refetchOnWindowFocus: false,
+    retry: 4,
+    retryDelay: (attempt) => Math.min(10_000 * 2 ** attempt, 60_000), // 10s, 20s, 40s, 60s
   });
 
   const sectors = [...(data?.sectors ?? [])]
@@ -109,22 +111,22 @@ export default function HeatmapPage() {
         ))}
       </div>
 
-      {/* Error state */}
-      {isError && (
-        <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 flex items-center gap-3">
-          <AlertCircle size={18} className="text-red-400 shrink-0" />
-          <p className="text-sm text-red-300">
-            Failed to load heatmap data. The server may be starting up — please wait a moment and refresh.
-          </p>
-        </div>
-      )}
-
       {/* Heatmap grid */}
-      {(isLoading && !data) ? (
-        <div className="grid gap-4">
-          {Array.from({ length: 8 }).map((_, i) => (
-            <div key={i} className="bg-dark-card border border-dark-border rounded-xl p-4 animate-pulse h-28" />
-          ))}
+      {(isLoading && !data) || (isError && !data) ? (
+        <div className="space-y-4">
+          {isError ? (
+            <div className="bg-dark-card border border-dark-border rounded-xl p-10 text-center text-gray-500">
+              <RefreshCw size={20} className="animate-spin mx-auto mb-3 text-gray-600" />
+              <p className="text-sm">Server starting up · Retrying automatically…</p>
+              <p className="text-xs mt-1 text-gray-600">This takes up to 30 seconds after inactivity.</p>
+            </div>
+          ) : (
+            <div className="grid gap-4">
+              {Array.from({ length: 8 }).map((_, i) => (
+                <div key={i} className="bg-dark-card border border-dark-border rounded-xl p-4 animate-pulse h-28" />
+              ))}
+            </div>
+          )}
         </div>
       ) : sectors.length === 0 ? (
         <div className="bg-dark-card border border-dark-border rounded-xl p-10 text-center text-gray-500">

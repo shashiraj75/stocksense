@@ -10,12 +10,14 @@ import { StockContextMenu } from "@/components/StockContextMenu";
 
 export default function ScreenerPage() {
   const [market, setMarket] = useState<Market>("IN");
-  const { data, isLoading, isFetching, dataUpdatedAt } = useQuery({
+  const { data, isLoading, isFetching, isError, dataUpdatedAt } = useQuery({
     queryKey: ["movers", market],
     queryFn: () => fetchTopMovers(market),
     refetchInterval: 60_000,   // matches backend 60s TTL
     staleTime: 55_000,
     refetchOnWindowFocus: false,
+    retry: 4,
+    retryDelay: (attempt) => Math.min(10_000 * 2 ** attempt, 60_000),
   });
 
   const currency = market === "US" ? "$" : "₹";
@@ -84,6 +86,14 @@ export default function ScreenerPage() {
                     </td>
                   </tr>
                 ))
+              : isError
+              ? (
+                  <tr>
+                    <td colSpan={4} className="px-6 py-12 text-center text-gray-500 text-sm">
+                      Server starting up · Retrying automatically…
+                    </td>
+                  </tr>
+                )
               : (!data?.movers?.length)
               ? (
                   <tr>
