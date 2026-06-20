@@ -1,7 +1,7 @@
 # StockSense — Complete Product & Technical Documentation
 
 > **Live Document** — Updated automatically as the product evolves.  
-> Last updated: 2026-06-19 (Session 4)
+> Last updated: 2026-06-20 (Session 5)
 
 ---
 
@@ -839,9 +839,13 @@ BTC, ETH, BNB, SOL, XRP, DOGE, ADA, AVAX, LINK, DOT
 
 ### Heatmap
 
-- Groups stocks by sector
-- Shows sector-level average return, top movers, stock count
-- Colour-coded by performance (green/red intensity)
+- Groups stocks by sector; sorted by sector avg change% (best sectors on top)
+- **India: 25 sectors** — Banking, IT, Auto, Pharma, Energy, FMCG, Finance, Healthcare, Insurance, Chemicals, Cement, Metal & Mining, Defence, Realty, Telecom, Consumer Disc, Hotels & Travel, Food & Beverage, Media & Entmt, Textiles, Agro & Chemicals, Logistics, Paints, Infra, Capital Goods, Power, EV & New Energy
+- **US: 29 sectors** — Mega Cap Tech, Semiconductors, Cloud & SaaS, Cybersecurity, Fintech, Finance, Insurance, Healthcare, Biotech, Med Devices, Energy, Clean Energy, EV, Consumer Disc, Consumer Stap, E-commerce, Social Media, Streaming & Media, Gaming, Aerospace & Defence, Industrials, Airlines, Cruise & Hotels, Restaurants, Retail, Telecom, Utilities, Realty, Materials, Crypto & Blockchain
+- Up to **15 stocks per sector** (MAX_STOCKS = 15)
+- Primary data source for India sectors: **NSE sector index APIs** (`SECTOR_TO_NSE_INDEX` mapping); Yahoo Finance used as fallback for symbols not in NSE indices and as primary source for all US sectors
+- Grey tiles = symbol has no live data; all 353 India symbols audited and bad tickers corrected (Session 5)
+- Colour-coded by performance (green/red intensity); loading status badge (Fetching / Refreshing / Live)
 
 ### Top Movers
 
@@ -855,27 +859,30 @@ BTC, ETH, BNB, SOL, XRP, DOGE, ADA, AVAX, LINK, DOT
 
 **File:** `backend/api/routers/paper_trading.py`, `frontend/src/app/paper-trading/page.tsx`
 
-A simulated trading environment where users can test stock calls without real money. All trades persist in PostgreSQL and survive Render restarts.
+A simulated trading environment where users can test stock calls without real money. All trades persist in PostgreSQL and survive Railway restarts.
 
 ### Database Schema
 
 ```sql
-paper_portfolio (session_id, cash_balance, updated_at)
-paper_trades    (id, session_id, symbol, market, quantity, entry_price, exit_price,
-                 stop_loss, target_price, status, signal, horizon, opened_at, closed_at)
+paper_portfolio (user_id TEXT PK, session_id TEXT, cash NUMERIC, updated_at TIMESTAMPTZ)
+paper_trades    (id SERIAL PK, user_id TEXT, session_id TEXT, symbol TEXT, market TEXT,
+                 quantity INT, entry_price NUMERIC, exit_price NUMERIC,
+                 stop_loss NUMERIC, target_price NUMERIC, status TEXT,
+                 signal TEXT, horizon TEXT, opened_at TIMESTAMPTZ, closed_at TIMESTAMPTZ)
 ```
 
-### Session Model
+### User Model
 
-- Single shared session ID: `"default"` (no real auth required)
+- Trades are scoped to **Supabase `user_id`** (stable UUID from `useAuth().user.id`)
+- No more session_id / localStorage dependency — trades persist across all browsers and devices
 - Starting virtual cash: **₹1,00,000 / $10,000** (depending on market)
 - All positions are long only (no shorting)
 
 ### Trade Lifecycle
 
 ```
-Open Trade  → entry_price captured at trade time
-Live Price  → fetched real-time via Finnhub / yfinance
+Open Trade  → entry_price captured at trade time, keyed to user_id
+Live Price  → fetched real-time via yfinance / NSE
 Unrealised P&L = (live_price − entry_price) × quantity
 Close Trade → exit_price set, status = 'CLOSED'
 Realised P&L = (exit_price − entry_price) × quantity
@@ -887,15 +894,17 @@ Realised P&L = (exit_price − entry_price) × quantity
 - ATR-based defaults pre-filled when placing a trade from the stock detail page
 - Both values always shown per position with % from entry
 - UI highlights rows where price is within 2% of stop (yellow) or target (green)
+- The Buy button is **not blocked** by AI prediction loading — trade is placeable immediately; stop loss/target suggestions update in the background
 
 ### API Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/paper-trading/{session_id}` | GET | All open + closed positions with live P&L |
-| `/api/paper-trading/{session_id}/trade` | POST | Open a new position |
-| `/api/paper-trading/{session_id}/close/{trade_id}` | POST | Close a position |
-| `/api/paper-trading/{session_id}/update/{trade_id}` | PATCH | Edit stop_loss / target_price |
+| `/api/paper-trading/portfolio` | GET | Portfolio summary (pass `user_id` as query param) |
+| `/api/paper-trading/buy` | POST | Open a new position (body: `user_id`, symbol, market, qty, price, …) |
+| `/api/paper-trading/sell/{trade_id}` | POST | Close a position (body: `user_id`, price) |
+| `/api/paper-trading/trade/{trade_id}` | PATCH | Edit stop_loss / target_price (body: `user_id`, …) |
+| `/api/paper-trading/reset` | POST | Reset portfolio to starting cash (query: `user_id`) |
 
 ---
 
@@ -991,10 +1000,11 @@ price_alerts (id TEXT PK, user_id TEXT, symbol TEXT, market TEXT,
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/paper-trading/{session_id}` | GET | Positions + portfolio summary |
-| `/api/paper-trading/{session_id}/trade` | POST | Open position |
-| `/api/paper-trading/{session_id}/close/{trade_id}` | POST | Close position |
-| `/api/paper-trading/{session_id}/update/{trade_id}` | PATCH | Edit SL / target |
+| `/api/paper-trading/portfolio` | GET | Portfolio summary (`?user_id=`) |
+| `/api/paper-trading/buy` | POST | Open position |
+| `/api/paper-trading/sell/{trade_id}` | POST | Close position |
+| `/api/paper-trading/trade/{trade_id}` | PATCH | Edit SL / target |
+| `/api/paper-trading/reset` | POST | Reset portfolio (`?user_id=`) |
 
 ### Infrastructure
 
@@ -1010,16 +1020,17 @@ price_alerts (id TEXT PK, user_id TEXT, symbol TEXT, market TEXT,
 
 | Page | Route | Description |
 |------|-------|-------------|
-| Dashboard | `/` | Movers (US/IN/Crypto), market status, live index bar |
+| Landing | `/` (unauthenticated) | Public marketing page — features, how-it-works, CTA adapts to login state |
+| Dashboard | `/dashboard` | Movers (US/IN/Crypto), market status, live index bar with loading badge |
 | Stock Detail | `/stock/:symbol` | Prediction, trade levels, factor breakdown, news, chart |
 | Daily Picks | `/picks` | Top BUY ideas by horizon, portfolio weights, trust layer |
 | Screener | `/screener` | Filter and explore the universe |
 | Backtest | `/backtest` | Single-stock historical walk-forward test |
-| Heatmap | `/heatmap` | Sector colour-coded snapshot (IN / US) |
-| Watchlist | `/watchlist` | Saved stocks with live prices and change% |
-| Alerts | `/alerts` | Price alerts with live trigger detection |
+| Heatmap | `/heatmap` | Sector colour-coded snapshot (IN / US) with loading badge |
+| Watchlist | `/watchlist` | Saved stocks with live prices and change% — user-scoped |
+| Alerts | `/alerts` | Price alerts with live trigger detection — user-scoped |
 | Portfolio | `/portfolio` | Holdings with BUY/HOLD/SELL per position |
-| Paper Trade | `/paper-trading` | Simulated trading — open/close positions, P&L |
+| Paper Trade | `/paper-trading` | Simulated trading — open/close positions, P&L — user-scoped |
 | Validation | `/validation` | Hit rate, Sharpe, alpha vs benchmark |
 
 ### Key Components
@@ -1063,10 +1074,12 @@ The Picks page has a collapsible **"Show Real Accuracy"** panel with three layer
 
 | Layer | Provider | Plan |
 |-------|----------|------|
-| Backend API | Render.com | Free tier (512 MB RAM, 0.1 vCPU) |
+| Backend API | Railway | Hobby ($5/month, always-on, no cold starts) |
 | Frontend | Vercel | Hobby |
-| Database | PostgreSQL (Render) or SQLite (local) | — |
+| Database | PostgreSQL (Railway) or SQLite (local) | — |
 | Auth | Supabase | Free tier |
+
+> **Migrated from Render to Railway** (Session 5) — Railway Hobby plan eliminates the free-tier cold-start problem (30-second spin-up delays) and provides a persistent, always-on server.
 
 ### Environment Variables
 
@@ -1077,13 +1090,12 @@ The Picks page has a collapsible **"Show Real Accuracy"** panel with three layer
 | `USE_POSTGRES` | `1` = Postgres, `0` = SQLite | `0` |
 | `PICKS_SECRET` | Secret header for `/api/picks/generate` | Required in prod |
 | `PICKS_UNIVERSE_LIMIT` | Cap stock count for picks run | 25 |
-| `PICKS_CANDIDATES` | Top N from Phase-0 momentum screen for deep prediction | 50 |
+| `PICKS_CANDIDATES` | Top N from Phase-0 momentum screen for deep prediction | **751** (set in Railway) |
 | `SCREEN_BATCH_SIZE` | NSE bulk download batch size (memory safety) | 300 |
 | `MIN_MCAP_CR` | Min market cap in ₹ Cr for NSE universe | 100 |
 | `SCREENER_EMAIL` | screener.in login (Indian fundamentals) | Required |
 | `SCREENER_PASSWORD` | screener.in password | Required |
 | `FRONTEND_URL` | Vercel frontend URL for CORS | Must be set in prod |
-| `RENDER_EXTERNAL_URL` | Auto-set by Render — used for self-ping keepalive | Auto |
 
 ### Backend Startup Sequence
 
@@ -1228,6 +1240,35 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 ---
 
 ## 26. Changelog
+
+### Session 5 — 2026-06-20
+
+**User Identity & Persistence:**
+
+- **All features migrated to Supabase `user_id`** — watchlist, alerts, paper trading, and StockContextMenu all previously used a hardcoded `USER_ID = "default"` or a localStorage `session_id`. Every feature is now scoped to the authenticated Supabase user UUID (`useAuth().user.id`), making data persist correctly across all browsers and devices.
+- **Paper trading backend rewritten** — all 5 API endpoints migrated from `session_id` (random localStorage UUID) to `user_id`. `BuyRequest`, `SellRequest`, `EditRequest` models updated; `_ensure_portfolio()` queries by `user_id`. Old trades with `user_id = NULL` are legacy-only.
+- **Dashboard watchlist fixed** — was fetching `/api/watchlist/default`; now uses `userId` from `useAuth`.
+
+**Heatmap Expansion & Quality:**
+
+- **India: 18 → 25 sectors** — added Healthcare, Insurance, Chemicals, Cement, Metal & Mining, Defence, Realty, Telecom, Consumer Disc, Hotels & Travel, Food & Beverage, Media & Entmt, Textiles, Agro & Chemicals, Logistics, Paints, Infra, Capital Goods, Power, EV & New Energy
+- **US: 13 → 29 sectors** — added Cybersecurity, Fintech, Biotech, Med Devices, Clean Energy, EV, Consumer Stap, E-commerce, Social Media, Streaming & Media, Gaming, Airlines, Cruise & Hotels, Restaurants, Retail, Telecom, Utilities, Realty, Materials, Crypto & Blockchain
+- **MAX_STOCKS raised 10 → 15** — wider coverage per sector
+- **Full symbol audit** — all 353 India heatmap symbols bulk-tested via Yahoo Finance. 37 bad symbols identified; confirmed replacements applied (ATGL, ASTERDM, BAYERCROP, CANFINHOME, DALBHARAT, GUJGASLTD, ICICIPRULI, KNRCON, LEMONTREE, MFSL, MTARTECH, NH, ORIENTCEM, TEJASNET, TIPSFILMS, VTL, VIJAYA, VINATIORGA, WAAREEENER, WELSPUNLIV, ZENSARTECH, ETERNAL). Symbols with no Yahoo Finance listing removed (SPICEJET, GREENKO, HEXAWARE, KEYSTONE, etc.)
+- **ZOMATO → ETERNAL** — company rebranded to Eternal on NSE
+- **NSE `SECTOR_TO_NSE_INDEX` expanded** — 13 new sector → NSE index mappings added for primary data sourcing via NSE APIs
+
+**UX Fixes:**
+
+- **Landing page auth confusion fixed** — page now detects login state via `useAuth`; CTA switches from "Sign In" to "Go to Dashboard" when logged in; bottom CTA shows user email
+- **Loading status badge** added to Market Overview (dashboard) and Heatmap — three states: blue "Fetching…" (first load), yellow "Refreshing…" (background poll), green wifi "Updated HH:MM:SS" (live)
+- **M%26M / URL-encoding fix** — NSE symbols with `&` (M&M, M&MFIN) were displaying as `M%26M` in the stock page header. Fixed with `decodeURIComponent` on the stock page params and `encodeURIComponent` when building `/stock/` URLs in heatmap, context menu, and picks pages
+- **Paper Trade modal unblocked** — Buy button was disabled until `fetchPrediction` completed (10–30s). Prediction now runs in background for stop loss/target suggestions only; button is immediately available
+
+**Infrastructure:**
+
+- **Migrated backend from Render → Railway Hobby** ($5/month, always-on, no cold starts)
+- **`PICKS_CANDIDATES=751`** set in Railway environment — expands the momentum screen candidate pool
 
 ### Session 4 — 2026-06-19
 
