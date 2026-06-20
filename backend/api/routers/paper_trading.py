@@ -190,7 +190,7 @@ def paper_sell(trade_id: int, req: SellRequest):
         "entry_price": ep,
         "exit_price": req.price,
         "pnl": round(pnl, 2),
-        "pnl_pct": round((req.price - ep) / ep * 100, 2),
+        "pnl_pct": round((req.price - ep) / ep * 100, 2) if ep and ep > 0 else 0,
         "proceeds": round(proceeds, 2),
     }
 

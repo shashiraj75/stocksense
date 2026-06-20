@@ -115,7 +115,7 @@ export default function AcceptTermsPage() {
       });
 
       document.cookie = "ss_terms=v1.0; path=/; max-age=31536000; SameSite=Lax";
-      window.location.href = "/dashboard";
+      router.push("/dashboard");
     } catch (err: any) {
       setError("Failed to record acceptance. Please try again.");
       setLoading(false);

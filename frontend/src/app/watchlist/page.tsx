@@ -70,7 +70,7 @@ export default function WatchlistPage() {
       setResults(r);
       setOpen(r.length > 0 || query.length >= 1);
     }
-  }, [universe]);
+  }, [universe, query]);
 
   const handleChange = useCallback((v: string) => {
     setQuery(v);

@@ -355,7 +355,7 @@ export default function PaperTradingPage() {
 
   const totalUnrealizedPnl = openTrades.reduce((sum, trade, i) => {
     const price = quoteResults[i]?.data?.price;
-    if (price == null) return sum;
+    if (price == null || trade.entry_price == null) return sum;
     return sum + (price - trade.entry_price) * trade.quantity;
   }, 0);
   const unrealizedLoaded = quoteResults.some(r => r.data != null);
@@ -364,7 +364,7 @@ export default function PaperTradingPage() {
   const totalRealized = portfolio.total_realized_pnl;
   const portfolioValue = portfolio.cash + totalInvested;
   const totalReturn = portfolioValue - STARTING_CASH + totalRealized;
-  const totalReturnPct = (totalReturn / STARTING_CASH) * 100;
+  const totalReturnPct = Math.round((totalReturn / STARTING_CASH) * 10000) / 100;
 
   const winTrades = closedTrades.filter(t => (t.realized_pnl ?? 0) > 0).length;
   const winRate = closedTrades.length > 0 ? (winTrades / closedTrades.length * 100) : null;

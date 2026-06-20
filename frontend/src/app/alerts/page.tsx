@@ -77,7 +77,7 @@ export default function AlertsPage() {
     if (changed) { setAlerts(updated); saveLocal(updated); }
   }, [alerts, quoteQueries]);
 
-  useEffect(() => { checkAlerts(); }, [quoteQueries.map(q => q.data?.price).join(",")]);
+  useEffect(() => { checkAlerts(); }, [checkAlerts]);
 
   const add = async () => {
     setError("");
