@@ -174,7 +174,7 @@ export default function HeatmapPage() {
                 {sector.stocks.map(stock => (
                   <StockContextMenu key={stock.symbol} symbol={stock.symbol} market={market}>
                     <button
-                      onClick={() => router.push(`/stock/${stock.symbol}?market=${market}`)}
+                      onClick={() => router.push(`/stock/${encodeURIComponent(stock.symbol)}?market=${market}`)}
                       title={stock.change_pct !== null ? `${stock.symbol}: ${stock.change_pct >= 0 ? "+" : ""}${stock.change_pct}% · Right-click for options` : `${stock.symbol}: no data`}
                       className={clsx(
                         "rounded-lg px-2 py-3 text-center w-full transition-opacity hover:opacity-75 active:scale-95 cursor-pointer",

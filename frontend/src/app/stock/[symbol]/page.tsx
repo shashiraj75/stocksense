@@ -74,7 +74,7 @@ const CRYPTO_NAMES: Record<string, string> = {
 
 export default function StockPage() {
   const params = useParams<{ symbol: string }>();
-  const symbol = params?.symbol ?? "";
+  const symbol = decodeURIComponent(params?.symbol ?? "");
   const searchParams = useSearchParams();
   const rawMarket = searchParams?.get("market") || "US";
   const isCrypto = rawMarket === "CRYPTO";

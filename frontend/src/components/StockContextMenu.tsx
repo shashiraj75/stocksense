@@ -48,7 +48,7 @@ export function StockContextMenu({ symbol, market, children, className }: Contex
   }, [pos, close]);
 
   const goToStock = () => {
-    router.push(`/stock/${symbol}?market=${market}`);
+    router.push(`/stock/${encodeURIComponent(symbol)}?market=${market}`);
     close();
   };
 
