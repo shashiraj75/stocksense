@@ -611,7 +611,26 @@ def _generate_picks_inner() -> dict:
         # Phase 4 — Z-score + alpha
         universe = _zscore_and_rank(items, ic_weights, regime, regime_id)
         ranked   = sorted(universe, key=lambda x: x.get("ranking_alpha", 0), reverse=True)
-        top_buy  = [r for r in ranked if r.get("signal") == "BUY"][:5]
+
+        # Quality gates before final selection:
+        # 1. Confidence must be >= 25% (0% confidence picks are noise, not signals)
+        # 2. Short-term picks must not be overbought (RSI > 75 = likely to pull back)
+        def _passes_quality_gate(r: dict, hz: str) -> bool:
+            conf = r.get("confidence") or 0
+            if conf < 25:
+                print(f"[picks] {r['symbol']} ({hz}) filtered: confidence {conf}% < 25%")
+                return False
+            if hz == "short":
+                reasons = " ".join(r.get("reasoning", []))
+                if "Overbought" in reasons:
+                    print(f"[picks] {r['symbol']} ({hz}) filtered: overbought RSI in short-term")
+                    return False
+            return True
+
+        top_buy = [
+            r for r in ranked
+            if r.get("signal") == "BUY" and _passes_quality_gate(r, horizon)
+        ][:5]
 
         # Phase 6 — Portfolio optimisation
         if len(top_buy) > 1:
@@ -628,7 +647,8 @@ def _generate_picks_inner() -> dict:
             for pick, w in zip(top_buy, port_weights):
                 pick["portfolio_weight"] = w
         elif len(top_buy) == 1:
-            top_buy[0]["portfolio_weight"] = 1.0
+            # Cap single-pick allocation at 50% — 100% in one stock is too aggressive
+            top_buy[0]["portfolio_weight"] = 0.50
 
         picks[horizon] = top_buy
         alpha_engine_meta[horizon] = {
