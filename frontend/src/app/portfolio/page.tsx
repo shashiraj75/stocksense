@@ -18,6 +18,94 @@ interface Holding {
 
 const STORAGE_KEY = "stocksense_portfolio";
 
+type Row = Holding & {
+  curPrice: number | null;
+  invested: number;
+  current: number | null;
+  plAmt: number | null;
+  plPct: number | null;
+  loading: boolean;
+  signal: string | null;
+  confidence?: number;
+  sigLoading: boolean;
+};
+
+function HoldingsTable({
+  rows, currency, onRemove,
+}: { rows: (Row & { _idx: number })[]; currency: string; onRemove: (i: number) => void }) {
+  return (
+    <div className="bg-dark-card border border-dark-border rounded-2xl overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-dark-border text-gray-400 text-left">
+              <th className="px-4 py-3 font-medium">Symbol</th>
+              <th className="px-4 py-3 font-medium text-right">Qty</th>
+              <th className="px-4 py-3 font-medium text-right">Avg Buy</th>
+              <th className="px-4 py-3 font-medium text-right">Current</th>
+              <th className="px-4 py-3 font-medium text-right">Invested</th>
+              <th className="px-4 py-3 font-medium text-right">Value</th>
+              <th className="px-4 py-3 font-medium text-right">P&L</th>
+              <th className="px-4 py-3 font-medium text-right">P&L %</th>
+              <th className="px-4 py-3 font-medium text-center">Signal</th>
+              <th className="px-4 py-3"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r._idx} className="border-b border-dark-border hover:bg-dark-border/30 transition-colors">
+                <td className="px-4 py-3">
+                  <Link href={`/stock/${r.symbol}?market=${r.market}`}
+                    className="font-mono font-bold text-white hover:text-brand-500 transition-colors">
+                    {r.symbol}
+                  </Link>
+                </td>
+                <td className="px-4 py-3 text-right font-mono">{r.qty}</td>
+                <td className="px-4 py-3 text-right font-mono">{currency}{r.avgPrice.toLocaleString()}</td>
+                <td className="px-4 py-3 text-right font-mono">
+                  {r.loading ? <span className="animate-pulse text-gray-500">…</span>
+                    : r.curPrice ? `${currency}${r.curPrice.toLocaleString()}` : "—"}
+                </td>
+                <td className="px-4 py-3 text-right font-mono text-gray-300">{currency}{r.invested.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+                <td className="px-4 py-3 text-right font-mono">
+                  {r.current !== null ? `${currency}${r.current.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "—"}
+                </td>
+                <td className={clsx("px-4 py-3 text-right font-mono font-bold",
+                  r.plAmt === null ? "text-gray-500" : r.plAmt >= 0 ? "text-bull" : "text-bear")}>
+                  {r.plAmt !== null ? `${r.plAmt >= 0 ? "+" : ""}${currency}${Math.abs(r.plAmt).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "—"}
+                </td>
+                <td className={clsx("px-4 py-3 text-right font-mono font-bold",
+                  r.plPct === null ? "text-gray-500" : r.plPct >= 0 ? "text-bull" : "text-bear")}>
+                  {r.plPct !== null
+                    ? <span className="flex items-center justify-end gap-1">
+                        {r.plPct >= 0 ? <TrendingUp size={13} /> : <TrendingDown size={13} />}
+                        {r.plPct >= 0 ? "+" : ""}{r.plPct.toFixed(1)}%
+                      </span>
+                    : "—"}
+                </td>
+                <td className="px-4 py-3 text-center">
+                  {r.sigLoading ? (
+                    <span className="text-gray-600 text-xs animate-pulse">…</span>
+                  ) : r.signal ? (
+                    <SignalBadge signal={r.signal as any} confidence={r.confidence} size="sm" />
+                  ) : (
+                    <span className="text-gray-600 text-xs">—</span>
+                  )}
+                </td>
+                <td className="px-4 py-3 text-right">
+                  <button onClick={() => onRemove(r._idx)} className="text-gray-500 hover:text-bear transition-colors">
+                    <Trash2 size={14} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function load(): Holding[] {
   try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); } catch { return []; }
 }
@@ -92,6 +180,8 @@ export default function PortfolioPage() {
 
   const hasIN = totalInvestedIN > 0;
   const hasUS = totalInvestedUS > 0;
+  const hasINHoldings = holdings.some(h => h.market === "IN");
+  const hasUSHoldings = holdings.some(h => h.market === "US");
   const totalPLIN = totalCurrentIN - totalInvestedIN;
   const totalPLUS = totalCurrentUS - totalInvestedUS;
   const totalPLPctIN = totalInvestedIN > 0 ? (totalPLIN / totalInvestedIN) * 100 : 0;
@@ -218,81 +308,33 @@ export default function PortfolioPage() {
         {error && <p className="text-bear text-xs mt-2">{error}</p>}
       </div>
 
-      {/* Holdings table */}
+      {/* Holdings tables — split by market so ₹ and $ rows are never mixed */}
       {holdings.length === 0 ? (
         <div className="bg-dark-card border border-dark-border rounded-2xl p-10 text-center text-gray-500 text-sm">
           No holdings yet — add your first stock above
         </div>
       ) : (
-        <div className="bg-dark-card border border-dark-border rounded-2xl overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-dark-border text-gray-400 text-left">
-                  <th className="px-4 py-3 font-medium">Symbol</th>
-                  <th className="px-4 py-3 font-medium text-right">Qty</th>
-                  <th className="px-4 py-3 font-medium text-right">Avg Buy</th>
-                  <th className="px-4 py-3 font-medium text-right">Current</th>
-                  <th className="px-4 py-3 font-medium text-right">Invested</th>
-                  <th className="px-4 py-3 font-medium text-right">Value</th>
-                  <th className="px-4 py-3 font-medium text-right">P&L</th>
-                  <th className="px-4 py-3 font-medium text-right">P&L %</th>
-                  <th className="px-4 py-3 font-medium text-center">Signal</th>
-                  <th className="px-4 py-3"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r, i) => (
-                  <tr key={i} className="border-b border-dark-border hover:bg-dark-border/30 transition-colors">
-                    <td className="px-4 py-3">
-                      <Link href={`/stock/${r.symbol}?market=${r.market}`}
-                        className="font-mono font-bold text-white hover:text-brand-500 transition-colors">
-                        {r.symbol}
-                      </Link>
-                      <span className="ml-2 text-xs text-gray-500">{r.market === "US" ? "🇺🇸" : "🇮🇳"}</span>
-                    </td>
-                    <td className="px-4 py-3 text-right font-mono">{r.qty}</td>
-                    <td className="px-4 py-3 text-right font-mono">{currency(r.market)}{r.avgPrice.toLocaleString()}</td>
-                    <td className="px-4 py-3 text-right font-mono">
-                      {r.loading ? <span className="animate-pulse text-gray-500">…</span>
-                        : r.curPrice ? `${currency(r.market)}${r.curPrice.toLocaleString()}` : "—"}
-                    </td>
-                    <td className="px-4 py-3 text-right font-mono text-gray-300">{currency(r.market)}{r.invested.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
-                    <td className="px-4 py-3 text-right font-mono">
-                      {r.current !== null ? `${currency(r.market)}${r.current.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "—"}
-                    </td>
-                    <td className={clsx("px-4 py-3 text-right font-mono font-bold",
-                      r.plAmt === null ? "text-gray-500" : r.plAmt >= 0 ? "text-bull" : "text-bear")}>
-                      {r.plAmt !== null ? `${r.plAmt >= 0 ? "+" : ""}${currency(r.market)}${Math.abs(r.plAmt).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "—"}
-                    </td>
-                    <td className={clsx("px-4 py-3 text-right font-mono font-bold",
-                      r.plPct === null ? "text-gray-500" : r.plPct >= 0 ? "text-bull" : "text-bear")}>
-                      {r.plPct !== null
-                        ? <span className="flex items-center justify-end gap-1">
-                            {r.plPct >= 0 ? <TrendingUp size={13} /> : <TrendingDown size={13} />}
-                            {r.plPct >= 0 ? "+" : ""}{r.plPct.toFixed(1)}%
-                          </span>
-                        : "—"}
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      {r.sigLoading ? (
-                        <span className="text-gray-600 text-xs animate-pulse">…</span>
-                      ) : r.signal ? (
-                        <SignalBadge signal={r.signal} confidence={r.confidence} size="sm" />
-                      ) : (
-                        <span className="text-gray-600 text-xs">—</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <button onClick={() => remove(i)} className="text-gray-500 hover:text-bear transition-colors">
-                        <Trash2 size={14} />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        <div className="space-y-5">
+          {hasINHoldings && (
+            <div>
+              <p className="text-xs text-gray-500 mb-2 flex items-center gap-1">🇮🇳 Indian Holdings (₹)</p>
+              <HoldingsTable
+                rows={rows.map((r, i) => ({ ...r, _idx: i })).filter(r => r.market === "IN")}
+                currency="₹"
+                onRemove={remove}
+              />
+            </div>
+          )}
+          {hasUSHoldings && (
+            <div>
+              <p className="text-xs text-gray-500 mb-2 flex items-center gap-1">🇺🇸 US Holdings ($)</p>
+              <HoldingsTable
+                rows={rows.map((r, i) => ({ ...r, _idx: i })).filter(r => r.market === "US")}
+                currency="$"
+                onRemove={remove}
+              />
+            </div>
+          )}
         </div>
       )}
     </div>
