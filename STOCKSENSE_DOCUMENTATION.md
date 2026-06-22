@@ -1243,6 +1243,12 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 
 ### Session 7 — 2026-06-22
 
+**Gold/Silver Tracking Support:**
+
+- Added `GLD`/`SLV` (US) and `GOLDBEES`/`SILVERBEES` (India) ETF tickers to both `backend/services/stock_universe.py` and `frontend/public/stock_universe.json`, so they're searchable and usable in Watchlist, Alerts, and the stock detail page (price + chart) via existing infra.
+- **Deliberately scoped to tracking only** — no AI BUY/SELL signal, no entry in Daily Picks. Fundamental factors (P/E, ROE, Piotroski score) that drive equity scoring don't meaningfully apply to a commodity ETF; full signal support would need a separate technical+macro-only model, considered and explicitly deferred rather than built half-heartedly into the existing equity-scoring engine.
+- Both lists are marked as manual additions outside the universe auto-generator's source (S&P/NASDAQ-100 + all NSE equities) — they'll need to be re-added if `scripts/generate_stock_universe.py` is ever re-run.
+
 **Full Indian Holiday Calendar + Muhurat Trading:**
 
 - **Gaps found:** the frontend's `marketHours.ts` was missing several *fixed-date* NSE holidays (Ambedkar Jayanti Apr 14, Maharashtra Day May 1, Christmas Dec 25, Good Friday) — it already had the Easter-algorithm machinery for US holidays but wasn't applying it to India. The lunar/regional holiday list (`NSE_EXTRA_HOLIDAYS`) was completely empty. The backend's market-hours check (duplicated in `paper_trading.py` and `screener_service.py`) had **zero** holiday awareness — not even the fixed ones.
