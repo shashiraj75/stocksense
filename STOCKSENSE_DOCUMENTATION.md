@@ -1243,6 +1243,23 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 
 ### Session 7 — 2026-06-22
 
+**Daily Picks Generation Crash Fix:**
+
+- **Root cause found** — the 2 AM IST daily picks cron run crashed every single day on the short-term overbought-RSI quality gate in `daily_picks.py`: `" ".join(r.get("reasoning", []))` assumed `reasoning` was a list of plain strings, but it's actually a list of structured dicts (`{"indicator":..., "reason":...}`) built in `prediction_engine.py` for the factor-breakdown UI. The crash threw `TypeError: sequence item 0: expected str instance, dict found`, caught by the top-level crash handler, which silently saved an empty fallback payload (`{"short": [], "medium": [], "long": []}` + an `error` field) instead of real picks — so the Daily Picks page showed either a stale "Generating picks…" spinner (during catch-up retries) or "No BUY signals found today" (a misleading message; it wasn't that no signals existed, the run never got far enough to find any).
+- **Fixed:** extract `item.get("reason", "")` from each dict before joining, with a defensive fallback for plain strings.
+- **Verified live** via `/api/picks/status` — confirmed the crashed run's `error` field, then watched a fresh catch-up-triggered run complete with `last_error: null` after the fix deployed.
+
+**Daily Picks Target-Price / Upside Methodology (clarified, not a bug):**
+
+- Confirmed via `prediction_engine.py::_estimate_target()`: every **BUY** signal's target price has a hard-coded floor relative to current price — medium-horizon floors at `price * 1.05`, long-horizon at `price * 1.15`, short-horizon via an ATR-based move. This means **every BUY pick is guaranteed to show positive upside by design**, not because each stock's underlying analyst-target/trend math happened to be positive. If several BUY picks' natural projections fall below the floor, they'll cluster at exactly the same floored upside % (e.g. several stocks all showing "+5.0% upside" identically) — that's expected behavior, not a calculation bug, but worth knowing when interpreting the displayed upside numbers as "genuine" per-stock projections.
+
+**Validation Universe Bug — India Results Were Permanently Shadowed:**
+
+- **Root cause found** — `val_runs` had no `universe` column. `get_latest_results()` / `get_per_stock_results()` only filtered by `horizon`, picking whichever run had the highest `id` (i.e. most recent). Since the daily validation schedule always runs `nifty100 → midcap → us` in that order, the **US run is always the most recent** for any given horizon — so the Validation page always displayed US results, and India (nifty100/midcap) results, though present in the database, were never shown.
+- **Fixed:** added a `universe` column to `val_runs` (Postgres: idempotent `ALTER TABLE ADD COLUMN IF NOT EXISTS`, since the table already existed in production and `CREATE TABLE IF NOT EXISTS` alone is a no-op on existing tables; SQLite: `ALTER TABLE` wrapped to ignore "duplicate column" on repeat init). `get_latest_results()`/`get_per_stock_results()` now accept and filter by `universe` (default `nifty100`).
+- **API:** `/api/validation/results`, `/results/stocks`, `/results/stock/{symbol}` all now accept a `universe` query param.
+- **Frontend:** Validation page now has a Nifty 100 / Midcap / US selector above the horizon tabs. All "vs Nifty" benchmark text is now dynamic — shows "vs S&P 500" when viewing the US universe instead of incorrectly saying Nifty for US data.
+
 **Railway Redeploy Scoping:**
 
 - **Root cause found** — Railway redeployed the backend service on every push to `main`, regardless of which files changed, including pure frontend and documentation commits. Each restart re-runs the startup "catch-up" check in `main.py`, which can kick off a brand-new ~10-15 minute full picks-generation run if it lands in a window before the day's legitimate 2 AM IST cron run has finished persisting — producing duplicate/wasted runs and a confusing "Generating picks…" spinner shown against an already-complete day's data.
