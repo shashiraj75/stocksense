@@ -5,9 +5,10 @@ window + a holiday calendar (fixed-date holidays computed exactly; lunar/
 regional Indian holidays sourced manually from the NSE circular each year).
 """
 import datetime
+from zoneinfo import ZoneInfo
 
 IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
-ET = datetime.timezone(datetime.timedelta(hours=-4))  # approximation, ignores EST/EDT switch
+ET = ZoneInfo("America/New_York")  # DST-aware — matches frontend's Intl-based zoning exactly
 
 
 def _easter_sunday(year: int) -> datetime.date:

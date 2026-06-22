@@ -285,11 +285,10 @@ async def lifespan(app: FastAPI):
     # now. This recovers from redeploys that killed a mid-run background task,
     # and from GitHub Actions PICKS_SECRET mismatches. Same recovery logic for
     # both markets — only the trigger-time/timezone/weekday rule differs.
-    async def _catchup_picks(market: str, tz_offset_hours: float, trigger_hour: int, settle_secs: int):
-        from datetime import datetime, timezone, timedelta
+    async def _catchup_picks(market: str, tz, trigger_hour: int, settle_secs: int):
+        from datetime import datetime
         await asyncio.sleep(settle_secs)  # let server settle first
         try:
-            tz = timezone(timedelta(hours=tz_offset_hours))
             now = datetime.now(tz)
             trigger_time = now.replace(hour=trigger_hour, minute=0, second=0, microsecond=0)
             if now < trigger_time:
@@ -351,13 +350,15 @@ async def lifespan(app: FastAPI):
     crumb_task = asyncio.create_task(_yfinance_crumb_loop())
     validation_task = asyncio.create_task(_validation_schedule_loop())
     catchup_task = asyncio.create_task(_catchup_validation())
+    from zoneinfo import ZoneInfo
+    from datetime import timezone as _tz, timedelta as _td
+    _IST = _tz(_td(hours=5, minutes=30))
+    _ET = ZoneInfo("America/New_York")  # DST-aware, matches services/market_hours.py
     # IN: catch up any time after 2 AM IST (the scheduled run time) on a weekday.
-    picks_catchup_task = asyncio.create_task(_catchup_picks("IN", 5.5, 2, 60))
+    picks_catchup_task = asyncio.create_task(_catchup_picks("IN", _IST, 2, 60))
     # US: cron fires ~12:30 UTC (8:30 AM ET / 7:30 AM ET depending on DST).
-    # Uses a fixed UTC-5 offset like picks_generated_today("US") — not
-    # DST-aware, but trigger_hour=9 leaves enough margin either way before
-    # declaring the scheduled run missed.
-    picks_catchup_task_us = asyncio.create_task(_catchup_picks("US", -5, 9, 90))
+    # trigger_hour=9 leaves margin either way before declaring the run missed.
+    picks_catchup_task_us = asyncio.create_task(_catchup_picks("US", _ET, 9, 90))
     trade_notify_task = asyncio.create_task(_paper_trade_notify_loop())
     yield
     task.cancel()

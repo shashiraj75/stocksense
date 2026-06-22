@@ -814,13 +814,14 @@ def get_cached_picks(market: str = "IN") -> dict | None:
 
 def picks_generated_today(market: str = "IN") -> bool:
     """Return True if today's picks (own market's local trading-day date) exist
-    and have at least one BUY pick. IN uses IST, US uses US/Eastern."""
+    and have at least one BUY pick. IN uses IST, US uses DST-aware US/Eastern."""
     from datetime import timedelta
+    from zoneinfo import ZoneInfo
     data = get_cached_picks(market)
     if not data or not data.get("generated_at"):
         return False
     try:
-        tz = timezone(timedelta(hours=5, minutes=30)) if market == "IN" else timezone(timedelta(hours=-5))
+        tz = timezone(timedelta(hours=5, minutes=30)) if market == "IN" else ZoneInfo("America/New_York")
         generated_at = datetime.fromisoformat(
             data["generated_at"].replace("Z", "+00:00")
         ).astimezone(tz)
