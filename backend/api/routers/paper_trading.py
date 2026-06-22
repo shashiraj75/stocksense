@@ -1,5 +1,6 @@
 import os
 import logging
+import datetime
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Literal
@@ -8,6 +9,27 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 STARTING_CASH = 1_000_000.0  # ₹10,00,000 virtual cash
+
+
+def _is_market_open(market: str) -> bool:
+    """
+    Server-side mirror of the frontend's market-hours check — orders must
+    be blocked here too, not just in the UI, since a direct API call would
+    otherwise bypass the frontend gate entirely. Executing at a stale
+    last-close price while a market is closed isn't something a real
+    broker would let you do (the next session can gap through that price).
+    """
+    if market == "IN":
+        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+        if now.weekday() >= 5:
+            return False
+        return now.replace(hour=9, minute=15, second=0, microsecond=0) <= now <= now.replace(hour=15, minute=30, second=0, microsecond=0)
+    elif market == "US":
+        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-4)))
+        if now.weekday() >= 5:
+            return False
+        return now.replace(hour=9, minute=30, second=0, microsecond=0) <= now <= now.replace(hour=16, minute=0, second=0, microsecond=0)
+    return False
 
 
 def _conn():
@@ -121,6 +143,8 @@ def paper_buy(req: BuyRequest):
         raise HTTPException(status_code=400, detail="Quantity must be > 0")
     if req.price <= 0:
         raise HTTPException(status_code=400, detail="Price must be > 0")
+    if not _is_market_open(req.market):
+        raise HTTPException(status_code=400, detail=f"{req.market} market is closed — orders are paused until it reopens")
 
     cost = req.price * req.quantity
     portfolio = _ensure_portfolio(req.user_id, req.email)
@@ -162,18 +186,20 @@ def paper_sell(trade_id: int, req: SellRequest):
 
     with _conn() as conn:
         trade = conn.execute(
-            "SELECT user_id, symbol, quantity, entry_price, status FROM paper_trades WHERE id = %s",
+            "SELECT user_id, symbol, quantity, entry_price, status, market FROM paper_trades WHERE id = %s",
             (trade_id,)
         ).fetchone()
 
         if trade is None:
             raise HTTPException(status_code=404, detail="Trade not found")
 
-        owner, sym, qty, ep, status = trade
+        owner, sym, qty, ep, status, trade_market = trade
         if owner != req.user_id:
             raise HTTPException(status_code=403, detail="Not your trade")
         if status != "OPEN":
             raise HTTPException(status_code=400, detail="Trade already closed")
+        if not _is_market_open(trade_market):
+            raise HTTPException(status_code=400, detail=f"{trade_market} market is closed — orders are paused until it reopens")
 
         proceeds = req.price * qty
         pnl = (req.price - ep) * qty

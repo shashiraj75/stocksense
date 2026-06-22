@@ -1,10 +1,11 @@
 "use client";
 import { useState, useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { X, TrendingUp, TrendingDown, Minus, AlertCircle, Loader2, ShieldAlert, Target } from "lucide-react";
+import { X, TrendingUp, TrendingDown, Minus, AlertCircle, Loader2, ShieldAlert, Target, Clock } from "lucide-react";
 import clsx from "clsx";
 import { placePaperBuy, closePaperTrade, fetchPrediction, type Market, type Horizon } from "@/utils/api";
 import { useAuth } from "@/lib/AuthContext";
+import { getMarketStatus } from "@/utils/marketHours";
 
 interface Props {
   symbol: string;
@@ -50,6 +51,18 @@ export function PaperTradeModal({
   const targetPriceEdited = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+
+  // Block order placement while the relevant market is closed — executing
+  // instantly at a stale last-close price would be unrealistic (real
+  // markets can gap on the next open) and looks unprofessional.
+  const [marketStatus, setMarketStatus] = useState(() => getMarketStatus(market));
+  useEffect(() => {
+    const update = () => setMarketStatus(getMarketStatus(market));
+    update();
+    const id = setInterval(update, 30_000);
+    return () => clearInterval(id);
+  }, [market]);
+  const marketClosed = !marketStatus.isOpen;
 
   // Fetch prediction for selected horizon (uses cached result if already loaded)
   const { data: prediction, isLoading: predLoading } = useQuery({
@@ -136,6 +149,17 @@ export function PaperTradeModal({
 
         {/* Scrollable body */}
         <div className="overflow-y-auto flex-1 px-5 py-3 space-y-2.5">
+
+          {/* Market closed — block order placement */}
+          {marketClosed && (
+            <div className="flex items-start gap-2 rounded-lg px-3 py-2 text-xs border bg-yellow-500/10 border-yellow-500/30 text-yellow-300">
+              <Clock size={13} className="shrink-0 mt-0.5" />
+              <span>
+                <strong>{market} market is closed.</strong> Orders execute at the live price, so trading is
+                paused until the market reopens{marketStatus.nextEventLabel ? ` — ${marketStatus.nextEventLabel}` : ""}.
+              </span>
+            </div>
+          )}
 
           {/* Horizon selector */}
           {!isSell && (
@@ -280,10 +304,15 @@ export function PaperTradeModal({
             </button>
             <button
               onClick={() => { setError(null); isSell ? sellMutation.mutate() : buyMutation.mutate(); }}
-              disabled={buyMutation.isPending || sellMutation.isPending}
+              disabled={buyMutation.isPending || sellMutation.isPending || marketClosed}
+              title={marketClosed ? `${market} market is closed` : undefined}
               className={clsx("flex-1 px-4 py-2 rounded-xl font-semibold text-sm transition-colors",
                 isSell ? "bg-bear hover:bg-red-600 text-white disabled:opacity-50" : "bg-bull hover:bg-green-600 text-white disabled:opacity-50")}>
-              {buyMutation.isPending || sellMutation.isPending ? "Placing…" : isSell ? `Sell ${existingQuantity} shares` : `Buy ${quantity} shares`}
+              {buyMutation.isPending || sellMutation.isPending
+                ? "Placing…"
+                : marketClosed
+                  ? "Market Closed"
+                  : isSell ? `Sell ${existingQuantity} shares` : `Buy ${quantity} shares`}
             </button>
           </div>
         </div>
