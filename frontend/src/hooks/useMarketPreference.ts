@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useLayoutEffect, useCallback } from "react";
 
 // Shared across every page with an IN/US (or wider) market toggle — Daily
 // Picks, Dashboard, Screener, Backtest, Alerts, Portfolio, Heatmap, Paper
@@ -22,9 +22,13 @@ export function useMarketPreference<T extends string>(
 ): [T, (value: T) => void] {
   const [value, setValue] = useState<T>(fallback);
 
-  // Runs client-side only (after hydration) — localStorage isn't available
-  // during SSR, so the first paint always shows `fallback` briefly.
-  useEffect(() => {
+  // useLayoutEffect (not useEffect) — fires synchronously before the browser
+  // paints, so the stored value swaps in before anything is visible rather
+  // than after a frame of `fallback` flashes on screen. No-op during SSR
+  // (localStorage isn't available there), which is fine — the very first
+  // server-rendered HTML still shows `fallback` for an instant, but the
+  // client takes over before paint instead of after.
+  useLayoutEffect(() => {
     try {
       const stored = localStorage.getItem(KEY);
       if (stored && (allowed as readonly string[]).includes(stored)) {
