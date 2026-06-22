@@ -107,18 +107,38 @@ export default function AlertsPage() {
     setSym(""); setTargetPrice("");
   };
 
+  // Delete/reset await the backend call before touching local state. Firing
+  // the request and updating local state unconditionally meant a failed
+  // network call left the row alive in Postgres while the UI showed it gone
+  // — the next page load's GET (line 40) blindly overwrites local state with
+  // the backend's list, silently resurrecting the "deleted" alert (same bug
+  // class as the paper-trades merge-on-reconnect issue fixed earlier).
   const remove = async (id: string) => {
+    if (apiBase) {
+      try {
+        await api.delete(`${apiBase}/${id}`);
+      } catch {
+        setError("Couldn't delete that alert — check your connection and try again.");
+        return;
+      }
+    }
     const updated = alerts.filter(a => a.id !== id);
     setAlerts(updated);
     saveLocal(updated);
-    if (apiBase) api.delete(`${apiBase}/${id}`).catch(() => {});
   };
 
   const resetTrigger = async (id: string) => {
+    if (apiBase) {
+      try {
+        await api.patch(`${apiBase}/${id}`, { triggered: false });
+      } catch {
+        setError("Couldn't reset that alert — check your connection and try again.");
+        return;
+      }
+    }
     const updated = alerts.map(a => a.id === id ? { ...a, triggered: false } : a);
     setAlerts(updated);
     saveLocal(updated);
-    if (apiBase) api.patch(`${apiBase}/${id}`, { triggered: false }).catch(() => {});
   };
 
   const currency = (m: Market) => m === "US" ? "$" : "₹";
