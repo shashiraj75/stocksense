@@ -9,6 +9,8 @@ import clsx from "clsx";
 import { PlusCircle, Trash2, TrendingUp, TrendingDown, Briefcase, Wifi } from "lucide-react";
 import { PortfolioAllocationChart } from "@/components/PortfolioAllocationChart";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
+import { StockSymbolField } from "@/components/StockSymbolField";
+import type { StockResult } from "@/hooks/useStockSearch";
 
 interface Holding {
   symbol: string;
@@ -276,9 +278,16 @@ export default function PortfolioPage() {
         <div className="flex flex-wrap gap-3 items-end">
           <div className="flex-1 min-w-32">
             <label className="text-xs text-gray-400 mb-1 block">Symbol</label>
-            <input className="w-full bg-dark-bg border border-dark-border rounded-xl px-3 py-2 text-white font-mono font-bold text-sm outline-none focus:border-brand-500 uppercase"
-              placeholder="AAPL" value={sym} onChange={e => setSym(e.target.value.toUpperCase())}
-              onKeyDown={e => e.key === "Enter" && add()} />
+            <StockSymbolField
+              className="w-full bg-dark-bg border border-dark-border rounded-xl px-3 py-2 text-white font-mono font-bold text-sm outline-none focus:border-brand-500 uppercase"
+              value={sym}
+              onChange={setSym}
+              onEnter={add}
+              onSelect={(stock: StockResult) => {
+                setSym(stock.symbol.replace(/\.(NS|BO)$/, ""));
+                if (stock.market === "IN" || stock.market === "US") setMarket(stock.market);
+              }}
+            />
           </div>
           <div>
             <label className="text-xs text-gray-400 mb-1 block">Market</label>
