@@ -621,7 +621,10 @@ def _generate_picks_inner() -> dict:
                 print(f"[picks] {r['symbol']} ({hz}) filtered: confidence {conf}% < 25%")
                 return False
             if hz == "short":
-                reasons = " ".join(r.get("reasoning", []))
+                reasons = " ".join(
+                    item.get("reason", "") if isinstance(item, dict) else str(item)
+                    for item in r.get("reasoning", [])
+                )
                 if "Overbought" in reasons:
                     print(f"[picks] {r['symbol']} ({hz}) filtered: overbought RSI in short-term")
                     return False
