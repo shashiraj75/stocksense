@@ -35,13 +35,25 @@ function urgencyScore(trade: PaperTrade, livePrice: number | null | undefined): 
   return distances.length ? Math.min(...distances) : Infinity;
 }
 
-function StatCard({ label, value, sub, positive }: { label: string; value: string; sub?: string; positive?: boolean }) {
+function StatCard({
+  label, value, sub, positive, pct,
+}: { label: string; value: string; sub?: string; positive?: boolean; pct?: number | null }) {
   return (
     <div className="bg-dark-card border border-dark-border rounded-xl p-4">
       <p className="text-xs text-gray-400 mb-1">{label}</p>
-      <p className={clsx("text-xl font-bold font-mono",
-        positive === true ? "text-bull" : positive === false ? "text-bear" : "text-white"
-      )}>{value}</p>
+      <div className="flex items-baseline gap-1.5 flex-wrap">
+        <p className={clsx("text-xl font-bold font-mono leading-tight",
+          positive === true ? "text-bull" : positive === false ? "text-bear" : "text-white"
+        )}>{value}</p>
+        {pct != null && (
+          <span className={clsx(
+            "text-[11px] font-semibold font-mono px-1.5 py-0.5 rounded-md shrink-0",
+            pct >= 0 ? "bg-bull/15 text-bull" : "bg-bear/15 text-bear"
+          )}>
+            {pct >= 0 ? "+" : ""}{pct.toFixed(2)}%
+          </span>
+        )}
+      </div>
       {sub && <p className="text-xs text-gray-500 mt-0.5">{sub}</p>}
     </div>
   );
@@ -458,16 +470,16 @@ export default function PaperTradingPage() {
         <StatCard
           label="Unrealized P&L"
           value={unrealizedLoaded
-            ? `${totalUnrealizedPnl >= 0 ? "+" : ""}₹${fmt(Math.abs(totalUnrealizedPnl), 0)}` +
-              (unrealizedPct !== null ? ` (${unrealizedPct >= 0 ? "+" : ""}${unrealizedPct.toFixed(2)}%)` : "")
+            ? `${totalUnrealizedPnl >= 0 ? "+" : ""}₹${fmt(Math.abs(totalUnrealizedPnl), 0)}`
             : "—"}
+          pct={unrealizedLoaded ? unrealizedPct : null}
           sub={unrealizedLoaded ? `across ${openTrades.length} open position${openTrades.length !== 1 ? "s" : ""}` : "Loading…"}
           positive={unrealizedLoaded ? (totalUnrealizedPnl > 0 ? true : totalUnrealizedPnl < 0 ? false : undefined) : undefined}
         />
         <StatCard
           label="Realized P&L"
-          value={`${totalRealized >= 0 ? "+" : ""}₹${fmt(Math.abs(totalRealized), 0)}` +
-            (realizedPct !== null ? ` (${realizedPct >= 0 ? "+" : ""}${realizedPct.toFixed(2)}%)` : "")}
+          value={`${totalRealized >= 0 ? "+" : ""}₹${fmt(Math.abs(totalRealized), 0)}`}
+          pct={realizedPct}
           sub={`from ${closedTrades.length} closed trade${closedTrades.length !== 1 ? "s" : ""}`}
           positive={totalRealized > 0 ? true : totalRealized < 0 ? false : undefined}
         />
