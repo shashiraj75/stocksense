@@ -75,6 +75,12 @@ const HORIZONS = [
   { key: "long",   label: "Long",   sub: "63-day forward" },
 ] as const;
 
+const UNIVERSES = [
+  { key: "nifty100", label: "🇮🇳 Nifty 100",  sub: "India large-cap" },
+  { key: "midcap",   label: "🇮🇳 Midcap",     sub: "India mid-cap" },
+  { key: "us",       label: "🇺🇸 US",         sub: "S&P 500 basket" },
+] as const;
+
 function StatCard({
   label, value, sub, color = "text-white", icon,
 }: {
@@ -140,18 +146,19 @@ function binomialPValue(n: number, hitRatePct: number): { p: number; z: number; 
 
 export default function ValidationPage() {
   const [horizon, setHorizon] = useState<"short" | "medium" | "long">("medium");
+  const [universe, setUniverse] = useState<"nifty100" | "midcap" | "us">("nifty100");
   const qc = useQueryClient();
 
   const { data: results, isLoading: resultsLoading } = useQuery<ValidationResult>({
-    queryKey: ["validation-results", horizon],
-    queryFn: () => api.get(`/api/validation/results?horizon=${horizon}`).then(r => r.data),
+    queryKey: ["validation-results", horizon, universe],
+    queryFn: () => api.get(`/api/validation/results?horizon=${horizon}&universe=${universe}`).then(r => r.data),
     refetchOnWindowFocus: false,
     staleTime: 60_000,
   });
 
   const { data: stockData } = useQuery<{ stocks: StockResult[] }>({
-    queryKey: ["validation-stocks", horizon],
-    queryFn: () => api.get(`/api/validation/results/stocks?horizon=${horizon}`).then(r => r.data),
+    queryKey: ["validation-stocks", horizon, universe],
+    queryFn: () => api.get(`/api/validation/results/stocks?horizon=${horizon}&universe=${universe}`).then(r => r.data),
     enabled: results?.available === true,
     refetchOnWindowFocus: false,
     staleTime: 60_000,
@@ -165,7 +172,7 @@ export default function ValidationPage() {
   });
 
   const { mutate: triggerRun, isPending: triggering } = useMutation({
-    mutationFn: () => api.post(`/api/validation/run?horizon=${horizon}`),
+    mutationFn: () => api.post(`/api/validation/run?horizon=${horizon}&universe=${universe}`),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["validation-status"] });
       qc.invalidateQueries({ queryKey: ["validation-results"] });
@@ -174,6 +181,8 @@ export default function ValidationPage() {
 
   const res = results?.available ? results : null;
   const isRunning = status?.running === true;
+  const benchmarkName = universe === "us" ? "S&P 500" : "Nifty";
+  const universeLabel = UNIVERSES.find(u => u.key === universe)?.label ?? universe;
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
@@ -188,7 +197,7 @@ export default function ValidationPage() {
             </span>
           </div>
           <p className="text-sm text-gray-400">
-            Historical accuracy of the AI model across all Nifty 100 stocks. Runs automatically every Sunday.
+            Historical accuracy of the AI model across {universeLabel}. Runs automatically every Sunday.
           </p>
         </div>
       </div>
@@ -199,11 +208,29 @@ export default function ValidationPage() {
         <div className="text-sm text-yellow-300/80">
           <strong className="text-yellow-300">Walk-forward guarantee:</strong> At each historical date, the model only uses data
           available <em>before</em> that date — no look-ahead bias. Correctness is <em>benchmark-relative</em>:{" "}
-          a <strong className="text-yellow-300">BUY</strong> is correct only if the stock <em>outperforms</em> Nifty over the forward window;
-          a <strong className="text-yellow-300">SELL</strong> is correct only if it <em>underperforms</em> Nifty;
-          a <strong className="text-yellow-300">HOLD</strong> is correct if it stays within ±threshold% of Nifty.{" "}
-          "Avg BUY Return" and "Profitable BUY %" measure <em>absolute</em> return (not vs Nifty) — all other metrics are alpha-based.
+          a <strong className="text-yellow-300">BUY</strong> is correct only if the stock <em>outperforms</em> {benchmarkName} over the forward window;
+          a <strong className="text-yellow-300">SELL</strong> is correct only if it <em>underperforms</em> {benchmarkName};
+          a <strong className="text-yellow-300">HOLD</strong> is correct if it stays within ±threshold% of {benchmarkName}.{" "}
+          "Avg BUY Return" and "Profitable BUY %" measure <em>absolute</em> return (not vs {benchmarkName}) — all other metrics are alpha-based.
         </div>
+      </div>
+
+      {/* Universe selector */}
+      <div className="flex gap-2">
+        {UNIVERSES.map(({ key, label, sub }) => (
+          <button
+            key={key}
+            onClick={() => setUniverse(key)}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+              universe === key
+                ? "bg-blue-600 text-white"
+                : "bg-dark-card border border-dark-border text-gray-400 hover:text-white"
+            }`}
+          >
+            {label}
+            <span className="ml-1.5 text-xs opacity-60">({sub})</span>
+          </button>
+        ))}
       </div>
 
       {/* Horizon selector + run controls */}
@@ -233,7 +260,7 @@ export default function ValidationPage() {
           >
             {isRunning
               ? <><Loader2 size={14} className="animate-spin" /> Running… {status?.progress}/{status?.total}</>
-              : <><Play size={14} /> Run Now (Nifty 100 · {horizon})</>
+              : <><Play size={14} /> Run Now ({universeLabel} · {horizon})</>
             }
           </button>
         </div>
@@ -258,7 +285,7 @@ export default function ValidationPage() {
       {!res && !resultsLoading && !isRunning && (
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <BarChart3 size={40} className="text-gray-600 mb-4" />
-          <h3 className="text-lg font-semibold text-gray-300 mb-2">No validation results yet for {horizon} horizon</h3>
+          <h3 className="text-lg font-semibold text-gray-300 mb-2">No validation results yet for {horizon} horizon · {universeLabel}</h3>
           <p className="text-sm text-gray-500 max-w-sm">
             Click "Run Now" to start, or wait for the automatic Sunday run.
           </p>
@@ -296,9 +323,9 @@ export default function ValidationPage() {
           {/* Primary metrics */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <StatCard
-              label="BUY Hit Rate (vs Nifty)"
+              label={`BUY Hit Rate (vs ${benchmarkName})`}
               value={res.buy_hit_rate_pct != null ? `${res.buy_hit_rate_pct}%` : null}
-              sub="% of BUY calls that beat Nifty"
+              sub={`% of BUY calls that beat ${benchmarkName}`}
               color={
                 (res.buy_hit_rate_pct ?? 0) >= 60 ? "text-green-400" :
                 (res.buy_hit_rate_pct ?? 0) >= 53 ? "text-yellow-400" : "text-red-400"
@@ -308,14 +335,14 @@ export default function ValidationPage() {
             <StatCard
               label="Avg Alpha on BUY"
               value={res.avg_alpha_on_buy_pct != null ? `${res.avg_alpha_on_buy_pct > 0 ? "+" : ""}${res.avg_alpha_on_buy_pct}%` : null}
-              sub="Mean outperformance vs Nifty per call"
+              sub={`Mean outperformance vs ${benchmarkName} per call`}
               color={(res.avg_alpha_on_buy_pct ?? 0) > 0 ? "text-green-400" : "text-red-400"}
               icon={<TrendingUp size={14} />}
             />
             <StatCard
               label="Strong Alpha %"
               value={res.beat_benchmark_pct != null ? `${res.beat_benchmark_pct}%` : null}
-              sub="% of BUY calls with alpha > 1% vs Nifty"
+              sub={`% of BUY calls with alpha > 1% vs ${benchmarkName}`}
               color={
                 (res.beat_benchmark_pct ?? 0) >= 50 ? "text-green-400" :
                 (res.beat_benchmark_pct ?? 0) >= 38 ? "text-yellow-400" : "text-red-400"
@@ -338,13 +365,13 @@ export default function ValidationPage() {
             <StatCard
               label="Avg BUY Return"
               value={res.avg_return_on_buy_pct != null ? `${res.avg_return_on_buy_pct > 0 ? "+" : ""}${res.avg_return_on_buy_pct}%` : null}
-              sub={`Absolute return · Nifty avg: ${res.nifty_avg_fwd_return_pct ?? "—"}%`}
+              sub={`Absolute return · ${benchmarkName} avg: ${res.nifty_avg_fwd_return_pct ?? "—"}%`}
               color={(res.avg_return_on_buy_pct ?? 0) > (res.nifty_avg_fwd_return_pct ?? 0) ? "text-green-400" : "text-yellow-400"}
             />
             <StatCard
               label="Profitable BUY %"
               value={res.profitable_buy_pct != null ? `${res.profitable_buy_pct}%` : null}
-              sub="% with positive absolute return (not vs Nifty)"
+              sub={`% with positive absolute return (not vs ${benchmarkName})`}
               color={(res.profitable_buy_pct ?? 0) >= 55 ? "text-green-400" : "text-yellow-400"}
             />
             <StatCard
@@ -441,7 +468,7 @@ export default function ValidationPage() {
             <div className="bg-dark-card border border-dark-border rounded-xl p-5">
               <p className="text-sm font-semibold text-white mb-1">Signal Precision by Confidence Score</p>
               <p className="text-xs text-gray-500 mb-4">
-                Among BUY signals in each score range, what % beat the Nifty benchmark?
+                Among BUY signals in each score range, what % beat the {benchmarkName} benchmark?
                 A well-calibrated model shows hit rate rising with score.
               </p>
               <div className="overflow-x-auto">
@@ -491,7 +518,7 @@ export default function ValidationPage() {
               <div className="space-y-4">
                 <ICBar label="Composite Score"                    value={res.factor_ic.composite} color="bg-purple-500" />
                 <ICBar label="Technical (RSI/MACD/EMA/ADX/BB)"   value={res.factor_ic.tech}      color="bg-blue-500" />
-                <ICBar label="Relative Strength vs Nifty"         value={res.factor_ic.rs}        color="bg-green-500" />
+                <ICBar label={`Relative Strength vs ${benchmarkName}`}         value={res.factor_ic.rs}        color="bg-green-500" />
                 <ICBar label="OBV Trend (Volume Flow)"            value={res.factor_ic.obv}       color="bg-yellow-500" />
                 <ICBar label="MFI (Money Flow Index)"             value={res.factor_ic.mfi}       color="bg-orange-500" />
               </div>
@@ -545,11 +572,11 @@ export default function ValidationPage() {
               <div className="space-y-2">
                 <div className="flex items-start gap-2">
                   <CheckCircle2 size={14} className="text-green-400 mt-0.5 shrink-0" />
-                  <p><strong className="text-gray-300">Strong Alpha &gt; 50%</strong> — more than half of BUY calls beat Nifty by &gt;1%, showing genuine edge.</p>
+                  <p><strong className="text-gray-300">Strong Alpha &gt; 50%</strong> — more than half of BUY calls beat {benchmarkName} by &gt;1%, showing genuine edge.</p>
                 </div>
                 <div className="flex items-start gap-2">
                   <CheckCircle2 size={14} className="text-green-400 mt-0.5 shrink-0" />
-                  <p><strong className="text-gray-300">Avg alpha &gt; 1%</strong> — meaningful return above Nifty per trade.</p>
+                  <p><strong className="text-gray-300">Avg alpha &gt; 1%</strong> — meaningful return above {benchmarkName} per trade.</p>
                 </div>
                 <div className="flex items-start gap-2">
                   <CheckCircle2 size={14} className="text-green-400 mt-0.5 shrink-0" />

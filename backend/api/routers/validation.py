@@ -64,34 +64,44 @@ def get_status():
 
 
 @router.get("/results")
-def get_results(horizon: Literal["short", "medium", "long"] = Query("medium")):
-    """Return aggregate validation metrics for the latest run of the given horizon."""
+def get_results(
+    horizon: Literal["short", "medium", "long"] = Query("medium"),
+    universe: Literal["nifty100", "midcap", "us"] = Query("nifty100"),
+):
+    """Return aggregate validation metrics for the latest run of the given horizon + universe."""
     from services.validation_engine import get_latest_results
     try:
-        return _json_response(get_latest_results(horizon=horizon))
+        return _json_response(get_latest_results(horizon=horizon, universe=universe))
     except Exception as e:
         import traceback
         return _json_response({"available": False, "error": str(e), "trace": traceback.format_exc()})
 
 
 @router.get("/results/stocks")
-def get_stock_results(horizon: Literal["short", "medium", "long"] = Query("medium")):
+def get_stock_results(
+    horizon: Literal["short", "medium", "long"] = Query("medium"),
+    universe: Literal["nifty100", "midcap", "us"] = Query("nifty100"),
+):
     """Per-stock hit rate and average return breakdown for the latest run."""
     from services.validation_engine import get_per_stock_results
     try:
-        return _json_response({"horizon": horizon, "stocks": get_per_stock_results(horizon=horizon)})
+        return _json_response({"horizon": horizon, "stocks": get_per_stock_results(horizon=horizon, universe=universe)})
     except Exception as e:
         return _json_response({"horizon": horizon, "stocks": [], "error": str(e)})
 
 
 @router.get("/results/stock/{symbol}")
-def get_single_stock_accuracy(symbol: str, horizon: Literal["short", "medium", "long"] = Query("medium")):
+def get_single_stock_accuracy(
+    symbol: str,
+    horizon: Literal["short", "medium", "long"] = Query("medium"),
+    universe: Literal["nifty100", "midcap", "us"] = Query("nifty100"),
+):
     """Accuracy stats for a single stock symbol across all horizons."""
     from services.validation_engine import get_per_stock_results
     try:
         all_results = {}
         for h in ["short", "medium", "long"]:
-            rows = get_per_stock_results(horizon=h)
+            rows = get_per_stock_results(horizon=h, universe=universe)
             match = next((r for r in rows if r.get("symbol", "").upper() == symbol.upper()), None)
             if match:
                 all_results[h] = match

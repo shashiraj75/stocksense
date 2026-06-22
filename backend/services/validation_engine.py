@@ -62,6 +62,11 @@ CREATE TABLE IF NOT EXISTS val_runs (
     summary     JSONB
 );
 
+-- Table may already exist from before multi-universe support — add the
+-- column idempotently rather than relying on CREATE TABLE IF NOT EXISTS,
+-- which is a no-op (and so never adds new columns) on an existing table.
+ALTER TABLE val_runs ADD COLUMN IF NOT EXISTS universe TEXT NOT NULL DEFAULT 'nifty100';
+
 CREATE TABLE IF NOT EXISTS val_signals (
     id                BIGSERIAL PRIMARY KEY,
     run_id            BIGINT REFERENCES val_runs(id) ON DELETE CASCADE,
@@ -219,7 +224,8 @@ def _init_db():
                     horizon     TEXT NOT NULL,
                     n_stocks    INTEGER,
                     n_signals   INTEGER,
-                    summary     TEXT
+                    summary     TEXT,
+                    universe    TEXT NOT NULL DEFAULT 'nifty100'
                 );
                 CREATE TABLE IF NOT EXISTS val_signals (
                     id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -243,6 +249,13 @@ def _init_db():
                 CREATE INDEX IF NOT EXISTS idx_vs_run    ON val_signals(run_id, horizon);
                 CREATE INDEX IF NOT EXISTS idx_vs_score  ON val_signals(composite_score);
                 """)
+                # SQLite's CREATE TABLE IF NOT EXISTS is a no-op on a table that
+                # already exists from before multi-universe support — add the
+                # column explicitly, ignoring "duplicate column" on repeat runs.
+                try:
+                    c.execute("ALTER TABLE val_runs ADD COLUMN universe TEXT NOT NULL DEFAULT 'nifty100'")
+                except sqlite3.OperationalError:
+                    pass
         _db_initialised = True
 
 
@@ -765,10 +778,10 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
                 try:
                     with conn.cursor() as cur:
                         cur.execute(
-                            "INSERT INTO val_runs (run_at, horizon, n_stocks, n_signals, summary) "
-                            "VALUES (%s,%s,%s,%s,%s) RETURNING id",
+                            "INSERT INTO val_runs (run_at, horizon, n_stocks, n_signals, summary, universe) "
+                            "VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
                             (metrics["run_at"], horizon, n_stocks, len(all_signals),
-                             json.dumps(clean_metrics))
+                             json.dumps(clean_metrics), universe)
                         )
                         run_id = cur.fetchone()[0]
                         cur.executemany(
@@ -785,9 +798,9 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
             else:
                 with _get_sqlite_conn() as conn:
                     cur = conn.execute(
-                        "INSERT INTO val_runs (run_at, horizon, n_stocks, n_signals, summary) VALUES (?,?,?,?,?)",
+                        "INSERT INTO val_runs (run_at, horizon, n_stocks, n_signals, summary, universe) VALUES (?,?,?,?,?,?)",
                         (metrics["run_at"], horizon, n_stocks, len(all_signals),
-                         json.dumps(clean_metrics))
+                         json.dumps(clean_metrics), universe)
                     )
                     run_id = cur.lastrowid
                     conn.executemany(
@@ -835,21 +848,21 @@ def _fetchall(sql_pg: str, sql_sq: str, params=()):
         return conn.execute(sql_sq, params).fetchall()
 
 
-def get_latest_results(horizon: str | None = None) -> dict:
-    """Return the most recent validation summary (or per-horizon breakdown)."""
+def get_latest_results(horizon: str | None = None, universe: str = "nifty100") -> dict:
+    """Return the most recent validation summary (or per-horizon breakdown) for a given universe."""
     try:
         _init_db()
         if horizon:
             row = _fetchone(
-                "SELECT summary FROM val_runs WHERE horizon=%s ORDER BY id DESC LIMIT 1",
-                "SELECT summary FROM val_runs WHERE horizon=? ORDER BY id DESC LIMIT 1",
-                (horizon,)
+                "SELECT summary FROM val_runs WHERE horizon=%s AND universe=%s ORDER BY id DESC LIMIT 1",
+                "SELECT summary FROM val_runs WHERE horizon=? AND universe=? ORDER BY id DESC LIMIT 1",
+                (horizon, universe)
             )
         else:
             row = _fetchone(
-                "SELECT summary FROM val_runs ORDER BY id DESC LIMIT 1",
-                "SELECT summary FROM val_runs ORDER BY id DESC LIMIT 1",
-                ()
+                "SELECT summary FROM val_runs WHERE universe=%s ORDER BY id DESC LIMIT 1",
+                "SELECT summary FROM val_runs WHERE universe=? ORDER BY id DESC LIMIT 1",
+                (universe,)
             )
         if not row:
             return {"available": False, "message": "No validation run found. Run /api/validation/run first."}
@@ -861,15 +874,15 @@ def get_latest_results(horizon: str | None = None) -> dict:
         return {"available": False, "error": str(e), "trace": traceback.format_exc()}
 
 
-def get_per_stock_results(run_id: int | None = None, horizon: str = "medium") -> list[dict]:
-    """Return per-stock hit rate and average return for the latest (or given) run."""
+def get_per_stock_results(run_id: int | None = None, horizon: str = "medium", universe: str = "nifty100") -> list[dict]:
+    """Return per-stock hit rate and average return for the latest (or given) run in a universe."""
     try:
         _init_db()
         if run_id is None:
             row = _fetchone(
-                "SELECT id FROM val_runs WHERE horizon=%s ORDER BY id DESC LIMIT 1",
-                "SELECT id FROM val_runs WHERE horizon=? ORDER BY id DESC LIMIT 1",
-                (horizon,)
+                "SELECT id FROM val_runs WHERE horizon=%s AND universe=%s ORDER BY id DESC LIMIT 1",
+                "SELECT id FROM val_runs WHERE horizon=? AND universe=? ORDER BY id DESC LIMIT 1",
+                (horizon, universe)
             )
             if not row:
                 return []
