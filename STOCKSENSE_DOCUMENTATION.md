@@ -1297,6 +1297,13 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 - **Fixed:** added a `cash_usd` column (`ALTER TABLE paper_portfolio ADD COLUMN IF NOT EXISTS cash_usd DOUBLE PRECISION NOT NULL DEFAULT 10000.0` — $10,000 starting balance, not a currency-converted equivalent of the ₹10,00,000 IN balance, just a separate round-number virtual pool). `paper_trading.py`'s buy/sell/edit/reset endpoints now resolve which cash column to debit/credit based on the trade's `market` field instead of always touching `cash`.
 - **Reset endpoint** now takes an optional `market=IN|US|ALL` param (defaults to `ALL` for backward compatibility) so a user can wipe just one market's trades/cash without touching the other.
 - **Frontend:** the Paper Trading page (`/paper-trading`) gets an IN/US toggle (same pattern as Daily Picks and Dashboard). Cash, invested amount, unrealized/realized P&L, and the reset confirmation are all scoped to the selected market — open/closed trades are filtered by market before any totals are summed, so dollars and rupees are never added together.
+- **Follow-up same session:** bumped the US starting balance from $10,000 to **$100,000** per founder request, with a one-time Postgres backfill (`UPDATE paper_portfolio SET cash_usd = 100000.0 WHERE cash_usd = 10000.0`) so the handful of portfolios created in the brief window the old default was live also get the new amount.
+
+**US Daily Picks Catch-Up Recovery (matching India's):**
+
+- **Root question:** with two scheduled cron runs now (IN at 2 AM IST, US at ~8:30 AM ET), does a missed/crashed run recover on its own for both markets? It didn't — the existing catch-up safety net in `api/main.py` (`_catchup_picks`, fires on server startup, regenerates today's picks if the scheduled cron never completed) was IN-only.
+- **Fixed:** generalized `_catchup_picks()` to take `(market, tz_offset_hours, trigger_hour, settle_secs)` instead of hardcoding IST/2 AM, and scheduled a second instance for US — checks after 9 AM (fixed UTC-5 offset, matching the same non-DST-aware simplification already used by `picks_generated_today("US")`) on weekdays, regenerates if no US picks exist for today yet.
+- **Bonus fix:** the validation catch-up task (`catchup_task`) was missing from the FastAPI lifespan's shutdown cancellation list — a pre-existing leak unrelated to picks, fixed while touching the same block.
 
 **Market-Hours Gating for Paper Trading:**
 
