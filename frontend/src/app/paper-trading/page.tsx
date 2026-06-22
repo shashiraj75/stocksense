@@ -1,11 +1,12 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import clsx from "clsx";
 import {
   TrendingUp, TrendingDown, RotateCcw, ExternalLink, Beaker,
   BarChart2, AlertTriangle, CheckCircle2, ShieldAlert, Pencil, Check, X, Target,
+  Bell, BellOff,
 } from "lucide-react";
 import {
   fetchPaperPortfolio, closePaperTrade, resetPaperPortfolio, editPaperTrade,
@@ -59,6 +60,13 @@ function StatCard({
   );
 }
 
+// Tracks which (tradeId, kind) pairs already triggered a browser
+// notification this session, so a price hovering near the line doesn't
+// re-fire on every 30s poll. Resets on page reload — that's fine, the
+// backend email notifier has its own multi-hour cooldown for the
+// "even if you closed the tab" case.
+const _notifiedThisSession = new Set<string>();
+
 function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t: PaperTrade) => void; userId: string }) {
   const currency = trade.market === "IN" ? "₹" : "$";
 
@@ -74,6 +82,35 @@ function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t
   const unrealizedPct = livePrice != null ? ((livePrice - trade.entry_price) / trade.entry_price * 100) : null;
   const nearStopLoss = livePrice != null && trade.stop_loss != null && livePrice <= trade.stop_loss * 1.02;
   const nearTarget   = livePrice != null && trade.target_price != null && livePrice >= trade.target_price * 0.98;
+
+  // Browser popup notification — fires once per (trade, kind) per session,
+  // only while this tab is open and permission has been granted.
+  useEffect(() => {
+    if (typeof window === "undefined" || !("Notification" in window)) return;
+    if (Notification.permission !== "granted") return;
+
+    if (nearTarget) {
+      const key = `${trade.id}-target`;
+      if (!_notifiedThisSession.has(key)) {
+        _notifiedThisSession.add(key);
+        new Notification(`🎯 ${trade.symbol} is near your target`, {
+          body: `Live price ${currency}${livePrice?.toLocaleString()} vs target ${currency}${trade.target_price?.toLocaleString()}`,
+          tag: key,
+        });
+      }
+    }
+    if (nearStopLoss) {
+      const key = `${trade.id}-stop`;
+      if (!_notifiedThisSession.has(key)) {
+        _notifiedThisSession.add(key);
+        new Notification(`⚠️ ${trade.symbol} is near your stop loss`, {
+          body: `Live price ${currency}${livePrice?.toLocaleString()} vs stop loss ${currency}${trade.stop_loss?.toLocaleString()}`,
+          tag: key,
+        });
+      }
+    }
+  }, [nearTarget, nearStopLoss, trade.id, trade.symbol, livePrice, currency, trade.target_price, trade.stop_loss]);
+
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [epInput, setEpInput] = useState(trade.entry_price.toFixed(2));
@@ -342,10 +379,25 @@ export default function PaperTradingPage() {
   const queryClient = useQueryClient();
   const [sellTarget, setSellTarget] = useState<PaperTrade | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [notifPermission, setNotifPermission] = useState<NotificationPermission | "unsupported">("default");
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && "Notification" in window) {
+      setNotifPermission(Notification.permission);
+    } else {
+      setNotifPermission("unsupported");
+    }
+  }, []);
+
+  const requestNotifications = async () => {
+    if (typeof window === "undefined" || !("Notification" in window)) return;
+    const result = await Notification.requestPermission();
+    setNotifPermission(result);
+  };
 
   const { data: portfolio, isLoading } = useQuery({
     queryKey: ["paper-portfolio", userId],
-    queryFn: () => fetchPaperPortfolio(userId),
+    queryFn: () => fetchPaperPortfolio(userId, user?.email),
     enabled: !!userId,
     refetchInterval: 30_000,
   });
@@ -425,13 +477,43 @@ export default function PaperTradingPage() {
             Practice with ₹10,00,000 virtual money · No real funds involved
           </p>
         </div>
-        <button
-          onClick={() => setShowResetConfirm(true)}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border border-dark-border text-gray-400 hover:text-white hover:border-white/30 transition-colors"
-        >
-          <RotateCcw size={13} />
-          Reset Portfolio
-        </button>
+        <div className="flex items-center gap-2">
+          {notifPermission !== "unsupported" && (
+            <button
+              onClick={notifPermission === "granted" ? undefined : requestNotifications}
+              disabled={notifPermission === "granted"}
+              title={
+                notifPermission === "granted"
+                  ? "Browser notifications are on — you'll also get an email if you close this tab"
+                  : notifPermission === "denied"
+                    ? "Notifications blocked — enable them in your browser's site settings"
+                    : "Get a popup when a position nears its target or stop loss"
+              }
+              className={clsx(
+                "flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border transition-colors",
+                notifPermission === "granted"
+                  ? "border-bull/30 text-bull bg-bull/10 cursor-default"
+                  : notifPermission === "denied"
+                    ? "border-dark-border text-gray-600 cursor-not-allowed"
+                    : "border-dark-border text-gray-400 hover:text-white hover:border-white/30"
+              )}
+            >
+              {notifPermission === "granted" ? <Bell size={13} /> : <BellOff size={13} />}
+              {notifPermission === "granted"
+                ? "Notifications On"
+                : notifPermission === "denied"
+                  ? "Notifications Blocked"
+                  : "Enable Notifications"}
+            </button>
+          )}
+          <button
+            onClick={() => setShowResetConfirm(true)}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border border-dark-border text-gray-400 hover:text-white hover:border-white/30 transition-colors"
+          >
+            <RotateCcw size={13} />
+            Reset Portfolio
+          </button>
+        </div>
       </div>
 
       {/* Reset confirm */}
@@ -496,6 +578,7 @@ export default function PaperTradingPage() {
         <CheckCircle2 size={14} className="text-brand-400 mt-0.5 shrink-0" />
         Paper trading simulates real trades using live prices. Results do not guarantee future performance.
         Go to any stock page and click <strong className="text-gray-400">Paper Trade</strong> to open a position.
+        You'll get an email whenever an open position nears its target or stop loss — enable the button above for an in-browser popup too.
       </div>
 
       {/* Open Positions */}

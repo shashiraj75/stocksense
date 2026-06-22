@@ -175,13 +175,13 @@ export interface PaperPortfolio {
   total_realized_pnl: number;
 }
 
-export const fetchPaperPortfolio = (userId: string) =>
-  api.get<PaperPortfolio>("/api/paper-trading/portfolio", { params: { user_id: userId } }).then((r) => r.data);
+export const fetchPaperPortfolio = (userId: string, email?: string | null) =>
+  api.get<PaperPortfolio>("/api/paper-trading/portfolio", { params: { user_id: userId, email: email ?? undefined } }).then((r) => r.data);
 
 export const placePaperBuy = (data: {
   user_id: string; symbol: string; market: Market;
   quantity: number; price: number; signal?: string; horizon?: string;
-  stop_loss?: number | null; target_price?: number | null;
+  stop_loss?: number | null; target_price?: number | null; email?: string | null;
 }) => api.post("/api/paper-trading/buy", data).then((r) => r.data);
 
 export const closePaperTrade = (tradeId: number, userId: string, price: number) =>

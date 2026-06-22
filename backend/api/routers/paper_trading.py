@@ -15,7 +15,7 @@ def _conn():
     return psycopg.connect(os.environ["DATABASE_URL"], autocommit=True, prepare_threshold=None)
 
 
-def _ensure_portfolio(user_id: str) -> dict:
+def _ensure_portfolio(user_id: str, email: str | None = None) -> dict:
     with _conn() as conn:
         row = conn.execute(
             "SELECT cash FROM paper_portfolio WHERE user_id = %s",
@@ -23,10 +23,16 @@ def _ensure_portfolio(user_id: str) -> dict:
         ).fetchone()
         if row is None:
             conn.execute(
-                "INSERT INTO paper_portfolio (session_id, user_id, cash) VALUES (%s, %s, %s)",
-                (user_id, user_id, STARTING_CASH)
+                "INSERT INTO paper_portfolio (session_id, user_id, cash, email) VALUES (%s, %s, %s, %s)",
+                (user_id, user_id, STARTING_CASH, email)
             )
             return {"cash": STARTING_CASH}
+        if email:
+            # Keep email fresh — cheap to update on every call, no extra round trip
+            conn.execute(
+                "UPDATE paper_portfolio SET email = %s WHERE user_id = %s AND (email IS DISTINCT FROM %s)",
+                (email, user_id, email)
+            )
         return {"cash": row[0]}
 
 
@@ -42,6 +48,7 @@ class BuyRequest(BaseModel):
     horizon: str = "medium"
     stop_loss: float | None = None
     target_price: float | None = None
+    email: str | None = None
 
 
 class SellRequest(BaseModel):
@@ -58,8 +65,8 @@ class EditRequest(BaseModel):
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/portfolio")
-def get_portfolio(user_id: str = Query(...)):
-    portfolio = _ensure_portfolio(user_id)
+def get_portfolio(user_id: str = Query(...), email: str | None = Query(None)):
+    portfolio = _ensure_portfolio(user_id, email)
     with _conn() as conn:
         trades = conn.execute(
             """SELECT id, symbol, market, quantity, entry_price, exit_price,
@@ -116,7 +123,7 @@ def paper_buy(req: BuyRequest):
         raise HTTPException(status_code=400, detail="Price must be > 0")
 
     cost = req.price * req.quantity
-    portfolio = _ensure_portfolio(req.user_id)
+    portfolio = _ensure_portfolio(req.user_id, req.email)
 
     if portfolio["cash"] < cost:
         raise HTTPException(

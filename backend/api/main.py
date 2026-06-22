@@ -112,6 +112,19 @@ async def _outcome_resolver_loop():
         await asyncio.sleep(6 * 3600)
 
 
+async def _paper_trade_notify_loop():
+    """Email a paper trade's owner when its live price nears the target or stop loss."""
+    await asyncio.sleep(150)  # let server fully start first
+    while True:
+        try:
+            loop = asyncio.get_event_loop()
+            from services.trade_notifier import check_and_notify
+            await loop.run_in_executor(None, check_and_notify)
+        except Exception as e:
+            print(f"[trade_notifier] error: {e}")
+        await asyncio.sleep(15 * 60)  # every 15 minutes
+
+
 async def _validation_schedule_loop():
     """
     Run walk-forward validation on a schedule (IST = UTC+5:30):
@@ -338,6 +351,7 @@ async def lifespan(app: FastAPI):
     validation_task = asyncio.create_task(_validation_schedule_loop())
     catchup_task = asyncio.create_task(_catchup_validation())
     picks_catchup_task = asyncio.create_task(_catchup_picks())
+    trade_notify_task = asyncio.create_task(_paper_trade_notify_loop())
     yield
     task.cancel()
     keepalive.cancel()
@@ -346,7 +360,8 @@ async def lifespan(app: FastAPI):
     crumb_task.cancel()
     validation_task.cancel()
     picks_catchup_task.cancel()
-    for t in (task, keepalive, outcome_task, warmup_task, crumb_task, validation_task, picks_catchup_task):
+    trade_notify_task.cancel()
+    for t in (task, keepalive, outcome_task, warmup_task, crumb_task, validation_task, picks_catchup_task, trade_notify_task):
         try:
             await t
         except asyncio.CancelledError:

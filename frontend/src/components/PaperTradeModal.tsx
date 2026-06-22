@@ -97,6 +97,7 @@ export function PaperTradeModal({
         price: currentPrice, signal: activeSignal, horizon: selectedHorizon,
         stop_loss: stopLossValue && stopLossValue > 0 ? stopLossValue : null,
         target_price: targetPriceValue && targetPriceValue > 0 ? targetPriceValue : null,
+        email: user?.email,
       }),
     onSuccess: () => {
       setSuccess(`Bought ${quantity} × ${symbol} @ ${currency}${currentPrice.toLocaleString()}`);
