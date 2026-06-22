@@ -6,7 +6,7 @@ import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { SignalBadge } from "@/components/SignalBadge";
 import Link from "next/link";
 import clsx from "clsx";
-import { PlusCircle, Trash2, TrendingUp, TrendingDown, Briefcase, Wifi } from "lucide-react";
+import { PlusCircle, Trash2, TrendingUp, TrendingDown, Briefcase, Wifi, Pencil, Check, X } from "lucide-react";
 import { PortfolioAllocationChart } from "@/components/PortfolioAllocationChart";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
 import { StockSymbolField } from "@/components/StockSymbolField";
@@ -33,9 +33,97 @@ type Row = Holding & {
   sigLoading: boolean;
 };
 
+function HoldingRow({
+  r, currency, onRemove, onEdit,
+}: { r: Row & { _idx: number }; currency: string; onRemove: (i: number) => void; onEdit: (i: number, updates: { qty: number; avgPrice: number }) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [qtyInput, setQtyInput] = useState(String(r.qty));
+  const [avgInput, setAvgInput] = useState(String(r.avgPrice));
+
+  const startEdit = () => {
+    setQtyInput(String(r.qty));
+    setAvgInput(String(r.avgPrice));
+    setEditing(true);
+  };
+
+  const confirm = () => {
+    const q = parseFloat(qtyInput);
+    const a = parseFloat(avgInput);
+    if (!q || q <= 0 || !a || a <= 0) return; // ignore invalid input, keep editing open
+    onEdit(r._idx, { qty: q, avgPrice: a });
+    setEditing(false);
+  };
+
+  return (
+    <tr className="border-b border-dark-border hover:bg-dark-border/30 transition-colors">
+      <td className="px-4 py-3">
+        <Link href={`/stock/${r.symbol}?market=${r.market}`}
+          className="font-mono font-bold text-white hover:text-brand-500 transition-colors">
+          {r.symbol}
+        </Link>
+      </td>
+      <td className="px-4 py-3 text-right font-mono">
+        {editing ? (
+          <input type="number" min="0" step="1" value={qtyInput} onChange={e => setQtyInput(e.target.value)}
+            className="w-20 bg-dark-bg border border-brand-500/60 rounded-lg px-2 py-1 text-right text-xs font-mono text-white focus:outline-none" />
+        ) : r.qty}
+      </td>
+      <td className="px-4 py-3 text-right font-mono">
+        {editing ? (
+          <input type="number" min="0" step="0.01" value={avgInput} onChange={e => setAvgInput(e.target.value)}
+            className="w-24 bg-dark-bg border border-brand-500/60 rounded-lg px-2 py-1 text-right text-xs font-mono text-white focus:outline-none" />
+        ) : `${currency}${r.avgPrice.toLocaleString()}`}
+      </td>
+      <td className="px-4 py-3 text-right font-mono">
+        {r.loading ? <span className="animate-pulse text-gray-500">…</span>
+          : r.curPrice ? `${currency}${r.curPrice.toLocaleString()}` : "—"}
+      </td>
+      <td className="px-4 py-3 text-right font-mono text-gray-300">{currency}{r.invested.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+      <td className="px-4 py-3 text-right font-mono">
+        {r.current !== null ? `${currency}${r.current.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "—"}
+      </td>
+      <td className={clsx("px-4 py-3 text-right font-mono font-bold",
+        r.plAmt === null ? "text-gray-500" : r.plAmt >= 0 ? "text-bull" : "text-bear")}>
+        {r.plAmt !== null ? `${r.plAmt >= 0 ? "+" : ""}${currency}${Math.abs(r.plAmt).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "—"}
+      </td>
+      <td className={clsx("px-4 py-3 text-right font-mono font-bold",
+        r.plPct === null ? "text-gray-500" : r.plPct >= 0 ? "text-bull" : "text-bear")}>
+        {r.plPct !== null
+          ? <span className="flex items-center justify-end gap-1">
+              {r.plPct >= 0 ? <TrendingUp size={13} /> : <TrendingDown size={13} />}
+              {r.plPct >= 0 ? "+" : ""}{r.plPct.toFixed(1)}%
+            </span>
+          : "—"}
+      </td>
+      <td className="px-4 py-3 text-center">
+        {r.sigLoading ? (
+          <span className="text-gray-600 text-xs animate-pulse">…</span>
+        ) : r.signal ? (
+          <SignalBadge signal={r.signal as any} confidence={r.confidence} size="sm" />
+        ) : (
+          <span className="text-gray-600 text-xs">—</span>
+        )}
+      </td>
+      <td className="px-4 py-3 text-right">
+        {editing ? (
+          <div className="flex items-center justify-end gap-1">
+            <button onClick={confirm} className="p-1 rounded text-bull hover:bg-bull/10 transition-colors"><Check size={14} /></button>
+            <button onClick={() => setEditing(false)} className="p-1 rounded text-gray-400 hover:bg-white/10 transition-colors"><X size={14} /></button>
+          </div>
+        ) : (
+          <div className="flex items-center justify-end gap-1">
+            <button onClick={startEdit} title="Edit qty / avg buy price" className="p-1 rounded text-gray-500 hover:text-white transition-colors"><Pencil size={13} /></button>
+            <button onClick={() => onRemove(r._idx)} className="p-1 rounded text-gray-500 hover:text-bear transition-colors"><Trash2 size={14} /></button>
+          </div>
+        )}
+      </td>
+    </tr>
+  );
+}
+
 function HoldingsTable({
-  rows, currency, onRemove,
-}: { rows: (Row & { _idx: number })[]; currency: string; onRemove: (i: number) => void }) {
+  rows, currency, onRemove, onEdit,
+}: { rows: (Row & { _idx: number })[]; currency: string; onRemove: (i: number) => void; onEdit: (i: number, updates: { qty: number; avgPrice: number }) => void }) {
   return (
     <div className="bg-dark-card border border-dark-border rounded-2xl overflow-hidden">
       <div className="overflow-x-auto">
@@ -56,51 +144,7 @@ function HoldingsTable({
           </thead>
           <tbody>
             {rows.map((r) => (
-              <tr key={r._idx} className="border-b border-dark-border hover:bg-dark-border/30 transition-colors">
-                <td className="px-4 py-3">
-                  <Link href={`/stock/${r.symbol}?market=${r.market}`}
-                    className="font-mono font-bold text-white hover:text-brand-500 transition-colors">
-                    {r.symbol}
-                  </Link>
-                </td>
-                <td className="px-4 py-3 text-right font-mono">{r.qty}</td>
-                <td className="px-4 py-3 text-right font-mono">{currency}{r.avgPrice.toLocaleString()}</td>
-                <td className="px-4 py-3 text-right font-mono">
-                  {r.loading ? <span className="animate-pulse text-gray-500">…</span>
-                    : r.curPrice ? `${currency}${r.curPrice.toLocaleString()}` : "—"}
-                </td>
-                <td className="px-4 py-3 text-right font-mono text-gray-300">{currency}{r.invested.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
-                <td className="px-4 py-3 text-right font-mono">
-                  {r.current !== null ? `${currency}${r.current.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "—"}
-                </td>
-                <td className={clsx("px-4 py-3 text-right font-mono font-bold",
-                  r.plAmt === null ? "text-gray-500" : r.plAmt >= 0 ? "text-bull" : "text-bear")}>
-                  {r.plAmt !== null ? `${r.plAmt >= 0 ? "+" : ""}${currency}${Math.abs(r.plAmt).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "—"}
-                </td>
-                <td className={clsx("px-4 py-3 text-right font-mono font-bold",
-                  r.plPct === null ? "text-gray-500" : r.plPct >= 0 ? "text-bull" : "text-bear")}>
-                  {r.plPct !== null
-                    ? <span className="flex items-center justify-end gap-1">
-                        {r.plPct >= 0 ? <TrendingUp size={13} /> : <TrendingDown size={13} />}
-                        {r.plPct >= 0 ? "+" : ""}{r.plPct.toFixed(1)}%
-                      </span>
-                    : "—"}
-                </td>
-                <td className="px-4 py-3 text-center">
-                  {r.sigLoading ? (
-                    <span className="text-gray-600 text-xs animate-pulse">…</span>
-                  ) : r.signal ? (
-                    <SignalBadge signal={r.signal as any} confidence={r.confidence} size="sm" />
-                  ) : (
-                    <span className="text-gray-600 text-xs">—</span>
-                  )}
-                </td>
-                <td className="px-4 py-3 text-right">
-                  <button onClick={() => onRemove(r._idx)} className="text-gray-500 hover:text-bear transition-colors">
-                    <Trash2 size={14} />
-                  </button>
-                </td>
-              </tr>
+              <HoldingRow key={r._idx} r={r} currency={currency} onRemove={onRemove} onEdit={onEdit} />
             ))}
           </tbody>
         </table>
@@ -155,6 +199,11 @@ export default function PortfolioPage() {
 
   const remove = (i: number) => {
     const updated = holdings.filter((_, idx) => idx !== i);
+    setHoldings(updated); save(updated);
+  };
+
+  const edit = (i: number, updates: { qty: number; avgPrice: number }) => {
+    const updated = holdings.map((h, idx) => idx === i ? { ...h, ...updates } : h);
     setHoldings(updated); save(updated);
   };
 
@@ -332,6 +381,7 @@ export default function PortfolioPage() {
                 rows={rows.map((r, i) => ({ ...r, _idx: i })).filter(r => r.market === "IN")}
                 currency="₹"
                 onRemove={remove}
+                onEdit={edit}
               />
             </div>
           )}
@@ -342,6 +392,7 @@ export default function PortfolioPage() {
                 rows={rows.map((r, i) => ({ ...r, _idx: i })).filter(r => r.market === "US")}
                 currency="$"
                 onRemove={remove}
+                onEdit={edit}
               />
             </div>
           )}
