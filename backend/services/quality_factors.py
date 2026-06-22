@@ -53,6 +53,35 @@ def _get_nifty_history() -> pd.DataFrame:
         except Exception:
             return pd.DataFrame()
 
+
+# ── S&P 500 history cache (US equivalent of the Nifty cache above) ───────────
+_sp500_lock: threading.Lock = threading.Lock()
+_sp500_df: pd.DataFrame | None = None
+_sp500_expiry: float = 0
+
+
+def _get_sp500_history() -> pd.DataFrame:
+    """Return cached S&P 500 7-month history. Fetched at most once per 15 min."""
+    global _sp500_df, _sp500_expiry
+    with _sp500_lock:
+        if _sp500_df is not None and time.time() < _sp500_expiry:
+            return _sp500_df
+        try:
+            df = yf.Ticker("^GSPC").history(period="7mo")
+            _sp500_df = df
+            _sp500_expiry = time.time() + _NIFTY_TTL
+            return df
+        except Exception:
+            return pd.DataFrame()
+
+
+def _get_benchmark_history(market: str) -> tuple[pd.DataFrame, str]:
+    """Return (history, display name) for the market's broad benchmark index."""
+    if market == "US":
+        return _get_sp500_history(), "S&P 500"
+    return _get_nifty_history(), "Nifty 50"
+
+
 # Nifty sector index tickers
 SECTOR_INDICES = {
     "IT":       "^CNXIT",
@@ -64,7 +93,7 @@ SECTOR_INDICES = {
     "Energy":   "^CNXENERGY",
     "Realty":   "^CNXREALTY",
     "Infra":    "^CNXINFRA",
-    "Finance":  "^CNXFINANCE",
+    "Finance":  "NIFTY_FIN_SERVICE.NS",  # ^CNXFINANCE is delisted/404s on yfinance now
     "Nifty50":  "^NSEI",
 }
 
@@ -139,13 +168,19 @@ def _fetch_sector_one(sector_sym: tuple[str, str]) -> tuple[str, dict | None]:
             return sector, None
         ret_1m = (df["Close"].iloc[-1] - df["Close"].iloc[-21]) / df["Close"].iloc[-21] * 100
         ret_3m = (df["Close"].iloc[-1] - df["Close"].iloc[-63]) / df["Close"].iloc[-63] * 100 if len(df) >= 63 else None
-        # Also warm the Nifty cache if this is the Nifty50 ticker
+        # Also warm the broad-benchmark cache if this is that benchmark's ticker
         if sym == "^NSEI":
             global _nifty_df, _nifty_expiry
             with _nifty_lock:
                 if _nifty_df is None or time.time() >= _nifty_expiry:
                     _nifty_df = yf.Ticker("^NSEI").history(period="7mo")
                     _nifty_expiry = time.time() + _NIFTY_TTL
+        elif sym == "^GSPC":
+            global _sp500_df, _sp500_expiry
+            with _sp500_lock:
+                if _sp500_df is None or time.time() >= _sp500_expiry:
+                    _sp500_df = yf.Ticker("^GSPC").history(period="7mo")
+                    _sp500_expiry = time.time() + _NIFTY_TTL
         return sector, {"1m": round(ret_1m, 2), "3m": round(ret_3m, 2) if ret_3m is not None else None}
     except Exception:
         return sector, None
@@ -164,6 +199,49 @@ def _get_sector_returns() -> dict[str, dict | None]:
                 result[sector] = val
         _sector_cache = result
         _sector_expiry = time.time() + SECTOR_CACHE_TTL
+        return result
+
+
+# ── US sector strength (SPDR Select Sector ETFs as proxies) ──────────────────
+# Maps yfinance's GICS `info["sector"]` string (verified directly against
+# real tickers — AAPL/MSFT->Technology, JPM->Financial Services, XOM->Energy,
+# JNJ->Healthcare, PG->Consumer Defensive, AMZN/HD->Consumer Cyclical,
+# CAT->Industrials, LIN->Basic Materials, AMT->Real Estate, NEE->Utilities,
+# VZ->Communication Services) to its SPDR sector ETF, so no static per-symbol
+# mapping is needed the way STOCK_SECTOR is for the curated Nifty 100 list —
+# every US stock with a populated `sector` field gets a real classification.
+US_SECTOR_INDICES = {
+    "Technology":             "XLK",
+    "Financial Services":     "XLF",
+    "Healthcare":             "XLV",
+    "Consumer Defensive":     "XLP",
+    "Consumer Cyclical":      "XLY",
+    "Energy":                 "XLE",
+    "Industrials":            "XLI",
+    "Basic Materials":        "XLB",
+    "Real Estate":            "XLRE",
+    "Utilities":              "XLU",
+    "Communication Services": "XLC",
+    "SP500":                  "^GSPC",
+}
+
+_us_sector_lock  = threading.Lock()
+_us_sector_cache: dict | None = None
+_us_sector_expiry: float = 0
+
+
+def _get_us_sector_returns() -> dict[str, dict | None]:
+    """Fetch 1M/3M returns for all US sector ETFs + S&P 500. Cached 15 min."""
+    global _us_sector_cache, _us_sector_expiry
+    with _us_sector_lock:
+        if _us_sector_cache is not None and time.time() < _us_sector_expiry:
+            return _us_sector_cache
+        result: dict[str, dict | None] = {}
+        with ThreadPoolExecutor(max_workers=len(US_SECTOR_INDICES)) as pool:
+            for sector, val in pool.map(_fetch_sector_one, US_SECTOR_INDICES.items()):
+                result[sector] = val
+        _us_sector_cache = result
+        _us_sector_expiry = time.time() + SECTOR_CACHE_TTL
         return result
 
 
@@ -322,43 +400,44 @@ def institutional_ownership_score(ticker, info: dict) -> dict:
 
 # ── 3. RELATIVE STRENGTH ─────────────────────────────────────────────────────
 
-def relative_strength_score(df: pd.DataFrame) -> dict:
+def relative_strength_score(df: pd.DataFrame, market: str = "IN") -> dict:
     """
-    Compare stock's 1M, 3M, 6M returns vs Nifty 50.
-    Outperforming the benchmark is a strong quality signal.
+    Compare stock's 1M, 3M, 6M returns vs its market's broad benchmark
+    (Nifty 50 for IN, S&P 500 for US). Outperforming the benchmark is a
+    strong quality signal.
     """
     score = 50
     reasons: list[str] = []
 
     try:
-        nifty_data = _get_nifty_history()   # uses shared 15-min cache — no duplicate fetch
-        if nifty_data.empty or len(df) < 21:
+        benchmark_data, benchmark_name = _get_benchmark_history(market)  # shared 15-min cache — no duplicate fetch
+        if benchmark_data.empty or len(df) < 21:
             return {"score": 50, "reasons": []}
 
         stock_close = df["Close"]
-        nifty_close = nifty_data["Close"]
+        bench_close = benchmark_data["Close"]
 
         periods = {"1M": 21, "3M": 63, "6M": 126}
         rs_scores = []
 
         for label, days in periods.items():
-            if len(stock_close) >= days and len(nifty_close) >= days:
+            if len(stock_close) >= days and len(bench_close) >= days:
                 stock_ret = (stock_close.iloc[-1] - stock_close.iloc[-days]) / stock_close.iloc[-days] * 100
-                nifty_ret = (nifty_close.iloc[-1] - nifty_close.iloc[-days]) / nifty_close.iloc[-days] * 100
-                rs = stock_ret - nifty_ret
+                bench_ret = (bench_close.iloc[-1] - bench_close.iloc[-days]) / bench_close.iloc[-days] * 100
+                rs = stock_ret - bench_ret
 
                 if rs > 10:
                     rs_scores.append(+12)
-                    reasons.append(f"Outperforming Nifty 50 by {rs:+.1f}% over {label} — strong relative strength")
+                    reasons.append(f"Outperforming {benchmark_name} by {rs:+.1f}% over {label} — strong relative strength")
                 elif rs > 4:
                     rs_scores.append(+6)
-                    reasons.append(f"Outperforming Nifty 50 by {rs:+.1f}% over {label}")
+                    reasons.append(f"Outperforming {benchmark_name} by {rs:+.1f}% over {label}")
                 elif rs < -10:
                     rs_scores.append(-12)
-                    reasons.append(f"Underperforming Nifty 50 by {abs(rs):.1f}% over {label} — weak relative strength")
+                    reasons.append(f"Underperforming {benchmark_name} by {abs(rs):.1f}% over {label} — weak relative strength")
                 elif rs < -4:
                     rs_scores.append(-6)
-                    reasons.append(f"Slightly underperforming Nifty 50 over {label} ({rs:+.1f}%)")
+                    reasons.append(f"Slightly underperforming {benchmark_name} over {label} ({rs:+.1f}%)")
                 else:
                     rs_scores.append(0)
 
@@ -374,46 +453,62 @@ def relative_strength_score(df: pd.DataFrame) -> dict:
 
 # ── 4. SECTOR STRENGTH ───────────────────────────────────────────────────────
 
-def sector_strength_score(symbol: str) -> dict:
+def sector_strength_score(symbol: str, info: dict | None = None, market: str = "IN") -> dict:
     """
-    Check if the stock's sector is outperforming Nifty 50.
+    Check if the stock's sector is outperforming its market's broad benchmark.
     Sector momentum is a powerful short-to-medium term predictor.
+
+    IN: sector comes from the curated STOCK_SECTOR map (Nifty 100-ish symbols),
+        compared against Nifty sector indices vs Nifty 50.
+    US: sector comes from yfinance's own GICS `info["sector"]` field (works for
+        any US stock, not just a curated list), compared against SPDR Select
+        Sector ETFs vs the S&P 500.
     """
     score = 50
     reasons: list[str] = []
 
-    sector = STOCK_SECTOR.get(symbol.upper())
-    if sector is None:
-        return {"score": 50, "reasons": [], "sector": "Unknown"}
+    if market == "US":
+        sector = (info or {}).get("sector")
+        if not sector or sector not in US_SECTOR_INDICES:
+            return {"score": 50, "reasons": [], "sector": sector or "Unknown"}
+        returns = _get_us_sector_returns()
+        benchmark_key = "SP500"
+        benchmark_name = "S&P 500"
+    else:
+        sector = STOCK_SECTOR.get(symbol.upper())
+        if sector is None:
+            return {"score": 50, "reasons": [], "sector": "Unknown"}
+        returns = _get_sector_returns()
+        benchmark_key = "Nifty50"
+        benchmark_name = "Nifty 50"
 
     try:
-        returns = _get_sector_returns()
-        sector_data = returns.get(sector)
-        nifty_data  = returns.get("Nifty50")
+        sector_data    = returns.get(sector)
+        benchmark_data = returns.get(benchmark_key)
 
-        if sector_data and nifty_data:
+        if sector_data and benchmark_data:
             s1m = sector_data.get("1m", 0) or 0
-            n1m = nifty_data.get("1m", 0) or 0
+            n1m = benchmark_data.get("1m", 0) or 0
             s3m = sector_data.get("3m", 0) or 0
-            n3m = nifty_data.get("3m", 0) or 0
+            n3m = benchmark_data.get("3m", 0) or 0
 
             rel_1m = s1m - n1m
             rel_3m = s3m - n3m
 
             if rel_1m > 5 and rel_3m > 5:
                 score += 16
-                reasons.append(f"{sector} sector is strongly outperforming Nifty 50 ({s1m:+.1f}% 1M, {s3m:+.1f}% 3M) — sector tailwind")
+                reasons.append(f"{sector} sector is strongly outperforming {benchmark_name} ({s1m:+.1f}% 1M, {s3m:+.1f}% 3M) — sector tailwind")
             elif rel_1m > 2 or rel_3m > 4:
                 score += 8
-                reasons.append(f"{sector} sector outperforming Nifty 50 ({s1m:+.1f}% 1M) — positive sector rotation")
+                reasons.append(f"{sector} sector outperforming {benchmark_name} ({s1m:+.1f}% 1M) — positive sector rotation")
             elif rel_1m < -5 and rel_3m < -5:
                 score -= 14
-                reasons.append(f"{sector} sector underperforming Nifty 50 ({s1m:+.1f}% 1M) — sector headwind; fighting the trend")
+                reasons.append(f"{sector} sector underperforming {benchmark_name} ({s1m:+.1f}% 1M) — sector headwind; fighting the trend")
             elif rel_1m < -2 or rel_3m < -4:
                 score -= 7
-                reasons.append(f"{sector} sector slightly underperforming Nifty 50 ({s1m:+.1f}% 1M)")
+                reasons.append(f"{sector} sector slightly underperforming {benchmark_name} ({s1m:+.1f}% 1M)")
             else:
-                reasons.append(f"{sector} sector inline with Nifty 50 ({s1m:+.1f}% 1M)")
+                reasons.append(f"{sector} sector inline with {benchmark_name} ({s1m:+.1f}% 1M)")
 
     except Exception:
         pass
@@ -1504,7 +1599,7 @@ def risk_management_score(df: pd.DataFrame, info: dict) -> dict:
 
 # ── MASTER FUNCTION ──────────────────────────────────────────────────────────
 
-def compute_all_quality_factors(symbol: str, ticker, df: pd.DataFrame, info: dict, horizon: str) -> dict:
+def compute_all_quality_factors(symbol: str, ticker, df: pd.DataFrame, info: dict, horizon: str, market: str = "IN") -> dict:
     """
     Run all 10 quality factor checks and return a combined score + all reasons.
 
@@ -1512,6 +1607,10 @@ def compute_all_quality_factors(symbol: str, ticker, df: pd.DataFrame, info: dic
     - Short  : fast signals only (no deep Piotroski/ROIC to keep latency <30s)
     - Medium : adds corporate actions + quality metrics
     - Long   : full suite
+
+    `market` ("IN"/"US") drives which benchmark/sector data relative_strength
+    and sector_strength compare against — defaults to "IN" so any existing
+    caller that omits it keeps the original Nifty-50-relative behavior.
     """
     results: dict[str, dict] = {}
     all_reasons: list[dict] = []
@@ -1522,8 +1621,8 @@ def compute_all_quality_factors(symbol: str, ticker, df: pd.DataFrame, info: dic
 
     # Fetch real NSE FII/DII flows for Indian stocks (market-wide signal, cached 30 min)
     fii_dii_data: dict | None = None
-    market = (info.get("market") or info.get("exchange") or "").upper()
-    is_indian = "NS" in market or market in ("NSE", "BSE", "IN")
+    yf_market = (info.get("market") or info.get("exchange") or "").upper()
+    is_indian = "NS" in yf_market or yf_market in ("NSE", "BSE", "IN")
     if is_indian:
         try:
             from services.nse_fii_dii import get_fii_dii_flow
@@ -1532,8 +1631,8 @@ def compute_all_quality_factors(symbol: str, ticker, df: pd.DataFrame, info: dic
             pass
 
     results["inst_flow"]            = institutional_flow_proxy(df, fii_dii=fii_dii_data)
-    results["relative_strength"]    = relative_strength_score(df)
-    results["sector_strength"]      = sector_strength_score(symbol)
+    results["relative_strength"]    = relative_strength_score(df, market)
+    results["sector_strength"]      = sector_strength_score(symbol, info, market)
     results["valuation"]            = valuation_score(symbol, df, info)
     results["risk_management"]      = risk_management_score(df, info)
     results["liquidity"]            = liquidity_score(df, info)

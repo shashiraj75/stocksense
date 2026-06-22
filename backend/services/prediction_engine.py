@@ -471,7 +471,7 @@ class PredictionEngine:
             if market == "CRYPTO":
                 return {}
             try:
-                return compute_all_quality_factors(symbol, yf.Ticker(symbol + suffix), df, info, horizon)
+                return compute_all_quality_factors(symbol, yf.Ticker(symbol + suffix), df, info, horizon, market)
             except BaseException as e:
                 print(f"[quality] failed for {symbol}: {e}")
                 return {}
