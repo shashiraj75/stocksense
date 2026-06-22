@@ -1,7 +1,7 @@
 # StockSense — Complete Product & Technical Documentation
 
 > **Live Document** — Updated automatically as the product evolves.  
-> Last updated: 2026-06-20 (Session 6)
+> Last updated: 2026-06-22 (Session 7)
 
 ---
 
@@ -1240,6 +1240,16 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 ---
 
 ## 26. Changelog
+
+### Session 7 — 2026-06-22
+
+**Invite Registration Fix:**
+
+- **Root cause found** — invite links (and password-reset links) authenticated the user for one Supabase session via magic-link code exchange, then dropped them straight onto `/accept-terms`. The user never set a password. On their next visit, `/login` only offers email + password sign-in with no Sign Up option (by design — invite-only app) — so an invited user with no password had no way back in.
+- **New `/auth/set-password` page** — shown right after the invite/reset link authenticates the session; lets the user create a real password (min 6 chars, confirm match) via `supabase.auth.updateUser({ password })`, then continues to `/accept-terms`. Shows a clear "link expired" message if there's no active session.
+- **`/auth/callback/route.ts` updated** — now redirects to `/auth/set-password?next=/accept-terms` instead of straight to `/accept-terms`. This covers both the invite flow and the forgot-password flow (previously forgot-password also had no way to actually set the new password after clicking the reset link).
+- **Login page footer clarified** — explains invited users should look for an invite email with a link rather than expecting a Sign Up form.
+- **Operational note:** Supabase Auth → URL Configuration must have `<site-url>/auth/callback` in the allowed Redirect URLs list for invite/reset links to work at all. If invites still fail after this fix, check that setting in the Supabase dashboard.
 
 ### Session 6 — 2026-06-20
 
