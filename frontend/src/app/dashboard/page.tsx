@@ -132,10 +132,10 @@ export default function Dashboard() {
                     : "Live"
               }
             </div>
-            <div className="flex gap-2">
+            <div className="flex gap-2 overflow-x-auto scrollbar-hide min-w-0 max-w-full">
               {MARKET_TABS.map(({ key, label }) => (
                 <button key={key} onClick={() => setMarket(key)}
-                  className={clsx("px-4 py-2 rounded-xl text-sm font-medium transition-colors border",
+                  className={clsx("shrink-0 whitespace-nowrap px-4 py-2 rounded-xl text-sm font-medium transition-colors border",
                     market === key
                       ? "bg-brand-500 text-white border-brand-500"
                       : "bg-dark-card border-dark-border text-gray-400 hover:text-white")}>
