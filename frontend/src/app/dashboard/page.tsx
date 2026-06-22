@@ -109,7 +109,7 @@ export default function Dashboard() {
             <h1 className="text-2xl font-bold text-white">Market Overview</h1>
             <p className="text-sm text-gray-400 mt-1">Live indices, top movers &amp; market sentiment</p>
           </div>
-          <div className="flex items-center gap-3 ml-auto">
+          <div className="flex items-center gap-3 ml-auto flex-wrap justify-end min-w-0 max-w-full">
             {/* Live status / loading badge */}
             <div className={clsx(
               "flex items-center gap-1.5 text-xs rounded-lg px-3 py-1.5 border transition-all",
