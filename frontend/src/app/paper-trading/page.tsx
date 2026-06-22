@@ -390,6 +390,9 @@ export default function PaperTradingPage() {
 
   const totalInvested = openTrades.reduce((s, t) => s + t.invested, 0);
   const totalRealized = portfolio.total_realized_pnl;
+  const unrealizedPct = totalInvested > 0 ? (totalUnrealizedPnl / totalInvested) * 100 : null;
+  const totalClosedInvested = closedTrades.reduce((s, t) => s + t.invested, 0);
+  const realizedPct = totalClosedInvested > 0 ? (totalRealized / totalClosedInvested) * 100 : null;
   const portfolioValue = portfolio.cash + totalInvested;
   const totalReturn = portfolioValue - STARTING_CASH + totalRealized;
   const totalReturnPct = Math.round((totalReturn / STARTING_CASH) * 10000) / 100;
@@ -455,14 +458,16 @@ export default function PaperTradingPage() {
         <StatCard
           label="Unrealized P&L"
           value={unrealizedLoaded
-            ? `${totalUnrealizedPnl >= 0 ? "+" : ""}₹${fmt(Math.abs(totalUnrealizedPnl), 0)}`
+            ? `${totalUnrealizedPnl >= 0 ? "+" : ""}₹${fmt(Math.abs(totalUnrealizedPnl), 0)}` +
+              (unrealizedPct !== null ? ` (${unrealizedPct >= 0 ? "+" : ""}${unrealizedPct.toFixed(2)}%)` : "")
             : "—"}
           sub={unrealizedLoaded ? `across ${openTrades.length} open position${openTrades.length !== 1 ? "s" : ""}` : "Loading…"}
           positive={unrealizedLoaded ? (totalUnrealizedPnl > 0 ? true : totalUnrealizedPnl < 0 ? false : undefined) : undefined}
         />
         <StatCard
           label="Realized P&L"
-          value={`${totalRealized >= 0 ? "+" : ""}₹${fmt(Math.abs(totalRealized), 0)}`}
+          value={`${totalRealized >= 0 ? "+" : ""}₹${fmt(Math.abs(totalRealized), 0)}` +
+            (realizedPct !== null ? ` (${realizedPct >= 0 ? "+" : ""}${realizedPct.toFixed(2)}%)` : "")}
           sub={`from ${closedTrades.length} closed trade${closedTrades.length !== 1 ? "s" : ""}`}
           positive={totalRealized > 0 ? true : totalRealized < 0 ? false : undefined}
         />
