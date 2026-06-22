@@ -54,7 +54,7 @@ export function MarketDisclaimer({ market }: Props) {
   const d = DISCLAIMERS[market];
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[60] w-screen h-screen overflow-hidden flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
       <div className="bg-dark-card border border-dark-border rounded-2xl max-w-lg w-full shadow-2xl">
         {/* Header */}
         <div className="flex items-center gap-3 px-6 py-5 border-b border-dark-border">

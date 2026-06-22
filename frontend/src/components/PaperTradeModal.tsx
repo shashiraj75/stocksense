@@ -133,7 +133,7 @@ export function PaperTradeModal({
   const SignalIcon = activeSignal === "BUY" ? TrendingUp : activeSignal === "SELL" ? TrendingDown : Minus;
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">
+    <div className="fixed inset-0 z-[60] w-screen h-screen overflow-hidden flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">
       <div className="bg-dark-card border border-dark-border rounded-2xl w-full max-w-sm shadow-2xl flex flex-col max-h-[92dvh]">
 
         {/* Header — fixed, never scrolls */}
