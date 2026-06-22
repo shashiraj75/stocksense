@@ -767,6 +767,11 @@ US_STOCKS = [
     ("ZD","Ziff Davis"),("ZION","Zions Bancorporation"),
     ("ZS","Zscaler"),("ZTS","Zoetis"),
     ("ZWS","Zurn Elkay Water Solutions Corp."),
+    # Manually added — not S&P/NASDAQ-100 constituents, so the universe
+    # regenerator script won't pick these up; re-add if the file is
+    # regenerated. Tracking-only (Watchlist/Alerts/charts) per product
+    # decision — no dedicated AI commodity scoring model.
+    ("GLD","SPDR Gold Shares"),("SLV","iShares Silver Trust"),
 ]
 
 IN_STOCKS = [
@@ -1954,6 +1959,9 @@ IN_STOCKS = [
     ("ZOTA","Zota Health Care LImited"),("ZSARACOM","Saraswati Commercial India Limited"),
     ("ZUARI","Zuari Agro Chemicals Limited"),("ZUARIIND","ZUARI INDUSTRIES LIMITED"),
     ("ZYDUSLIFE","Zydus Lifesciences Limited"),("ZYDUSWELL","Zydus Wellness Limited"),
+    # Manually added — tracking-only commodity ETFs (Watchlist/Alerts/charts),
+    # not part of the auto-generated NSE-equities source; re-add if regenerated.
+    ("GOLDBEES","Nippon India ETF Gold BeES"),("SILVERBEES","Nippon India ETF Silver BeES"),
 ]
 
 CRYPTO_COINS = [
