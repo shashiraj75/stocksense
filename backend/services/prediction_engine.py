@@ -381,6 +381,59 @@ class PredictionEngine:
 
         df = compute_indicators(df)
         tech_signal = get_signal_summary(df)
+
+        # ── Tracking-only instruments (commodity ETFs etc.) ─────────────────────
+        # No real company fundamentals exist for these on yfinance — running them
+        # through the full fundamentals/sentiment/quality pipeline produced
+        # fabricated, sometimes cross-market-nonsensical analysis (e.g. a US gold
+        # ETF "underperforming the Nifty 50"). Return a plain technical-only
+        # reading instead of pretending to have a full signal.
+        from services.stock_universe import TRACKING_ONLY_SYMBOLS
+        if symbol.upper() in TRACKING_ONLY_SYMBOLS:
+            import datetime as _dt
+            current_price = float(df["Close"].iloc[-1])
+            atr_series = (df["High"] - df["Low"]).rolling(14).mean().dropna()
+            atr = float(atr_series.iloc[-1]) if not atr_series.empty else current_price * 0.02
+            signal = tech_signal["overall"]
+            confidence = max(0, min(100, round(tech_signal.get("score", 50))))
+            target_price = self._estimate_target(current_price, signal, confidence, horizon, df, info)
+            trade_levels = self._trade_levels(current_price, signal, target_price, atr, horizon)
+            result = {
+                "symbol": symbol,
+                "market": market,
+                "horizon": horizon,
+                "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                "data_timestamp": df.index[-1].isoformat() if hasattr(df.index[-1], "isoformat") else str(df.index[-1]),
+                "signal": signal,
+                "confidence": confidence,
+                "score_band": None,
+                "composite_score": tech_signal.get("score"),
+                "tracking_only": True,
+                "tracking_only_note": "Price-tracking instrument — no company fundamentals exist for this symbol, so the signal reflects technical analysis only.",
+                "confidence_score": confidence,
+                "confidence_band": "High" if confidence >= 65 else "Medium" if confidence >= 45 else "Low",
+                "confidence_breakdown": {
+                    "data_completeness": 0,    # honest — no fundamental fields exist for this instrument
+                    "factor_agreement": 100,   # only one factor (technical) drives this signal
+                    "earnings_stability": 50,  # not applicable — neutral placeholder
+                    "regime_certainty": 50,    # not applicable — neutral placeholder
+                    "historical_factor_reliability": 50,
+                },
+                "bull_case": [],
+                "bear_case": [],
+                "current_price": round(current_price, 2),
+                "target_price": target_price,
+                "trade_levels": trade_levels,
+                "reasoning": tech_signal.get("breakdown", []),
+                "technical": tech_signal,
+                "fundamental_score": None,
+                "sentiment_score": None,
+                "quality_factors": None,
+                "global_context": None,
+            }
+            _cache_set(_pred_cache, cache_key, (time.time(), result))
+            return result
+
         ratio_score = self._fundamental_score(info, horizon, market)
 
         # ── Hard quality gate — reject fundamentally broken stocks ──────────────

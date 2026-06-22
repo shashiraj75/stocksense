@@ -378,19 +378,22 @@ export default function StockPage() {
                   {/* Row 4: score indicator pills */}
                   {prediction && !predLoading && !isCrypto && (() => {
                     const scoreItems: { label: string; value: number; bg: string; bar: string; text: string }[] = [];
-                    const fundScore = prediction.fundamental_score.score;
-                    const sentScore = prediction.sentiment_score.score;
+                    const fundScore = (prediction as any).fundamental_score?.score ?? null;
+                    const sentScore = (prediction as any).sentiment_score?.score ?? null;
                     const rsi = prediction.technical?.rsi ? Math.round(prediction.technical.rsi) : null;
 
-                    const fundTier = fundScore >= 65 ? { bg: "bg-bull/10 border-bull/20", bar: "bg-bull", text: "text-bull" }
-                                   : fundScore >= 45 ? { bg: "bg-yellow-500/10 border-yellow-500/20", bar: "bg-yellow-400", text: "text-yellow-400" }
-                                   : { bg: "bg-bear/10 border-bear/20", bar: "bg-bear", text: "text-bear" };
-                    const sentTier = sentScore >= 60 ? { bg: "bg-bull/10 border-bull/20", bar: "bg-bull", text: "text-bull" }
-                                   : sentScore >= 40 ? { bg: "bg-yellow-500/10 border-yellow-500/20", bar: "bg-yellow-400", text: "text-yellow-400" }
-                                   : { bg: "bg-bear/10 border-bear/20", bar: "bg-bear", text: "text-bear" };
-
-                    scoreItems.push({ label: "Fundamentals", value: fundScore, ...fundTier });
-                    scoreItems.push({ label: "Sentiment", value: sentScore, ...sentTier });
+                    if (fundScore !== null) {
+                      const fundTier = fundScore >= 65 ? { bg: "bg-bull/10 border-bull/20", bar: "bg-bull", text: "text-bull" }
+                                     : fundScore >= 45 ? { bg: "bg-yellow-500/10 border-yellow-500/20", bar: "bg-yellow-400", text: "text-yellow-400" }
+                                     : { bg: "bg-bear/10 border-bear/20", bar: "bg-bear", text: "text-bear" };
+                      scoreItems.push({ label: "Fundamentals", value: fundScore, ...fundTier });
+                    }
+                    if (sentScore !== null) {
+                      const sentTier = sentScore >= 60 ? { bg: "bg-bull/10 border-bull/20", bar: "bg-bull", text: "text-bull" }
+                                     : sentScore >= 40 ? { bg: "bg-yellow-500/10 border-yellow-500/20", bar: "bg-yellow-400", text: "text-yellow-400" }
+                                     : { bg: "bg-bear/10 border-bear/20", bar: "bg-bear", text: "text-bear" };
+                      scoreItems.push({ label: "Sentiment", value: sentScore, ...sentTier });
+                    }
 
                     if (rsi !== null) {
                       const rsiLabel = rsi >= 70 ? "Overbought" : rsi <= 30 ? "Oversold" : rsi >= 55 ? "Bullish" : rsi <= 45 ? "Bearish" : "Neutral";
@@ -853,8 +856,12 @@ export default function StockPage() {
                         />
                       ) : (
                         <>
-                          <ConfidenceMeter value={prediction.fundamental_score.score} label="Fundamental Score" />
-                          <ConfidenceMeter value={prediction.sentiment_score.score} label="News Sentiment Score" />
+                          {(prediction as any).fundamental_score?.score != null && (
+                            <ConfidenceMeter value={(prediction as any).fundamental_score.score} label="Fundamental Score" />
+                          )}
+                          {(prediction as any).sentiment_score?.score != null && (
+                            <ConfidenceMeter value={(prediction as any).sentiment_score.score} label="News Sentiment Score" />
+                          )}
                           {(() => {
                             const rsi = prediction.technical?.rsi;
                             if (!rsi) return null;
@@ -876,14 +883,20 @@ export default function StockPage() {
             </div>
           </div>
 
-          {((prediction as any)?.bull_case?.length > 0 || (prediction as any)?.bear_case?.length > 0) && (
+          {(prediction as any)?.tracking_only && (
+            <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl px-4 py-3 text-sm text-blue-300">
+              {(prediction as any).tracking_only_note ?? "Price-tracking instrument — no company fundamentals available, signal reflects technical analysis only."}
+            </div>
+          )}
+
+          {!(prediction as any)?.tracking_only && ((prediction as any)?.bull_case?.length > 0 || (prediction as any)?.bear_case?.length > 0) && (
             <BullBearCase
               bull={(prediction as any).bull_case ?? []}
               bear={(prediction as any).bear_case ?? []}
             />
           )}
 
-          {attribution && !isCrypto && (
+          {attribution && !isCrypto && !(prediction as any)?.tracking_only && (
             <FactorAttributionWaterfall data={attribution} prediction={prediction} />
           )}
 

@@ -2002,6 +2002,14 @@ CRYPTO_COINS = [
     ("BLUR","Blur"),("GMT","STEPN"),
     ("SAND","The Sandbox"),
 ]
+
+# Commodity ETFs added for price tracking only (Watchlist/Alerts/charts) —
+# they have no real company fundamentals on yfinance, so the prediction
+# engine must skip its fundamentals/sentiment/quality pipeline for these
+# rather than fabricate analysis from missing data. See prediction_engine.py.
+TRACKING_ONLY_SYMBOLS = {"GLD", "SLV", "GOLDBEES", "SILVERBEES"}
+
+
 def search_universe(query: str, market: str, limit: int = 8) -> list:
     q = query.lower().strip()
     if not q:
