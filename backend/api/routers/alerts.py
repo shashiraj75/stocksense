@@ -32,6 +32,10 @@ def _ensure_table():
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_user ON price_alerts(user_id)")
+        # Email backstop: lets the background checker (services/price_alert_notifier.py)
+        # notify a user even if their tab is closed, instead of relying purely on the
+        # client-side 5s poll in alerts/page.tsx.
+        conn.execute("ALTER TABLE price_alerts ADD COLUMN IF NOT EXISTS email TEXT")
 
 
 class AlertCreate(BaseModel):
@@ -39,6 +43,7 @@ class AlertCreate(BaseModel):
     market: Literal["IN", "US"]
     target_price: float
     direction: Literal["above", "below"]
+    email: str | None = None
 
 
 class AlertTrigger(BaseModel):
@@ -81,8 +86,8 @@ def create_alert(user_id: str, body: AlertCreate):
         alert_id = str(uuid.uuid4())
         with _conn() as conn:
             conn.execute(
-                "INSERT INTO price_alerts (id, user_id, symbol, market, target_price, direction) VALUES (%s, %s, %s, %s, %s, %s)",
-                (alert_id, user_id, body.symbol.upper(), body.market, body.target_price, body.direction)
+                "INSERT INTO price_alerts (id, user_id, symbol, market, target_price, direction, email) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (alert_id, user_id, body.symbol.upper(), body.market, body.target_price, body.direction, body.email)
             )
         return {"id": alert_id, "symbol": body.symbol.upper(), "market": body.market,
                 "targetPrice": body.target_price, "direction": body.direction,

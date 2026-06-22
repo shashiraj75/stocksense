@@ -146,6 +146,32 @@ async def _us_movers_refresh_loop():
         await asyncio.sleep(3 * 60)  # every 3 min — ahead of the 2-5 min movers cache TTL
 
 
+async def _price_alerts_check_loop():
+    """
+    Email backstop for the Alerts page (services/price_alert_notifier.py).
+    The frontend only checks alerts client-side every 5s while the tab is
+    open — close the tab, lock the phone, or let the browser discard a
+    backgrounded tab and monitoring silently stops. This runs server-side on
+    its own schedule so an alert still fires even then.
+
+    Kill switch: set PRICE_ALERTS_ENFORCEMENT=0 in the environment to turn
+    this off without a code change — checked every cycle, so flipping the
+    var and letting Railway restart the service (which it already does on
+    env var changes) is enough. The client-side polling on the Alerts page
+    is unaffected either way.
+    """
+    await asyncio.sleep(100)  # let server settle first
+    while True:
+        if os.getenv("PRICE_ALERTS_ENFORCEMENT", "1") == "1":
+            try:
+                loop = asyncio.get_event_loop()
+                from services.price_alert_notifier import check_and_notify
+                await loop.run_in_executor(None, check_and_notify)
+            except Exception as e:
+                print(f"[price_alerts] error: {e}")
+        await asyncio.sleep(90)  # every 90s — far more responsive than email needs to be, still cheap
+
+
 async def _validation_schedule_loop():
     """
     Run walk-forward validation on a schedule (IST = UTC+5:30):
@@ -387,6 +413,7 @@ async def lifespan(app: FastAPI):
     picks_catchup_task_us = asyncio.create_task(_catchup_picks("US", _ET, 9, 90))
     trade_notify_task = asyncio.create_task(_paper_trade_notify_loop())
     us_movers_task = asyncio.create_task(_us_movers_refresh_loop())
+    price_alerts_task = asyncio.create_task(_price_alerts_check_loop())
     yield
     task.cancel()
     keepalive.cancel()
@@ -399,8 +426,9 @@ async def lifespan(app: FastAPI):
     picks_catchup_task_us.cancel()
     trade_notify_task.cancel()
     us_movers_task.cancel()
+    price_alerts_task.cancel()
     for t in (task, keepalive, outcome_task, warmup_task, crumb_task, validation_task, catchup_task,
-              picks_catchup_task, picks_catchup_task_us, trade_notify_task, us_movers_task):
+              picks_catchup_task, picks_catchup_task_us, trade_notify_task, us_movers_task, price_alerts_task):
         try:
             await t
         except asyncio.CancelledError:

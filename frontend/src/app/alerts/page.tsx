@@ -85,6 +85,7 @@ export default function AlertsPage() {
         market,
         target_price: +targetPrice,
         direction,
+        email: user?.email ?? null,
       });
       const newAlert = res.data;
       const updated = [newAlert, ...alerts];
@@ -147,11 +148,12 @@ export default function AlertsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-3 flex items-start gap-2.5 text-xs text-yellow-300">
+      <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-3 flex items-start gap-2.5 text-xs text-blue-300">
         <Bell size={14} className="shrink-0 mt-0.5" />
         <span>
-          <strong>Keep this tab open</strong> — alerts only fire while this page is active in your browser.
-          Closing or switching tabs pauses monitoring. Alerts are now saved to the cloud and persist across devices.
+          This page checks every 5 seconds while it's open, for the fastest possible update.
+          You'll also get an <strong>email</strong> if your alert hits while this tab is closed —
+          so it's safe to navigate away once an alert is set.
         </span>
       </div>
 
