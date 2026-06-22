@@ -1243,6 +1243,17 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 
 ### Session 7 — 2026-06-22
 
+**Two Manuals Added:**
+
+- `StockSense360_Technical_Handbook.docx` — internal architecture/AI-engine/infra reference for engineers and the founder.
+- `StockSense360_User_Guide.docx` — end-user/investor-facing walkthrough of every page, with 16 real screenshots captured from production (also doubles as a visual confirmation that this session's fixes shipped correctly).
+
+**Market-Hours Gating for Paper Trading:**
+
+- **Root issue:** Buy/Sell could execute instantly at any time of day using a stale last-close quote when the market was closed — unrealistic (a real market can gap through that exact price by next open) and not a good look for a tool positioning itself as a serious research platform.
+- **Frontend:** `PaperTradeModal` now checks `getMarketStatus(market)` (the same utility already driving the navbar's market-status pills), shows a "{market} market is closed — opens at ..." banner, and disables the submit button while closed.
+- **Backend:** mirrored the same check in `paper_trading.py`'s `/buy` and `/sell` endpoints (a local `_is_market_open()`, same pattern already used in `screener_service.py`) — a direct API call would otherwise bypass the frontend-only gate entirely.
+
 **Paper Trade Target/Stop-Loss Proximity Notifications:**
 
 - **New `services/trade_notifier.py`** — a background loop (every 15 min, registered in `main.py`) scans all OPEN paper trades with a `target_price` or `stop_loss` set, fetches the live quote, and emails the owner once price is within 2% of (or has crossed) either level. Each trigger is deduped via `target_notified_at`/`stop_notified_at` columns + a 6-hour cooldown, so a price hovering near the line doesn't spam the same email repeatedly.
