@@ -753,7 +753,11 @@ export default function DailyPicksPage() {
         </div>
       ) : (
         <div className="flex flex-col items-center justify-center py-20 text-center">
-          {(data as any)?.generating ? (
+          {/* Only show the big blocking spinner when no data has ever been
+              generated yet — if generated_at already exists, a concurrent
+              background refresh shouldn't hide already-valid results
+              (including a legitimate "0 BUY signals" outcome). */}
+          {(data as any)?.generating && !data?.generated_at ? (
             <>
               <Loader2 size={40} className="text-brand-400 mb-4 animate-spin" />
               <h3 className="text-lg font-semibold text-gray-300 mb-2">Generating picks…</h3>
@@ -773,6 +777,11 @@ export default function DailyPicksPage() {
                   ? "The AI didn't find strong BUY signals across NSE today. Market conditions may be weak — check back tomorrow."
                   : "Daily picks are generated at 2 AM IST on market days, scanning 750 NSE stocks. Check back after 2 AM IST."}
               </p>
+              {(data as any)?.generating && data?.generated_at && (
+                <p className="text-xs text-gray-600 mt-3 flex items-center gap-1.5">
+                  <Loader2 size={12} className="animate-spin" /> Refreshing in the background…
+                </p>
+              )}
             </>
           )}
         </div>
