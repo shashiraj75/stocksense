@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 import { PaperTradeModal } from "@/components/PaperTradeModal";
+import { useMarketPreference } from "@/hooks/useMarketPreference";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type ReasonItem = { indicator: string; signal: string; reason: string };
@@ -577,7 +578,7 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 export default function DailyPicksPage() {
-  const [market, setMarket] = useState<"IN" | "US">("IN");
+  const [market, setMarket] = useMarketPreference(["IN", "US"] as const, "IN");
   const [horizon, setHorizon] = useState<"short" | "medium" | "long">("short");
   const [showTruth, setShowTruth] = useState(false);
 

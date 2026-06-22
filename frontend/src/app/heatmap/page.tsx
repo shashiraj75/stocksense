@@ -7,6 +7,7 @@ import clsx from "clsx";
 import { RefreshCw, Wifi } from "lucide-react";
 import { IndexBar } from "@/components/IndexBar";
 import { StockContextMenu } from "@/components/StockContextMenu";
+import { useMarketPreference } from "@/hooks/useMarketPreference";
 
 type Stock  = { symbol: string; change_pct: number | null };
 type Sector = { sector: string; avg_change: number | null; stocks: Stock[]; loaded: number; total: number };
@@ -32,7 +33,7 @@ function getSectorColor(pct: number | null): string {
 }
 
 export default function HeatmapPage() {
-  const [market, setMarket] = useState<"IN" | "US">("IN");
+  const [market, setMarket] = useMarketPreference(["IN", "US"] as const, "IN");
   const router = useRouter();
 
   const { data, isLoading, isFetching, isError, dataUpdatedAt } = useQuery({

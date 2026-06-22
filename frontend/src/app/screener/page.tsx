@@ -7,9 +7,10 @@ import Link from "next/link";
 import clsx from "clsx";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { StockContextMenu } from "@/components/StockContextMenu";
+import { useMarketPreference } from "@/hooks/useMarketPreference";
 
 export default function ScreenerPage() {
-  const [market, setMarket] = useState<Market>("IN");
+  const [market, setMarket] = useMarketPreference(["IN", "US"] as const, "IN");
   const { data, isLoading, isFetching, isError, dataUpdatedAt } = useQuery({
     queryKey: ["movers", market],
     queryFn: () => fetchTopMovers(market),

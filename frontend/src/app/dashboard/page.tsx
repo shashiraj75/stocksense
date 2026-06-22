@@ -9,6 +9,7 @@ import { IndexBar } from "@/components/IndexBar";
 import { StockContextMenu } from "@/components/StockContextMenu";
 import { useAuthGuard } from "@/hooks/useAuthGuard";
 import { useAuth } from "@/lib/AuthContext";
+import { useMarketPreference } from "@/hooks/useMarketPreference";
 const POPULAR_US     = ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "JPM", "META", "AMZN"];
 const POPULAR_IN     = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "WIPRO", "BAJFINANCE", "ICICIBANK", "ADANIENT"];
 const POPULAR_CRYPTO = ["BTC", "ETH", "BNB", "SOL", "XRP", "DOGE"];
@@ -49,7 +50,7 @@ export default function Dashboard() {
   useAuthGuard();
   const { user } = useAuth();
   const userId = user?.id ?? "";
-  const [market, setMarket] = useState<DashMarket>("IN");
+  const [market, setMarket] = useMarketPreference(["IN", "US", "CRYPTO", "COMMODITY"] as const, "IN");
 
   const { data: movers, isLoading: moversLoading, isFetching: moversFetching, dataUpdatedAt: moversUpdatedAt } = useQuery({
     queryKey: ["movers", market],

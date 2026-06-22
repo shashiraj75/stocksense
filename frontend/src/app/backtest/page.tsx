@@ -5,6 +5,7 @@ import { SignalBadge } from "@/components/SignalBadge";
 import { ConfidenceMeter } from "@/components/ConfidenceMeter";
 import clsx from "clsx";
 import { FlaskConical, CheckCircle, XCircle } from "lucide-react";
+import { useMarketPreference } from "@/hooks/useMarketPreference";
 
 interface BacktestResult {
   symbol: string; market: Market; horizon: Horizon;
@@ -22,7 +23,7 @@ interface BacktestResult {
 
 export default function BacktestPage() {
   const [symbol, setSymbol] = useState("RELIANCE");
-  const [market, setMarket] = useState<Market>("IN");
+  const [market, setMarket] = useMarketPreference(["IN", "US"] as const, "IN");
   const [horizon, setHorizon] = useState<Horizon>("short");
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<BacktestResult | null>(null);

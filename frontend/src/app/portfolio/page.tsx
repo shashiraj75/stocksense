@@ -8,6 +8,7 @@ import Link from "next/link";
 import clsx from "clsx";
 import { PlusCircle, Trash2, TrendingUp, TrendingDown, Briefcase, Wifi } from "lucide-react";
 import { PortfolioAllocationChart } from "@/components/PortfolioAllocationChart";
+import { useMarketPreference } from "@/hooks/useMarketPreference";
 
 interface Holding {
   symbol: string;
@@ -116,7 +117,7 @@ function save(h: Holding[]) {
 export default function PortfolioPage() {
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [sym, setSym] = useState("");
-  const [market, setMarket] = useState<Market>("IN");
+  const [market, setMarket] = useMarketPreference(["IN", "US"] as const, "IN");
   const [qty, setQty] = useState("");
   const [avgPrice, setAvgPrice] = useState("");
   const [error, setError] = useState("");

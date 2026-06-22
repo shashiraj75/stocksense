@@ -15,6 +15,7 @@ import {
 import { useAuth } from "@/lib/AuthContext";
 import { PaperTradeModal } from "@/components/PaperTradeModal";
 import { SignalBadge } from "@/components/SignalBadge";
+import { useMarketPreference } from "@/hooks/useMarketPreference";
 
 const MARKETS = [
   { key: "IN" as const, label: "🇮🇳 IN", currency: "₹", locale: "en-IN" },
@@ -387,7 +388,7 @@ export default function PaperTradingPage() {
   const { user } = useAuth();
   const userId = user?.id ?? "";
   const queryClient = useQueryClient();
-  const [market, setMarket] = useState<"IN" | "US">("IN");
+  const [market, setMarket] = useMarketPreference(["IN", "US"] as const, "IN");
   const marketCfg = MARKETS.find(m => m.key === market)!;
   const [sellTarget, setSellTarget] = useState<PaperTrade | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);

@@ -5,6 +5,7 @@ import { fetchQuote, Market, api } from "@/utils/api";
 import { Bell, BellRing, PlusCircle, Trash2, CheckCircle, Wifi } from "lucide-react";
 import clsx from "clsx";
 import { useAuth } from "@/lib/AuthContext";
+import { useMarketPreference } from "@/hooks/useMarketPreference";
 
 interface Alert {
   id: string;
@@ -28,7 +29,7 @@ export default function AlertsPage() {
 
   const [alerts, setAlerts] = useState<Alert[]>(() => loadLocal());
   const [sym, setSym] = useState("");
-  const [market, setMarket] = useState<Market>("IN");
+  const [market, setMarket] = useMarketPreference(["IN", "US"] as const, "IN");
   const [targetPrice, setTargetPrice] = useState("");
   const [direction, setDirection] = useState<"above" | "below">("above");
   const [error, setError] = useState("");
