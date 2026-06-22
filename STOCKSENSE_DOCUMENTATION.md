@@ -1279,6 +1279,17 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 
 - `StockSense360_Technical_Handbook.docx` — internal architecture/AI-engine/infra reference for engineers and the founder.
 - `StockSense360_User_Guide.docx` — end-user/investor-facing walkthrough of every page, with 16 real screenshots captured from production (also doubles as a visual confirmation that this session's fixes shipped correctly).
+- Both manuals later updated again in this session to reflect the market-hours gating, holiday calendar, Commodities tab, and tracking-only-instrument changes below (the manuals had drifted behind the markdown/PDF changelog).
+
+**US Market Support Added to Daily Picks:**
+
+- **Root question:** Daily Picks only ever covered NSE India — not a technical limitation, just never wired up. `PredictionEngine.predict()` already accepted a `market` parameter and worked correctly for US stocks (used on every US stock detail page); the daily-picks batch job (`daily_picks.py`) was the only piece hardcoded to `market="IN"`.
+- **Backend:** generalized the bulk momentum screener (`_bulk_screen_nse` → `_bulk_screen(market, ...)`), the mcap-floor screener (NSE exchange code `NSI` vs US exchange codes `NMS`/`NYQ`/`NGM`/`ASE`/`PCX`), the regime-detection proxy ticker (`RELIANCE` → `AAPL` for US), the per-stock prediction call, and the disk/Postgres cache — all now take a `market` argument instead of assuming India. Added a 100-ticker US mega-cap fallback list (mirrors the existing Nifty 100 fallback role) for when the live screener call fails.
+- **Postgres:** added a `market` column to `daily_picks_cache` (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`) so `save_picks_to_db`/`load_picks_from_db` keep independent history per market instead of one market overwriting the other's cache row.
+- **API:** `/api/picks/daily`, `/api/picks/status`, and `/api/picks/generate` all accept a `market=IN|US` query param (default `IN`, validated against an allow-list). The `_generating`/`_last_error` module state in `daily_picks.py` changed from a single bool/string to a dict keyed by market, so an IN run and a US run can't trip each other's "already running" guard.
+- **Cron:** GitHub Actions workflow (`daily_picks.yml`) now runs two scheduled jobs — India at 20:30 UTC (2 AM IST, unchanged) and US at 12:30 UTC (~8:30 AM ET, comfortably before the 9:30 AM ET open) — each calling `/api/picks/generate` with its own `market` param.
+- **Frontend:** Daily Picks page (`/picks`) gets an IN/US toggle next to the existing horizon tabs. Switching markets changes the query key (separate cache per market), currency symbol (₹/$), number locale (`en-IN`/`en-US`), display timezone for "Updated at," and the market passed through to the stock-detail link and the Paper Trade modal — all previously hardcoded to India.
+- **Known limitation, not fixed in this pass:** the live picks-performance tracker (`/api/picks/performance`) and score-snapshot history key only on `(symbol, horizon)`, with no market column — if a US ticker and an NSE ticker ever share the same symbol, their historical performance rows could blend. Low real-world risk (ticker collisions across the two universes are rare) but worth a follow-up if it's ever seen in practice.
 
 **Market-Hours Gating for Paper Trading:**
 
