@@ -1291,6 +1291,13 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 - **Frontend:** Daily Picks page (`/picks`) gets an IN/US toggle next to the existing horizon tabs. Switching markets changes the query key (separate cache per market), currency symbol (₹/$), number locale (`en-IN`/`en-US`), display timezone for "Updated at," and the market passed through to the stock-detail link and the Paper Trade modal — all previously hardcoded to India.
 - **Known limitation, not fixed in this pass:** the live picks-performance tracker (`/api/picks/performance`) and score-snapshot history key only on `(symbol, horizon)`, with no market column — if a US ticker and an NSE ticker ever share the same symbol, their historical performance rows could blend. Low real-world risk (ticker collisions across the two universes are rare) but worth a follow-up if it's ever seen in practice.
 
+**Separate USD Ledger for US Paper Trading:**
+
+- **Bug caught during the US Daily Picks review:** paper trading had exactly one `cash` column on `paper_portfolio`, denominated in ₹10,00,000, shared across every trade regardless of market. Buying a $100 US stock would have deducted "100" from that same rupee pool — silently treating dollars as rupees, with no currency conversion or separation at all.
+- **Fixed:** added a `cash_usd` column (`ALTER TABLE paper_portfolio ADD COLUMN IF NOT EXISTS cash_usd DOUBLE PRECISION NOT NULL DEFAULT 10000.0` — $10,000 starting balance, not a currency-converted equivalent of the ₹10,00,000 IN balance, just a separate round-number virtual pool). `paper_trading.py`'s buy/sell/edit/reset endpoints now resolve which cash column to debit/credit based on the trade's `market` field instead of always touching `cash`.
+- **Reset endpoint** now takes an optional `market=IN|US|ALL` param (defaults to `ALL` for backward compatibility) so a user can wipe just one market's trades/cash without touching the other.
+- **Frontend:** the Paper Trading page (`/paper-trading`) gets an IN/US toggle (same pattern as Daily Picks and Dashboard). Cash, invested amount, unrealized/realized P&L, and the reset confirmation are all scoped to the selected market — open/closed trades are filtered by market before any totals are summed, so dollars and rupees are never added together.
+
 **Market-Hours Gating for Paper Trading:**
 
 - **Root issue:** Buy/Sell could execute instantly at any time of day using a stale last-close quote when the market was closed — unrealistic (a real market can gap through that exact price by next open) and not a good look for a tool positioning itself as a serious research platform.
