@@ -13,8 +13,8 @@ export function useAuthGuard() {
       router.replace("/login");
       return;
     }
-    // Check terms acceptance via cookie
-    const termsAccepted = document.cookie.includes("ss_terms=v1.0");
+    // Check terms acceptance via cookie, scoped to this specific user
+    const termsAccepted = document.cookie.includes(`ss_terms_${user.id}=v1.0`);
     const metaAccepted = user.user_metadata?.terms_accepted === true;
     if (!termsAccepted && !metaAccepted) {
       router.replace("/accept-terms");

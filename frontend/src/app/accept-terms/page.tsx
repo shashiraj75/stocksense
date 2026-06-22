@@ -75,10 +75,11 @@ export default function AcceptTermsPage() {
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
       if (!data.user) { router.replace("/login"); return; }
-      const cookieAccepted = document.cookie.includes("ss_terms=v1.0");
+      const cookieName = `ss_terms_${data.user.id}`;
+      const cookieAccepted = document.cookie.includes(`${cookieName}=v1.0`);
       if (cookieAccepted || data.user.user_metadata?.terms_accepted === true) {
         if (!cookieAccepted) {
-          document.cookie = "ss_terms=v1.0; path=/; max-age=31536000; SameSite=Lax";
+          document.cookie = `${cookieName}=v1.0; path=/; max-age=31536000; SameSite=Lax`;
         }
         router.replace("/dashboard");
         return;
@@ -114,7 +115,7 @@ export default function AcceptTermsPage() {
         },
       });
 
-      document.cookie = "ss_terms=v1.0; path=/; max-age=31536000; SameSite=Lax";
+      document.cookie = `ss_terms_${user.id}=v1.0; path=/; max-age=31536000; SameSite=Lax`;
       router.push("/dashboard");
     } catch (err: any) {
       setError("Failed to record acceptance. Please try again.");
