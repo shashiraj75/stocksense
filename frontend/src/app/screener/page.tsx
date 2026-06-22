@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchTopMovers, Market } from "@/utils/api";
-import { TrendingUp, TrendingDown } from "lucide-react";
+import { TrendingUp, TrendingDown, RefreshCw, Wifi } from "lucide-react";
 import Link from "next/link";
 import clsx from "clsx";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
@@ -21,44 +21,54 @@ export default function ScreenerPage() {
   });
 
   const currency = market === "US" ? "$" : "₹";
+  const lastUpdated = dataUpdatedAt > 0
+    ? new Date(dataUpdatedAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true })
+    : null;
 
   return (
     <div className="space-y-6">
       <MarketDisclaimer market={market} />
-      <div className="flex items-center justify-between">
+
+      {/* Header — layout matches Market Heatmap / Market Overview header style */}
+      <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
           <h1 className="text-2xl font-bold">Stock Screener</h1>
-          <p className="text-gray-400 text-sm mt-1">Top movers across US and Indian markets</p>
+          <p className="text-sm text-gray-400 mt-1">Top movers across US and Indian markets</p>
         </div>
-        {dataUpdatedAt > 0 && (
-          <div className="flex items-center gap-1.5 text-xs text-gray-500">
-            {isFetching
-              ? <span className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse inline-block" />
-              : <span className="relative flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
-                </span>
+        <div className="flex items-center gap-3">
+          {/* Live status / loading badge */}
+          <div className={clsx(
+            "flex items-center gap-1.5 text-xs rounded-lg px-3 py-1.5 border transition-all",
+            isLoading && !data
+              ? "bg-brand-500/10 border-brand-500/30 text-brand-400"
+              : isFetching
+                ? "bg-yellow-500/10 border-yellow-500/30 text-yellow-400"
+                : "bg-dark-card border-dark-border text-gray-500"
+          )}>
+            {(isLoading && !data) || isFetching
+              ? <RefreshCw size={11} className="animate-spin" />
+              : <Wifi size={11} className="text-green-500" />
             }
-            {isFetching ? "Refreshing…" : `Updated ${new Date(dataUpdatedAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true })}`}
+            {isLoading && !data
+              ? "Fetching screener data…"
+              : isFetching
+                ? "Refreshing…"
+                : lastUpdated
+                  ? `Updated ${lastUpdated}`
+                  : "Live"
+            }
           </div>
-        )}
-      </div>
-
-      <div className="flex items-center gap-3">
-        {(["IN", "US"] as Market[]).map((m) => (
-          <button
-            key={m}
-            onClick={() => setMarket(m)}
-            className={clsx(
-              "px-4 py-1.5 rounded-lg text-sm font-medium transition-colors",
-              market === m
-                ? "bg-brand-500 text-white"
-                : "bg-dark-card border border-dark-border text-gray-400 hover:text-white"
-            )}
-          >
-            {m === "US" ? "🇺🇸 USA" : "🇮🇳 India"}
-          </button>
-        ))}
+          {/* Market toggle */}
+          <div className="flex gap-2">
+            {(["IN", "US"] as Market[]).map((m) => (
+              <button key={m} onClick={() => setMarket(m)}
+                className={clsx("px-4 py-2 rounded-xl text-sm font-medium transition-colors border",
+                  market === m ? "bg-brand-500 text-white border-brand-500" : "bg-dark-card border-dark-border text-gray-400 hover:text-white")}>
+                {m === "IN" ? "🇮🇳 India" : "🇺🇸 USA"}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       {(data as any)?.stale && (
