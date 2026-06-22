@@ -1243,6 +1243,11 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 
 ### Session 7 — 2026-06-22
 
+**Gold & Silver Dashboard Tab:**
+
+- GLD/SLV/GOLDBEES/SILVERBEES were only reachable via search before this — no discoverable spot on the app's main landing page. Added a 4th market tab on the Dashboard (`frontend/src/app/dashboard/page.tsx`) next to India/USA/Crypto, showing live price + day change for all four as simple cards, same pattern as the existing Crypto tab's grid.
+- No index bar (no natural index for 2 commodities — same simplification already made for Crypto) and no Quick Access/horizon-info sections (not meaningful for a fixed 4-symbol list) — just the price cards plus a note that these are tracking-only with no AI signal.
+
 **Gold/Silver Tracking Support — Fixed Fabricated Analysis:**
 
 - **Caught live:** after adding GLD/SLV/GOLDBEES/SILVERBEES to the universe, visiting their stock detail page produced a confident SELL signal whose bear case claimed *"Underperforming the Nifty 50 benchmark"* for a US gold ETF, plus invented valuation/earnings claims — despite `confidence_breakdown.data_completeness` being `0`. The fundamentals/sentiment/quality pipeline was fabricating plausible-sounding analysis from data that didn't exist.
