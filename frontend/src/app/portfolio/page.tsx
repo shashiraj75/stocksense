@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect } from "react";
 import { useQueries } from "@tanstack/react-query";
-import { fetchQuote, fetchPrediction, Market } from "@/utils/api";
+import { fetchQuote, fetchPrediction, Market, api } from "@/utils/api";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { SignalBadge } from "@/components/SignalBadge";
 import Link from "next/link";
@@ -11,14 +11,20 @@ import { PortfolioAllocationChart } from "@/components/PortfolioAllocationChart"
 import { useMarketPreference } from "@/hooks/useMarketPreference";
 import { StockSymbolField } from "@/components/StockSymbolField";
 import type { StockResult } from "@/hooks/useStockSearch";
+import { useAuth } from "@/lib/AuthContext";
 
 interface Holding {
+  id: string;
   symbol: string;
   market: Market;
   qty: number;
   avgPrice: number;
 }
 
+// localStorage is now just a fast-access cache / offline fallback — the
+// backend (Postgres, via /api/portfolio) is the source of truth so holdings
+// sync across devices for the same logged-in user instead of being stuck on
+// whichever browser they were added from.
 const STORAGE_KEY = "stocksense_portfolio";
 
 type Row = Holding & {
@@ -35,7 +41,7 @@ type Row = Holding & {
 
 function HoldingRow({
   r, currency, onRemove, onEdit,
-}: { r: Row & { _idx: number }; currency: string; onRemove: (i: number) => void; onEdit: (i: number, updates: { qty: number; avgPrice: number }) => void }) {
+}: { r: Row; currency: string; onRemove: (id: string) => void; onEdit: (id: string, updates: { qty: number; avgPrice: number }) => void }) {
   const [editing, setEditing] = useState(false);
   const [qtyInput, setQtyInput] = useState(String(r.qty));
   const [avgInput, setAvgInput] = useState(String(r.avgPrice));
@@ -50,7 +56,7 @@ function HoldingRow({
     const q = parseFloat(qtyInput);
     const a = parseFloat(avgInput);
     if (!q || q <= 0 || !a || a <= 0) return; // ignore invalid input, keep editing open
-    onEdit(r._idx, { qty: q, avgPrice: a });
+    onEdit(r.id, { qty: q, avgPrice: a });
     setEditing(false);
   };
 
@@ -115,7 +121,7 @@ function HoldingRow({
         ) : (
           <div className="flex items-center justify-end gap-1">
             <button onClick={startEdit} title="Edit qty / avg buy price" className="p-1 rounded text-gray-500 hover:text-white transition-colors"><Pencil size={13} /></button>
-            <button onClick={() => onRemove(r._idx)} className="p-1 rounded text-gray-500 hover:text-bear transition-colors"><Trash2 size={14} /></button>
+            <button onClick={() => onRemove(r.id)} className="p-1 rounded text-gray-500 hover:text-bear transition-colors"><Trash2 size={14} /></button>
           </div>
         )}
       </td>
@@ -125,7 +131,7 @@ function HoldingRow({
 
 function HoldingsTable({
   rows, currency, onRemove, onEdit,
-}: { rows: (Row & { _idx: number })[]; currency: string; onRemove: (i: number) => void; onEdit: (i: number, updates: { qty: number; avgPrice: number }) => void }) {
+}: { rows: Row[]; currency: string; onRemove: (id: string) => void; onEdit: (id: string, updates: { qty: number; avgPrice: number }) => void }) {
   return (
     <div className="bg-dark-card border border-dark-border rounded-2xl overflow-hidden">
       <div className="overflow-x-auto">
@@ -146,7 +152,7 @@ function HoldingsTable({
           </thead>
           <tbody>
             {rows.map((r) => (
-              <HoldingRow key={r._idx} r={r} currency={currency} onRemove={onRemove} onEdit={onEdit} />
+              <HoldingRow key={r.id} r={r} currency={currency} onRemove={onRemove} onEdit={onEdit} />
             ))}
           </tbody>
         </table>
@@ -155,22 +161,53 @@ function HoldingsTable({
   );
 }
 
-function load(): Holding[] {
+function loadLocal(): Holding[] {
   try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); } catch { return []; }
 }
-function save(h: Holding[]) {
+function saveLocal(h: Holding[]) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(h));
 }
 
 export default function PortfolioPage() {
-  const [holdings, setHoldings] = useState<Holding[]>([]);
+  const { user } = useAuth();
+  const userId = user?.id ?? "";
+  const apiBase = userId ? `/api/portfolio/${userId}` : null;
+
+  const [holdings, setHoldings] = useState<Holding[]>(() => loadLocal());
   const [sym, setSym] = useState("");
   const [market, setMarket] = useMarketPreference(["IN", "US"] as const, "IN");
   const [qty, setQty] = useState("");
   const [avgPrice, setAvgPrice] = useState("");
   const [error, setError] = useState("");
 
-  useEffect(() => { setHoldings(load()); }, []);
+  // Load from backend when the user is ready. If the server has nothing yet
+  // but this browser's localStorage does, migrate those old local-only
+  // holdings up to the server once, so they don't silently disappear for
+  // anyone who used Portfolio before it synced across devices.
+  useEffect(() => {
+    if (!apiBase) return;
+    api.get<{ items: Holding[] }>(apiBase)
+      .then(async res => {
+        const serverItems = res.data.items;
+        if (serverItems.length > 0) {
+          setHoldings(serverItems);
+          saveLocal(serverItems);
+          return;
+        }
+        const local = loadLocal();
+        if (local.length === 0) return;
+        const migrated: Holding[] = [];
+        for (const h of local) {
+          try {
+            const created = await api.post<Holding>(apiBase, { symbol: h.symbol, market: h.market, qty: h.qty, avg_price: h.avgPrice }).then(r => r.data);
+            migrated.push(created);
+          } catch { /* skip holdings that fail to migrate — better than losing the whole list */ }
+        }
+        setHoldings(migrated);
+        saveLocal(migrated);
+      })
+      .catch(() => setHoldings(loadLocal()));
+  }, [apiBase]);
 
   const quoteQueries = useQueries({
     queries: holdings.map(h => ({
@@ -189,24 +226,46 @@ export default function PortfolioPage() {
     })),
   });
 
-  const add = () => {
+  const add = async () => {
     setError("");
     if (!sym.trim()) return setError("Enter a symbol");
     if (!qty || isNaN(+qty) || +qty <= 0) return setError("Enter valid quantity");
     if (!avgPrice || isNaN(+avgPrice) || +avgPrice <= 0) return setError("Enter valid buy price");
-    const updated = [...holdings, { symbol: sym.trim().toUpperCase(), market, qty: +qty, avgPrice: +avgPrice }];
-    setHoldings(updated); save(updated);
+
+    const payload = { symbol: sym.trim().toUpperCase(), market, qty: +qty, avgPrice: +avgPrice };
+    let newHolding: Holding;
+    try {
+      if (!apiBase) throw new Error("Not logged in");
+      newHolding = await api.post<Holding>(apiBase, { ...payload, avg_price: payload.avgPrice }).then(r => r.data);
+    } catch {
+      newHolding = { id: Date.now().toString(), ...payload }; // offline fallback — local-only
+    }
+    const updated = [...holdings, newHolding];
+    setHoldings(updated); saveLocal(updated);
     setSym(""); setQty(""); setAvgPrice("");
   };
 
-  const remove = (i: number) => {
-    const updated = holdings.filter((_, idx) => idx !== i);
-    setHoldings(updated); save(updated);
+  // Await the backend call before touching local state — firing the request
+  // and updating state unconditionally would let a failed delete/edit leave
+  // the row alive server-side while the UI shows it gone/changed, and the
+  // next load's GET would silently revert it (same bug class fixed in
+  // Alerts earlier).
+  const remove = async (id: string) => {
+    if (apiBase) {
+      try { await api.delete(`${apiBase}/${id}`); }
+      catch { setError("Couldn't delete that holding — check your connection and try again."); return; }
+    }
+    const updated = holdings.filter(h => h.id !== id);
+    setHoldings(updated); saveLocal(updated);
   };
 
-  const edit = (i: number, updates: { qty: number; avgPrice: number }) => {
-    const updated = holdings.map((h, idx) => idx === i ? { ...h, ...updates } : h);
-    setHoldings(updated); save(updated);
+  const edit = async (id: string, updates: { qty: number; avgPrice: number }) => {
+    if (apiBase) {
+      try { await api.patch(`${apiBase}/${id}`, { qty: updates.qty, avg_price: updates.avgPrice }); }
+      catch { setError("Couldn't update that holding — check your connection and try again."); return; }
+    }
+    const updated = holdings.map(h => h.id === id ? { ...h, ...updates } : h);
+    setHoldings(updated); saveLocal(updated);
   };
 
   const currency = (m: Market) => m === "US" ? "$" : "₹";
@@ -380,7 +439,7 @@ export default function PortfolioPage() {
             <div>
               <p className="text-xs text-gray-500 mb-2 flex items-center gap-1">🇮🇳 Indian Holdings (₹)</p>
               <HoldingsTable
-                rows={rows.map((r, i) => ({ ...r, _idx: i })).filter(r => r.market === "IN")}
+                rows={rows.filter(r => r.market === "IN")}
                 currency="₹"
                 onRemove={remove}
                 onEdit={edit}
@@ -391,7 +450,7 @@ export default function PortfolioPage() {
             <div>
               <p className="text-xs text-gray-500 mb-2 flex items-center gap-1">🇺🇸 US Holdings ($)</p>
               <HoldingsTable
-                rows={rows.map((r, i) => ({ ...r, _idx: i })).filter(r => r.market === "US")}
+                rows={rows.filter(r => r.market === "US")}
                 currency="$"
                 onRemove={remove}
                 onEdit={edit}
