@@ -19,6 +19,22 @@ const STARTING_CASH = 1_000_000;
 const fmt = (n: number, dec = 2) =>
   n.toLocaleString("en-IN", { minimumFractionDigits: dec, maximumFractionDigits: dec });
 
+const HORIZON_BLOCKS = [
+  { key: "short",  label: "Short Term",  sub: "1–5 days",   accent: "border-l-blue-500" },
+  { key: "medium", label: "Medium Term", sub: "2–4 weeks",  accent: "border-l-purple-500" },
+  { key: "long",   label: "Long Term",   sub: "3–6 months", accent: "border-l-indigo-500" },
+] as const;
+
+// How close the live price is to triggering either the stop loss or the
+// target — smallest distance sorts first (most urgent to watch).
+function urgencyScore(trade: PaperTrade, livePrice: number | null | undefined): number {
+  if (livePrice == null) return Infinity;
+  const distances: number[] = [];
+  if (trade.target_price) distances.push(Math.abs(livePrice - trade.target_price) / livePrice);
+  if (trade.stop_loss)    distances.push(Math.abs(livePrice - trade.stop_loss) / livePrice);
+  return distances.length ? Math.min(...distances) : Infinity;
+}
+
 function StatCard({ label, value, sub, positive }: { label: string; value: string; sub?: string; positive?: boolean }) {
   return (
     <div className="bg-dark-card border border-dark-border rounded-xl p-4">
@@ -354,6 +370,17 @@ export default function PaperTradingPage() {
   const openTrades = portfolio.open_trades;
   const closedTrades = portfolio.closed_trades;
 
+  // Group open positions into Short/Medium/Long blocks, each sorted so the
+  // trade whose live price is nearest its target or stop loss is on top.
+  const groupedOpenTrades = HORIZON_BLOCKS.map(block => ({
+    ...block,
+    trades: openTrades
+      .map((t, i) => ({ trade: t, livePrice: quoteResults[i]?.data?.price ?? null }))
+      .filter(({ trade }) => trade.horizon === block.key)
+      .sort((a, b) => urgencyScore(a.trade, a.livePrice) - urgencyScore(b.trade, b.livePrice))
+      .map(({ trade }) => trade),
+  }));
+
   const totalUnrealizedPnl = openTrades.reduce((sum, trade, i) => {
     const price = quoteResults[i]?.data?.price;
     if (price == null || trade.entry_price == null) return sum;
@@ -472,30 +499,42 @@ export default function PaperTradingPage() {
             <p className="text-xs mt-1">Browse a stock and click <strong>Paper Trade</strong> to start.</p>
           </div>
         ) : (
-          <div className="bg-dark-card border border-dark-border rounded-xl overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-dark-border text-xs text-gray-500">
-                    <th className="px-4 py-2.5 text-left">Stock</th>
-                    <th className="px-4 py-2.5 text-left">Qty</th>
-                    <th className="px-4 py-2.5 text-left">Entry</th>
-                    <th className="px-4 py-2.5 text-left">Mkt Price <span className="text-gray-600 font-normal">(last close when closed)</span></th>
-                    <th className="px-4 py-2.5 text-left">Unr. P&L</th>
-                    <th className="px-4 py-2.5 text-left">Signal</th>
-                    <th className="px-4 py-2.5 text-left">Stop Loss</th>
-                    <th className="px-4 py-2.5 text-left">Target</th>
-                    <th className="px-4 py-2.5 text-left">Date</th>
-                    <th className="px-4 py-2.5 text-right">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {openTrades.map(t => (
-                    <OpenTradeRow key={t.id} trade={t} onSell={setSellTarget} userId={userId} />
-                  ))}
-                </tbody>
-              </table>
-            </div>
+          <div className="space-y-4">
+            {groupedOpenTrades.map(({ key, label, sub, accent, trades }) => trades.length > 0 && (
+              <div key={key} className={clsx("bg-dark-card border border-dark-border rounded-xl overflow-hidden border-l-4", accent)}>
+                <div className="px-4 py-2.5 flex items-center gap-2 border-b border-dark-border bg-white/[0.02]">
+                  <h3 className="font-semibold text-sm text-white">{label}</h3>
+                  <span className="text-xs text-gray-500">({sub})</span>
+                  <span className="bg-white/10 text-gray-300 text-[11px] px-1.5 py-0.5 rounded-full font-medium ml-1">
+                    {trades.length}
+                  </span>
+                  <span className="text-[10px] text-gray-600 ml-auto">Sorted by proximity to target / stop loss</span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-dark-border text-xs text-gray-500">
+                        <th className="px-4 py-2.5 text-left">Stock</th>
+                        <th className="px-4 py-2.5 text-left">Qty</th>
+                        <th className="px-4 py-2.5 text-left">Entry</th>
+                        <th className="px-4 py-2.5 text-left">Mkt Price <span className="text-gray-600 font-normal">(last close when closed)</span></th>
+                        <th className="px-4 py-2.5 text-left">Unr. P&L</th>
+                        <th className="px-4 py-2.5 text-left">Signal</th>
+                        <th className="px-4 py-2.5 text-left">Stop Loss</th>
+                        <th className="px-4 py-2.5 text-left">Target</th>
+                        <th className="px-4 py-2.5 text-left">Date</th>
+                        <th className="px-4 py-2.5 text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {trades.map(t => (
+                        <OpenTradeRow key={t.id} trade={t} onSell={setSellTarget} userId={userId} />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </div>
