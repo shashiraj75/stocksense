@@ -618,7 +618,7 @@ export default function DailyPicksPage() {
             {data?.screened_from ? ` · screened from ${data.screened_from.toLocaleString()} ${market === "IN" ? "NSE" : "US"} stocks` : ""}
           </p>
         </div>
-        <div className="flex items-center gap-2 shrink-0 ml-auto">
+        <div className="flex items-center gap-2 shrink-0 ml-auto flex-wrap justify-end">
           {/* Market toggle */}
           <div className="flex items-center bg-dark-card border border-dark-border rounded-lg p-0.5">
             {MARKETS.map(m => (
