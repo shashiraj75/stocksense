@@ -593,7 +593,7 @@ export default function StockPage() {
 
               {/* Tabs row */}
               <div className="flex gap-2 flex-wrap mt-4 pt-4 border-t border-white/[0.06]">
-                {HORIZON_TABS.map(({ key, label }) => (
+                {HORIZON_TABS.filter(({ key }) => key !== "fundamentals" || market === "IN").map(({ key, label }) => (
                   <button key={key} onClick={() => setTab(key)}
                     className={clsx(
                       "flex items-center gap-1.5 px-3.5 py-1.5 text-xs sm:text-sm rounded-lg font-medium transition-all",
