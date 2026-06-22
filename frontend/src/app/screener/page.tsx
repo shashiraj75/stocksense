@@ -35,7 +35,7 @@ export default function ScreenerPage() {
           <h1 className="text-2xl font-bold">Stock Screener</h1>
           <p className="text-sm text-gray-400 mt-1">Top movers across US and Indian markets</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 ml-auto">
           {/* Live status / loading badge */}
           <div className={clsx(
             "flex items-center gap-1.5 text-xs rounded-lg px-3 py-1.5 border transition-all",
