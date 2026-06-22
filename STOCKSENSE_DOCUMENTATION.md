@@ -1243,8 +1243,12 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 
 ### Session 7 — 2026-06-22
 
-**Gold/Silver Tracking Support:**
+**Gold/Silver Tracking Support — Fixed Fabricated Analysis:**
 
+- **Caught live:** after adding GLD/SLV/GOLDBEES/SILVERBEES to the universe, visiting their stock detail page produced a confident SELL signal whose bear case claimed *"Underperforming the Nifty 50 benchmark"* for a US gold ETF, plus invented valuation/earnings claims — despite `confidence_breakdown.data_completeness` being `0`. The fundamentals/sentiment/quality pipeline was fabricating plausible-sounding analysis from data that didn't exist.
+- **Fixed in `PredictionEngine.predict()`:** added an early-return branch for `TRACKING_ONLY_SYMBOLS` (`stock_universe.py`) that computes the signal from real technical indicators only (RSI/MACD/EMA/ADX/volume — legitimate for any price series) and skips the entire fundamentals/sentiment/quality/bull-bear-case pipeline, returning a `tracking_only: true` flag and an honest explanatory note instead.
+- **Frontend:** stock detail page now shows a clear "price-tracking instrument" banner and hides Bull/Bear Case, Factor Attribution, and Academic Quality Signals when `tracking_only` is set.
+- **Bonus fix:** this surfaced two latent null-pointer crashes (`prediction.fundamental_score.score` / `sentiment_score.score` accessed without a null guard) that would have thrown for *any* symbol with missing fundamental data, not just the new commodity ETFs — fixed with optional chaining.
 - Added `GLD`/`SLV` (US) and `GOLDBEES`/`SILVERBEES` (India) ETF tickers to both `backend/services/stock_universe.py` and `frontend/public/stock_universe.json`, so they're searchable and usable in Watchlist, Alerts, and the stock detail page (price + chart) via existing infra.
 - **Deliberately scoped to tracking only** — no AI BUY/SELL signal, no entry in Daily Picks. Fundamental factors (P/E, ROE, Piotroski score) that drive equity scoring don't meaningfully apply to a commodity ETF; full signal support would need a separate technical+macro-only model, considered and explicitly deferred rather than built half-heartedly into the existing equity-scoring engine.
 - Both lists are marked as manual additions outside the universe auto-generator's source (S&P/NASDAQ-100 + all NSE equities) — they'll need to be re-added if `scripts/generate_stock_universe.py` is ever re-run.
