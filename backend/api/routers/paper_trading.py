@@ -28,11 +28,19 @@ def _ensure_portfolio(user_id: str, email: str | None = None) -> dict:
             (user_id,)
         ).fetchone()
         if row is None:
+            # ON CONFLICT DO NOTHING — two concurrent first-time requests (e.g.
+            # /portfolio and /buy both firing on first login) could otherwise
+            # both see no row, both INSERT, and the second hit the user_id
+            # UNIQUE constraint as an unhandled 500.
             conn.execute(
-                "INSERT INTO paper_portfolio (session_id, user_id, cash, cash_usd, email) VALUES (%s, %s, %s, %s, %s)",
+                """INSERT INTO paper_portfolio (session_id, user_id, cash, cash_usd, email)
+                   VALUES (%s, %s, %s, %s, %s) ON CONFLICT (user_id) DO NOTHING""",
                 (user_id, user_id, STARTING_CASH_IN, STARTING_CASH_US, email)
             )
-            return {"cash": STARTING_CASH_IN, "cash_usd": STARTING_CASH_US}
+            row = conn.execute(
+                "SELECT cash, cash_usd FROM paper_portfolio WHERE user_id = %s",
+                (user_id,)
+            ).fetchone()
         if email:
             # Keep email fresh — cheap to update on every call, no extra round trip
             conn.execute(
@@ -140,20 +148,29 @@ def paper_buy(req: BuyRequest):
     cash_col = _CASH_COL[req.market]
     sym = _SYMBOL[req.market]
     cost = req.price * req.quantity
-    portfolio = _ensure_portfolio(req.user_id, req.email)
-    available = portfolio["cash"] if req.market == "IN" else portfolio["cash_usd"]
-
-    if available < cost:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Insufficient {req.market} funds. Available: {sym}{available:,.2f}, Required: {sym}{cost:,.2f}"
-        )
+    _ensure_portfolio(req.user_id, req.email)  # make sure the row exists before the conditional debit below
 
     with _conn() as conn:
-        conn.execute(
-            f"UPDATE paper_portfolio SET {cash_col} = {cash_col} - %s, updated_at = now() WHERE user_id = %s",
-            (cost, req.user_id)
-        )
+        # Atomic check-and-debit: the WHERE clause re-checks the balance at
+        # write time, inside the same statement, instead of trusting a value
+        # read moments earlier. Two concurrent buys can no longer both pass a
+        # stale balance check and both decrement past zero.
+        debited = conn.execute(
+            f"UPDATE paper_portfolio SET {cash_col} = {cash_col} - %s, updated_at = now() "
+            f"WHERE user_id = %s AND {cash_col} >= %s RETURNING {cash_col}",
+            (cost, req.user_id, cost)
+        ).fetchone()
+
+        if debited is None:
+            current = conn.execute(
+                f"SELECT {cash_col} FROM paper_portfolio WHERE user_id = %s", (req.user_id,)
+            ).fetchone()
+            available = current[0] if current else 0.0
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient {req.market} funds. Available: {sym}{available:,.2f}, Required: {sym}{cost:,.2f}"
+            )
+
         row = conn.execute(
             """INSERT INTO paper_trades
                (session_id, user_id, symbol, market, quantity, entry_price, signal, horizon, stop_loss, target_price)
@@ -161,6 +178,7 @@ def paper_buy(req: BuyRequest):
             (req.user_id, req.user_id, req.symbol.upper(), req.market, req.quantity,
              req.price, req.signal, req.horizon, req.stop_loss, req.target_price)
         ).fetchone()
+        remaining_cash = debited[0]  # already post-debit — RETURNING reflects the new balance
 
     return {
         "message": "Paper buy placed",
@@ -170,7 +188,7 @@ def paper_buy(req: BuyRequest):
         "quantity": req.quantity,
         "entry_price": req.price,
         "cost": round(cost, 2),
-        "remaining_cash": round(available - cost, 2),
+        "remaining_cash": round(remaining_cash, 2),
     }
 
 
@@ -238,7 +256,9 @@ def edit_trade(trade_id: int, req: EditRequest):
             raise HTTPException(status_code=400, detail="Cannot edit a closed trade")
 
         old_entry, qty, trade_market = trade[2], trade[3], trade[4]
-        cash_col = _CASH_COL.get(trade_market, "cash")
+        if trade_market not in _CASH_COL:
+            raise HTTPException(status_code=500, detail=f"Trade has an unrecognized market '{trade_market}' — cannot determine which cash ledger to adjust")
+        cash_col = _CASH_COL[trade_market]
 
         conn.execute(
             "UPDATE paper_trades SET stop_loss = %s, target_price = %s WHERE id = %s",

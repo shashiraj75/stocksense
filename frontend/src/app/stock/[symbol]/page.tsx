@@ -79,7 +79,11 @@ export default function StockPage() {
   const searchParams = useSearchParams();
   const rawMarket = searchParams?.get("market") || "US";
   const isCrypto = rawMarket === "CRYPTO";
-  const market = isCrypto ? "US" : (rawMarket as Market);
+  // Malformed/unrecognized ?market= values (wrong case, typos, stale links)
+  // fall back to "US" instead of being cast through unvalidated — a bad
+  // value here would silently mismatch currency display against the data
+  // actually returned by API calls built from the same string.
+  const market: Market = isCrypto ? "US" : (rawMarket === "IN" || rawMarket === "US" ? rawMarket : "US");
   const currency = market === "IN" ? "₹" : "$";
 
   const [tab, setTab] = useState<Tab>("short");

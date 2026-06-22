@@ -33,7 +33,7 @@ const HORIZON_BLOCKS = [
 // How close the live price is to triggering either the stop loss or the
 // target — smallest distance sorts first (most urgent to watch).
 function urgencyScore(trade: PaperTrade, livePrice: number | null | undefined): number {
-  if (livePrice == null) return Infinity;
+  if (livePrice == null || livePrice === 0) return Infinity;
   const distances: number[] = [];
   if (trade.target_price) distances.push(Math.abs(livePrice - trade.target_price) / livePrice);
   if (trade.stop_loss)    distances.push(Math.abs(livePrice - trade.stop_loss) / livePrice);
@@ -85,7 +85,7 @@ function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t
 
   const livePrice = quote?.price ?? null;
   const unrealizedPnl = livePrice != null ? (livePrice - trade.entry_price) * trade.quantity : null;
-  const unrealizedPct = livePrice != null ? ((livePrice - trade.entry_price) / trade.entry_price * 100) : null;
+  const unrealizedPct = livePrice != null && trade.entry_price > 0 ? ((livePrice - trade.entry_price) / trade.entry_price * 100) : null;
   const nearStopLoss = livePrice != null && trade.stop_loss != null && livePrice <= trade.stop_loss * 1.02;
   const nearTarget   = livePrice != null && trade.target_price != null && livePrice >= trade.target_price * 0.98;
 
@@ -188,9 +188,11 @@ function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t
             <span className={clsx("text-sm font-mono font-bold", unrealizedPnl >= 0 ? "text-bull" : "text-bear")}>
               {unrealizedPnl >= 0 ? "+" : ""}{currency}{fmt(Math.abs(unrealizedPnl))}
             </span>
-            <p className={clsx("text-[10px]", unrealizedPct! >= 0 ? "text-bull/70" : "text-bear/70")}>
-              {unrealizedPct! >= 0 ? "+" : ""}{unrealizedPct!.toFixed(2)}%
-            </p>
+            {unrealizedPct != null && (
+              <p className={clsx("text-[10px]", unrealizedPct >= 0 ? "text-bull/70" : "text-bear/70")}>
+                {unrealizedPct >= 0 ? "+" : ""}{unrealizedPct.toFixed(2)}%
+              </p>
+            )}
           </div>
         ) : (
           <span className="text-xs text-gray-600">—</span>

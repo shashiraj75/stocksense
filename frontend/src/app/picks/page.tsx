@@ -145,7 +145,7 @@ function TopReasons({ reasoning }: { reasoning: ReasonItem[] }) {
 }
 
 // ── Priority 1: Backtest Truth Panel ─────────────────────────────────────────
-function BacktestPanel({ horizon }: { horizon: string }) {
+function BacktestPanel({ horizon, benchmarkLabel }: { horizon: string; benchmarkLabel: string }) {
   const { data, isLoading } = useQuery<ValidationResult>({
     queryKey: ["validation", horizon],
     queryFn: () => api.get(`/api/validation/results?horizon=${horizon}`).then(r => r.data),
@@ -186,7 +186,7 @@ function BacktestPanel({ horizon }: { horizon: string }) {
           sub={`${data.buy_signals ?? "—"} signals`} good={hitRate >= 55} />
         <Stat label="Avg Return on BUY" value={data.avg_return_on_buy_pct != null ? `${data.avg_return_on_buy_pct > 0 ? "+" : ""}${data.avg_return_on_buy_pct}%` : "—"}
           good={data.avg_return_on_buy_pct != null ? data.avg_return_on_buy_pct > 0 : undefined} />
-        <Stat label="Alpha vs Nifty" value={data.avg_alpha_on_buy_pct != null ? `${data.avg_alpha_on_buy_pct > 0 ? "+" : ""}${data.avg_alpha_on_buy_pct}%` : "—"}
+        <Stat label={`Alpha vs ${benchmarkLabel}`} value={data.avg_alpha_on_buy_pct != null ? `${data.avg_alpha_on_buy_pct > 0 ? "+" : ""}${data.avg_alpha_on_buy_pct}%` : "—"}
           good={data.avg_alpha_on_buy_pct != null ? data.avg_alpha_on_buy_pct > 0 : undefined} />
         <Stat label="Sharpe Ratio" value={data.sharpe_on_buys != null ? data.sharpe_on_buys.toFixed(2) : "—"}
           good={data.sharpe_on_buys != null ? data.sharpe_on_buys > 0.5 : undefined} />
@@ -262,7 +262,7 @@ function BacktestPanel({ horizon }: { horizon: string }) {
 }
 
 // ── Priority 3: Live Picks Performance Tracker ────────────────────────────────
-function LivePerformanceTracker({ horizon }: { horizon: string }) {
+function LivePerformanceTracker({ horizon, currency, locale, benchmarkLabel }: { horizon: string; currency: string; locale: string; benchmarkLabel: string }) {
   const returnKey = horizon === "short" ? "return_5d" : horizon === "medium" ? "return_20d" : "return_60d";
   const benchKey  = horizon === "short" ? "benchmark_return_5d" : horizon === "medium" ? "benchmark_return_20d" : "benchmark_return_60d";
 
@@ -301,10 +301,10 @@ function LivePerformanceTracker({ horizon }: { horizon: string }) {
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         <Stat label="Avg Return" value={`${avgRet >= 0 ? "+" : ""}${avgRet.toFixed(1)}%`} good={avgRet > 0} />
-        <Stat label="vs Nifty" value={`${(avgRet - avgBench) >= 0 ? "+" : ""}${(avgRet - avgBench).toFixed(1)}%`}
+        <Stat label={`vs ${benchmarkLabel}`} value={`${(avgRet - avgBench) >= 0 ? "+" : ""}${(avgRet - avgBench).toFixed(1)}%`}
           good={(avgRet - avgBench) > 0} sub="alpha generated" />
         <Stat label="Win Rate" value={`${winRate.toFixed(0)}%`} good={winRate >= 55} sub={`${picks.length} resolved picks`} />
-        <Stat label="Beat Nifty" value={`${beatCount}/${picks.length}`}
+        <Stat label={`Beat ${benchmarkLabel}`} value={`${beatCount}/${picks.length}`}
           good={beatCount / picks.length >= 0.5} sub="picks beat benchmark" />
       </div>
 
@@ -317,7 +317,7 @@ function LivePerformanceTracker({ horizon }: { horizon: string }) {
               <th className="py-1.5 pr-3">Date</th>
               <th className="py-1.5 pr-3 text-right">Entry</th>
               <th className="py-1.5 pr-3 text-right">Return</th>
-              <th className="py-1.5 text-right">vs Nifty</th>
+              <th className="py-1.5 text-right">vs {benchmarkLabel}</th>
             </tr>
           </thead>
           <tbody>
@@ -329,7 +329,7 @@ function LivePerformanceTracker({ horizon }: { horizon: string }) {
                 <tr key={`${p.symbol}-${p.date}`} className="border-b border-dark-border/40 hover:bg-dark-border/20">
                   <td className="py-1.5 pr-3 font-mono font-bold text-white">{p.symbol}</td>
                   <td className="py-1.5 pr-3 text-gray-500">{p.date}</td>
-                  <td className="py-1.5 pr-3 text-right font-mono text-gray-300">₹{p.entry_price?.toLocaleString("en-IN")}</td>
+                  <td className="py-1.5 pr-3 text-right font-mono text-gray-300">{currency}{p.entry_price?.toLocaleString(locale)}</td>
                   <td className={clsx("py-1.5 pr-3 text-right font-mono font-semibold tabular-nums", ret >= 0 ? "text-green-400" : "text-red-400")}>
                     {ret >= 0 ? "+" : ""}{ret.toFixed(1)}%
                   </td>
@@ -739,10 +739,10 @@ export default function DailyPicksPage() {
       </div>
 
       {/* Priority 1 + 2: Backtest truth panel (toggle) */}
-      {showTruth && <BacktestPanel horizon={horizon} />}
+      {showTruth && <BacktestPanel horizon={horizon} benchmarkLabel={market === "IN" ? "Nifty" : "S&P 500"} />}
 
       {/* Priority 3: Live performance tracker (toggle) */}
-      {showTruth && <LivePerformanceTracker horizon={horizon} />}
+      {showTruth && <LivePerformanceTracker horizon={horizon} currency={currency} locale={marketCfg.locale} benchmarkLabel={market === "IN" ? "Nifty" : "S&P 500"} />}
 
       {/* Loading */}
       {isLoading && (

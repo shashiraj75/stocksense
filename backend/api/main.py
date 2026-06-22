@@ -302,11 +302,16 @@ async def lifespan(app: FastAPI):
             if picks_generated_today(market):
                 print(f"[picks_catchup] [{market}] Today's picks already exist — skipping")
                 return
-            if _dp._generating.get(market, False):
-                print(f"[picks_catchup] [{market}] Generation already in progress — skipping")
-                return
+            # Use the same lock as POST /api/picks/generate so a cron-triggered
+            # run and this startup catch-up can't both pass the check and run
+            # concurrently — this is the exact TOCTOU race the lock exists to
+            # close (see _generating_lock comment in daily_picks.py).
+            with _dp._generating_lock:
+                if _dp._generating.get(market, False):
+                    print(f"[picks_catchup] [{market}] Generation already in progress — skipping")
+                    return
+                _dp._generating[market] = True
             print(f"[picks_catchup] [{market}] No picks for today — generating now (this takes ~10-20 min)…")
-            _dp._generating[market] = True
             try:
                 loop2 = asyncio.get_running_loop()
                 await loop2.run_in_executor(None, generate_picks, market)
