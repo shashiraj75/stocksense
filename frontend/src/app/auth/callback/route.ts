@@ -25,5 +25,8 @@ export async function GET(request: NextRequest) {
     await supabase.auth.exchangeCodeForSession(code);
   }
 
-  return NextResponse.redirect(`${origin}/accept-terms`);
+  // Invite links and password-reset links both land here. The user is now
+  // authenticated for this one session but has no password set yet — send
+  // them to set one before they can sign in again with email + password.
+  return NextResponse.redirect(`${origin}/auth/set-password?next=/accept-terms`);
 }

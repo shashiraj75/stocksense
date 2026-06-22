@@ -112,7 +112,9 @@ export default function LoginPage() {
         </div>
 
         <p className="text-center text-xs text-gray-600">
-          Access is by invitation only. Contact the administrator to request access.
+          Access is by invitation only. If you were just invited, check your email for an
+          invite link — it will ask you to set a password before you sign in here.
+          No invite yet? Contact the administrator to request access.
         </p>
       </div>
     </div>
