@@ -1257,6 +1257,18 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 - **Fixed:** `InviteHashRedirect` now parses `access_token` + `refresh_token` out of the hash with `URLSearchParams` and calls `supabase.auth.setSession({ access_token, refresh_token })` before navigating to `/auth/set-password?next=/accept-terms`.
 - **Operational note — invite tokens are single-use:** clicking an invite/reset link consumes the token at Supabase's `/verify` endpoint regardless of whether the app does anything useful with the result. Any invite clicked before this fix shipped needs a **fresh invite resent** — the same link won't work twice.
 
+**Branded Invite Emails (Custom SMTP):**
+
+- **Custom SMTP via Resend** configured in Supabase → Authentication → Emails → SMTP Settings, sending from `invites@stocksense360.com` instead of Supabase's shared default sender — fixes deliverability and removes the "looks like spam" concern with invite emails.
+- **Domain verification:** `stocksense360.com` added to Resend with DKIM (TXT), MX, and SPF (TXT) records added in GoDaddy DNS. Domain-level status can lag behind individual record checkmarks — re-trigger verification from the Resend domain detail page if status shows "Not Started" despite green record checkmarks.
+- **Branded HTML invite template** (`supabase_invite_email_template.html` in repo root) pasted into Supabase's "Invite user" email template — dark themed, StockSense360 logo, "Team StockSense360" sender framing (no individual name), clear one-time-link messaging.
+- **Diagnosing SMTP failures:** Supabase's "Failed to invite user" toast doesn't show the real cause — query `auth_logs` in Logs → Explorer (`select cast(timestamp as datetime) as timestamp, event_message, metadata from auth_logs order by timestamp desc limit 10`) to see the actual GoTrue/SMTP error (e.g. domain not verified, bad credentials).
+
+**Per-User Terms Cookie Bug:**
+
+- **Root cause found** — the `ss_terms=v1.0` cookie set after accepting the Terms of Use disclaimer was **not scoped to a specific user** (`path=/` with a fixed name). Any user authenticating in a browser that had *previously* accepted terms as a *different* account would see the cookie, skip `/accept-terms` entirely, and land straight on `/dashboard` — never asked for name/mobile/country or shown the legal disclaimer.
+- **Fixed in two places:** `accept-terms/page.tsx` (both the read-check and the write-after-accept) and `useAuthGuard.ts` (the app-wide route guard) now use a cookie scoped per user: `ss_terms_${user.id}=v1.0`. The guard fix matters more — it could previously let a user bypass the disclaimer-acceptance redirect entirely on a shared browser, not just skip the profile form.
+
 ### Session 6 — 2026-06-20
 
 **User Feedback System:**
