@@ -40,7 +40,7 @@ export function NpsPopup() {
   const submitted = submitMutation.isSuccess;
 
   return (
-    <div className="fixed bottom-6 right-6 z-50 w-[320px] rounded-2xl border border-white/10 bg-dark-card shadow-2xl p-5">
+    <div className="fixed bottom-6 right-6 z-50 w-[320px] max-w-[calc(100vw-3rem)] rounded-2xl border border-white/10 bg-dark-card shadow-2xl p-5">
       <button
         onClick={() => setDismissed(true)}
         className="absolute top-3 right-3 text-gray-500 hover:text-white"

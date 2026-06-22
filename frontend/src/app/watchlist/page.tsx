@@ -179,7 +179,7 @@ export default function WatchlistPage() {
                 >
                   <span className="text-base w-5 text-center shrink-0">{MARKET_BADGE[r.market] ?? "🌐"}</span>
                   <span className="text-white font-mono font-bold text-sm shrink-0">{r.symbol.replace(/\.(NS|BO)$/, "")}</span>
-                  <span className="text-gray-400 text-xs truncate">{r.name}</span>
+                  <span className="text-gray-400 text-xs truncate min-w-0 flex-1">{r.name}</span>
                   <span className="ml-auto text-[10px] text-brand-400 font-medium shrink-0">+ Add</span>
                 </button>
               </li>

@@ -141,7 +141,7 @@ export function SearchBar() {
                 <span className="text-white font-mono font-bold text-sm flex-shrink-0">
                   {r.symbol.replace(/\.(NS|BO)$/, "")}
                 </span>
-                <span className="text-gray-400 text-xs truncate">{r.name}</span>
+                <span className="text-gray-400 text-xs truncate min-w-0 flex-1">{r.name}</span>
               </button>
             </li>
           ))}
