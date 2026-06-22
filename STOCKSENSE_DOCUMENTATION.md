@@ -1243,6 +1243,13 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 
 ### Session 7 — 2026-06-22
 
+**Paper Trade Target/Stop-Loss Proximity Notifications:**
+
+- **New `services/trade_notifier.py`** — a background loop (every 15 min, registered in `main.py`) scans all OPEN paper trades with a `target_price` or `stop_loss` set, fetches the live quote, and emails the owner once price is within 2% of (or has crossed) either level. Each trigger is deduped via `target_notified_at`/`stop_notified_at` columns + a 6-hour cooldown, so a price hovering near the line doesn't spam the same email repeatedly.
+- **Sends via Resend's HTTP API directly** (not through Supabase's SMTP) from `alerts@stocksense360.com` — a distinct sender from `invites@` so users can tell notification types apart. Requires a `RESEND_API_KEY` env var on the Railway backend service (reuses the same Resend account/API key set up for invite emails).
+- **`paper_portfolio.email` column** stores the user's email captured from the frontend (`useAuth().user.email`) on every `/buy` and `/portfolio` call — no Supabase admin API call needed on the backend.
+- **Browser popup notifications** — `OpenTradeRow` fires a `Notification()` once per (trade, kind) per session when price nears target/stop, gated on `Notification.permission === "granted"`. New "Enable Notifications" button added to the Paper Trading page header (browser permission prompts require a user gesture).
+
 **Daily Picks Generation Crash Fix:**
 
 - **Root cause found** — the 2 AM IST daily picks cron run crashed every single day on the short-term overbought-RSI quality gate in `daily_picks.py`: `" ".join(r.get("reasoning", []))` assumed `reasoning` was a list of plain strings, but it's actually a list of structured dicts (`{"indicator":..., "reason":...}`) built in `prediction_engine.py` for the factor-breakdown UI. The crash threw `TypeError: sequence item 0: expected str instance, dict found`, caught by the top-level crash handler, which silently saved an empty fallback payload (`{"short": [], "medium": [], "long": []}` + an `error` field) instead of real picks — so the Daily Picks page showed either a stale "Generating picks…" spinner (during catch-up retries) or "No BUY signals found today" (a misleading message; it wasn't that no signals existed, the run never got far enough to find any).
