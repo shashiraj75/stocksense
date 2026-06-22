@@ -33,7 +33,7 @@ const MARKET_TABS: { key: DashMarket; label: string }[] = [
   { key: "IN",        label: "🇮🇳 India" },
   { key: "US",        label: "🇺🇸 USA" },
   { key: "CRYPTO",    label: "₿ Crypto" },
-  { key: "COMMODITY", label: "🥇 Gold & Silver" },
+  { key: "COMMODITY", label: "🥇 Commodities" },
 ];
 
 // Tracking-only commodity ETFs — no AI signal, just live price (see
@@ -198,7 +198,7 @@ export default function Dashboard() {
       {/* Top Movers / Crypto / Commodity grid */}
       {market === "COMMODITY" ? (
         <section>
-          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">Gold &amp; Silver</h2>
+          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">Commodities</h2>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {COMMODITY_CARDS.map((c, i) => {
               const q = commodityQueries[i]?.data;
