@@ -63,8 +63,8 @@ type LivePick = {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const MARKETS = [
-  { key: "IN" as const, label: "🇮🇳 NSE India",  currency: "₹", locale: "en-IN", tz: "Asia/Kolkata",     genTime: "2 AM IST" },
-  { key: "US" as const, label: "🇺🇸 NYSE/NASDAQ", currency: "$", locale: "en-US", tz: "America/New_York", genTime: "8:30 AM ET" },
+  { key: "IN" as const, short: "🇮🇳 IN", label: "🇮🇳 NSE India",  currency: "₹", locale: "en-IN", tz: "Asia/Kolkata",     genTime: "2 AM IST" },
+  { key: "US" as const, short: "🇺🇸 US", label: "🇺🇸 NYSE/NASDAQ", currency: "$", locale: "en-US", tz: "America/New_York", genTime: "8:30 AM ET" },
 ];
 
 const HORIZONS = [
@@ -621,12 +621,12 @@ export default function DailyPicksPage() {
         </div>
         <div className="flex items-center gap-2 shrink-0 ml-auto flex-wrap justify-end">
           {/* Market toggle */}
-          <div className="flex items-center bg-dark-card border border-dark-border rounded-lg p-0.5">
+          <div className="flex items-center gap-0.5 overflow-x-auto scrollbar-hide max-w-full bg-dark-card border border-dark-border rounded-lg p-0.5">
             {MARKETS.map(m => (
               <button key={m.key} onClick={() => setMarket(m.key)}
-                className={clsx("text-xs px-3 py-1.5 rounded-md font-medium transition-colors",
+                className={clsx("shrink-0 whitespace-nowrap text-xs px-3 py-1.5 rounded-md font-medium transition-colors",
                   market === m.key ? "bg-brand-500 text-white" : "text-gray-400 hover:text-white")}>
-                {m.key}
+                {m.short}
               </button>
             ))}
           </div>

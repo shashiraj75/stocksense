@@ -67,11 +67,11 @@ export default function BacktestPage() {
           />
         </div>
         <div>
-          <label className="text-xs text-gray-400 mb-1.5 block">Market</label>
-          <div className="flex gap-2">
+          <label className="text-xs text-gray-400 mb-1 block">Market</label>
+          <div className="flex gap-1">
             {(["IN", "US"] as Market[]).map(m => (
               <button key={m} onClick={() => setMarket(m)}
-                className={clsx("px-4 py-2.5 rounded-xl text-sm font-medium border transition-colors",
+                className={clsx("px-3 py-2 rounded-lg text-xs font-medium border transition-colors",
                   market === m ? "bg-brand-500 text-white border-brand-500" : "bg-dark-bg border-dark-border text-gray-400 hover:text-white")}>
                 {m === "US" ? "🇺🇸" : "🇮🇳"} {m}
               </button>

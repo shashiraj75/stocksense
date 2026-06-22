@@ -501,10 +501,10 @@ export default function PaperTradingPage() {
         </div>
         <div className="flex items-center gap-2">
           {/* Market toggle — IN and US are separate cash ledgers */}
-          <div className="flex items-center bg-dark-card border border-dark-border rounded-lg p-0.5">
+          <div className="flex items-center gap-0.5 overflow-x-auto scrollbar-hide max-w-full bg-dark-card border border-dark-border rounded-lg p-0.5">
             {MARKETS.map(m => (
               <button key={m.key} onClick={() => setMarket(m.key)}
-                className={clsx("text-xs px-3 py-1.5 rounded-md font-medium transition-colors",
+                className={clsx("shrink-0 whitespace-nowrap text-xs px-3 py-1.5 rounded-md font-medium transition-colors",
                   market === m.key ? "bg-brand-500 text-white" : "text-gray-400 hover:text-white")}>
                 {m.label}
               </button>

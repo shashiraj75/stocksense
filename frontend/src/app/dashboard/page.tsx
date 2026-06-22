@@ -31,8 +31,8 @@ const CRYPTO_CARDS = [
 type DashMarket = "US" | "IN" | "CRYPTO" | "COMMODITY";
 
 const MARKET_TABS: { key: DashMarket; label: string }[] = [
-  { key: "IN",        label: "🇮🇳 India" },
-  { key: "US",        label: "🇺🇸 USA" },
+  { key: "IN",        label: "🇮🇳 IN" },
+  { key: "US",        label: "🇺🇸 US" },
   { key: "CRYPTO",    label: "₿ Crypto" },
   { key: "COMMODITY", label: "🥇 Commodities" },
 ];
@@ -132,13 +132,11 @@ export default function Dashboard() {
                     : "Live"
               }
             </div>
-            <div className="flex gap-2 overflow-x-auto scrollbar-hide min-w-0 max-w-full">
+            <div className="flex items-center gap-0.5 overflow-x-auto scrollbar-hide min-w-0 max-w-full bg-dark-card border border-dark-border rounded-lg p-0.5">
               {MARKET_TABS.map(({ key, label }) => (
                 <button key={key} onClick={() => setMarket(key)}
-                  className={clsx("shrink-0 whitespace-nowrap px-4 py-2 rounded-xl text-sm font-medium transition-colors border",
-                    market === key
-                      ? "bg-brand-500 text-white border-brand-500"
-                      : "bg-dark-card border-dark-border text-gray-400 hover:text-white")}>
+                  className={clsx("shrink-0 whitespace-nowrap text-xs px-3 py-1.5 rounded-md font-medium transition-colors",
+                    market === key ? "bg-brand-500 text-white" : "text-gray-400 hover:text-white")}>
                   {label}
                 </button>
               ))}

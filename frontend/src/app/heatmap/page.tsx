@@ -88,12 +88,12 @@ export default function HeatmapPage() {
             }
           </div>
           {/* Market toggle */}
-          <div className="flex gap-2">
+          <div className="flex items-center gap-0.5 overflow-x-auto scrollbar-hide max-w-full bg-dark-card border border-dark-border rounded-lg p-0.5">
             {(["IN", "US"] as const).map(m => (
               <button key={m} onClick={() => setMarket(m)}
-                className={clsx("px-4 py-2 rounded-xl text-sm font-medium transition-colors border",
-                  market === m ? "bg-brand-500 text-white border-brand-500" : "bg-dark-card border-dark-border text-gray-400 hover:text-white")}>
-                {m === "IN" ? "🇮🇳 India" : "🇺🇸 USA"}
+                className={clsx("shrink-0 whitespace-nowrap text-xs px-3 py-1.5 rounded-md font-medium transition-colors",
+                  market === m ? "bg-brand-500 text-white" : "text-gray-400 hover:text-white")}>
+                {m === "IN" ? "🇮🇳 IN" : "🇺🇸 US"}
               </button>
             ))}
           </div>
