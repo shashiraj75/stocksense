@@ -1243,6 +1243,11 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 
 ### Session 7 — 2026-06-22
 
+**Crypto Fundamentals Check + Dead-End Tab Removal:**
+
+- Verified crypto's actual signal engine (`crypto_engine.py`) already correctly skips fundamentals entirely — technical + fear/greed (volatility proxy) + on-chain proxy (volume-based) only, explicitly documented as "no fundamentals." (An initial direct test of `PredictionEngine.predict()` for a CRYPTO market was misleading — that's dead code for crypto in production; `predictions.py`'s router actually dispatches CRYPTO to `predict_crypto()` instead.)
+- The real issue was UI, not logic: the **Fundamentals tab** (screener.in data) rendered unconditionally on every stock detail page, but screener.in only covers Indian companies — for US, Crypto, and the tracking-only commodity ETFs it could only ever show "available for Indian (NSE) stocks only." Filtered it out of `HORIZON_TABS` for any market other than IN, since there's no scenario where it shows real data otherwise.
+
 **Gold & Silver Dashboard Tab:**
 
 - GLD/SLV/GOLDBEES/SILVERBEES were only reachable via search before this — no discoverable spot on the app's main landing page. Added a 4th market tab on the Dashboard (`frontend/src/app/dashboard/page.tsx`) next to India/USA/Crypto, showing live price + day change for all four as simple cards, same pattern as the existing Crypto tab's grid.
