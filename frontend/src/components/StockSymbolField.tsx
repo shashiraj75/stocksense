@@ -19,7 +19,7 @@ export function StockSymbolField({
   onChange,
   onSelect,
   onEnter,
-  placeholder = "AAPL",
+  placeholder = "AAPL, RELIANCE, BTC",
   className = "",
 }: {
   value: string;

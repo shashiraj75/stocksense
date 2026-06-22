@@ -205,85 +205,98 @@ export default function WatchlistPage() {
         )}
       </div>
 
-      {/* List */}
-      <div className="bg-dark-card border border-dark-border rounded-2xl overflow-hidden">
-        {isLoading ? (
-          <div className="p-6 text-gray-400 text-sm">Loading…</div>
-        ) : !items.length ? (
-          <div className="p-10 text-center text-gray-500 text-sm">
-            No stocks in your watchlist yet. Add one above!
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-dark-border text-gray-400 text-left">
-                <th className="px-6 py-4 font-medium">Symbol</th>
-                <th className="px-6 py-4 font-medium">Market</th>
-                <th className="px-6 py-4 font-medium text-right">Price</th>
-                <th className="px-6 py-4 font-medium text-right">Change</th>
-                <th className="px-6 py-4 font-medium text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((item, i) => {
-                const q = quoteQueries[i]?.data;
-                const loading = quoteQueries[i]?.isLoading;
-                const price = q?.price ?? null;
-                const changePct = q?.change_pct ?? null;
-                const changeAmt = q?.change ?? null;
-                const up = (changePct ?? 0) >= 0;
+      {/* List — split by market so ₹/$ stocks are never shown in one mixed table */}
+      {isLoading ? (
+        <div className="bg-dark-card border border-dark-border rounded-2xl p-6 text-gray-400 text-sm">Loading…</div>
+      ) : !items.length ? (
+        <div className="bg-dark-card border border-dark-border rounded-2xl p-10 text-center text-gray-500 text-sm">
+          No stocks in your watchlist yet. Add one above!
+        </div>
+      ) : (
+        <div className="space-y-5">
+          {(["IN", "US"] as const).map(mkt => {
+            const rows = items
+              .map((item, i) => ({ item, i }))
+              .filter(({ item }) => item.market === mkt);
+            if (!rows.length) return null;
+            return (
+              <div key={mkt}>
+                <p className="text-xs text-gray-500 mb-2 flex items-center gap-1">
+                  {mkt === "IN" ? "🇮🇳 Indian Stocks" : "🇺🇸 US Stocks"}
+                </p>
+                <div className="bg-dark-card border border-dark-border rounded-2xl overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-dark-border text-gray-400 text-left">
+                          <th className="px-6 py-4 font-medium">Symbol</th>
+                          <th className="px-6 py-4 font-medium text-right">Price</th>
+                          <th className="px-6 py-4 font-medium text-right">Change</th>
+                          <th className="px-6 py-4 font-medium text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map(({ item, i }) => {
+                          const q = quoteQueries[i]?.data;
+                          const loading = quoteQueries[i]?.isLoading;
+                          const price = q?.price ?? null;
+                          const changePct = q?.change_pct ?? null;
+                          const changeAmt = q?.change ?? null;
+                          const up = (changePct ?? 0) >= 0;
 
-                return (
-                  <tr key={item.symbol} className="border-b border-dark-border hover:bg-dark-border/30 transition-colors">
-                    <td className="px-6 py-4 font-mono font-bold text-white">
-                      <Link href={`/stock/${item.symbol}?market=${item.market}`} className="hover:text-brand-400 transition-colors">
-                        {item.symbol}
-                      </Link>
-                    </td>
-                    <td className="px-6 py-4 text-gray-400">{item.market === "US" ? "🇺🇸 USA" : "🇮🇳 India"}</td>
-                    <td className="px-6 py-4 text-right font-mono font-bold text-white">
-                      {loading ? (
-                        <span className="text-gray-600 animate-pulse">—</span>
-                      ) : price != null ? (
-                        `${currency(item.market)}${price.toLocaleString()}`
-                      ) : (
-                        <span className="text-gray-600">N/A</span>
-                      )}
-                    </td>
-                    <td className="px-6 py-4 text-right">
-                      {loading ? (
-                        <span className="text-gray-600 animate-pulse">—</span>
-                      ) : changePct != null ? (
-                        <div className={clsx("flex items-center justify-end gap-1 font-medium", up ? "text-bull" : "text-bear")}>
-                          {up ? <TrendingUp size={13} /> : <TrendingDown size={13} />}
-                          <span>{up ? "+" : ""}{changeAmt != null ? changeAmt.toFixed(2) : ""}</span>
-                          <span className="text-xs">({up ? "+" : ""}{changePct.toFixed(2)}%)</span>
-                        </div>
-                      ) : (
-                        <span className="text-gray-600 flex items-center justify-end gap-1"><Minus size={12} /> N/A</span>
-                      )}
-                    </td>
-                    <td className="px-6 py-4 text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <Link href={`/stock/${item.symbol}?market=${item.market}`}
-                          className="px-3 py-1 rounded-lg bg-brand-500/20 text-brand-500 border border-brand-500/30 hover:bg-brand-500/30 text-xs font-medium transition-colors">
-                          Analyse →
-                        </Link>
-                        <button onClick={() => remove.mutate(item.symbol)}
-                          className="p-1.5 rounded-lg text-gray-500 hover:text-bear hover:bg-bear/10 transition-colors">
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          </div>
-        )}
-      </div>
+                          return (
+                            <tr key={item.symbol} className="border-b border-dark-border hover:bg-dark-border/30 transition-colors">
+                              <td className="px-6 py-4 font-mono font-bold text-white">
+                                <Link href={`/stock/${item.symbol}?market=${item.market}`} className="hover:text-brand-400 transition-colors">
+                                  {item.symbol}
+                                </Link>
+                              </td>
+                              <td className="px-6 py-4 text-right font-mono font-bold text-white">
+                                {loading ? (
+                                  <span className="text-gray-600 animate-pulse">—</span>
+                                ) : price != null ? (
+                                  `${currency(item.market)}${price.toLocaleString()}`
+                                ) : (
+                                  <span className="text-gray-600">N/A</span>
+                                )}
+                              </td>
+                              <td className="px-6 py-4 text-right">
+                                {loading ? (
+                                  <span className="text-gray-600 animate-pulse">—</span>
+                                ) : changePct != null ? (
+                                  <div className={clsx("flex items-center justify-end gap-1 font-medium", up ? "text-bull" : "text-bear")}>
+                                    {up ? <TrendingUp size={13} /> : <TrendingDown size={13} />}
+                                    <span>{up ? "+" : ""}{changeAmt != null ? changeAmt.toFixed(2) : ""}</span>
+                                    <span className="text-xs">({up ? "+" : ""}{changePct.toFixed(2)}%)</span>
+                                  </div>
+                                ) : (
+                                  <span className="text-gray-600 flex items-center justify-end gap-1"><Minus size={12} /> N/A</span>
+                                )}
+                              </td>
+                              <td className="px-6 py-4 text-right">
+                                <div className="flex items-center justify-end gap-2">
+                                  <Link href={`/stock/${item.symbol}?market=${item.market}`}
+                                    className="px-3 py-1 rounded-lg bg-brand-500/20 text-brand-500 border border-brand-500/30 hover:bg-brand-500/30 text-xs font-medium transition-colors">
+                                    Analyse →
+                                  </Link>
+                                  <button onClick={() => remove.mutate(item.symbol)}
+                                    className="p-1.5 rounded-lg text-gray-500 hover:text-bear hover:bg-bear/10 transition-colors">
+                                    <Trash2 size={14} />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

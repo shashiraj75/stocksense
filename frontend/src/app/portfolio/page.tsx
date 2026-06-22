@@ -65,12 +65,14 @@ function HoldingRow({
       <td className="px-4 py-3 text-right font-mono">
         {editing ? (
           <input type="number" min="0" step="1" value={qtyInput} onChange={e => setQtyInput(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") confirm(); if (e.key === "Escape") setEditing(false); }}
             className="w-20 bg-dark-bg border border-brand-500/60 rounded-lg px-2 py-1 text-right text-xs font-mono text-white focus:outline-none" />
         ) : r.qty}
       </td>
       <td className="px-4 py-3 text-right font-mono">
         {editing ? (
           <input type="number" min="0" step="0.01" value={avgInput} onChange={e => setAvgInput(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") confirm(); if (e.key === "Escape") setEditing(false); }}
             className="w-24 bg-dark-bg border border-brand-500/60 rounded-lg px-2 py-1 text-right text-xs font-mono text-white focus:outline-none" />
         ) : `${currency}${r.avgPrice.toLocaleString()}`}
       </td>
