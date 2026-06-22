@@ -1,35 +1,14 @@
 import os
 import logging
-import datetime
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Literal
+from services.market_hours import is_market_open as _is_market_open
 
 log = logging.getLogger(__name__)
 router = APIRouter()
 
 STARTING_CASH = 1_000_000.0  # ₹10,00,000 virtual cash
-
-
-def _is_market_open(market: str) -> bool:
-    """
-    Server-side mirror of the frontend's market-hours check — orders must
-    be blocked here too, not just in the UI, since a direct API call would
-    otherwise bypass the frontend gate entirely. Executing at a stale
-    last-close price while a market is closed isn't something a real
-    broker would let you do (the next session can gap through that price).
-    """
-    if market == "IN":
-        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
-        if now.weekday() >= 5:
-            return False
-        return now.replace(hour=9, minute=15, second=0, microsecond=0) <= now <= now.replace(hour=15, minute=30, second=0, microsecond=0)
-    elif market == "US":
-        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-4)))
-        if now.weekday() >= 5:
-            return False
-        return now.replace(hour=9, minute=30, second=0, microsecond=0) <= now <= now.replace(hour=16, minute=0, second=0, microsecond=0)
-    return False
 
 
 def _conn():

@@ -119,19 +119,56 @@ function usMarketHolidays(year: number): Set<string> {
 }
 
 /**
- * NSE/BSE fixed-Gregorian-date holidays only (confidently computable).
- * Lunar/variable Hindu, Islamic, and other festival holidays (Holi, Diwali,
- * Eid, Dussehra, Mahashivratri, Ram Navami, Buddha Purnima, Guru Nanak
- * Jayanti, etc.) vary by year and require the official NSE holiday circular —
- * add them here manually each year.
+ * Lunar/regional Hindu, Islamic, and Sikh festival holidays (Holi, Diwali,
+ * Eid, Dussehra, Ram Navami, Mahavir Jayanti, Guru Nanak Jayanti, etc.) vary
+ * by year and have no closed-form formula — sourced from the official NSE
+ * holiday circular each year. Re-verify and refresh this list every
+ * December for the following year (https://www.nseindia.com/resources/exchange-communication-holidays).
+ *
+ * 2026 list verified against the NSE 2026 holiday calendar (via Zerodha's
+ * mirror, https://zerodha.com/marketintel/holiday-calendar/) on 2026-06-22.
+ * The Jan 15 entry is an election-related one-off, not an annually
+ * recurring festival — double-check it specifically if it recurs.
  */
 const NSE_EXTRA_HOLIDAYS: string[] = [
-  // "2026-03-04",  // e.g. Holi — verify against official NSE circular and uncomment
+  "2026-01-15", // Maharashtra Municipal Corporation elections (one-off, not a recurring annual holiday)
+  "2026-03-03", // Holi
+  "2026-03-26", // Shri Ram Navami
+  "2026-03-31", // Shri Mahavir Jayanti
+  "2026-05-28", // Bakri Eid
+  "2026-06-26", // Moharram
+  "2026-09-14", // Ganesh Chaturthi
+  "2026-10-20", // Dussehra
+  "2026-11-10", // Diwali — Balipratipada
+  "2026-11-24", // Guru Nanak Jayanti
+];
+
+/**
+ * Muhurat trading — a special ~1 hour evening session NSE/BSE run on Diwali
+ * Laxmi Pujan, even though that date is otherwise a market holiday (and in
+ * 2026 also a Sunday). Exact start/end time is announced by NSE via a
+ * separate circular only 1-2 weeks before Diwali, so it can't be hardcoded
+ * months in advance — update the time below once NSE publishes it.
+ */
+const MUHURAT_SESSIONS: { date: string; startMin: number; endMin: number }[] = [
+  // 2026 Muhurat trading: Sunday, Nov 8, 2026 (Diwali Laxmi Pujan).
+  // Placeholder window (typical recent-year timing) — REPLACE with NSE's
+  // exact announced timing once published, expected ~late Oct 2026.
+  { date: "2026-11-08", startMin: 18 * 60, endMin: 19 * 60 + 15 },
 ];
 
 function nseMarketHolidays(year: number): Set<string> {
+  const easter = easterSunday(year);
+  const goodFriday = new Date(easter);
+  goodFriday.setUTCDate(goodFriday.getUTCDate() - 2);
+  const goodFridayKey = `${goodFriday.getUTCFullYear()}-${pad(goodFriday.getUTCMonth() + 1)}-${pad(goodFriday.getUTCDate())}`;
+
   return new Set([
     `${year}-01-26`, // Republic Day
+    `${year}-04-14`, // Dr. Babasaheb Ambedkar Jayanti
+    goodFridayKey,   // Good Friday (algorithmically computed, NSE observes it too)
+    `${year}-05-01`, // Maharashtra Day
+    `${year}-12-25`, // Christmas
     `${year}-08-15`, // Independence Day
     `${year}-10-02`, // Gandhi Jayanti
     ...NSE_EXTRA_HOLIDAYS.filter((d) => d.startsWith(String(year))),
@@ -168,9 +205,11 @@ function nextEvent(market: "IN" | "US", now: Date): string | null {
 
   const isOpenAt = (d: Date) => {
     const p = getZonedParts(d, tz);
+    const isExtraHoliday = market === "IN" && NSE_EXTRA_HOLIDAYS.includes(p.dateKey);
     return (
       WEEKDAYS.has(p.weekday) &&
       !holidays(p.year).has(p.dateKey) &&
+      !isExtraHoliday &&
       p.minutesSinceMidnight >= openMin &&
       p.minutesSinceMidnight < closeMin
     );
@@ -207,8 +246,19 @@ export function getMarketStatus(market: MarketKey, now: Date = new Date()): Mark
 
   if (market === "IN") {
     const p = getZonedParts(now, "Asia/Kolkata");
+
+    // Muhurat trading overrides everything else — it runs precisely on a
+    // date that's normally a holiday (and often a weekend), for a short
+    // evening window only. Forward-looking "Opens/Closes at" labels below
+    // don't account for this window — it's a rare, well-publicized
+    // exception, not something users need a countdown for.
+    const muhurat = MUHURAT_SESSIONS.find(s => s.date === p.dateKey);
+    if (muhurat && p.minutesSinceMidnight >= muhurat.startMin && p.minutesSinceMidnight < muhurat.endMin) {
+      return { isOpen: true, label: "Muhurat Trading", nextEventLabel: null };
+    }
+
     const isWeekday = WEEKDAYS.has(p.weekday);
-    const isHoliday = nseMarketHolidays(p.year).has(p.dateKey);
+    const isHoliday = nseMarketHolidays(p.year).has(p.dateKey) || NSE_EXTRA_HOLIDAYS.includes(p.dateKey);
     const inHours = p.minutesSinceMidnight >= 9 * 60 + 15 && p.minutesSinceMidnight < 15 * 60 + 30;
     const isOpen = isWeekday && !isHoliday && inHours;
     return { isOpen, label: isOpen ? "Market Open" : "Market Closed", nextEventLabel: nextEvent("IN", now) };

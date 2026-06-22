@@ -1,7 +1,6 @@
 import math
 import time
 import logging
-import datetime
 import yfinance as yf
 from typing import Optional
 
@@ -11,6 +10,7 @@ from services.heatmap_service import INDIA_SECTORS, US_SECTORS
 from services.stock_universe import IN_STOCKS, US_STOCKS
 from services import finnhub_client
 from services import nse_client
+from services.market_hours import is_market_open as _is_market_open
 
 # Build symbol→name lookup from universe
 _NAME_MAP: dict[str, str] = {}
@@ -28,19 +28,6 @@ NIFTY50_SYMBOLS = [
     "TRENT","SHRIRAMFIN","BEL","ETERNAL","HEROMOTOCO","M&M",
 ]
 
-
-def _is_market_open(market: str) -> bool:
-    if market == "IN":
-        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
-        if now.weekday() >= 5:
-            return False
-        return now.replace(hour=9, minute=15, second=0, microsecond=0) <= now <= now.replace(hour=15, minute=30, second=0, microsecond=0)
-    elif market == "US":
-        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-4)))
-        if now.weekday() >= 5:
-            return False
-        return now.replace(hour=9, minute=30, second=0, microsecond=0) <= now <= now.replace(hour=16, minute=0, second=0, microsecond=0)
-    return False
 
 
 def _universe_from_sectors(sectors: dict, suffix: str = "") -> list[str]:
