@@ -280,43 +280,44 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[startup] movers pre-warm failed: {e}")
 
-    # Catch-up picks: if server restarted after 9 AM IST on a weekday and
-    # today's picks haven't been generated, run them now. This recovers
-    # from redeploys that killed a mid-run background task, and from
-    # GitHub Actions PICKS_SECRET mismatches.
-    async def _catchup_picks():
+    # Catch-up picks: if server restarted after a market's scheduled generation
+    # time on a market day and today's picks haven't been generated, run them
+    # now. This recovers from redeploys that killed a mid-run background task,
+    # and from GitHub Actions PICKS_SECRET mismatches. Same recovery logic for
+    # both markets — only the trigger-time/timezone/weekday rule differs.
+    async def _catchup_picks(market: str, tz_offset_hours: float, trigger_hour: int, settle_secs: int):
         from datetime import datetime, timezone, timedelta
-        await asyncio.sleep(60)  # let server settle first
+        await asyncio.sleep(settle_secs)  # let server settle first
         try:
-            IST = timezone(timedelta(hours=5, minutes=30))
-            now = datetime.now(IST)
-            today_2am = now.replace(hour=2, minute=0, second=0, microsecond=0)
-            if now < today_2am:
-                print("[picks_catchup] Before 2 AM IST — skipping")
+            tz = timezone(timedelta(hours=tz_offset_hours))
+            now = datetime.now(tz)
+            trigger_time = now.replace(hour=trigger_hour, minute=0, second=0, microsecond=0)
+            if now < trigger_time:
+                print(f"[picks_catchup] [{market}] Before {trigger_hour:02d}:00 local — skipping")
                 return
             if now.weekday() >= 5:
-                print("[picks_catchup] Weekend — skipping picks catchup")
+                print(f"[picks_catchup] [{market}] Weekend — skipping picks catchup")
                 return
             from services.daily_picks import picks_generated_today, generate_picks
             import services.daily_picks as _dp
-            if picks_generated_today("IN"):
-                print("[picks_catchup] Today's IN picks already exist — skipping")
+            if picks_generated_today(market):
+                print(f"[picks_catchup] [{market}] Today's picks already exist — skipping")
                 return
-            if _dp._generating.get("IN", False):
-                print("[picks_catchup] IN generation already in progress — skipping")
+            if _dp._generating.get(market, False):
+                print(f"[picks_catchup] [{market}] Generation already in progress — skipping")
                 return
-            print("[picks_catchup] No IN picks for today — generating now (this takes ~10 min)…")
-            _dp._generating["IN"] = True
+            print(f"[picks_catchup] [{market}] No picks for today — generating now (this takes ~10-20 min)…")
+            _dp._generating[market] = True
             try:
                 loop2 = asyncio.get_running_loop()
-                await loop2.run_in_executor(None, generate_picks, "IN")
-                print("[picks_catchup] IN picks generation complete")
+                await loop2.run_in_executor(None, generate_picks, market)
+                print(f"[picks_catchup] [{market}] picks generation complete")
             finally:
-                _dp._generating["IN"] = False
+                _dp._generating[market] = False
         except Exception as e:
-            print(f"[picks_catchup] error: {e}")
+            print(f"[picks_catchup] [{market}] error: {e}")
             import services.daily_picks as _dp2
-            _dp2._generating["IN"] = False
+            _dp2._generating[market] = False
 
     # Catch-up validation: if server restarted after 6 AM IST and today's run
     # was missed (e.g. due to deployment), fire it in the background.
@@ -350,7 +351,13 @@ async def lifespan(app: FastAPI):
     crumb_task = asyncio.create_task(_yfinance_crumb_loop())
     validation_task = asyncio.create_task(_validation_schedule_loop())
     catchup_task = asyncio.create_task(_catchup_validation())
-    picks_catchup_task = asyncio.create_task(_catchup_picks())
+    # IN: catch up any time after 2 AM IST (the scheduled run time) on a weekday.
+    picks_catchup_task = asyncio.create_task(_catchup_picks("IN", 5.5, 2, 60))
+    # US: cron fires ~12:30 UTC (8:30 AM ET / 7:30 AM ET depending on DST).
+    # Uses a fixed UTC-5 offset like picks_generated_today("US") — not
+    # DST-aware, but trigger_hour=9 leaves enough margin either way before
+    # declaring the scheduled run missed.
+    picks_catchup_task_us = asyncio.create_task(_catchup_picks("US", -5, 9, 90))
     trade_notify_task = asyncio.create_task(_paper_trade_notify_loop())
     yield
     task.cancel()
@@ -359,9 +366,12 @@ async def lifespan(app: FastAPI):
     warmup_task.cancel()
     crumb_task.cancel()
     validation_task.cancel()
+    catchup_task.cancel()
     picks_catchup_task.cancel()
+    picks_catchup_task_us.cancel()
     trade_notify_task.cancel()
-    for t in (task, keepalive, outcome_task, warmup_task, crumb_task, validation_task, picks_catchup_task, trade_notify_task):
+    for t in (task, keepalive, outcome_task, warmup_task, crumb_task, validation_task, catchup_task,
+              picks_catchup_task, picks_catchup_task_us, trade_notify_task):
         try:
             await t
         except asyncio.CancelledError:
