@@ -590,7 +590,7 @@ export default function DailyPicksPage() {
   const alphaForHorizon = data?.alpha_engine?.[horizon];
 
   return (
-    <div className="space-y-6 max-w-4xl mx-auto">
+    <div className="space-y-6">
 
       {/* Header — alignment matches Market Heatmap / Market Overview / Screener style */}
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -745,11 +745,11 @@ export default function DailyPicksPage() {
 
       {/* Picks grid */}
       {isLoading ? (
-        <div className="grid md:grid-cols-2 gap-4">
+        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
           {[...Array(5)].map((_, i) => <div key={i} className="bg-dark-card border border-dark-border rounded-xl p-4 animate-pulse h-72" />)}
         </div>
       ) : picks.length > 0 ? (
-        <div className="grid md:grid-cols-2 gap-4">
+        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
           {picks.map((pick, i) => <PickCard key={pick.symbol} pick={pick} rank={i + 1} />)}
         </div>
       ) : (
