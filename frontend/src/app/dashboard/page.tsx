@@ -281,15 +281,18 @@ export default function Dashboard() {
         <div className="space-y-6">
           {/* Top Gainers */}
           <section>
-            <div className="flex items-center gap-2 mb-3">
+            <div className="flex items-center gap-2 mb-1">
               <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">
-                Top Gainers · {market === "IN" ? "NSE" : "NYSE / NASDAQ"}
+                Top Gainers · {market === "IN" ? "NSE (Nifty 100)" : "NYSE / NASDAQ (Large Cap)"}
               </h2>
               {movers?.market_open
                 ? <span className="text-[10px] text-bull font-medium bg-bull/10 px-2 py-0.5 rounded-full">Live</span>
                 : <span className="text-[10px] text-gray-400 font-medium bg-white/5 px-2 py-0.5 rounded-full">Market Closed · Last Session</span>
               }
             </div>
+            <p className="text-[11px] text-gray-600 mb-3">
+              Ranked by today&apos;s price change only — not an AI recommendation or signal.
+            </p>
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
               {[...(movers?.gainers ?? [])].map((m: any) => (
                 <StockContextMenu key={m.symbol} symbol={m.symbol} market={market}>
@@ -311,7 +314,7 @@ export default function Dashboard() {
           <section>
             <div className="flex items-center gap-2 mb-3">
               <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">
-                Top Losers · {market === "IN" ? "NSE" : "NYSE / NASDAQ"}
+                Top Losers · {market === "IN" ? "NSE (Nifty 100)" : "NYSE / NASDAQ (Large Cap)"}
               </h2>
               {movers?.market_open
                 ? <span className="text-[10px] text-bear font-medium bg-bear/10 px-2 py-0.5 rounded-full">Live</span>
