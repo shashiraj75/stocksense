@@ -67,6 +67,14 @@ CREATE TABLE IF NOT EXISTS val_runs (
 -- which is a no-op (and so never adds new columns) on an existing table.
 ALTER TABLE val_runs ADD COLUMN IF NOT EXISTS universe TEXT NOT NULL DEFAULT 'nifty100';
 
+-- The DEFAULT above blindly labels every pre-existing row 'nifty100',
+-- including rows that were actually run for 'midcap'/'us' before this
+-- column existed. Re-derive the true value from the JSON already stored
+-- in summary at insert time (run_validation() has always written
+-- metrics["universe"]). Idempotent — re-running this is a harmless no-op
+-- for rows whose default already happens to match their real universe.
+UPDATE val_runs SET universe = COALESCE(summary->>'universe', 'nifty100') WHERE universe = 'nifty100';
+
 CREATE TABLE IF NOT EXISTS val_signals (
     id                BIGSERIAL PRIMARY KEY,
     run_id            BIGINT REFERENCES val_runs(id) ON DELETE CASCADE,
@@ -256,6 +264,13 @@ def _init_db():
                     c.execute("ALTER TABLE val_runs ADD COLUMN universe TEXT NOT NULL DEFAULT 'nifty100'")
                 except sqlite3.OperationalError:
                     pass
+                # Re-derive true universe for pre-existing rows from the JSON
+                # already stored in summary — see matching Postgres comment above.
+                c.execute(
+                    "UPDATE val_runs SET universe = "
+                    "COALESCE(json_extract(summary, '$.universe'), 'nifty100') "
+                    "WHERE universe = 'nifty100'"
+                )
         _db_initialised = True
 
 
