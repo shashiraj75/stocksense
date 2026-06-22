@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { fetchTopMovers, api } from "@/utils/api";
+import { useQuery, useQueries } from "@tanstack/react-query";
+import { fetchTopMovers, fetchQuote, api } from "@/utils/api";
 import { TrendingUp, TrendingDown, RefreshCw, Wifi } from "lucide-react";
 import Link from "next/link";
 import clsx from "clsx";
@@ -27,12 +27,22 @@ const CRYPTO_CARDS = [
   { symbol: "DOT",  name: "Polkadot" },
 ];
 
-type DashMarket = "US" | "IN" | "CRYPTO";
+type DashMarket = "US" | "IN" | "CRYPTO" | "COMMODITY";
 
 const MARKET_TABS: { key: DashMarket; label: string }[] = [
-  { key: "IN",     label: "🇮🇳 India" },
-  { key: "US",     label: "🇺🇸 USA" },
-  { key: "CRYPTO", label: "₿ Crypto" },
+  { key: "IN",        label: "🇮🇳 India" },
+  { key: "US",        label: "🇺🇸 USA" },
+  { key: "CRYPTO",    label: "₿ Crypto" },
+  { key: "COMMODITY", label: "🥇 Gold & Silver" },
+];
+
+// Tracking-only commodity ETFs — no AI signal, just live price (see
+// prediction_engine.py's TRACKING_ONLY_SYMBOLS for why).
+const COMMODITY_CARDS: { symbol: string; name: string; market: "US" | "IN" }[] = [
+  { symbol: "GLD",        name: "Gold (SPDR ETF)",          market: "US" },
+  { symbol: "SLV",        name: "Silver (iShares ETF)",     market: "US" },
+  { symbol: "GOLDBEES",   name: "Gold (Nippon India ETF)",  market: "IN" },
+  { symbol: "SILVERBEES", name: "Silver (Nippon India ETF)", market: "IN" },
 ];
 
 export default function Dashboard() {
@@ -59,9 +69,21 @@ export default function Dashboard() {
     refetchOnWindowFocus: false,
   });
 
-  const lastUpdated = market === "CRYPTO" ? cryptoUpdatedAt : moversUpdatedAt;
-  const isFetching = market === "CRYPTO" ? cryptoFetching : moversFetching;
-  const isFirstLoad = (market === "CRYPTO" ? cryptoLoading : moversLoading) && !lastUpdated;
+  const commodityQueries = useQueries({
+    queries: COMMODITY_CARDS.map(c => ({
+      queryKey: ["quote", c.symbol, c.market],
+      queryFn: () => fetchQuote(c.symbol, c.market),
+      enabled: market === "COMMODITY",
+      refetchInterval: 120_000,
+      staleTime: 115_000,
+    })),
+  });
+  const commodityLoading = market === "COMMODITY" && commodityQueries.some(q => q.isLoading);
+  const commodityUpdatedAt = Math.max(0, ...commodityQueries.map(q => q.data ? Date.now() : 0));
+
+  const lastUpdated = market === "CRYPTO" ? cryptoUpdatedAt : market === "COMMODITY" ? commodityUpdatedAt : moversUpdatedAt;
+  const isFetching = market === "CRYPTO" ? cryptoFetching : market === "COMMODITY" ? false : moversFetching;
+  const isFirstLoad = market === "COMMODITY" ? commodityLoading : (market === "CRYPTO" ? cryptoLoading : moversLoading) && !lastUpdated;
 
   const { data: watchlistData } = useQuery({
     queryKey: ["watchlist-quick", userId],
@@ -124,31 +146,36 @@ export default function Dashboard() {
         </div>
         {/* Index bar */}
         <div className="bg-dark-card border border-dark-border rounded-xl px-4 overflow-x-auto scrollbar-hide">
-          {market !== "CRYPTO"
-            ? <IndexBar market={market as any} />
-            : <p className="text-xs text-gray-500 py-3">Live index data unavailable for crypto</p>
+          {market === "CRYPTO"
+            ? <p className="text-xs text-gray-500 py-3">Live index data unavailable for crypto</p>
+            : market === "COMMODITY"
+              ? <p className="text-xs text-gray-500 py-3">Tracking only — no AI signal for commodity ETFs (see each card&apos;s stock page for details)</p>
+              : <IndexBar market={market as any} />
           }
         </div>
       </div>
 
       {/* Horizon info cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        {[
-          { label: "Short Term",  period: "1–10 Days",      desc: "Technicals, momentum, volume, news sentiment",              border: "border-green-500/40",  text: "text-green-400" },
-          { label: "Medium Term", period: "1–3 Months",     desc: "Earnings, sector rotation, macro trends",                   border: "border-yellow-500/40", text: "text-yellow-400" },
-          { label: "Long Term",   period: "6M – 3 Years",   desc: "Fundamentals, management quality, government policy",       border: "border-purple-500/40", text: "text-purple-400" },
-        ].map(({ label, period, desc, border, text }) => (
-          <div key={label} className={`bg-dark-card border ${border} rounded-xl p-4`}>
-            <div className="flex items-baseline gap-2 mb-1.5">
-              <p className={`text-sm font-bold ${text}`}>{label}</p>
-              <p className="text-xs text-gray-500">{period}</p>
+      {market !== "COMMODITY" && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {[
+            { label: "Short Term",  period: "1–10 Days",      desc: "Technicals, momentum, volume, news sentiment",              border: "border-green-500/40",  text: "text-green-400" },
+            { label: "Medium Term", period: "1–3 Months",     desc: "Earnings, sector rotation, macro trends",                   border: "border-yellow-500/40", text: "text-yellow-400" },
+            { label: "Long Term",   period: "6M – 3 Years",   desc: "Fundamentals, management quality, government policy",       border: "border-purple-500/40", text: "text-purple-400" },
+          ].map(({ label, period, desc, border, text }) => (
+            <div key={label} className={`bg-dark-card border ${border} rounded-xl p-4`}>
+              <div className="flex items-baseline gap-2 mb-1.5">
+                <p className={`text-sm font-bold ${text}`}>{label}</p>
+                <p className="text-xs text-gray-500">{period}</p>
+              </div>
+              <p className="text-xs text-gray-300">{desc}</p>
             </div>
-            <p className="text-xs text-gray-300">{desc}</p>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
 
       {/* Quick Access */}
+      {market !== "COMMODITY" && (
       <section>
         <div className="mb-2 space-y-0.5">
           <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">Quick Access</h2>
@@ -166,9 +193,43 @@ export default function Dashboard() {
           ))}
         </div>
       </section>
+      )}
 
-      {/* Top Movers / Crypto grid */}
-      {market === "CRYPTO" ? (
+      {/* Top Movers / Crypto / Commodity grid */}
+      {market === "COMMODITY" ? (
+        <section>
+          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">Gold &amp; Silver</h2>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {COMMODITY_CARDS.map((c, i) => {
+              const q = commodityQueries[i]?.data;
+              const cur = c.market === "IN" ? "₹" : "$";
+              return (
+                <Link key={c.symbol} href={`/stock/${c.symbol}?market=${c.market}`}
+                  className="p-4 rounded-xl bg-dark-card border border-dark-border hover:border-brand-500/50 transition-colors">
+                  <p className="font-mono font-bold text-white">{c.symbol}</p>
+                  <p className="text-xs text-gray-400 mt-0.5">{c.name}</p>
+                  {q?.price ? (
+                    <>
+                      <p className="text-base font-bold mt-1">
+                        {cur}{Number(q.price).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                      </p>
+                      {q.change_pct != null && (
+                        <div className={clsx("flex items-center gap-1 text-xs font-medium mt-0.5",
+                          q.change_pct >= 0 ? "text-bull" : "text-bear")}>
+                          {q.change_pct >= 0 ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
+                          {q.change_pct >= 0 ? "+" : ""}{q.change_pct}%
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-xs text-gray-500 mt-2">Loading…</p>
+                  )}
+                </Link>
+              );
+            })}
+          </div>
+        </section>
+      ) : market === "CRYPTO" ? (
         <section>
           <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">Top Cryptocurrencies</h2>
           {cryptoLoading ? (
