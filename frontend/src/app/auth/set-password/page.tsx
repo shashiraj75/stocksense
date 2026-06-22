@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from "react";
+import { Suspense, useState, useEffect } from "react";
 import { supabase } from "@/lib/supabase";
 import { TrendingUp, Lock } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -7,7 +7,7 @@ import Link from "next/link";
 
 const inputCls = "w-full bg-dark-bg border border-dark-border rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-gray-500 outline-none focus:border-brand-500 transition-colors";
 
-export default function SetPasswordPage() {
+function SetPasswordForm() {
   const [password, setPassword]   = useState("");
   const [confirm, setConfirm]     = useState("");
   const [loading, setLoading]     = useState(false);
@@ -16,7 +16,7 @@ export default function SetPasswordPage() {
   const [message, setMessage]     = useState<{ type: "error" | "success"; text: string } | null>(null);
   const router = useRouter();
   const searchParams = useSearchParams();
-  const next = searchParams.get("next") || "/accept-terms";
+  const next = searchParams?.get("next") || "/accept-terms";
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
@@ -118,5 +118,17 @@ export default function SetPasswordPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function SetPasswordPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-[80vh] flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    }>
+      <SetPasswordForm />
+    </Suspense>
   );
 }
