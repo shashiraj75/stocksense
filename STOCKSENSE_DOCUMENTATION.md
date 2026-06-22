@@ -1243,6 +1243,10 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 
 ### Session 7 — 2026-06-22
 
+**Dashboard Tab Renamed "Gold & Silver" → "Commodities":**
+
+- More professional label, and leaves room to add more commodity instruments later (e.g. oil, platinum) without relabeling the tab again. `COMMODITY` internal key/type was already generic — only the two display strings (tab label, section heading) needed updating.
+
 **Crypto Fundamentals Check + Dead-End Tab Removal:**
 
 - Verified crypto's actual signal engine (`crypto_engine.py`) already correctly skips fundamentals entirely — technical + fear/greed (volatility proxy) + on-chain proxy (volume-based) only, explicitly documented as "no fundamentals." (An initial direct test of `PredictionEngine.predict()` for a CRYPTO market was misleading — that's dead code for crypto in production; `predictions.py`'s router actually dispatches CRYPTO to `predict_crypto()` instead.)
