@@ -9,7 +9,7 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 STARTING_CASH_IN = 1_000_000.0  # ₹10,00,000 virtual cash
-STARTING_CASH_US = 10_000.0     # $10,000 virtual cash — separate ledger, not a currency conversion of the above
+STARTING_CASH_US = 100_000.0    # $100,000 virtual cash — separate ledger, not a currency conversion of the above
 
 _CASH_COL = {"IN": "cash", "US": "cash_usd"}
 _STARTING = {"IN": STARTING_CASH_IN, "US": STARTING_CASH_US}

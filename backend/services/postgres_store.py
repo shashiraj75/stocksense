@@ -184,7 +184,10 @@ ALTER TABLE paper_portfolio ADD COLUMN IF NOT EXISTS email TEXT;
 ALTER TABLE paper_trades    ADD COLUMN IF NOT EXISTS target_notified_at TIMESTAMPTZ;
 ALTER TABLE paper_trades    ADD COLUMN IF NOT EXISTS stop_notified_at   TIMESTAMPTZ;
 -- Separate USD ledger so IN (₹) and US ($) paper trading never share a cash pool
-ALTER TABLE paper_portfolio ADD COLUMN IF NOT EXISTS cash_usd DOUBLE PRECISION NOT NULL DEFAULT 10000.0;
+ALTER TABLE paper_portfolio ADD COLUMN IF NOT EXISTS cash_usd DOUBLE PRECISION NOT NULL DEFAULT 100000.0;
+-- One-time backfill: bump untouched $10,000 balances (the brief initial default)
+-- up to $100,000. Only touches rows that never bought/sold a US paper trade yet.
+UPDATE paper_portfolio SET cash_usd = 100000.0 WHERE cash_usd = 10000.0;
 CREATE TABLE IF NOT EXISTS watchlist (
     id         BIGSERIAL PRIMARY KEY,
     user_id    TEXT NOT NULL,
