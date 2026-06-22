@@ -1243,6 +1243,14 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 
 ### Session 7 — 2026-06-22
 
+**Full Indian Holiday Calendar + Muhurat Trading:**
+
+- **Gaps found:** the frontend's `marketHours.ts` was missing several *fixed-date* NSE holidays (Ambedkar Jayanti Apr 14, Maharashtra Day May 1, Christmas Dec 25, Good Friday) — it already had the Easter-algorithm machinery for US holidays but wasn't applying it to India. The lunar/regional holiday list (`NSE_EXTRA_HOLIDAYS`) was completely empty. The backend's market-hours check (duplicated in `paper_trading.py` and `screener_service.py`) had **zero** holiday awareness — not even the fixed ones.
+- **Fixed:** added the missing fixed holidays (including Good Friday via the existing Easter computation) to `nseMarketHolidays()`; populated `NSE_EXTRA_HOLIDAYS` with the verified 2026 list (Holi, Ram Navami, Mahavir Jayanti, Bakri Eid, Moharram, Ganesh Chaturthi, Dussehra, Diwali, Guru Nanak Jayanti) sourced from NSE's official circular via Zerodha's mirror; wired it into the `nextEvent()` lookahead too (previously ignored).
+- **Muhurat trading** — the special ~1hr evening session NSE/BSE run on Diwali Laxmi Pujan despite that date otherwise being a holiday — is now modeled via a `MUHURAT_SESSIONS` override list. 2026 falls on Sunday Nov 8; exact timing is a **placeholder** until NSE publishes the official window (~2 weeks before Diwali) — needs a follow-up update closer to that date.
+- **Backend/frontend sync:** extracted a shared `backend/services/market_hours.py` mirroring the frontend logic exactly (same Easter computation, same 2026 extra-holiday list) and pointed both `paper_trading.py` and `screener_service.py` at it, removing two inline duplicates that were drifting out of sync with the frontend and with each other.
+- **Operational note:** `NSE_EXTRA_HOLIDAYS` (both the TS and Python copies) needs a manual refresh every December for the following year, from NSE's official circular at nseindia.com/resources/exchange-communication-holidays.
+
 **Two Manuals Added:**
 
 - `StockSense360_Technical_Handbook.docx` — internal architecture/AI-engine/infra reference for engineers and the founder.
