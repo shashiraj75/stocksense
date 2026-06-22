@@ -301,7 +301,7 @@ export default function StockPage() {
             )}
 
             <div className="p-5">
-              <div className="flex gap-6">
+              <div className="flex flex-col sm:flex-row gap-4 sm:gap-6">
                 {/* ── Left column: all stock info ── */}
                 <div className="flex-1 min-w-0">
 
@@ -432,7 +432,7 @@ export default function StockPage() {
 
                 {/* ── Right column: signal panel ── */}
                 {tab !== "backtest" && (
-                  <div className="shrink-0 flex flex-col items-center justify-center gap-3 min-w-[140px]">
+                  <div className="shrink-0 flex flex-col items-center justify-center gap-3 w-full sm:w-auto sm:min-w-[140px]">
                     {prediction && !predLoading ? (
                       <>
                         {/* Big signal display */}

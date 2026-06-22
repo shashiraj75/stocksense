@@ -214,6 +214,7 @@ export default function WatchlistPage() {
             No stocks in your watchlist yet. Add one above!
           </div>
         ) : (
+          <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-dark-border text-gray-400 text-left">
@@ -280,6 +281,7 @@ export default function WatchlistPage() {
               })}
             </tbody>
           </table>
+          </div>
         )}
       </div>
     </div>

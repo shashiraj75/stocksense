@@ -262,6 +262,7 @@ export default function AlertsPage() {
           <div className="px-5 py-3 border-b border-dark-border">
             <h2 className="text-sm font-semibold text-gray-300">Active Alerts ({active.length})</h2>
           </div>
+          <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-dark-border text-gray-400 text-left">
@@ -311,6 +312,7 @@ export default function AlertsPage() {
               })}
             </tbody>
           </table>
+          </div>
         </div>
       )}
     </div>
