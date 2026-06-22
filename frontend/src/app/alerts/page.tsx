@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { fetchQuote, Market, api } from "@/utils/api";
-import { Bell, BellRing, PlusCircle, Trash2, CheckCircle } from "lucide-react";
+import { Bell, BellRing, PlusCircle, Trash2, CheckCircle, Wifi } from "lucide-react";
 import clsx from "clsx";
 import { useAuth } from "@/lib/AuthContext";
 
@@ -141,11 +141,19 @@ export default function AlertsPage() {
           <h1 className="text-2xl font-bold">Price Alerts</h1>
           <p className="text-gray-400 text-sm">Get notified when a stock hits your target — checked every 5 seconds</p>
         </div>
-        {triggered.length > 0 && (
-          <span className="ml-auto flex items-center gap-1.5 px-3 py-1 rounded-full bg-bull/20 text-bull text-xs font-semibold">
-            <BellRing size={13} /> {triggered.length} triggered
-          </span>
-        )}
+        <div className="ml-auto flex items-center gap-3">
+          {active.length > 0 && (
+            <span className="flex items-center gap-1.5 text-xs text-gray-500">
+              <Wifi size={12} className="text-green-500" />
+              Monitoring {active.length} alert{active.length !== 1 ? "s" : ""}
+            </span>
+          )}
+          {triggered.length > 0 && (
+            <span className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-bull/20 text-bull text-xs font-semibold">
+              <BellRing size={13} /> {triggered.length} triggered
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Add alert form */}

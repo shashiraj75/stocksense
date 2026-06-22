@@ -6,7 +6,7 @@ import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { SignalBadge } from "@/components/SignalBadge";
 import Link from "next/link";
 import clsx from "clsx";
-import { PlusCircle, Trash2, TrendingUp, TrendingDown, Briefcase } from "lucide-react";
+import { PlusCircle, Trash2, TrendingUp, TrendingDown, Briefcase, Wifi } from "lucide-react";
 import { PortfolioAllocationChart } from "@/components/PortfolioAllocationChart";
 
 interface Holding {
@@ -107,6 +107,12 @@ export default function PortfolioPage() {
           <h1 className="text-2xl font-bold">Portfolio</h1>
           <p className="text-gray-400 text-sm">Track your holdings and live P&L</p>
         </div>
+        {holdings.length > 0 && (
+          <span className="ml-auto flex items-center gap-1.5 text-xs text-gray-500">
+            <Wifi size={12} className="text-green-500" />
+            Tracking {holdings.length} holding{holdings.length !== 1 ? "s" : ""} · live prices
+          </span>
+        )}
       </div>
 
       {/* Summary cards */}

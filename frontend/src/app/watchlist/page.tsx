@@ -2,7 +2,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, Market, fetchQuote } from "@/utils/api";
-import { Trash2, TrendingUp, TrendingDown, Minus, Search } from "lucide-react";
+import { Trash2, TrendingUp, TrendingDown, Minus, Search, Star, Wifi } from "lucide-react";
 import Link from "next/link";
 import clsx from "clsx";
 import { useAuth } from "@/lib/AuthContext";
@@ -138,9 +138,18 @@ export default function WatchlistPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">Watchlist</h1>
-        <p className="text-gray-400 text-sm mt-1">Track your favourite stocks</p>
+      <div className="flex items-center gap-3">
+        <Star size={22} className="text-brand-500" />
+        <div>
+          <h1 className="text-2xl font-bold">Watchlist</h1>
+          <p className="text-gray-400 text-sm">Track your favourite stocks</p>
+        </div>
+        {items.length > 0 && (
+          <span className="ml-auto flex items-center gap-1.5 text-xs text-gray-500">
+            <Wifi size={12} className="text-green-500" />
+            Tracking {items.length} stock{items.length !== 1 ? "s" : ""} · live prices
+          </span>
+        )}
       </div>
 
       {/* Add stock — search with dropdown */}
