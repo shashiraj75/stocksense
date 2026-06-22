@@ -1,9 +1,27 @@
 "use client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { api } from "@/utils/api";
 import { AuthProvider } from "@/lib/AuthContext";
 import { NpsPopup } from "@/components/NpsPopup";
+
+// Supabase's dashboard "Invite user" / password-reset emails use the implicit
+// flow: they redirect to the bare Site URL with #access_token=...&type=invite
+// (or type=recovery) in the hash fragment — never hitting /auth/callback,
+// since hash fragments never reach the server. supabase-js auto-establishes
+// the session from that hash on the client (detectSessionInUrl), but nothing
+// then sends the user to set a password. Catch it here, on every page load.
+function InviteHashRedirect() {
+  const router = useRouter();
+  useEffect(() => {
+    const hash = window.location.hash;
+    if (hash.includes("access_token") && (hash.includes("type=invite") || hash.includes("type=recovery"))) {
+      router.replace("/auth/set-password?next=/accept-terms");
+    }
+  }, [router]);
+  return null;
+}
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [qc] = useState(() => new QueryClient({
@@ -39,6 +57,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <QueryClientProvider client={qc}>
       <AuthProvider>
+        <InviteHashRedirect />
         {children}
         <NpsPopup />
       </AuthProvider>
