@@ -1243,6 +1243,11 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 
 ### Session 7 — 2026-06-22
 
+**Railway Redeploy Scoping:**
+
+- **Root cause found** — Railway redeployed the backend service on every push to `main`, regardless of which files changed, including pure frontend and documentation commits. Each restart re-runs the startup "catch-up" check in `main.py`, which can kick off a brand-new ~10-15 minute full picks-generation run if it lands in a window before the day's legitimate 2 AM IST cron run has finished persisting — producing duplicate/wasted runs and a confusing "Generating picks…" spinner shown against an already-complete day's data.
+- **Fixed:** added `railway.json` at repo root with `build.watchPatterns: ["backend/**"]`, so the backend service only redeploys when backend code actually changes. Frontend and docs-only pushes no longer restart it.
+
 **Invite Registration Fix:**
 
 - **Root cause found** — invite links (and password-reset links) authenticated the user for one Supabase session via magic-link code exchange, then dropped them straight onto `/accept-terms`. The user never set a password. On their next visit, `/login` only offers email + password sign-in with no Sign Up option (by design — invite-only app) — so an invited user with no password had no way back in.
