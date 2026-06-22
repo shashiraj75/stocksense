@@ -14,14 +14,34 @@ import { supabase } from "@/lib/supabase";
 // browser client, @supabase/ssr's createBrowserClient does NOT auto-parse
 // hash tokens (detectSessionInUrl), so the session must be established
 // explicitly via setSession() before navigating anywhere.
+//
+// Deliberately NOT gated on a specific `type=` value. Re-inviting an email
+// that already has a row in auth.users (e.g. someone clicked an old invite
+// before this fix shipped, which partially authenticates+confirms them) can
+// make Supabase issue a different hash type than a fresh "invite" — observed
+// as a user landing on the homepage with an unprocessed access_token and no
+// session, then failing to sign in because they never got to set a password.
+// Any hash carrying both tokens means "establish this session and let the
+// user finish setup" regardless of which auth action produced it.
 function InviteHashRedirect() {
   const router = useRouter();
   useEffect(() => {
     const hash = window.location.hash;
-    if (!hash.includes("access_token") || !(hash.includes("type=invite") || hash.includes("type=recovery"))) {
+    if (!hash) return;
+
+    const params = new URLSearchParams(hash.slice(1));
+
+    // Reused/expired/already-clicked links land here with #error=... instead
+    // of tokens — Supabase tokens are single-use, so a link clicked twice (or
+    // pre-fetched by an email client's link scanner) hits this path. Without
+    // this branch the user landed on a silent homepage with no indication
+    // anything was wrong, then failed to sign in because they'd never gotten
+    // to set a password — surface it clearly instead.
+    if (params.get("error")) {
+      router.replace("/login?notice=invite_expired");
       return;
     }
-    const params = new URLSearchParams(hash.slice(1));
+
     const access_token = params.get("access_token");
     const refresh_token = params.get("refresh_token");
     if (!access_token || !refresh_token) return;

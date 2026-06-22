@@ -1,19 +1,29 @@
 "use client";
-import { useState } from "react";
+import { Suspense, useState, useEffect } from "react";
 import { supabase } from "@/lib/supabase";
 import { TrendingUp, Mail, Lock } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
 const inputCls = "w-full bg-dark-bg border border-dark-border rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-gray-500 outline-none focus:border-brand-500 transition-colors";
 
-export default function LoginPage() {
+function LoginForm() {
   const [email, setEmail]       = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading]   = useState(false);
   const [forgotMode, setForgotMode] = useState(false);
   const [message, setMessage]   = useState<{ type: "error" | "success"; text: string } | null>(null);
   const router = useRouter();
+  const searchParams = useSearchParams();
+
+  useEffect(() => {
+    if (searchParams?.get("notice") === "invite_expired") {
+      setMessage({
+        type: "error",
+        text: "That invite or reset link was already used (or has expired) — links only work once. Ask the administrator to send a fresh one.",
+      });
+    }
+  }, [searchParams]);
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -118,5 +128,17 @@ export default function LoginPage() {
         </p>
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-[80vh] flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    }>
+      <LoginForm />
+    </Suspense>
   );
 }
