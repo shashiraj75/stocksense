@@ -594,19 +594,20 @@ export default function DailyPicksPage() {
 
       {/* Header — alignment matches Market Heatmap / Market Overview / Screener style */}
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
+        <div className="min-w-0">
           <div className="flex items-center gap-3 mb-1">
-            <TrendingUp size={24} className="text-green-400" />
+            <TrendingUp size={24} className="text-green-400 shrink-0" />
             <h1 className="text-2xl font-bold">Daily Stock Picks</h1>
-            <span className="text-xs bg-green-500/15 text-green-400 border border-green-500/30 px-2 py-0.5 rounded-full font-semibold">
+            <span className="text-xs bg-green-500/15 text-green-400 border border-green-500/30 px-2 py-0.5 rounded-full font-semibold shrink-0">
               🇮🇳 NSE India
             </span>
           </div>
           <p className="text-sm text-gray-400">
-            Top 5 AI-selected BUY calls from {data?.screened_from ? `all ${data.screened_from.toLocaleString()} NSE-listed stocks` : "all NSE-listed stocks"} — generated at 2 AM IST daily, scanning 750 stocks
+            Top 5 AI-selected BUY calls per horizon · generated daily at 2 AM IST
+            {data?.screened_from ? ` · screened from ${data.screened_from.toLocaleString()} NSE stocks` : ""}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           {/* Toggle truth panel */}
           <button onClick={() => setShowTruth(v => !v)}
             className={clsx("flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg border transition-colors",
