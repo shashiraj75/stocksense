@@ -1305,6 +1305,12 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 - **Fixed:** generalized `_catchup_picks()` to take `(market, tz_offset_hours, trigger_hour, settle_secs)` instead of hardcoding IST/2 AM, and scheduled a second instance for US — checks after 9 AM (fixed UTC-5 offset, matching the same non-DST-aware simplification already used by `picks_generated_today("US")`) on weekdays, regenerates if no US picks exist for today yet.
 - **Bonus fix:** the validation catch-up task (`catchup_task`) was missing from the FastAPI lifespan's shutdown cancellation list — a pre-existing leak unrelated to picks, fixed while touching the same block.
 
+**US Market-Hours DST Bug Fixed:**
+
+- **Found while explaining the IN/US holiday-handling comparison:** `backend/services/market_hours.py` computed Eastern Time using a hardcoded `UTC-4` offset, with its own comment admitting *"approximation, ignores EST/EDT switch"* — while the frontend's `marketHours.ts` correctly used the IANA `America/New_York` zone (auto-adjusting for daylight saving via `Intl`). The two only agreed during EDT (roughly mid-Mar–early Nov); during EST months the backend's `is_market_open("US")` — which gates paper trading buy/sell orders — was off by an hour from the real market clock and from what the frontend displayed.
+- **Fixed:** switched `market_hours.py`, `daily_picks.py`'s `picks_generated_today("US")`, and the US Daily Picks catch-up scheduler in `main.py` to `zoneinfo.ZoneInfo("America/New_York")` instead of a fixed offset — all three (and the frontend) now agree year-round. Verified directly: `ZoneInfo` correctly returns `-05:00` for a January date and `-04:00` for a July date.
+- India's side was never affected — IST has no daylight-saving rule, so a fixed `+05:30` offset is always correct.
+
 **Market-Hours Gating for Paper Trading:**
 
 - **Root issue:** Buy/Sell could execute instantly at any time of day using a stale last-close quote when the market was closed — unrealistic (a real market can gap through that exact price by next open) and not a good look for a tool positioning itself as a serious research platform.
