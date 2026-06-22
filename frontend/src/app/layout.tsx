@@ -38,7 +38,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className="dark">
       <body className="bg-dark-bg text-white min-h-screen font-sans antialiased">
         <Providers>
-          <nav className="sticky top-0 z-10 border-b border-dark-border bg-dark-bg/90 backdrop-blur-md">
+          <nav className="sticky top-0 z-10 border-b border-dark-border bg-dark-bg sm:bg-dark-bg/90 backdrop-blur-none sm:backdrop-blur-md">
             {/* Row 1: Logo · Search · Hamburger (mobile) / Clock + Market Status + Sign In (desktop) */}
             <div className="max-w-7xl mx-auto px-3 sm:px-4 pt-2.5 pb-2 flex items-center gap-2 sm:gap-4">
               {/* Logo */}
