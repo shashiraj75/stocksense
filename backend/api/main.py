@@ -125,6 +125,27 @@ async def _paper_trade_notify_loop():
         await asyncio.sleep(15 * 60)  # every 15 minutes
 
 
+async def _us_movers_refresh_loop():
+    """
+    Pre-warms the US Top Gainers/Losers cache with a full-universe scan
+    (340+ curated large-cap symbols via one bulk yf.download() call) so the
+    live dashboard request never has to wait on it. Without this, a cache
+    miss fell back to Finnhub's per-symbol /quote calls, which can only check
+    ~50 symbols within a reasonable timeout (60 req/min free tier, no bulk
+    endpoint) — explaining why Top Gainers/Losers regularly showed far fewer
+    than 10 names each for US.
+    """
+    await asyncio.sleep(120)  # let server settle first
+    while True:
+        try:
+            loop = asyncio.get_event_loop()
+            from services.screener_service import refresh_us_movers_cache
+            await loop.run_in_executor(None, refresh_us_movers_cache)
+        except Exception as e:
+            print(f"[us_movers_refresh] error: {e}")
+        await asyncio.sleep(3 * 60)  # every 3 min — ahead of the 2-5 min movers cache TTL
+
+
 async def _validation_schedule_loop():
     """
     Run walk-forward validation on a schedule (IST = UTC+5:30):
@@ -365,6 +386,7 @@ async def lifespan(app: FastAPI):
     # trigger_hour=9 leaves margin either way before declaring the run missed.
     picks_catchup_task_us = asyncio.create_task(_catchup_picks("US", _ET, 9, 90))
     trade_notify_task = asyncio.create_task(_paper_trade_notify_loop())
+    us_movers_task = asyncio.create_task(_us_movers_refresh_loop())
     yield
     task.cancel()
     keepalive.cancel()
@@ -376,8 +398,9 @@ async def lifespan(app: FastAPI):
     picks_catchup_task.cancel()
     picks_catchup_task_us.cancel()
     trade_notify_task.cancel()
+    us_movers_task.cancel()
     for t in (task, keepalive, outcome_task, warmup_task, crumb_task, validation_task, catchup_task,
-              picks_catchup_task, picks_catchup_task_us, trade_notify_task):
+              picks_catchup_task, picks_catchup_task_us, trade_notify_task, us_movers_task):
         try:
             await t
         except asyncio.CancelledError:

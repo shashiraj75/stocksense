@@ -190,6 +190,44 @@ def _closed_gainers_losers(universe: list[str]) -> tuple[list, list]:
     return gainers, losers
 
 
+def refresh_us_movers_cache() -> bool:
+    """
+    Full-universe US large-cap movers scan, meant to run on its own background
+    schedule (see _us_movers_refresh_loop in main.py) — NOT on the live request
+    path. The synchronous request-time fallback for US (Finnhub /quote calls)
+    can only check ~50 symbols within an acceptable timeout because Finnhub's
+    free tier caps at 60 req/min with no bulk-quote endpoint; the curated US
+    large-cap universe (US_SECTORS) has 340+ unique symbols, so most of it was
+    never actually being checked — that's why Top Gainers/Losers regularly
+    showed far fewer than 10 names each. A single yf.download() bulk call
+    covers the whole universe at once with no per-symbol rate limit, same
+    mechanism already used as the last-resort fallback below — this just runs
+    it proactively so the cache is warm before any user ever asks.
+    Returns True if it found anything and updated the cache.
+    """
+    gainers, losers = _closed_gainers_losers(US_UNIVERSE)
+    if not gainers and not losers:
+        return False
+    response = {
+        "market": "US",
+        "market_open": _is_market_open("US"),
+        "gainers": gainers,
+        "losers": losers,
+        "movers": gainers + losers,
+        "error": None,
+    }
+    _movers_cache["US"] = (time.time(), response)
+    _last_good_movers["US"] = response
+    try:
+        import os
+        if os.getenv("USE_POSTGRES") == "1":
+            from services.postgres_store import save_market_cache
+            save_market_cache("movers_US", response)
+    except Exception:
+        pass
+    return True
+
+
 class ScreenerService:
     async def get_top_movers(self, market: str) -> dict:
         cached = _movers_cache.get(market)
