@@ -592,8 +592,8 @@ export default function DailyPicksPage() {
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
 
-      {/* Header */}
-      <div className="flex items-start justify-between flex-wrap gap-3">
+      {/* Header — alignment matches Market Heatmap / Market Overview / Screener style */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <div className="flex items-center gap-3 mb-1">
             <TrendingUp size={24} className="text-green-400" />
