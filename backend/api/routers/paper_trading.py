@@ -8,7 +8,12 @@ from services.market_hours import is_market_open as _is_market_open
 log = logging.getLogger(__name__)
 router = APIRouter()
 
-STARTING_CASH = 1_000_000.0  # ₹10,00,000 virtual cash
+STARTING_CASH_IN = 1_000_000.0  # ₹10,00,000 virtual cash
+STARTING_CASH_US = 10_000.0     # $10,000 virtual cash — separate ledger, not a currency conversion of the above
+
+_CASH_COL = {"IN": "cash", "US": "cash_usd"}
+_STARTING = {"IN": STARTING_CASH_IN, "US": STARTING_CASH_US}
+_SYMBOL = {"IN": "₹", "US": "$"}
 
 
 def _conn():
@@ -19,22 +24,22 @@ def _conn():
 def _ensure_portfolio(user_id: str, email: str | None = None) -> dict:
     with _conn() as conn:
         row = conn.execute(
-            "SELECT cash FROM paper_portfolio WHERE user_id = %s",
+            "SELECT cash, cash_usd FROM paper_portfolio WHERE user_id = %s",
             (user_id,)
         ).fetchone()
         if row is None:
             conn.execute(
-                "INSERT INTO paper_portfolio (session_id, user_id, cash, email) VALUES (%s, %s, %s, %s)",
-                (user_id, user_id, STARTING_CASH, email)
+                "INSERT INTO paper_portfolio (session_id, user_id, cash, cash_usd, email) VALUES (%s, %s, %s, %s, %s)",
+                (user_id, user_id, STARTING_CASH_IN, STARTING_CASH_US, email)
             )
-            return {"cash": STARTING_CASH}
+            return {"cash": STARTING_CASH_IN, "cash_usd": STARTING_CASH_US}
         if email:
             # Keep email fresh — cheap to update on every call, no extra round trip
             conn.execute(
                 "UPDATE paper_portfolio SET email = %s WHERE user_id = %s AND (email IS DISTINCT FROM %s)",
                 (email, user_id, email)
             )
-        return {"cash": row[0]}
+        return {"cash": row[0], "cash_usd": row[1]}
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
@@ -78,7 +83,8 @@ def get_portfolio(user_id: str = Query(...), email: str | None = Query(None)):
 
     open_trades = []
     closed_trades = []
-    total_realized = 0.0
+    total_realized_in = 0.0
+    total_realized_us = 0.0
 
     for t in trades:
         tid, sym, mkt, qty, ep, xp, status, sig, hor, opened, closed, sl, tp = t
@@ -103,16 +109,22 @@ def get_portfolio(user_id: str = Query(...), email: str | None = Query(None)):
         else:
             realized = round((xp - ep) * qty, 2) if xp else 0.0
             trade["realized_pnl"] = realized
-            total_realized += realized
+            if mkt == "US":
+                total_realized_us += realized
+            else:
+                total_realized_in += realized
             closed_trades.append(trade)
 
     return {
         "user_id": user_id,
         "cash": round(portfolio["cash"], 2),
-        "starting_cash": STARTING_CASH,
+        "cash_usd": round(portfolio["cash_usd"], 2),
+        "starting_cash": STARTING_CASH_IN,
+        "starting_cash_usd": STARTING_CASH_US,
         "open_trades": open_trades,
         "closed_trades": closed_trades,
-        "total_realized_pnl": round(total_realized, 2),
+        "total_realized_pnl": round(total_realized_in, 2),
+        "total_realized_pnl_usd": round(total_realized_us, 2),
     }
 
 
@@ -125,18 +137,21 @@ def paper_buy(req: BuyRequest):
     if not _is_market_open(req.market):
         raise HTTPException(status_code=400, detail=f"{req.market} market is closed — orders are paused until it reopens")
 
+    cash_col = _CASH_COL[req.market]
+    sym = _SYMBOL[req.market]
     cost = req.price * req.quantity
     portfolio = _ensure_portfolio(req.user_id, req.email)
+    available = portfolio["cash"] if req.market == "IN" else portfolio["cash_usd"]
 
-    if portfolio["cash"] < cost:
+    if available < cost:
         raise HTTPException(
             status_code=400,
-            detail=f"Insufficient funds. Available: ₹{portfolio['cash']:,.2f}, Required: ₹{cost:,.2f}"
+            detail=f"Insufficient {req.market} funds. Available: {sym}{available:,.2f}, Required: {sym}{cost:,.2f}"
         )
 
     with _conn() as conn:
         conn.execute(
-            "UPDATE paper_portfolio SET cash = cash - %s, updated_at = now() WHERE user_id = %s",
+            f"UPDATE paper_portfolio SET {cash_col} = {cash_col} - %s, updated_at = now() WHERE user_id = %s",
             (cost, req.user_id)
         )
         row = conn.execute(
@@ -151,10 +166,11 @@ def paper_buy(req: BuyRequest):
         "message": "Paper buy placed",
         "trade_id": row[0],
         "symbol": req.symbol.upper(),
+        "market": req.market,
         "quantity": req.quantity,
         "entry_price": req.price,
         "cost": round(cost, 2),
-        "remaining_cash": round(portfolio["cash"] - cost, 2),
+        "remaining_cash": round(available - cost, 2),
     }
 
 
@@ -180,6 +196,7 @@ def paper_sell(trade_id: int, req: SellRequest):
         if not _is_market_open(trade_market):
             raise HTTPException(status_code=400, detail=f"{trade_market} market is closed — orders are paused until it reopens")
 
+        cash_col = _CASH_COL[trade_market]
         proceeds = req.price * qty
         pnl = (req.price - ep) * qty
 
@@ -188,7 +205,7 @@ def paper_sell(trade_id: int, req: SellRequest):
             (req.price, trade_id)
         )
         conn.execute(
-            "UPDATE paper_portfolio SET cash = cash + %s, updated_at = now() WHERE user_id = %s",
+            f"UPDATE paper_portfolio SET {cash_col} = {cash_col} + %s, updated_at = now() WHERE user_id = %s",
             (proceeds, req.user_id)
         )
 
@@ -196,6 +213,7 @@ def paper_sell(trade_id: int, req: SellRequest):
         "message": "Paper sell placed",
         "trade_id": trade_id,
         "symbol": sym,
+        "market": trade_market,
         "quantity": qty,
         "entry_price": ep,
         "exit_price": req.price,
@@ -209,7 +227,7 @@ def paper_sell(trade_id: int, req: SellRequest):
 def edit_trade(trade_id: int, req: EditRequest):
     with _conn() as conn:
         trade = conn.execute(
-            "SELECT user_id, status, entry_price, quantity FROM paper_trades WHERE id = %s",
+            "SELECT user_id, status, entry_price, quantity, market FROM paper_trades WHERE id = %s",
             (trade_id,)
         ).fetchone()
         if trade is None:
@@ -219,7 +237,8 @@ def edit_trade(trade_id: int, req: EditRequest):
         if trade[1] != "OPEN":
             raise HTTPException(status_code=400, detail="Cannot edit a closed trade")
 
-        old_entry, qty = trade[2], trade[3]
+        old_entry, qty, trade_market = trade[2], trade[3], trade[4]
+        cash_col = _CASH_COL.get(trade_market, "cash")
 
         conn.execute(
             "UPDATE paper_trades SET stop_loss = %s, target_price = %s WHERE id = %s",
@@ -233,7 +252,7 @@ def edit_trade(trade_id: int, req: EditRequest):
                 (req.entry_price, trade_id)
             )
             conn.execute(
-                "UPDATE paper_portfolio SET cash = cash + %s, updated_at = now() WHERE user_id = %s",
+                f"UPDATE paper_portfolio SET {cash_col} = {cash_col} + %s, updated_at = now() WHERE user_id = %s",
                 (cash_delta, req.user_id)
             )
 
@@ -241,12 +260,25 @@ def edit_trade(trade_id: int, req: EditRequest):
 
 
 @router.post("/reset")
-def reset_portfolio(user_id: str = Query(...)):
+def reset_portfolio(user_id: str = Query(...), market: Literal["IN", "US", "ALL"] = Query("ALL")):
+    """Reset paper trading. Defaults to wiping both ledgers; pass market=IN or
+    market=US to reset just one side and leave the other market's trades/cash intact."""
     with _conn() as conn:
-        conn.execute("DELETE FROM paper_trades WHERE user_id = %s", (user_id,))
+        if market == "ALL":
+            conn.execute("DELETE FROM paper_trades WHERE user_id = %s", (user_id,))
+            conn.execute(
+                """INSERT INTO paper_portfolio (session_id, user_id, cash, cash_usd) VALUES (%s, %s, %s, %s)
+                   ON CONFLICT (user_id) DO UPDATE SET cash = %s, cash_usd = %s, updated_at = now()""",
+                (user_id, user_id, STARTING_CASH_IN, STARTING_CASH_US, STARTING_CASH_IN, STARTING_CASH_US)
+            )
+            return {"message": "Portfolio reset", "cash": STARTING_CASH_IN, "cash_usd": STARTING_CASH_US}
+
+        conn.execute("DELETE FROM paper_trades WHERE user_id = %s AND market = %s", (user_id, market))
+        cash_col = _CASH_COL[market]
+        starting = _STARTING[market]
         conn.execute(
-            """INSERT INTO paper_portfolio (session_id, user_id, cash) VALUES (%s, %s, %s)
-               ON CONFLICT (user_id) DO UPDATE SET cash = %s, updated_at = now()""",
-            (user_id, user_id, STARTING_CASH, STARTING_CASH)
+            f"""INSERT INTO paper_portfolio (session_id, user_id, {cash_col}) VALUES (%s, %s, %s)
+                ON CONFLICT (user_id) DO UPDATE SET {cash_col} = %s, updated_at = now()""",
+            (user_id, user_id, starting, starting)
         )
-    return {"message": "Portfolio reset", "cash": STARTING_CASH}
+        return {"message": f"{market} portfolio reset", cash_col: starting}

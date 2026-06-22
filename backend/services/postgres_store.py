@@ -147,6 +147,7 @@ CREATE TABLE IF NOT EXISTS factor_ic_history (
 );
 CREATE INDEX IF NOT EXISTS idx_factor_ic_lookup ON factor_ic_history(horizon, factor, window_days, computed_at DESC);
 
+-- (cash_usd column added below via ALTER for existing deployments)
 CREATE TABLE IF NOT EXISTS paper_portfolio (
     session_id   TEXT PRIMARY KEY,
     cash         DOUBLE PRECISION NOT NULL DEFAULT 1000000.0,
@@ -182,6 +183,8 @@ CREATE INDEX IF NOT EXISTS idx_paper_portfolio_user ON paper_portfolio(user_id);
 ALTER TABLE paper_portfolio ADD COLUMN IF NOT EXISTS email TEXT;
 ALTER TABLE paper_trades    ADD COLUMN IF NOT EXISTS target_notified_at TIMESTAMPTZ;
 ALTER TABLE paper_trades    ADD COLUMN IF NOT EXISTS stop_notified_at   TIMESTAMPTZ;
+-- Separate USD ledger so IN (₹) and US ($) paper trading never share a cash pool
+ALTER TABLE paper_portfolio ADD COLUMN IF NOT EXISTS cash_usd DOUBLE PRECISION NOT NULL DEFAULT 10000.0;
 CREATE TABLE IF NOT EXISTS watchlist (
     id         BIGSERIAL PRIMARY KEY,
     user_id    TEXT NOT NULL,

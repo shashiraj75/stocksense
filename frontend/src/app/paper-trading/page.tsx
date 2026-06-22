@@ -16,9 +16,13 @@ import { useAuth } from "@/lib/AuthContext";
 import { PaperTradeModal } from "@/components/PaperTradeModal";
 import { SignalBadge } from "@/components/SignalBadge";
 
-const STARTING_CASH = 1_000_000;
-const fmt = (n: number, dec = 2) =>
-  n.toLocaleString("en-IN", { minimumFractionDigits: dec, maximumFractionDigits: dec });
+const MARKETS = [
+  { key: "IN" as const, label: "🇮🇳 IN", currency: "₹", locale: "en-IN" },
+  { key: "US" as const, label: "🇺🇸 US", currency: "$", locale: "en-US" },
+];
+
+const fmt = (n: number, dec = 2, locale = "en-IN") =>
+  n.toLocaleString(locale, { minimumFractionDigits: dec, maximumFractionDigits: dec });
 
 const HORIZON_BLOCKS = [
   { key: "short",  label: "Short Term",  sub: "1–5 days",   accent: "border-l-blue-500" },
@@ -69,6 +73,8 @@ const _notifiedThisSession = new Set<string>();
 
 function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t: PaperTrade) => void; userId: string }) {
   const currency = trade.market === "IN" ? "₹" : "$";
+  const locale = trade.market === "IN" ? "en-IN" : "en-US";
+  const fmt = (n: number, dec = 2) => n.toLocaleString(locale, { minimumFractionDigits: dec, maximumFractionDigits: dec });
 
   const { data: quote } = useQuery({
     queryKey: ["quote", trade.symbol, trade.market],
@@ -327,6 +333,8 @@ function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t
 
 function ClosedTradeRow({ trade }: { trade: PaperTrade }) {
   const currency = trade.market === "IN" ? "₹" : "$";
+  const locale = trade.market === "IN" ? "en-IN" : "en-US";
+  const fmt = (n: number, dec = 2) => n.toLocaleString(locale, { minimumFractionDigits: dec, maximumFractionDigits: dec });
   const pnl = trade.realized_pnl ?? 0;
   const pnlPct = trade.entry_price > 0
     ? ((trade.exit_price! - trade.entry_price) / trade.entry_price * 100)
@@ -377,6 +385,8 @@ export default function PaperTradingPage() {
   const { user } = useAuth();
   const userId = user?.id ?? "";
   const queryClient = useQueryClient();
+  const [market, setMarket] = useState<"IN" | "US">("IN");
+  const marketCfg = MARKETS.find(m => m.key === market)!;
   const [sellTarget, setSellTarget] = useState<PaperTrade | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [notifPermission, setNotifPermission] = useState<NotificationPermission | "unsupported">("default");
@@ -403,7 +413,7 @@ export default function PaperTradingPage() {
   });
 
   const resetMutation = useMutation({
-    mutationFn: () => resetPaperPortfolio(userId),
+    mutationFn: () => resetPaperPortfolio(userId, market),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["paper-portfolio"] });
       setShowResetConfirm(false);
@@ -431,35 +441,44 @@ export default function PaperTradingPage() {
     );
   }
 
-  const openTrades = portfolio.open_trades;
-  const closedTrades = portfolio.closed_trades;
+  // quoteResults indices line up with portfolio.open_trades (unfiltered) —
+  // build a lookup so per-market filtering below doesn't lose the live price.
+  const priceByTradeId = new Map<number, number | null>();
+  portfolio.open_trades.forEach((t, i) => priceByTradeId.set(t.id, quoteResults[i]?.data?.price ?? null));
+
+  // Everything below is scoped to the selected market — IN (₹) and US ($) are
+  // separate ledgers and must never be summed together.
+  const openTrades = portfolio.open_trades.filter(t => t.market === market);
+  const closedTrades = portfolio.closed_trades.filter(t => t.market === market);
+  const cash = market === "IN" ? portfolio.cash : portfolio.cash_usd;
+  const startingCash = market === "IN" ? portfolio.starting_cash : portfolio.starting_cash_usd;
+  const totalRealized = market === "IN" ? portfolio.total_realized_pnl : portfolio.total_realized_pnl_usd;
 
   // Group open positions into Short/Medium/Long blocks, each sorted so the
   // trade whose live price is nearest its target or stop loss is on top.
   const groupedOpenTrades = HORIZON_BLOCKS.map(block => ({
     ...block,
     trades: openTrades
-      .map((t, i) => ({ trade: t, livePrice: quoteResults[i]?.data?.price ?? null }))
+      .map(trade => ({ trade, livePrice: priceByTradeId.get(trade.id) ?? null }))
       .filter(({ trade }) => trade.horizon === block.key)
       .sort((a, b) => urgencyScore(a.trade, a.livePrice) - urgencyScore(b.trade, b.livePrice))
       .map(({ trade }) => trade),
   }));
 
-  const totalUnrealizedPnl = openTrades.reduce((sum, trade, i) => {
-    const price = quoteResults[i]?.data?.price;
+  const totalUnrealizedPnl = openTrades.reduce((sum, trade) => {
+    const price = priceByTradeId.get(trade.id);
     if (price == null || trade.entry_price == null) return sum;
     return sum + (price - trade.entry_price) * trade.quantity;
   }, 0);
-  const unrealizedLoaded = quoteResults.some(r => r.data != null);
+  const unrealizedLoaded = openTrades.some(t => priceByTradeId.get(t.id) != null);
 
   const totalInvested = openTrades.reduce((s, t) => s + t.invested, 0);
-  const totalRealized = portfolio.total_realized_pnl;
   const unrealizedPct = totalInvested > 0 ? (totalUnrealizedPnl / totalInvested) * 100 : null;
   const totalClosedInvested = closedTrades.reduce((s, t) => s + t.invested, 0);
   const realizedPct = totalClosedInvested > 0 ? (totalRealized / totalClosedInvested) * 100 : null;
-  const portfolioValue = portfolio.cash + totalInvested;
-  const totalReturn = portfolioValue - STARTING_CASH + totalRealized;
-  const totalReturnPct = Math.round((totalReturn / STARTING_CASH) * 10000) / 100;
+  const portfolioValue = cash + totalInvested;
+  const totalReturn = portfolioValue - startingCash + totalRealized;
+  const totalReturnPct = Math.round((totalReturn / startingCash) * 10000) / 100;
 
   const winTrades = closedTrades.filter(t => (t.realized_pnl ?? 0) > 0).length;
   const winRate = closedTrades.length > 0 ? (winTrades / closedTrades.length * 100) : null;
@@ -474,10 +493,20 @@ export default function PaperTradingPage() {
             Paper Trading
           </h1>
           <p className="text-sm text-gray-400 mt-1">
-            Practice with ₹10,00,000 virtual money · No real funds involved
+            Practice with {marketCfg.currency}{fmt(startingCash, 0, marketCfg.locale)} virtual money · No real funds involved
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {/* Market toggle — IN and US are separate cash ledgers */}
+          <div className="flex items-center bg-dark-card border border-dark-border rounded-lg p-0.5">
+            {MARKETS.map(m => (
+              <button key={m.key} onClick={() => setMarket(m.key)}
+                className={clsx("text-xs px-3 py-1.5 rounded-md font-medium transition-colors",
+                  market === m.key ? "bg-brand-500 text-white" : "text-gray-400 hover:text-white")}>
+                {m.label}
+              </button>
+            ))}
+          </div>
           {notifPermission !== "unsupported" && (
             <button
               onClick={notifPermission === "granted" ? undefined : requestNotifications}
@@ -521,7 +550,8 @@ export default function PaperTradingPage() {
         <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2 text-yellow-300 text-sm">
             <AlertTriangle size={16} />
-            This will erase all trades and reset to ₹10,00,000. Are you sure?
+            This will erase your {market} trades and reset to {marketCfg.currency}{fmt(startingCash, 0, marketCfg.locale)}.
+            Your other market's portfolio is untouched. Are you sure?
           </div>
           <div className="flex gap-2 ml-4">
             <button onClick={() => setShowResetConfirm(false)}
@@ -540,19 +570,19 @@ export default function PaperTradingPage() {
       {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         <StatCard
-          label="Virtual Cash"
-          value={`₹${fmt(portfolio.cash, 0)}`}
-          sub={`of ₹${fmt(STARTING_CASH, 0)} starting`}
+          label={`Virtual Cash (${market})`}
+          value={`${marketCfg.currency}${fmt(cash, 0, marketCfg.locale)}`}
+          sub={`of ${marketCfg.currency}${fmt(startingCash, 0, marketCfg.locale)} starting`}
         />
         <StatCard
           label="Invested"
-          value={`₹${fmt(totalInvested, 0)}`}
+          value={`${marketCfg.currency}${fmt(totalInvested, 0, marketCfg.locale)}`}
           sub={`${openTrades.length} open position${openTrades.length !== 1 ? "s" : ""}`}
         />
         <StatCard
           label="Unrealized P&L"
           value={unrealizedLoaded
-            ? `${totalUnrealizedPnl >= 0 ? "+" : ""}₹${fmt(Math.abs(totalUnrealizedPnl), 0)}`
+            ? `${totalUnrealizedPnl >= 0 ? "+" : ""}${marketCfg.currency}${fmt(Math.abs(totalUnrealizedPnl), 0, marketCfg.locale)}`
             : "—"}
           pct={unrealizedLoaded ? unrealizedPct : null}
           sub={unrealizedLoaded ? `across ${openTrades.length} open position${openTrades.length !== 1 ? "s" : ""}` : "Loading…"}
@@ -560,7 +590,7 @@ export default function PaperTradingPage() {
         />
         <StatCard
           label="Realized P&L"
-          value={`${totalRealized >= 0 ? "+" : ""}₹${fmt(Math.abs(totalRealized), 0)}`}
+          value={`${totalRealized >= 0 ? "+" : ""}${marketCfg.currency}${fmt(Math.abs(totalRealized), 0, marketCfg.locale)}`}
           pct={realizedPct}
           sub={`from ${closedTrades.length} closed trade${closedTrades.length !== 1 ? "s" : ""}`}
           positive={totalRealized > 0 ? true : totalRealized < 0 ? false : undefined}

@@ -169,10 +169,13 @@ export interface PaperTrade {
 export interface PaperPortfolio {
   user_id: string;
   cash: number;
+  cash_usd: number;
   starting_cash: number;
+  starting_cash_usd: number;
   open_trades: PaperTrade[];
   closed_trades: PaperTrade[];
   total_realized_pnl: number;
+  total_realized_pnl_usd: number;
 }
 
 export const fetchPaperPortfolio = (userId: string, email?: string | null) =>
@@ -187,8 +190,8 @@ export const placePaperBuy = (data: {
 export const closePaperTrade = (tradeId: number, userId: string, price: number) =>
   api.post(`/api/paper-trading/sell/${tradeId}`, { user_id: userId, price }).then((r) => r.data);
 
-export const resetPaperPortfolio = (userId: string) =>
-  api.post("/api/paper-trading/reset", null, { params: { user_id: userId } }).then((r) => r.data);
+export const resetPaperPortfolio = (userId: string, market: Market | "ALL" = "ALL") =>
+  api.post("/api/paper-trading/reset", null, { params: { user_id: userId, market } }).then((r) => r.data);
 
 export const editPaperTrade = (tradeId: number, userId: string, stopLoss: number | null, targetPrice: number | null, entryPrice?: number | null) =>
   api.patch(`/api/paper-trading/trade/${tradeId}`, { user_id: userId, stop_loss: stopLoss, target_price: targetPrice, entry_price: entryPrice ?? null }).then((r) => r.data);
