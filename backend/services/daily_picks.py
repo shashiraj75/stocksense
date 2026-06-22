@@ -24,20 +24,41 @@ import yfinance as yf
 
 from services.prediction_engine import PredictionEngine
 
-CACHE_FILE = os.path.join(os.path.dirname(__file__), "../picks_cache.json")
+def _cache_file(market: str) -> str:
+    suffix = "" if market == "IN" else f"_{market.lower()}"
+    return os.path.join(os.path.dirname(__file__), f"../picks_cache{suffix}.json")
 
-# Full NSE universe for Phase-0 bulk screen
-from services.stock_universe import IN_STOCKS as _IN_STOCKS
+# Full stock universes for Phase-0 bulk screen
+from services.stock_universe import IN_STOCKS as _IN_STOCKS, US_STOCKS as _US_STOCKS
 _ALL_NSE_SYMBOLS = [sym for sym, _ in _IN_STOCKS]   # 2 300+ NSE tickers
+_ALL_US_SYMBOLS  = [sym for sym, _ in _US_STOCKS]   # 1 500+ US tickers
+
+_UNIVERSE = {"IN": _ALL_NSE_SYMBOLS, "US": _ALL_US_SYMBOLS}
+_CURRENCY = {"IN": "₹", "US": "$"}
+_REGIME_PROXY = {"IN": "RELIANCE", "US": "AAPL"}
 
 # Nifty 100 as always-included anchor (liquid, index-level stocks)
 from services.validation_engine import NIFTY_100 as _NIFTY_100
+
+# Mega-cap US fallback if the live screener fails (mirrors the NIFTY_100 role for IN)
+_US_MEGACAP_100 = [
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "BRK-B", "AVGO", "LLY",
+    "JPM", "V", "UNH", "XOM", "MA", "JNJ", "PG", "HD", "COST", "MRK",
+    "ABBV", "CVX", "ORCL", "ADBE", "CRM", "BAC", "KO", "PEP", "NFLX", "AMD",
+    "WMT", "MCD", "TMO", "CSCO", "ACN", "ABT", "LIN", "DHR", "PFE", "NKE",
+    "DIS", "INTC", "TXN", "WFC", "VZ", "PM", "CMCSA", "NEE", "INTU", "COP",
+    "UNP", "AMGN", "QCOM", "RTX", "LOW", "HON", "BMY", "UPS", "IBM", "GE",
+    "CAT", "SPGI", "AMAT", "BA", "DE", "ELV", "SBUX", "GS", "BLK", "PLD",
+    "MDT", "ISRG", "GILD", "ADI", "T", "AXP", "MMC", "SYK", "TJX", "REGN",
+    "VRTX", "ETN", "CI", "BKNG", "MO", "ZTS", "CB", "SO", "PGR", "DUK",
+    "MU", "SLB", "EOG", "AON", "ITW", "APD", "CME", "FI", "EQIX", "WM",
+][:100]
 
 # PICKS_CANDIDATES env var: how many top-momentum stocks to deep-predict (default 50).
 # 50 × 3 horizons × ~8s = ~20 min — reliable on Render free tier.
 _N_CANDIDATES = int(os.getenv("PICKS_CANDIDATES", 50))
 
-print(f"[picks] NSE universe: {len(_ALL_NSE_SYMBOLS)} stocks → "
+print(f"[picks] Universes: NSE {len(_ALL_NSE_SYMBOLS)} / US {len(_ALL_US_SYMBOLS)} stocks → "
       f"bulk-screen → top {_N_CANDIDATES} candidates for deep prediction")
 
 
@@ -48,7 +69,7 @@ HORIZON_LABELS = {
 }
 
 
-def _build_summary(result: dict, horizon: str) -> str:
+def _build_summary(result: dict, horizon: str, currency: str = "₹") -> str:
     """Compose a human-readable analyst-style summary from prediction engine output."""
     name       = result.get("company_name", result.get("symbol", ""))
     confidence = result.get("confidence", 0)
@@ -168,58 +189,80 @@ def _build_summary(result: dict, horizon: str) -> str:
         f"{name} is flagged as a {term} BUY {conf_tone}{band_note}. "
         f"The AI engine detects a {tech_label} combined with {fund_label}.{sent_label}"
         f"{regime_note}{global_note}{quality_note} "
-        f"Target ₹{target:,.2f} implies {upside}% upside within {period}."
+        f"Target {currency}{target:,.2f} implies {upside}% upside within {period}."
     )
     return summary
 
 
 _SCREEN_BATCH_SIZE = int(os.getenv("SCREEN_BATCH_SIZE", 300))  # tickers per download batch
-_MIN_MCAP_CR = int(os.getenv("MIN_MCAP_CR", 100))   # minimum market cap in crores INR
+_MIN_MCAP_CR = int(os.getenv("MIN_MCAP_CR", 100))   # minimum market cap in crores INR (IN only)
+_MIN_MCAP_USD_M = int(os.getenv("MIN_MCAP_USD_M", 2000))  # minimum market cap in $M (US only)
+
+# Per-market screener config: yfinance exchange codes, ticker suffix, fallback universe
+_SCREEN_CONFIG = {
+    "IN": {"exchanges": ["NSI"], "suffix": ".NS"},
+    "US": {"exchanges": ["NMS", "NYQ", "NGM", "ASE", "PCX"], "suffix": ""},
+}
 
 
-def _get_nse_universe_by_mcap(min_mcap_cr: int = 100) -> list[str]:
+def _get_universe_by_mcap(market: str) -> list[str]:
     """
-    Use yfinance equity screener to get NSE stocks above a market-cap floor.
-    1 crore INR = 10,000,000 INR. 100 Cr = 1,000,000,000 INR.
-    Falls back to full _ALL_NSE_SYMBOLS list if screener fails.
+    Use yfinance equity screener to get stocks above a market-cap floor.
+    Falls back to the full static universe if the screener fails.
     """
-    min_mcap_inr = min_mcap_cr * 10_000_000
+    cfg = _SCREEN_CONFIG[market]
+    full_universe = _UNIVERSE[market]
+    if market == "IN":
+        min_mcap = _MIN_MCAP_CR * 10_000_000  # 1 Cr INR = 10,000,000 INR
+        label = f"≥{_MIN_MCAP_CR}Cr"
+    else:
+        min_mcap = _MIN_MCAP_USD_M * 1_000_000
+        label = f"≥${_MIN_MCAP_USD_M}M"
+
     try:
+        exch_query = yf.EquityQuery("or", [
+            yf.EquityQuery("eq", ["exchange", ex]) for ex in cfg["exchanges"]
+        ]) if len(cfg["exchanges"]) > 1 else yf.EquityQuery("eq", ["exchange", cfg["exchanges"][0]])
         query = yf.EquityQuery("and", [
-            yf.EquityQuery("eq", ["exchange", "NSI"]),
-            yf.EquityQuery("gt", ["intradaymarketcap", min_mcap_inr]),
+            exch_query,
+            yf.EquityQuery("gt", ["intradaymarketcap", min_mcap]),
         ])
         result = yf.screen(
             query, sortField="intradaymarketcap", sortAsc=False, count=1000
         )
         quotes = result.get("quotes", [])
-        syms = [q["symbol"].replace(".NS", "") for q in quotes if q.get("symbol")]
+        suffix = cfg["suffix"]
+        syms = [q["symbol"].replace(suffix, "") if suffix else q["symbol"]
+                for q in quotes if q.get("symbol")]
         if syms:
-            print(f"[picks] mcap filter ≥{min_mcap_cr}Cr: {len(syms)} NSE stocks qualify")
+            print(f"[picks] [{market}] mcap filter {label}: {len(syms)} stocks qualify")
             return syms
     except Exception as e:
-        print(f"[picks] mcap screener failed ({e}), using full universe")
-    return _ALL_NSE_SYMBOLS
+        print(f"[picks] [{market}] mcap screener failed ({e}), using full universe")
+    return full_universe
 
 
-def _bulk_screen_nse(n_candidates: int = 50) -> list[str]:
+def _bulk_screen(market: str, n_candidates: int = 50) -> list[str]:
     """
     Phase-0 screener: batched yf.download() → momentum rank.
 
-    1. Filter to NSE stocks with market cap ≥ MIN_MCAP_CR crores (default 100Cr)
+    1. Filter to stocks with market cap above a floor (per-market threshold)
        using yfinance equity screener — removes illiquid micro-caps.
     2. Batch-download in groups of SCREEN_BATCH_SIZE to avoid OOM on Render
        (512 MB RAM). Free each batch's DataFrame immediately after processing.
     3. Rank by composite momentum and return top n_candidates.
 
-    Falls back to Nifty 100 if all else fails.
+    Falls back to Nifty 100 (IN) / mega-cap 100 (US) if all else fails.
     """
     import math
-    universe = _get_nse_universe_by_mcap(_MIN_MCAP_CR)
-    all_tickers = [s + ".NS" for s in universe]
+    suffix = _SCREEN_CONFIG[market]["suffix"]
+    fallback = _NIFTY_100 if market == "IN" else _US_MEGACAP_100
+
+    universe = _get_universe_by_mcap(market)
+    all_tickers = [s + suffix for s in universe]
     batches = [all_tickers[i:i + _SCREEN_BATCH_SIZE]
                for i in range(0, len(all_tickers), _SCREEN_BATCH_SIZE)]
-    print(f"[picks] Phase-0: downloading {len(all_tickers)} tickers "
+    print(f"[picks] [{market}] Phase-0: downloading {len(all_tickers)} tickers "
           f"in {len(batches)} batches of {_SCREEN_BATCH_SIZE} …")
     t0 = time.time()
     scores: dict[str, float] = {}
@@ -248,7 +291,7 @@ def _bulk_screen_nse(n_candidates: int = 50) -> list[str]:
             first_row = close.iloc[0]
 
             for ticker in tickers:
-                sym = ticker.replace(".NS", "")
+                sym = ticker.replace(suffix, "") if suffix else ticker
                 try:
                     p_prev  = float(prev_row.get(ticker, float("nan")))
                     p_last  = float(last_row.get(ticker, float("nan")))
@@ -263,25 +306,25 @@ def _bulk_screen_nse(n_candidates: int = 50) -> list[str]:
                     continue
 
             del df  # free memory immediately
-            print(f"[picks] Phase-0 batch {batch_idx+1}/{len(batches)}: "
+            print(f"[picks] [{market}] Phase-0 batch {batch_idx+1}/{len(batches)}: "
                   f"{len(scores)} scored so far")
         except Exception as e:
-            print(f"[picks] Phase-0 batch {batch_idx+1} failed: {e}")
+            print(f"[picks] [{market}] Phase-0 batch {batch_idx+1} failed: {e}")
             continue
 
     elapsed = round(time.time() - t0, 1)
     if not scores:
-        print(f"[picks] Phase-0: no stocks scored — falling back to Nifty 100")
-        return list(_NIFTY_100[:n_candidates])
+        print(f"[picks] [{market}] Phase-0: no stocks scored — falling back to anchor list")
+        return list(fallback[:n_candidates])
 
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     top_syms = [sym for sym, _ in ranked[:n_candidates]]
-    print(f"[picks] Phase-0 complete in {elapsed}s: {len(scores)} scored, "
+    print(f"[picks] [{market}] Phase-0 complete in {elapsed}s: {len(scores)} scored, "
           f"top candidates: {top_syms[:10]} …")
     return top_syms
 
 
-def _predict_stock(symbol: str, horizon: str) -> dict | None:
+def _predict_stock(symbol: str, horizon: str, market: str = "IN") -> dict | None:
     """
     Run prediction engine for one stock + horizon.
     Returns raw scores for ALL non-rejected stocks (not just BUY) so the
@@ -292,7 +335,7 @@ def _predict_stock(symbol: str, horizon: str) -> dict | None:
         # Small jitter between requests to avoid Yahoo Finance rate-limit bursts
         time.sleep(random.uniform(0.3, 0.8))
         engine = PredictionEngine()
-        result = asyncio.run(engine.predict(symbol, "IN", horizon))
+        result = asyncio.run(engine.predict(symbol, market, horizon))
 
         if not result:
             return None
@@ -324,7 +367,7 @@ def _predict_stock(symbol: str, horizon: str) -> dict | None:
             "quality_score":  qf.get("score") or 50,
             "sentiment":      result.get("sentiment_score", {}).get("label", "NEUTRAL"),
             "reasoning":      reasoning,
-            "summary":        _build_summary(result, horizon),
+            "summary":        _build_summary(result, horizon, _CURRENCY.get(market, "₹")),
             "score_band":     result.get("score_band"),
             "global_context": result.get("global_context"),
             "quality_factors": result.get("quality_factors"),
@@ -346,7 +389,7 @@ _FACTOR_KEYS = {
 }
 
 
-def _write_score_snapshots(raw: dict[str, list]):
+def _write_score_snapshots(raw: dict[str, list], market: str = "IN"):
     """
     Persist one daily score snapshot per (symbol, horizon) for every scored
     stock. No-op unless USE_POSTGRES=1 (score history is Postgres-only, since
@@ -466,10 +509,11 @@ def _zscore_and_rank(
     return enriched
 
 
-def _fetch_returns_matrix(symbols: list[str], days: int = 126) -> np.ndarray | None:
+def _fetch_returns_matrix(symbols: list[str], market: str = "IN", days: int = 126) -> np.ndarray | None:
     """Fetch daily returns for the selected picks to estimate covariance."""
     try:
-        tickers = [s + ".NS" for s in symbols]
+        suffix = _SCREEN_CONFIG[market]["suffix"]
+        tickers = [s + suffix for s in symbols]
         data = yf.download(tickers, period="6mo", auto_adjust=True,
                            progress=False)["Close"]
         if data.empty:
@@ -480,12 +524,12 @@ def _fetch_returns_matrix(symbols: list[str], days: int = 126) -> np.ndarray | N
         return None
 
 
-def generate_picks() -> dict:
+def generate_picks(market: str = "IN") -> dict:
     """
     Learning Alpha Engine pipeline:
 
       Phase 0 — Resolve outcomes: log actual returns for past predictions
-      Phase 0b— Bulk screen: one yf.download() for all 2 300+ NSE stocks → top N candidates
+      Phase 0b— Bulk screen: one yf.download() for the full stock universe → top N candidates
       Phase 1 — Score candidates: run prediction engine on top N momentum stocks
       Phase 2 — Detect regime: classify current market with KMeans clustering
       Phase 3 — IC weights: get data-driven factor weights (academic priors until
@@ -496,16 +540,18 @@ def generate_picks() -> dict:
       Phase 6 — Optimise: mean-variance portfolio weights for the selected picks
       Phase 7 — Log predictions: store factor z-scores for future IC computation
       Phase 8 — Adapt: retrain IC/meta-model/regime after picks are published
+
+    market: "IN" (NSE, default) or "US" (NYSE/NASDAQ).
     """
     import traceback
     global _last_error
-    _last_error = None
+    _last_error[market] = None
 
     try:
-        return _generate_picks_inner()
+        return _generate_picks_inner(market)
     except Exception as e:
-        _last_error = traceback.format_exc()
-        print(f"[picks] generate_picks CRASHED: {e}\n{_last_error}")
+        _last_error[market] = traceback.format_exc()
+        print(f"[picks] [{market}] generate_picks CRASHED: {e}\n{_last_error[market]}")
         # Save a minimal payload so the UI shows "no signals today" instead of spinning
         payload = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -513,24 +559,24 @@ def generate_picks() -> dict:
             "error": str(e),
         }
         try:
-            with open(CACHE_FILE, "w") as f:
+            with open(_cache_file(market), "w") as f:
                 json.dump(payload, f)
         except Exception:
             pass
         if os.getenv("USE_POSTGRES") == "1":
             try:
                 from services.postgres_store import save_picks_to_db
-                save_picks_to_db(payload)
+                save_picks_to_db(payload, market=market)
             except Exception:
                 pass
         return payload
 
 
-# Module-level last error (exposed via /api/picks/status)
-_last_error: str | None = None
+# Module-level last error per market (exposed via /api/picks/status)
+_last_error: dict[str, str | None] = {"IN": None, "US": None}
 
 
-def _generate_picks_inner() -> dict:
+def _generate_picks_inner(market: str = "IN") -> dict:
     from services.alpha_engine.outcome_logger import resolve_pending_outcomes
     from services.alpha_engine.ic_engine import get_ic_weights
     from services.alpha_engine.regime_cluster import detect_regime
@@ -540,36 +586,38 @@ def _generate_picks_inner() -> dict:
     from services.global_context import get_global_context
 
     start = time.time()
+    currency = _CURRENCY.get(market, "₹")
 
     # ── Phase 0: Resolve outcomes from previous prediction runs ──────────────
     resolve_pending_outcomes()
 
     # ── Global crumb refresh — do this ONCE before bulk fetching ─────────────
     try:
+        regime_ticker = "^NSEI" if market == "IN" else "^GSPC"
         if hasattr(yf.utils, "get_crumb"):
             yf.utils.get_crumb(force=True)
         else:
-            yf.download("^NSEI", period="1d", progress=False, auto_adjust=True)
-        print("[picks] Yahoo Finance session refreshed.")
+            yf.download(regime_ticker, period="1d", progress=False, auto_adjust=True)
+        print(f"[picks] [{market}] Yahoo Finance session refreshed.")
     except Exception as e:
-        print(f"[picks] Session refresh failed (non-fatal): {e}")
+        print(f"[picks] [{market}] Session refresh failed (non-fatal): {e}")
 
-    # ── Phase 0b: Bulk screen all NSE stocks → top N momentum candidates ─────
-    # One yf.download() call for all 2 300+ tickers (~60s) then rank by
-    # composite momentum score. Falls back to Nifty 100 if download fails.
-    candidates = _bulk_screen_nse(_N_CANDIDATES)
-    print(f"[picks] Starting deep prediction for {len(candidates)} candidates × 3 horizons …")
+    # ── Phase 0b: Bulk screen the market's stock universe → top N momentum candidates ─
+    # One yf.download() call for the full universe (~60s) then rank by
+    # composite momentum score. Falls back to an anchor list if download fails.
+    candidates = _bulk_screen(market, _N_CANDIDATES)
+    print(f"[picks] [{market}] Starting deep prediction for {len(candidates)} candidates × 3 horizons …")
 
     # ── Phase 2: Detect market regime (done once, shared across all stocks) ──
     try:
-        global_ctx_proxy = get_global_context("RELIANCE")
+        global_ctx_proxy = get_global_context(_REGIME_PROXY.get(market, "RELIANCE"))
     except Exception:
         global_ctx_proxy = {}
 
     regime = detect_regime(global_ctx_proxy)
     regime_id    = regime["regime_id"]
     regime_label = regime["label"]
-    print(f"[picks] Regime: {regime_label} — {regime['description']}")
+    print(f"[picks] [{market}] Regime: {regime_label} — {regime['description']}")
 
     # ── Phase 1: Deep-predict candidates ─────────────────────────────────────
     # max_workers=1 to avoid Yahoo Finance rate-limiting Render's IP.
@@ -577,19 +625,19 @@ def _generate_picks_inner() -> dict:
     raw: dict[str, list] = {"short": [], "medium": [], "long": []}
 
     with ThreadPoolExecutor(max_workers=1) as pool:
-        futures = {pool.submit(_predict_stock, sym, h): (sym, h) for sym, h in tasks}
+        futures = {pool.submit(_predict_stock, sym, h, market): (sym, h) for sym, h in tasks}
         done = 0
         for future in as_completed(futures):
             done += 1
             if done % 30 == 0:
-                print(f"[picks] {done}/{len(tasks)} done …")
+                print(f"[picks] [{market}] {done}/{len(tasks)} done …")
             r = future.result()
             if r:
                 raw[r["horizon"]].append(r)
 
     # ── Score snapshots (section 4) — persist every scored stock for history ──
     # Piggybacks on the universe scan above so we don't re-fetch anything.
-    _write_score_snapshots(raw)
+    _write_score_snapshots(raw, market)
 
     # ── Phases 3-6 per horizon ────────────────────────────────────────────────
     picks: dict[str, list] = {}
@@ -606,7 +654,7 @@ def _generate_picks_inner() -> dict:
             horizon,
             regime_multipliers=regime.get("weight_multipliers"),
         )
-        print(f"[picks] {horizon} IC weights: {ic_weights}")
+        print(f"[picks] [{market}] {horizon} IC weights: {ic_weights}")
 
         # Phase 4 — Z-score + alpha
         universe = _zscore_and_rank(items, ic_weights, regime, regime_id)
@@ -639,7 +687,7 @@ def _generate_picks_inner() -> dict:
         if len(top_buy) > 1:
             alphas = [r.get("ranking_alpha", 0) for r in top_buy]
             symbols = [r["symbol"] for r in top_buy]
-            ret_matrix = _fetch_returns_matrix(symbols)
+            ret_matrix = _fetch_returns_matrix(symbols, market)
             port_weights = optimize(
                 alphas=alphas,
                 returns_matrix=ret_matrix,
@@ -662,7 +710,7 @@ def _generate_picks_inner() -> dict:
             "meta_model":  any(r.get("meta_alpha") is not None for r in top_buy),
         }
         print(
-            f"[picks] {horizon}: {len(universe)} scored, "
+            f"[picks] [{market}] {horizon}: {len(universe)} scored, "
             f"{alpha_engine_meta[horizon]['n_buy']} BUY, "
             f"{len(top_buy)} picks | "
             f"meta_model={'on' if alpha_engine_meta[horizon]['meta_model'] else 'off (IC alpha)'}"
@@ -686,37 +734,40 @@ def _generate_picks_inner() -> dict:
                     pick_rank=rank,
                 )
             except Exception as e:
-                print(f"[picks] Log error for {pick['symbol']}: {e}")
+                print(f"[picks] [{market}] Log error for {pick['symbol']}: {e}")
 
     elapsed = round(time.time() - start, 1)
     total = sum(len(v) for v in picks.values())
-    print(f"[picks] Done in {elapsed}s — {total} BUY picks found across "
-          f"{len(candidates)} candidates from {len(_ALL_NSE_SYMBOLS)} NSE stocks.")
+    universe_size = len(_UNIVERSE.get(market, []))
+    print(f"[picks] [{market}] Done in {elapsed}s — {total} BUY picks found across "
+          f"{len(candidates)} candidates from {universe_size} stocks.")
 
     payload = {
         "generated_at":    datetime.now(timezone.utc).isoformat(),
+        "market":          market,
+        "currency":        currency,
         "picks":           picks,
         "alpha_engine":    alpha_engine_meta,
         "regime":          {"label": regime_label, "description": regime["description"]},
-        "screened_from":   len(_ALL_NSE_SYMBOLS),
+        "screened_from":   universe_size,
         "candidates":      len(candidates),
     }
 
     # Save to disk (best-effort — ephemeral on Render free tier)
     try:
-        with open(CACHE_FILE, "w") as f:
+        with open(_cache_file(market), "w") as f:
             json.dump(payload, f)
     except Exception as e:
-        print(f"[picks] Disk cache write failed: {e}")
+        print(f"[picks] [{market}] Disk cache write failed: {e}")
 
     # Save to Postgres (survives redeploys)
     if os.getenv("USE_POSTGRES") == "1":
         try:
             from services.postgres_store import save_picks_to_db
-            save_picks_to_db(payload)
-            print("[picks] Saved to Postgres.")
+            save_picks_to_db(payload, market=market)
+            print(f"[picks] [{market}] Saved to Postgres.")
         except Exception as e:
-            print(f"[picks] Postgres save failed: {e}")
+            print(f"[picks] [{market}] Postgres save failed: {e}")
 
     # ── Phase 8: Adapt weights in background ─────────────────────────────────
     try:
@@ -725,34 +776,35 @@ def _generate_picks_inner() -> dict:
     except Exception as e:
         print(f"[weight_adapter] Could not start: {e}")
 
-    # Send to Telegram if configured
-    try:
-        from services.telegram_bot import send_picks_to_telegram
-        send_picks_to_telegram(picks)
-    except Exception as e:
-        print(f"[telegram] Error: {e}")
+    # Send to Telegram if configured (IN only — channel is India-focused)
+    if market == "IN":
+        try:
+            from services.telegram_bot import send_picks_to_telegram
+            send_picks_to_telegram(picks)
+        except Exception as e:
+            print(f"[telegram] Error: {e}")
 
     return payload
 
 
-def get_cached_picks() -> dict | None:
+def get_cached_picks(market: str = "IN") -> dict | None:
     """
-    Return today's picks. Reads from Postgres first (survives Render redeploys),
-    falls back to local disk cache.
+    Return today's picks for a market. Reads from Postgres first (survives
+    Render redeploys), falls back to local disk cache.
     """
     # Postgres first
     if os.getenv("USE_POSTGRES") == "1":
         try:
             from services.postgres_store import load_picks_from_db
-            data = load_picks_from_db()
+            data = load_picks_from_db(market=market)
             if data:
                 return data
         except Exception as e:
-            print(f"[picks] Postgres load failed, falling back to disk: {e}")
+            print(f"[picks] [{market}] Postgres load failed, falling back to disk: {e}")
 
     # Disk fallback
     try:
-        with open(CACHE_FILE) as f:
+        with open(_cache_file(market)) as f:
             return json.load(f)
     except FileNotFoundError:
         return None
@@ -760,19 +812,20 @@ def get_cached_picks() -> dict | None:
         return None
 
 
-def picks_generated_today() -> bool:
-    """Return True if today's picks (IST date) exist and have at least one BUY pick."""
+def picks_generated_today(market: str = "IN") -> bool:
+    """Return True if today's picks (own market's local trading-day date) exist
+    and have at least one BUY pick. IN uses IST, US uses US/Eastern."""
     from datetime import timedelta
-    data = get_cached_picks()
+    data = get_cached_picks(market)
     if not data or not data.get("generated_at"):
         return False
     try:
-        IST = timezone(timedelta(hours=5, minutes=30))
+        tz = timezone(timedelta(hours=5, minutes=30)) if market == "IN" else timezone(timedelta(hours=-5))
         generated_at = datetime.fromisoformat(
             data["generated_at"].replace("Z", "+00:00")
-        ).astimezone(IST)
-        today_ist = datetime.now(IST).date()
-        if generated_at.date() < today_ist:
+        ).astimezone(tz)
+        today_local = datetime.now(tz).date()
+        if generated_at.date() < today_local:
             return False
         # Also require at least one actual pick — empty payload means a prior crash/0-signal run
         picks = data.get("picks", {})
@@ -782,9 +835,10 @@ def picks_generated_today() -> bool:
         return False
 
 
-# Guard to prevent concurrent generation runs (module-level, shared across threads)
+# Guard to prevent concurrent generation runs (module-level, shared across threads,
+# keyed by market so an IN run and a US run can't trip each other's flag).
 # Lock makes the check-then-set atomic — plain bool had a TOCTOU race where two
 # concurrent POST /picks/generate requests both passed the guard simultaneously.
 import threading as _threading
-_generating = False
+_generating: dict[str, bool] = {"IN": False, "US": False}
 _generating_lock = _threading.Lock()

@@ -131,7 +131,9 @@ CREATE TABLE IF NOT EXISTS daily_picks_cache (
     generated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     payload      JSONB NOT NULL
 );
+ALTER TABLE daily_picks_cache ADD COLUMN IF NOT EXISTS market TEXT NOT NULL DEFAULT 'IN';
 CREATE INDEX IF NOT EXISTS idx_daily_picks_cache_date ON daily_picks_cache(generated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_daily_picks_cache_market ON daily_picks_cache(market, generated_at DESC);
 
 CREATE TABLE IF NOT EXISTS factor_ic_history (
     id            BIGSERIAL PRIMARY KEY,
@@ -494,28 +496,31 @@ def get_factor_ic_history(horizon: str) -> list[dict]:
 
 # ── New: Daily picks performance (section 5) ────────────────────────────────
 
-def save_picks_to_db(payload: dict) -> None:
+def save_picks_to_db(payload: dict, market: str = "IN") -> None:
     """Persist the full picks payload to Postgres so it survives Render redeploys."""
     with _get_pool().connection() as conn:
         conn.execute(
-            "INSERT INTO daily_picks_cache (generated_at, payload) VALUES (%s, %s)",
-            (datetime.now(timezone.utc), json.dumps(payload)),
+            "INSERT INTO daily_picks_cache (generated_at, payload, market) VALUES (%s, %s, %s)",
+            (datetime.now(timezone.utc), json.dumps(payload), market),
         )
-        # Keep only last 10 rows to avoid bloat
+        # Keep only last 10 rows per market to avoid bloat
         conn.execute("""
             DELETE FROM daily_picks_cache
-            WHERE id NOT IN (
-                SELECT id FROM daily_picks_cache ORDER BY generated_at DESC LIMIT 10
+            WHERE market = %s AND id NOT IN (
+                SELECT id FROM daily_picks_cache WHERE market = %s
+                ORDER BY generated_at DESC LIMIT 10
             )
-        """)
+        """, (market, market))
 
 
-def load_picks_from_db() -> dict | None:
-    """Load the most recently generated picks from Postgres."""
+def load_picks_from_db(market: str = "IN") -> dict | None:
+    """Load the most recently generated picks for a market from Postgres."""
     try:
         with _get_pool().connection() as conn:
             row = conn.execute(
-                "SELECT payload FROM daily_picks_cache ORDER BY generated_at DESC LIMIT 1"
+                "SELECT payload FROM daily_picks_cache WHERE market = %s "
+                "ORDER BY generated_at DESC LIMIT 1",
+                (market,),
             ).fetchone()
         if row:
             payload = row[0]

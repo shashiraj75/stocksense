@@ -29,6 +29,8 @@ type AlphaEngineMeta = { ic_weights?: Record<string, number>; regime?: string; n
 type GlobalContext = { score?: number; levels?: Record<string, number>; changes?: Record<string, number> };
 type DailyPicksResponse = {
   generated_at: string | null;
+  market?: "IN" | "US";
+  currency?: string;
   picks: { short: Pick[]; medium: Pick[]; long: Pick[] };
   alpha_engine?: Record<string, AlphaEngineMeta>;
   regime?: { label: string; description: string };
@@ -59,6 +61,11 @@ type LivePick = {
 };
 
 // ── Constants ─────────────────────────────────────────────────────────────────
+const MARKETS = [
+  { key: "IN" as const, label: "🇮🇳 NSE India",  currency: "₹", locale: "en-IN", tz: "Asia/Kolkata",     genTime: "2 AM IST" },
+  { key: "US" as const, label: "🇺🇸 NYSE/NASDAQ", currency: "$", locale: "en-US", tz: "America/New_York", genTime: "8:30 AM ET" },
+];
+
 const HORIZONS = [
   { key: "short",  label: "Short Term",  sub: "1–5 days"   },
   { key: "medium", label: "Medium Term", sub: "2–4 weeks"  },
@@ -343,7 +350,7 @@ function LivePerformanceTracker({ horizon }: { horizon: string }) {
 }
 
 // ── Pick Card ─────────────────────────────────────────────────────────────────
-function PickCard({ pick, rank }: { pick: Pick; rank: number }) {
+function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: number; market: "IN" | "US"; currency: string; locale: string }) {
   const router = useRouter();
   const [expanded, setExpanded] = useState(false);
   const [showPaperTrade, setShowPaperTrade] = useState(false);
@@ -379,14 +386,14 @@ function PickCard({ pick, rank }: { pick: Pick; rank: number }) {
       </div>
 
       {/* Clickable body */}
-      <div onClick={() => router.push(`/stock/${encodeURIComponent(pick.symbol)}?market=IN`)} className="p-4 cursor-pointer flex-1">
+      <div onClick={() => router.push(`/stock/${encodeURIComponent(pick.symbol)}?market=${market}`)} className="p-4 cursor-pointer flex-1">
         <div className="flex items-start justify-between mb-2">
           <div>
             <span className="font-mono font-bold text-white text-lg group-hover:text-green-400 transition-colors">{pick.symbol}</span>
             <p className="text-xs text-gray-500 mt-0.5 truncate max-w-[200px]">{pick.name}</p>
           </div>
           <div className="text-right">
-            <div className="text-sm font-semibold text-white">₹{pick.price?.toLocaleString("en-IN")}</div>
+            <div className="text-sm font-semibold text-white">{currency}{pick.price?.toLocaleString(locale)}</div>
             {upside && <div className="text-xs text-green-400 font-medium">+{upside}% upside</div>}
           </div>
         </div>
@@ -406,18 +413,18 @@ function PickCard({ pick, rank }: { pick: Pick; rank: number }) {
             <p className="text-[10px] text-gray-500 mb-0.5">Entry Zone</p>
             <p className="text-xs text-white font-mono">
               {pick.entry_low && pick.entry_high
-                ? `₹${pick.entry_low.toLocaleString("en-IN")}–${pick.entry_high.toLocaleString("en-IN")}`
-                : `₹${pick.price?.toLocaleString("en-IN")}`}
+                ? `${currency}${pick.entry_low.toLocaleString(locale)}–${pick.entry_high.toLocaleString(locale)}`
+                : `${currency}${pick.price?.toLocaleString(locale)}`}
             </p>
           </div>
           <div className="bg-green-500/10 rounded-lg p-2 text-center border border-green-500/20">
             <p className="text-[10px] text-gray-500 mb-0.5 flex items-center justify-center gap-1"><Target size={9} />Target</p>
-            <p className="text-xs text-green-400 font-mono font-semibold">₹{pick.target?.toLocaleString("en-IN")}</p>
+            <p className="text-xs text-green-400 font-mono font-semibold">{currency}{pick.target?.toLocaleString(locale)}</p>
           </div>
           <div className="bg-red-500/10 rounded-lg p-2 text-center border border-red-500/20">
             <p className="text-[10px] text-gray-500 mb-0.5 flex items-center justify-center gap-1"><ShieldAlert size={9} />Stop Loss</p>
             <p className="text-xs text-red-400 font-mono font-semibold">
-              {pick.stop_loss ? `₹${pick.stop_loss.toLocaleString("en-IN")}` : "—"}
+              {pick.stop_loss ? `${currency}${pick.stop_loss.toLocaleString(locale)}` : "—"}
             </p>
           </div>
         </div>
@@ -464,11 +471,11 @@ function PickCard({ pick, rank }: { pick: Pick; rank: number }) {
       {showPaperTrade && pick.price && (
         <PaperTradeModal
           symbol={pick.symbol}
-          market="IN"
+          market={market}
           currentPrice={pick.price}
           signal="BUY"
           horizon={pick.horizon}
-          currency="₹"
+          currency={currency}
           suggestedStopLoss={pick.stop_loss}
           suggestedTargetPrice={pick.target}
           onClose={() => setShowPaperTrade(false)}
@@ -480,7 +487,7 @@ function PickCard({ pick, rank }: { pick: Pick; rank: number }) {
           {pick.factor_zscores && (
             <div className="pt-3 space-y-2">
               <div className="flex items-center justify-between">
-                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Universe Rank vs All NSE</p>
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Universe Rank vs All {market === "IN" ? "NSE" : "US"} Stocks</p>
                 {pick.combined_alpha != null && (
                   <span className={clsx("text-xs font-semibold px-2 py-0.5 rounded",
                     pick.combined_alpha > 0.5 ? "bg-green-500/20 text-green-400" : pick.combined_alpha < -0.3 ? "bg-red-500/20 text-red-400" : "bg-yellow-500/20 text-yellow-400")}>
@@ -570,21 +577,25 @@ function PickCard({ pick, rank }: { pick: Pick; rank: number }) {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 export default function DailyPicksPage() {
+  const [market, setMarket] = useState<"IN" | "US">("IN");
   const [horizon, setHorizon] = useState<"short" | "medium" | "long">("short");
   const [showTruth, setShowTruth] = useState(false);
 
+  const marketCfg = MARKETS.find(m => m.key === market)!;
+
   const { data, isLoading, error: queryError } = useQuery<DailyPicksResponse>({
-    queryKey: ["daily-picks"],
-    queryFn: () => api.get("/api/picks/daily").then(r => r.data),
+    queryKey: ["daily-picks", market],
+    queryFn: () => api.get(`/api/picks/daily?market=${market}`).then(r => r.data),
     // Poll every 60s when generating, every 5 min when idle
     refetchInterval: (query) => (query.state.data as any)?.generating ? 60_000 : 5 * 60_000,
     staleTime: 55_000, refetchOnWindowFocus: false, retry: 3, retryDelay: 8000,
   });
 
+  const currency = data?.currency ?? marketCfg.currency;
   const picks = data?.picks?.[horizon] ?? [];
   const generatedAt = data?.generated_at
-    ? new Date(data.generated_at).toLocaleString("en-IN", {
-        timeZone: "Asia/Kolkata", day: "2-digit", month: "short",
+    ? new Date(data.generated_at).toLocaleString(marketCfg.locale, {
+        timeZone: marketCfg.tz, day: "2-digit", month: "short",
         year: "numeric", hour: "2-digit", minute: "2-digit", hour12: true,
       }) : null;
   const alphaForHorizon = data?.alpha_engine?.[horizon];
@@ -599,15 +610,25 @@ export default function DailyPicksPage() {
             <TrendingUp size={24} className="text-green-400 shrink-0" />
             <h1 className="text-2xl font-bold">Daily Stock Picks</h1>
             <span className="text-xs bg-green-500/15 text-green-400 border border-green-500/30 px-2 py-0.5 rounded-full font-semibold shrink-0">
-              🇮🇳 NSE India
+              {marketCfg.label}
             </span>
           </div>
           <p className="text-sm text-gray-400">
-            Top 5 AI-selected BUY calls per horizon · generated daily at 2 AM IST
-            {data?.screened_from ? ` · screened from ${data.screened_from.toLocaleString()} NSE stocks` : ""}
+            Top 5 AI-selected BUY calls per horizon · generated daily at {marketCfg.genTime}
+            {data?.screened_from ? ` · screened from ${data.screened_from.toLocaleString()} ${market === "IN" ? "NSE" : "US"} stocks` : ""}
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {/* Market toggle */}
+          <div className="flex items-center bg-dark-card border border-dark-border rounded-lg p-0.5">
+            {MARKETS.map(m => (
+              <button key={m.key} onClick={() => setMarket(m.key)}
+                className={clsx("text-xs px-3 py-1.5 rounded-md font-medium transition-colors",
+                  market === m.key ? "bg-brand-500 text-white" : "text-gray-400 hover:text-white")}>
+                {m.key}
+              </button>
+            ))}
+          </div>
           {/* Toggle truth panel */}
           <button onClick={() => setShowTruth(v => !v)}
             className={clsx("flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg border transition-colors",
@@ -750,7 +771,7 @@ export default function DailyPicksPage() {
         </div>
       ) : picks.length > 0 ? (
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {picks.map((pick, i) => <PickCard key={pick.symbol} pick={pick} rank={i + 1} />)}
+          {picks.map((pick, i) => <PickCard key={pick.symbol} pick={pick} rank={i + 1} market={market} currency={currency} locale={marketCfg.locale} />)}
         </div>
       ) : (
         <div className="flex flex-col items-center justify-center py-20 text-center">
@@ -763,7 +784,7 @@ export default function DailyPicksPage() {
               <Loader2 size={40} className="text-brand-400 mb-4 animate-spin" />
               <h3 className="text-lg font-semibold text-gray-300 mb-2">Generating picks…</h3>
               <p className="text-sm text-gray-500 max-w-sm">
-                The AI is bulk-scanning all NSE-listed stocks, then running deep analysis on top momentum candidates.
+                The AI is bulk-scanning all {market === "IN" ? "NSE-listed" : "US-listed"} stocks, then running deep analysis on top momentum candidates.
                 This takes about 15 minutes. Page auto-refreshes every minute.
               </p>
             </>
@@ -775,8 +796,8 @@ export default function DailyPicksPage() {
               </h3>
               <p className="text-sm text-gray-500 max-w-sm">
                 {data?.generated_at
-                  ? "The AI didn't find strong BUY signals across NSE today. Market conditions may be weak — check back tomorrow."
-                  : "Daily picks are generated at 2 AM IST on market days, scanning 750 NSE stocks. Check back after 2 AM IST."}
+                  ? `The AI didn't find strong BUY signals across ${market === "IN" ? "NSE" : "US markets"} today. Market conditions may be weak — check back tomorrow.`
+                  : `Daily picks are generated at ${marketCfg.genTime} on market days. Check back then.`}
               </p>
               {(data as any)?.generating && data?.generated_at && (
                 <p className="text-xs text-gray-600 mt-3 flex items-center gap-1.5">
@@ -793,7 +814,7 @@ export default function DailyPicksPage() {
         <p className="text-xs text-gray-500">
           StockSense360 picks are AI-generated signals for <strong className="text-gray-400">educational and research purposes only</strong>.
           They do not constitute financial advice. Past accuracy is not a guarantee of future results.
-          Always consult a SEBI-registered investment advisor before trading.
+          Always consult a {market === "IN" ? "SEBI-registered" : "licensed"} investment advisor before trading.
         </p>
       </div>
     </div>

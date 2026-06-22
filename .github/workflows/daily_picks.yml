@@ -1,14 +1,22 @@
-name: Daily Stock Picks (2 AM IST)
+name: Daily Stock Picks (India 2 AM IST + US pre-market)
 
 on:
   schedule:
     # 20:30 UTC = 2:00 AM IST — 750 stocks × 3 horizons takes ~3.75 hrs, done by ~5:45 AM IST
     - cron: "30 20 * * 0-4"   # Sun–Thu UTC = Mon–Fri IST (market days)
+    # 12:30 UTC ≈ 8:30 AM ET (7:30 AM during EST) — comfortably before the 9:30 AM ET open
+    - cron: "30 12 * * 1-5"   # Mon–Fri UTC = US market days
   workflow_dispatch:           # allow manual trigger from GitHub UI
+    inputs:
+      market:
+        description: "Market to generate picks for (IN or US)"
+        required: false
+        default: "IN"
 
 jobs:
-  generate-picks:
+  generate-picks-in:
     runs-on: ubuntu-latest
+    if: github.event_name != 'schedule' || github.event.schedule == '30 20 * * 0-4'
     steps:
       - name: Check Railway backend is healthy
         run: |
@@ -24,12 +32,42 @@ jobs:
             sleep 10
           done
 
-      - name: Trigger pick generation
+      - name: Trigger India pick generation
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.market == 'IN'
         run: |
-          echo "Triggering daily picks generation at $(date -u) UTC (2:00 AM IST)..."
+          echo "Triggering IN daily picks generation at $(date -u) UTC (2:00 AM IST)..."
           curl -sS --fail-with-body --max-time 30 \
             -X POST \
             -H "x-secret: ${{ secrets.PICKS_SECRET }}" \
-            https://stocksense-production-7e0d.up.railway.app/api/picks/generate
+            "https://stocksense-production-7e0d.up.railway.app/api/picks/generate?market=IN"
           echo ""
-          echo "Generation started. 750 stocks x 3 horizons — picks ready by ~5:45 AM IST."
+          echo "Generation started. 2,300+ NSE stocks x 3 horizons — picks ready by ~5:45 AM IST."
+
+  generate-picks-us:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule' || github.event.schedule == '30 12 * * 1-5'
+    steps:
+      - name: Check Railway backend is healthy
+        run: |
+          echo "Checking Railway backend at $(date -u) UTC..."
+          for i in $(seq 1 5); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
+              https://stocksense-production-7e0d.up.railway.app/health)
+            echo "Attempt $i: HTTP $STATUS"
+            if [ "$STATUS" = "200" ]; then
+              echo "Server is ready!"
+              break
+            fi
+            sleep 10
+          done
+
+      - name: Trigger US pick generation
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.market == 'US'
+        run: |
+          echo "Triggering US daily picks generation at $(date -u) UTC (~8:30 AM ET)..."
+          curl -sS --fail-with-body --max-time 30 \
+            -X POST \
+            -H "x-secret: ${{ secrets.PICKS_SECRET }}" \
+            "https://stocksense-production-7e0d.up.railway.app/api/picks/generate?market=US"
+          echo ""
+          echo "Generation started. 1,500+ US stocks x 3 horizons — picks ready ahead of the 9:30 AM ET open."

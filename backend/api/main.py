@@ -297,26 +297,26 @@ async def lifespan(app: FastAPI):
             if now.weekday() >= 5:
                 print("[picks_catchup] Weekend — skipping picks catchup")
                 return
-            from services.daily_picks import picks_generated_today, generate_picks, _generating
+            from services.daily_picks import picks_generated_today, generate_picks
             import services.daily_picks as _dp
-            if picks_generated_today():
-                print("[picks_catchup] Today's picks already exist — skipping")
+            if picks_generated_today("IN"):
+                print("[picks_catchup] Today's IN picks already exist — skipping")
                 return
-            if _dp._generating:
-                print("[picks_catchup] Generation already in progress — skipping")
+            if _dp._generating.get("IN", False):
+                print("[picks_catchup] IN generation already in progress — skipping")
                 return
-            print("[picks_catchup] No picks for today — generating now (this takes ~10 min)…")
-            _dp._generating = True
+            print("[picks_catchup] No IN picks for today — generating now (this takes ~10 min)…")
+            _dp._generating["IN"] = True
             try:
                 loop2 = asyncio.get_running_loop()
-                await loop2.run_in_executor(None, generate_picks)
-                print("[picks_catchup] Picks generation complete")
+                await loop2.run_in_executor(None, generate_picks, "IN")
+                print("[picks_catchup] IN picks generation complete")
             finally:
-                _dp._generating = False
+                _dp._generating["IN"] = False
         except Exception as e:
             print(f"[picks_catchup] error: {e}")
             import services.daily_picks as _dp2
-            _dp2._generating = False
+            _dp2._generating["IN"] = False
 
     # Catch-up validation: if server restarted after 6 AM IST and today's run
     # was missed (e.g. due to deployment), fire it in the background.
