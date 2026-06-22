@@ -2,7 +2,7 @@
 import { useState, useEffect } from "react";
 import { useQuery, useQueries } from "@tanstack/react-query";
 import { fetchTopMovers, fetchQuote, api } from "@/utils/api";
-import { TrendingUp, TrendingDown, RefreshCw, Wifi } from "lucide-react";
+import { TrendingUp, TrendingDown, RefreshCw, Wifi, LayoutDashboard } from "lucide-react";
 import Link from "next/link";
 import clsx from "clsx";
 import { IndexBar } from "@/components/IndexBar";
@@ -105,9 +105,12 @@ export default function Dashboard() {
       {/* Market Overview — layout matches Market Heatmap header style */}
       <div className="space-y-3">
         <div className="flex items-center justify-between flex-wrap gap-4">
-          <div>
-            <h1 className="text-2xl font-bold text-white">Market Overview</h1>
-            <p className="text-sm text-gray-400 mt-1">Live indices, top movers &amp; market sentiment</p>
+          <div className="flex items-center gap-3">
+            <LayoutDashboard size={22} className="text-brand-500" />
+            <div>
+              <h1 className="text-2xl font-bold text-white">Market Overview</h1>
+              <p className="text-sm text-gray-400 mt-1">Live indices, top movers &amp; market sentiment</p>
+            </div>
           </div>
           <div className="flex items-center gap-3 ml-auto flex-wrap justify-end min-w-0 max-w-full">
             {/* Live status / loading badge */}

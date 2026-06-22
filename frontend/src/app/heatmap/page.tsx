@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { api } from "@/utils/api";
 import clsx from "clsx";
-import { RefreshCw, Wifi } from "lucide-react";
+import { RefreshCw, Wifi, Flame } from "lucide-react";
 import { IndexBar } from "@/components/IndexBar";
 import { StockContextMenu } from "@/components/StockContextMenu";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
@@ -60,9 +60,12 @@ export default function HeatmapPage() {
     <div className="space-y-5">
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-4">
-        <div>
-          <h1 className="text-2xl font-bold">Market Heatmap</h1>
-          <p className="text-sm text-gray-400 mt-1">Sector-wise performance — green = up, red = down</p>
+        <div className="flex items-center gap-3">
+          <Flame size={22} className="text-brand-500" />
+          <div>
+            <h1 className="text-2xl font-bold">Market Heatmap</h1>
+            <p className="text-sm text-gray-400 mt-1">Sector-wise performance — green = up, red = down</p>
+          </div>
         </div>
         <div className="flex items-center gap-3 ml-auto">
           {/* Live status / loading badge — always visible */}

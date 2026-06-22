@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchTopMovers, Market } from "@/utils/api";
-import { TrendingUp, TrendingDown, RefreshCw, Wifi } from "lucide-react";
+import { TrendingUp, TrendingDown, RefreshCw, Wifi, Filter } from "lucide-react";
 import Link from "next/link";
 import clsx from "clsx";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
@@ -32,9 +32,12 @@ export default function ScreenerPage() {
 
       {/* Header — layout matches Market Heatmap / Market Overview header style */}
       <div className="flex items-center justify-between flex-wrap gap-4">
-        <div>
-          <h1 className="text-2xl font-bold">Stock Screener</h1>
-          <p className="text-sm text-gray-400 mt-1">Top movers across US and Indian markets</p>
+        <div className="flex items-center gap-3">
+          <Filter size={22} className="text-brand-500" />
+          <div>
+            <h1 className="text-2xl font-bold">Stock Screener</h1>
+            <p className="text-sm text-gray-400 mt-1">Top movers across US and Indian markets</p>
+          </div>
         </div>
         <div className="flex items-center gap-3 ml-auto">
           {/* Live status / loading badge */}
