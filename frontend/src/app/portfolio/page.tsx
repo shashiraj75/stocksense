@@ -6,13 +6,14 @@ import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { SignalBadge } from "@/components/SignalBadge";
 import Link from "next/link";
 import clsx from "clsx";
-import { PlusCircle, Trash2, TrendingUp, TrendingDown, Briefcase, Wifi, Pencil, Check, X, Upload, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
+import { PlusCircle, Trash2, TrendingUp, TrendingDown, Briefcase, Wifi, Pencil, Check, X, Upload, Download, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
 import { PortfolioAllocationChart } from "@/components/PortfolioAllocationChart";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
 import { StockSymbolField } from "@/components/StockSymbolField";
 import type { StockResult } from "@/hooks/useStockSearch";
 import { useAuth } from "@/lib/AuthContext";
 import { ImportPortfolioModal } from "@/components/ImportPortfolioModal";
+import { exportPortfolioToExcel } from "@/utils/portfolioExport";
 
 interface Holding {
   id: string;
@@ -396,6 +397,13 @@ export default function PortfolioPage() {
           className="ml-auto flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border border-dark-border text-gray-400 hover:text-white hover:border-white/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           <Upload size={13} /> Import Portfolio
+        </button>
+        <button
+          onClick={() => exportPortfolioToExcel(rows)}
+          disabled={rows.length === 0}
+          className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border border-dark-border text-gray-400 hover:text-white hover:border-white/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          <Download size={13} /> Export Portfolio
         </button>
         {holdings.length > 0 && (
           <span className="flex items-center gap-1.5 text-xs text-gray-500">
