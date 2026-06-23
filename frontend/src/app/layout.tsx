@@ -29,6 +29,7 @@ export const NAV_LINKS = [
   { href: "/dashboard",  label: "Dashboard" },
   { href: "/heatmap",    label: "Heatmap" },
   { href: "/screener",   label: "Screener" },
+  { href: "/multibagger", label: "Multibagger" },
   { href: "/portfolio",  label: "Portfolio" },
   { href: "/alerts",     label: "Alerts" },
   { href: "/watchlist",  label: "Watchlist" },

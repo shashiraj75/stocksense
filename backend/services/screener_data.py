@@ -423,6 +423,35 @@ def _parse_screener_page(soup: BeautifulSoup, symbol: str) -> dict:
                             data["profit_growth_3y_pct"] = round(cagr, 2)
                             data["profit_growth_ttm_pct"] = round(cagr, 2)
 
+    # ── Annual P&L detail — OPM%, Interest, Depreciation ──────────────────────
+    # Used to derive Interest Coverage Ratio and EBITDA, neither of which
+    # screener.in exposes directly anywhere else on the page.
+    pl_section = soup.find("section", id="profit-loss")
+    if pl_section:
+        table = pl_section.find("table")
+        if table:
+            for row in table.find_all("tr"):
+                cells = row.find_all("td")
+                if len(cells) < 2:
+                    continue
+                label = cells[0].get_text(strip=True).lower().rstrip("+")
+                vals = [_parse_number(c.get_text(strip=True)) for c in cells[1:]]
+                vals = [v for v in vals if v is not None]
+                if not vals:
+                    continue
+                if label == "sales":
+                    data["sales_annual_cr"] = vals
+                    data["sales_latest_cr"] = vals[-1]
+                elif label == "operating profit":
+                    data["operating_profit_annual_cr"] = vals
+                    data["operating_profit_latest_cr"] = vals[-1]
+                elif label == "opm %":
+                    data["opm_pct"] = vals[-1]
+                elif label == "interest":
+                    data["interest_latest_cr"] = vals[-1]
+                elif label == "depreciation":
+                    data["depreciation_latest_cr"] = vals[-1]
+
     # ── Shareholding pattern — latest + full quarterly history ───────────────
     shareholding_section = soup.find("section", id="shareholding")
     if shareholding_section:
@@ -560,6 +589,38 @@ def _parse_screener_page(soup: BeautifulSoup, symbol: str) -> dict:
                 elif "net profit" in label or "pat" in label:
                     data["latest_quarter_pat_cr"] = vals[-1] if vals else None
                     data["quarterly_pat_cr"] = vals  # full history for earnings stability
+
+    # ── Derived metrics — computed last so every section above (P&L, balance
+    # sheet, top ratios) has already run, regardless of their order in the page ──
+
+    # Interest Coverage Ratio = Operating Profit (EBIT proxy) / Interest.
+    # Skip when interest is ~0 — coverage is meaningless/undefined, not infinite.
+    op_profit = data.get("operating_profit_latest_cr")
+    interest = data.get("interest_latest_cr")
+    if op_profit is not None and interest is not None and interest > 1:
+        data["interest_coverage_ratio"] = round(op_profit / interest, 2)
+
+    # EBITDA = Operating Profit + Depreciation (screener's "Operating Profit"
+    # already excludes interest/depreciation, so this is the standard add-back).
+    depreciation = data.get("depreciation_latest_cr")
+    if op_profit is not None and depreciation is not None:
+        data["ebitda_cr"] = round(op_profit + depreciation, 2)
+
+    # EV/EBITDA — approximated as (Market Cap + Borrowings) / EBITDA, no cash
+    # netting since screener.in doesn't expose a clean top-level Cash row (it's
+    # nested inside an expandable "Other Assets" sub-table we don't scrape).
+    # Slightly overstates EV for cash-rich companies.
+    market_cap = data.get("market_cap_cr")
+    borrowings = data.get("borrowings_latest_cr")
+    ebitda = data.get("ebitda_cr")
+    if market_cap is not None and ebitda and ebitda > 0:
+        ev = market_cap + (borrowings or 0)
+        data["ev_ebitda"] = round(ev / ebitda, 2)
+
+    # Price-to-Sales = Market Cap / latest annual Sales
+    sales = data.get("sales_latest_cr")
+    if market_cap is not None and sales and sales > 0:
+        data["price_to_sales"] = round(market_cap / sales, 2)
 
     return data
 

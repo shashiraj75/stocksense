@@ -1,0 +1,36 @@
+name: Multibagger Fundamentals Refresh (Nightly)
+
+on:
+  schedule:
+    # 21:30 UTC = 3:00 AM IST — after Daily Picks (2 AM IST), before markets open.
+    # ~2,300 NSE stocks at a polite scrape pace takes roughly 1-2 hours.
+    - cron: "30 21 * * 0-4"   # Sun–Thu UTC = Mon–Fri IST (market days)
+  workflow_dispatch:           # allow manual trigger from GitHub UI
+
+jobs:
+  refresh-fundamentals:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Railway backend is healthy
+        run: |
+          echo "Checking Railway backend at $(date -u) UTC..."
+          for i in $(seq 1 5); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
+              https://stocksense-production-7e0d.up.railway.app/health)
+            echo "Attempt $i: HTTP $STATUS"
+            if [ "$STATUS" = "200" ]; then
+              echo "Server is ready!"
+              break
+            fi
+            sleep 10
+          done
+
+      - name: Trigger fundamentals refresh
+        run: |
+          echo "Triggering full-universe fundamentals refresh at $(date -u) UTC (3:00 AM IST)..."
+          curl -sS --fail-with-body --max-time 30 \
+            -X POST \
+            -H "x-secret: ${{ secrets.PICKS_SECRET }}" \
+            "https://stocksense-production-7e0d.up.railway.app/api/multibagger/refresh"
+          echo ""
+          echo "Refresh started in the background. ~2,300 NSE stocks — expect completion in 1-2 hours."

@@ -206,3 +206,37 @@ export const acceptTerms = (
 
 export const getTermsStatus = (userId: string) =>
   api.get<{ accepted: boolean; terms_version?: string; accepted_at?: string; first_name?: string; last_name?: string; mobile?: string; country?: string }>(`/api/auth/terms-status/${userId}`).then((r) => r.data);
+
+export type MultibaggerScreen = "quality_compounder" | "multibagger_discovery" | "tenbagger_early";
+
+export interface MultibaggerStock {
+  symbol: string;
+  company_name: string | null;
+  sector_name: string | null;
+  market_cap_cr: number | null;
+  pe_ratio: number | null;
+  roe_pct: number | null;
+  roe_5y_pct: number | null;
+  roce_pct: number | null;
+  debt_to_equity_pct: number | null;
+  promoter_holding_pct: number | null;
+  promoter_pledge_pct: number | null;
+  sales_growth_3y_pct: number | null;
+  sales_growth_5y_pct: number | null;
+  profit_growth_3y_pct: number | null;
+  profit_growth_5y_pct: number | null;
+  opm_pct: number | null;
+  interest_coverage_ratio: number | null;
+  ev_ebitda: number | null;
+  price_to_sales: number | null;
+  operating_cf_latest_cr: number | null;
+  updated_at: string;
+}
+
+export const fetchMultibaggerScreen = (screen: MultibaggerScreen) =>
+  api.get<{ screen: string; count: number; results: MultibaggerStock[]; last_refreshed: string | null; error?: string }>(
+    "/api/multibagger/screen", { params: { screen } }
+  ).then((r) => r.data);
+
+export const fetchMultibaggerStatus = () =>
+  api.get<{ running: boolean; last_summary: any; last_refreshed: string | null }>("/api/multibagger/status").then((r) => r.data);
