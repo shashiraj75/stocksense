@@ -313,6 +313,14 @@ export default function StockPage() {
                 {/* ── Left column: all stock info ── */}
                 <div className="flex-1 min-w-0">
 
+                  {/* Page label — matches the icon+label convention every
+                      other page (Market Overview, Daily Picks, Portfolio…)
+                      uses, just smaller since the ticker below is the real title */}
+                  <div className="flex items-center gap-1.5 text-xs text-gray-500 mb-2">
+                    <BarChart2 size={14} className="text-brand-500" />
+                    <span className="uppercase tracking-wide font-semibold">Stock Analysis</span>
+                  </div>
+
                   {/* Row 1: symbol + badges + full name */}
                   <div className="mb-2.5">
                     <div className="flex flex-wrap items-center gap-2">
