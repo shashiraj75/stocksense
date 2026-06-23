@@ -1,7 +1,7 @@
 """
 Daily Picks Service
 Screens Nifty 100 stocks, runs prediction engine on each,
-returns top 5 BUY signals per horizon (short/medium/long).
+returns top 6 BUY signals per horizon (short/medium/long).
 Results cached to picks_cache.json so the endpoint is instant after generation.
 
 Learning Alpha Engine integration:
@@ -536,7 +536,7 @@ def generate_picks(market: str = "IN") -> dict:
                              enough real outcome data accumulates)
       Phase 4 — Z-score + alpha: cross-sectional normalisation + IC-weighted alpha,
                                   with meta-model override when trained
-      Phase 5 — Select picks: rank by ranking_alpha; keep top 5 BUY per horizon
+      Phase 5 — Select picks: rank by ranking_alpha; keep top 6 BUY per horizon
       Phase 6 — Optimise: mean-variance portfolio weights for the selected picks
       Phase 7 — Log predictions: store factor z-scores for future IC computation
       Phase 8 — Adapt: retrain IC/meta-model/regime after picks are published
@@ -681,7 +681,7 @@ def _generate_picks_inner(market: str = "IN") -> dict:
         top_buy = [
             r for r in ranked
             if r.get("signal") == "BUY" and _passes_quality_gate(r, horizon)
-        ][:5]
+        ][:6]
 
         # Phase 6 — Portfolio optimisation
         if len(top_buy) > 1:

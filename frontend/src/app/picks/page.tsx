@@ -645,7 +645,7 @@ export default function DailyPicksPage() {
         </div>
       </div>
       <p className="text-sm text-gray-400">
-        Top 5 AI-selected BUY calls per horizon · generated daily at {marketCfg.genTime}
+        Top 6 AI-selected BUY calls per horizon · generated daily at {marketCfg.genTime}
         {data?.screened_from ? ` · screened from ${data.screened_from.toLocaleString()} ${market === "IN" ? "NSE" : "US"} stocks` : ""}
       </p>
       </div>
