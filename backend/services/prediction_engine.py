@@ -398,6 +398,9 @@ class PredictionEngine:
             confidence = max(0, min(100, round(tech_signal.get("score", 50))))
             target_price = self._estimate_target(current_price, signal, confidence, horizon, df, info)
             trade_levels = self._trade_levels(current_price, signal, target_price, atr, horizon)
+            reasoning = list(tech_signal.get("breakdown", []))
+            bear_case: list = []
+            confidence = self._apply_risk_reward_adjustment(signal, confidence, trade_levels, reasoning, bear_case)
             result = {
                 "symbol": symbol,
                 "market": market,
@@ -420,11 +423,11 @@ class PredictionEngine:
                     "historical_factor_reliability": 50,
                 },
                 "bull_case": [],
-                "bear_case": [],
+                "bear_case": bear_case,
                 "current_price": round(current_price, 2),
                 "target_price": target_price,
                 "trade_levels": trade_levels,
-                "reasoning": tech_signal.get("breakdown", []),
+                "reasoning": reasoning,
                 "technical": tech_signal,
                 "fundamental_score": None,
                 "sentiment_score": None,
@@ -542,6 +545,7 @@ class PredictionEngine:
             current_price, signal, confidence, horizon, df, info
         )
         trade_levels = self._trade_levels(current_price, signal, target_price, atr, horizon)
+        confidence = self._apply_risk_reward_adjustment(signal, confidence, trade_levels, reasoning, bear_case)
 
         import datetime as _dt
         result = {
@@ -664,6 +668,37 @@ class PredictionEngine:
             "reward_per_share": round(reward, 2),
             "risk_reward_ratio": rr_ratio,
         }
+
+    def _apply_risk_reward_adjustment(
+        self, signal: str, confidence: int, trade_levels: dict,
+        reasoning: list, bear_case: list,
+    ) -> int:
+        """
+        The composite score (which decides BUY/HOLD/SELL) and the trade-level
+        risk/reward math are computed independently — a stock can clear the
+        BUY threshold on score while its own stop/target math is honestly
+        unfavorable (small forecast move relative to the stock's volatility;
+        see _trade_levels' MIN_RR comment — we never fake a good ratio by
+        tightening the stop past the noise floor). Left alone, that produces
+        a confident-looking BUY badge on a setup that risks materially more
+        than it stands to gain — exactly the kind of thing this tool exists
+        to catch instead of leaving the user to compute it themselves.
+        Demotes confidence (not the composite score/signal itself, so
+        Daily Picks ranking and the IC learning engine stay unaffected) and
+        surfaces the reason explicitly rather than leaving it as a number
+        on the trade card most users won't cross-check.
+        """
+        rr = trade_levels.get("risk_reward_ratio", 0)
+        if signal in ("BUY", "SELL") and 0 < rr < 1.0:
+            msg = (
+                f"Unfavorable risk/reward — risking {trade_levels['risk_per_share']:.2f}/share "
+                f"to make {trade_levels['reward_per_share']:.2f}/share ({rr}:1). "
+                "Confidence demoted because the stop is farther than the target."
+            )
+            reasoning.append({"indicator": "Risk/Reward", "signal": "BEARISH", "reason": msg})
+            bear_case.append(msg)
+            return min(confidence, 30)
+        return confidence
 
     def _deep_fundamental_score(self, ticker, horizon: str) -> dict:
         """
