@@ -491,7 +491,15 @@ def sector_strength_score(symbol: str, info: dict | None = None, market: str = "
     if market == "US":
         sector = (info or {}).get("sector")
         if not sector or sector not in US_SECTOR_INDICES:
-            return {"score": 50, "reasons": [], "sector": sector or "Unknown"}
+            # Genuinely no sector text available (info dict missing it
+            # entirely, or it's outside our curated buckets) — return None
+            # rather than the literal string "Unknown". The frontend hides
+            # the sector badge on a falsy value; showing "Unknown" instead
+            # of just omitting it reads as a bug, especially since which
+            # stocks hit this path varies run to run (the upstream sector
+            # source is intermittently rate-limited, not consistently
+            # missing for the same stocks).
+            return {"score": 50, "reasons": [], "sector": sector}
         returns = _get_us_sector_returns()
         benchmark_key = "SP500"
         benchmark_name = "S&P 500"
@@ -508,7 +516,8 @@ def sector_strength_score(symbol: str, info: dict | None = None, market: str = "
                            if any(re.search(p, raw) for p in patterns)), None)
             if mapped is None:
                 fallback = (info or {}).get("sector") or (info or {}).get("industry")
-                return {"score": 50, "reasons": [], "sector": fallback or "Unknown"}
+                # None instead of literal "Unknown" — see US branch comment above.
+                return {"score": 50, "reasons": [], "sector": fallback}
             sector = mapped
         returns = _get_sector_returns()
         benchmark_key = "Nifty50"
@@ -1785,7 +1794,7 @@ def compute_all_quality_factors(symbol: str, ticker, df: pd.DataFrame, info: dic
                 "reason": reason,
             })
 
-    sector    = results.get("sector_strength", {}).get("sector", "Unknown")
+    sector    = results.get("sector_strength", {}).get("sector")
     piotroski = results.get("quality_metrics", {}).get("piotroski")
 
     return {
