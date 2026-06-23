@@ -41,6 +41,19 @@ function urgencyScore(trade: PaperTrade, livePrice: number | null | undefined): 
   return distances.length ? Math.min(...distances) : Infinity;
 }
 
+// Trying this out — easy to remove (just delete this function + its one
+// call site below) if it doesn't end up being useful in practice.
+function daysSinceLabel(dateStr: string): string {
+  const opened = new Date(dateStr);
+  opened.setHours(0, 0, 0, 0);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = Math.round((today.getTime() - opened.getTime()) / 86_400_000);
+  if (days <= 0) return "Today";
+  if (days === 1) return "1 day ago";
+  return `${days} days ago`;
+}
+
 function StatCard({
   label, value, sub, positive, pct,
 }: { label: string; value: string; sub?: string; positive?: boolean; pct?: number | null }) {
@@ -284,6 +297,7 @@ function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t
       </td>
       <td className="px-4 py-3 text-xs text-gray-500">
         {new Date(trade.opened_at).toLocaleDateString("en-IN")}
+        <p className="text-[10px] text-gray-600 mt-0.5">{daysSinceLabel(trade.opened_at)}</p>
       </td>
       <td className="px-4 py-3 text-right">
         <button
