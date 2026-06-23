@@ -146,6 +146,30 @@ def query_screen(screen: str, market: str = "IN") -> list[dict]:
         return [dict(zip(_SELECT_COLS, row)) for row in rows]
 
 
+def get_sector(symbol: str, market: str = "IN") -> tuple[str | None, str | None]:
+    """
+    (sector_name, industry_name) for one symbol from the nightly-refreshed
+    cache. A stock's sector classification doesn't change day to day, so
+    this is a far more reliable source than re-scraping screener.in live on
+    every prediction request — that live scrape has a 4h in-memory cache
+    that also caches *failures* for the full TTL, so a single rate-limited
+    request poisons the result for hours. This table persists across
+    restarts and survives any individual scrape attempt failing.
+    Returns (None, None) if the symbol isn't in the cache yet (e.g. it's
+    outside the refresh job's universe, or hasn't run for this symbol yet).
+    """
+    try:
+        with _conn() as conn:
+            row = conn.execute(
+                "SELECT sector_name, industry_name FROM stock_fundamentals_cache "
+                "WHERE symbol = %s AND market = %s",
+                [symbol.upper(), market],
+            ).fetchone()
+            return (row[0], row[1]) if row else (None, None)
+    except Exception:
+        return (None, None)
+
+
 def last_refreshed(market: str = "IN") -> str | None:
     with _conn() as conn:
         row = conn.execute(

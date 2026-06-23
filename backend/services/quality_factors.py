@@ -474,6 +474,17 @@ def relative_strength_score(df: pd.DataFrame, market: str = "IN") -> dict:
 
 # ── 4. SECTOR STRENGTH ───────────────────────────────────────────────────────
 
+def _get_cached_sector(symbol: str, market: str) -> tuple[str | None, str | None]:
+    """Lazy import — DATABASE_URL may not be set in some local/test contexts,
+    and this is a non-essential fallback, not worth failing the whole
+    prediction over."""
+    try:
+        from services.fundamentals_cache import get_sector
+        return get_sector(symbol, market)
+    except Exception:
+        return (None, None)
+
+
 def sector_strength_score(symbol: str, info: dict | None = None, market: str = "IN") -> dict:
     """
     Check if the stock's sector is outperforming its market's broad benchmark.
@@ -491,15 +502,17 @@ def sector_strength_score(symbol: str, info: dict | None = None, market: str = "
     if market == "US":
         sector = (info or {}).get("sector")
         if not sector or sector not in US_SECTOR_INDICES:
-            # Genuinely no sector text available (info dict missing it
-            # entirely, or it's outside our curated buckets) — return None
-            # rather than the literal string "Unknown". The frontend hides
-            # the sector badge on a falsy value; showing "Unknown" instead
-            # of just omitting it reads as a bug, especially since which
-            # stocks hit this path varies run to run (the upstream sector
-            # source is intermittently rate-limited, not consistently
-            # missing for the same stocks).
-            return {"score": 50, "reasons": [], "sector": sector}
+            # A stock's sector classification doesn't change day to day —
+            # check the nightly-refreshed Postgres cache (already maintained
+            # for the Multibagger screen) before giving up. That table
+            # persists across restarts and isn't affected by today's live
+            # info/scrape attempt failing, unlike the in-memory caches.
+            cached_sector, _ = _get_cached_sector(symbol, market)
+            if not cached_sector:
+                return {"score": 50, "reasons": [], "sector": None}
+            sector = cached_sector
+            if sector not in US_SECTOR_INDICES:
+                return {"score": 50, "reasons": [], "sector": sector}
         returns = _get_us_sector_returns()
         benchmark_key = "SP500"
         benchmark_name = "S&P 500"
@@ -516,7 +529,12 @@ def sector_strength_score(symbol: str, info: dict | None = None, market: str = "
                            if any(re.search(p, raw) for p in patterns)), None)
             if mapped is None:
                 fallback = (info or {}).get("sector") or (info or {}).get("industry")
-                # None instead of literal "Unknown" — see US branch comment above.
+                if not fallback:
+                    # Today's live screener.in fetch didn't return anything
+                    # usable — try the persistent nightly cache before
+                    # falling back to None. See US branch comment above.
+                    cached_sector, cached_industry = _get_cached_sector(symbol, market)
+                    fallback = cached_industry or cached_sector
                 return {"score": 50, "reasons": [], "sector": fallback}
             sector = mapped
         returns = _get_sector_returns()
