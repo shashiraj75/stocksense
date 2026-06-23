@@ -65,22 +65,31 @@ def _on_chain_proxy(df: pd.DataFrame) -> dict:
     return {"signal": "NEUTRAL", "score": 50, "reason": "No clear volume signal"}
 
 
-async def predict_crypto(symbol: str, horizon: str) -> dict:
+def _fetch_crypto_history(symbol: str, horizon: str):
+    """Blocking — must run via run_in_executor, never awaited directly.
+    Includes the retry-with-backoff for rate limits, so the sleeps land on
+    a worker thread instead of freezing the event loop for everyone else."""
     import time as _time
     yf_symbol = f"{symbol}-USD"
     ticker = yf.Ticker(yf_symbol)
-    df = None
     for attempt in range(4):
         try:
-            df = ticker.history(period=HORIZON_PERIODS[horizon])
-            break
+            return ticker.history(period=HORIZON_PERIODS[horizon])
         except Exception as e:
             if "rate" in str(e).lower() and attempt < 3:
                 _time.sleep(5 * (attempt + 1))
             else:
                 raise
-    if df is None:
-        df = ticker.history(period=HORIZON_PERIODS[horizon])
+    return ticker.history(period=HORIZON_PERIODS[horizon])
+
+
+async def predict_crypto(symbol: str, horizon: str) -> dict:
+    import asyncio
+    loop = asyncio.get_running_loop()
+    df = await asyncio.wait_for(
+        loop.run_in_executor(None, _fetch_crypto_history, symbol, horizon),
+        timeout=30.0,
+    )
 
     if df.empty or len(df) < 30:
         return {"error": f"No data found for {symbol}"}

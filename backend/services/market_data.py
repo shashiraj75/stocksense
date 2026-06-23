@@ -252,6 +252,11 @@ class MarketDataService:
             _quote_cache[key] = (time.time(), result)
         return dict(result) if result else result
 
+    def _fetch_history(self, symbol: str, market: str, period: str, interval: str):
+        """Blocking — must always be called via run_in_executor, never
+        awaited directly; .history() is a real HTTP call to Yahoo."""
+        return yf.Ticker(self._sym(symbol, market)).history(period=period, interval=interval)
+
     async def get_ohlcv(self, symbol: str, market: str, period: str, interval: str) -> dict:
         key = f"{symbol}:{market}:{period}:{interval}"
         cached = _ohlcv_cache.get(key)
@@ -259,7 +264,11 @@ class MarketDataService:
             return cached[1]
 
         try:
-            df = yf.Ticker(self._sym(symbol, market)).history(period=period, interval=interval)
+            loop = asyncio.get_running_loop()
+            df = await asyncio.wait_for(
+                loop.run_in_executor(None, self._fetch_history, symbol, market, period, interval),
+                timeout=15.0,
+            )
             df.reset_index(inplace=True)
             result = {
                 "symbol": symbol,

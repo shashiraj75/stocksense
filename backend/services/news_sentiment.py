@@ -151,7 +151,8 @@ class NewsSentimentService:
         return result
 
     async def get_macro_news(self, market: str) -> dict:
-        articles = self._fetch_macro_rss(market, 15)
+        loop = asyncio.get_running_loop()
+        articles = await loop.run_in_executor(None, self._fetch_macro_rss, market, 15)
         for a in articles:
             a["sentiment"] = score_sentiment(a["title"], a.get("description", ""))
         return {"market": market, "articles": articles}
