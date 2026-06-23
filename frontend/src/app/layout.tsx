@@ -26,10 +26,10 @@ export const viewport: Viewport = {
 
 export const NAV_LINKS = [
   { href: "/picks",      label: "Daily Picks", accent: true },
+  { href: "/multibagger", label: "Multibagger" },
   { href: "/dashboard",  label: "Dashboard" },
   { href: "/heatmap",    label: "Heatmap" },
   { href: "/screener",   label: "Screener" },
-  { href: "/multibagger", label: "Multibagger" },
   { href: "/portfolio",  label: "Portfolio" },
   { href: "/alerts",     label: "Alerts" },
   { href: "/watchlist",  label: "Watchlist" },
