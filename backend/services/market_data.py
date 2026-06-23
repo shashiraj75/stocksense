@@ -84,6 +84,24 @@ class MarketDataService:
             return f"BINANCE:{s}USDT"
         return s
 
+    def _fetch_fast_info(self, symbol: str, market: str) -> Optional[dict]:
+        """Blocking — must always be called via run_in_executor, never awaited
+        directly. fast_info triggers a real HTTP call to Yahoo on first
+        attribute access; calling it inline in an async function would
+        freeze the whole event loop for every other in-flight request."""
+        fi = yf.Ticker(self._sym(symbol, market)).fast_info
+        return {
+            "price":      fi.last_price,
+            "prev_close": fi.previous_close,
+            "day_high":   fi.day_high,
+            "day_low":    fi.day_low,
+            "open":       fi.open,
+            "volume":     fi.three_month_average_volume,
+            "market_cap": fi.market_cap,
+            "year_high":  fi.year_high,
+            "year_low":   fi.year_low,
+        }
+
     async def get_quote(self, symbol: str, market: str) -> Optional[dict]:
         key = f"{symbol}:{market}"
         cached = _quote_cache.get(key)
@@ -113,12 +131,18 @@ class MarketDataService:
             result = finnhub_client.get_quote(symbol, market)
 
         # 3. Fallback to yfinance fast_info (one call only)
+        # fast_info does a real blocking HTTP call on first attribute access —
+        # must run in a thread, never directly in this async function, or it
+        # freezes the single event loop for every other in-flight request.
         if not result:
             try:
-                fi = yf.Ticker(self._sym(symbol, market)).fast_info
-                price = fi.last_price
-                prev  = fi.previous_close
-                if price is not None and prev is not None:
+                loop = asyncio.get_running_loop()
+                fi_data = await asyncio.wait_for(
+                    loop.run_in_executor(None, self._fetch_fast_info, symbol, market),
+                    timeout=8.0,
+                )
+                if fi_data and fi_data.get("price") is not None and fi_data.get("prev_close") is not None:
+                    price, prev = fi_data["price"], fi_data["prev_close"]
                     result = {
                         "symbol":     symbol,
                         "market":     market,
@@ -126,13 +150,13 @@ class MarketDataService:
                         "prev_close": round(float(prev), 2),
                         "change":     round(float(price - prev), 2),
                         "change_pct": round(float((price - prev) / prev * 100), 2),
-                        "high":       fi.day_high,
-                        "low":        fi.day_low,
-                        "open":       fi.open,
-                        "volume":     int(fi.three_month_average_volume or 0),
-                        "market_cap": fi.market_cap,
-                        "fifty_two_week_high": fi.year_high,
-                        "fifty_two_week_low":  fi.year_low,
+                        "high":       fi_data["day_high"],
+                        "low":        fi_data["day_low"],
+                        "open":       fi_data["open"],
+                        "volume":     int(fi_data["volume"] or 0),
+                        "market_cap": fi_data["market_cap"],
+                        "fifty_two_week_high": fi_data["year_high"],
+                        "fifty_two_week_low":  fi_data["year_low"],
                     }
             except Exception as e:
                 log.warning("get_quote yfinance fallback failed %s/%s: %s", symbol, market, e)
@@ -141,11 +165,16 @@ class MarketDataService:
         # 3. Enrich Finnhub result with fast_info extras if missing
         if result and not result.get("market_cap"):
             try:
-                fi = yf.Ticker(self._sym(symbol, market)).fast_info
-                result.setdefault("volume",              int(fi.three_month_average_volume or 0))
-                result.setdefault("market_cap",          fi.market_cap)
-                result.setdefault("fifty_two_week_high", fi.year_high)
-                result.setdefault("fifty_two_week_low",  fi.year_low)
+                loop = asyncio.get_running_loop()
+                fi_data = await asyncio.wait_for(
+                    loop.run_in_executor(None, self._fetch_fast_info, symbol, market),
+                    timeout=8.0,
+                )
+                if fi_data:
+                    result.setdefault("volume",              int(fi_data["volume"] or 0))
+                    result.setdefault("market_cap",          fi_data["market_cap"])
+                    result.setdefault("fifty_two_week_high", fi_data["year_high"])
+                    result.setdefault("fifty_two_week_low",  fi_data["year_low"])
             except Exception:
                 pass
 
