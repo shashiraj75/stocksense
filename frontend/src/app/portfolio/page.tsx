@@ -322,6 +322,52 @@ export default function PortfolioPage() {
         )}
       </div>
 
+      {/* Add holding form */}
+      <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
+        <h2 className="font-semibold mb-4 text-sm text-gray-300">Add Holding</h2>
+        <div className="flex flex-wrap gap-3 items-end">
+          <div className="flex-1 min-w-32">
+            <label className="text-xs text-gray-400 mb-1 block">Symbol</label>
+            <StockSymbolField
+              className="w-full bg-dark-bg border border-dark-border rounded-xl px-3 py-2 text-white font-mono font-bold text-sm outline-none focus:border-brand-500 uppercase"
+              value={sym}
+              onChange={setSym}
+              onEnter={add}
+              onSelect={(stock: StockResult) => {
+                setSym(stock.symbol.replace(/\.(NS|BO)$/, ""));
+                if (stock.market === "IN" || stock.market === "US") setMarket(stock.market);
+              }}
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-400 mb-1 block">Market</label>
+            <div className="flex gap-1">
+              {(["IN", "US"] as Market[]).map(m => (
+                <button key={m} onClick={() => setMarket(m)}
+                  className={clsx("px-3 py-2 rounded-lg text-xs font-medium border transition-colors",
+                    market === m ? "bg-brand-500 text-white border-brand-500" : "bg-dark-bg border-dark-border text-gray-400 hover:text-white")}>
+                  {m === "US" ? "🇺🇸" : "🇮🇳"} {m}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="w-28">
+            <label className="text-xs text-gray-400 mb-1 block">Qty / Shares</label>
+            <input className="w-full bg-dark-bg border border-dark-border rounded-xl px-3 py-2 text-white text-sm outline-none focus:border-brand-500"
+              placeholder="10" type="number" min="0" value={qty} onChange={e => setQty(e.target.value)} />
+          </div>
+          <div className="w-36">
+            <label className="text-xs text-gray-400 mb-1 block">Avg Buy Price</label>
+            <input className="w-full bg-dark-bg border border-dark-border rounded-xl px-3 py-2 text-white font-mono text-sm outline-none focus:border-brand-500"
+              placeholder="150.00" type="number" min="0" step="0.01" value={avgPrice} onChange={e => setAvgPrice(e.target.value)} />
+          </div>
+          <button onClick={add} className="flex items-center gap-2 px-5 py-2 rounded-xl bg-brand-500 text-white text-sm font-medium hover:bg-brand-600 transition-colors">
+            <PlusCircle size={15} /> Add
+          </button>
+        </div>
+        {error && <p className="text-bear text-xs mt-2">{error}</p>}
+      </div>
+
       {/* Summary cards */}
       {holdings.length > 0 && (
         <div className="space-y-3">
@@ -385,52 +431,6 @@ export default function PortfolioPage() {
           }))}
         />
       )}
-
-      {/* Add holding form */}
-      <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
-        <h2 className="font-semibold mb-4 text-sm text-gray-300">Add Holding</h2>
-        <div className="flex flex-wrap gap-3 items-end">
-          <div className="flex-1 min-w-32">
-            <label className="text-xs text-gray-400 mb-1 block">Symbol</label>
-            <StockSymbolField
-              className="w-full bg-dark-bg border border-dark-border rounded-xl px-3 py-2 text-white font-mono font-bold text-sm outline-none focus:border-brand-500 uppercase"
-              value={sym}
-              onChange={setSym}
-              onEnter={add}
-              onSelect={(stock: StockResult) => {
-                setSym(stock.symbol.replace(/\.(NS|BO)$/, ""));
-                if (stock.market === "IN" || stock.market === "US") setMarket(stock.market);
-              }}
-            />
-          </div>
-          <div>
-            <label className="text-xs text-gray-400 mb-1 block">Market</label>
-            <div className="flex gap-1">
-              {(["IN", "US"] as Market[]).map(m => (
-                <button key={m} onClick={() => setMarket(m)}
-                  className={clsx("px-3 py-2 rounded-lg text-xs font-medium border transition-colors",
-                    market === m ? "bg-brand-500 text-white border-brand-500" : "bg-dark-bg border-dark-border text-gray-400 hover:text-white")}>
-                  {m === "US" ? "🇺🇸" : "🇮🇳"} {m}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="w-28">
-            <label className="text-xs text-gray-400 mb-1 block">Qty / Shares</label>
-            <input className="w-full bg-dark-bg border border-dark-border rounded-xl px-3 py-2 text-white text-sm outline-none focus:border-brand-500"
-              placeholder="10" type="number" min="0" value={qty} onChange={e => setQty(e.target.value)} />
-          </div>
-          <div className="w-36">
-            <label className="text-xs text-gray-400 mb-1 block">Avg Buy Price</label>
-            <input className="w-full bg-dark-bg border border-dark-border rounded-xl px-3 py-2 text-white font-mono text-sm outline-none focus:border-brand-500"
-              placeholder="150.00" type="number" min="0" step="0.01" value={avgPrice} onChange={e => setAvgPrice(e.target.value)} />
-          </div>
-          <button onClick={add} className="flex items-center gap-2 px-5 py-2 rounded-xl bg-brand-500 text-white text-sm font-medium hover:bg-brand-600 transition-colors">
-            <PlusCircle size={15} /> Add
-          </button>
-        </div>
-        {error && <p className="text-bear text-xs mt-2">{error}</p>}
-      </div>
 
       {/* Holdings tables — split by market so ₹ and $ rows are never mixed */}
       {holdings.length === 0 ? (

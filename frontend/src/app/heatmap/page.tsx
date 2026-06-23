@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { api } from "@/utils/api";
 import clsx from "clsx";
 import { RefreshCw, Wifi, Flame } from "lucide-react";
-import { IndexBar } from "@/components/IndexBar";
 import { StockContextMenu } from "@/components/StockContextMenu";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
 
@@ -101,11 +100,6 @@ export default function HeatmapPage() {
             ))}
           </div>
         </div>
-      </div>
-
-      {/* Live index bar */}
-      <div className="bg-dark-card border border-dark-border rounded-xl px-4">
-        <IndexBar market={market} />
       </div>
 
       {/* Legend */}
