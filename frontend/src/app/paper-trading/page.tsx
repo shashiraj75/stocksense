@@ -680,7 +680,10 @@ export default function PaperTradingPage() {
                         <th className="px-4 py-2.5 text-left">Stock</th>
                         <th className="px-4 py-2.5 text-left">Qty</th>
                         <th className="px-4 py-2.5 text-left">Entry</th>
-                        <th className="px-4 py-2.5 text-left">Mkt Price <span className="text-gray-400 font-normal">(last close when closed)</span></th>
+                        <th className="px-4 py-2.5 text-left max-w-[120px]">
+                          Mkt Price
+                          <span className="block text-gray-400 font-normal text-[10px] leading-tight">(last close when closed)</span>
+                        </th>
                         <th className="px-4 py-2.5 text-left">Invested</th>
                         <th className="px-4 py-2.5 text-left">Unr. P&L</th>
                         <th className="px-4 py-2.5 text-left">Signal</th>
