@@ -311,20 +311,20 @@ export default function StockPage() {
           className="fixed left-0 right-0 z-[5] bg-dark-bg/95 backdrop-blur-md border-b border-dark-border"
           style={{ top: "var(--nav-h, 0px)" }}
         >
-          <div className="max-w-7xl mx-auto px-3 sm:px-4 py-2 flex items-center gap-3 overflow-x-auto scrollbar-hide">
-            <span className="font-mono font-bold text-sm shrink-0">{symbol}</span>
+          <div className="max-w-7xl mx-auto px-3 sm:px-4 py-2.5 flex items-center gap-3 overflow-x-auto scrollbar-hide">
+            <span className="font-mono font-bold text-lg shrink-0">{symbol}</span>
             {(screenerFund?.company_name || usFund?.company_name || quote?.company_name) && (
-              <span className="text-sm text-gray-400 truncate shrink-0 max-w-[200px]">
+              <span className="text-base text-gray-400 truncate shrink-0 max-w-[200px]">
                 {screenerFund?.company_name || usFund?.company_name || quote?.company_name}
               </span>
             )}
             {!isCrypto && quote?.price != null && (
-              <span className="font-mono font-bold text-sm ml-auto shrink-0">
+              <span className="font-mono font-bold text-lg ml-auto shrink-0">
                 {currency}{quote.price.toLocaleString()}
               </span>
             )}
             {!isCrypto && quote?.change_pct != null && (
-              <span className={clsx("text-xs font-semibold shrink-0", quote.change_pct >= 0 ? "text-bull" : "text-bear")}>
+              <span className={clsx("text-sm font-semibold shrink-0", quote.change_pct >= 0 ? "text-bull" : "text-bear")}>
                 {quote.change_pct >= 0 ? "+" : ""}{quote.change_pct.toFixed(2)}%
               </span>
             )}
