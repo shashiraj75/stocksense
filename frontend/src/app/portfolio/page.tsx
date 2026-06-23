@@ -6,7 +6,7 @@ import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { SignalBadge } from "@/components/SignalBadge";
 import Link from "next/link";
 import clsx from "clsx";
-import { PlusCircle, Trash2, TrendingUp, TrendingDown, Briefcase, Wifi, Pencil, Check, X, Upload } from "lucide-react";
+import { PlusCircle, Trash2, TrendingUp, TrendingDown, Briefcase, Wifi, Pencil, Check, X, Upload, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
 import { PortfolioAllocationChart } from "@/components/PortfolioAllocationChart";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
 import { StockSymbolField } from "@/components/StockSymbolField";
@@ -130,29 +130,89 @@ function HoldingRow({
   );
 }
 
+type SortKey = "symbol" | "qty" | "avgPrice" | "curPrice" | "invested" | "current" | "plAmt" | "plPct" | "signal";
+
+const SORT_ACCESSORS: Record<SortKey, (r: Row) => string | number | null> = {
+  symbol: (r) => r.symbol,
+  qty: (r) => r.qty,
+  avgPrice: (r) => r.avgPrice,
+  curPrice: (r) => r.curPrice,
+  invested: (r) => r.invested,
+  current: (r) => r.current,
+  plAmt: (r) => r.plAmt,
+  plPct: (r) => r.plPct,
+  signal: (r) => r.signal,
+};
+
+function SortableHeader({
+  label, sortKey, align, activeKey, dir, onSort,
+}: { label: string; sortKey: SortKey; align?: "right" | "center"; activeKey: SortKey | null; dir: "asc" | "desc"; onSort: (key: SortKey) => void }) {
+  const isActive = activeKey === sortKey;
+  return (
+    <th className={clsx("px-4 py-3 font-medium select-none", align === "right" ? "text-right" : align === "center" ? "text-center" : "text-left")}>
+      <button
+        onClick={() => onSort(sortKey)}
+        className={clsx(
+          "flex items-center gap-1 hover:text-white transition-colors",
+          align === "right" ? "ml-auto" : align === "center" ? "mx-auto" : "",
+          isActive ? "text-white" : "text-gray-400"
+        )}
+      >
+        {label}
+        {isActive ? (dir === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} />) : <ArrowUpDown size={12} className="opacity-40" />}
+      </button>
+    </th>
+  );
+}
+
 function HoldingsTable({
   rows, currency, onRemove, onEdit,
 }: { rows: Row[]; currency: string; onRemove: (id: string) => void; onEdit: (id: string, updates: { qty: number; avgPrice: number }) => void }) {
+  const [sortKey, setSortKey] = useState<SortKey | null>(null);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+
+  const handleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir(d => d === "asc" ? "desc" : "asc");
+    } else {
+      setSortKey(key);
+      setSortDir("asc");
+    }
+  };
+
+  const sortedRows = sortKey ? [...rows].sort((a, b) => {
+    const av = SORT_ACCESSORS[sortKey](a);
+    const bv = SORT_ACCESSORS[sortKey](b);
+    // Nulls (still loading / no data) always sink to the bottom regardless
+    // of sort direction — otherwise toggling to descending would put
+    // "still loading" rows at the top, which looks broken.
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    const cmp = typeof av === "string" ? av.localeCompare(bv as string) : av - (bv as number);
+    return sortDir === "asc" ? cmp : -cmp;
+  }) : rows;
+
   return (
     <div className="bg-dark-card border border-dark-border rounded-2xl overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-dark-border text-gray-400 text-left">
-              <th className="px-4 py-3 font-medium">Symbol</th>
-              <th className="px-4 py-3 font-medium text-right">Qty</th>
-              <th className="px-4 py-3 font-medium text-right">Avg Buy</th>
-              <th className="px-4 py-3 font-medium text-right">Current</th>
-              <th className="px-4 py-3 font-medium text-right">Invested</th>
-              <th className="px-4 py-3 font-medium text-right">Value</th>
-              <th className="px-4 py-3 font-medium text-right">P&L</th>
-              <th className="px-4 py-3 font-medium text-right">P&L %</th>
-              <th className="px-4 py-3 font-medium text-center">Signal</th>
+              <SortableHeader label="Symbol" sortKey="symbol" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
+              <SortableHeader label="Qty" sortKey="qty" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
+              <SortableHeader label="Avg Buy" sortKey="avgPrice" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
+              <SortableHeader label="Current" sortKey="curPrice" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
+              <SortableHeader label="Invested" sortKey="invested" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
+              <SortableHeader label="Value" sortKey="current" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
+              <SortableHeader label="P&L" sortKey="plAmt" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
+              <SortableHeader label="P&L %" sortKey="plPct" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
+              <SortableHeader label="Signal" sortKey="signal" align="center" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               <th className="px-4 py-3"></th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+            {sortedRows.map((r) => (
               <HoldingRow key={r.id} r={r} currency={currency} onRemove={onRemove} onEdit={onEdit} />
             ))}
           </tbody>
