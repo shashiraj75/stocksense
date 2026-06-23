@@ -40,8 +40,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="bg-dark-bg text-white min-h-screen font-sans antialiased">
         <Providers>
           <nav className="sticky top-0 z-10 border-b border-dark-border bg-dark-bg sm:bg-dark-bg/90 backdrop-blur-none sm:backdrop-blur-md">
-            {/* Row 1: Logo · Search · Hamburger (mobile) / Clock + Market Status + Sign In (desktop) */}
-            <div className="max-w-7xl mx-auto px-3 sm:px-4 pt-2.5 pb-2 flex items-center gap-2 sm:gap-4">
+            {/* Row 1: Logo · Search · Hamburger (mobile) / Clock + Market Status + Sign In (desktop).
+                flex-wrap (instead of squeezing the status block into a narrow
+                horizontal-scroll strip) lets it drop to its own full-width
+                line when it doesn't fit alongside Logo+Search — same clean
+                two-line layout (label row + "Opens/Closes at..." sub-row)
+                every market pill already uses, just without needing to
+                scroll to see all of it. */}
+            <div className="max-w-7xl mx-auto px-3 sm:px-4 pt-2.5 pb-2 flex items-center flex-wrap gap-2 sm:gap-4">
               {/* Logo */}
               <Link href="/" className="flex items-center gap-1.5 text-brand-500 font-bold text-base sm:text-lg shrink-0">
                 <TrendingUp size={20} />
@@ -51,8 +57,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               {/* Search — fills remaining space */}
               <div className="flex-1 min-w-0"><SearchBar /></div>
 
-              {/* Desktop: clock + market status */}
-              <div className="hidden lg:flex items-start gap-4 shrink-0 min-w-0 max-w-[42vw] overflow-x-auto scrollbar-hide">
+              {/* Desktop: clock + market status — wraps to its own line, full width, if it doesn't fit on row 1 */}
+              <div className="hidden lg:flex items-start flex-wrap gap-4 shrink-0">
                 <LiveClock inline />
                 <span className="text-dark-border text-xs shrink-0">|</span>
                 <MarketStatusInline />

@@ -55,6 +55,14 @@ US_ETFS = [
     ("UVXY","ProShares Ultra VIX Short-Term Futures ETF"),("VXX","iPath Series B S&P 500 VIX"),
 ]
 
+# ── NSE commodity ETFs (static — not in the official NSE equity CSV used by
+# fetch_in_stocks(), so they'd silently disappear on every regeneration
+# without this. Added for Gold/Silver price-tracking support.) ───────────────
+IN_ETFS = [
+    ("GOLDBEES", "Nippon India ETF Gold BeES"),
+    ("SILVERBEES", "Nippon India ETF Silver BeES"),
+]
+
 # ── Crypto list (static — no API needed) ─────────────────────────────────────
 CRYPTO_COINS = [
     ("BTC","Bitcoin"),("ETH","Ethereum"),("BNB","BNB"),("SOL","Solana"),
@@ -135,22 +143,44 @@ def fetch_us_stocks() -> list[tuple[str, str]]:
                     added += 1
         print(f"✓  +{added} ({len(stocks)} total)")
 
-    # Fallback: use NASDAQ public screener CSV if Wikipedia blocked
-    if len(stocks) < 100:
-        print("  Wikipedia blocked — fetching NASDAQ screener CSV …", end=" ", flush=True)
-        try:
-            url = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=5000&exchange=nasdaq,nyse,amex&download=true"
-            resp = requests.get(url, headers={**HEADERS, "Accept": "application/json"}, timeout=30)
-            data = resp.json()
-            rows = data.get("data", {}).get("rows", [])
-            for row in rows:
-                sym  = str(row.get("symbol","")).strip()
-                name = str(row.get("name","")).strip()
-                if sym and name and len(sym) <= 6:
+    # Always broaden with NASDAQ Trader's official symbol directory — covers
+    # ~12,800 NASDAQ + NYSE + AMEX listed tickers (the curated S&P/NASDAQ-100
+    # index lists above only cover ~1,500 of the largest names; mid/small-caps
+    # like RKT or UUUU were confirmed missing without this). No auth needed,
+    # unlike api.nasdaq.com's screener endpoint which now returns null rows
+    # (bot-detection) — verified directly before relying on this instead.
+    # Existing Wikipedia-sourced names are kept as-is (generally cleaner);
+    # this only fills in symbols Wikipedia didn't have.
+    print("  Broadening with NASDAQ Trader symbol directory …", end=" ", flush=True)
+    try:
+        added = 0
+        for fname, sym_idx, name_idx, test_idx in [
+            ("nasdaqlisted.txt", 0, 1, 3),
+            ("otherlisted.txt",  0, 1, 6),
+        ]:
+            url = f"https://www.nasdaqtrader.com/dynamic/SymDir/{fname}"
+            resp = requests.get(url, headers=HEADERS, timeout=30)
+            resp.raise_for_status()
+            for line in resp.text.splitlines()[1:]:
+                if not line or line.startswith("File Creation Time"):
+                    continue
+                cols = line.split("|")
+                if len(cols) <= max(sym_idx, name_idx, test_idx):
+                    continue
+                if cols[test_idx].strip().upper() == "Y":
+                    continue  # test issue, not a real tradeable symbol
+                sym  = cols[sym_idx].strip().replace(".", "-")
+                name = cols[name_idx].strip()
+                if not sym or not name or len(sym) > 6:
+                    continue
+                if any(k in name.lower() for k in (" warrant", " right", " unit ", " units")):
+                    continue  # SPAC-related noise, not stocks people search for here
+                if sym not in stocks:
                     stocks[sym] = name
-            print(f"✓  {len(rows)} rows")
-        except Exception as e:
-            print(f"✗  {e}")
+                    added += 1
+        print(f"✓  +{added} ({len(stocks)} total)")
+    except Exception as e:
+        print(f"✗  {e}")
 
     # Always include major ETFs
     for sym, name in US_ETFS:
@@ -203,6 +233,11 @@ def fetch_in_stocks() -> list[tuple[str, str]]:
             print(f"✓  {len(stocks)} stocks from FnO list")
         except Exception as e2:
             print(f"✗  {e2}")
+
+    # Always include commodity ETFs (not in the official equity CSV)
+    for sym, name in IN_ETFS:
+        if sym not in stocks:
+            stocks[sym] = name
 
     result = sorted(stocks.items(), key=lambda x: x[0])
     print(f"  → {len(result)} unique IN stocks total")
@@ -281,11 +316,25 @@ def write_universe(us: list, india: list, crypto: list):
             return results
     ''')
 
+    # Price-tracking-only symbols (commodity ETFs with no real company
+    # fundamentals) — prediction_engine.py imports this directly, so it must
+    # survive every regeneration. Was previously a hand-edit to this
+    # generated file that silently got wiped the first time the generator
+    # ran again; now part of the template itself.
+    tracking_only = textwrap.dedent('''\
+
+        # Price-tracking instruments only — no company fundamentals exist, so
+        # prediction_engine.py skips the fundamentals/sentiment/quality pipeline
+        # for these and returns a technical-only signal instead.
+        TRACKING_ONLY_SYMBOLS = {"GLD", "SLV", "GOLDBEES", "SILVERBEES"}
+    ''')
+
     content = (
         header
         + format_list("US_STOCKS", us) + "\n\n"
         + format_list("IN_STOCKS", india) + "\n\n"
         + format_list("CRYPTO_COINS", crypto)
+        + tracking_only
         + search_fn
     )
 

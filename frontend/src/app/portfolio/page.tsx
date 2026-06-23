@@ -291,10 +291,14 @@ export default function PortfolioPage() {
     return { ...h, curPrice, invested, current, plAmt, plPct, loading: quoteQueries[i]?.isLoading, signal, confidence, sigLoading: signalQueries[i]?.isLoading };
   });
 
-  const hasIN = totalInvestedIN > 0;
-  const hasUS = totalInvestedUS > 0;
-  const hasINHoldings = holdings.some(h => h.market === "IN");
-  const hasUSHoldings = holdings.some(h => h.market === "US");
+  // Gated on the selected market toggle too, not just whether holdings exist —
+  // otherwise both currencies' summary cards/tables/chart show simultaneously
+  // regardless of which market is selected, unlike every other page's market
+  // toggle (Daily Picks, Dashboard, Heatmap), which filters the whole view.
+  const hasIN = market === "IN" && totalInvestedIN > 0;
+  const hasUS = market === "US" && totalInvestedUS > 0;
+  const hasINHoldings = market === "IN" && holdings.some(h => h.market === "IN");
+  const hasUSHoldings = market === "US" && holdings.some(h => h.market === "US");
   const totalPLIN = totalCurrentIN - totalInvestedIN;
   const totalPLUS = totalCurrentUS - totalInvestedUS;
   const totalPLPctIN = totalInvestedIN > 0 ? (totalPLIN / totalInvestedIN) * 100 : 0;
@@ -359,12 +363,12 @@ export default function PortfolioPage() {
               </div>
             </div>
           )}
-          {/* Total holdings count when no prices loaded yet */}
+          {/* Selected-market holdings count while prices are still loading (or none in this market) */}
           {!hasIN && !hasUS && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div className="bg-dark-card border border-dark-border rounded-2xl p-4">
                 <p className="text-xs text-gray-400 mb-1">Holdings</p>
-                <p className="text-lg font-bold text-white">{holdings.length}</p>
+                <p className="text-lg font-bold text-white">{holdings.filter(h => h.market === market).length}</p>
               </div>
             </div>
           )}
