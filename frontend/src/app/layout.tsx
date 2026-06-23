@@ -86,12 +86,18 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 way MarketStatusInline shows all markets' hours regardless of
                 which one a given page has selected. */}
             <div className="border-t border-dark-border/40 px-3 sm:px-4 py-1.5 overflow-x-auto scrollbar-hide">
-              <div className="max-w-7xl mx-auto flex items-center gap-4 w-max">
-                <IndexBar market="IN" inline />
+              {/* No width utility here — IndexBar's own `inline` wrapper is
+                  already w-max, and nesting two width-constrained flex
+                  containers breaks width calculation in some browsers,
+                  causing items to overlap instead of sitting side by side.
+                  Flex items size to their content by default, so this row
+                  doesn't need one of its own. */}
+              <div className="max-w-7xl mx-auto flex items-center gap-4">
+                <div className="shrink-0"><IndexBar market="IN" inline /></div>
                 <span className="text-dark-border text-xs shrink-0">|</span>
-                <IndexBar market="US" inline />
+                <div className="shrink-0"><IndexBar market="US" inline /></div>
                 <span className="text-dark-border text-xs shrink-0">|</span>
-                <IndexBar market="CRYPTO" inline />
+                <div className="shrink-0"><IndexBar market="CRYPTO" inline /></div>
               </div>
             </div>
 
