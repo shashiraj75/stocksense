@@ -401,6 +401,7 @@ class PredictionEngine:
             reasoning = list(tech_signal.get("breakdown", []))
             bear_case: list = []
             confidence = self._apply_risk_reward_adjustment(signal, confidence, trade_levels, reasoning, bear_case)
+            confidence = self._apply_pledge_adjustment(market, info or {}, signal, confidence, reasoning, bear_case)
             result = {
                 "symbol": symbol,
                 "market": market,
@@ -546,6 +547,7 @@ class PredictionEngine:
         )
         trade_levels = self._trade_levels(current_price, signal, target_price, atr, horizon)
         confidence = self._apply_risk_reward_adjustment(signal, confidence, trade_levels, reasoning, bear_case)
+        confidence = self._apply_pledge_adjustment(market, info or {}, signal, confidence, reasoning, bear_case)
 
         import datetime as _dt
         result = {
@@ -696,6 +698,38 @@ class PredictionEngine:
                 "Confidence demoted because the stop is farther than the target."
             )
             reasoning.append({"indicator": "Risk/Reward", "signal": "BEARISH", "reason": msg})
+            bear_case.append(msg)
+            return min(confidence, 30)
+        return confidence
+
+    def _apply_pledge_adjustment(
+        self, market: str, info: dict, signal: str, confidence: int,
+        reasoning: list, bear_case: list,
+    ) -> int:
+        """
+        Same gap as _apply_risk_reward_adjustment, India-specific field.
+        Severe promoter pledge (>50%) is already described in the
+        fundamental-score reasoning as "severe margin call risk; avoid" —
+        but that text only costs -8 points inside a ±10-capped governance
+        bucket, one of six buckets feeding the composite. Strong growth/
+        profitability elsewhere can fully absorb that and still cross the
+        BUY threshold, leaving a confident-looking badge directly
+        contradicting the system's own "avoid" language. Demotes
+        confidence only (not composite score) for the same reason as the
+        risk/reward adjustment — keep Daily Picks/IC learning unaffected,
+        just stop showing high conviction on a stock the system itself
+        flags as a forced-selling risk.
+        """
+        if market != "IN" or signal != "BUY" or not info:
+            return confidence
+        pledge = info.get("promoter_pledge_pct")
+        if pledge is not None and pledge > 50:
+            msg = (
+                f"Severe promoter pledge ({pledge:.1f}%) — high risk of forced selling or "
+                "margin calls if the stock falls. Confidence demoted regardless of other "
+                "fundamentals."
+            )
+            reasoning.append({"indicator": "Governance Risk", "signal": "BEARISH", "reason": msg})
             bear_case.append(msg)
             return min(confidence, 30)
         return confidence
