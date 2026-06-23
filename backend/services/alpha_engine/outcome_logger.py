@@ -7,14 +7,23 @@ computes 1D / 5D / 20D / 60D actual returns.
 
 Only logs outcomes when the full forward window has elapsed — partial returns
 were previously logged silently and corrupted IC training data.
+
+Runs once per market (IN, US) — this used to hardcode the NSE ".NS" ticker
+suffix unconditionally, so US predictions (added later) could never resolve:
+"AAPL.NS" doesn't exist on Yahoo Finance, every fetch silently returned None,
+and US outcomes never accumulated at all despite US predictions being logged
+fine. The IC engine and meta-model were effectively IN-only despite ranking
+both markets' Daily Picks with the same learned weights.
 """
 
 from datetime import datetime, timezone
 
 import yfinance as yf
 
+_TICKER_SUFFIX = {"IN": ".NS", "US": ""}
 
-def _fetch_return(symbol: str, pred_date_str: str, days: int) -> float | None:
+
+def _fetch_return(symbol: str, pred_date_str: str, days: int, market: str = "IN") -> float | None:
     """
     Compute the actual return from pred_date to pred_date + `days` trading days.
     Returns None if fewer than `days` trading days have elapsed since pred_date
@@ -23,7 +32,7 @@ def _fetch_return(symbol: str, pred_date_str: str, days: int) -> float | None:
     try:
         from pandas import Timestamp
         pred_date = Timestamp(pred_date_str)
-        ticker = yf.Ticker(symbol + ".NS")
+        ticker = yf.Ticker(symbol + _TICKER_SUFFIX.get(market, ""))
         # Fetch enough history: 60 trading days ≈ 90 calendar days
         hist = ticker.history(start=pred_date_str, period="4mo")
         if hist.empty or len(hist) < 2:
@@ -47,8 +56,8 @@ def resolve_pending_outcomes():
     """
     Main entry point — called every 6 hours via outcome_resolver_loop in main.py.
 
-    For each horizon, finds predictions old enough that the full forward return
-    window has elapsed, fetches actual returns, and logs them.
+    For each market and horizon, finds predictions old enough that the full
+    forward return window has elapsed, fetches actual returns, and logs them.
     Never logs partial returns — a None from _fetch_return means "not ready yet".
     """
     try:
@@ -64,20 +73,22 @@ def resolve_pending_outcomes():
         ]
 
         total_resolved = 0
-        for horizon, min_days, d1, d5, d20, d60 in horizon_config:
-            pending = get_unresolved_predictions(horizon, min_days_old=min_days)
-            for row in pending:
-                symbol    = row["symbol"]
-                pred_date = row["pred_date"]
+        for market in ("IN", "US"):
+            for horizon, min_days, d1, d5, d20, d60 in horizon_config:
+                pending = get_unresolved_predictions(horizon, min_days_old=min_days, market=market)
+                for row in pending:
+                    symbol    = row["symbol"]
+                    pred_date = row["pred_date"]
 
-                r1  = _fetch_return(symbol, pred_date, 1)  if d1  else None
-                r5  = _fetch_return(symbol, pred_date, 5)  if d5  else None
-                r20 = _fetch_return(symbol, pred_date, 20) if d20 else None
-                r60 = _fetch_return(symbol, pred_date, 60) if d60 else None
+                    r1  = _fetch_return(symbol, pred_date, 1,  market) if d1  else None
+                    r5  = _fetch_return(symbol, pred_date, 5,  market) if d5  else None
+                    r20 = _fetch_return(symbol, pred_date, 20, market) if d20 else None
+                    r60 = _fetch_return(symbol, pred_date, 60, market) if d60 else None
 
-                if any(x is not None for x in (r1, r5, r20, r60)):
-                    log_outcome(symbol, horizon, pred_date, r1, r5, r20, return_60d=r60)
-                    total_resolved += 1
+                    if any(x is not None for x in (r1, r5, r20, r60)):
+                        log_outcome(symbol, horizon, pred_date, r1, r5, r20,
+                                    return_60d=r60, market=market)
+                        total_resolved += 1
 
         if total_resolved:
             print(f"[outcome_logger] Resolved {total_resolved} pending predictions")

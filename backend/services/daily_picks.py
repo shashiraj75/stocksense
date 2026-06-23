@@ -437,6 +437,7 @@ def _zscore_and_rank(
     ic_weights: dict[str, float],
     regime: dict,
     regime_id: int,
+    market: str = "IN",
 ) -> list[dict]:
     """
     Cross-sectional z-scoring + alpha computation for the full universe.
@@ -492,6 +493,7 @@ def _zscore_and_rank(
             combined_alpha=combined_alpha,
             regime_id=regime_id,
             horizon=horizon,
+            market=market,
         )
 
         # Ranking signal: meta_alpha when available (trained model), else IC alpha
@@ -652,12 +654,13 @@ def _generate_picks_inner(market: str = "IN") -> dict:
         # Phase 3 — IC weights (regime-adjusted)
         ic_weights = get_ic_weights(
             horizon,
+            market=market,
             regime_multipliers=regime.get("weight_multipliers"),
         )
         print(f"[picks] [{market}] {horizon} IC weights: {ic_weights}")
 
         # Phase 4 — Z-score + alpha
-        universe = _zscore_and_rank(items, ic_weights, regime, regime_id)
+        universe = _zscore_and_rank(items, ic_weights, regime, regime_id, market=market)
         ranked   = sorted(universe, key=lambda x: x.get("ranking_alpha", 0), reverse=True)
 
         # Quality gates before final selection:
@@ -744,6 +747,7 @@ def _generate_picks_inner(market: str = "IN") -> dict:
                     confidence_score=pick.get("confidence"),
                     is_daily_pick=True,
                     pick_rank=rank,
+                    market=market,
                 )
             except Exception as e:
                 print(f"[picks] [{market}] Log error for {pick['symbol']}: {e}")
@@ -784,7 +788,7 @@ def _generate_picks_inner(market: str = "IN") -> dict:
     # ── Phase 8: Adapt weights in background ─────────────────────────────────
     try:
         import threading
-        threading.Thread(target=run_adaptation, daemon=True).start()
+        threading.Thread(target=run_adaptation, args=(market,), daemon=True).start()
     except Exception as e:
         print(f"[weight_adapter] Could not start: {e}")
 

@@ -36,6 +36,7 @@ def init_db():
             logged_at      TEXT    NOT NULL,
             symbol         TEXT    NOT NULL,
             horizon        TEXT    NOT NULL,
+            market         TEXT    NOT NULL DEFAULT 'IN',
             tech_z         REAL,
             fund_z         REAL,
             sentiment_z    REAL,
@@ -52,6 +53,7 @@ def init_db():
             resolved_at  TEXT NOT NULL,
             symbol       TEXT NOT NULL,
             horizon      TEXT NOT NULL,
+            market       TEXT NOT NULL DEFAULT 'IN',
             pred_date    TEXT NOT NULL,
             return_1d    REAL,
             return_5d    REAL,
@@ -74,25 +76,36 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_outcome_lookup
             ON outcomes(symbol, pred_date, horizon);
         """)
+        # CREATE TABLE IF NOT EXISTS doesn't add columns to a table that
+        # already existed before `market` was introduced — guard each ALTER
+        # since SQLite errors (not no-ops) on a duplicate column.
+        for stmt in (
+            "ALTER TABLE predictions ADD COLUMN market TEXT NOT NULL DEFAULT 'IN'",
+            "ALTER TABLE outcomes ADD COLUMN market TEXT NOT NULL DEFAULT 'IN'",
+        ):
+            try:
+                c.execute(stmt)
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
 
 def log_prediction(symbol: str, horizon: str, factor_zscores: dict,
                    combined_alpha: float, meta_alpha: float | None,
                    signal: str, price: float, regime_label: str = "",
-                   **kwargs):
+                   market: str = "IN", **kwargs):
     if USE_POSTGRES:
         return _pg.log_prediction(symbol, horizon, factor_zscores, combined_alpha,
-                                   meta_alpha, signal, price, regime_label, **kwargs)
+                                   meta_alpha, signal, price, regime_label, market=market, **kwargs)
     init_db()
     with _lock, _conn() as c:
         c.execute("""
             INSERT INTO predictions
-              (logged_at, symbol, horizon, tech_z, fund_z, sentiment_z, quality_z,
+              (logged_at, symbol, horizon, market, tech_z, fund_z, sentiment_z, quality_z,
                combined_alpha, meta_alpha, signal, price, regime_label)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             datetime.now(timezone.utc).isoformat(),
-            symbol, horizon,
+            symbol, horizon, market,
             factor_zscores.get("tech"),
             factor_zscores.get("fund"),
             factor_zscores.get("sentiment"),
@@ -103,25 +116,26 @@ def log_prediction(symbol: str, horizon: str, factor_zscores: dict,
 
 def log_outcome(symbol: str, horizon: str, pred_date: str,
                 return_1d: float | None, return_5d: float | None,
-                return_20d: float | None, return_60d: float | None = None, **kwargs):
+                return_20d: float | None, return_60d: float | None = None,
+                market: str = "IN", **kwargs):
     if USE_POSTGRES:
         return _pg.log_outcome(symbol, horizon, pred_date, return_1d, return_5d, return_20d,
-                                return_60d=return_60d, **kwargs)
+                                return_60d=return_60d, market=market, **kwargs)
     init_db()
     with _lock, _conn() as c:
         existing = c.execute(
-            "SELECT id FROM outcomes WHERE symbol=? AND horizon=? AND pred_date=?",
-            (symbol, horizon, pred_date)
+            "SELECT id FROM outcomes WHERE symbol=? AND horizon=? AND pred_date=? AND market=?",
+            (symbol, horizon, pred_date, market)
         ).fetchone()
         if existing:
             return
         c.execute("""
-            INSERT INTO outcomes (resolved_at, symbol, horizon, pred_date,
+            INSERT INTO outcomes (resolved_at, symbol, horizon, pred_date, market,
                                   return_1d, return_5d, return_20d, return_60d)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             datetime.now(timezone.utc).isoformat(),
-            symbol, horizon, pred_date, return_1d, return_5d, return_20d, return_60d,
+            symbol, horizon, pred_date, market, return_1d, return_5d, return_20d, return_60d,
         ))
 
 
@@ -137,13 +151,14 @@ def log_regime(regime_id: int, label: str, features: list[float]):
         )
 
 
-def get_training_data(horizon: str, window_days: int | None = None) -> list[dict]:
+def get_training_data(horizon: str, market: str = "IN", window_days: int | None = None) -> list[dict]:
     """
     Join predictions with outcomes to get labelled training rows.
-    Forward return column selected by horizon.
+    Forward return column selected by horizon. IN and US train separately —
+    see services/postgres_store.py's get_training_data for why.
     """
     if USE_POSTGRES:
-        return _pg.get_training_data(horizon, window_days=window_days)
+        return _pg.get_training_data(horizon, market=market, window_days=window_days)
     init_db()
     # long horizon = 60D forward return (≈3 months), matching the stated holding period
     fwd_col = {"short": "return_5d", "medium": "return_20d", "long": "return_60d"}[horizon]
@@ -156,35 +171,37 @@ def get_training_data(horizon: str, window_days: int | None = None) -> list[dict
             JOIN outcomes o
               ON p.symbol = o.symbol
              AND p.horizon = o.horizon
+             AND p.market = o.market
              AND date(p.logged_at) = date(o.pred_date)
-            WHERE p.horizon = ?
+            WHERE p.horizon = ? AND p.market = ?
               AND o.{fwd_col} IS NOT NULL
-        """, (horizon,)).fetchall()
+        """, (horizon, market)).fetchall()
     return [dict(r) for r in rows]
 
 
-def get_unresolved_predictions(horizon: str, min_days_old: int) -> list[dict]:
+def get_unresolved_predictions(horizon: str, min_days_old: int, market: str = "IN") -> list[dict]:
     """
     Fetch predictions logged ≥ min_days_old ago that have no outcome entry yet.
     Used by the outcome logger to know which prices to fetch.
     """
     if USE_POSTGRES:
-        return _pg.get_unresolved_predictions(horizon, min_days_old)
+        return _pg.get_unresolved_predictions(horizon, min_days_old, market=market)
     init_db()
     with _lock, _conn() as c:
         rows = c.execute("""
             SELECT p.symbol, p.horizon, date(p.logged_at) AS pred_date, p.price
             FROM predictions p
-            WHERE p.horizon = ?
+            WHERE p.horizon = ? AND p.market = ?
               AND julianday('now') - julianday(p.logged_at) >= ?
               AND NOT EXISTS (
                   SELECT 1 FROM outcomes o
                   WHERE o.symbol = p.symbol
                     AND o.horizon = p.horizon
+                    AND o.market = p.market
                     AND o.pred_date = date(p.logged_at)
               )
             GROUP BY p.symbol, date(p.logged_at)
-        """, (horizon, min_days_old)).fetchall()
+        """, (horizon, market, min_days_old)).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -205,5 +222,5 @@ def get_regime_history() -> list[list[float]]:
     return result
 
 
-def count_training_rows(horizon: str) -> int:
-    return len(get_training_data(horizon))
+def count_training_rows(horizon: str, market: str = "IN") -> int:
+    return len(get_training_data(horizon, market=market))

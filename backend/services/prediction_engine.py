@@ -1740,8 +1740,9 @@ class PredictionEngine:
             from services.alpha_engine.ic_engine import get_ic_values
             from services.alpha_engine.store import count_training_rows
             from services.alpha_engine.ic_engine import MIN_REAL_DATA_ROWS
-            if count_training_rows(horizon) >= MIN_REAL_DATA_ROWS:
-                ic_vals = get_ic_values(horizon)
+            ic_market = kwargs.get("market", "IN")
+            if count_training_rows(horizon, market=ic_market) >= MIN_REAL_DATA_ROWS:
+                ic_vals = get_ic_values(horizon, market=ic_market)
                 avg_positive_ic = sum(max(0.0, v) for v in ic_vals.values()) / max(1, len(ic_vals))
                 # Normalise: IC of 0.07+ → 100; IC of 0 → 0. Clamp to [0,100].
                 historical_factor_reliability = round(min(100, avg_positive_ic / 0.07 * 100))

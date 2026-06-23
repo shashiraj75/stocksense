@@ -77,9 +77,17 @@ CREATE TABLE IF NOT EXISTS predictions (
     pick_rank         SMALLINT,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- The learning store had no market column at all — IN and US predictions
+-- were indistinguishable, and outcome_logger hardcoded the NSE ".NS" ticker
+-- suffix unconditionally, so US outcomes could never resolve. That meant the
+-- IC engine and meta-model were trained only on (the subset of) IN outcomes
+-- that resolved, yet that single learned weighting was applied to ranking
+-- both markets. Added market so IN and US each learn from their own outcomes.
+ALTER TABLE predictions ADD COLUMN IF NOT EXISTS market TEXT NOT NULL DEFAULT 'IN';
 CREATE INDEX IF NOT EXISTS idx_predictions_symbol_date ON predictions(symbol, logged_at);
 CREATE INDEX IF NOT EXISTS idx_predictions_horizon     ON predictions(horizon, logged_at);
 CREATE INDEX IF NOT EXISTS idx_predictions_daily_picks ON predictions(is_daily_pick, horizon, logged_at) WHERE is_daily_pick;
+CREATE INDEX IF NOT EXISTS idx_predictions_market       ON predictions(market, horizon, logged_at);
 
 CREATE TABLE IF NOT EXISTS outcomes (
     id           BIGSERIAL PRIMARY KEY,
@@ -96,6 +104,7 @@ CREATE TABLE IF NOT EXISTS outcomes (
     benchmark_return_60d DOUBLE PRECISION,
     UNIQUE (symbol, horizon, pred_date)
 );
+ALTER TABLE outcomes ADD COLUMN IF NOT EXISTS market TEXT NOT NULL DEFAULT 'IN';
 CREATE INDEX IF NOT EXISTS idx_outcomes_lookup ON outcomes(symbol, pred_date, horizon);
 
 CREATE TABLE IF NOT EXISTS regime_log (
@@ -284,6 +293,31 @@ def load_market_cache(key: str) -> dict | list | None:
 def init_db():
     with _get_pool().connection() as conn:
         conn.execute(SCHEMA_SQL)
+        _migrate_outcomes_market_constraint(conn)
+
+
+def _migrate_outcomes_market_constraint(conn) -> None:
+    """
+    One-time migration, guarded so it only runs once even though init_db()
+    runs on every startup (same pattern as other schema changes in this
+    file). The original UNIQUE (symbol, horizon, pred_date) constraint
+    predates the market column — without widening it, IN and US outcomes
+    for the same symbol/horizon/date would collide on ON CONFLICT.
+    Postgres doesn't support ADD CONSTRAINT IF NOT EXISTS directly, so this
+    checks information_schema first.
+    """
+    exists = conn.execute("""
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE table_name = 'outcomes' AND constraint_type = 'UNIQUE'
+          AND constraint_name = 'outcomes_symbol_horizon_pred_date_market_key'
+    """).fetchone()
+    if exists:
+        return
+    conn.execute("ALTER TABLE outcomes DROP CONSTRAINT IF EXISTS outcomes_symbol_horizon_pred_date_key")
+    conn.execute(
+        "ALTER TABLE outcomes ADD CONSTRAINT outcomes_symbol_horizon_pred_date_market_key "
+        "UNIQUE (symbol, horizon, pred_date, market)"
+    )
 
 
 def log_prediction(symbol: str, horizon: str, factor_zscores: dict,
@@ -297,23 +331,24 @@ def log_prediction(symbol: str, horizon: str, factor_zscores: dict,
                    bull_case: list | None = None,
                    bear_case: list | None = None,
                    is_daily_pick: bool = False,
-                   pick_rank: int | None = None):
+                   pick_rank: int | None = None,
+                   market: str = "IN"):
     contributions = contributions or {}
     with _get_pool().connection() as conn:
         conn.execute("""
             INSERT INTO predictions
-              (logged_at, symbol, horizon, tech_z, fund_z, sentiment_z, quality_z,
+              (logged_at, symbol, horizon, market, tech_z, fund_z, sentiment_z, quality_z,
                combined_alpha, meta_alpha, signal, price, regime_label,
                contrib_technical, contrib_fundamental, contrib_sentiment, contrib_quality,
                contrib_analyst, contrib_week52, contrib_regime, contrib_global_macro,
                contrib_risk_penalty, contrib_clamp_adj, composite_score,
                confidence_score, confidence_band, confidence_components,
                bull_case, bear_case, is_daily_pick, pick_rank)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s)
         """, (
-            datetime.now(timezone.utc), symbol, horizon,
+            datetime.now(timezone.utc), symbol, horizon, market,
             factor_zscores.get("tech"), factor_zscores.get("fund"),
             factor_zscores.get("sentiment"), factor_zscores.get("quality"),
             combined_alpha, meta_alpha, signal, price, regime_label,
@@ -336,16 +371,17 @@ def log_outcome(symbol: str, horizon: str, pred_date: str,
                 return_20d: float | None, return_60d: float | None = None,
                 benchmark_return_5d: float | None = None,
                 benchmark_return_20d: float | None = None,
-                benchmark_return_60d: float | None = None):
+                benchmark_return_60d: float | None = None,
+                market: str = "IN"):
     with _get_pool().connection() as conn:
         conn.execute("""
-            INSERT INTO outcomes (resolved_at, symbol, horizon, pred_date,
+            INSERT INTO outcomes (resolved_at, symbol, horizon, pred_date, market,
                                   return_1d, return_5d, return_20d, return_60d,
                                   benchmark_return_5d, benchmark_return_20d, benchmark_return_60d)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (symbol, horizon, pred_date) DO NOTHING
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (symbol, horizon, pred_date, market) DO NOTHING
         """, (
-            datetime.now(timezone.utc), symbol, horizon, pred_date,
+            datetime.now(timezone.utc), symbol, horizon, pred_date, market,
             return_1d, return_5d, return_20d, return_60d,
             benchmark_return_5d, benchmark_return_20d, benchmark_return_60d,
         ))
@@ -359,10 +395,13 @@ def log_regime(regime_id: int, label: str, features: list[float]):
         )
 
 
-def get_training_data(horizon: str, window_days: int | None = None) -> list[dict]:
+def get_training_data(horizon: str, market: str = "IN", window_days: int | None = None) -> list[dict]:
     """
     Join predictions with outcomes to get labelled training rows.
     Forward return column selected by horizon.
+    market: IN and US train completely separately — different fundamentals
+            distributions, different outcome dynamics, no reason to assume
+            the same factor weights transfer between them.
     window_days: if set, only include predictions logged within the last N days
                  (used by the multi-window IC engine).
     """
@@ -377,31 +416,33 @@ def get_training_data(horizon: str, window_days: int | None = None) -> list[dict
             JOIN outcomes o
               ON p.symbol = o.symbol
              AND p.horizon = o.horizon
+             AND p.market = o.market
              AND date(p.logged_at) = o.pred_date
-            WHERE p.horizon = %s
+            WHERE p.horizon = %s AND p.market = %s
               AND o.{fwd_col} IS NOT NULL
               {window_clause}
-        """, (horizon,)).fetchall()
+        """, (horizon, market)).fetchall()
     cols = ["tech_z", "fund_z", "sentiment_z", "quality_z", "combined_alpha",
             "meta_alpha", "signal", "regime_label", "fwd_return"]
     return [dict(zip(cols, r)) for r in rows]
 
 
-def get_unresolved_predictions(horizon: str, min_days_old: int) -> list[dict]:
+def get_unresolved_predictions(horizon: str, min_days_old: int, market: str = "IN") -> list[dict]:
     with _get_pool().connection() as conn:
         rows = conn.execute("""
             SELECT p.symbol, p.horizon, date(p.logged_at) AS pred_date, p.price
             FROM predictions p
-            WHERE p.horizon = %s
+            WHERE p.horizon = %s AND p.market = %s
               AND now() - p.logged_at >= (%s || ' days')::interval
               AND NOT EXISTS (
                   SELECT 1 FROM outcomes o
                   WHERE o.symbol = p.symbol
                     AND o.horizon = p.horizon
+                    AND o.market = p.market
                     AND o.pred_date = date(p.logged_at)
               )
             GROUP BY p.symbol, p.horizon, date(p.logged_at), p.price
-        """, (horizon, str(min_days_old))).fetchall()
+        """, (horizon, market, str(min_days_old))).fetchall()
     cols = ["symbol", "horizon", "pred_date", "price"]
     return [dict(zip(cols, r)) for r in rows]
 
@@ -418,8 +459,8 @@ def get_regime_history() -> list[list[float]]:
     return result
 
 
-def count_training_rows(horizon: str) -> int:
-    return len(get_training_data(horizon))
+def count_training_rows(horizon: str, market: str = "IN") -> int:
+    return len(get_training_data(horizon, market=market))
 
 
 # ── New: Score history (section 4) ──────────────────────────────────────────

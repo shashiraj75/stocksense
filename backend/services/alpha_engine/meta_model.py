@@ -4,6 +4,10 @@ Ridge Meta-Model (and optional XGBoost upgrade).
 Learns the optimal non-linear combination of factor z-scores + regime
 interactions that historically predicted forward returns best.
 
+Trained separately per market (IN, US) — same rationale as the IC engine:
+different fundamentals distributions and outcome dynamics, no reason to
+assume one market's learned model transfers to the other.
+
 Input features (11-dim):
   tech_z, fund_z, sentiment_z, quality_z     — 4 factor z-scores
   combined_alpha                              — IC-weighted alpha (pre-signal)
@@ -33,8 +37,8 @@ _cache: dict = {}
 MIN_ROWS = 100   # minimum labelled pairs to trust the meta-model
 
 
-def _model_path(horizon: str) -> str:
-    return os.path.join(_MODEL_DIR, f"meta_model_{horizon}.pkl")
+def _model_path(horizon: str, market: str = "IN") -> str:
+    return os.path.join(_MODEL_DIR, f"meta_model_{market}_{horizon}.pkl")
 
 
 def _build_features(tech_z: float, fund_z: float, sentiment_z: float,
@@ -59,11 +63,11 @@ def _build_features(tech_z: float, fund_z: float, sentiment_z: float,
     ], dtype=float)
 
 
-def train(horizon: str) -> bool:
+def train(horizon: str, market: str = "IN") -> bool:
     """
-    Train Ridge regression on stored (factor_zscores, fwd_return) pairs.
-    If xgboost is installed, also trains an XGBoost model and uses whichever
-    has lower cross-val RMSE.
+    Train Ridge regression on stored (factor_zscores, fwd_return) pairs for
+    one market. If xgboost is installed, also trains an XGBoost model and
+    uses whichever has lower cross-val RMSE.
     Returns True if training succeeded.
     """
     try:
@@ -73,9 +77,9 @@ def train(horizon: str) -> bool:
         from sklearn.model_selection import cross_val_score
         from services.alpha_engine.store import get_training_data
 
-        data = get_training_data(horizon)
+        data = get_training_data(horizon, market=market)
         if len(data) < MIN_ROWS:
-            print(f"[meta_model] {horizon}: only {len(data)} rows (need {MIN_ROWS}) — skipping")
+            print(f"[meta_model] {market}/{horizon}: only {len(data)} rows (need {MIN_ROWS}) — skipping")
             return False
 
         X, y = [], []
@@ -120,44 +124,45 @@ def train(horizon: str) -> bool:
                 xgb.fit(X_arr, y_arr)
                 best_model = xgb
                 best_rmse  = xgb_rmse
-                print(f"[meta_model] {horizon}: XGBoost wins (RMSE {xgb_rmse:.4f} vs Ridge {ridge_cv**0.5:.4f})")
+                print(f"[meta_model] {market}/{horizon}: XGBoost wins (RMSE {xgb_rmse:.4f} vs Ridge {ridge_cv**0.5:.4f})")
             else:
-                print(f"[meta_model] {horizon}: Ridge wins (RMSE {best_rmse:.4f})")
+                print(f"[meta_model] {market}/{horizon}: Ridge wins (RMSE {best_rmse:.4f})")
         except ImportError:
-            print(f"[meta_model] {horizon}: Ridge trained (RMSE {best_rmse:.4f}), xgboost not installed")
+            print(f"[meta_model] {market}/{horizon}: Ridge trained (RMSE {best_rmse:.4f}), xgboost not installed")
 
-        with open(_model_path(horizon), "wb") as f:
+        with open(_model_path(horizon, market), "wb") as f:
             pickle.dump(best_model, f)
 
         with _lock:
-            _cache[horizon] = best_model
+            _cache[f"{market}:{horizon}"] = best_model
 
-        print(f"[meta_model] {horizon}: model saved ({len(X)} rows)")
+        print(f"[meta_model] {market}/{horizon}: model saved ({len(X)} rows)")
         return True
 
     except Exception as e:
-        print(f"[meta_model] Training error ({horizon}): {e}")
+        print(f"[meta_model] Training error ({market}/{horizon}): {e}")
         return False
 
 
 def predict(tech_z: float, fund_z: float, sentiment_z: float,
             quality_z: float, combined_alpha: float,
-            regime_id: int, horizon: str) -> float | None:
+            regime_id: int, horizon: str, market: str = "IN") -> float | None:
     """
     Predict expected forward return for one stock.
     Returns None if no model is trained yet (caller should use combined_alpha instead).
     """
+    cache_key = f"{market}:{horizon}"
     with _lock:
-        model = _cache.get(horizon)
+        model = _cache.get(cache_key)
 
     if model is None:
-        path = _model_path(horizon)
+        path = _model_path(horizon, market)
         if os.path.exists(path):
             try:
                 with open(path, "rb") as f:
                     model = pickle.load(f)
                 with _lock:
-                    _cache[horizon] = model
+                    _cache[cache_key] = model
             except Exception:
                 return None
         else:
@@ -173,5 +178,5 @@ def predict(tech_z: float, fund_z: float, sentiment_z: float,
         return None
 
 
-def is_trained(horizon: str) -> bool:
-    return os.path.exists(_model_path(horizon))
+def is_trained(horizon: str, market: str = "IN") -> bool:
+    return os.path.exists(_model_path(horizon, market))
