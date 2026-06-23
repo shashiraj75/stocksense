@@ -17,6 +17,7 @@ All functions accept pre-fetched (ticker, df, info) to avoid redundant yfinance 
 Sector index data is cached for 15 minutes (shared across all stocks in a generation run).
 """
 
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -95,6 +96,26 @@ SECTOR_INDICES = {
     "Infra":    "^CNXINFRA",
     "Finance":  "NIFTY_FIN_SERVICE.NS",  # ^CNXFINANCE is delisted/404s on yfinance now
     "Nifty50":  "^NSEI",
+}
+
+# Keyword fallback for IN stocks outside the curated STOCK_SECTOR map —
+# maps screener.in's free-text sector/industry strings onto the same bucket
+# keys as SECTOR_INDICES above, so the momentum score still works for stocks
+# we haven't manually curated. Checked in order; first match wins.
+# Each entry is a regex with \b word boundaries — plain substring matching
+# previously let "it services" match inside "credit services" (IRFC's actual
+# industry), wrongly bucketing a financial company as "IT".
+_SECTOR_KEYWORD_MAP: dict[str, list[str]] = {
+    "IT":      [r"\binformation technology\b", r"\bcomputer\b", r"\bsoftware\b", r"\bit services\b"],
+    "Bank":    [r"\bbank\b"],
+    "Finance": [r"\bfinancial services\b", r"\bfinance\b", r"\bnbfc\b", r"\binsurance\b", r"\basset management\b", r"\bhousing finance\b", r"\bcredit\b"],
+    "Pharma":  [r"\bpharma\b", r"\bhealthcare\b", r"\bhospital\b", r"\bbiotechnology\b"],
+    "Auto":    [r"\bautomobile\b", r"\bauto\b", r"\btyres\b"],
+    "FMCG":    [r"\bfmcg\b", r"\bconsumer staples\b", r"\bfood products\b", r"\bbeverages\b", r"\bpersonal care\b", r"\bhousehold\b"],
+    "Metal":   [r"\bmetal\b", r"\bmining\b", r"\bsteel\b", r"\biron\b"],
+    "Energy":  [r"\boil\b", r"\bgas\b", r"\bpetroleum\b", r"\bpower generation\b", r"\benergy\b", r"\belectric utilities\b"],
+    "Realty":  [r"\brealty\b", r"\breal estate\b"],
+    "Infra":   [r"\binfrastructure\b", r"\bconstruction\b", r"\bcement\b", r"\bcapital goods\b", r"\bengineering\b"],
 }
 
 # Map each Nifty 100 symbol to its sector index key
@@ -477,7 +498,18 @@ def sector_strength_score(symbol: str, info: dict | None = None, market: str = "
     else:
         sector = STOCK_SECTOR.get(symbol.upper())
         if sector is None:
-            return {"score": 50, "reasons": [], "sector": "Unknown"}
+            # Not in the curated ~150-stock map — fall back to the
+            # screener.in-derived sector/industry text (now reliably populated
+            # via augment_info_with_screener) instead of just saying "Unknown".
+            # Try to map it onto one of our curated index buckets first so the
+            # momentum score still works; otherwise show the real text as-is.
+            raw = ((info or {}).get("industry") or (info or {}).get("sector") or "").lower()
+            mapped = next((bucket for bucket, patterns in _SECTOR_KEYWORD_MAP.items()
+                           if any(re.search(p, raw) for p in patterns)), None)
+            if mapped is None:
+                fallback = (info or {}).get("sector") or (info or {}).get("industry")
+                return {"score": 50, "reasons": [], "sector": fallback or "Unknown"}
+            sector = mapped
         returns = _get_sector_returns()
         benchmark_key = "Nifty50"
         benchmark_name = "Nifty 50"

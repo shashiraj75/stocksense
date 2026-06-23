@@ -171,11 +171,26 @@ def _resolve_screener_url(symbol: str) -> str | None:
             timeout=6,
         )
         if resp.status_code == 200:
-            for item in resp.json():
-                url = item.get("url", "")
-                if "/company/" in url and "/full-text-search/" not in url:
+            candidates = [
+                item.get("url", "") for item in resp.json()
+                if "/company/" in item.get("url", "") and "/full-text-search/" not in item.get("url", "")
+            ]
+            # Screener's search ranks by name relevance, not ticker match — a
+            # query like "IDEA" can rank "Ideaforge Technology" (name starts
+            # with "Idea") above "Vodafone Idea Ltd" (the actual exact-ticker
+            # page, /company/IDEA/...), silently attaching a totally unrelated
+            # company's fundamentals to our symbol. Always prefer a result
+            # whose URL company-code is an exact ticker match before falling
+            # back to the top relevance-ranked result.
+            for url in candidates:
+                code = url.strip("/").split("/")
+                code = code[1] if len(code) > 1 else ""
+                if code.upper() == symbol.upper():
                     _url_cache[symbol] = url
                     return url
+            if candidates:
+                _url_cache[symbol] = candidates[0]
+                return candidates[0]
     except Exception:
         pass
     return None
