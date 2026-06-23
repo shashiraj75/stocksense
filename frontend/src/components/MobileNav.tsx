@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { Menu, X } from "lucide-react";
 import { useAuth } from "@/lib/AuthContext";
 
-interface NavLink { href: string; label: string; accent?: boolean }
+interface NavLink { href: string; label: string; accent?: boolean; color?: string }
 
 export function MobileNav({ links }: { links: NavLink[] }) {
   const [open, setOpen] = useState(false);
@@ -38,7 +38,7 @@ export function MobileNav({ links }: { links: NavLink[] }) {
 
       {open && (
         <div className="absolute right-0 top-full mt-2 w-52 bg-dark-card border border-dark-border rounded-xl shadow-xl overflow-hidden z-50">
-          {links.map(({ href, label, accent }) => {
+          {links.map(({ href, label, accent, color }) => {
             const active = isActive(href);
             return (
               <Link
@@ -47,7 +47,9 @@ export function MobileNav({ links }: { links: NavLink[] }) {
                 onClick={() => setOpen(false)}
                 className={`block px-4 py-3 text-sm border-b border-dark-border last:border-0 transition-colors hover:bg-dark-border/50 ${
                   active
-                    ? "font-bold text-white border-l-2 border-l-white pl-3.5"
+                    ? "font-bold text-white border-l-2 border-l-brand-400 bg-white/5 pl-3.5"
+                    : color
+                    ? `font-medium ${color}`
                     : accent
                     ? "font-medium text-green-400 hover:text-green-300"
                     : "text-gray-300 hover:text-white"

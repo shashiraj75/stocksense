@@ -26,7 +26,7 @@ export const viewport: Viewport = {
 
 export const NAV_LINKS = [
   { href: "/picks",      label: "Daily Picks", accent: true },
-  { href: "/multibagger", label: "Multibagger" },
+  { href: "/multibagger", label: "Multibagger", color: "text-purple-400 hover:text-purple-300" },
   { href: "/dashboard",  label: "Dashboard" },
   { href: "/heatmap",    label: "Heatmap" },
   { href: "/screener",   label: "Screener" },

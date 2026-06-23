@@ -6,7 +6,7 @@ import { api } from "@/utils/api";
 import { useAuth } from "@/lib/AuthContext";
 import clsx from "clsx";
 
-interface NavLink { href: string; label: string; accent?: boolean }
+interface NavLink { href: string; label: string; accent?: boolean; color?: string }
 
 function AccuracyBadge() {
   const { data } = useQuery({
@@ -47,19 +47,21 @@ export function NavLinks({ links }: { links: NavLink[] }) {
 
   return (
     <div className="flex items-center gap-1 py-1 text-sm text-gray-400">
-      {links.map(({ href, label, accent }) => {
+      {links.map(({ href, label, accent, color }) => {
         const active = isActive(href);
         return (
           <Link
             key={href}
             href={href}
             className={clsx(
-              "px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap",
+              "px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap border focus:outline-none",
               active
-                ? "text-white font-semibold bg-white/10"
-                : accent
-                ? "font-medium text-green-400 hover:text-green-300 hover:bg-white/5"
-                : "hover:text-white hover:bg-white/5"
+                ? "text-white font-semibold bg-white/10 border-brand-400/60"
+                : clsx(
+                    "border-transparent",
+                    color ? color : accent ? "font-medium text-green-400 hover:text-green-300" : "hover:text-white",
+                    "hover:bg-white/5"
+                  )
             )}
           >
             {label}
