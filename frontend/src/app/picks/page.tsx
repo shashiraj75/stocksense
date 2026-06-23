@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { api } from "@/utils/api";
 import {
@@ -64,7 +64,7 @@ type LivePick = {
 // ── Constants ─────────────────────────────────────────────────────────────────
 const MARKETS = [
   { key: "IN" as const, short: "🇮🇳 IN", label: "🇮🇳 NSE India",  currency: "₹", locale: "en-IN", tz: "Asia/Kolkata",     genTime: "2 AM IST" },
-  { key: "US" as const, short: "🇺🇸 US", label: "🇺🇸 NYSE/NASDAQ", currency: "$", locale: "en-US", tz: "America/New_York", genTime: "8:30 AM ET" },
+  { key: "US" as const, short: "🇺🇸 US", label: "🇺🇸 NYSE/NASDAQ", currency: "$", locale: "en-US", tz: "America/New_York", genTime: "6:00 PM IST" },
 ];
 
 const HORIZONS = [
@@ -590,6 +590,11 @@ export default function DailyPicksPage() {
     // Poll every 60s when generating, every 5 min when idle
     refetchInterval: (query) => (query.state.data as any)?.generating ? 60_000 : 5 * 60_000,
     staleTime: 55_000, refetchOnWindowFocus: false, retry: 3, retryDelay: 8000,
+    // Keep showing the previous market's data while the new one loads —
+    // without this, switching IN/US briefly nulls `data`, collapsing the
+    // "Updated X ago" badge and the regime/results sections, which made
+    // the header's right-aligned button cluster visibly jump position.
+    placeholderData: keepPreviousData,
   });
 
   const currency = data?.currency ?? marketCfg.currency;
