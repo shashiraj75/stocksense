@@ -18,6 +18,10 @@ import { useAuth } from "@/lib/AuthContext";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { TradeLevelVisualizer } from "@/components/TradeLevelVisualizer";
 
+// Kill switch — set back to true to restore the "Was this signal useful?"
+// thumbs up/down prompt. Hidden per user feedback that it looked annoying.
+const SHOW_SIGNAL_FEEDBACK = false;
+
 type Tab = Horizon | "backtest" | "history" | "fundamentals";
 
 const HORIZON_TABS: { key: Tab; label: string }[] = [
@@ -569,10 +573,11 @@ export default function StockPage() {
                           );
                         })()}
 
-                        {/* Signal feedback thumbs — full prompt only before voting;
-                            once voted, collapse to a one-line confirmation so it
-                            doesn't keep taking the same space on every visit/stock. */}
-                        {!isCrypto && user && (
+                        {/* Signal feedback thumbs — hidden for now per feedback that
+                            it looked annoying; flip SHOW_SIGNAL_FEEDBACK back on to
+                            restore (full prompt only before voting, collapses to a
+                            one-line confirmation after). */}
+                        {SHOW_SIGNAL_FEEDBACK && !isCrypto && user && (
                           existingVote?.vote ? (
                             <p className="text-[11px] text-gray-500 text-center flex items-center justify-center gap-1.5">
                               Feedback recorded
