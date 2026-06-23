@@ -20,9 +20,10 @@ def get_screen(screen: Literal["quality_compounder", "multibagger_discovery", "t
     Instant — no live scraping happens here, only against the nightly cache.
     """
     from services import fundamentals_cache as cache
+    from services.multibagger_scorecard import annotate_and_rank
     try:
         cache.ensure_table()
-        rows = cache.query_screen(screen)
+        rows = annotate_and_rank(cache.query_screen(screen))
         return {
             "screen": screen,
             "count": len(rows),

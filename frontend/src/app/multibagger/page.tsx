@@ -1,10 +1,16 @@
 "use client";
-import { useState } from "react";
+import { useState, Fragment } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchMultibaggerScreen, fetchMultibaggerStatus, MultibaggerScreen, MultibaggerStock } from "@/utils/api";
-import { Gem, Wifi, Clock } from "lucide-react";
+import { Gem, Wifi, Clock, ChevronDown, ChevronUp, Flame, AlertTriangle, Check, X } from "lucide-react";
 import Link from "next/link";
 import clsx from "clsx";
+
+const VERDICT: Record<string, { label: string; color: string }> = {
+  strong_buy: { label: "Strong Buy", color: "text-bull bg-bull/10 border-bull/30" },
+  watchlist: { label: "Watchlist", color: "text-yellow-400 bg-yellow-500/10 border-yellow-500/30" },
+  avoid: { label: "Avoid", color: "text-bear bg-bear/10 border-bear/30" },
+};
 
 const SCREENS: { key: MultibaggerScreen; label: string; color: string; desc: string }[] = [
   {
@@ -40,6 +46,7 @@ const METRICS: { key: keyof MultibaggerStock; label: string; fmt: (v: number) =>
 
 export default function MultibaggerPage() {
   const [screen, setScreen] = useState<MultibaggerScreen>("quality_compounder");
+  const [expanded, setExpanded] = useState<string | null>(null);
   const active = SCREENS.find(s => s.key === screen)!;
 
   const { data, isLoading } = useQuery({
@@ -101,10 +108,19 @@ export default function MultibaggerPage() {
 
       {/* Results */}
       <div className="bg-dark-card border border-dark-border rounded-2xl overflow-hidden">
-        <div className="px-4 py-3 border-b border-dark-border flex items-center justify-between">
+        <div className="px-4 py-3 border-b border-dark-border flex items-center justify-between flex-wrap gap-2">
           <h2 className="font-semibold text-sm text-gray-300">{active.label}</h2>
-          {data && <span className="text-xs text-gray-500">{data.count} match{data.count !== 1 ? "es" : ""}</span>}
+          {data && data.count > 0 && (
+            <span className="text-xs text-gray-500">
+              {data.count} match{data.count !== 1 ? "es" : ""} ·{" "}
+              <span className="text-brand-400">{data.results.filter(r => r.shortlisted).length} shortlisted</span> (top ~20%)
+            </span>
+          )}
         </div>
+        <p className="px-4 pt-3 text-[11px] text-gray-500 leading-relaxed">
+          Score is a transparent rule-based checklist (12 fundamentals checks) — separate from, and not the same as, the AI signal shown on each stock's own page.
+          Click a row for the full breakdown. Verdict downgrades to Avoid if any Anti-Loss red flag is present, regardless of score.
+        </p>
 
         {isLoading ? (
           <div className="p-8 text-center text-sm text-gray-500">Loading…</div>
@@ -123,28 +139,97 @@ export default function MultibaggerPage() {
               <thead>
                 <tr className="border-b border-dark-border text-xs text-gray-500">
                   <th className="px-4 py-2.5 text-left">Stock</th>
+                  <th className="px-3 py-2.5 text-left whitespace-nowrap">Verdict</th>
+                  <th className="px-3 py-2.5 text-right whitespace-nowrap">Score</th>
                   {METRICS.map(m => <th key={m.key} className="px-3 py-2.5 text-right whitespace-nowrap">{m.label}</th>)}
+                  <th className="px-3 py-2.5"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-dark-border">
-                {data.results.map((r) => (
-                  <tr key={r.symbol} className="hover:bg-white/[0.03]">
-                    <td className="px-4 py-2.5">
-                      <Link href={`/stock/${r.symbol}?market=IN`} className="font-mono font-bold text-white hover:text-brand-400">
-                        {r.symbol}
-                      </Link>
-                      {r.company_name && <p className="text-[11px] text-gray-500 truncate max-w-[160px]">{r.company_name}</p>}
-                    </td>
-                    {METRICS.map(m => {
-                      const val = r[m.key];
-                      return (
-                        <td key={m.key} className="px-3 py-2.5 text-right font-mono text-gray-300 whitespace-nowrap">
-                          {typeof val === "number" ? m.fmt(val) : "—"}
+                {data.results.map((r, i) => {
+                  const showShortlistDivider = i > 0 && r.shortlisted === false && data.results[i - 1].shortlisted === true;
+                  const v = VERDICT[r.scorecard.verdict];
+                  const isOpen = expanded === r.symbol;
+                  return (
+                    <Fragment key={r.symbol}>
+                      {showShortlistDivider && (
+                        <tr key={`divider-${r.symbol}`}>
+                          <td colSpan={METRICS.length + 4} className="px-4 py-1.5 bg-dark-bg text-[11px] text-gray-500 uppercase tracking-wide">
+                            Other matches (outside the top 20% shortlist)
+                          </td>
+                        </tr>
+                      )}
+                      <tr
+                        key={r.symbol}
+                        onClick={() => setExpanded(isOpen ? null : r.symbol)}
+                        className={clsx("hover:bg-white/[0.03] cursor-pointer", r.shortlisted && "bg-brand-500/[0.04]")}
+                      >
+                        <td className="px-4 py-2.5">
+                          <div className="flex items-center gap-1.5">
+                            {r.shortlisted && <Flame size={12} className="text-orange-400 shrink-0" />}
+                            <Link href={`/stock/${r.symbol}?market=IN`} onClick={(e) => e.stopPropagation()} className="font-mono font-bold text-white hover:text-brand-400">
+                              {r.symbol}
+                            </Link>
+                          </div>
+                          {r.company_name && <p className="text-[11px] text-gray-500 truncate max-w-[160px]">{r.company_name}</p>}
                         </td>
-                      );
-                    })}
-                  </tr>
-                ))}
+                        <td className="px-3 py-2.5">
+                          <span className={clsx("inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border whitespace-nowrap", v.color)}>
+                            {r.scorecard.red_flags.length > 0 && <AlertTriangle size={10} />}
+                            {v.label}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2.5 text-right font-mono text-gray-300 whitespace-nowrap">
+                          {r.scorecard.score}/{r.scorecard.max_score}
+                        </td>
+                        {METRICS.map(m => {
+                          const val = r[m.key];
+                          return (
+                            <td key={m.key} className="px-3 py-2.5 text-right font-mono text-gray-300 whitespace-nowrap">
+                              {typeof val === "number" ? m.fmt(val) : "—"}
+                            </td>
+                          );
+                        })}
+                        <td className="px-3 py-2.5 text-gray-500">
+                          {isOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                        </td>
+                      </tr>
+                      {isOpen && (
+                        <tr key={`detail-${r.symbol}`}>
+                          <td colSpan={METRICS.length + 4} className="px-4 py-4 bg-dark-bg">
+                            <div className="grid sm:grid-cols-2 gap-4">
+                              <div>
+                                <p className="text-xs font-semibold text-gray-400 mb-2">Scorecard checklist</p>
+                                <ul className="space-y-1">
+                                  {r.scorecard.checks.map((c, ci) => (
+                                    <li key={ci} className="flex items-start gap-1.5 text-xs">
+                                      {c.passed
+                                        ? <Check size={13} className="text-bull shrink-0 mt-0.5" />
+                                        : <X size={13} className="text-gray-600 shrink-0 mt-0.5" />}
+                                      <span className={c.passed ? "text-gray-300" : "text-gray-600"}>{c.label}</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                              {r.scorecard.red_flags.length > 0 && (
+                                <div>
+                                  <p className="text-xs font-semibold text-bear mb-2 flex items-center gap-1.5">
+                                    <AlertTriangle size={13} /> Anti-loss red flags
+                                  </p>
+                                  <ul className="space-y-1">
+                                    {r.scorecard.red_flags.map((f, fi) => (
+                                      <li key={fi} className="text-xs text-red-300">{f}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>

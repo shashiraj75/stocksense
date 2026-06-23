@@ -231,6 +231,14 @@ export interface MultibaggerStock {
   price_to_sales: number | null;
   operating_cf_latest_cr: number | null;
   updated_at: string;
+  scorecard: {
+    score: number;
+    max_score: number;
+    verdict: "strong_buy" | "watchlist" | "avoid";
+    checks: { label: string; passed: boolean }[];
+    red_flags: string[];
+  };
+  shortlisted: boolean;
 }
 
 export const fetchMultibaggerScreen = (screen: MultibaggerScreen) =>
