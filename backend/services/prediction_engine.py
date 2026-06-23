@@ -1269,19 +1269,27 @@ class PredictionEngine:
             if op_cf is None:
                 op_cf = info.get("operatingCashflows")
 
+            # Financial-sector check — banks/NBFCs/insurers structurally violate
+            # several "normal company" checks below for accounting reasons, not
+            # because the business is unhealthy (e.g. loans disbursed count as
+            # operating cash outflows under Ind-AS, routinely making bank OCF
+            # negative even for healthy banks).
+            sector = (info.get("sector") or "").lower()
+            industry = (info.get("industry") or "").lower()
+            is_financial = any(k in sector or k in industry for k in ("financial", "bank", "insurance", "nbfc"))
+
             # Reject if EITHER metric is severely negative (was: AND — too strict)
             if roe is not None and roe < -0.10:
                 rejections.append(f"Severely negative ROE ({roe*100:.1f}%) — destroying shareholder value")
             elif profit_margin is not None and profit_margin < -0.15:
                 rejections.append(f"Deeply loss-making: profit margins {profit_margin*100:.1f}%")
 
-            # OCF gate only applies to medium/long — growth stocks may have negative OCF short-term
-            if horizon != "short" and op_cf is not None and op_cf <= 0:
+            # OCF gate only applies to medium/long — growth stocks may have negative OCF short-term.
+            # Exempt financial-sector stocks — see is_financial comment above.
+            if not is_financial and horizon != "short" and op_cf is not None and op_cf <= 0:
                 rejections.append("Non-positive operating cash flows — core business not generating cash")
 
             # Extreme leverage — exclude NBFC/banks by checking sector
-            sector = (info.get("sector") or "").lower()
-            is_financial = any(k in sector for k in ("financial", "bank", "insurance"))
             de = info.get("debtToEquity")
             if not is_financial and de and de > 500:
                 rejections.append(
