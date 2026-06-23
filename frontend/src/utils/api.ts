@@ -249,7 +249,15 @@ export const fetchMultibaggerScreen = (screen: MultibaggerScreen, market: "IN" |
     "/api/multibagger/screen", { params: { screen, market } }
   ).then((r) => r.data);
 
+export interface MultibaggerRefreshSummary {
+  total: number;
+  refreshed: number;
+  skipped: number;
+  failed: number;
+  elapsed_minutes: number;
+}
+
 export const fetchMultibaggerStatus = (market: "IN" | "US" = "IN") =>
-  api.get<{ market: string; running: boolean; last_summary: any; last_refreshed: string | null }>(
+  api.get<{ market: string; running: boolean; last_summary: MultibaggerRefreshSummary | null; last_refreshed: string | null }>(
     "/api/multibagger/status", { params: { market } }
   ).then((r) => r.data);

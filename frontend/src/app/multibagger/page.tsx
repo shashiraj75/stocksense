@@ -89,7 +89,11 @@ export default function MultibaggerPage() {
           <Gem size={22} className="text-brand-500" />
           <div>
             <h1 className="text-2xl font-bold">Multibagger Screen</h1>
-            <p className="text-sm text-gray-400 mt-1">Three hard-filter screens — never merge them, that's how you get zero results</p>
+            <p className="text-sm text-gray-400 mt-1">
+              Three hard-filter screens — never merge them, that's how you get zero results
+              {" · refreshed nightly at " + (market === "IN" ? "10:30 PM IST" : "7:30 AM IST")}
+              {status?.last_summary?.total ? ` · screened from ${status.last_summary.total.toLocaleString()} ${market === "IN" ? "NSE" : "US"} stocks` : ""}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
