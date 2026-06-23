@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect } from "react";
-import { useQueries } from "@tanstack/react-query";
 import { fetchQuote, fetchPrediction, Market, api } from "@/utils/api";
+import { useStaggeredQueries } from "@/hooks/useStaggeredQueries";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { SignalBadge } from "@/components/SignalBadge";
 import Link from "next/link";
@@ -278,22 +278,29 @@ export default function PortfolioPage() {
       .catch(() => {});
   };
 
-  const quoteQueries = useQueries({
-    queries: holdings.map(h => ({
+  // Staggered, not plain useQueries — firing one quote + one prediction
+  // request per holding simultaneously hits the browser's per-origin
+  // connection cap once a portfolio has more than a handful of rows,
+  // leaving most of them stuck loading even though the backend itself
+  // handles the concurrent load fine.
+  const quoteQueries = useStaggeredQueries(
+    holdings.map(h => ({
       queryKey: ["quote", h.symbol, h.market],
       queryFn: () => fetchQuote(h.symbol, h.market),
       staleTime: 5 * 60_000,
     })),
-  });
+    8
+  );
 
-  const signalQueries = useQueries({
-    queries: holdings.map(h => ({
+  const signalQueries = useStaggeredQueries(
+    holdings.map(h => ({
       queryKey: ["prediction", h.symbol, h.market, "medium"],
       queryFn: () => fetchPrediction(h.symbol, h.market, "medium"),
       staleTime: 15 * 60_000,   // predictions cache for 15 min
       retry: 1,
     })),
-  });
+    6
+  );
 
   const add = async () => {
     setError("");
