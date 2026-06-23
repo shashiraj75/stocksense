@@ -287,7 +287,10 @@ export default function StockPage() {
   }
 
   return (
-    <div className="space-y-5">
+    // Negative top margin pulls just this page closer to the nav row above —
+    // scoped here rather than on the shared <main> padding in layout.tsx,
+    // which every other page also relies on.
+    <div className="space-y-5 -mt-2 sm:-mt-3">
       {!isCrypto && <MarketDisclaimer market={market} />}
 
       {/* ── Hero Header Card ── */}
