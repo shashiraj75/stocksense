@@ -257,6 +257,16 @@ export interface MultibaggerRefreshSummary {
   elapsed_minutes: number;
 }
 
+export const importPortfolioHoldings = (
+  userId: string,
+  market: Market,
+  holdings: { symbol: string; qty: number; avgPrice: number }[]
+) =>
+  api.post<{ added: number; updated: number; total: number }>(
+    `/api/portfolio/${userId}/import`,
+    { holdings: holdings.map(h => ({ symbol: h.symbol, market, qty: h.qty, avg_price: h.avgPrice })) }
+  ).then(r => r.data);
+
 export const fetchMultibaggerStatus = (market: "IN" | "US" = "IN") =>
   api.get<{ market: string; running: boolean; last_summary: MultibaggerRefreshSummary | null; last_refreshed: string | null }>(
     "/api/multibagger/status", { params: { market } }

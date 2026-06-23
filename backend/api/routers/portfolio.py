@@ -46,6 +46,17 @@ class HoldingUpdate(BaseModel):
     avg_price: float
 
 
+class ImportHolding(BaseModel):
+    symbol: str
+    market: Literal["IN", "US"]
+    qty: float
+    avg_price: float
+
+
+class ImportRequest(BaseModel):
+    holdings: list[ImportHolding]
+
+
 @router.on_event("startup")
 def startup():
     try:
@@ -83,6 +94,48 @@ def add_holding(user_id: str, body: HoldingCreate):
             )
         return {"id": holding_id, "symbol": body.symbol.upper(), "market": body.market,
                 "qty": body.qty, "avgPrice": body.avg_price}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{user_id}/import")
+def import_holdings(user_id: str, body: ImportRequest):
+    """
+    Bulk import from a broker export (CSV/Excel) or pasted text, parsed
+    client-side into normalized rows. Merges rather than replaces: a symbol
+    already in the portfolio (same market) gets its qty/avg_price updated
+    in place; anything new is inserted. Holdings not present in the import
+    are left untouched — this is intentionally additive, not destructive.
+    """
+    try:
+        _ensure_table()
+        added = 0
+        updated = 0
+        with _conn() as conn:
+            existing = conn.execute(
+                "SELECT id, symbol, market FROM portfolio_holdings WHERE user_id = %s",
+                (user_id,)
+            ).fetchall()
+            existing_map = {(sym, mkt): hid for hid, sym, mkt in existing}
+
+            for h in body.holdings:
+                sym = h.symbol.upper()
+                key = (sym, h.market)
+                if key in existing_map:
+                    conn.execute(
+                        "UPDATE portfolio_holdings SET qty = %s, avg_price = %s WHERE id = %s",
+                        (h.qty, h.avg_price, existing_map[key])
+                    )
+                    updated += 1
+                else:
+                    holding_id = str(uuid.uuid4())
+                    conn.execute(
+                        "INSERT INTO portfolio_holdings (id, user_id, symbol, market, qty, avg_price) VALUES (%s, %s, %s, %s, %s, %s)",
+                        (holding_id, user_id, sym, h.market, h.qty, h.avg_price)
+                    )
+                    existing_map[key] = holding_id  # guard against duplicate rows within the same import batch
+                    added += 1
+        return {"added": added, "updated": updated, "total": len(body.holdings)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

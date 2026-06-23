@@ -6,12 +6,13 @@ import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { SignalBadge } from "@/components/SignalBadge";
 import Link from "next/link";
 import clsx from "clsx";
-import { PlusCircle, Trash2, TrendingUp, TrendingDown, Briefcase, Wifi, Pencil, Check, X } from "lucide-react";
+import { PlusCircle, Trash2, TrendingUp, TrendingDown, Briefcase, Wifi, Pencil, Check, X, Upload } from "lucide-react";
 import { PortfolioAllocationChart } from "@/components/PortfolioAllocationChart";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
 import { StockSymbolField } from "@/components/StockSymbolField";
 import type { StockResult } from "@/hooks/useStockSearch";
 import { useAuth } from "@/lib/AuthContext";
+import { ImportPortfolioModal } from "@/components/ImportPortfolioModal";
 
 interface Holding {
   id: string;
@@ -179,6 +180,7 @@ export default function PortfolioPage() {
   const [qty, setQty] = useState("");
   const [avgPrice, setAvgPrice] = useState("");
   const [error, setError] = useState("");
+  const [showImport, setShowImport] = useState(false);
 
   // Load from backend when the user is ready. If the server has nothing yet
   // but this browser's localStorage does, migrate those old local-only
@@ -208,6 +210,13 @@ export default function PortfolioPage() {
       })
       .catch(() => setHoldings(loadLocal()));
   }, [apiBase]);
+
+  const refetchHoldings = () => {
+    if (!apiBase) return;
+    api.get<{ items: Holding[] }>(apiBase)
+      .then(res => { setHoldings(res.data.items); saveLocal(res.data.items); })
+      .catch(() => {});
+  };
 
   const quoteQueries = useQueries({
     queries: holdings.map(h => ({
@@ -314,13 +323,30 @@ export default function PortfolioPage() {
           <h1 className="text-2xl font-bold">Portfolio</h1>
           <p className="text-gray-400 text-sm">Track your holdings and live P&L</p>
         </div>
+        <button
+          onClick={() => setShowImport(true)}
+          disabled={!apiBase}
+          className="ml-auto flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border border-dark-border text-gray-400 hover:text-white hover:border-white/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          <Upload size={13} /> Import Portfolio
+        </button>
         {holdings.length > 0 && (
-          <span className="ml-auto flex items-center gap-1.5 text-xs text-gray-500">
+          <span className="flex items-center gap-1.5 text-xs text-gray-500">
             <Wifi size={12} className="text-green-500" />
             Tracking {holdings.length} holding{holdings.length !== 1 ? "s" : ""} · live prices
           </span>
         )}
       </div>
+
+      {showImport && apiBase && (
+        <ImportPortfolioModal
+          userId={userId}
+          defaultMarket={market}
+          existingHoldings={holdings}
+          onClose={() => setShowImport(false)}
+          onImported={refetchHoldings}
+        />
+      )}
 
       {/* Add holding form */}
       <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
