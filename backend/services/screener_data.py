@@ -305,62 +305,45 @@ def _parse_screener_page(soup: BeautifulSoup, symbol: str) -> dict:
             elif "net interest income" in name or "nii" == name:
                 data["nii_cr"] = val
 
-    # ── Compounded growth rates table ─────────────────────────────────────────
-    # Screener shows: Sales/Profit/Stock price growth for 10Y/5Y/3Y/TTM
-    growth_section = soup.find("section", id="growth")
-    if not growth_section:
-        # Try by heading text
-        for section in soup.find_all("section"):
-            h2 = section.find("h2")
-            if h2 and "compounded" in h2.get_text(strip=True).lower():
-                growth_section = section
-                break
-
-    if growth_section:
-        for table in growth_section.find_all("table"):
-            rows = table.find_all("tr")
-            if not rows:
+    # ── Compounded growth rates ────────────────────────────────────────────────
+    # Screener now renders these as four separate "ranges-table" mini-tables
+    # (Compounded Sales Growth / Compounded Profit Growth / Stock Price CAGR /
+    # Return on Equity), each one row-per-period rather than the single wide
+    # table with period columns this used to be (and which no longer exists —
+    # there is no <section id="growth"> any more). They're currently nested
+    # inside <section id="profit-loss">, but we search the whole document by
+    # class instead of relying on that location, since screener.in has moved
+    # this block before.
+    PERIOD_MAP = {
+        "10 years": "10y", "5 years": "5y", "3 years": "3y",
+        "ttm": "ttm", "trailing": "ttm",
+        "1 year": "1y", "last year": "1y",
+    }
+    METRIC_KEY_MAP = {
+        "compounded sales growth":  "sales_growth",
+        "compounded profit growth": "profit_growth",
+        "stock price cagr":         "price_cagr",
+        "return on equity":         "roe",
+    }
+    for table in soup.find_all("table", class_="ranges-table"):
+        header = table.find("th")
+        if not header:
+            continue
+        metric = METRIC_KEY_MAP.get(header.get_text(strip=True).lower())
+        if not metric:
+            continue
+        for row in table.find_all("tr")[1:]:
+            cells = row.find_all("td")
+            if len(cells) != 2:
                 continue
-            # Build column index map from header row.
-            # Screener uses <th> or <td> for header cells depending on table type.
-            # Columns are some subset of: 10 Years / 5 Years / 3 Years / TTM
-            col_map: dict[str, int] = {}
-            header_row = rows[0]
-            header_cells = header_row.find_all("th") or header_row.find_all("td")
-            for i, cell in enumerate(header_cells[1:], 0):  # skip label column
-                h = cell.get_text(strip=True).lower()
-                if "10" in h:
-                    col_map["10y"] = i
-                elif "5" in h:
-                    col_map["5y"] = i
-                elif "3" in h:
-                    col_map["3y"] = i
-                elif "ttm" in h or "trailing" in h:
-                    col_map["ttm"] = i
+            period = PERIOD_MAP.get(cells[0].get_text(strip=True).lower().rstrip(":"))
+            if not period:
+                continue
+            val = _parse_number(cells[1].get_text(strip=True))
+            if val is not None:
+                data[f"{metric}_{period}_pct"] = val
 
-            for row in rows[1:]:
-                cells = row.find_all("td")
-                if len(cells) < 2:
-                    continue
-                label = cells[0].get_text(strip=True).lower()
-                vals = [_parse_number(c.get_text(strip=True)) for c in cells[1:]]
-
-                def _get(key: str):
-                    idx = col_map.get(key)
-                    return vals[idx] if idx is not None and idx < len(vals) else None
-
-                if "sales growth" in label:
-                    data["sales_growth_3y_pct"]  = _get("3y")
-                    data["sales_growth_5y_pct"]  = _get("5y")
-                    data["sales_growth_ttm_pct"] = _get("ttm")
-                elif "profit growth" in label:
-                    data["profit_growth_3y_pct"]  = _get("3y")
-                    data["profit_growth_5y_pct"]  = _get("5y")
-                    data["profit_growth_ttm_pct"] = _get("ttm")
-                elif "stock price cagr" in label or "price cagr" in label:
-                    data["price_cagr_5y_pct"] = _get("5y")
-
-    # ── Fallback growth from P&L annual data (banks lack #growth section) ───────
+    # ── Fallback growth from P&L annual data (banks lack the ranges-tables) ───
     # Banks on screener.in don't have the compounded growth table — calculate
     # 3-year CAGR from the annual profit-loss revenue and net profit rows instead.
     if data.get("sales_growth_3y_pct") is None:

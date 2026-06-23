@@ -1084,29 +1084,33 @@ export default function StockPage() {
                       <thead>
                         <tr className="text-gray-500 text-xs">
                           <th className="text-left pb-2 font-medium">Metric</th>
-                          <th className="text-right pb-2 font-medium">3Y CAGR</th>
+                          <th className="text-right pb-2 font-medium">10Y CAGR</th>
                           <th className="text-right pb-2 font-medium">5Y CAGR</th>
-                          <th className="text-right pb-2 font-medium">TTM</th>
+                          <th className="text-right pb-2 font-medium">3Y CAGR</th>
+                          <th className="text-right pb-2 font-medium">TTM / Latest</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-dark-border">
                         {[
-                          { label: "Sales Growth",  k3: "sales_growth_3y_pct",  k5: "sales_growth_5y_pct",  kt: "sales_growth_ttm_pct" },
-                          { label: "Profit Growth", k3: "profit_growth_3y_pct", k5: "profit_growth_5y_pct", kt: "profit_growth_ttm_pct" },
-                          { label: "Price CAGR",    k3: null,                   k5: "price_cagr_5y_pct",    kt: null },
-                        ].map(({ label, k3, k5, kt }) => {
-                          const v3 = k3 ? screenerFund[k3] : null;
-                          const v5 = k5 ? screenerFund[k5] : null;
-                          const vt = kt ? screenerFund[kt] : null;
-                          if (v3 == null && v5 == null && vt == null) return null;
+                          { label: "Sales Growth",     k10: "sales_growth_10y_pct",  k5: "sales_growth_5y_pct",  k3: "sales_growth_3y_pct",  klast: "sales_growth_ttm_pct" },
+                          { label: "Profit Growth",    k10: "profit_growth_10y_pct", k5: "profit_growth_5y_pct", k3: "profit_growth_3y_pct", klast: "profit_growth_ttm_pct" },
+                          { label: "Price CAGR",       k10: "price_cagr_10y_pct",    k5: "price_cagr_5y_pct",    k3: "price_cagr_3y_pct",    klast: "price_cagr_1y_pct" },
+                          { label: "Return on Equity", k10: "roe_10y_pct",           k5: "roe_5y_pct",           k3: "roe_3y_pct",           klast: "roe_1y_pct" },
+                        ].map(({ label, k10, k5, k3, klast }) => {
+                          const v10 = screenerFund[k10];
+                          const v5 = screenerFund[k5];
+                          const v3 = screenerFund[k3];
+                          const vlast = screenerFund[klast];
+                          if (v10 == null && v5 == null && v3 == null && vlast == null) return null;
                           const color = (v: number | null) => v == null ? "text-gray-600" : v >= 0 ? "text-green-400" : "text-red-400";
                           const fmt = (v: number | null) => v == null ? "—" : (v >= 0 ? "+" : "") + v.toFixed(1) + "%";
                           return (
                             <tr key={label}>
                               <td className="py-2 text-gray-300 font-medium">{label}</td>
-                              <td className={clsx("py-2 text-right font-mono font-bold tabular-nums", color(v3))}>{fmt(v3)}</td>
+                              <td className={clsx("py-2 text-right font-mono font-bold tabular-nums", color(v10))}>{fmt(v10)}</td>
                               <td className={clsx("py-2 text-right font-mono font-bold tabular-nums", color(v5))}>{fmt(v5)}</td>
-                              <td className={clsx("py-2 text-right font-mono font-bold tabular-nums", color(vt))}>{fmt(vt)}</td>
+                              <td className={clsx("py-2 text-right font-mono font-bold tabular-nums", color(v3))}>{fmt(v3)}</td>
+                              <td className={clsx("py-2 text-right font-mono font-bold tabular-nums", color(vlast))}>{fmt(vlast)}</td>
                             </tr>
                           );
                         })}
