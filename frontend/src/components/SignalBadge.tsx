@@ -24,16 +24,16 @@ export function SignalBadge({
       ? "bg-bear/20 text-bear border border-bear/40"
       : "bg-neutral/20 text-neutral border border-neutral/40";
 
-  const label =
-    signal === "BUY" && confidence !== undefined && confidence < 45
-      ? "HOLD"
-      : signal;
-
-  const effectiveSignal = label as Signal;
+  // Always show the backend's actual signal — never relabel it. The backend's
+  // BUY/HOLD/SELL bands (composite score >=60 / 45-59 / <45) are the single
+  // source of truth; a weak BUY is communicated via muted color (getBuyClasses
+  // above), not by silently swapping the word to HOLD, which previously made
+  // the same stock look like BUY on one page and HOLD on another.
+  const label = signal;
 
   const Icon =
-    effectiveSignal === "BUY"  ? TrendingUp   :
-    effectiveSignal === "SELL" ? TrendingDown  :
+    label === "BUY"  ? TrendingUp   :
+    label === "SELL" ? TrendingDown  :
     Minus;
 
   if (size === "lg") {
