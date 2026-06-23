@@ -104,7 +104,7 @@ export default function Dashboard() {
 
       {/* Market Overview — layout matches Market Heatmap header style */}
       <div className="space-y-3">
-        <div className="flex items-center justify-between flex-wrap gap-4">
+        <div className="flex items-center flex-wrap gap-4">
           <div className="flex items-center gap-3">
             <LayoutDashboard size={22} className="text-brand-500" />
             <div>
@@ -112,6 +112,11 @@ export default function Dashboard() {
               <p className="text-sm text-gray-400 mt-1">Live indices, top movers &amp; market sentiment</p>
             </div>
           </div>
+          {market !== "CRYPTO" && market !== "COMMODITY" && (
+            <div className="overflow-x-auto scrollbar-hide min-w-0 max-w-full">
+              <IndexBar market={market as any} inline />
+            </div>
+          )}
           <div className="flex items-center gap-3 ml-auto flex-wrap justify-end min-w-0 max-w-full">
             {/* Live status / loading badge */}
             <div className={clsx(
@@ -146,15 +151,14 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
-        {/* Index bar */}
-        <div className="bg-dark-card border border-dark-border rounded-xl px-4 overflow-x-auto scrollbar-hide">
-          {market === "CRYPTO"
-            ? <p className="text-xs text-gray-500 py-3">Live index data unavailable for crypto</p>
-            : market === "COMMODITY"
-              ? <p className="text-xs text-gray-500 py-3">Tracking only — no AI signal for commodity ETFs (see each card&apos;s stock page for details)</p>
-              : <IndexBar market={market as any} />
-          }
-        </div>
+        {/* Index unavailable notice — crypto/commodity have no index data */}
+        {(market === "CRYPTO" || market === "COMMODITY") && (
+          <p className="text-xs text-gray-500 px-1">
+            {market === "CRYPTO"
+              ? "Live index data unavailable for crypto"
+              : "Tracking only — no AI signal for commodity ETFs (see each card's stock page for details)"}
+          </p>
+        )}
       </div>
 
       {/* Horizon info cards */}
