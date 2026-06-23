@@ -2,9 +2,15 @@ name: Multibagger Fundamentals Refresh (Nightly)
 
 on:
   schedule:
-    # 21:30 UTC = 3:00 AM IST — after Daily Picks (2 AM IST), before markets open.
-    # ~2,300 NSE stocks at a polite scrape pace takes roughly 1-2 hours.
-    - cron: "30 21 * * 0-4"   # Sun–Thu UTC = Mon–Fri IST (market days)
+    # 17:00 UTC = 10:30 PM IST — deliberately NOT during Daily Picks' window.
+    # IN Daily Picks starts 20:30 UTC (2 AM IST) and runs ~4 hrs; US Daily Picks
+    # starts 12:30 UTC and is generously assumed done well before this. Both
+    # this job and Daily Picks hit screener.in through the same backend
+    # process — running them concurrently would compound load on a single
+    # screener.in session and risk slowing/blocking both. ~2,300 NSE stocks
+    # at a polite scrape pace takes roughly 1-2 hours, finishing with a
+    # comfortable buffer before IN Daily Picks starts at 20:30 UTC.
+    - cron: "0 17 * * 0-4"    # Sun–Thu UTC = Mon–Fri IST evening (market days)
   workflow_dispatch:           # allow manual trigger from GitHub UI
 
 jobs:
@@ -27,7 +33,7 @@ jobs:
 
       - name: Trigger fundamentals refresh
         run: |
-          echo "Triggering full-universe fundamentals refresh at $(date -u) UTC (3:00 AM IST)..."
+          echo "Triggering full-universe fundamentals refresh at $(date -u) UTC (10:30 PM IST)..."
           curl -sS --fail-with-body --max-time 30 \
             -X POST \
             -H "x-secret: ${{ secrets.PICKS_SECRET }}" \
