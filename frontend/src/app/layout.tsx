@@ -10,6 +10,7 @@ import { UserMenu } from "@/components/UserMenu";
 import { MarketStatusInline, MobileMarketStrip } from "@/components/MarketStatusBar";
 import { LiveClock } from "@/components/LiveClock";
 import { IndexBar } from "@/components/IndexBar";
+import { NavHeightObserver } from "@/components/NavHeightObserver";
 
 export const metadata: Metadata = {
   title: { default: "StockSense360 — AI Stock Predictor", template: "%s | StockSense360" },
@@ -40,7 +41,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className="dark">
       <body className="bg-dark-bg text-white min-h-screen font-sans antialiased">
         <Providers>
-          <nav className="sticky top-0 z-10 border-b border-dark-border bg-dark-bg sm:bg-dark-bg/90 backdrop-blur-none sm:backdrop-blur-md">
+          <NavHeightObserver />
+          <nav id="site-nav" className="sticky top-0 z-10 border-b border-dark-border bg-dark-bg sm:bg-dark-bg/90 backdrop-blur-none sm:backdrop-blur-md">
             {/* Row 1: Logo · Search · Hamburger (mobile) / Clock + Market Status + Sign In (desktop).
                 flex-wrap (instead of squeezing the status block into a narrow
                 horizontal-scroll strip) lets it drop to its own full-width

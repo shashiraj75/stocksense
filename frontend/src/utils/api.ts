@@ -20,6 +20,8 @@ export interface StockQuote {
   market_cap: number;
   fifty_two_week_high: number;
   fifty_two_week_low: number;
+  high?: number;
+  low?: number;
   company_name?: string;
 }
 

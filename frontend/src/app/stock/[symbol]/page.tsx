@@ -97,6 +97,15 @@ export default function StockPage() {
   const [showPaperModal, setShowPaperModal] = useState(false);
   const { user } = useAuth();
 
+  // Sticky ticker bar — only shown once the user has scrolled past the
+  // real ticker header, so it never appears as a duplicate on first load.
+  const [showStickyTicker, setShowStickyTicker] = useState(false);
+  useEffect(() => {
+    const onScroll = () => setShowStickyTicker(window.scrollY > 160);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
   const horizon = (tab === "backtest" || tab === "history" || tab === "fundamentals") ? "medium" : (tab as Horizon);
 
   const { data: quote, dataUpdatedAt: quoteUpdatedAt } = useQuery({
@@ -291,6 +300,38 @@ export default function StockPage() {
     // scoped here rather than on the shared <main> padding in layout.tsx,
     // which every other page also relies on.
     <div className="space-y-5 -mt-2 sm:-mt-3">
+      {/* Sticky ticker bar — keeps the symbol/price visible once you've
+          scrolled past the real header below. Fixed (not CSS sticky) since
+          visibility is already scroll-gated in JS, so there's no risk of it
+          ever appearing twice. top offset comes from --nav-h, set by
+          NavHeightObserver in layout.tsx, since the navbar's height varies
+          across breakpoints and as its async content (index strip etc.) loads. */}
+      {showStickyTicker && (
+        <div
+          className="fixed left-0 right-0 z-[5] bg-dark-bg/95 backdrop-blur-md border-b border-dark-border"
+          style={{ top: "var(--nav-h, 0px)" }}
+        >
+          <div className="max-w-7xl mx-auto px-3 sm:px-4 py-2 flex items-center gap-3 overflow-x-auto scrollbar-hide">
+            <span className="font-mono font-bold text-sm shrink-0">{symbol}</span>
+            {(screenerFund?.company_name || usFund?.company_name || quote?.company_name) && (
+              <span className="text-sm text-gray-400 truncate shrink-0 max-w-[200px]">
+                {screenerFund?.company_name || usFund?.company_name || quote?.company_name}
+              </span>
+            )}
+            {!isCrypto && quote?.price != null && (
+              <span className="font-mono font-bold text-sm ml-auto shrink-0">
+                {currency}{quote.price.toLocaleString()}
+              </span>
+            )}
+            {!isCrypto && quote?.change_pct != null && (
+              <span className={clsx("text-xs font-semibold shrink-0", quote.change_pct >= 0 ? "text-bull" : "text-bear")}>
+                {quote.change_pct >= 0 ? "+" : ""}{quote.change_pct.toFixed(2)}%
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
       {!isCrypto && <MarketDisclaimer market={market} />}
 
       {/* ── Hero Header Card ── */}
@@ -379,6 +420,8 @@ export default function StockPage() {
                   {!isCrypto && quote && (
                     <div className="flex flex-wrap gap-2 mb-3">
                       {[
+                        ...(quote.high != null ? [["Day High", `${currency}${quote.high.toLocaleString()}`, "text-gray-200"]] : []),
+                        ...(quote.low != null ? [["Day Low", `${currency}${quote.low.toLocaleString()}`, "text-gray-200"]] : []),
                         ["52W High", `${currency}${quote.fifty_two_week_high?.toLocaleString()}`, "text-gray-200"],
                         ["52W Low",  `${currency}${quote.fifty_two_week_low?.toLocaleString()}`,  "text-gray-200"],
                         ["Mkt Cap",  (() => {
