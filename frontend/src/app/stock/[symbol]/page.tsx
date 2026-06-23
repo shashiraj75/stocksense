@@ -1050,7 +1050,16 @@ export default function StockPage() {
             <>
               {/* Key Ratios */}
               <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
-                <h3 className="font-bold text-white mb-4">Key Ratios</h3>
+                <div className="mb-4">
+                  <h3 className="font-bold text-white">Key Ratios</h3>
+                  {(screenerFund.broad_sector || screenerFund.sector_name) && (
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      {[screenerFund.broad_sector, screenerFund.sector_name, screenerFund.industry_name]
+                        .filter((v, i, arr) => v && arr.indexOf(v) === i)
+                        .join(" · ")}
+                    </p>
+                  )}
+                </div>
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
                   {[
                     { label: "P/E Ratio",      val: screenerFund.pe_ratio,           fmt: (v: number) => v.toFixed(1) + "×" },
@@ -1116,6 +1125,42 @@ export default function StockPage() {
                         })}
                       </tbody>
                     </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Pros & Cons */}
+              {((screenerFund.screener_pros?.length ?? 0) > 0 || (screenerFund.screener_cons?.length ?? 0) > 0) && (
+                <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
+                  <h3 className="font-bold text-white mb-1">Pros &amp; Cons</h3>
+                  <p className="text-[11px] text-gray-500 mb-4">Machine-generated checklist highlights from screener.in — exercise caution, do your own analysis.</p>
+                  <div className="grid sm:grid-cols-2 gap-4">
+                    {(screenerFund.screener_pros?.length ?? 0) > 0 && (
+                      <div>
+                        <p className="text-xs font-semibold text-green-400 mb-2">Pros</p>
+                        <ul className="space-y-1.5">
+                          {screenerFund.screener_pros.map((p: string, i: number) => (
+                            <li key={i} className="flex items-start gap-2 text-sm text-gray-300">
+                              <span className="shrink-0 mt-1.5 w-1.5 h-1.5 rounded-full bg-green-400" />
+                              {p}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {(screenerFund.screener_cons?.length ?? 0) > 0 && (
+                      <div>
+                        <p className="text-xs font-semibold text-red-400 mb-2">Cons</p>
+                        <ul className="space-y-1.5">
+                          {screenerFund.screener_cons.map((c: string, i: number) => (
+                            <li key={i} className="flex items-start gap-2 text-sm text-gray-300">
+                              <span className="shrink-0 mt-1.5 w-1.5 h-1.5 rounded-full bg-red-400" />
+                              {c}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -1196,6 +1241,60 @@ export default function StockPage() {
               )}
 
               {/* Cash Flow */}
+              {(screenerFund.reserves_annual_cr || screenerFund.borrowings_annual_cr) && (
+                <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
+                  <h3 className="font-bold text-white mb-4">Balance Sheet <span className="text-xs text-gray-500 font-normal ml-1">(₹ Crore · newest → oldest)</span></h3>
+                  {(() => {
+                    const bsLabels = [...(screenerFund.balance_sheet_labels ?? [])].reverse();
+                    const reserves = screenerFund.reserves_annual_cr ? [...screenerFund.reserves_annual_cr].reverse() : null;
+                    const borrowings = screenerFund.borrowings_annual_cr ? [...screenerFund.borrowings_annual_cr].reverse() : null;
+                    const totalLiab = screenerFund.total_liabilities_annual_cr ? [...screenerFund.total_liabilities_annual_cr].reverse() : null;
+                    const colCount = (reserves ?? borrowings ?? totalLiab ?? []).length;
+                    const toFY = (raw: string) => {
+                      const m = raw.match(/(\d{4})$/);
+                      if (!m) return raw;
+                      const y = parseInt(m[1]);
+                      return `FY${String(y - 1).slice(2)}-${String(y).slice(2)}`;
+                    };
+                    const row = (label: string, vals: number[] | null, color = false) => vals && (
+                      <tr>
+                        <td className="py-2 text-gray-400">{label}</td>
+                        {vals.map((v, i) => (
+                          <td key={i} className={clsx("py-2 text-right font-mono tabular-nums font-bold",
+                            color ? (v >= 0 ? "text-green-400" : "text-red-400") : "text-gray-200")}>
+                            {v != null ? v.toLocaleString() : "—"}
+                          </td>
+                        ))}
+                      </tr>
+                    );
+                    return (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="text-gray-500 text-xs">
+                              <th className="text-left pb-2 font-medium">Type</th>
+                              {Array.from({ length: colCount }).map((_, i) => (
+                                <th key={i} className="text-right pb-2 font-medium whitespace-nowrap">{toFY(bsLabels[i] ?? `FY${i + 1}`)}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-dark-border">
+                            {row("Reserves", reserves)}
+                            {row("Borrowings", borrowings)}
+                            {row("Total Liabilities", totalLiab)}
+                          </tbody>
+                        </table>
+                        {screenerFund.debt_to_equity_pct != null && (
+                          <p className="text-[11px] text-gray-500 mt-3">
+                            Debt-to-Equity (latest): <span className="text-gray-300 font-mono font-medium">{screenerFund.debt_to_equity_pct.toFixed(1)}%</span>
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+
               {screenerFund.operating_cf_annual_cr && screenerFund.operating_cf_annual_cr.length > 0 && (
                 <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
                   <h3 className="font-bold text-white mb-4">Annual Cash Flow <span className="text-xs text-gray-500 font-normal ml-1">(₹ Crore · newest → oldest)</span></h3>

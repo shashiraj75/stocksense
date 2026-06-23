@@ -260,6 +260,39 @@ def _parse_screener_page(soup: BeautifulSoup, symbol: str) -> dict:
         if name and name.upper() != symbol:
             data["company_name"] = name
 
+    # ── Sector / industry classification (breadcrumb in the Peer comparison
+    # section header) — yfinance frequently returns no sector at all for NSE
+    # stocks, so this fills a real gap rather than just duplicating yfinance.
+    peers_section = soup.find("section", id="peers")
+    if peers_section:
+        breadcrumb = peers_section.find("p", class_="sub")
+        if breadcrumb:
+            for a in breadcrumb.find_all("a"):
+                title = (a.get("title") or "").lower()
+                text = a.get_text(strip=True)
+                if title == "broad sector":
+                    data["broad_sector"] = text
+                elif title == "sector":
+                    data["sector_name"] = text
+                elif title == "broad industry":
+                    data["broad_industry"] = text
+                elif title == "industry":
+                    data["industry_name"] = text
+
+    # ── Pros / Cons (screener.in's machine-generated checklist highlights) ──
+    analysis_section = soup.find("section", id="analysis")
+    if analysis_section:
+        pros_div = analysis_section.find("div", class_="pros")
+        cons_div = analysis_section.find("div", class_="cons")
+        if pros_div:
+            pros = [li.get_text(strip=True) for li in pros_div.find_all("li")]
+            if pros:
+                data["screener_pros"] = pros
+        if cons_div:
+            cons = [li.get_text(strip=True) for li in cons_div.find_all("li")]
+            if cons:
+                data["screener_cons"] = cons
+
     # ── Top ratios (the pill-box numbers at the top of every screener page) ──
     ratios_section = soup.find("ul", id="top-ratios")
     if ratios_section:
@@ -436,6 +469,54 @@ def _parse_screener_page(soup: BeautifulSoup, symbol: str) -> dict:
                     data["investing_cf_annual_cr"] = vals
                     data["investing_cf_latest_cr"] = vals[-1]
 
+    # ── Balance Sheet — multi-year Reserves / Borrowings / Total Liabilities ──
+    # yfinance's debtToEquity is frequently missing for NSE stocks (noted
+    # elsewhere in this file); screener.in's balance sheet gives us the raw
+    # components to compute a reliable proxy ourselves.
+    bs_section = soup.find("section", id="balance-sheet")
+    if bs_section:
+        table = bs_section.find("table")
+        if table:
+            rows = table.find_all("tr")
+            header_row = table.find("tr")
+            if header_row:
+                ths = header_row.find_all("th")
+                bs_labels = [th.get_text(strip=True) for th in ths[1:]]
+                if bs_labels:
+                    data["balance_sheet_labels"] = bs_labels
+            for row in rows:
+                cells = row.find_all("td")
+                if len(cells) < 2:
+                    continue
+                label = cells[0].get_text(strip=True).lower().rstrip("+")
+                vals = [_parse_number(c.get_text(strip=True)) for c in cells[1:]]
+                vals = [v for v in vals if v is not None]
+                if not vals:
+                    continue
+                if "equity capital" in label:
+                    data["equity_capital_cr"] = vals
+                elif label == "reserves":
+                    data["reserves_annual_cr"] = vals
+                    data["reserves_latest_cr"] = vals[-1]
+                elif "borrowings" in label:
+                    data["borrowings_annual_cr"] = vals
+                    data["borrowings_latest_cr"] = vals[-1]
+                elif "total liabilities" in label:
+                    data["total_liabilities_annual_cr"] = vals
+                elif "fixed assets" in label:
+                    data["fixed_assets_annual_cr"] = vals
+
+        # Derive a debt-to-equity proxy (Borrowings / (Equity Capital + Reserves) * 100)
+        # in the same 0-300+ scale yfinance's debtToEquity uses, so it can slot
+        # straight into the existing risk-penalty thresholds without any changes there.
+        equity_cap = (data.get("equity_capital_cr") or [None])[-1]
+        reserves = data.get("reserves_latest_cr")
+        borrowings = data.get("borrowings_latest_cr")
+        if equity_cap is not None and reserves is not None and borrowings is not None:
+            total_equity = equity_cap + reserves
+            if total_equity > 0:
+                data["debt_to_equity_pct"] = round(borrowings / total_equity * 100, 1)
+
     # ── Quarterly results — last 8 quarters of revenue + PAT ─────────────────
     quarterly_section = soup.find("section", id="quarters")
     if quarterly_section:
@@ -514,6 +595,18 @@ def augment_info_with_screener(info: dict, symbol: str) -> dict:
         elif screener.get("profit_growth_ttm_pct") is not None:
             enriched["earningsGrowth"] = screener["profit_growth_ttm_pct"] / 100
 
+        # Sector/industry — yfinance frequently returns nothing at all for NSE
+        # stocks; only fill the gap, don't override a real yfinance value.
+        if not enriched.get("sector") and (screener.get("industry_name") or screener.get("sector_name")):
+            enriched["sector"] = screener.get("industry_name") or screener.get("sector_name")
+        if not enriched.get("industry") and screener.get("industry_name"):
+            enriched["industry"] = screener["industry_name"]
+
+        # Debt-to-equity — yfinance often omits this for NSE stocks too; fill
+        # from the balance-sheet-derived proxy computed above when missing.
+        if enriched.get("debtToEquity") is None and screener.get("debt_to_equity_pct") is not None:
+            enriched["debtToEquity"] = screener["debt_to_equity_pct"]
+
         # Promoter holding — always use screener (yfinance is unreliable for India)
         if screener.get("promoter_holding_pct") is not None:
             enriched["promoterHolding"] = screener["promoter_holding_pct"] / 100
@@ -559,6 +652,14 @@ def augment_info_with_screener(info: dict, symbol: str) -> dict:
             "dii_quarterly_pct":         screener.get("dii_quarterly_pct"),
             # Capital efficiency
             "roce_pct":                  screener.get("roce_pct"),
+            # Sector / industry classification
+            "sector_name":               screener.get("sector_name"),
+            "industry_name":             screener.get("industry_name"),
+            # Balance-sheet-derived leverage proxy
+            "debt_to_equity_pct":        screener.get("debt_to_equity_pct"),
+            # Machine-generated checklist highlights
+            "screener_pros":             screener.get("screener_pros"),
+            "screener_cons":             screener.get("screener_cons"),
             # Growth CAGRs
             "sales_growth_3y_pct":       screener.get("sales_growth_3y_pct"),
             "sales_growth_5y_pct":       screener.get("sales_growth_5y_pct"),
