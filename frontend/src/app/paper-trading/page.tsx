@@ -197,6 +197,9 @@ function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t
           <span className="text-xs text-gray-600">Loading…</span>
         )}
       </td>
+      <td className="px-4 py-3 text-sm font-mono text-gray-300">
+        {currency}{fmt(trade.entry_price * trade.quantity, 0)}
+      </td>
       <td className="px-4 py-3">
         {unrealizedPnl != null ? (
           <div>
@@ -311,7 +314,7 @@ function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t
     </tr>
     {/* Inline reminder row — always shown so all positions look consistent */}
     <tr className="border-b border-dark-border bg-dark-bg/40">
-      <td colSpan={11} className="px-4 py-2">
+      <td colSpan={12} className="px-4 py-2">
         <div className="flex flex-wrap gap-3">
           {trade.stop_loss && trade.stop_loss > 0 ? (
             <span className="flex items-center gap-1.5 text-[11px] text-yellow-300/80">
@@ -678,6 +681,7 @@ export default function PaperTradingPage() {
                         <th className="px-4 py-2.5 text-left">Qty</th>
                         <th className="px-4 py-2.5 text-left">Entry</th>
                         <th className="px-4 py-2.5 text-left">Mkt Price <span className="text-gray-400 font-normal">(last close when closed)</span></th>
+                        <th className="px-4 py-2.5 text-left">Invested</th>
                         <th className="px-4 py-2.5 text-left">Unr. P&L</th>
                         <th className="px-4 py-2.5 text-left">Signal</th>
                         <th className="px-4 py-2.5 text-left">Stop Loss</th>
