@@ -1,6 +1,6 @@
 "use client";
 import { useState, Fragment } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { fetchMultibaggerScreen, fetchMultibaggerStatus, MultibaggerScreen, MultibaggerStock } from "@/utils/api";
 import { Gem, Wifi, Clock, ChevronDown, ChevronUp, Flame, AlertTriangle, Check, X } from "lucide-react";
 import Link from "next/link";
@@ -68,6 +68,10 @@ export default function MultibaggerPage() {
     queryFn: () => fetchMultibaggerScreen(screen, market),
     staleTime: 60 * 60_000,
     refetchOnWindowFocus: false,
+    // Keep the previous market/screen's results on screen while the new
+    // ones load, instead of briefly going undefined — same header-jump
+    // fix applied to Daily Picks for the identical IN/US toggle pattern.
+    placeholderData: keepPreviousData,
   });
 
   const { data: status } = useQuery({
@@ -75,6 +79,7 @@ export default function MultibaggerPage() {
     queryFn: () => fetchMultibaggerStatus(market),
     staleTime: 5 * 60_000,
     refetchOnWindowFocus: false,
+    placeholderData: keepPreviousData,
   });
 
   const lastRefreshed = data?.last_refreshed
@@ -83,9 +88,20 @@ export default function MultibaggerPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="space-y-3">
-        <div className="flex items-center gap-2 flex-wrap">
+      {/* Header — alignment matches Daily Picks / Market Heatmap / Screener style */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <Gem size={22} className="text-brand-500 shrink-0" />
+          <div>
+            <h1 className="text-2xl font-bold">Multibagger Screen</h1>
+            <p className="text-sm text-gray-400 mt-1">
+              Three hard-filter screens — never merge them, that's how you get zero results
+              {" · refreshed nightly at " + (market === "IN" ? "10:30 PM IST" : "7:30 AM IST")}
+              {status?.last_summary?.total ? ` · screened from ${status.last_summary.total.toLocaleString()} ${market === "IN" ? "NSE" : "US"} stocks` : ""}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0 flex-wrap">
           <div className="flex items-center gap-0.5 bg-dark-card border border-dark-border rounded-lg p-0.5">
             {(["IN", "US"] as const).map(m => (
               <button key={m} onClick={() => setMarket(m)}
@@ -104,17 +120,6 @@ export default function MultibaggerPage() {
               <Clock size={12} /> Refreshed {lastRefreshed}
             </span>
           )}
-        </div>
-        <div className="flex items-center gap-3">
-          <Gem size={22} className="text-brand-500" />
-          <div>
-            <h1 className="text-2xl font-bold">Multibagger Screen</h1>
-            <p className="text-sm text-gray-400 mt-1">
-              Three hard-filter screens — never merge them, that's how you get zero results
-              {" · refreshed nightly at " + (market === "IN" ? "10:30 PM IST" : "7:30 AM IST")}
-              {status?.last_summary?.total ? ` · screened from ${status.last_summary.total.toLocaleString()} ${market === "IN" ? "NSE" : "US"} stocks` : ""}
-            </p>
-          </div>
         </div>
       </div>
 
