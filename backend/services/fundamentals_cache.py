@@ -71,6 +71,12 @@ def ensure_table():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_fundamentals_cache_updated ON stock_fundamentals_cache(updated_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_fundamentals_cache_market ON stock_fundamentals_cache(market)")
 
+        # No PII here, but closing the Supabase "RLS disabled" finding for
+        # every public table, not just the ones with sensitive columns —
+        # this connects as `postgres`, which has BYPASSRLS by default, so
+        # our own access is unaffected. Idempotent.
+        conn.execute("ALTER TABLE stock_fundamentals_cache ENABLE ROW LEVEL SECURITY")
+
 
 # Maps our internal field names to the table's columns — single source of
 # truth so the refresh job and the upsert statement can't drift apart.

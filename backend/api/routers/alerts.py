@@ -36,6 +36,12 @@ def _ensure_table():
         # notify a user even if their tab is closed, instead of relying purely on the
         # client-side 5s poll in alerts/page.tsx.
         conn.execute("ALTER TABLE price_alerts ADD COLUMN IF NOT EXISTS email TEXT")
+        # Closes the Supabase "RLS disabled" finding — this table has email
+        # addresses and was readable/writable by anyone with the project's
+        # anon key via the public REST API. Connects as `postgres`, which
+        # has BYPASSRLS by default, so this backend's own access is
+        # unaffected. Idempotent.
+        conn.execute("ALTER TABLE price_alerts ENABLE ROW LEVEL SECURITY")
 
 
 class AlertCreate(BaseModel):

@@ -260,6 +260,30 @@ CREATE TABLE IF NOT EXISTS nps_responses (
     submitted_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_nps_user ON nps_responses(user_id, submitted_at);
+
+-- Every table above had Row-Level Security disabled, meaning anyone with
+-- this project's URL + anon key (normally embedded in frontend JS by
+-- design, for Supabase Auth) could read/write/delete all of them directly
+-- via the auto-generated PostgREST API, completely bypassing our FastAPI
+-- backend's own access control. This connection authenticates as the
+-- `postgres` role, which has BYPASSRLS by default in every Supabase
+-- project, so enabling RLS here with no policies blocks the public REST
+-- API (which connects as `anon`/`authenticated`) while leaving this
+-- backend's own direct access completely unaffected. ENABLE is idempotent
+-- — safe to run on every startup.
+ALTER TABLE predictions          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE outcomes             ENABLE ROW LEVEL SECURITY;
+ALTER TABLE regime_log           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE score_snapshots      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE daily_picks_cache    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE factor_ic_history    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE paper_portfolio      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE paper_trades         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE watchlist            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE terms_acceptance     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE market_cache         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE signal_feedback      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE nps_responses        ENABLE ROW LEVEL SECURITY;
 """
 
 

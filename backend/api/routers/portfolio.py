@@ -32,6 +32,11 @@ def _ensure_table():
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_portfolio_holdings_user ON portfolio_holdings(user_id)")
+        # Closes the Supabase "RLS disabled" finding — holdings/qty/avg_price
+        # were readable/writable by anyone with the project's anon key via
+        # the public REST API. Connects as `postgres`, which has BYPASSRLS
+        # by default, so this backend's own access is unaffected. Idempotent.
+        conn.execute("ALTER TABLE portfolio_holdings ENABLE ROW LEVEL SECURITY")
 
 
 class HoldingCreate(BaseModel):

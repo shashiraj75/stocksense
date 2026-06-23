@@ -97,6 +97,12 @@ CREATE TABLE IF NOT EXISTS val_signals (
 CREATE INDEX IF NOT EXISTS idx_val_signals_run   ON val_signals(run_id, horizon);
 CREATE INDEX IF NOT EXISTS idx_val_signals_sym   ON val_signals(symbol, horizon);
 CREATE INDEX IF NOT EXISTS idx_val_signals_score ON val_signals(composite_score);
+
+-- No PII here, but closing the Supabase "RLS disabled" finding for every
+-- public table — this connects as `postgres`, which has BYPASSRLS by
+-- default, so our own access is unaffected. Idempotent.
+ALTER TABLE val_runs    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE val_signals ENABLE ROW LEVEL SECURITY;
 """
 
 # Synced with official NSE Nifty 100 index (June 2026) + popular large-caps
