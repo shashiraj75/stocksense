@@ -9,6 +9,7 @@ import { NavLinks } from "@/components/NavLinks";
 import { UserMenu } from "@/components/UserMenu";
 import { MarketStatusInline, MobileMarketStrip } from "@/components/MarketStatusBar";
 import { LiveClock } from "@/components/LiveClock";
+import { IndexBar } from "@/components/IndexBar";
 
 export const metadata: Metadata = {
   title: { default: "StockSense360 — AI Stock Predictor", template: "%s | StockSense360" },
@@ -78,6 +79,20 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             {/* Row 2 (mobile): compact market status strip */}
             <div className="md:hidden border-t border-dark-border/40 px-3 py-1.5 overflow-x-auto scrollbar-hide">
               <MobileMarketStrip />
+            </div>
+
+            {/* Index strip — NIFTY/SENSEX, S&P/NASDAQ/DOW, Bitcoin. Persistent
+                across every page instead of being duplicated per-page, same
+                way MarketStatusInline shows all markets' hours regardless of
+                which one a given page has selected. */}
+            <div className="border-t border-dark-border/40 px-3 sm:px-4 py-1.5 overflow-x-auto scrollbar-hide">
+              <div className="max-w-7xl mx-auto flex items-center gap-4 w-max">
+                <IndexBar market="IN" inline />
+                <span className="text-dark-border text-xs shrink-0">|</span>
+                <IndexBar market="US" inline />
+                <span className="text-dark-border text-xs shrink-0">|</span>
+                <IndexBar market="CRYPTO" inline />
+              </div>
             </div>
 
             {/* Row 3: Nav links (desktop only) */}

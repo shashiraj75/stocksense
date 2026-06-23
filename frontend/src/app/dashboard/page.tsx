@@ -5,7 +5,6 @@ import { fetchTopMovers, fetchQuote, api } from "@/utils/api";
 import { TrendingUp, TrendingDown, RefreshCw, Wifi, LayoutDashboard } from "lucide-react";
 import Link from "next/link";
 import clsx from "clsx";
-import { IndexBar } from "@/components/IndexBar";
 import { StockContextMenu } from "@/components/StockContextMenu";
 import { useAuthGuard } from "@/hooks/useAuthGuard";
 import { useAuth } from "@/lib/AuthContext";
@@ -102,63 +101,50 @@ export default function Dashboard() {
   return (
     <div className="space-y-6">
 
-      {/* Market Overview — layout matches Market Heatmap header style */}
-      <div className="space-y-3">
-        <div className="flex items-center flex-wrap gap-4">
-          <div className="flex items-center gap-3">
-            <LayoutDashboard size={22} className="text-brand-500" />
-            <div>
-              <h1 className="text-2xl font-bold text-white">Market Overview</h1>
-              <p className="text-sm text-gray-400 mt-1">Live indices, top movers &amp; market sentiment</p>
-            </div>
-          </div>
-          {market !== "CRYPTO" && market !== "COMMODITY" && (
-            <div className="overflow-x-auto scrollbar-hide min-w-0 max-w-full">
-              <IndexBar market={market as any} inline />
-            </div>
-          )}
-          <div className="flex items-center gap-3 ml-auto flex-wrap justify-end min-w-0 max-w-full">
-            {/* Live status / loading badge */}
-            <div className={clsx(
-              "flex items-center gap-1.5 text-xs rounded-lg px-3 py-1.5 border transition-all",
-              isFirstLoad
-                ? "bg-brand-500/10 border-brand-500/30 text-brand-400"
-                : isFetching
-                  ? "bg-yellow-500/10 border-yellow-500/30 text-yellow-400"
-                  : "bg-dark-card border-dark-border text-gray-500"
-            )}>
-              {isFirstLoad || isFetching
-                ? <RefreshCw size={11} className="animate-spin" />
-                : <Wifi size={11} className="text-green-500" />
-              }
-              {isFirstLoad
-                ? "Fetching market data…"
-                : isFetching
-                  ? "Refreshing…"
-                  : lastUpdated
-                    ? `Updated ${new Date(lastUpdated).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true })}`
-                    : "Live"
-              }
-            </div>
-            <div className="flex items-center gap-0.5 overflow-x-auto scrollbar-hide min-w-0 max-w-full bg-dark-card border border-dark-border rounded-lg p-0.5">
-              {MARKET_TABS.map(({ key, label }) => (
-                <button key={key} onClick={() => setMarket(key)}
-                  className={clsx("shrink-0 whitespace-nowrap text-xs px-3 py-1.5 rounded-md font-medium transition-colors",
-                    market === key ? "bg-brand-500 text-white" : "text-gray-400 hover:text-white")}>
-                  {label}
-                </button>
-              ))}
-            </div>
+      {/* Market Overview — layout matches Market Heatmap header style.
+          NIFTY/SENSEX etc. now live in the persistent navbar index strip
+          (layout.tsx) instead of duplicated here per-page. */}
+      <div className="flex items-center justify-between flex-wrap gap-4">
+        <div className="flex items-center gap-3">
+          <LayoutDashboard size={22} className="text-brand-500" />
+          <div>
+            <h1 className="text-2xl font-bold text-white">Market Overview</h1>
+            <p className="text-sm text-gray-400 mt-1">Live indices, top movers &amp; market sentiment</p>
           </div>
         </div>
-        {/* Index unavailable notice — crypto/commodity have no index data */}
-        {(market === "CRYPTO" || market === "COMMODITY") && (
-          <p className="text-xs text-gray-500 px-1">
-            {market === "CRYPTO"
-              ? "Live index data unavailable for crypto"
-              : "Tracking only — no AI signal for commodity ETFs (see each card's stock page for details)"}
-          </p>
-        )}
+        <div className="flex items-center gap-3 ml-auto flex-wrap justify-end min-w-0 max-w-full">
+          {/* Live status / loading badge */}
+          <div className={clsx(
+            "flex items-center gap-1.5 text-xs rounded-lg px-3 py-1.5 border transition-all",
+            isFirstLoad
+              ? "bg-brand-500/10 border-brand-500/30 text-brand-400"
+              : isFetching
+                ? "bg-yellow-500/10 border-yellow-500/30 text-yellow-400"
+                : "bg-dark-card border-dark-border text-gray-500"
+          )}>
+            {isFirstLoad || isFetching
+              ? <RefreshCw size={11} className="animate-spin" />
+              : <Wifi size={11} className="text-green-500" />
+            }
+            {isFirstLoad
+              ? "Fetching market data…"
+              : isFetching
+                ? "Refreshing…"
+                : lastUpdated
+                  ? `Updated ${new Date(lastUpdated).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true })}`
+                  : "Live"
+            }
+          </div>
+          <div className="flex items-center gap-0.5 overflow-x-auto scrollbar-hide min-w-0 max-w-full bg-dark-card border border-dark-border rounded-lg p-0.5">
+            {MARKET_TABS.map(({ key, label }) => (
+              <button key={key} onClick={() => setMarket(key)}
+                className={clsx("shrink-0 whitespace-nowrap text-xs px-3 py-1.5 rounded-md font-medium transition-colors",
+                  market === key ? "bg-brand-500 text-white" : "text-gray-400 hover:text-white")}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* Horizon info cards */}
