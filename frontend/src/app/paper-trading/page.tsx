@@ -6,7 +6,7 @@ import clsx from "clsx";
 import {
   TrendingUp, TrendingDown, RotateCcw, ExternalLink, Beaker,
   BarChart2, AlertTriangle, CheckCircle2, ShieldAlert, Pencil, Check, X, Target,
-  Bell, BellOff,
+  Bell, BellOff, ChevronDown, ChevronUp,
 } from "lucide-react";
 import {
   fetchPaperPortfolio, closePaperTrade, resetPaperPortfolio, editPaperTrade,
@@ -406,6 +406,7 @@ export default function PaperTradingPage() {
   const marketCfg = MARKETS.find(m => m.key === market)!;
   const [sellTarget, setSellTarget] = useState<PaperTrade | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [historyExpanded, setHistoryExpanded] = useState(true);
   const [notifPermission, setNotifPermission] = useState<NotificationPermission | "unsupported">("default");
 
   useEffect(() => {
@@ -689,32 +690,39 @@ export default function PaperTradingPage() {
       {/* Trade History */}
       {closedTrades.length > 0 && (
         <div>
-          <h2 className="font-bold text-base mb-3 flex items-center gap-2">
+          <button
+            onClick={() => setHistoryExpanded(v => !v)}
+            className="font-bold text-base mb-3 flex items-center gap-2 hover:text-gray-300 transition-colors"
+          >
             <BarChart2 size={16} className="text-gray-400" />
             Trade History
-          </h2>
-          <div className="bg-dark-card border border-dark-border rounded-xl overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-dark-border text-xs text-gray-500">
-                    <th className="px-4 py-2.5 text-left">Stock</th>
-                    <th className="px-4 py-2.5 text-left">Qty</th>
-                    <th className="px-4 py-2.5 text-left">Entry</th>
-                    <th className="px-4 py-2.5 text-left">Exit</th>
-                    <th className="px-4 py-2.5 text-left">P&L</th>
-                    <th className="px-4 py-2.5 text-left">vs Target</th>
-                    <th className="px-4 py-2.5 text-left">Closed</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {closedTrades.map(t => (
-                    <ClosedTradeRow key={t.id} trade={t} />
-                  ))}
-                </tbody>
-              </table>
+            <span className="text-xs text-gray-500 font-normal">({closedTrades.length})</span>
+            {historyExpanded ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
+          </button>
+          {historyExpanded && (
+            <div className="bg-dark-card border border-dark-border rounded-xl overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-dark-border text-xs text-gray-500">
+                      <th className="px-4 py-2.5 text-left">Stock</th>
+                      <th className="px-4 py-2.5 text-left">Qty</th>
+                      <th className="px-4 py-2.5 text-left">Entry</th>
+                      <th className="px-4 py-2.5 text-left">Exit</th>
+                      <th className="px-4 py-2.5 text-left">P&L</th>
+                      <th className="px-4 py-2.5 text-left">vs Target</th>
+                      <th className="px-4 py-2.5 text-left">Closed</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {closedTrades.map(t => (
+                      <ClosedTradeRow key={t.id} trade={t} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
-          </div>
+          )}
         </div>
       )}
 

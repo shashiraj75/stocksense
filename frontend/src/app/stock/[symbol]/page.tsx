@@ -569,30 +569,41 @@ export default function StockPage() {
                           );
                         })()}
 
-                        {/* Signal feedback thumbs */}
+                        {/* Signal feedback thumbs — full prompt only before voting;
+                            once voted, collapse to a one-line confirmation so it
+                            doesn't keep taking the same space on every visit/stock. */}
                         {!isCrypto && user && (
-                          <div className="w-full">
-                            <p className="text-[11px] text-gray-400 text-center mb-1 uppercase tracking-widest">Was this signal useful?</p>
-                            <div className="flex gap-2 justify-center">
-                              {([1, -1] as const).map((v) => (
-                                <button
-                                  key={v}
-                                  onClick={() => voteMutation.mutate(v)}
-                                  disabled={voteMutation.isPending}
-                                  className={clsx(
-                                    "flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs border transition-all",
-                                    existingVote?.vote === v
-                                      ? v === 1
-                                        ? "bg-bull/20 border-bull/50 text-bull"
-                                        : "bg-bear/20 border-bear/50 text-red-400"
-                                      : "bg-white/5 border-white/10 text-gray-500 hover:text-white hover:border-white/20"
-                                  )}
-                                >
-                                  {v === 1 ? "👍" : "👎"}
-                                </button>
-                              ))}
+                          existingVote?.vote ? (
+                            <p className="text-[11px] text-gray-500 text-center flex items-center justify-center gap-1.5">
+                              Feedback recorded
+                              <span className={existingVote.vote === 1 ? "text-bull" : "text-red-400"}>
+                                {existingVote.vote === 1 ? "👍" : "👎"}
+                              </span>
+                              <button
+                                onClick={() => voteMutation.mutate(existingVote.vote === 1 ? -1 : 1)}
+                                disabled={voteMutation.isPending}
+                                className="text-gray-600 hover:text-gray-400 underline ml-1"
+                              >
+                                change
+                              </button>
+                            </p>
+                          ) : (
+                            <div className="w-full">
+                              <p className="text-[11px] text-gray-400 text-center mb-1 uppercase tracking-widest">Was this signal useful?</p>
+                              <div className="flex gap-2 justify-center">
+                                {([1, -1] as const).map((v) => (
+                                  <button
+                                    key={v}
+                                    onClick={() => voteMutation.mutate(v)}
+                                    disabled={voteMutation.isPending}
+                                    className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs border transition-all bg-white/5 border-white/10 text-gray-500 hover:text-white hover:border-white/20"
+                                  >
+                                    {v === 1 ? "👍" : "👎"}
+                                  </button>
+                                ))}
+                              </div>
                             </div>
-                          </div>
+                          )
                         )}
                       </>
                     ) : predLoading ? (
