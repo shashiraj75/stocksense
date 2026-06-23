@@ -1153,7 +1153,7 @@ export default function StockPage() {
               {/* Balance Sheet */}
               {(usFund.total_debt_annual_m || usFund.stockholders_equity_annual_m) && (
                 <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
-                  <h3 className="font-bold text-white mb-4">Balance Sheet <span className="text-xs text-gray-500 font-normal ml-1">($M · oldest → newest)</span></h3>
+                  <h3 className="font-bold text-white mb-4">Balance Sheet <span className="text-xs text-gray-500 font-normal ml-1">($M · newest → oldest)</span></h3>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
@@ -1188,7 +1188,7 @@ export default function StockPage() {
               {/* Cash Flow */}
               {usFund.operating_cf_annual_m && (
                 <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
-                  <h3 className="font-bold text-white mb-4">Annual Cash Flow <span className="text-xs text-gray-500 font-normal ml-1">($M · oldest → newest)</span></h3>
+                  <h3 className="font-bold text-white mb-4">Annual Cash Flow <span className="text-xs text-gray-500 font-normal ml-1">($M · newest → oldest)</span></h3>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>

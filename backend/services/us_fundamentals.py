@@ -77,13 +77,13 @@ def _build(sym: str) -> dict:
             "analyst_count": info.get("numberOfAnalystOpinions"),
         }
 
-        # Multi-year balance sheet — Total Debt / Stockholders Equity / Total Assets,
-        # oldest → newest to match the IN Balance Sheet card's display convention.
+        # Multi-year balance sheet — Total Debt / Stockholders Equity / Total Assets.
+        # yfinance's columns already come newest-first, so no reversal needed.
         try:
             bs = ticker.balance_sheet
             if bs is not None and not bs.empty:
                 cols = list(bs.columns)
-                data["balance_sheet_labels"] = [f"FY{str(c.year)[2:]}" for c in reversed(cols)]
+                data["balance_sheet_labels"] = [f"FY{str(c.year)[2:]}" for c in cols]
                 for row_label, key in [
                     ("Total Debt", "total_debt_annual_m"),
                     ("Stockholders Equity", "stockholders_equity_annual_m"),
@@ -91,23 +91,23 @@ def _build(sym: str) -> dict:
                 ]:
                     if row_label in bs.index:
                         vals = bs.loc[row_label].tolist()
-                        data[key] = [round(v / 1e6, 1) if _clean(v) is not None else None for v in reversed(vals)]
+                        data[key] = [round(v / 1e6, 1) if _clean(v) is not None else None for v in vals]
         except Exception:
             pass
 
-        # Multi-year cash flow — Operating / Investing, oldest → newest
+        # Multi-year cash flow — Operating / Investing, newest-first
         try:
             cf = ticker.cashflow
             if cf is not None and not cf.empty:
                 cols = list(cf.columns)
-                data["cashflow_labels"] = [f"FY{str(c.year)[2:]}" for c in reversed(cols)]
+                data["cashflow_labels"] = [f"FY{str(c.year)[2:]}" for c in cols]
                 for row_label, key in [
                     ("Operating Cash Flow", "operating_cf_annual_m"),
                     ("Investing Cash Flow", "investing_cf_annual_m"),
                 ]:
                     if row_label in cf.index:
                         vals = cf.loc[row_label].tolist()
-                        data[key] = [round(v / 1e6, 1) if _clean(v) is not None else None for v in reversed(vals)]
+                        data[key] = [round(v / 1e6, 1) if _clean(v) is not None else None for v in vals]
         except Exception:
             pass
 
