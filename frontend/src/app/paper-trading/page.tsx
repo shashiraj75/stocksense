@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect } from "react";
-import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useStaggeredQueries } from "@/hooks/useStaggeredQueries";
 import Link from "next/link";
 import clsx from "clsx";
 import {
@@ -438,15 +439,26 @@ export default function PaperTradingPage() {
     },
   });
 
-  // Must be called before any early return — hooks must always run in the same order
-  const quoteResults = useQueries({
-    queries: (portfolio?.open_trades ?? []).map(t => ({
+  // Must be called before any early return — hooks must always run in the same order.
+  // Staggered, not plain useQueries — firing one quote request per open trade
+  // (refetching every 30s, on top of that) saturates the browser's per-origin
+  // connection cap once there are more than a handful of positions, which can
+  // leave an unrelated request (like closing a position) stuck queued behind
+  // them even though the backend itself responds quickly.
+  const quoteResults = useStaggeredQueries(
+    (portfolio?.open_trades ?? []).map((t, i) => ({
       queryKey: ["quote", t.symbol, t.market],
       queryFn: () => fetchQuote(t.symbol, t.market as any),
       staleTime: 25_000,
-      refetchInterval: 30_000,
+      // Jittered by index, not a flat 30s for every query — once the
+      // initial staggered load fully unlocks, an unjittered interval would
+      // still mean every query refetches at the exact same moment, every
+      // 30s, indefinitely (the same connection-saturation problem, just
+      // recurring instead of one-time).
+      refetchInterval: 28_000 + (i % 8) * 500,
     })),
-  });
+    8
+  );
 
   if (isLoading || !portfolio) {
     return (
