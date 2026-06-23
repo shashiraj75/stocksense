@@ -84,18 +84,7 @@ export default function MultibaggerPage() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-4">
-        <div className="flex items-center gap-3">
-          <Gem size={22} className="text-brand-500" />
-          <div>
-            <h1 className="text-2xl font-bold">Multibagger Screen</h1>
-            <p className="text-sm text-gray-400 mt-1">
-              Three hard-filter screens — never merge them, that's how you get zero results
-              {" · refreshed nightly at " + (market === "IN" ? "10:30 PM IST" : "7:30 AM IST")}
-              {status?.last_summary?.total ? ` · screened from ${status.last_summary.total.toLocaleString()} ${market === "IN" ? "NSE" : "US"} stocks` : ""}
-            </p>
-          </div>
-        </div>
+      <div className="space-y-3">
         <div className="flex items-center gap-2 flex-wrap">
           <div className="flex items-center gap-0.5 bg-dark-card border border-dark-border rounded-lg p-0.5">
             {(["IN", "US"] as const).map(m => (
@@ -115,6 +104,17 @@ export default function MultibaggerPage() {
               <Clock size={12} /> Refreshed {lastRefreshed}
             </span>
           )}
+        </div>
+        <div className="flex items-center gap-3">
+          <Gem size={22} className="text-brand-500" />
+          <div>
+            <h1 className="text-2xl font-bold">Multibagger Screen</h1>
+            <p className="text-sm text-gray-400 mt-1">
+              Three hard-filter screens — never merge them, that's how you get zero results
+              {" · refreshed nightly at " + (market === "IN" ? "10:30 PM IST" : "7:30 AM IST")}
+              {status?.last_summary?.total ? ` · screened from ${status.last_summary.total.toLocaleString()} ${market === "IN" ? "NSE" : "US"} stocks` : ""}
+            </p>
+          </div>
         </div>
       </div>
 
