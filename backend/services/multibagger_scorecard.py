@@ -103,14 +103,27 @@ def annotate_and_rank(results: list[dict], market: str = "IN") -> list[dict]:
     "10-20% shortlist" ranking — a screen's pass/fail filter alone doesn't
     tell you which passers are strongest), and marks the top ~20% (at
     least 1, capped reasonably) as the shortlist tier.
+
+    Two things sorting by raw score alone gets wrong, both fixed here:
+    1. Ties — a stable sort would let a red-flagged stock outrank an
+       equally-scored clean one purely because of list order. Red flag
+       count is a secondary sort key so clean stocks win ties.
+    2. Eligibility — an "avoid" verdict (2+ red flags) must never be
+       shortlisted regardless of raw score, or a row can show a
+       "Shortlisted" flame next to its own "Avoid" badge — a direct
+       self-contradiction a user would reasonably read as a bug.
     """
     for r in results:
         r["scorecard"] = compute_scorecard(r, market)
 
-    results.sort(key=lambda r: r["scorecard"]["score"], reverse=True)
+    results.sort(key=lambda r: (r["scorecard"]["score"], -len(r["scorecard"]["red_flags"])), reverse=True)
 
-    shortlist_n = max(1, round(len(results) * 0.2)) if results else 0
-    for i, r in enumerate(results):
-        r["shortlisted"] = i < shortlist_n
+    for r in results:
+        r["shortlisted"] = False
+
+    eligible = [r for r in results if r["scorecard"]["verdict"] != "avoid"]
+    shortlist_n = max(1, round(len(eligible) * 0.2)) if eligible else 0
+    for r in eligible[:shortlist_n]:
+        r["shortlisted"] = True
 
     return results
