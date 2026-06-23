@@ -18,20 +18,28 @@ export function useStaggeredQueries<T>(
 ): UseQueryResult<T>[] {
   const [unlocked, setUnlocked] = useState(Math.min(batchSize, configs.length));
 
-  const results = useQueries({
+  const rawResults = useQueries({
     queries: configs.map((c, i) => ({ ...c, enabled: (c.enabled ?? true) && i < unlocked })),
   }) as UseQueryResult<T>[];
 
-  const settledKey = results.slice(0, unlocked).map(r => (r.isLoading ? "0" : "1")).join("");
+  const settledKey = rawResults.slice(0, unlocked).map(r => (r.isLoading ? "0" : "1")).join("");
 
   useEffect(() => {
     if (unlocked >= configs.length) return;
-    const windowSettled = results.slice(0, unlocked).every(r => !r.isLoading);
+    const windowSettled = rawResults.slice(0, unlocked).every(r => !r.isLoading);
     if (windowSettled) {
       setUnlocked(u => Math.min(u + batchSize, configs.length));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settledKey, unlocked, configs.length]);
 
-  return results;
+  // A disabled query reports isLoading: false (it never started), which is
+  // indistinguishable from "settled with no data" to anything consuming
+  // these results — rows still waiting in the queue rendered as "no signal
+  // available" instead of "still loading", which looks broken/confusing.
+  // Override isLoading for anything not yet unlocked so it reads as
+  // pending, since it genuinely is — just queued, not abandoned.
+  return rawResults.map((r, i) =>
+    i < unlocked ? r : ({ ...r, isLoading: true, isPending: true } as unknown as UseQueryResult<T>)
+  );
 }
