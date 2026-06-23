@@ -28,6 +28,7 @@ export function ImportPortfolioModal({
   const [excluded, setExcluded] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
   const [submitError, setSubmitError] = useState("");
+  const [successMsg, setSuccessMsg] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const existingMap = new Map(existingHoldings.filter(h => h.market === market).map(h => [h.symbol, h]));
@@ -68,9 +69,12 @@ export function ImportPortfolioModal({
     setBusy(true);
     setSubmitError("");
     try {
-      await importPortfolioHoldings(userId, market, toImport);
+      const result = await importPortfolioHoldings(userId, market, toImport);
       onImported();
-      onClose();
+      setSuccessMsg(
+        `Added ${result.added}, updated ${result.updated}` +
+        (result.cleaned_up > 0 ? `, removed ${result.cleaned_up} stale duplicate${result.cleaned_up !== 1 ? "s" : ""} from earlier symbol corrections.` : ".")
+      );
     } catch {
       setSubmitError("Import failed — check your connection and try again.");
     } finally {
@@ -104,7 +108,7 @@ export function ImportPortfolioModal({
               <label className="text-xs text-gray-400">Market</label>
               <div className="flex gap-1">
                 {(["IN", "US"] as Market[]).map(m => (
-                  <button key={m} onClick={() => { setMarket(m); setParsed(null); }}
+                  <button key={m} onClick={() => { setMarket(m); setParsed(null); setSuccessMsg(""); }}
                     className={clsx("px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors",
                       market === m ? "bg-brand-500 text-white border-brand-500" : "bg-dark-bg border-dark-border text-gray-400 hover:text-white")}>
                     {m === "US" ? "🇺🇸 US" : "🇮🇳 IN"}
@@ -113,12 +117,12 @@ export function ImportPortfolioModal({
               </div>
             </div>
             <div className="flex gap-1 ml-auto">
-              <button onClick={() => { setMode("file"); setParsed(null); }}
+              <button onClick={() => { setMode("file"); setParsed(null); setSuccessMsg(""); }}
                 className={clsx("flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors",
                   mode === "file" ? "bg-brand-500 text-white border-brand-500" : "bg-dark-bg border-dark-border text-gray-400 hover:text-white")}>
                 <Upload size={13} /> Upload File
               </button>
-              <button onClick={() => { setMode("paste"); setParsed(null); }}
+              <button onClick={() => { setMode("paste"); setParsed(null); setSuccessMsg(""); }}
                 className={clsx("flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors",
                   mode === "paste" ? "bg-brand-500 text-white border-brand-500" : "bg-dark-bg border-dark-border text-gray-400 hover:text-white")}>
                 <FileText size={13} /> Paste Text
@@ -165,6 +169,20 @@ export function ImportPortfolioModal({
 
           {submitError && <p className="text-bear text-xs">{submitError}</p>}
 
+          {successMsg ? (
+            <div className="bg-bull/10 border border-bull/30 rounded-lg p-4 space-y-3">
+              <p className="text-sm text-bull flex items-center gap-1.5">
+                <Check size={14} /> {successMsg}
+              </p>
+              <button
+                onClick={onClose}
+                className="px-4 py-2 rounded-lg bg-brand-500 text-white text-sm font-medium hover:bg-brand-600 transition-colors"
+              >
+                Done
+              </button>
+            </div>
+          ) : (
+          <>
           {parseErrors.length > 0 && (
             <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3">
               <p className="text-xs font-semibold text-yellow-400 flex items-center gap-1.5 mb-1">
@@ -239,6 +257,8 @@ export function ImportPortfolioModal({
                 {busy ? "Importing…" : `Import ${parsed.length - excluded.size} Holding${parsed.length - excluded.size !== 1 ? "s" : ""}`}
               </button>
             </div>
+          )}
+          </>
           )}
         </div>
       </div>

@@ -260,11 +260,11 @@ export interface MultibaggerRefreshSummary {
 export const importPortfolioHoldings = (
   userId: string,
   market: Market,
-  holdings: { symbol: string; qty: number; avgPrice: number }[]
+  holdings: { symbol: string; qty: number; avgPrice: number; originalSymbol?: string }[]
 ) =>
-  api.post<{ added: number; updated: number; total: number }>(
+  api.post<{ added: number; updated: number; cleaned_up: number; total: number }>(
     `/api/portfolio/${userId}/import`,
-    { holdings: holdings.map(h => ({ symbol: h.symbol, market, qty: h.qty, avg_price: h.avgPrice })) }
+    { holdings: holdings.map(h => ({ symbol: h.symbol, market, qty: h.qty, avg_price: h.avgPrice, original_symbol: h.originalSymbol ?? null })) }
   ).then(r => r.data);
 
 export const fetchMultibaggerStatus = (market: "IN" | "US" = "IN") =>

@@ -51,6 +51,11 @@ class ImportHolding(BaseModel):
     market: Literal["IN", "US"]
     qty: float
     avg_price: float
+    # Set when the import resolved a broker-internal scrip code to the real
+    # ticker (e.g. "EICMOT" -> "EICHERMOT") — if a holding under the OLD
+    # code already exists, it's removed so re-importing after a correction
+    # doesn't leave a stale duplicate sitting next to the corrected one.
+    original_symbol: str | None = None
 
 
 class ImportRequest(BaseModel):
@@ -111,6 +116,7 @@ def import_holdings(user_id: str, body: ImportRequest):
         _ensure_table()
         added = 0
         updated = 0
+        cleaned_up = 0
         with _conn() as conn:
             existing = conn.execute(
                 "SELECT id, symbol, market FROM portfolio_holdings WHERE user_id = %s",
@@ -121,6 +127,22 @@ def import_holdings(user_id: str, body: ImportRequest):
             for h in body.holdings:
                 sym = h.symbol.upper()
                 key = (sym, h.market)
+
+                # If this row's symbol was corrected from a broker-internal
+                # code, and a holding under that OLD code still exists, drop
+                # it — otherwise a re-import after fixing a symbol mapping
+                # leaves the stale wrong-symbol row sitting next to the new
+                # correct one indefinitely.
+                if h.original_symbol:
+                    old_key = (h.original_symbol.upper(), h.market)
+                    if old_key in existing_map and old_key != key:
+                        conn.execute(
+                            "DELETE FROM portfolio_holdings WHERE id = %s",
+                            (existing_map[old_key],)
+                        )
+                        del existing_map[old_key]
+                        cleaned_up += 1
+
                 if key in existing_map:
                     conn.execute(
                         "UPDATE portfolio_holdings SET qty = %s, avg_price = %s WHERE id = %s",
@@ -135,7 +157,7 @@ def import_holdings(user_id: str, body: ImportRequest):
                     )
                     existing_map[key] = holding_id  # guard against duplicate rows within the same import batch
                     added += 1
-        return {"added": added, "updated": updated, "total": len(body.holdings)}
+        return {"added": added, "updated": updated, "cleaned_up": cleaned_up, "total": len(body.holdings)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
