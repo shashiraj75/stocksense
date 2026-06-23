@@ -295,9 +295,9 @@ function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t
           </div>
         )}
       </td>
-      <td className="px-4 py-3 text-xs text-gray-500">
+      <td className="px-4 py-3 text-xs text-gray-300">
         {new Date(trade.opened_at).toLocaleDateString("en-IN")}
-        <p className="text-[10px] text-gray-600 mt-0.5">{daysSinceLabel(trade.opened_at)}</p>
+        <p className="text-xs font-medium text-brand-400 mt-0.5">{daysSinceLabel(trade.opened_at)}</p>
       </td>
       <td className="px-4 py-3 text-right">
         <button
