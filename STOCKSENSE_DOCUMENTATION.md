@@ -908,26 +908,57 @@ Realised P&L = (exit_price − entry_price) × quantity
 
 ---
 
-## 18. Alerts System
+## 18. Portfolio Tracker
 
-**File:** `backend/api/routers/alerts.py`, `frontend/src/app/alerts/page.tsx`
+**File:** `backend/api/routers/portfolio.py`, `frontend/src/app/portfolio/page.tsx`
+
+Manually-tracked real (or planned) holdings with live P&L — distinct from Paper Trading's AI-signal-driven simulated trades. Added in Session 8 (2026-06-23); previously stored entirely in the browser's `localStorage` with no cross-device sync, migrated to Postgres so a holding added on one device is visible on any other device for the same account. `localStorage` is now only a fast-access cache / offline fallback; on first load after the migration shipped, any pre-existing local-only holdings are pushed up to the server automatically.
+
+### Database Schema
+
+```sql
+portfolio_holdings (id TEXT PK, user_id TEXT, symbol TEXT, market TEXT CHECK('IN','US'),
+                     qty NUMERIC, avg_price NUMERIC, created_at TIMESTAMPTZ)
+```
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/portfolio/{user_id}` | GET | All holdings for user |
+| `/api/portfolio/{user_id}` | POST | Add a holding (body: `symbol`, `market`, `qty`, `avg_price`) |
+| `/api/portfolio/{user_id}/{holding_id}` | PATCH | Edit qty / avg_price |
+| `/api/portfolio/{user_id}/{holding_id}` | DELETE | Remove holding |
+
+### Frontend Behavior
+
+- IN and US holdings render in separate sections (never mixed — ₹ and $ totals can't be summed into one number).
+- Inline edit (pencil icon) for Qty/Avg Buy, confirmed via checkmark or Enter, cancelled via X or Escape.
+- Delete/edit await the backend response before updating local state — closes the same "resurrection" race class found in Alerts (a failed request used to leave the row alive server-side while the UI showed it changed/gone, with the next page load silently reverting it).
+- Symbol entry uses the shared `StockSymbolField` predictive-search component (Session 8) instead of a bare text input.
+
+---
+
+## 19. Alerts System
+
+**File:** `backend/api/routers/alerts.py`, `backend/services/price_alert_notifier.py`, `frontend/src/app/alerts/page.tsx`
 
 Price-level alerts that trigger when a stock crosses a target price. All alerts persist in PostgreSQL.
 
 ### Database Schema
 
 ```sql
-price_alerts (id TEXT PK, user_id TEXT, symbol TEXT, market TEXT,
+price_alerts (id TEXT PK, user_id TEXT, symbol TEXT, market TEXT, email TEXT,
               target_price NUMERIC, direction TEXT CHECK('above','below'),
               triggered BOOL DEFAULT FALSE, created_at TIMESTAMPTZ, triggered_at TIMESTAMPTZ)
 ```
 
 ### Alert Check Logic
 
-- Frontend polls live quote every 60 seconds
-- Compares `live_price` vs `target_price` by direction (`above` / `below`)
-- On trigger: PATCH alert to `triggered = true`, stores `triggered_at`
-- Triggered alerts shown with timestamp; can be reset or deleted
+- **Client-side:** frontend polls live quote every 5 seconds while the page is open; on trigger, PATCHes the alert to `triggered = true`. Stops working the moment the tab is closed/backgrounded.
+- **Server-side (Session 8):** `_price_alerts_check_loop` in `main.py` runs `price_alert_notifier.check_and_notify()` every 90 seconds — scans all non-triggered alerts with an `email` on file, fetches the live quote, and emails the owner (same Resend account as invites/paper-trade notifications) once the threshold is crossed, marking it triggered server-side. No time-based cooldown needed — `triggered` itself is the dedup, since the query only selects non-triggered rows. Kill switch: set `PRICE_ALERTS_ENFORCEMENT=0` to disable just this background check without a code change; client-side polling is unaffected either way.
+- Triggered alerts shown with timestamp; can be reset (re-arms for exactly one more notification) or deleted.
+- Delete/reset await the backend response before updating local UI state (Session 8 fix) — previously a failed request could leave the row alive server-side while the screen showed it changed, with the next page load silently reverting it.
 
 ### API Endpoints
 
@@ -940,7 +971,7 @@ price_alerts (id TEXT PK, user_id TEXT, symbol TEXT, market TEXT,
 
 ---
 
-## 19. API Reference
+## 20. API Reference
 
 ### Prediction
 
@@ -1014,7 +1045,7 @@ price_alerts (id TEXT PK, user_id TEXT, symbol TEXT, market TEXT,
 
 ---
 
-## 20. Frontend Pages & Components
+## 21. Frontend Pages & Components
 
 ### Pages
 
@@ -1068,7 +1099,7 @@ The Picks page has a collapsible **"Show Real Accuracy"** panel with three layer
 
 ---
 
-## 21. Infrastructure & Deployment
+## 22. Infrastructure & Deployment
 
 ### Hosting
 
@@ -1111,7 +1142,7 @@ The Picks page has a collapsible **"Show Real Accuracy"** panel with three layer
 
 ---
 
-## 22. Automation Workflows
+## 23. Automation Workflows
 
 **Directory:** `.github/workflows/`
 
@@ -1147,7 +1178,7 @@ Purpose:  Prevent Render free tier from spinning down
 
 ---
 
-## 23. Persistence & Data Durability
+## 24. Persistence & Data Durability
 
 Render's free tier uses ephemeral disk — files written locally are wiped on every restart/redeploy. All user-facing and learning data is stored in PostgreSQL to survive this.
 
@@ -1182,7 +1213,7 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 
 ---
 
-## 24. Factor Weights by Horizon
+## 25. Factor Weights by Horizon
 
 ### Short-Term (1–5 days)
 
@@ -1213,7 +1244,7 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 
 ---
 
-## 25. Key Design Principles
+## 26. Key Design Principles
 
 1. **No Look-Ahead Bias** — Backtester uses only data available at the prediction date. Forward returns computed strictly after prediction timestamp.
 
@@ -1239,7 +1270,52 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 
 ---
 
-## 26. Changelog
+## 27. Changelog
+
+### Session 8 — 2026-06-23
+
+A long session covering a surgical bug-hunt pass across the multi-market changes, a thorough mobile/desktop CSS layout audit, and a real architecture fix (Portfolio finally syncing across devices). Documentation batching was changed mid-session from "after every push" to "once per day" per explicit founder feedback — this entry covers everything from that point through end of session in one pass instead of ~22 separate changelog entries.
+
+**Multi-Market Scoring Bugs Found and Fixed:**
+
+- **Sector/relative-strength scoring was India-only for every US stock.** `sector_strength_score()` looked symbols up in a static curated India-only map, so any US symbol always returned "Unknown" with a neutral score. Separately, `relative_strength_score()` always compared against Nifty 50 regardless of market — a US stock's "relative strength" was being computed against a rupee-denominated index. Fixed: US sector now comes from yfinance's own GICS `info["sector"]` field (works for any US stock, no curated list needed) compared against SPDR Select Sector ETFs vs. the S&P 500; IN behavior is byte-for-byte unchanged. Bonus: the NSE Finance sector index ticker (`^CNXFINANCE`) was found delisted/404ing on yfinance — swapped to `NIFTY_FIN_SERVICE.NS`.
+- **US Top Gainers/Losers showed far fewer than 10 names each.** The live-request fallback scanned ~50 of the 340+ curated US large-cap symbols one at a time via Finnhub (free tier, no bulk endpoint, hard timeout budget) — ~85% of the universe was never checked. Fixed by adding a periodic background job (`_us_movers_refresh_loop`, every 3 min) that scans the full universe via one bulk `yf.download()` call (~30s, fine for a background job, too slow for a live request) and pre-warms the cache.
+- **Invite-link handling had two more gaps** beyond the earlier fix: it only processed hashes with `type=invite`/`type=recovery` exactly (re-inviting an email with an existing partial `auth.users` row can produce a different `type=`), and a reused/expired link (`#error=...` instead of tokens) gave zero indication anything was wrong. Both fixed — any hash with valid tokens is now processed regardless of type, and an error hash redirects to `/login?notice=invite_expired` with a clear message.
+
+**Alerts System Hardened to Match Paper Trading's Standard:**
+
+- **Server-side enforcement added.** Alerts previously only fired client-side via a 5s poll — closing the tab silently stopped monitoring with no backstop. New `services/price_alert_notifier.py` + `_price_alerts_check_loop` (every 90s) scans non-triggered alerts with an email on file and notifies via the same Resend account used for invites/paper-trade alerts. Kill switch: `PRICE_ALERTS_ENFORCEMENT=0` env var disables just this background check without a code change.
+- **Resurrection race fixed** — delete/reset fired the API call and updated local UI state unconditionally; a failed network call left the row alive in Postgres while the screen showed it gone, and the next page load's GET would silently bring it back. Now awaits the request first, only committing the local change on success (same bug class found and fixed independently in Portfolio later this session).
+- **Screener filter unit mismatch + silent failures**: `min_roe` was compared against yfinance's raw ROE fraction while the output field is `*100`-scaled (not wired to the frontend yet, but a landmine); bare `except: pass` replaced with logged skip counts.
+
+**Surgical CSS/Layout Audit (mobile + desktop):**
+
+- **Stock detail page header** didn't stack on mobile — the AI signal panel's 140px minimum width left almost no room for price/badges on a ~375px phone. Now stacks vertically below `sm:`.
+- **Two tables (Watchlist, Alerts) were missing `overflow-x-auto`** wrappers that every other table in the app already had — verified all `<table>` usages app-wide to confirm these were the only gaps.
+- **Daily Picks and Dashboard header rows overflowed past the screen edge** on narrower viewports — both had an outer row that correctly wrapped, but an *inner* row (toggle + buttons + status badge) with no `flex-wrap`/`overflow-x-auto` of its own, so 3+ children forced onto one unbreakable line wider than the viewport. Fixed both, plus added a second safety layer (`flex-wrap` on the parent too) since in some browsers a child's `overflow-x-auto` doesn't get factored into the parent's own wrap decision.
+- **Desktop navbar market-status block overflowed at laptop widths.** `MarketStatusInline` (NSE/NYSE/Crypto status + "Opens/Closes at..." text) was `shrink-0` with no width cap — US/Crypto's longer status text pushed the whole navbar row past the viewport right at the `lg:` breakpoint where it first appears. Since this lives in the shared root layout, it affected every page at once. Capped to `max-w-[42vw]` with its own internal scroll.
+- **A genuine regression, self-corrected:** added `overflow-x: hidden` on `html`/`body` as a "safety net" against page-wide horizontal scroll — this didn't fix anything, it just removed the user's ability to scroll right to reach content that was still overflowing (worse, not better). Reverted, then found and fixed the actual overflow sources instead.
+- **Missing header icons**: Market Overview, Market Heatmap, and Stock Screener were the only 3 of 9 main pages with no icon before the title (every other page already had one) — added `LayoutDashboard`, `Flame`, `Filter` respectively.
+- **Market toggle styling unified** across Daily Picks, Dashboard, Heatmap, and Paper Trading (previously: compact segmented pills on some pages, larger individually-bordered pills with full country names on others) — all now use the same compact segmented-control style. Also standardized the three form-field market selectors (Alerts, Portfolio, Backtest).
+- **Unresolved, flagged not fixed**: a navbar avatar/search-bar overlap reported on both Android and iOS, in what looks like a constrained in-app webview (Safari View Controller / Chrome Custom Tabs) rather than the full browser app — ruled out backdrop-blur compositing, global CSS, viewport meta conflicts, and the flexbox math itself (which cannot produce real box overlap as written) across multiple passes. Locked `maximumScale: 1` on the viewport as a defensive measure. Asked the founder to confirm whether it reproduces in the full standalone browser before further investigation, since computer-use/browser-automation tools were unavailable in this environment to verify directly.
+
+**Predictive Search Added to Portfolio and Alerts:**
+
+- Both pages had a bare text `<input>` for entering a symbol — no autocomplete, unlike the global search bar and Watchlist's add-stock field. Extracted the universe-loading + local-matching logic (previously duplicated between `SearchBar.tsx` and `watchlist/page.tsx`) into a shared `useStockSearch` hook + `StockSymbolField` component; picking a suggestion also auto-syncs the page's IN/US toggle to the selected stock's actual market.
+- **Known gap, deferred to next session**: the autocomplete only matches against a static curated `stock_universe.json` (~1,585 US tickers), not the full market — confirmed RKT (Rocket Companies) and UUUU (Energy Fuels) are missing. Manual entry + Enter still works as a fallback even without a match.
+
+**Market Selection Now Persists:**
+
+- Every page with a market toggle (Daily Picks, Dashboard, Screener, Backtest, Alerts, Portfolio, Heatmap, Paper Trading) reset to "IN" on every refresh, with no memory of the user's choice. New `useMarketPreference` hook persists to one shared `localStorage` key across all 8 pages — picking "US" on one page carries the preference to the others, not just the same page on reload. Switched the internal read from `useEffect` to `useLayoutEffect` to eliminate a visible flash of the wrong market before the stored value applied.
+
+**Watchlist Split by Market:**
+
+- Was rendering all stocks (IN + US mixed) in one combined table with a Market column — inconsistent with Portfolio and Paper Trading, which both already group by market. Split into separate "🇮🇳 Indian Stocks" / "🇺🇸 US Stocks" sections, same pattern as the other two pages.
+
+**Portfolio: Inline Edit + Cross-Device Sync (the big one):**
+
+- **Inline edit added** for Qty and Avg Buy — previously the only way to fix a typo'd value was deleting and re-adding the holding. Pencil icon toggles to editable inputs, confirmed with a checkmark/Enter or cancelled with X/Escape (same pattern as Paper Trading's open-positions table).
+- **Root architecture gap found and fixed**: Portfolio was the one feature still stored entirely in the browser's `localStorage` — Watchlist, Alerts, and Paper Trading all already synced per-user through Postgres, but a holding added on desktop was invisible on any other device for the same account, since nothing was ever sent to a server. New `portfolio_holdings` table + full CRUD endpoints (`backend/api/routers/portfolio.py`), mirroring the `_ensure_table()`-on-startup pattern already used by Alerts. `localStorage` is now just a fast-access cache; on first load after this shipped, any holdings already sitting in local storage get migrated up to the server automatically so existing users don't lose them. Delete/edit also await the backend call before updating local state, same fix as the Alerts resurrection bug above.
 
 ### Session 7 — 2026-06-22
 
