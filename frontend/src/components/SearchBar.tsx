@@ -25,9 +25,24 @@ function loadUniverse(): Promise<Universe> {
   return loadPromise;
 }
 
+// Normalizes common corporate-suffix abbreviations and punctuation so e.g.
+// "Hospital Ltd" matches a stored name of "Hospital Limited".
+function normalizeName(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/\bltd\b\.?/g, "limited")
+    .replace(/\bcorp\b\.?/g, "corporation")
+    .replace(/\binc\b\.?/g, "incorporated")
+    .replace(/&/g, "and")
+    .replace(/[.,]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function searchLocal(universe: Universe, query: string, limit = 8): Stock[] {
   const q = query.toLowerCase().trim();
   if (!q) return [];
+  const qNorm = normalizeName(q);
 
   const all = [...universe.US, ...universe.IN, ...universe.CRYPTO];
   const exact: Stock[] = [], symStart: Stock[] = [], symContain: Stock[] = [],
@@ -38,14 +53,14 @@ function searchLocal(universe: Universe, query: string, limit = 8): Stock[] {
     const key = `${s.symbol}:${s.market}`;
     if (seen.has(key)) continue;
     const sl = s.symbol.toLowerCase().replace(/-/g, ".");
-    const nl = s.name.toLowerCase();
+    const nl = normalizeName(s.name);
     const ql = q.replace(/-/g, ".");
 
     if (sl === ql)            exact.push(s);
     else if (sl.startsWith(ql)) symStart.push(s);
     else if (sl.includes(ql))   symContain.push(s);
-    else if (nl.startsWith(q))  nameStart.push(s);
-    else if (nl.includes(q))    nameContain.push(s);
+    else if (nl.startsWith(qNorm))  nameStart.push(s);
+    else if (nl.includes(qNorm))    nameContain.push(s);
     else continue;
     seen.add(key);
   }
@@ -78,8 +93,13 @@ export function SearchBar() {
     }, 100);
   }, [universe]);
 
-  // Direct symbol fallback shown when no results found
-  const showFallback = open && results.length === 0 && query.length >= 1;
+  // Direct symbol fallback shown when no results found — only makes sense for
+  // ticker-like text (short, no spaces). A multi-word company name with zero
+  // matches should say "no results", not offer itself as a fake symbol in
+  // every market.
+  const looksLikeSymbol = /^[A-Za-z0-9.-]{1,10}$/.test(query.trim());
+  const showFallback = open && results.length === 0 && query.length >= 1 && looksLikeSymbol;
+  const showNoResults = open && results.length === 0 && query.length >= 1 && !looksLikeSymbol;
 
   // Re-run search once universe loads (if user already typed something)
   useEffect(() => {
@@ -127,8 +147,11 @@ export function SearchBar() {
           onKeyDown={(e) => e.key === "Enter" && handleEnter()}
         />
       </div>
-      {(open && results.length > 0) || showFallback ? (
+      {(open && results.length > 0) || showFallback || showNoResults ? (
         <ul className="absolute top-full mt-2 w-[calc(100vw-2rem)] sm:w-full bg-dark-card border border-dark-border rounded-xl overflow-hidden z-50 shadow-xl">
+          {showNoResults && (
+            <li className="px-4 py-3 text-gray-400 text-sm">No matches found for &ldquo;{query}&rdquo;</li>
+          )}
           {results.map((r) => (
             <li key={`${r.symbol}-${r.market}`}>
               <button
