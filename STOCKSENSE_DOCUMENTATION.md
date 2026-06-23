@@ -24,6 +24,7 @@
 15. [Crypto Prediction Module](#15-crypto-prediction-module)
 16. [Screener & Universe Management](#16-screener--universe-management)
 17. [Paper Trading Module](#17-paper-trading-module)
+18a. [Reading the UI — Signal Colors & Common Jargon](#18a-reading-the-ui--signal-colors--common-jargon)
 18. [Alerts System](#18-alerts-system)
 19. [API Reference](#19-api-reference)
 20. [Frontend Pages & Components](#20-frontend-pages--components)
@@ -936,6 +937,42 @@ portfolio_holdings (id TEXT PK, user_id TEXT, symbol TEXT, market TEXT CHECK('IN
 - Inline edit (pencil icon) for Qty/Avg Buy, confirmed via checkmark or Enter, cancelled via X or Escape.
 - Delete/edit await the backend response before updating local state — closes the same "resurrection" race class found in Alerts (a failed request used to leave the row alive server-side while the UI showed it changed/gone, with the next page load silently reverting it).
 - Symbol entry uses the shared `StockSymbolField` predictive-search component (Session 8) instead of a bare text input.
+
+---
+
+## 18a. Reading the UI — Signal Colors & Common Jargon
+
+A reference for what the colors, badges, and terms scattered across Portfolio, Paper Trading, Daily Picks, and Multibagger actually mean. Source of truth: `frontend/src/components/SignalBadge.tsx`.
+
+### Signal badge colors
+
+| Badge | Color | Meaning |
+|---|---|---|
+| **BUY** | Green | Confidence ≥ 60% — strong conviction |
+| **BUY** | Gold/yellow (filled) | Confidence 45–59% — moderate conviction |
+| **BUY** | Gray (outlined) | Confidence < 45% — technically a BUY call, but weak conviction |
+| **HOLD** | Amber/gold | Composite score landed in the neutral 45–59 band — model found no clear edge either way |
+| **REJECTED** | Amber/gold (same color as HOLD, different label) | The model never scored this stock at all — a hard quality gate rejected it before scoring, typically for severe fundamental red flags or data quality issues. Different from HOLD: HOLD means "scored and neutral," REJECTED means "refused to score." Check that stock's `rejection_reasons` for specifics. |
+| **SELL** | Red | Composite score below the SELL threshold |
+| **—** (dash) | — | Not "no signal exists" — the row's data is still queued behind other rows in a staggered batch (added to avoid overwhelming the browser's per-origin connection limit on pages with many holdings/trades). It resolves to a real badge once its turn comes up; if it never resolves after a minute or more, that's worth reporting as a bug. |
+
+Color tokens: `bull` = green (`#22c55e`), `bear` = red (`#ef4444`), `neutral` = amber (`#f59e0b`). BUY is the only signal with confidence-graded shading; HOLD/REJECTED/SELL are always a single fixed shade regardless of confidence.
+
+### Other terms that show up across the app
+
+| Term | Where seen | Meaning |
+|---|---|---|
+| **Confidence %** | Signal badges, prediction detail | How sure the model is about its own call — a measure of conviction, not a probability of being "right." Low confidence ≠ wrong, it means the underlying signals were mixed/weak. |
+| **Invested** | Portfolio, Paper Trade | `Qty × Avg Buy Price` (or entry price for paper trades) — what you actually put in, unaffected by current price moves. |
+| **Unr. P&L** | Paper Trade | "Unrealized P&L" — the gain/loss on an open position if you closed it right now at the current market price. Becomes "Realized P&L" only after you actually close the trade. |
+| **Near stop loss** | Paper Trade | The current price has moved within a small buffer of the stop-loss price — a warning to consider closing, not an automatic close (this app has no real broker execution; stop-loss/target are advisory levels you act on manually). |
+| **Mkt Price (last close when closed)** | Paper Trade | For OPEN trades this is the live price; for CLOSED trades it's frozen at whatever the price was at the last market close before/at closing, since a closed position has no further "live" price to track. |
+| **Target Price** | Predictions, Paper Trade | The model's projected price for the selected horizon if the thesis plays out — not a guarantee, and not the same as the stop-loss. |
+| **Horizon (short/medium/long)** | Everywhere | short = 1–10 days, medium = 1–3 months, long = 6 months–3 years. Each horizon re-weights the same underlying factors differently (see §9 Dynamic Weights) — the same stock can legitimately show different signals across horizons at the same time. |
+| **Composite Score** | Prediction detail, score history | The single 0–100 number all the BUY/HOLD/SELL thresholds are based on — a weighted blend of technical, fundamental, sentiment, macro, and quality factors (see §4). |
+| **Verdict (Multibagger)** | Multibagger screen | `strong_buy` / `watchlist` / `avoid` — a checklist-based pass/fail rating distinct from the BUY/HOLD/SELL prediction signal; a stock can be a Multibagger "watchlist" candidate while simultaneously showing a HOLD prediction signal, since they're answering different questions (long-term quality checklist vs. current-horizon timing call). |
+| **Shortlisted (Multibagger)** | Multibagger screen | The top ~20% scorers within a screen — a relative ranking marker, not a guarantee. |
+| **REJECTED reasons** | Multibagger, Predictions | A specific list of which hard-gate checks failed (e.g. promoter pledge too high, negative equity) — click through if a stock you expected to see is missing or rejected. |
 
 ---
 
