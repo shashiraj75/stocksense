@@ -51,7 +51,7 @@ def run_full_refresh() -> dict:
                 continue
 
             is_fin = _is_financial(data.get("sector_name"), data.get("industry_name"))
-            cache.upsert(symbol, is_fin, data)
+            cache.upsert(symbol, "IN", is_fin, data)
             refreshed += 1
 
         except Exception as e:

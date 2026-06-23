@@ -12,37 +12,34 @@ deliberately implemented as latest-snapshot checks instead, and labelled as
 such in the reason text — they are NOT claiming a trend we can't see.
 """
 
-SCORECARD_MAX = 12
-
-
 def _check(label: str, passed: bool) -> dict:
     return {"label": label, "passed": passed}
 
 
-def compute_scorecard(stock: dict) -> dict:
+def compute_scorecard(stock: dict, market: str = "IN") -> dict:
     roe = stock.get("roe_pct")
-    roe_5y = stock.get("roe_5y_pct")
+    roe_avg = stock.get("roe_5y_pct")  # 5Y avg for IN, 4Y avg for US
     roce = stock.get("roce_pct")
     sales_3y = stock.get("sales_growth_3y_pct")
-    sales_5y = stock.get("sales_growth_5y_pct")
+    sales_5y = stock.get("sales_growth_5y_pct")  # always None for US — see below
     profit_3y = stock.get("profit_growth_3y_pct")
-    profit_5y = stock.get("profit_growth_5y_pct")
+    profit_5y = stock.get("profit_growth_5y_pct")  # always None for US — see below
     de = stock.get("debt_to_equity_pct")
     icr = stock.get("interest_coverage_ratio")
     ocf = stock.get("operating_cf_latest_cr")
     pe = stock.get("pe_ratio")
     ev_ebitda = stock.get("ev_ebitda")
     pledge = stock.get("promoter_pledge_pct")
+    roe_avg_label = "4Y avg" if market == "US" else "5Y avg"
 
     checks = [
         # Business Quality
-        _check("ROE > 18%, not visibly declining vs 5Y avg", roe is not None and roe > 18 and (roe_5y is None or roe >= roe_5y * 0.8)),
+        _check(f"ROE > 18%, not visibly declining vs {roe_avg_label}", roe is not None and roe > 18 and (roe_avg is None or roe >= roe_avg * 0.8)),
         _check("ROCE > 15%", roce is not None and roce > 15),
         _check("Profit growing both 3Y and 5Y", profit_3y is not None and profit_3y > 0 and (profit_5y is None or profit_5y > 0)),
         # Growth
         _check("Sales growth > 12% (3Y)", sales_3y is not None and sales_3y > 12),
         _check("Profit growth > 12% (3Y)", profit_3y is not None and profit_3y > 12),
-        _check("Growth accelerating (3Y CAGR > 5Y CAGR)", sales_3y is not None and sales_5y is not None and sales_3y > sales_5y),
         # Financial Safety
         _check("Debt/Equity < 50%", de is not None and de < 50),
         _check("Interest Coverage > 3x", icr is not None and icr > 3),
@@ -50,9 +47,17 @@ def compute_scorecard(stock: dict) -> dict:
         # Valuation
         _check("P/E < 35", pe is not None and pe < 35),
         _check("EV/EBITDA < 20", ev_ebitda is not None and ev_ebitda < 20),
-        _check("No promoter pledge (latest)", pledge is None or pledge < 1),
     ]
 
+    if market == "IN":
+        # Both checks below need data that's structurally unavailable for
+        # US stocks (no 5Y growth history past yfinance's 4Y cap, and no
+        # "promoter pledge" concept in US filings at all) — included only
+        # for IN rather than silently auto-passing or always-failing them.
+        checks.append(_check("Growth accelerating (3Y CAGR > 5Y CAGR)", sales_3y is not None and sales_5y is not None and sales_3y > sales_5y))
+        checks.append(_check("No promoter pledge (latest)", pledge is None or pledge < 1))
+
+    max_score = len(checks)
     score = sum(1 for c in checks if c["passed"])
 
     # Anti-loss red flags — any ONE triggers a downgrade to Avoid regardless
@@ -60,36 +65,39 @@ def compute_scorecard(stock: dict) -> dict:
     # (collapsed to a single override here since we only have a snapshot,
     # not the multi-year deterioration this rule is designed to catch).
     red_flags = []
-    if roe is not None and roe_5y is not None and roe < roe_5y * 0.6:
-        red_flags.append("ROE well below its 5Y average — possible earnings deterioration")
+    if roe is not None and roe_avg is not None and roe < roe_avg * 0.6:
+        red_flags.append(f"ROE well below its {roe_avg_label} — possible earnings deterioration")
     if profit_3y is not None and profit_3y < 0:
         red_flags.append("3Y profit growth is negative")
     if ocf is not None and ocf < 0:
         red_flags.append("Negative operating cash flow (latest year)")
-    if pledge is not None and pledge > 5:
+    if market == "IN" and pledge is not None and pledge > 5:
         red_flags.append(f"Promoter pledge at {pledge:.1f}% (latest)")
     if de is not None and de > 150:
         red_flags.append(f"High leverage — Debt/Equity {de:.0f}% (latest)")
 
+    # Verdict thresholds scale proportionally to max_score (10/12=0.83,
+    # 7/12=0.58) so a 10-check US scorecard and a 12-check IN one apply the
+    # same relative bar, not the same absolute one.
     if red_flags:
         verdict = "avoid" if len(red_flags) >= 2 else "watch"
-    elif score >= 10:
+    elif score >= round(max_score * 0.83):
         verdict = "strong_buy"
-    elif score >= 7:
+    elif score >= round(max_score * 0.58):
         verdict = "watchlist"
     else:
         verdict = "avoid"
 
     return {
         "score": score,
-        "max_score": SCORECARD_MAX,
+        "max_score": max_score,
         "verdict": verdict,
         "checks": checks,
         "red_flags": red_flags,
     }
 
 
-def annotate_and_rank(results: list[dict]) -> list[dict]:
+def annotate_and_rank(results: list[dict], market: str = "IN") -> list[dict]:
     """
     Attaches a scorecard to each result, sorts by score descending (the
     "10-20% shortlist" ranking — a screen's pass/fail filter alone doesn't
@@ -97,7 +105,7 @@ def annotate_and_rank(results: list[dict]) -> list[dict]:
     least 1, capped reasonably) as the shortlist tier.
     """
     for r in results:
-        r["scorecard"] = compute_scorecard(r)
+        r["scorecard"] = compute_scorecard(r, market)
 
     results.sort(key=lambda r: r["scorecard"]["score"], reverse=True)
 

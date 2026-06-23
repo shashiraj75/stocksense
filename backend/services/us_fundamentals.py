@@ -75,7 +75,79 @@ def _build(sym: str) -> dict:
             "analyst_recommendation": info.get("recommendationKey"),
             "analyst_target_price": info.get("targetMeanPrice"),
             "analyst_count": info.get("numberOfAnalystOpinions"),
+            # yfinance gives this directly — no need to derive from market cap/sales
+            "price_to_sales": info.get("priceToSalesTrailing12Months"),
         }
+
+        # EV/EBITDA — yfinance gives real totalDebt/totalCash for US stocks
+        # (unlike screener.in for India, where we had to approximate without
+        # cash netting), so this is a genuine EV calc, not an approximation.
+        try:
+            total_debt = info.get("totalDebt")
+            total_cash = info.get("totalCash")
+            market_cap = info.get("marketCap")
+            fin = ticker.financials
+            if fin is not None and not fin.empty and "EBITDA" in fin.index and market_cap is not None:
+                ebitda = _clean(fin.loc["EBITDA"].dropna().iloc[0]) if not fin.loc["EBITDA"].dropna().empty else None
+                if ebitda and ebitda > 0:
+                    ev = market_cap + (total_debt or 0) - (total_cash or 0)
+                    data["ev_ebitda"] = round(ev / ebitda, 2)
+        except Exception:
+            pass
+
+        # OPM% and Interest Coverage Ratio from the income statement —
+        # yfinance exposes EBIT/Operating Income/Interest Expense directly.
+        try:
+            fin = ticker.financials
+            if fin is not None and not fin.empty:
+                op_income = _clean(fin.loc["Operating Income"].dropna().iloc[0]) if "Operating Income" in fin.index and not fin.loc["Operating Income"].dropna().empty else None
+                revenue = _clean(fin.loc["Total Revenue"].dropna().iloc[0]) if "Total Revenue" in fin.index and not fin.loc["Total Revenue"].dropna().empty else None
+                if op_income is not None and revenue and revenue > 0:
+                    data["opm_pct"] = round(op_income / revenue * 100, 1)
+
+                ebit = _clean(fin.loc["EBIT"].dropna().iloc[0]) if "EBIT" in fin.index and not fin.loc["EBIT"].dropna().empty else None
+                interest = _clean(fin.loc["Interest Expense"].dropna().iloc[0]) if "Interest Expense" in fin.index and not fin.loc["Interest Expense"].dropna().empty else None
+                if ebit is not None and interest and abs(interest) > 1e4:  # skip ~0 interest — meaningless coverage
+                    data["interest_coverage_ratio"] = round(ebit / abs(interest), 2)
+        except Exception:
+            pass
+
+        # ROCE = EBIT / (Total Assets - Current Liabilities), latest year.
+        # yfinance's own returnOnCapitalEmployed field is unreliable/sparse
+        # (same issue noted for India) — derived directly instead.
+        try:
+            fin = ticker.financials
+            bs = ticker.balance_sheet
+            if fin is not None and not fin.empty and bs is not None and not bs.empty and "EBIT" in fin.index:
+                ebit = _clean(fin.loc["EBIT"].dropna().iloc[0]) if not fin.loc["EBIT"].dropna().empty else None
+                total_assets = _clean(bs.loc["Total Assets"].dropna().iloc[0]) if "Total Assets" in bs.index and not bs.loc["Total Assets"].dropna().empty else None
+                current_liab = _clean(bs.loc["Current Liabilities"].dropna().iloc[0]) if "Current Liabilities" in bs.index and not bs.loc["Current Liabilities"].dropna().empty else None
+                if ebit is not None and total_assets is not None and current_liab is not None:
+                    capital_employed = total_assets - current_liab
+                    if capital_employed > 0:
+                        data["roce_pct"] = round(ebit / capital_employed * 100, 1)
+        except Exception:
+            pass
+
+        # ROE 4Y average (yfinance's free tier caps annual financials at 4
+        # years — labelled "4y" rather than "5y" so it doesn't overclaim data
+        # we don't have, same honesty constraint as the IN scorecard).
+        try:
+            fin = ticker.financials
+            bs = ticker.balance_sheet
+            if fin is not None and not fin.empty and bs is not None and not bs.empty and "Net Income" in fin.index and "Stockholders Equity" in bs.index:
+                ni_series = fin.loc["Net Income"].dropna()
+                eq_series = bs.loc["Stockholders Equity"].dropna()
+                common_years = [c for c in ni_series.index if c in eq_series.index]
+                yearly_roe = []
+                for y in common_years:
+                    ni, eq = _clean(ni_series[y]), _clean(eq_series[y])
+                    if ni is not None and eq and eq > 0:
+                        yearly_roe.append(ni / eq * 100)
+                if yearly_roe:
+                    data["roe_4y_pct"] = round(sum(yearly_roe) / len(yearly_roe), 1)
+        except Exception:
+            pass
 
         # Multi-year balance sheet — Total Debt / Stockholders Equity / Total Assets.
         # yfinance's columns already come newest-first, so no reversal needed.

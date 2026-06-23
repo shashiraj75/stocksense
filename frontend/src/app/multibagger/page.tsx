@@ -33,32 +33,46 @@ const SCREENS: { key: MultibaggerScreen; label: string; color: string; desc: str
   },
 ];
 
-const METRICS: { key: keyof MultibaggerStock; label: string; fmt: (v: number) => string }[] = [
-  { key: "market_cap_cr", label: "Mkt Cap", fmt: (v) => `₹${v.toLocaleString("en-IN", { maximumFractionDigits: 0 })} Cr` },
-  { key: "pe_ratio", label: "P/E", fmt: (v) => `${v.toFixed(1)}×` },
-  { key: "roe_pct", label: "ROE", fmt: (v) => `${v.toFixed(1)}%` },
-  { key: "roce_pct", label: "ROCE", fmt: (v) => `${v.toFixed(1)}%` },
-  { key: "debt_to_equity_pct", label: "D/E", fmt: (v) => `${(v / 100).toFixed(2)}×` },
-  { key: "sales_growth_3y_pct", label: "Sales 3Y", fmt: (v) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%` },
-  { key: "profit_growth_3y_pct", label: "Profit 3Y", fmt: (v) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%` },
-  { key: "promoter_holding_pct", label: "Promoter", fmt: (v) => `${v.toFixed(1)}%` },
-];
+const METRICS_BY_MARKET: Record<"IN" | "US", { key: keyof MultibaggerStock; label: string; fmt: (v: number) => string }[]> = {
+  IN: [
+    { key: "market_cap_cr", label: "Mkt Cap", fmt: (v) => `₹${v.toLocaleString("en-IN", { maximumFractionDigits: 0 })} Cr` },
+    { key: "pe_ratio", label: "P/E", fmt: (v) => `${v.toFixed(1)}×` },
+    { key: "roe_pct", label: "ROE", fmt: (v) => `${v.toFixed(1)}%` },
+    { key: "roce_pct", label: "ROCE", fmt: (v) => `${v.toFixed(1)}%` },
+    { key: "debt_to_equity_pct", label: "D/E", fmt: (v) => `${(v / 100).toFixed(2)}×` },
+    { key: "sales_growth_3y_pct", label: "Sales 3Y", fmt: (v) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%` },
+    { key: "profit_growth_3y_pct", label: "Profit 3Y", fmt: (v) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%` },
+    { key: "promoter_holding_pct", label: "Promoter", fmt: (v) => `${v.toFixed(1)}%` },
+  ],
+  US: [
+    { key: "market_cap_usd_m", label: "Mkt Cap", fmt: (v) => v >= 1000 ? `$${(v / 1000).toFixed(1)}B` : `$${v.toFixed(0)}M` },
+    { key: "pe_ratio", label: "P/E", fmt: (v) => `${v.toFixed(1)}×` },
+    { key: "roe_pct", label: "ROE", fmt: (v) => `${v.toFixed(1)}%` },
+    { key: "roce_pct", label: "ROCE", fmt: (v) => `${v.toFixed(1)}%` },
+    { key: "debt_to_equity_pct", label: "D/E", fmt: (v) => `${(v / 100).toFixed(2)}×` },
+    { key: "sales_growth_3y_pct", label: "Sales 3Y", fmt: (v) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%` },
+    { key: "profit_growth_3y_pct", label: "Profit 3Y", fmt: (v) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%` },
+    { key: "insider_holding_pct", label: "Insider", fmt: (v) => `${v.toFixed(1)}%` },
+  ],
+};
 
 export default function MultibaggerPage() {
+  const [market, setMarket] = useState<"IN" | "US">("IN");
   const [screen, setScreen] = useState<MultibaggerScreen>("quality_compounder");
   const [expanded, setExpanded] = useState<string | null>(null);
   const active = SCREENS.find(s => s.key === screen)!;
+  const METRICS = METRICS_BY_MARKET[market];
 
   const { data, isLoading } = useQuery({
-    queryKey: ["multibagger-screen", screen],
-    queryFn: () => fetchMultibaggerScreen(screen),
+    queryKey: ["multibagger-screen", screen, market],
+    queryFn: () => fetchMultibaggerScreen(screen, market),
     staleTime: 60 * 60_000,
     refetchOnWindowFocus: false,
   });
 
   const { data: status } = useQuery({
-    queryKey: ["multibagger-status"],
-    queryFn: fetchMultibaggerStatus,
+    queryKey: ["multibagger-status", market],
+    queryFn: () => fetchMultibaggerStatus(market),
     staleTime: 5 * 60_000,
     refetchOnWindowFocus: false,
   });
@@ -78,15 +92,26 @@ export default function MultibaggerPage() {
             <p className="text-sm text-gray-400 mt-1">Three hard-filter screens — never merge them, that's how you get zero results</p>
           </div>
         </div>
-        {status?.running ? (
-          <span className="flex items-center gap-1.5 text-xs text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 rounded-lg px-3 py-1.5">
-            <Wifi size={12} className="animate-pulse" /> Refreshing fundamentals…
-          </span>
-        ) : lastRefreshed && (
-          <span className="flex items-center gap-1.5 text-xs text-gray-500 bg-dark-card border border-dark-border rounded-lg px-3 py-1.5">
-            <Clock size={12} /> Refreshed {lastRefreshed}
-          </span>
-        )}
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-0.5 bg-dark-card border border-dark-border rounded-lg p-0.5">
+            {(["IN", "US"] as const).map(m => (
+              <button key={m} onClick={() => setMarket(m)}
+                className={clsx("px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
+                  market === m ? "bg-brand-500 text-white" : "text-gray-400 hover:text-white")}>
+                {m === "IN" ? "🇮🇳 IN" : "🇺🇸 US"}
+              </button>
+            ))}
+          </div>
+          {status?.running ? (
+            <span className="flex items-center gap-1.5 text-xs text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 rounded-lg px-3 py-1.5">
+              <Wifi size={12} className="animate-pulse" /> Refreshing fundamentals…
+            </span>
+          ) : lastRefreshed && (
+            <span className="flex items-center gap-1.5 text-xs text-gray-500 bg-dark-card border border-dark-border rounded-lg px-3 py-1.5">
+              <Clock size={12} /> Refreshed {lastRefreshed}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Screen selector */}
@@ -118,7 +143,7 @@ export default function MultibaggerPage() {
           )}
         </div>
         <p className="px-4 pt-3 text-[11px] text-gray-500 leading-relaxed">
-          Score is a transparent rule-based checklist (12 fundamentals checks) — separate from, and not the same as, the AI signal shown on each stock's own page.
+          Score is a transparent rule-based checklist ({data?.results[0]?.scorecard.max_score ?? (market === "IN" ? 12 : 10)} fundamentals checks{market === "US" ? " — no promoter pledge or 5Y growth, neither exists for US filings" : ""}) — separate from, and not the same as, the AI signal shown on each stock's own page.
           Click a row for the full breakdown. Verdict downgrades to Avoid if any Anti-Loss red flag is present, regardless of score.
         </p>
 
@@ -167,7 +192,7 @@ export default function MultibaggerPage() {
                         <td className="px-4 py-2.5">
                           <div className="flex items-center gap-1.5">
                             {r.shortlisted && <Flame size={12} className="text-orange-400 shrink-0" />}
-                            <Link href={`/stock/${r.symbol}?market=IN`} onClick={(e) => e.stopPropagation()} className="font-mono font-bold text-white hover:text-brand-400">
+                            <Link href={`/stock/${r.symbol}?market=${market}`} onClick={(e) => e.stopPropagation()} className="font-mono font-bold text-white hover:text-brand-400">
                               {r.symbol}
                             </Link>
                           </div>
@@ -237,7 +262,7 @@ export default function MultibaggerPage() {
       </div>
 
       <p className="text-xs text-gray-600 text-center">
-        Data sourced from screener.in · Refreshed nightly · Educational research tool only — not investment advice.
+        Data sourced from {market === "IN" ? "screener.in" : "Yahoo Finance"} · Refreshed nightly · Educational research tool only — not investment advice.
         Do your own due diligence before acting on any screen result.
       </p>
     </div>

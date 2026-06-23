@@ -1,0 +1,40 @@
+name: Multibagger Fundamentals Refresh — US (Nightly)
+
+on:
+  schedule:
+    # 02:00 UTC — deliberately in the wide-open gap between US Daily Picks
+    # (12:30 UTC start) and IN Daily Picks (20:30 UTC start), and well clear
+    # of the IN Multibagger refresh (17:00 UTC, ~1-2hr). ~5,300 common
+    # stocks at a conservative pace (2.5s/symbol, slower than the IN job —
+    # yfinance backs live pricing app-wide, so it carries more risk than
+    # screener.in) takes roughly 5-6 hours, finishing well before 12:30 UTC.
+    - cron: "0 2 * * 1-5"     # Mon-Fri UTC
+  workflow_dispatch:           # allow manual trigger from GitHub UI
+
+jobs:
+  refresh-fundamentals-us:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Railway backend is healthy
+        run: |
+          echo "Checking Railway backend at $(date -u) UTC..."
+          for i in $(seq 1 5); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
+              https://stocksense-production-7e0d.up.railway.app/health)
+            echo "Attempt $i: HTTP $STATUS"
+            if [ "$STATUS" = "200" ]; then
+              echo "Server is ready!"
+              break
+            fi
+            sleep 10
+          done
+
+      - name: Trigger US fundamentals refresh
+        run: |
+          echo "Triggering US fundamentals refresh at $(date -u) UTC..."
+          curl -sS --fail-with-body --max-time 30 \
+            -X POST \
+            -H "x-secret: ${{ secrets.PICKS_SECRET }}" \
+            "https://stocksense-production-7e0d.up.railway.app/api/multibagger/refresh?market=US"
+          echo ""
+          echo "Refresh started in the background. ~5,300 US common stocks at a conservative pace — expect 5-6 hours."

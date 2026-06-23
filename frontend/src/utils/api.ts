@@ -211,9 +211,11 @@ export type MultibaggerScreen = "quality_compounder" | "multibagger_discovery" |
 
 export interface MultibaggerStock {
   symbol: string;
+  market: "IN" | "US";
   company_name: string | null;
   sector_name: string | null;
   market_cap_cr: number | null;
+  market_cap_usd_m: number | null;
   pe_ratio: number | null;
   roe_pct: number | null;
   roe_5y_pct: number | null;
@@ -221,6 +223,7 @@ export interface MultibaggerStock {
   debt_to_equity_pct: number | null;
   promoter_holding_pct: number | null;
   promoter_pledge_pct: number | null;
+  insider_holding_pct: number | null;
   sales_growth_3y_pct: number | null;
   sales_growth_5y_pct: number | null;
   profit_growth_3y_pct: number | null;
@@ -241,10 +244,12 @@ export interface MultibaggerStock {
   shortlisted: boolean;
 }
 
-export const fetchMultibaggerScreen = (screen: MultibaggerScreen) =>
-  api.get<{ screen: string; count: number; results: MultibaggerStock[]; last_refreshed: string | null; error?: string }>(
-    "/api/multibagger/screen", { params: { screen } }
+export const fetchMultibaggerScreen = (screen: MultibaggerScreen, market: "IN" | "US" = "IN") =>
+  api.get<{ screen: string; market: string; count: number; results: MultibaggerStock[]; last_refreshed: string | null; error?: string }>(
+    "/api/multibagger/screen", { params: { screen, market } }
   ).then((r) => r.data);
 
-export const fetchMultibaggerStatus = () =>
-  api.get<{ running: boolean; last_summary: any; last_refreshed: string | null }>("/api/multibagger/status").then((r) => r.data);
+export const fetchMultibaggerStatus = (market: "IN" | "US" = "IN") =>
+  api.get<{ market: string; running: boolean; last_summary: any; last_refreshed: string | null }>(
+    "/api/multibagger/status", { params: { market } }
+  ).then((r) => r.data);

@@ -18,14 +18,17 @@ def _conn():
 
 def ensure_table():
     with _conn() as conn:
+        # Fresh installs get the full schema directly.
         conn.execute("""
             CREATE TABLE IF NOT EXISTS stock_fundamentals_cache (
-                symbol                   TEXT PRIMARY KEY,
+                symbol                   TEXT NOT NULL,
+                market                   TEXT NOT NULL DEFAULT 'IN',
                 company_name             TEXT,
                 sector_name              TEXT,
                 industry_name            TEXT,
                 is_financial             BOOLEAN NOT NULL DEFAULT FALSE,
                 market_cap_cr            NUMERIC,
+                market_cap_usd_m         NUMERIC,
                 pe_ratio                 NUMERIC,
                 roe_pct                  NUMERIC,
                 roe_5y_pct               NUMERIC,
@@ -33,6 +36,7 @@ def ensure_table():
                 debt_to_equity_pct       NUMERIC,
                 promoter_holding_pct     NUMERIC,
                 promoter_pledge_pct      NUMERIC,
+                insider_holding_pct      NUMERIC,
                 sales_growth_3y_pct      NUMERIC,
                 sales_growth_5y_pct      NUMERIC,
                 profit_growth_3y_pct     NUMERIC,
@@ -42,19 +46,44 @@ def ensure_table():
                 ev_ebitda                NUMERIC,
                 price_to_sales           NUMERIC,
                 operating_cf_latest_cr   NUMERIC,
-                updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
+                updated_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+                PRIMARY KEY (symbol, market)
             )
         """)
+
+        # Migration path for a table created before the `market` column
+        # existed (PRIMARY KEY was just `symbol`). Guarded by a cheap
+        # information_schema check so this only runs once ever, not on
+        # every call — ensure_table() runs on every screen/status request.
+        has_market_col = conn.execute("""
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'stock_fundamentals_cache' AND column_name = 'market'
+        """).fetchone()
+        if not has_market_col:
+            conn.execute("ALTER TABLE stock_fundamentals_cache ADD COLUMN market TEXT NOT NULL DEFAULT 'IN'")
+            conn.execute("ALTER TABLE stock_fundamentals_cache ADD COLUMN IF NOT EXISTS market_cap_usd_m NUMERIC")
+            conn.execute("ALTER TABLE stock_fundamentals_cache ADD COLUMN IF NOT EXISTS insider_holding_pct NUMERIC")
+            # Existing rows predate `market` and were always IN-only data,
+            # so the DEFAULT 'IN' above already backfills them correctly.
+            conn.execute("ALTER TABLE stock_fundamentals_cache DROP CONSTRAINT IF EXISTS stock_fundamentals_cache_pkey")
+            conn.execute("ALTER TABLE stock_fundamentals_cache ADD PRIMARY KEY (symbol, market)")
+
         conn.execute("CREATE INDEX IF NOT EXISTS idx_fundamentals_cache_updated ON stock_fundamentals_cache(updated_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_fundamentals_cache_market ON stock_fundamentals_cache(market)")
 
 
 # Maps our internal field names to the table's columns — single source of
 # truth so the refresh job and the upsert statement can't drift apart.
+# roe_5y_pct is reused for both markets — it's a 5Y average for IN (full
+# multi-year history available) and a 4Y average for US (yfinance's free
+# tier caps annual financials at 4 years); labelled accordingly in the UI,
+# not claiming data we don't have.
 FIELD_MAP = {
     "company_name":            "company_name",
     "sector_name":              "sector_name",
     "industry_name":            "industry_name",
     "market_cap_cr":            "market_cap_cr",
+    "market_cap_usd_m":         "market_cap_usd_m",
     "pe_ratio":                 "pe_ratio",
     "roe_pct":                  "roe_pct",
     "roe_5y_pct":                "roe_5y_pct",
@@ -62,6 +91,7 @@ FIELD_MAP = {
     "debt_to_equity_pct":       "debt_to_equity_pct",
     "promoter_holding_pct":     "promoter_holding_pct",
     "promoter_pledge_pct":      "promoter_pledge_pct",
+    "insider_holding_pct":      "insider_holding_pct",
     "sales_growth_3y_pct":      "sales_growth_3y_pct",
     "sales_growth_5y_pct":      "sales_growth_5y_pct",
     "profit_growth_3y_pct":     "profit_growth_3y_pct",
@@ -73,59 +103,54 @@ FIELD_MAP = {
     "operating_cf_latest_cr":   "operating_cf_latest_cr",
 }
 
+_SELECT_COLS = ["symbol", "market", "company_name", "sector_name", "market_cap_cr", "market_cap_usd_m",
+                "pe_ratio", "roe_pct", "roe_5y_pct", "roce_pct", "debt_to_equity_pct",
+                "promoter_holding_pct", "promoter_pledge_pct", "insider_holding_pct",
+                "sales_growth_3y_pct", "sales_growth_5y_pct",
+                "profit_growth_3y_pct", "profit_growth_5y_pct",
+                "opm_pct", "interest_coverage_ratio", "ev_ebitda", "price_to_sales",
+                "operating_cf_latest_cr", "updated_at"]
 
-def upsert(symbol: str, is_financial: bool, fields: dict):
-    cols = ["symbol", "is_financial", "updated_at"] + list(FIELD_MAP.values())
+
+def upsert(symbol: str, market: str, is_financial: bool, fields: dict):
+    cols = ["symbol", "market", "is_financial", "updated_at"] + list(FIELD_MAP.values())
     placeholders = ", ".join(["%s"] * len(cols))
-    update_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c != "symbol")
-    values = [symbol, is_financial, datetime.now(timezone.utc)] + [fields.get(k) for k in FIELD_MAP]
+    update_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in ("symbol", "market"))
+    values = [symbol, market, is_financial, datetime.now(timezone.utc)] + [fields.get(k) for k in FIELD_MAP]
 
     with _conn() as conn:
         conn.execute(f"""
             INSERT INTO stock_fundamentals_cache ({", ".join(cols)})
             VALUES ({placeholders})
-            ON CONFLICT (symbol) DO UPDATE SET {update_clause}
+            ON CONFLICT (symbol, market) DO UPDATE SET {update_clause}
         """, values)
 
 
-def query_screen(screen: str) -> list[dict]:
+def query_screen(screen: str, market: str = "IN") -> list[dict]:
     """
     Each screen is a hard AND-filter — a stock must pass every condition to
     appear, matching the "2-Screen System" design (combining loose +
     strict criteria into one screen produces zero/over-expensive results).
     """
-    where, order = _SCREENS.get(screen, (None, None))
+    where, order = _SCREENS.get(screen, {}).get(market, (None, None))
     if where is None:
         return []
 
     with _conn() as conn:
         rows = conn.execute(f"""
-            SELECT symbol, company_name, sector_name, market_cap_cr, pe_ratio,
-                   roe_pct, roe_5y_pct, roce_pct, debt_to_equity_pct,
-                   promoter_holding_pct, promoter_pledge_pct,
-                   sales_growth_3y_pct, sales_growth_5y_pct,
-                   profit_growth_3y_pct, profit_growth_5y_pct,
-                   opm_pct, interest_coverage_ratio, ev_ebitda, price_to_sales,
-                   operating_cf_latest_cr, updated_at
+            SELECT {", ".join(_SELECT_COLS)}
             FROM stock_fundamentals_cache
-            WHERE {where}
+            WHERE market = %s AND {where}
             ORDER BY {order}
-        """).fetchall()
-        cols = [
-            "symbol", "company_name", "sector_name", "market_cap_cr", "pe_ratio",
-            "roe_pct", "roe_5y_pct", "roce_pct", "debt_to_equity_pct",
-            "promoter_holding_pct", "promoter_pledge_pct",
-            "sales_growth_3y_pct", "sales_growth_5y_pct",
-            "profit_growth_3y_pct", "profit_growth_5y_pct",
-            "opm_pct", "interest_coverage_ratio", "ev_ebitda", "price_to_sales",
-            "operating_cf_latest_cr", "updated_at",
-        ]
-        return [dict(zip(cols, row)) for row in rows]
+        """, [market]).fetchall()
+        return [dict(zip(_SELECT_COLS, row)) for row in rows]
 
 
-def last_refreshed() -> str | None:
+def last_refreshed(market: str = "IN") -> str | None:
     with _conn() as conn:
-        row = conn.execute("SELECT MAX(updated_at) FROM stock_fundamentals_cache").fetchone()
+        row = conn.execute(
+            "SELECT MAX(updated_at) FROM stock_fundamentals_cache WHERE market = %s", [market]
+        ).fetchone()
         return row[0].isoformat() if row and row[0] else None
 
 
@@ -136,50 +161,111 @@ def last_refreshed() -> str | None:
 # financials since those columns are NULL for them (NULL fails any
 # comparison), which is the correct behavior — those ratios aren't
 # meaningful for a bank/NBFC anyway.
-_SCREENS: dict[str, tuple[str, str]] = {
-    "quality_compounder": (
-        """
-        market_cap_cr > 2000
-        AND roe_5y_pct > 18
-        AND roce_pct > 15
-        AND debt_to_equity_pct < 50
-        AND promoter_pledge_pct < 1
-        AND promoter_holding_pct > 35
-        AND sales_growth_5y_pct > 10
-        AND profit_growth_5y_pct > 10
-        AND pe_ratio < 35
-        AND ev_ebitda < 20
-        AND operating_cf_latest_cr > 0
-        """,
-        "roe_5y_pct DESC",
-    ),
-    "multibagger_discovery": (
-        """
-        market_cap_cr > 300 AND market_cap_cr < 20000
-        AND sales_growth_3y_pct > 15
-        AND profit_growth_3y_pct > 15
-        AND roce_pct > 12
-        AND debt_to_equity_pct < 100
-        AND promoter_pledge_pct < 2
-        AND price_to_sales < 5
-        AND pe_ratio < 50
-        """,
-        "profit_growth_3y_pct DESC",
-    ),
-    "tenbagger_early": (
-        """
-        market_cap_cr > 300 AND market_cap_cr < 15000
-        AND sales_growth_3y_pct > 20
-        AND profit_growth_3y_pct > 20
-        AND roce_pct > 10
-        AND roe_pct > 8
-        AND debt_to_equity_pct < 100
-        AND interest_coverage_ratio > 2
-        AND promoter_pledge_pct < 2
-        AND price_to_sales < 4
-        AND pe_ratio < 60
-        AND opm_pct > 8
-        """,
-        "sales_growth_3y_pct DESC",
-    ),
+#
+# US variants drop the promoter/pledge checks entirely — there's no
+# "promoter" concept in US filings (insider_holding_pct is tracked as the
+# closest informational analog but isn't gated on, since insider ownership
+# norms differ structurally from Indian promoter-holding norms and aren't
+# comparable apples-to-apples). Market cap thresholds use market_cap_usd_m
+# with the same numeral as the IN Crore thresholds (e.g. 2000 -> $2000M),
+# a deliberate simple re-scaling for US cap tiers, not a literal currency
+# conversion of the India-calibrated thresholds.
+_SCREENS: dict[str, dict[str, tuple[str, str]]] = {
+    "quality_compounder": {
+        "IN": (
+            """
+            market_cap_cr > 2000
+            AND roe_5y_pct > 18
+            AND roce_pct > 15
+            AND debt_to_equity_pct < 50
+            AND promoter_pledge_pct < 1
+            AND promoter_holding_pct > 35
+            AND sales_growth_5y_pct > 10
+            AND profit_growth_5y_pct > 10
+            AND pe_ratio < 35
+            AND ev_ebitda < 20
+            AND operating_cf_latest_cr > 0
+            """,
+            "roe_5y_pct DESC",
+        ),
+        "US": (
+            # Uses 3Y growth, not 5Y — yfinance's free tier caps annual
+            # financials at 4 years, so a true 5Y CAGR isn't computable for
+            # US stocks at all (sales_growth_5y_pct/profit_growth_5y_pct are
+            # always NULL for US rows). Substituting 3Y here rather than
+            # gating on fields that could never pass.
+            """
+            market_cap_usd_m > 2000
+            AND roe_5y_pct > 18
+            AND roce_pct > 15
+            AND debt_to_equity_pct < 50
+            AND sales_growth_3y_pct > 10
+            AND profit_growth_3y_pct > 10
+            AND pe_ratio < 35
+            AND ev_ebitda < 20
+            AND operating_cf_latest_cr > 0
+            """,
+            "roe_5y_pct DESC",
+        ),
+    },
+    "multibagger_discovery": {
+        "IN": (
+            """
+            market_cap_cr > 300 AND market_cap_cr < 20000
+            AND sales_growth_3y_pct > 15
+            AND profit_growth_3y_pct > 15
+            AND roce_pct > 12
+            AND debt_to_equity_pct < 100
+            AND promoter_pledge_pct < 2
+            AND price_to_sales < 5
+            AND pe_ratio < 50
+            """,
+            "profit_growth_3y_pct DESC",
+        ),
+        "US": (
+            """
+            market_cap_usd_m > 300 AND market_cap_usd_m < 20000
+            AND sales_growth_3y_pct > 15
+            AND profit_growth_3y_pct > 15
+            AND roce_pct > 12
+            AND debt_to_equity_pct < 100
+            AND price_to_sales < 5
+            AND pe_ratio < 50
+            """,
+            "profit_growth_3y_pct DESC",
+        ),
+    },
+    "tenbagger_early": {
+        "IN": (
+            """
+            market_cap_cr > 300 AND market_cap_cr < 15000
+            AND sales_growth_3y_pct > 20
+            AND profit_growth_3y_pct > 20
+            AND roce_pct > 10
+            AND roe_pct > 8
+            AND debt_to_equity_pct < 100
+            AND interest_coverage_ratio > 2
+            AND promoter_pledge_pct < 2
+            AND price_to_sales < 4
+            AND pe_ratio < 60
+            AND opm_pct > 8
+            """,
+            "sales_growth_3y_pct DESC",
+        ),
+        "US": (
+            """
+            market_cap_usd_m > 300 AND market_cap_usd_m < 15000
+            AND sales_growth_3y_pct > 20
+            AND profit_growth_3y_pct > 20
+            AND roce_pct > 10
+            AND roe_pct > 8
+            AND debt_to_equity_pct < 100
+            AND interest_coverage_ratio > 2
+            AND price_to_sales < 4
+            AND pe_ratio < 60
+            AND opm_pct > 8
+            """,
+            "sales_growth_3y_pct DESC",
+        ),
+    },
 }
