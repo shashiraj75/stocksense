@@ -697,6 +697,9 @@ export default function PaperTradingPage() {
             <BarChart2 size={16} className="text-gray-400" />
             Trade History
             <span className="text-xs text-gray-500 font-normal">({closedTrades.length})</span>
+            <span className={clsx("text-sm font-mono font-bold", totalRealized > 0 ? "text-bull" : totalRealized < 0 ? "text-bear" : "text-gray-400")}>
+              {totalRealized >= 0 ? "+" : ""}{marketCfg.currency}{fmt(Math.abs(totalRealized), 0, marketCfg.locale)}
+            </span>
             {historyExpanded ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
           </button>
           {historyExpanded && (
