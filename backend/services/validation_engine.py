@@ -280,6 +280,21 @@ def _init_db():
         _db_initialised = True
 
 
+def init_db():
+    """
+    Public entry point for app startup. _init_db() used to only run lazily
+    on first call to a handful of functions (get_latest_results,
+    get_per_stock_results, etc.), never at boot like every other table's
+    schema setup in postgres_store.py. That meant a schema change here
+    (e.g. adding ENABLE ROW LEVEL SECURITY) would sit deployed but inert
+    until something happened to hit one of those lazy call sites — exactly
+    what happened with the RLS fix, which only took effect after manually
+    curling /api/validation/results. Call this from main.py's lifespan so
+    schema changes apply on deploy like everywhere else.
+    """
+    _init_db()
+
+
 # ── Scoring (uses ONLY data at index i — no look-ahead) ──────────────────────
 
 def _score_at(df: pd.DataFrame, i: int, nifty_close: pd.Series | None, fund_score: float, regime_adj: float) -> dict:

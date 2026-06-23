@@ -263,6 +263,12 @@ async def lifespan(app: FastAPI):
             print("[startup] Postgres schema initialized")
         except Exception as e:
             print(f"[startup] Postgres init failed: {e}")
+        try:
+            from services.validation_engine import init_db as init_validation_db
+            init_validation_db()
+            print("[startup] Validation schema initialized")
+        except Exception as e:
+            print(f"[startup] Validation schema init failed: {e}")
     # Force yfinance crumb refresh so cloud IP starts with a valid session
     try:
         import yfinance as yf
