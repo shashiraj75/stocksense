@@ -55,32 +55,32 @@ US_SECTORS = {
     "Mega Cap Tech":  ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "ORCL", "ADBE", "CRM"],
     "Semiconductors": ["NVDA", "TSM", "AVGO", "QCOM", "MU", "ASML", "AMAT", "LRCX", "KLAC", "MRVL", "MCHP", "ON", "TXN", "ADI", "SWKS", "MPWR", "NXPI"],
     "Cloud & SaaS":   ["MSFT", "AMZN", "GOOGL", "CRM", "NOW", "SNOW", "DDOG", "MDB", "NET", "ZS", "HUBS", "WDAY", "TEAM", "BILL", "OKTA"],
-    "Cybersecurity":  ["CRWD", "PANW", "FTNT", "ZS", "OKTA", "S", "CYBR", "QLYS", "TENB", "VRNS", "RPD", "SAIL"],
-    "Fintech":        ["V", "MA", "PYPL", "SQ", "AFRM", "SOFI", "COIN", "HOOD", "UPST", "LC", "PAYO", "WEX"],
+    "Cybersecurity":  ["CRWD", "PANW", "FTNT", "ZS", "OKTA", "S", "QLYS", "TENB", "VRNS", "RPD", "SAIL"],
+    "Fintech":        ["V", "MA", "PYPL", "XYZ", "AFRM", "SOFI", "COIN", "HOOD", "UPST", "LC", "PAYO", "WEX"],
     "Finance":        ["JPM", "BAC", "GS", "MS", "WFC", "AXP", "BLK", "C", "SCHW", "COF", "USB", "PNC", "TFC", "FITB", "KEY", "ALLY", "SYF", "BX", "KKR", "APO"],
     "Insurance":      ["BRK-B", "MET", "PRU", "AFL", "ALL", "TRV", "CB", "AIG", "HIG", "PGR", "UNM", "CINF"],
     "Healthcare":     ["JNJ", "UNH", "PFE", "MRK", "ABT", "ABBV", "LLY", "BMY", "CVS", "CI", "HCA", "ELV", "CNC", "MOH", "THC"],
-    "Biotech":        ["AMGN", "GILD", "BIIB", "REGN", "VRTX", "MRNA", "BNTX", "ALNY", "INCY", "EXAS", "ILMN", "BEAM", "CRSP", "NTLA", "EDIT"],
-    "Med Devices":    ["MDT", "ABT", "SYK", "BSX", "EW", "ZBH", "BDX", "RMD", "ISRG", "HOLX", "TFX", "ALGN"],
-    "Energy":         ["XOM", "CVX", "COP", "SLB", "OXY", "EOG", "MPC", "PSX", "VLO", "HAL", "BKR", "DVN", "MRO", "APA", "FANG"],
-    "Clean Energy":   ["NEE", "ENPH", "SEDG", "RUN", "FSLR", "PLUG", "BE", "CWEN", "AES", "BEP", "NOVA", "ARRY"],
-    "EV":             ["TSLA", "RIVN", "LCID", "NIO", "XPEV", "LI", "FSR", "NKLA", "GOEV", "WKHS", "BLNK", "CHPT"],
+    "Biotech":        ["AMGN", "GILD", "BIIB", "REGN", "VRTX", "MRNA", "BNTX", "ALNY", "INCY", "ILMN", "BEAM", "CRSP", "NTLA", "EDIT"],
+    "Med Devices":    ["MDT", "ABT", "SYK", "BSX", "EW", "ZBH", "BDX", "RMD", "ISRG", "TFX", "ALGN"],
+    "Energy":         ["XOM", "CVX", "COP", "SLB", "OXY", "EOG", "MPC", "PSX", "VLO", "HAL", "BKR", "DVN", "APA", "FANG"],
+    "Clean Energy":   ["NEE", "ENPH", "SEDG", "RUN", "FSLR", "PLUG", "BE", "CWEN", "AES", "BEP", "ARRY"],
+    "EV":             ["TSLA", "RIVN", "LCID", "NIO", "XPEV", "LI", "WKHS", "BLNK", "CHPT"],
     "Consumer Disc":  ["AMZN", "HD", "MCD", "NKE", "SBUX", "LOW", "BKNG", "TGT", "ROST", "TJX", "DG", "DLTR", "BBY", "W"],
-    "Consumer Stap":  ["WMT", "COST", "PG", "KO", "PEP", "PM", "MO", "CL", "GIS", "K", "HSY", "CPB", "SJM", "KHC"],
+    "Consumer Stap":  ["WMT", "COST", "PG", "KO", "PEP", "PM", "MO", "CL", "GIS", "HSY", "CPB", "SJM", "KHC"],
     "E-commerce":     ["AMZN", "SHOP", "EBAY", "ETSY", "W", "CHWY", "CPNG", "SE", "PDD", "JD", "BABA"],
     "Social Media":   ["META", "SNAP", "PINS", "RDDT", "MTCH", "BMBL", "YELP", "SPOT"],
-    "Streaming & Media":["NFLX", "DIS", "WBD", "PARA", "FOX", "AMZN", "AAPL", "ROKU", "FUBO", "LGF-A"],
-    "Gaming":         ["MSFT", "ATVI", "EA", "TTWO", "RBLX", "U", "DKNG", "PENN", "RSI", "MGAM"],
+    "Streaming & Media":["NFLX", "DIS", "WBD", "PSKY", "FOX", "AMZN", "AAPL", "ROKU", "FUBO", "LION"],
+    "Gaming":         ["MSFT", "EA", "TTWO", "RBLX", "U", "DKNG", "PENN", "RSI", "MGAM"],
     "Aerospace & Defence":["LMT", "RTX", "NOC", "BA", "GD", "HII", "TDG", "HEI", "WWD", "AXON", "KTOS", "PLTR"],
     "Industrials":    ["CAT", "GE", "HON", "UPS", "DE", "MMM", "FDX", "CSX", "NSC", "UNP", "EMR", "ROK", "PH", "ETN", "AME"],
-    "Airlines":       ["DAL", "UAL", "AAL", "LUV", "ALK", "JBLU", "SAVE", "ULCC", "HA"],
+    "Airlines":       ["DAL", "UAL", "AAL", "LUV", "ALK", "JBLU", "ULCC"],
     "Cruise & Hotels":["MAR", "HLT", "H", "CCL", "RCL", "NCLH", "WYNN", "MGM", "LVS", "CZR", "VICI"],
-    "Restaurants":    ["MCD", "SBUX", "CMG", "YUM", "DPZ", "WEN", "QSR", "JACK", "SHAK", "TXRH", "DENN"],
+    "Restaurants":    ["MCD", "SBUX", "CMG", "YUM", "DPZ", "WEN", "QSR", "JACK", "SHAK", "TXRH"],
     "Retail":         ["WMT", "COST", "HD", "TGT", "LOW", "TJX", "ROST", "DG", "DLTR", "BBY", "M", "KSS"],
-    "Telecom":        ["T", "VZ", "TMUS", "CHTR", "CMCSA", "DISH", "LUMN"],
+    "Telecom":        ["T", "VZ", "TMUS", "CHTR", "CMCSA", "LUMN"],
     "Utilities":      ["NEE", "DUK", "SO", "AEP", "EXC", "SRE", "PCG", "XEL", "WEC", "ES", "D", "ETR", "AWK"],
-    "Realty":         ["AMT", "PLD", "EQIX", "CCI", "SPG", "O", "WELL", "DLR", "PSA", "EXR", "VICI", "ARE", "SBA", "IRM"],
-    "Materials":      ["LIN", "APD", "ECL", "NEM", "FCX", "DOW", "DD", "PPG", "ALB", "CF", "MOS", "IP", "PKG", "BLL"],
+    "Realty":         ["AMT", "PLD", "EQIX", "CCI", "SPG", "O", "WELL", "DLR", "PSA", "EXR", "VICI", "ARE", "SBAC", "IRM"],
+    "Materials":      ["LIN", "APD", "ECL", "NEM", "FCX", "DOW", "DD", "PPG", "ALB", "CF", "MOS", "IP", "PKG", "BALL"],
     "Crypto & Blockchain":["COIN", "MSTR", "MARA", "RIOT", "HUT", "BTBT", "CLSK", "CIFR", "WULF"],
 }
 
@@ -114,7 +114,10 @@ def _bulk_changes(symbols: list[str], suffix: str) -> dict[str, float | None]:
         for sym, ticker in zip(symbols, tickers):
             prev  = prev_row.get(ticker)
             today = today_row.get(ticker)
-            if prev is not None and today is not None and float(prev) > 0:
+            # pd.notna() — a missing cell from yf.download() comes back as a
+            # float NaN, not None, so "is not None" alone lets it through and
+            # produces a NaN change_pct that then poisons the sector average.
+            if pd.notna(prev) and pd.notna(today) and float(prev) > 0:
                 changes[sym] = round((float(today) - float(prev)) / float(prev) * 100, 2)
     except Exception as e:
         err = str(e).lower()
@@ -153,9 +156,15 @@ def _build_sector_output(sectors: dict, all_changes: dict[str, dict[str, float |
         changes = []
         for sym in stocks:
             chg = sector_changes.get(sym)
-            stock_data.append({"symbol": sym, "change_pct": chg})
-            if chg is not None:
+            # NaN is not None, so guard against it explicitly here too — a
+            # NaN change_pct must never reach the JSON response (it's not
+            # valid JSON) or the sector average (it would poison the whole
+            # sector's avg_change to NaN, as happened with US "Fintech"/"LC").
+            if chg is not None and chg == chg:
+                stock_data.append({"symbol": sym, "change_pct": chg})
                 changes.append(chg)
+            else:
+                stock_data.append({"symbol": sym, "change_pct": None})
         sector_avg = round(sum(changes) / len(changes), 2) if changes else None
         stock_data.sort(key=lambda s: abs(s["change_pct"]) if s["change_pct"] is not None else 0, reverse=True)
         stock_data = stock_data[:MAX_STOCKS]
