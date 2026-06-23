@@ -87,7 +87,10 @@ function rowsToHoldings(rows: Record<string, unknown>[]): ImportParseResult {
       errors.push({ rowIndex: i, raw: row, reason: `Invalid quantity (${row[qtyCol]})` });
       return;
     }
-    if (price == null || price <= 0) {
+    // 0 is a legitimate average cost (bonus shares, gifted/transferred-in
+    // holdings genuinely have no cost basis) — only reject negative or
+    // unparseable values, not zero.
+    if (price == null || price < 0) {
       errors.push({ rowIndex: i, raw: row, reason: `Invalid average price (${row[priceCol]})` });
       return;
     }

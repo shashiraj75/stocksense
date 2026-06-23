@@ -447,10 +447,13 @@ export default function PortfolioPage() {
         </div>
       )}
 
-      {/* Allocation chart */}
-      {holdings.length > 1 && (hasIN || hasUS) && (
+      {/* Allocation chart — filtered to the selected market, same as the
+          summary cards and holdings tables. Mixing ₹ and $ values in one
+          chart would make the percentages meaningless (₹ and $ amounts
+          aren't comparable without FX conversion). */}
+      {holdings.filter(h => h.market === market).length > 1 && (
         <PortfolioAllocationChart
-          slices={rows.map(r => ({
+          slices={rows.filter(r => r.market === market).map(r => ({
             symbol: r.symbol,
             value: r.current ?? 0,
             signal: r.signal,
