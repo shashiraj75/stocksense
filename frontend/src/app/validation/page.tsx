@@ -435,7 +435,7 @@ export default function ValidationPage() {
                           <p className={`text-lg font-bold font-mono ${res.max_drawdown_pct > 25 ? "text-red-400" : res.max_drawdown_pct > 15 ? "text-yellow-400" : "text-green-400"}`}>
                             -{res.max_drawdown_pct}%
                           </p>
-                          <p className="text-xs text-gray-600">peak-to-trough</p>
+                          <p className="text-xs text-gray-400">peak-to-trough</p>
                         </div>
                       )}
                       {res.max_consecutive_wrong != null && (
@@ -444,7 +444,7 @@ export default function ValidationPage() {
                           <p className={`text-lg font-bold font-mono ${res.max_consecutive_wrong > 8 ? "text-red-400" : res.max_consecutive_wrong > 5 ? "text-yellow-400" : "text-green-400"}`}>
                             {res.max_consecutive_wrong} wrong
                           </p>
-                          <p className="text-xs text-gray-600">consecutive</p>
+                          <p className="text-xs text-gray-400">consecutive</p>
                         </div>
                       )}
                       {res.max_consecutive_right != null && (
@@ -453,7 +453,7 @@ export default function ValidationPage() {
                           <p className="text-lg font-bold font-mono text-green-400">
                             {res.max_consecutive_right} right
                           </p>
-                          <p className="text-xs text-gray-600">consecutive</p>
+                          <p className="text-xs text-gray-400">consecutive</p>
                         </div>
                       )}
                     </div>

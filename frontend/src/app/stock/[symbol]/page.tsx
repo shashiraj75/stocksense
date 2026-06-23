@@ -461,7 +461,7 @@ export default function StockPage() {
                               prediction.signal === "BUY" ? "text-bull" : prediction.signal === "SELL" ? "text-bear" : "text-neutral"
                             )}>{prediction.confidence}%</span>
                           </div>
-                          <p className="text-[10px] text-gray-600 mt-0.5">confidence</p>
+                          <p className="text-[11px] text-gray-400 mt-0.5">confidence</p>
 
                           {/* Per-stock historical accuracy */}
                           {(() => {
@@ -473,7 +473,7 @@ export default function StockPage() {
                             return (
                               <div className="mt-2 px-2 py-1 rounded-lg bg-white/[0.04] border border-white/[0.07]">
                                 <p className={clsx("text-xs font-bold tabular-nums", color)}>✓ {pct}% accurate</p>
-                                <p className="text-[9px] text-gray-600 mt-0.5">{acc.total} past predictions</p>
+                                <p className="text-[11px] text-gray-400 mt-0.5">{acc.total} past predictions</p>
                               </div>
                             );
                           })()}
@@ -498,8 +498,8 @@ export default function StockPage() {
                                 {isBuy ? "Paper Buy" : isSell ? "Paper Sell / Short" : "Paper Trade"}
                               </button>
                               {(isSell || prediction.signal === "HOLD") && (
-                                <p className={clsx("text-[10px] text-center leading-tight",
-                                  isSell ? "text-red-400/60" : "text-gray-600")}>
+                                <p className={clsx("text-[11px] text-center leading-tight",
+                                  isSell ? "text-red-400/80" : "text-gray-400")}>
                                   {isSell ? "AI signals exit — caution" : "No strong entry signal"}
                                 </p>
                               )}
@@ -510,7 +510,7 @@ export default function StockPage() {
                         {/* Signal feedback thumbs */}
                         {!isCrypto && user && (
                           <div className="w-full">
-                            <p className="text-[9px] text-gray-600 text-center mb-1 uppercase tracking-widest">Was this signal useful?</p>
+                            <p className="text-[11px] text-gray-400 text-center mb-1 uppercase tracking-widest">Was this signal useful?</p>
                             <div className="flex gap-2 justify-center">
                               {([1, -1] as const).map((v) => (
                                 <button
@@ -1044,7 +1044,7 @@ export default function StockPage() {
           ) : !screenerFund?.available ? (
             <div className="bg-dark-card border border-dark-border rounded-2xl p-8 text-center text-gray-500 text-sm">
               Fundamental data not available for {symbol} on screener.in.
-              {screenerFund?.reason && <p className="text-xs text-gray-600 mt-1">{screenerFund.reason}</p>}
+              {screenerFund?.reason && <p className="text-xs text-gray-400 mt-1">{screenerFund.reason}</p>}
             </div>
           ) : (
             <>

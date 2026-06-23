@@ -33,7 +33,7 @@ export function MobileMarketStrip() {
       {statuses.map(({ key, flag, label, status }) => (
         <div key={key} className="flex items-center gap-1 shrink-0">
           <span className="text-xs leading-none">{flag}</span>
-          <span className="text-[11px] text-gray-400">{label}</span>
+          <span className="text-[11px] text-gray-300">{label}</span>
           <span className={clsx("w-1.5 h-1.5 rounded-full shrink-0",
             status.isOpen ? "bg-green-500" : "bg-red-500"
           )} />
@@ -41,7 +41,7 @@ export function MobileMarketStrip() {
             {status.isOpen ? "Open" : "Closed"}
           </span>
           {status.nextEventLabel && (
-            <span className="text-[10px] text-gray-500 ml-0.5">{status.nextEventLabel}</span>
+            <span className="text-[11px] text-gray-300 ml-0.5">{status.nextEventLabel}</span>
           )}
         </div>
       ))}
@@ -73,7 +73,7 @@ export function MarketStatusInline() {
             </span>
           </div>
           {status.nextEventLabel && (
-            <span className="text-[10px] text-gray-400 leading-tight mt-0.5 pl-5">
+            <span className="text-[11px] text-gray-300 leading-tight mt-0.5 pl-5">
               {status.nextEventLabel}
             </span>
           )}

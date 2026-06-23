@@ -121,7 +121,7 @@ function Stat({ label, value, sub, good }: { label: string; value: string; sub?:
     <div className="bg-dark-border/40 rounded-xl p-3 text-center">
       <p className="text-[10px] text-gray-500 mb-1">{label}</p>
       <p className={clsx("text-lg font-bold tabular-nums", good === true ? "text-green-400" : good === false ? "text-red-400" : "text-white")}>{value}</p>
-      {sub && <p className="text-[10px] text-gray-600 mt-0.5">{sub}</p>}
+      {sub && <p className="text-[11px] text-gray-400 mt-0.5">{sub}</p>}
     </div>
   );
 }
@@ -175,7 +175,7 @@ function BacktestPanel({ horizon, benchmarkLabel }: { horizon: string; benchmark
           <span className="text-xs px-2 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">Real data</span>
         </div>
         {data.run_at && (
-          <p className="text-[10px] text-gray-600">
+          <p className="text-[11px] text-gray-400">
             Run {new Date(data.run_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
           </p>
         )}
@@ -228,7 +228,7 @@ function BacktestPanel({ horizon, benchmarkLabel }: { horizon: string; benchmark
               </tbody>
             </table>
           </div>
-          <p className="text-[10px] text-gray-600 mt-1.5">
+          <p className="text-[11px] text-gray-400 mt-1.5">
             This table shows the real hit rate for each AI confidence band — not a theoretical score.
             If 80+ confidence picks hit 72% of the time historically, that's a calibrated signal.
           </p>
@@ -255,7 +255,7 @@ function BacktestPanel({ horizon, benchmarkLabel }: { horizon: string; benchmark
               );
             })}
           </div>
-          <p className="text-[10px] text-gray-600 mt-1.5">IC (Information Coefficient) = correlation between factor score and actual forward return. IC &gt; 0.03 is considered meaningful in quant finance.</p>
+          <p className="text-[11px] text-gray-400 mt-1.5">IC (Information Coefficient) = correlation between factor score and actual forward return. IC &gt; 0.03 is considered meaningful in quant finance.</p>
         </div>
       )}
     </div>
@@ -343,7 +343,7 @@ function LivePerformanceTracker({ horizon, currency, locale, benchmarkLabel }: {
           </tbody>
         </table>
         {picks.length > 15 && (
-          <p className="text-[10px] text-gray-600 mt-1.5 text-center">Showing 15 of {picks.length} resolved picks</p>
+          <p className="text-[11px] text-gray-400 mt-1.5 text-center">Showing 15 of {picks.length} resolved picks</p>
         )}
       </div>
     </div>
@@ -371,7 +371,7 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
     <div className="bg-dark-card border border-dark-border rounded-xl overflow-hidden hover:border-green-500/40 transition-all hover:shadow-lg hover:shadow-green-500/5 group flex flex-col">
       {/* Rank + badges row */}
       <div className="flex items-center gap-2 px-4 pt-3 pb-0 flex-wrap">
-        <span className="text-xs font-bold text-gray-600">#{rank}</span>
+        <span className="text-xs font-bold text-gray-400">#{rank}</span>
         {pick.score_band && (
           <span className={clsx("text-xs font-bold px-2 py-0.5 rounded border tracking-wide", SCORE_BAND_STYLE[pick.score_band] ?? "bg-gray-500/20 text-gray-400 border-gray-500/30")}>
             {pick.score_band}
@@ -552,7 +552,7 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
               <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">All Signals</p>
               {orderedGroups.map(group => (
                 <div key={group}>
-                  <p className="text-xs font-semibold text-gray-600 mb-1.5">{group}</p>
+                  <p className="text-xs font-semibold text-gray-400 mb-1.5">{group}</p>
                   <div className="space-y-1.5">
                     {grouped[group].map((r, i) => (
                       <div key={i} className="flex items-start gap-2">
@@ -560,7 +560,7 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
                           {SIGNAL_ICON[r.signal] ?? "·"}
                         </span>
                         <div className="min-w-0">
-                          <span className="text-[10px] text-gray-600 mr-1">{r.indicator}</span>
+                          <span className="text-[11px] text-gray-400 mr-1">{r.indicator}</span>
                           <span className="text-xs text-gray-300 leading-relaxed">{r.reason}</span>
                         </div>
                       </div>

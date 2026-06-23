@@ -79,7 +79,7 @@ export function NpsPopup() {
               </button>
             ))}
           </div>
-          <div className="flex justify-between text-[9px] text-gray-600 mb-3">
+          <div className="flex justify-between text-[11px] text-gray-400 mb-3">
             <span>Not likely</span>
             <span>Very likely</span>
           </div>

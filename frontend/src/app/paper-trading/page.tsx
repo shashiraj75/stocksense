@@ -321,7 +321,7 @@ function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t
               </span>
             </span>
           ) : (
-            <span className="flex items-center gap-1.5 text-[11px] text-gray-600">
+            <span className="flex items-center gap-1.5 text-[11px] text-gray-400">
               <ShieldAlert size={11} className="shrink-0" />
               Stop Loss: <span className="italic">not set — click ✎ to add one</span>
             </span>
@@ -336,7 +336,7 @@ function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t
               </span>
             </span>
           ) : (
-            <span className="flex items-center gap-1.5 text-[11px] text-gray-600">
+            <span className="flex items-center gap-1.5 text-[11px] text-gray-400">
               <Target size={11} className="shrink-0" />
               Target: <span className="italic">not set — click ✎ to add one</span>
             </span>
@@ -655,7 +655,7 @@ export default function PaperTradingPage() {
                   <span className="bg-white/10 text-gray-300 text-[11px] px-1.5 py-0.5 rounded-full font-medium ml-1">
                     {trades.length}
                   </span>
-                  <span className="text-[10px] text-gray-600 ml-auto">Sorted by proximity to target / stop loss</span>
+                  <span className="text-[11px] text-gray-400 ml-auto">Sorted by proximity to target / stop loss</span>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
@@ -664,7 +664,7 @@ export default function PaperTradingPage() {
                         <th className="px-4 py-2.5 text-left">Stock</th>
                         <th className="px-4 py-2.5 text-left">Qty</th>
                         <th className="px-4 py-2.5 text-left">Entry</th>
-                        <th className="px-4 py-2.5 text-left">Mkt Price <span className="text-gray-600 font-normal">(last close when closed)</span></th>
+                        <th className="px-4 py-2.5 text-left">Mkt Price <span className="text-gray-400 font-normal">(last close when closed)</span></th>
                         <th className="px-4 py-2.5 text-left">Unr. P&L</th>
                         <th className="px-4 py-2.5 text-left">Signal</th>
                         <th className="px-4 py-2.5 text-left">Stop Loss</th>
