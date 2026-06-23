@@ -358,7 +358,7 @@ def _predict_stock(symbol: str, horizon: str, market: str = "IN") -> dict | None
             "stop_loss":   trade.get("stop_loss"),
             "entry_low":   trade.get("entry_low"),
             "entry_high":  trade.get("entry_high"),
-            "risk_reward": trade.get("risk_reward"),
+            "risk_reward": trade.get("risk_reward_ratio"),
             "confidence":  result.get("confidence"),
             # Raw factor scores — kept for cross-sectional z-scoring
             "tech_score":     result.get("technical", {}).get("score", 50),
@@ -663,10 +663,22 @@ def _generate_picks_inner(market: str = "IN") -> dict:
         # Quality gates before final selection:
         # 1. Confidence must be >= 25% (0% confidence picks are noise, not signals)
         # 2. Short-term picks must not be overbought (RSI > 75 = likely to pull back)
+        # 3. No unfavorable risk/reward or severe governance red flag — these
+        #    demote confidence to exactly 30 in the prediction engine (see
+        #    _apply_risk_reward_adjustment / _apply_pledge_adjustment), which
+        #    clears the >=25% floor above. That floor exists to filter pure
+        #    noise, not to let a flagged "avoid"-level red flag back into a
+        #    curated "Top 6" list just because it didn't drop low enough.
         def _passes_quality_gate(r: dict, hz: str) -> bool:
             conf = r.get("confidence") or 0
             if conf < 25:
                 print(f"[picks] {r['symbol']} ({hz}) filtered: confidence {conf}% < 25%")
+                return False
+            indicators = {
+                item.get("indicator") for item in r.get("reasoning", []) if isinstance(item, dict)
+            }
+            if "Risk/Reward" in indicators or "Governance Risk" in indicators:
+                print(f"[picks] {r['symbol']} ({hz}) filtered: unfavorable risk/reward or governance red flag")
                 return False
             if hz == "short":
                 reasons = " ".join(
