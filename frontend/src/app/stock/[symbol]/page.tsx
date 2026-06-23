@@ -211,6 +211,14 @@ export default function StockPage() {
     refetchOnWindowFocus: false,
   });
 
+  const { data: usFund, isLoading: usFundLoading } = useQuery({
+    queryKey: ["us-fundamentals", symbol],
+    queryFn: () => api.get(`/api/stocks/${symbol}/us-fundamentals`).then(r => r.data),
+    enabled: tab === "fundamentals" && market === "US",
+    staleTime: 4 * 60 * 60_000, // 4h — matches backend cache TTL
+    refetchOnWindowFocus: false,
+  });
+
   const runBacktest = async () => {
     setBtRunning(true); setBtError(""); setBtData(null);
     try {
@@ -597,7 +605,7 @@ export default function StockPage() {
 
               {/* Tabs row */}
               <div className="flex gap-2 flex-wrap mt-4 pt-4 border-t border-white/[0.06]">
-                {HORIZON_TABS.filter(({ key }) => key !== "fundamentals" || market === "IN").map(({ key, label }) => (
+                {HORIZON_TABS.filter(({ key }) => key !== "fundamentals" || !isCrypto).map(({ key, label }) => (
                   <button key={key} onClick={() => setTab(key)}
                     className={clsx(
                       "flex items-center gap-1.5 px-3.5 py-1.5 text-xs sm:text-sm rounded-lg font-medium transition-all",
@@ -1029,13 +1037,204 @@ export default function StockPage() {
       )}
 
       {/* ── FUNDAMENTALS VIEW (screener.in data) ── */}
-      {tab === "fundamentals" && (
+      {tab === "fundamentals" && market === "US" && (
         <div className="space-y-5">
-          {market !== "IN" ? (
-            <div className="bg-dark-card border border-dark-border rounded-2xl p-8 text-center text-gray-500 text-sm">
-              Detailed fundamentals from screener.in are available for Indian (NSE) stocks only.
+          {usFundLoading ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="bg-dark-card border border-dark-border rounded-2xl p-5 animate-pulse h-40" />
+              ))}
             </div>
-          ) : screenerLoading ? (
+          ) : !usFund?.available ? (
+            <div className="bg-dark-card border border-dark-border rounded-2xl p-8 text-center text-gray-500 text-sm">
+              Fundamental data not available for {symbol}.
+              {usFund?.reason && <p className="text-xs text-gray-400 mt-1">{usFund.reason}</p>}
+            </div>
+          ) : (
+            <>
+              {/* Key Ratios */}
+              <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
+                <div className="mb-4">
+                  <h3 className="font-bold text-white">Key Ratios</h3>
+                  {(usFund.sector || usFund.industry) && (
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      {[usFund.sector, usFund.industry].filter((v, i, arr) => v && arr.indexOf(v) === i).join(" · ")}
+                    </p>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                  {[
+                    { label: "P/E Ratio",       val: usFund.pe_ratio,            fmt: (v: number) => v.toFixed(1) + "×" },
+                    { label: "Forward P/E",     val: usFund.forward_pe,          fmt: (v: number) => v.toFixed(1) + "×" },
+                    { label: "P/B Ratio",       val: usFund.price_to_book,       fmt: (v: number) => v.toFixed(1) + "×" },
+                    { label: "ROE",             val: usFund.roe_pct,             fmt: (v: number) => v.toFixed(1) + "%" },
+                    { label: "ROA",             val: usFund.roa_pct,             fmt: (v: number) => v.toFixed(1) + "%" },
+                    { label: "Profit Margin",   val: usFund.profit_margin_pct,   fmt: (v: number) => v.toFixed(1) + "%" },
+                    { label: "Book Value",      val: usFund.book_value,          fmt: (v: number) => "$" + v.toLocaleString() },
+                    { label: "Dividend Yield",  val: usFund.dividend_yield_pct,  fmt: (v: number) => v.toFixed(2) + "%" },
+                    { label: "Market Cap",      val: usFund.market_cap,          fmt: (v: number) => "$" + (v / 1e9).toFixed(1) + "B" },
+                    { label: "Debt/Equity",     val: usFund.debt_to_equity,      fmt: (v: number) => v.toFixed(1) + "%" },
+                    { label: "Revenue Growth",  val: usFund.revenue_growth_pct,  fmt: (v: number) => (v >= 0 ? "+" : "") + v.toFixed(1) + "%" },
+                    { label: "Earnings Growth", val: usFund.earnings_growth_pct, fmt: (v: number) => (v >= 0 ? "+" : "") + v.toFixed(1) + "%" },
+                  ].filter(r => r.val != null).map(({ label, val, fmt }) => (
+                    <div key={label} className="bg-dark-bg rounded-xl p-3">
+                      <p className="text-[11px] text-gray-500 mb-1">{label}</p>
+                      <p className="text-white font-bold text-sm tabular-nums">{fmt(val as number)}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Analyst View */}
+              {(usFund.analyst_recommendation || usFund.analyst_target_price != null) && (
+                <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
+                  <h3 className="font-bold text-white mb-4">Analyst View</h3>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                    {usFund.analyst_recommendation && (
+                      <div className="bg-dark-bg rounded-xl p-3">
+                        <p className="text-[11px] text-gray-500 mb-1">Consensus</p>
+                        <p className="text-white font-bold text-sm capitalize">{usFund.analyst_recommendation.replace("_", " ")}</p>
+                      </div>
+                    )}
+                    {usFund.analyst_target_price != null && (
+                      <div className="bg-dark-bg rounded-xl p-3">
+                        <p className="text-[11px] text-gray-500 mb-1">Mean Target Price</p>
+                        <p className="text-white font-bold text-sm tabular-nums">${usFund.analyst_target_price.toFixed(2)}</p>
+                      </div>
+                    )}
+                    {usFund.analyst_count != null && (
+                      <div className="bg-dark-bg rounded-xl p-3">
+                        <p className="text-[11px] text-gray-500 mb-1">Analysts Covering</p>
+                        <p className="text-white font-bold text-sm tabular-nums">{usFund.analyst_count}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Growth */}
+              {(usFund.revenue_3y_cagr_pct != null || usFund.profit_3y_cagr_pct != null) && (
+                <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
+                  <h3 className="font-bold text-white mb-4">3-Year CAGR</h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    {[
+                      { label: "Revenue", val: usFund.revenue_3y_cagr_pct },
+                      { label: "Net Income", val: usFund.profit_3y_cagr_pct },
+                    ].filter(r => r.val != null).map(({ label, val }) => (
+                      <div key={label} className="bg-dark-bg rounded-xl p-3">
+                        <p className="text-[11px] text-gray-500 mb-1">{label}</p>
+                        <p className={clsx("font-bold text-sm tabular-nums", val! >= 0 ? "text-green-400" : "text-red-400")}>
+                          {val! >= 0 ? "+" : ""}{val!.toFixed(1)}%
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Ownership */}
+              {(usFund.insider_holding_pct != null || usFund.institution_holding_pct != null) && (
+                <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
+                  <h3 className="font-bold text-white mb-4">Ownership</h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    {[
+                      { label: "Insider Holding", val: usFund.insider_holding_pct },
+                      { label: "Institutional Holding", val: usFund.institution_holding_pct },
+                    ].filter(r => r.val != null).map(({ label, val }) => (
+                      <div key={label} className="bg-dark-bg rounded-xl p-3">
+                        <p className="text-[11px] text-gray-500 mb-1">{label}</p>
+                        <p className="text-white font-bold text-sm tabular-nums">{val!.toFixed(1)}%</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Balance Sheet */}
+              {(usFund.total_debt_annual_m || usFund.stockholders_equity_annual_m) && (
+                <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
+                  <h3 className="font-bold text-white mb-4">Balance Sheet <span className="text-xs text-gray-500 font-normal ml-1">($M · oldest → newest)</span></h3>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-gray-500 text-xs">
+                          <th className="text-left pb-2 font-medium">Type</th>
+                          {(usFund.balance_sheet_labels ?? []).map((l: string, i: number) => (
+                            <th key={i} className="text-right pb-2 font-medium whitespace-nowrap">{l}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-dark-border">
+                        {[
+                          { label: "Total Debt", vals: usFund.total_debt_annual_m },
+                          { label: "Stockholders Equity", vals: usFund.stockholders_equity_annual_m },
+                          { label: "Total Assets", vals: usFund.total_assets_annual_m },
+                        ].filter(r => r.vals).map(({ label, vals }) => (
+                          <tr key={label}>
+                            <td className="py-2 text-gray-400">{label}</td>
+                            {vals.map((v: number | null, i: number) => (
+                              <td key={i} className="py-2 text-right font-mono tabular-nums font-bold text-gray-200">
+                                {v != null ? v.toLocaleString() : "—"}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Cash Flow */}
+              {usFund.operating_cf_annual_m && (
+                <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
+                  <h3 className="font-bold text-white mb-4">Annual Cash Flow <span className="text-xs text-gray-500 font-normal ml-1">($M · oldest → newest)</span></h3>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-gray-500 text-xs">
+                          <th className="text-left pb-2 font-medium">Type</th>
+                          {(usFund.cashflow_labels ?? []).map((l: string, i: number) => (
+                            <th key={i} className="text-right pb-2 font-medium whitespace-nowrap">{l}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-dark-border">
+                        <tr>
+                          <td className="py-2 text-gray-400">Operating CF</td>
+                          {usFund.operating_cf_annual_m.map((v: number | null, i: number) => (
+                            <td key={i} className={clsx("py-2 text-right font-mono tabular-nums font-bold", v != null && v >= 0 ? "text-green-400" : "text-red-400")}>
+                              {v != null ? v.toLocaleString() : "—"}
+                            </td>
+                          ))}
+                        </tr>
+                        {usFund.investing_cf_annual_m && (
+                          <tr>
+                            <td className="py-2 text-gray-400">Investing CF</td>
+                            {usFund.investing_cf_annual_m.map((v: number | null, i: number) => (
+                              <td key={i} className={clsx("py-2 text-right font-mono tabular-nums font-bold", v != null && v >= 0 ? "text-green-400" : "text-red-400")}>
+                                {v != null ? v.toLocaleString() : "—"}
+                              </td>
+                            ))}
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              <p className="text-xs text-gray-600 text-center">
+                Data sourced from Yahoo Finance · Cached 4 hours · All figures in USD
+              </p>
+            </>
+          )}
+        </div>
+      )}
+
+      {tab === "fundamentals" && market === "IN" && (
+        <div className="space-y-5">
+          {screenerLoading ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {Array.from({ length: 4 }).map((_, i) => (
                 <div key={i} className="bg-dark-card border border-dark-border rounded-2xl p-5 animate-pulse h-40" />

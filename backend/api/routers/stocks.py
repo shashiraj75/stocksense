@@ -112,6 +112,22 @@ async def get_screener_fundamentals(
         return {"available": False, "reason": str(e)}
 
 
+@router.get("/{symbol}/us-fundamentals")
+async def get_us_fundamentals(symbol: str):
+    """
+    Fundamental data for US stocks from yfinance: key ratios, analyst
+    consensus, multi-year balance sheet/cash flow, revenue/profit CAGR.
+    Counterpart to /screener-fundamentals, which only covers Indian stocks.
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        from services.us_fundamentals import fetch_us_fundamentals
+        data = await loop.run_in_executor(None, fetch_us_fundamentals, symbol.upper())
+        return data
+    except Exception as e:
+        return {"available": False, "reason": str(e)}
+
+
 @router.get("/{symbol}/factor-attribution")
 async def get_factor_attribution(
     symbol: str,
