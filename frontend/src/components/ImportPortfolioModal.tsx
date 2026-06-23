@@ -35,7 +35,7 @@ export function ImportPortfolioModal({
   const handleFile = async (file: File) => {
     setSubmitError("");
     try {
-      const result = await parseHoldingsFile(file);
+      const result = await parseHoldingsFile(file, market);
       setParsed(result.holdings);
       setParseErrors(result.errors);
       setExcluded(new Set());
@@ -44,9 +44,9 @@ export function ImportPortfolioModal({
     }
   };
 
-  const handlePaste = () => {
+  const handlePaste = async () => {
     setSubmitError("");
-    const result = parseHoldingsText(pasteText);
+    const result = await parseHoldingsText(pasteText, market);
     setParsed(result.holdings);
     setParseErrors(result.errors);
     setExcluded(new Set());
@@ -104,7 +104,7 @@ export function ImportPortfolioModal({
               <label className="text-xs text-gray-400">Market</label>
               <div className="flex gap-1">
                 {(["IN", "US"] as Market[]).map(m => (
-                  <button key={m} onClick={() => setMarket(m)}
+                  <button key={m} onClick={() => { setMarket(m); setParsed(null); }}
                     className={clsx("px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors",
                       market === m ? "bg-brand-500 text-white border-brand-500" : "bg-dark-bg border-dark-border text-gray-400 hover:text-white")}>
                     {m === "US" ? "🇺🇸 US" : "🇮🇳 IN"}
@@ -205,13 +205,25 @@ export function ImportPortfolioModal({
                               {isExcluded ? <X size={14} /> : <Check size={14} className="text-bull" />}
                             </button>
                           </td>
-                          <td className="px-3 py-1.5 font-mono font-bold">{h.symbol}</td>
+                          <td className="px-3 py-1.5 font-mono font-bold">
+                            {h.symbol}
+                            {h.corrected && (
+                              <p className="text-[10px] font-normal text-yellow-400" title="Your broker's internal code didn't match a real ticker — corrected via company name">
+                                was &quot;{h.originalSymbol}&quot;
+                              </p>
+                            )}
+                          </td>
                           <td className="px-3 py-1.5 text-right font-mono">{h.qty}</td>
                           <td className="px-3 py-1.5 text-right font-mono">{h.avgPrice}</td>
                           <td className="px-3 py-1.5 text-gray-500">
                             {existing
                               ? `Update (was ${existing.qty} @ ${existing.avgPrice})`
                               : "Add new"}
+                            {h.unverified && (
+                              <span className="ml-1.5 inline-flex items-center gap-1 text-yellow-400" title="Couldn't verify this symbol against our stock list — it may be delisted, illiquid, or not yet in our universe. Live prices/signals may not populate.">
+                                <AlertTriangle size={10} /> unverified
+                              </span>
+                            )}
                           </td>
                         </tr>
                       );
