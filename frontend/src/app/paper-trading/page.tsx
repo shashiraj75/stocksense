@@ -686,7 +686,9 @@ export default function PaperTradingPage() {
                         </th>
                         <th className="px-4 py-2.5 text-left">Invested</th>
                         <th className="px-4 py-2.5 text-left">Unr. P&L</th>
-                        <th className="px-4 py-2.5 text-left">Signal</th>
+                        <th className="px-4 py-2.5 text-left" title="The AI signal at the moment you opened this trade — frozen, not re-evaluated live. It can differ from what the stock's current signal shows today; check the stock's own page for the up-to-date call.">
+                          Entry Signal
+                        </th>
                         <th className="px-4 py-2.5 text-left">Stop Loss</th>
                         <th className="px-4 py-2.5 text-left">Target</th>
                         <th className="px-4 py-2.5 text-left">Date</th>

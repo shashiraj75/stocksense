@@ -146,11 +146,11 @@ const SORT_ACCESSORS: Record<SortKey, (r: Row) => string | number | null> = {
 };
 
 function SortableHeader({
-  label, sortKey, align, activeKey, dir, onSort,
-}: { label: string; sortKey: SortKey; align?: "right" | "center"; activeKey: SortKey | null; dir: "asc" | "desc"; onSort: (key: SortKey) => void }) {
+  label, sortKey, align, activeKey, dir, onSort, title,
+}: { label: string; sortKey: SortKey; align?: "right" | "center"; activeKey: SortKey | null; dir: "asc" | "desc"; onSort: (key: SortKey) => void; title?: string }) {
   const isActive = activeKey === sortKey;
   return (
-    <th className={clsx("px-4 py-3 font-medium select-none", align === "right" ? "text-right" : align === "center" ? "text-center" : "text-left")}>
+    <th title={title} className={clsx("px-4 py-3 font-medium select-none", align === "right" ? "text-right" : align === "center" ? "text-center" : "text-left")}>
       <button
         onClick={() => onSort(sortKey)}
         className={clsx(
@@ -208,7 +208,8 @@ function HoldingsTable({
               <SortableHeader label="Value" sortKey="current" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               <SortableHeader label="P&L" sortKey="plAmt" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               <SortableHeader label="P&L %" sortKey="plPct" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
-              <SortableHeader label="Signal" sortKey="signal" align="center" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
+              <SortableHeader label="Signal" sortKey="signal" align="center" activeKey={sortKey} dir={sortDir} onSort={handleSort}
+                title="Today's forward-looking AI call for this stock — independent of your P&L. A BUY here doesn't retroactively justify your original entry price, and a HOLD/SELL doesn't mean you're wrong to be holding; it reflects current conditions, not your specific cost basis." />
               <th className="px-4 py-3"></th>
             </tr>
           </thead>

@@ -161,7 +161,9 @@ export default function MultibaggerPage() {
         </div>
         <p className="px-4 pt-3 text-[11px] text-gray-500 leading-relaxed">
           Score is a transparent rule-based checklist ({data?.results[0]?.scorecard.max_score ?? (market === "IN" ? 12 : 10)} fundamentals checks{market === "US" ? " — no promoter pledge or 5Y growth, neither exists for US filings" : ""}) — separate from, and not the same as, the AI signal shown on each stock's own page.
-          Click a row for the full breakdown. Verdict downgrades to Avoid if any Anti-Loss red flag is present, regardless of score.
+          Click a row for the full breakdown. Verdict downgrades to Avoid/Watch if any Anti-Loss red flag is present, regardless of score.
+          "Elite Strong Buy" is a separate, stricter check (ROCE&gt;15%, Debt/Equity&lt;50%, positive operating cash flow, sales growth&gt;10% must <em>all individually</em> pass) —
+          a high overall score alone doesn't guarantee it if just one of those four specifically falls short.
         </p>
 
         {isLoading ? (
