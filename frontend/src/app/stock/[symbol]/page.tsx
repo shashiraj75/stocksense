@@ -877,7 +877,7 @@ export default function StockPage() {
                       <SignalBadge signal={prediction.signal} confidence={prediction.confidence} size="md" />
                     </div>
                     <div className="text-right">
-                      <p className="text-xs text-gray-400 mb-0.5">Conviction</p>
+                      <p className="text-xs text-gray-400 mb-0.5">Confidence</p>
                       <p className={clsx("text-2xl font-black tabular-nums",
                         prediction.signal === "BUY"  ? "text-bull" :
                         prediction.signal === "SELL" ? "text-bear" : "text-neutral"
@@ -886,7 +886,7 @@ export default function StockPage() {
                   </div>
                   <ConfidenceMeter
                     value={prediction.confidence}
-                    label="Signal Conviction"
+                    label="Confidence"
                   />
                   <div>
                     <p className="text-gray-400 text-sm mb-2">Key Reasons</p>

@@ -468,11 +468,27 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
             </span>
           )}
           {pick.portfolio_weight != null && (
-            <span className="ml-auto">Allocation <span className={clsx("font-semibold", pick.portfolio_weight >= 0.30 ? "text-green-400" : "text-yellow-400")}>
-              {Math.round(pick.portfolio_weight * 100)}%
-            </span></span>
+            <span
+              className="ml-auto"
+              title="Suggested weight if buying all of today's picks together as one basket — based on this stock's predicted return relative to the other picks and how correlated they are, not how strong its own BUY signal is on its own."
+            >
+              Allocation{" "}
+              <span className={clsx("font-semibold",
+                pick.portfolio_weight === 0 ? "text-gray-500" :
+                pick.portfolio_weight >= 0.30 ? "text-green-400" : "text-yellow-400"
+              )}>
+                {Math.round(pick.portfolio_weight * 100)}%
+              </span>
+            </span>
           )}
         </div>
+
+        {pick.portfolio_weight === 0 && (
+          <div className="mb-3 text-[11px] text-gray-500 bg-dark-border/30 rounded-lg px-2.5 py-1.5">
+            0% allocation just means today&apos;s basket optimizer favored the other picks over this one
+            — the BUY signal above is unaffected and independent of this number.
+          </div>
+        )}
 
         <TopReasons reasoning={pick.reasoning ?? []} />
 
