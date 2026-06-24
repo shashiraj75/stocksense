@@ -35,9 +35,25 @@ def _get_pool() -> ConnectionPool:
         # autocommit=True — without it, psycopg_pool rolls back any uncommitted
         # transaction when a connection is returned to the pool, silently
         # discarding every CREATE TABLE / INSERT we never explicitly committed.
+        #
+        # prepare_threshold=None — every other direct psycopg.connect() call
+        # site in this codebase (paper_trading.py, alerts.py, portfolio.py,
+        # fundamentals_cache.py, validation_engine.py) already sets this; this
+        # pool was the one exception. Without it, psycopg auto-prepares a
+        # query as a named server-side statement after a few uses — but
+        # Supabase's transaction-mode pooler (port 6543) can hand the same
+        # underlying server connection to a different logical query between
+        # transactions, so a statement name minted for a 1-parameter query can
+        # later collide with a 31-parameter one reusing the same pooled
+        # connection. Confirmed live in Railway logs: "Failed to log
+        # prediction for X: bind message supplies 31 parameters, but prepared
+        # statement requires 1" — repeating for nearly every symbol, silently
+        # breaking log_prediction (and therefore the IC engine / meta-model
+        # training data) regardless of the Render/Railway duplicate-deployment
+        # issue resolved earlier — this pool alone reproduces it standalone.
         _pool = ConnectionPool(
             DATABASE_URL, min_size=1, max_size=5, open=True,
-            kwargs={"autocommit": True},
+            kwargs={"autocommit": True, "prepare_threshold": None},
         )
     return _pool
 
