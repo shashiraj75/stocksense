@@ -3,14 +3,14 @@
 > Short, medium & long-term AI signals for Indian (NSE) and US markets.  
 > Built with institutional-grade quant methods. Fully explainable. Zero subscription cost.
 
-**Live:** [stocksense-api-12ii.onrender.com](https://stocksense-api-12ii.onrender.com) (backend) · Vercel (frontend)
+**Live:** Railway (backend) · Vercel (frontend) · [stocksense360.com](https://stocksense360.com)
 
 ---
 
 ## What StockSense Does
 
 - **BUY / HOLD / SELL signals** with confidence score, target price, and stop-loss for every stock
-- **Daily Picks** — top 5 BUY ideas per horizon (short / medium / long) delivered every morning at 9 AM IST
+- **Daily Picks** — top 6 BUY ideas per horizon (short / medium / long), screened from the full NSE/US universe; IN generates at 2 AM IST, US at 6 PM IST
 - **Full explainability** — factor breakdown, bull/bear thesis, and reasoning bullets for every call
 - **Learning engine** — tracks prediction outcomes, retrains factor weights weekly via IC (Information Coefficient)
 - **Paper Trading** — test signals with virtual money, track P&L, set stop-losses and targets
@@ -29,9 +29,9 @@
 | Indian institutional flows | NSE FII/DII API | Daily flows in ₹ Cr |
 | News & sentiment | Yahoo Finance RSS + Google News RSS | VADER NLP + financial lexicon |
 | Technical indicators | `ta` library | RSI, MACD, BB, EMA, ADX, Stoch, OBV |
-| Backend | FastAPI + Python 3.11 | Hosted on Render free tier |
+| Backend | FastAPI + Python 3.11 | Hosted on Railway |
 | Frontend | Next.js 14 + TailwindCSS | Hosted on Vercel |
-| Database | PostgreSQL (Render) | All user data persisted across restarts |
+| Database | PostgreSQL (Supabase) | All user data persisted across restarts |
 | Automation | GitHub Actions | Daily picks cron, weekly validation, keep-alive |
 
 ---
@@ -126,7 +126,7 @@ All user data lives in Postgres and survives Render restarts:
 |------|-----|---------------|
 | Dashboard | `/` | Top movers, live index bar, quick access |
 | Stock Detail | `/stock/:symbol` | Full prediction, trade levels, news, chart |
-| Daily Picks | `/picks` | Top 5 BUY ideas + real backtest results |
+| Daily Picks | `/picks` | Top 6 BUY ideas per horizon + real backtest results |
 | Heatmap | `/heatmap` | Sector performance tiles (IN / US) |
 | Screener | `/screener` | Filter by PE, ROE, sector, signal |
 | Watchlist | `/watchlist` | Saved stocks with live prices |

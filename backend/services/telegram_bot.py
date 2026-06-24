@@ -1,6 +1,6 @@
 """
-Telegram Bot — sends daily stock picks at 9 AM IST.
-Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID as environment variables on Render.
+Telegram Bot — sends daily stock picks after the IN Daily Picks run (2 AM IST).
+Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID as environment variables on Railway.
 """
 import os
 import requests

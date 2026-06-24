@@ -19,7 +19,7 @@ const FEATURES = [
   {
     icon: Zap,
     title: "Daily Picks",
-    desc: "Every morning at 9 AM IST, the AI ranks the entire NSE universe and surfaces the top 5 BUY ideas per time horizon.",
+    desc: "Every day, the AI ranks the full NSE and US universe and surfaces the top 6 BUY ideas per time horizon, for both markets.",
     color: "text-yellow-400",
     bg: "bg-yellow-500/10",
     border: "border-yellow-500/20",
