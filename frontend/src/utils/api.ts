@@ -237,9 +237,10 @@ export interface MultibaggerStock {
   scorecard: {
     score: number;
     max_score: number;
-    verdict: "strong_buy" | "watchlist" | "avoid";
+    verdict: "elite_strong_buy" | "strong_buy" | "watchlist" | "watch" | "avoid";
     checks: { label: string; passed: boolean }[];
     red_flags: string[];
+    elite_strong_buy: boolean;
   };
   shortlisted: boolean;
 }

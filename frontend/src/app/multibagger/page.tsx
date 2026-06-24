@@ -7,8 +7,16 @@ import Link from "next/link";
 import clsx from "clsx";
 
 const VERDICT: Record<string, { label: string; color: string }> = {
+  // Stricter than strong_buy — ROCE>15%, D/E<50%, OCF>0, sales growth>10%
+  // all pass explicitly, not just an overall score percentage. See
+  // multibagger_scorecard.py's elite_strong_buy logic.
+  elite_strong_buy: { label: "Elite Strong Buy", color: "text-bull bg-bull/20 border-bull/50" },
   strong_buy: { label: "Strong Buy", color: "text-bull bg-bull/10 border-bull/30" },
   watchlist: { label: "Watchlist", color: "text-yellow-400 bg-yellow-500/10 border-yellow-500/30" },
+  // One Anti-Loss red flag (not yet the two needed for Avoid) — a real
+  // value the backend has always been able to return; was missing here,
+  // which crashed this table (v.color on undefined) whenever it occurred.
+  watch: { label: "Watch", color: "text-orange-400 bg-orange-500/10 border-orange-500/30" },
   avoid: { label: "Avoid", color: "text-bear bg-bear/10 border-bear/30" },
 };
 

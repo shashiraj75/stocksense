@@ -88,12 +88,31 @@ def compute_scorecard(stock: dict, market: str = "IN") -> dict:
     else:
         verdict = "avoid"
 
+    # Explicit "elite_strong_buy" — a stricter, all-conditions-must-pass rule
+    # on top of the score-percentage verdict above, requested explicitly:
+    # ROCE > 15%, Debt/Equity < 50%, OCF > 0, Sales growth > 10%. The
+    # founder's original formula also wanted Order Book/Revenue > 3x, which
+    # we dropped — no scraped source has that figure for any stock, IN or
+    # US (not on screener.in, not in yfinance); faking it would be worse
+    # than omitting it. Only promotes a verdict that already cleared
+    # "strong_buy" or "watchlist" — never overrides "avoid"/"watch", since
+    # the Anti-Loss red-flag check is a hard ceiling by design (see above).
+    elite_strong_buy = (
+        roce is not None and roce > 15
+        and de is not None and de < 50
+        and ocf is not None and ocf > 0
+        and sales_3y is not None and sales_3y > 10
+    )
+    if elite_strong_buy and verdict in ("strong_buy", "watchlist"):
+        verdict = "elite_strong_buy"
+
     return {
         "score": score,
         "max_score": max_score,
         "verdict": verdict,
         "checks": checks,
         "red_flags": red_flags,
+        "elite_strong_buy": elite_strong_buy,
     }
 
 
