@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
-import { api } from "@/utils/api";
+import { api, fetchQuote } from "@/utils/api";
 import {
   TrendingUp, Clock, AlertCircle, ChevronDown, ChevronUp,
   Loader2, Target, ShieldAlert, Zap, CheckCircle, BarChart2, Activity, FlaskConical,
@@ -357,6 +357,23 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
   const [showPaperTrade, setShowPaperTrade] = useState(false);
   const upside = pick.price && pick.target
     ? (((pick.target - pick.price) / pick.price) * 100).toFixed(1) : null;
+
+  // Daily Picks are a frozen snapshot from generation time (once or twice
+  // daily) — entry zone/target/stop are all computed against pick.price as
+  // it stood then. A user viewing this later the same day, or the next day
+  // before the next run, can see a stale entry zone the live price has
+  // already moved past — misleading for a "1-5 day" short-term call
+  // specifically. Fetch the live quote and flag it explicitly instead of
+  // silently showing numbers that may no longer be actionable.
+  const { data: liveQuote } = useQuery({
+    queryKey: ["quote", pick.symbol, market],
+    queryFn: () => fetchQuote(pick.symbol, market),
+    staleTime: 5 * 60_000,
+  });
+  const livePrice = liveQuote?.price ?? null;
+  const entryZonePassed =
+    livePrice != null && pick.entry_low != null && pick.entry_high != null &&
+    (livePrice < pick.entry_low || livePrice > pick.entry_high);
   const sector = pick.quality_factors?.sector;
   const piotroski = pick.quality_factors?.piotroski;
   const grouped: Record<string, ReasonItem[]> = {};
@@ -394,10 +411,22 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
             <p className="text-xs text-gray-500 mt-0.5 truncate max-w-[200px]">{pick.name}</p>
           </div>
           <div className="text-right">
-            <div className="text-sm font-semibold text-white">{currency}{pick.price?.toLocaleString(locale)}</div>
+            <div className="text-sm font-semibold text-white">
+              {currency}{(livePrice ?? pick.price)?.toLocaleString(locale)}
+            </div>
+            {livePrice != null && pick.price != null && Math.abs(livePrice - pick.price) > 0.01 && (
+              <div className="text-[10px] text-gray-500">was {currency}{pick.price.toLocaleString(locale)} at generation</div>
+            )}
             {upside && <div className="text-xs text-green-400 font-medium">+{upside}% upside</div>}
           </div>
         </div>
+
+        {entryZonePassed && (
+          <div className="mb-3 flex items-center gap-1.5 text-[11px] text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 rounded-lg px-2.5 py-1.5">
+            <AlertCircle size={11} className="shrink-0" />
+            Price has moved {livePrice! > pick.entry_high! ? "above" : "below"} the entry zone since this was generated — may no longer be actionable as shown.
+          </div>
+        )}
 
         <div className="mb-3">
           <div className="flex justify-between text-xs text-gray-500 mb-1">
@@ -410,9 +439,9 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
         </div>
 
         <div className="grid grid-cols-3 gap-2 mb-3">
-          <div className="bg-dark-border/40 rounded-lg p-2 text-center">
-            <p className="text-[10px] text-gray-500 mb-0.5">Entry Zone</p>
-            <p className="text-xs text-white font-mono">
+          <div className={clsx("rounded-lg p-2 text-center", entryZonePassed ? "bg-yellow-500/10 border border-yellow-500/30" : "bg-dark-border/40")}>
+            <p className="text-[10px] text-gray-500 mb-0.5">Entry Zone{entryZonePassed && " (passed)"}</p>
+            <p className={clsx("text-xs font-mono", entryZonePassed ? "text-yellow-400 line-through" : "text-white")}>
               {pick.entry_low && pick.entry_high
                 ? `${currency}${pick.entry_low.toLocaleString(locale)}–${pick.entry_high.toLocaleString(locale)}`
                 : `${currency}${pick.price?.toLocaleString(locale)}`}
