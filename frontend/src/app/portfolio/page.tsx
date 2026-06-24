@@ -300,7 +300,10 @@ export default function PortfolioPage() {
       staleTime: 15 * 60_000,   // predictions cache for 15 min
       retry: 1,
     })),
-    6
+    8 // load-tested: 8 concurrent fresh predictions resolve in ~12s with no
+      // degradation vs 5 in ~9s — was 6 mainly out of caution before the
+      // event-loop fixes; raised to cut the number of sequential batches a
+      // large portfolio needs (e.g. 38 holdings: 7 batches -> 5).
   );
 
   const add = async () => {

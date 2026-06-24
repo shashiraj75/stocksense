@@ -89,7 +89,14 @@ export const fetchPrediction = async (
     if ((res.data as any)?.error) throw new Error((res.data as any).error);
     // 202 = computing in background — notify caller and wait
     if (attempt === 0) onComputing?.();
-    const delay = ((res.data as { retry_after?: number }).retry_after ?? 5) * 1000;
+    const serverDelay = (res.data as { retry_after?: number }).retry_after ?? 5;
+    // Most predictions finish in 3-8s server-side, but every poll attempt
+    // waited the server's full suggested 5s regardless of how close it
+    // actually was — pure dead time on top of real compute time, which
+    // compounds badly across staggered batches on a large portfolio. Poll
+    // faster for the first few attempts; fall back to the server's own
+    // pacing afterward in case something is genuinely slower than typical.
+    const delay = (attempt < 4 ? Math.min(2, serverDelay) : serverDelay) * 1000;
     await new Promise((r) => setTimeout(r, delay));
   }
   throw new Error("Prediction timed out after 120 s");
