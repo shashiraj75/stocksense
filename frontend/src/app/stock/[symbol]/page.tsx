@@ -841,6 +841,28 @@ export default function StockPage() {
                 </div>
               ) : (prediction as any)?.error ? (
                 <p className="text-red-400 text-sm">{(prediction as any).error}</p>
+              ) : (prediction as any)?.signal === "REJECTED" ? (
+                // A hard quality-gate rejection returns a minimal payload —
+                // only signal/rejection_reasons/confidence/current_price, no
+                // reasoning/trade_levels/technical/etc. "REJECTED" is itself
+                // a truthy string, so this must be checked before the
+                // generic prediction?.signal branch below, which assumes a
+                // full payload and would crash trying to read fields (e.g.
+                // .reasoning.slice(...)) that don't exist on this shape.
+                <div className="space-y-2 py-2">
+                  <p className="text-gray-300 text-sm font-medium">No signal for this horizon</p>
+                  <p className="text-gray-500 text-xs">
+                    This stock didn&apos;t pass our hard quality screen, so it was never scored at this horizon:
+                  </p>
+                  <ul className="space-y-1">
+                    {((prediction as any).rejection_reasons ?? []).map((r: string, i: number) => (
+                      <li key={i} className="text-xs text-gray-400 flex items-start gap-1.5">
+                        <span className="shrink-0 mt-1 w-1.5 h-1.5 rounded-full bg-bear" />
+                        {r}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               ) : prediction?.signal ? (
                 <>
                   {/* Signal strip */}
