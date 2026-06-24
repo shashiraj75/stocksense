@@ -1353,13 +1353,38 @@ class PredictionEngine:
             elif profit_margin is not None and profit_margin < -0.15:
                 rejections.append(f"Deeply loss-making: profit margins {profit_margin*100:.1f}%")
 
+            de = info.get("debtToEquity")
+
             # OCF gate only applies to medium/long — growth stocks may have negative OCF short-term.
             # Exempt financial-sector stocks — see is_financial comment above.
             if not is_financial and horizon != "short" and op_cf is not None and op_cf <= 0:
-                rejections.append("Non-positive operating cash flows — core business not generating cash")
+                # Order-book-driven businesses (defense/capital-goods/telecom
+                # infra) often run negative OCF from working-capital drag
+                # against growing receivables while genuinely turning around.
+                # A large order book/strong revenue growth should be a
+                # multiplier on an already-decent business, not a license to
+                # ignore weak fundamentals — so this is a "Potential
+                # Turnaround" exception, not a blanket pass: requires strong
+                # revenue growth AND contained leverage AND (decent capital
+                # efficiency OR an improving execution trend). If leverage or
+                # growth is also broken, that's the "Avoid" case and the
+                # rejection stands. The negative-OCF risk penalty elsewhere in
+                # scoring (_compute_risk_penalty) still applies regardless —
+                # this only controls whether the stock gets scored at all.
+                roce = info.get("returnOnCapitalEmployed")
+                revenue_growth = info.get("revenueGrowth")
+                eps_trend = (info.get("_screener_data") or {}).get("eps_trend")
+                strong_growth = revenue_growth is not None and revenue_growth > 0.15
+                contained_leverage = de is None or de < 150
+                decent_capital_efficiency = roce is not None and roce > 0.08
+                improving_execution = eps_trend in ("accelerating", "mixed_positive")
+                turnaround_exception = strong_growth and contained_leverage and (
+                    decent_capital_efficiency or improving_execution
+                )
+                if not turnaround_exception:
+                    rejections.append("Non-positive operating cash flows — core business not generating cash")
 
             # Extreme leverage — exclude NBFC/banks by checking sector
-            de = info.get("debtToEquity")
             if not is_financial and de and de > 500:
                 rejections.append(
                     f"Extreme leverage (D/E {de:.0f}%) — balance sheet risk too high to score"
