@@ -1,4 +1,4 @@
-# StockSense — Complete Product & Technical Documentation
+# StockSense360 — Complete Product & Technical Documentation
 
 > **Live Document** — Updated automatically as the product evolves.  
 > Last updated: 2026-06-24 (Session 9)
@@ -39,9 +39,9 @@
 
 ## 1. Product Overview
 
-**StockSense** is an AI-powered stock prediction and portfolio intelligence platform built for Indian and US equity markets. It combines institutional-grade quantitative signals with a consumer-friendly interface to deliver actionable BUY / HOLD / SELL signals with full explainability.
+**StockSense360** is an AI-powered stock prediction and portfolio intelligence platform built for Indian and US equity markets. It combines institutional-grade quantitative signals with a consumer-friendly interface to deliver actionable BUY / HOLD / SELL signals with full explainability.
 
-### What StockSense Does
+### What StockSense360 Does
 
 - Generates **BUY / HOLD / SELL signals** for Nifty 100, US large-cap, and top cryptocurrencies
 - Delivers **Daily Picks** every morning at 9 AM IST — top 5 BUY ideas per horizon (short / medium / long)
@@ -1744,4 +1744,4 @@ A long session covering a surgical bug-hunt pass across the multi-market changes
 
 ---
 
-*This document is a living record of StockSense. It is updated with every significant change to the product.*
+*This document is a living record of StockSense360. It is updated with every significant change to the product.*

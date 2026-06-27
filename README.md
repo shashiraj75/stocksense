@@ -1,4 +1,4 @@
-# StockSense — AI Stock Intelligence Platform
+# StockSense360 — AI Stock Intelligence Platform
 
 > Short, medium & long-term AI signals for Indian (NSE) and US markets.  
 > Built with institutional-grade quant methods. Fully explainable. Zero subscription cost.
@@ -7,7 +7,7 @@
 
 ---
 
-## What StockSense Does
+## What StockSense360 Does
 
 - **BUY / HOLD / SELL signals** with confidence score, target price, and stop-loss for every stock
 - **Daily Picks** — top 6 BUY ideas per horizon (short / medium / long), screened from the full NSE/US universe; IN generates at 2 AM IST, US at 6 PM IST

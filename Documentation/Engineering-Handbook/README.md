@@ -4,8 +4,8 @@ This handbook is the governing reference for how engineering work on StockSense3
 
 ## What governs
 
-- **`SES/` (StockSense Engineering Standards)** — binding standards for every future implementation: [SES-001 Engineering Standards](SES/SES-001-Engineering-Standards.md), [SES-002 Python Coding Standards](SES/SES-002-Python-Coding-Standards.md), [SES-003 Testing Standards](SES/SES-003-Testing-Standards.md), [SES-004 Documentation Standards](SES/SES-004-Documentation-Standards.md).
-- **`SSDS/` (StockSense Specification & Design Standards)** — templates used to scope work before it's built: [SSDS-001 Feature Specification Template](SSDS/SSDS-001-Feature-Specification-Template.md), [SSDS-002 Sprint Specification Template](SSDS/SSDS-002-Sprint-Specification-Template.md).
+- **`SES/` (StockSense360 Engineering Standards)** — binding standards for every future implementation: [SES-001 Engineering Standards](SES/SES-001-Engineering-Standards.md), [SES-002 Python Coding Standards](SES/SES-002-Python-Coding-Standards.md), [SES-003 Testing Standards](SES/SES-003-Testing-Standards.md), [SES-004 Documentation Standards](SES/SES-004-Documentation-Standards.md), [SES-005 StockSense360 Branding Standard](SES/SES-005-StockSense360-Branding-Standard.md).
+- **`SSDS/` (StockSense360 Specification & Design Standards)** — templates used to scope work before it's built: [SSDS-001 Feature Specification Template](SSDS/SSDS-001-Feature-Specification-Template.md), [SSDS-002 Sprint Specification Template](SSDS/SSDS-002-Sprint-Specification-Template.md).
 
 These two folders are not optional reading — they are the standard every audit, sprint, feature, and test in this repository is expected to be held to from this point forward.
 

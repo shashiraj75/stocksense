@@ -10,6 +10,7 @@ These are binding on all future implementation work, not reference material to c
 - [SES-002 — Python Coding Standards](SES/SES-002-Python-Coding-Standards.md) — threshold registry, logging, engine return shape, typing, error handling.
 - [SES-003 — Testing Standards](SES/SES-003-Testing-Standards.md) — pytest layout, the four test categories, isolation, sanity-checking your own tests.
 - [SES-004 — Documentation Standards](SES/SES-004-Documentation-Standards.md) — where documents live, what every audit/sprint-report/roadmap must contain.
+- [SES-005 — StockSense360 Branding Standard](SES/SES-005-StockSense360-Branding-Standard.md) — official product name, approved naming conventions, what's explicitly out of scope to rename.
 
 ## Specification Templates
 
