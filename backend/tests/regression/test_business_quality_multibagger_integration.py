@@ -37,15 +37,19 @@ def test_select_cols_includes_new_fields_without_dropping_existing():
 
 
 @pytest.mark.regression
-def test_in_refresh_job_not_touched_by_this_sprint():
-    """Per the architectural finding driving this sprint's IN/US asymmetry:
-    fundamentals_refresh.py (IN) sources data from screener.in and never
-    constructs a yfinance Ticker — confirms this sprint did not add one,
-    which would have been the 'broad refactor' this sprint was told not
-    to do."""
+def test_in_refresh_job_uses_adapter_not_inline_ticker():
+    """SUPERSEDED PREMISE (was Sprint #005 'US-only'): Sprint #007 wires the
+    India Business Quality Adapter into fundamentals_refresh.py. The
+    architectural promise Sprint #005 cared about still holds, just in a
+    different place: the refresh loop itself must NOT construct a yfinance
+    Ticker inline (the 'broad refactor' that was always out of scope) — the
+    adapter encapsulates that, lazily. So the refresh module wires in the
+    adapter and references business_quality, but contains no `yf.Ticker`
+    of its own."""
     source = (_BACKEND_ROOT / "services" / "fundamentals_refresh.py").read_text()
     assert "yf.Ticker" not in source
-    assert "business_quality" not in source
+    assert "compute_india_business_quality" in source
+    assert "business_quality_score" in source
 
 
 @pytest.mark.regression

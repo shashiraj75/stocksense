@@ -40,7 +40,13 @@ SECTOR_BUCKETS = (
 _KEYWORD_PATTERNS: dict[str, list[str]] = {
     "FINANCIAL": [r"\bbank\b", r"\bnbfc\b", r"\binsurance\b", r"\bfinancial services\b",
                   r"\bfinance\b", r"\bhousing finance\b", r"\bcredit\b", r"\basset management\b"],
-    "FMCG": [r"\bfmcg\b", r"\bconsumer staples\b", r"\bconsumer defensive\b", r"\bfood products\b",
+    # "fast moving consumer goods" and "packaged foods" are screener.in's
+    # actual IN sector/industry labels (Sprint #007): without them, real
+    # Indian FMCG names (NESTLEIND, BRITANNIA) fell through to OTHER and
+    # lost their FMCG metric-applicability treatment — a genuine
+    # classification defect surfaced by the India adapter's live data.
+    "FMCG": [r"\bfmcg\b", r"\bfast moving consumer goods\b", r"\bconsumer staples\b",
+              r"\bconsumer defensive\b", r"\bfood products\b", r"\bpackaged foods\b",
               r"\bbeverages\b", r"\bpersonal care\b", r"\bhousehold\b", r"\btobacco\b"],
     "IT": [r"\binformation technology\b", r"\btechnology\b", r"\bcomputer\b",
            r"\bsoftware\b", r"\bit services\b", r"\bsemiconductor\b", r"\bconsumer electronics\b"],
@@ -48,7 +54,12 @@ _KEYWORD_PATTERNS: dict[str, list[str]] = {
     "MANUFACTURING": [r"\bmanufactur\w*\b", r"\bcapital goods\b", r"\bengineering\b",
                        r"\bindustrial\w*\b", r"\bauto\w*\b", r"\bmetal\b", r"\bsteel\b", r"\bcement\b",
                        r"\bchemical\w*\b", r"\bbasic materials\b"],
-    "UTILITIES_ENERGY": [r"\butilit\w*\b", r"\belectric\b", r"\bpower generation\b", r"\boil\b",
+    # bare "power" added Sprint #007: screener.in labels power-sector names
+    # by line of business ("Power - Transmission" for POWERGRID), which the
+    # narrower "power generation" pattern missed — POWERGRID fell to OTHER
+    # while NTPC/TATAPOWER (whose industries said "Generation"/"Utilities")
+    # classified correctly. Genuine defect surfaced by the India adapter.
+    "UTILITIES_ENERGY": [r"\butilit\w*\b", r"\belectric\b", r"\bpower\b", r"\boil\b",
                           r"\bgas\b", r"\bpetroleum\b", r"\benergy\b"],
     "TELECOM": [r"\btelecom\w*\b", r"\bwireless\b", r"\bcommunication services\b"],
     "REAL_ESTATE": [r"\breal estate\b", r"\brealty\b", r"\bproperty\b"],

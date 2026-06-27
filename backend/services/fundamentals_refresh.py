@@ -16,6 +16,7 @@ import logging
 
 from services.stock_universe import IN_STOCKS
 from services.screener_data import fetch_screener_data
+from services.india_business_quality_adapter import compute_india_business_quality
 from services import fundamentals_cache as cache
 
 log = logging.getLogger(__name__)
@@ -51,6 +52,22 @@ def run_full_refresh() -> dict:
                 continue
 
             is_fin = _is_financial(data.get("sector_name"), data.get("industry_name"))
+
+            # StockSense360 India Business Quality Adapter (SSDS-003,
+            # SSDS-004, Sprint #007). Reuses the screener data already
+            # fetched above — no extra screener call. Computed here at
+            # refresh time, exactly as the US side does in
+            # us_fundamentals.py's _build(), so request-time latency is
+            # unaffected (the Multibagger screen still serves from cache).
+            # Failure is non-fatal: the four fields stay absent and the row
+            # upserts with everything else, mirroring the US try/except.
+            bq = compute_india_business_quality(symbol, data, market="IN")
+            if bq is not None:
+                data["business_quality_score"] = bq.get("score")
+                data["business_quality_grade"] = bq.get("grade")
+                data["business_quality_style"] = (bq.get("metadata") or {}).get("suitable_investment_style")
+                data["business_quality_confidence"] = bq.get("confidence")
+
             cache.upsert(symbol, "IN", is_fin, data)
             refreshed += 1
 
