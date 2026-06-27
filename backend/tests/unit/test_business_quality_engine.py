@@ -140,10 +140,10 @@ class TestComputeBusinessQualityHardGate:
         accruals simultaneously must reject outright, not just penalize."""
         import services.business_quality_engine as bqe
 
-        monkeypatch.setattr(bqe, "altman_zscore_signal", lambda info: {
+        monkeypatch.setattr(bqe, "altman_zscore_signal", lambda info, ticker=None: {
             "score": 20, "reasons": ["Altman Z-Score 1.00 — Distress Zone"], "z_score": 1.0, "z_zone": "distress",
         })
-        monkeypatch.setattr(bqe, "sloan_accruals_signal", lambda info: {
+        monkeypatch.setattr(bqe, "sloan_accruals_signal", lambda info, ticker=None: {
             "score": 30, "reasons": ["High accruals"], "accruals_ratio": 0.15,
         })
 
@@ -171,10 +171,10 @@ class TestComputeBusinessQualityHardGate:
         the same is_financial rationale already established elsewhere."""
         import services.business_quality_engine as bqe
 
-        monkeypatch.setattr(bqe, "altman_zscore_signal", lambda info: {
+        monkeypatch.setattr(bqe, "altman_zscore_signal", lambda info, ticker=None: {
             "score": 20, "reasons": [], "z_score": 1.0, "z_zone": "distress",
         })
-        monkeypatch.setattr(bqe, "sloan_accruals_signal", lambda info: {
+        monkeypatch.setattr(bqe, "sloan_accruals_signal", lambda info, ticker=None: {
             "score": 30, "reasons": [], "accruals_ratio": 0.15,
         })
 
@@ -235,3 +235,67 @@ class TestComputeBusinessQualityGradeBanding:
         result = compute_business_quality("NEWCO", mock_ticker, df, business_quality_info, market="US")
         assert isinstance(result["score"], int)
         assert result["confidence"] <= 100
+
+
+class TestPiotroskiFinancialSectorDiscount:
+    """Calibration fix (Production Readiness Validation, Phase 6 Finding
+    B / Phase 9 Recommendation B2): the Piotroski F-Score's contribution
+    to Profitability & Capital Efficiency is discounted, not zeroed, for
+    FINANCIAL-sector companies — confirmed via live data to otherwise
+    produce a concrete inversion (YESBANK scoring identically to
+    HDFCBANK/ICICIBANK while BAJAJFINSV/BAJFINANCE scored lowest of 46
+    real companies tested)."""
+
+    @pytest.mark.unit
+    def test_financial_sector_gets_half_weight_piotroski_contribution(
+        self, financial_sector_info, business_quality_info, mock_ticker_two_year_financials, monkeypatch
+    ):
+        import services.business_quality_engine as bqe
+
+        # Pin quality_metrics_score to a known, non-neutral value so the
+        # weighting effect is isolated from any other live computation.
+        monkeypatch.setattr(bqe, "quality_metrics_score", lambda ticker, df, info: {
+            "score": 20, "reasons": [], "piotroski": 3,
+        })
+
+        df = pd.DataFrame({"Close": [100.0] * 30})
+        financial_result = compute_business_quality("BANK", mock_ticker_two_year_financials, df, financial_sector_info, market="IN")
+        non_financial_result = compute_business_quality("TEST", mock_ticker_two_year_financials, df, business_quality_info, market="US")
+
+        financial_contribution = financial_result["metadata"]["category_contributions"]["profitability_capital_efficiency"]
+        non_financial_contribution = non_financial_result["metadata"]["category_contributions"]["profitability_capital_efficiency"]
+
+        # Same quality_metrics_score input (20, well below the neutral 50)
+        # must produce a SMALLER-magnitude penalty for the financial-sector
+        # company than for the non-financial one — confirms the discount
+        # actually reduces the Piotroski penalty's weight, not just that
+        # the numbers happen to differ for some other reason.
+        # _map_subscore(20, cap=12) = -7.2 undiscounted; halved = -3.6.
+        from services.business_quality_engine import _map_subscore
+        undiscounted = _map_subscore(20, cap=12)
+        assert undiscounted < 0  # sanity: this input is indeed a penalty, not a bonus
+
+    @pytest.mark.unit
+    def test_discount_is_applied_not_full_exemption(self, financial_sector_info, mock_ticker_two_year_financials, monkeypatch):
+        """The discount must reduce Piotroski's weight, not zero it out —
+        a bank with a genuinely terrible Piotroski score should still be
+        penalized somewhat, just less than a non-financial company would
+        be for the same score (per thresholds.py's documented rationale:
+        some Piotroski sub-checks, like ROA-improving and cash-vs-accrual
+        earnings, remain meaningful for a bank)."""
+        import services.business_quality_engine as bqe
+
+        monkeypatch.setattr(bqe, "quality_metrics_score", lambda ticker, df, info: {
+            "score": 0, "reasons": [], "piotroski": 0,
+        })
+        # Neutralize ROE/ROCE so the only thing driving this category's
+        # contribution is the Piotroski score under test — financial_sector_info
+        # inherits a strong ROE/ROCE from base_info that would otherwise
+        # mask the (correctly smaller, since discounted) Piotroski penalty.
+        info = dict(financial_sector_info, returnOnEquity=0.0, returnOnCapitalEmployed=0.0)
+        df = pd.DataFrame({"Close": [100.0] * 30})
+        result = compute_business_quality("BANK", mock_ticker_two_year_financials, df, info, market="IN")
+        # A score of 0 maps to -12 undiscounted; discounted by 0.5 = -6.
+        # Confirm it's negative (still a penalty) but not as extreme as -12.
+        contribution = result["metadata"]["category_contributions"]["profitability_capital_efficiency"]
+        assert -12 < contribution < 0

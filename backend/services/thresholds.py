@@ -196,6 +196,25 @@ class BusinessQualityThresholds:
     # StockSense360-specific choice, reused as-is rather than re-derived.
     BENEISH_MANIPULATION_LIKELY_MIN = -1.78
 
+    # Calibration fix (Business Quality Engine Production Readiness
+    # Validation, Architecture/Business-Quality-Engine-Production-
+    # Readiness-Validation.md, Phase 6 Finding B / Phase 9 Recommendation
+    # B2). Confirmed with live data: the reused Piotroski F-Score
+    # (quality_metrics_score) has no sector-awareness internally, and
+    # several of its 9 sub-checks (declining leverage, improving asset
+    # turnover, improving gross margin) are structurally inapplicable —
+    # in some cases backwards — for a balance-sheet-driven business model.
+    # Evidence: YESBANK (Piotroski 7/9) scored identically to HDFCBANK/
+    # ICICIBANK, while BAJAJFINSV/BAJFINANCE (Piotroski 3/9) scored the
+    # LOWEST of 46 real companies tested, despite being widely-regarded
+    # financial compounders. 0.5 is a deliberate half-weight discount, not
+    # a full exemption (the existing FINANCIAL exemptions for D/E and
+    # interest coverage already remove the checks that don't apply at
+    # all; Piotroski still carries SOME signal for a bank — declining ROA,
+    # cash-vs-accrual-earnings checks remain meaningful — so it is
+    # discounted, not zeroed).
+    PIOTROSKI_FINANCIAL_SECTOR_WEIGHT = 0.5
+
 
 # Singleton instances — import these, not the dataclasses, from call sites.
 DEBT_TO_EQUITY = DebtToEquityThresholds()
