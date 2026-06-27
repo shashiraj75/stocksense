@@ -37,11 +37,15 @@ def configure_logging() -> None:
             datefmt="%Y-%m-%d %H:%M:%S",
         )
     )
+    # Tag our own handler so the dedup check below can't be fooled by an
+    # unrelated StreamHandler subclass another library (or a test runner's
+    # log-capture plugin) has already attached to the root logger.
+    handler._stocksense_structured = True
 
     root = logging.getLogger()
     root.setLevel(level)
     # Avoid duplicate handlers if uvicorn's --reload re-imports this module.
-    if not any(isinstance(h, logging.StreamHandler) for h in root.handlers):
+    if not any(getattr(h, "_stocksense_structured", False) for h in root.handlers):
         root.addHandler(handler)
 
     # Quiet noisy third-party libraries unless explicitly debugging.
