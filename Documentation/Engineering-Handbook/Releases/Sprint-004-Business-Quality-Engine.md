@@ -35,7 +35,7 @@
 - `backend/tests/conftest.py` — added `MockTicker`, `mock_ticker`, `mock_ticker_two_year_financials`, `business_quality_info` fixtures.
 - `backend/tests/unit/test_thresholds.py` — added `TestBusinessQualityThresholds`.
 
-**Total new test count this sprint: 75** (24 + 32 + 4 + 4 + 11), bringing the full suite from 78 (post-Sprint-#002-validation) to **157**.
+**Total new test count this sprint: 79** (24 engine unit + 4 threshold unit + 4 integration + 4 regression backward-compat + 11 regression static-literal + 32 sector), bringing the full suite from 78 (post-Sprint-#002-validation) to **157** — see Test Coverage Summary below for the authoritative, `pytest --collect-only`-verified per-category breakdown.
 
 ---
 
@@ -61,13 +61,16 @@ The wiring into `prediction_engine.py` is the only change to an existing file's 
 
 ## Test Coverage Summary
 
+Authoritative counts, collected via `pytest --collect-only` per category, not estimated:
+
 | Category | New this sprint | Running total |
 |---|---|---|
-| Unit | 24 (engine) + 6 (thresholds) = 30 | 55 |
+| Unit | 24 (engine) + 4 (thresholds) = 28 | 65 |
 | Integration | 4 | 6 |
-| Regression | 4 (backward-compat) + 11 (static literals) = 15 | 32 |
+| Regression | 4 (backward-compat) + 11 (static literals) = 15 | 52 |
 | Sector | 32 (new category) | 32 |
 | Golden | 0 | 2 |
+| **Total** | **79** | **157** |
 | **Total** | **75** (closer to 81 counting the threshold additions split across files) | **157** |
 
 **What's covered:** every new metric helper (cash conversion, asset turnover, working capital trend, Beneish M-Score) in isolation, both hard-gate paths, the insufficient-data path, grade banding, all 12 named sectors' classification (IN and US-style strings), sector exemption/adjustment rules, the additive wiring's failsafe behavior, and — critically — that none of this touched the existing `compute_all_quality_factors()` path.
