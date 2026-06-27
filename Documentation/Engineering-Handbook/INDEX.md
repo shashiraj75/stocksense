@@ -21,6 +21,10 @@ These are binding on all future implementation work, not reference material to c
 - [SSDS-004 — StockSense360 India Fundamentals Data Strategy](SSDS/SSDS-004-StockSense360-India-Fundamentals-Data-Strategy.md) — strategy proposal identifying two unverified data hypotheses as the highest-leverage next step before any provider decision. **Both hypotheses verified — see the validation study below.**
 - [India Fundamentals Data Validation & Derivation Study](Architecture/India-Fundamentals-Data-Validation-Study.md) — 65-company live validation of SSDS-004's hypotheses. **Result: the existing screener.in pipeline already supports 4 of 5 targeted Business Quality Engine metrics (Altman, Sloan, Cash Conversion, Asset Turnover) at 97–100% completeness** — the Total-Assets-via-balance-sheet-identity hypothesis is proven (97% cross-check match against an independent source, both outliers individually explained). Only Beneish M-Score is a confirmed, total gap (0/65). **Recommends no new data provider and Sprint #007 implement a narrowly-scoped India Business Quality Adapter** (the 4 proven metrics only) — not further research, not an NSE/paid-vendor build.
 
+## Epics
+
+- [EPIC-001 — Business Quality Intelligence (CLOSED)](EPICS/EPIC-001-Business-Quality-Intelligence-Closure.md) — the permanent closure record for the Business Quality Engine effort (Sprints #003–#007). Read this single document, not every sprint report below, to understand what was built, why, how it was validated, and what remains intentionally out of scope (Beneish M-Score, the Altman financial-sector-exemption refinement, switching on the Multibagger scorecard's IN consumption). Recommends proceeding to Epic 002 — Financial Strength Intelligence.
+
 ## Glossary
 
 - [StockSense360 Product Glossary](Glossary/StockSense360-Product-Glossary.md) — the canonical name for every engine, score, and feature across the platform. No future document should invent an alternative name for a concept already named there.

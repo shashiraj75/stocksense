@@ -123,4 +123,4 @@ Re-ran the adapter across the **same 65-company validated India universe** from 
 
 ## Final Commit Hash
 
-_Recorded in INDEX.md and the commit itself upon completion._
+**`ecfcab4`** — pushed to `main`. GitHub Actions (Backend Tests): green.
