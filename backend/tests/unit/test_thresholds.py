@@ -16,6 +16,7 @@ from services.thresholds import (
     VALUATION,
     GOVERNANCE,
     RISK_PENALTY,
+    BUSINESS_QUALITY,
 )
 
 
@@ -70,6 +71,43 @@ class TestMigratedValuesMatchOriginalCode:
     def test_valuation_values(self):
         assert VALUATION.PE_QUALITY_COMPOUNDER_MAX == 35.0
         assert VALUATION.EV_EBITDA_QUALITY_COMPOUNDER_MAX == 20.0
+
+
+class TestBusinessQualityThresholds:
+    """New thresholds introduced for Sprint #004's Business Quality Engine
+    (SSDS-003). Pins the values and their justifications' numeric
+    consequences — see services/thresholds.py's BusinessQualityThresholds
+    docstring for the full rationale behind each."""
+
+    @pytest.mark.unit
+    def test_grade_bands_are_monotonically_decreasing(self):
+        assert (
+            BUSINESS_QUALITY.GRADE_STRONG_BUY_MIN
+            > BUSINESS_QUALITY.GRADE_BUY_MIN
+            > BUSINESS_QUALITY.GRADE_HOLD_MIN
+            > BUSINESS_QUALITY.GRADE_WATCH_MIN
+        )
+
+    @pytest.mark.unit
+    def test_values(self):
+        assert BUSINESS_QUALITY.GRADE_STRONG_BUY_MIN == 80
+        assert BUSINESS_QUALITY.GRADE_BUY_MIN == 65
+        assert BUSINESS_QUALITY.GRADE_HOLD_MIN == 50
+        assert BUSINESS_QUALITY.GRADE_WATCH_MIN == 35
+        assert BUSINESS_QUALITY.MIN_DATA_COMPLETENESS_PCT == 60.0
+        assert BUSINESS_QUALITY.CASH_CONVERSION_STRONG_MIN == 0.8
+        assert BUSINESS_QUALITY.CASH_CONVERSION_WEAK_MAX == 0.5
+        assert BUSINESS_QUALITY.ACCRUALS_AGGRESSIVE_MIN_PCT == 10.0
+        assert BUSINESS_QUALITY.BENEISH_MANIPULATION_LIKELY_MIN == -1.78
+
+    @pytest.mark.unit
+    def test_cash_conversion_strong_exceeds_weak(self):
+        assert BUSINESS_QUALITY.CASH_CONVERSION_STRONG_MIN > BUSINESS_QUALITY.CASH_CONVERSION_WEAK_MAX
+
+    @pytest.mark.unit
+    def test_thresholds_are_frozen(self):
+        with pytest.raises(Exception):
+            BUSINESS_QUALITY.GRADE_STRONG_BUY_MIN = 999
 
     @pytest.mark.unit
     def test_governance_values(self):

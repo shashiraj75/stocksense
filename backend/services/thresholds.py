@@ -140,6 +140,63 @@ class RiskPenaltyThresholds:
     RISK_SUBSCORE_BELOW_AVERAGE_MAX = 45
 
 
+@dataclass(frozen=True)
+class BusinessQualityThresholds:
+    """
+    New thresholds introduced for the Business Quality Engine (SSDS-003,
+    Sprint #004). Every value below is justified in its own comment —
+    none are copied from an existing call site, since this is new scoring
+    surface, not a migration of existing literals.
+    """
+
+    # SSDS-003 §2 — combined-score grade bands, mirroring the existing
+    # base-50-plus-capped-buckets convention used elsewhere (e.g.
+    # prediction_engine.py's _fundamental_score). Bands chosen to leave a
+    # genuinely narrow "Exceptional" tier (most businesses should NOT
+    # qualify) rather than grade-inflating the top band.
+    GRADE_STRONG_BUY_MIN = 80
+    GRADE_BUY_MIN = 65
+    GRADE_HOLD_MIN = 50
+    GRADE_WATCH_MIN = 35
+    # Below GRADE_WATCH_MIN = "avoid" tier (not a separate constant — it's
+    # simply "everything else", same convention as multibagger_scorecard.py's
+    # verdict fallthrough).
+
+    # SSDS-003 §5 — minimum fraction of Mandatory metrics (per the sector's
+    # applicability table, not the universal list) required to return a
+    # real score rather than REJECTED/insufficient_data. 60% chosen as the
+    # same bar already used implicitly elsewhere in this codebase's
+    # "partial data is fine — use whatever we extracted" pattern, made
+    # explicit and numeric here per SSDS-003's instruction not to leave
+    # this rule undocumented.
+    MIN_DATA_COMPLETENESS_PCT = 60.0
+
+    # SSDS-003 §3 — new Cash Conversion Ratio (OCF / Net Income) tiers.
+    # >0.8 chosen as "most reported profit is converting to cash" (a
+    # business converting LESS than 80% of profit to cash for a sustained
+    # period is increasingly relying on accruals); <0.5 chosen as a clear
+    # red flag tier (less than half of reported profit is cash).
+    CASH_CONVERSION_STRONG_MIN = 0.8
+    CASH_CONVERSION_WEAK_MAX = 0.5
+
+    # SSDS-003 §3 — Sloan (1996) accruals-ratio "aggressive" tier, used by
+    # the hard-gate AND-condition in SSDS-003 §2 (combined with Altman
+    # distress). Sloan's own research ranks accruals into deciles and finds
+    # the highest-accruals decile underperforms; 10% is a commonly cited
+    # rule-of-thumb cutoff for "high accruals" in practitioner use of the
+    # ratio, used here as a deliberate, named simplification of the full
+    # decile-ranking methodology (which requires a cross-sectional universe
+    # ranking this engine does not have access to at single-stock scoring
+    # time) — documented as a Known Limitation in SSDS-003, not silently
+    # assumed equivalent.
+    ACCRUALS_AGGRESSIVE_MIN_PCT = 10.0
+
+    # SSDS-003 §3 — Beneish (1999) M-Score manipulation-likelihood
+    # threshold. -1.78 is the original paper's published cutoff — not a
+    # StockSense360-specific choice, reused as-is rather than re-derived.
+    BENEISH_MANIPULATION_LIKELY_MIN = -1.78
+
+
 # Singleton instances — import these, not the dataclasses, from call sites.
 DEBT_TO_EQUITY = DebtToEquityThresholds()
 PROFITABILITY = ProfitabilityThresholds()
@@ -148,3 +205,4 @@ GROWTH = GrowthThresholds()
 VALUATION = ValuationThresholds()
 GOVERNANCE = GovernanceThresholds()
 RISK_PENALTY = RiskPenaltyThresholds()
+BUSINESS_QUALITY = BusinessQualityThresholds()
