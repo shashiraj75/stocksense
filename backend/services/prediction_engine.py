@@ -11,6 +11,7 @@ from services.technical_indicators import compute_indicators, get_signal_summary
 from services.news_sentiment import NewsSentimentService
 from services.global_context import get_global_context
 from services.quality_factors import compute_all_quality_factors
+from services.thresholds import DEBT_TO_EQUITY, PROFITABILITY, GROWTH, RISK_PENALTY
 
 MARKET_SUFFIX = {"US": "", "IN": ".NS"}
 _news_svc = NewsSentimentService()
@@ -193,19 +194,19 @@ def _compute_risk_penalty(info: dict, df: pd.DataFrame, quality: dict | None = N
     try:
         # High debt
         de = info.get("debtToEquity")
-        if de is not None and de > 300:
+        if de is not None and de > DEBT_TO_EQUITY.RISK_PENALTY_SEVERE_MIN:
             penalty += 8
             reasons.append(f"High debt-to-equity ({de:.0f}%) — financial fragility risk")
-        elif de is not None and de > 200:
+        elif de is not None and de > DEBT_TO_EQUITY.RISK_PENALTY_ELEVATED_MIN:
             penalty += 4
             reasons.append(f"Elevated debt-to-equity ({de:.0f}%) — leverage risk")
 
         # High beta
         beta = info.get("beta")
-        if beta is not None and beta > 2.0:
+        if beta is not None and beta > RISK_PENALTY.BETA_HIGH:
             penalty += 6
             reasons.append(f"High beta ({beta:.2f}) — amplified downside in market corrections")
-        elif beta is not None and beta > 1.6:
+        elif beta is not None and beta > RISK_PENALTY.BETA_ABOVE_AVERAGE:
             penalty += 3
             reasons.append(f"Above-average beta ({beta:.2f}) — sensitive to market swings")
 
@@ -217,7 +218,7 @@ def _compute_risk_penalty(info: dict, df: pd.DataFrame, quality: dict | None = N
 
         # Negative ROE (loss-making)
         roe = info.get("returnOnEquity")
-        if roe is not None and roe < -0.05:
+        if roe is not None and roe < PROFITABILITY.ROE_NEGATIVE_RISK_PENALTY:
             penalty += 5
             reasons.append(f"Negative ROE ({roe*100:.1f}%) — destroying shareholder value")
 
@@ -225,10 +226,10 @@ def _compute_risk_penalty(info: dict, df: pd.DataFrame, quality: dict | None = N
         if quality:
             risk_bd = quality.get("breakdown", {}).get("risk_management", {})
             risk_sc = risk_bd.get("score", 50) if isinstance(risk_bd, dict) else 50
-            if risk_sc < 35:
+            if risk_sc < RISK_PENALTY.RISK_SUBSCORE_POOR_MAX:
                 penalty += 5
                 reasons.append("Poor risk profile — high drawdown and/or low risk-adjusted returns")
-            elif risk_sc < 45:
+            elif risk_sc < RISK_PENALTY.RISK_SUBSCORE_BELOW_AVERAGE_MAX:
                 penalty += 2
 
         # Earnings volatility — high EPS std dev signals unpredictability
@@ -1058,13 +1059,13 @@ class PredictionEngine:
         # ── BALANCE SHEET bucket (cap ±10) ────────────────────────────────────
         de = info.get("debtToEquity")
         if de is not None:
-            if de > 300:
+            if de > DEBT_TO_EQUITY.RISK_PENALTY_SEVERE_MIN:
                 balance_sheet -= 7
                 reasons.append(f"Very high debt-to-equity ({de:.0f}%)")
-            elif de > 150:
+            elif de > DEBT_TO_EQUITY.ELEVATED_PENALTY_MIN:
                 balance_sheet -= 3
                 reasons.append(f"Elevated debt-to-equity ({de:.0f}%)")
-            elif de < 50:
+            elif de < DEBT_TO_EQUITY.LOW_DEBT_BONUS_MAX:
                 balance_sheet += 3
                 reasons.append("Low debt — strong balance sheet")
 
@@ -1348,9 +1349,9 @@ class PredictionEngine:
             is_financial = any(k in sector or k in industry for k in ("financial", "bank", "insurance", "nbfc"))
 
             # Reject if EITHER metric is severely negative (was: AND — too strict)
-            if roe is not None and roe < -0.10:
+            if roe is not None and roe < PROFITABILITY.ROE_SEVERE_NEGATIVE:
                 rejections.append(f"Severely negative ROE ({roe*100:.1f}%) — destroying shareholder value")
-            elif profit_margin is not None and profit_margin < -0.15:
+            elif profit_margin is not None and profit_margin < PROFITABILITY.PROFIT_MARGIN_SEVERE_NEGATIVE:
                 rejections.append(f"Deeply loss-making: profit margins {profit_margin*100:.1f}%")
 
             de = info.get("debtToEquity")
@@ -1374,9 +1375,9 @@ class PredictionEngine:
                 roce = info.get("returnOnCapitalEmployed")
                 revenue_growth = info.get("revenueGrowth")
                 eps_trend = (info.get("_screener_data") or {}).get("eps_trend")
-                strong_growth = revenue_growth is not None and revenue_growth > 0.15
-                contained_leverage = de is None or de < 150
-                decent_capital_efficiency = roce is not None and roce > 0.08
+                strong_growth = revenue_growth is not None and revenue_growth > GROWTH.REVENUE_GROWTH_TURNAROUND_EXCEPTION_MIN
+                contained_leverage = de is None or de < DEBT_TO_EQUITY.TURNAROUND_EXCEPTION_MAX
+                decent_capital_efficiency = roce is not None and roce > PROFITABILITY.ROCE_TURNAROUND_EXCEPTION_MIN
                 improving_execution = eps_trend in ("accelerating", "mixed_positive")
                 turnaround_exception = strong_growth and contained_leverage and (
                     decent_capital_efficiency or improving_execution
@@ -1385,7 +1386,7 @@ class PredictionEngine:
                     rejections.append("Non-positive operating cash flows — core business not generating cash")
 
             # Extreme leverage — exclude NBFC/banks by checking sector
-            if not is_financial and de and de > 500:
+            if not is_financial and de and de > DEBT_TO_EQUITY.HARD_REJECT_MIN:
                 rejections.append(
                     f"Extreme leverage (D/E {de:.0f}%) — balance sheet risk too high to score"
                 )

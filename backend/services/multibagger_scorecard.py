@@ -12,6 +12,9 @@ deliberately implemented as latest-snapshot checks instead, and labelled as
 such in the reason text — they are NOT claiming a trend we can't see.
 """
 
+from services.thresholds import DEBT_TO_EQUITY, PROFITABILITY, GROWTH, VALUATION, GOVERNANCE, CASH_FLOW
+
+
 def _check(label: str, passed: bool) -> dict:
     return {"label": label, "passed": passed}
 
@@ -34,19 +37,19 @@ def compute_scorecard(stock: dict, market: str = "IN") -> dict:
 
     checks = [
         # Business Quality
-        _check(f"ROE > 18%, not visibly declining vs {roe_avg_label}", roe is not None and roe > 18 and (roe_avg is None or roe >= roe_avg * 0.8)),
-        _check("ROCE > 15%", roce is not None and roce > 15),
+        _check(f"ROE > 18%, not visibly declining vs {roe_avg_label}", roe is not None and roe > PROFITABILITY.ROE_QUALITY_COMPOUNDER_MIN_PCT and (roe_avg is None or roe >= roe_avg * 0.8)),
+        _check("ROCE > 15%", roce is not None and roce > PROFITABILITY.ROCE_QUALITY_COMPOUNDER_MIN_PCT),
         _check("Profit growing both 3Y and 5Y", profit_3y is not None and profit_3y > 0 and (profit_5y is None or profit_5y > 0)),
         # Growth
-        _check("Sales growth > 12% (3Y)", sales_3y is not None and sales_3y > 12),
-        _check("Profit growth > 12% (3Y)", profit_3y is not None and profit_3y > 12),
+        _check("Sales growth > 12% (3Y)", sales_3y is not None and sales_3y > GROWTH.SALES_GROWTH_3Y_QUALITY_COMPOUNDER_MIN_PCT),
+        _check("Profit growth > 12% (3Y)", profit_3y is not None and profit_3y > GROWTH.PROFIT_GROWTH_3Y_QUALITY_COMPOUNDER_MIN_PCT),
         # Financial Safety
-        _check("Debt/Equity < 50%", de is not None and de < 50),
-        _check("Interest Coverage > 3x", icr is not None and icr > 3),
-        _check("Operating cash flow positive (latest year)", ocf is not None and ocf > 0),
+        _check("Debt/Equity < 50%", de is not None and de < DEBT_TO_EQUITY.QUALITY_COMPOUNDER_MAX),
+        _check("Interest Coverage > 3x", icr is not None and icr > GOVERNANCE.INTEREST_COVERAGE_MIN),
+        _check("Operating cash flow positive (latest year)", ocf is not None and ocf > CASH_FLOW.OCF_MUST_BE_POSITIVE),
         # Valuation
-        _check("P/E < 35", pe is not None and pe < 35),
-        _check("EV/EBITDA < 20", ev_ebitda is not None and ev_ebitda < 20),
+        _check("P/E < 35", pe is not None and pe < VALUATION.PE_QUALITY_COMPOUNDER_MAX),
+        _check("EV/EBITDA < 20", ev_ebitda is not None and ev_ebitda < VALUATION.EV_EBITDA_QUALITY_COMPOUNDER_MAX),
     ]
 
     if market == "IN":
@@ -55,7 +58,7 @@ def compute_scorecard(stock: dict, market: str = "IN") -> dict:
         # "promoter pledge" concept in US filings at all) — included only
         # for IN rather than silently auto-passing or always-failing them.
         checks.append(_check("Growth accelerating (3Y CAGR > 5Y CAGR)", sales_3y is not None and sales_5y is not None and sales_3y > sales_5y))
-        checks.append(_check("No promoter pledge (latest)", pledge is None or pledge < 1))
+        checks.append(_check("No promoter pledge (latest)", pledge is None or pledge < GOVERNANCE.PROMOTER_PLEDGE_CLEAN_MAX_PCT))
 
     max_score = len(checks)
     score = sum(1 for c in checks if c["passed"])
@@ -71,9 +74,9 @@ def compute_scorecard(stock: dict, market: str = "IN") -> dict:
         red_flags.append("3Y profit growth is negative")
     if ocf is not None and ocf < 0:
         red_flags.append("Negative operating cash flow (latest year)")
-    if market == "IN" and pledge is not None and pledge > 5:
+    if market == "IN" and pledge is not None and pledge > GOVERNANCE.PROMOTER_PLEDGE_RED_FLAG_MIN_PCT:
         red_flags.append(f"Promoter pledge at {pledge:.1f}% (latest)")
-    if de is not None and de > 150:
+    if de is not None and de > DEBT_TO_EQUITY.ELEVATED_PENALTY_MIN:
         red_flags.append(f"High leverage — Debt/Equity {de:.0f}% (latest)")
 
     # Verdict thresholds scale proportionally to max_score (10/12=0.83,
@@ -98,10 +101,10 @@ def compute_scorecard(stock: dict, market: str = "IN") -> dict:
     # "strong_buy" or "watchlist" — never overrides "avoid"/"watch", since
     # the Anti-Loss red-flag check is a hard ceiling by design (see above).
     elite_strong_buy = (
-        roce is not None and roce > 15
-        and de is not None and de < 50
-        and ocf is not None and ocf > 0
-        and sales_3y is not None and sales_3y > 10
+        roce is not None and roce > PROFITABILITY.ROCE_QUALITY_COMPOUNDER_MIN_PCT
+        and de is not None and de < DEBT_TO_EQUITY.QUALITY_COMPOUNDER_MAX
+        and ocf is not None and ocf > CASH_FLOW.OCF_MUST_BE_POSITIVE
+        and sales_3y is not None and sales_3y > GROWTH.SALES_GROWTH_3Y_ELITE_MIN_PCT
     )
     if elite_strong_buy and verdict in ("strong_buy", "watchlist"):
         verdict = "elite_strong_buy"
