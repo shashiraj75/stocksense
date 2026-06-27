@@ -17,6 +17,7 @@ These are binding on all future implementation work, not reference material to c
 - [SSDS-000 — StockSense360 System Architecture](SSDS/SSDS-000-StockSense360-System-Architecture.md) — the master architecture document; the single source of truth for how every component of the platform fits together. Read this before designing anything that spans more than one engine or service.
 - [SSDS-001 — Feature Specification Template](SSDS/SSDS-001-Feature-Specification-Template.md) — for any user-facing feature or material behavior change.
 - [SSDS-002 — Sprint Specification Template](SSDS/SSDS-002-Sprint-Specification-Template.md) — for scoping a numbered engineering sprint against the Roadmap.
+- [SSDS-003 — StockSense360 Business Quality Engine](SSDS/SSDS-003-StockSense360-Business-Quality-Engine.md) — full design spec (framework, metrics, sector adaptation, output contract, validation strategy) for the engine answering "is this fundamentally an outstanding business worthy of long-term ownership?" Implementation-ready, not yet built.
 
 ## Glossary
 
