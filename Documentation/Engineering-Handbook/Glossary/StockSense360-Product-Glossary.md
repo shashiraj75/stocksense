@@ -230,11 +230,11 @@ Per this sprint's explicit rule, **no functional code is renamed or modified to 
 - **Related Components:** `Documentation/Engineering-Handbook/SES/`.
 - **Status:** Established — matches existing usage exactly.
 
-### SSDS — StockSense360 Specification & Design Standards
-- **Short Description:** Templates used to scope feature and sprint work before it's built.
+### SSDS — StockSense360 System Design Specifications
+- **Short Description:** The specification family covering both feature/sprint scoping templates and platform-level system design documents (e.g. SSDS-000, the master architecture document).
 - **Primary Owner:** Engineering / Product
 - **Related Components:** `Documentation/Engineering-Handbook/SSDS/`.
-- **Status:** Established. **Validation finding:** this glossary's brief proposed expanding "SSDS" as "StockSense360 **System Design Specifications**." That conflicts with the expansion already published in `Documentation/Engineering-Handbook/README.md` — "StockSense360 **Specification & Design Standards**." **Recommendation: keep "Specification & Design Standards"** as official, since it's already published and more accurately describes the two templates that actually exist (a Feature Spec template and a Sprint Spec template — not "system design" documents specifically). "System Design Specifications" is a non-canonical alternate phrasing; do not use it in new documents.
+- **Status:** Established — **superseding ruling.** This glossary originally recommended "Specification & Design Standards" (the expansion published in `README.md` at the time) over this glossary brief's proposed "System Design Specifications," reasoning that the only two SSDS documents that existed then (SSDS-001, SSDS-002) were scoping templates, not system-design documents. That reasoning no longer holds: the SSDS-000 task that commissioned the platform's master architecture document explicitly designated **"StockSense360 System Design Specifications"** as the official, canonical expansion going forward, and the SSDS family now includes an actual system-design document (SSDS-000) alongside the two templates. **"System Design Specifications" is now official.** "Specification & Design Standards" is the deprecated former name — see the Deprecated/Disallowed table below, and `README.md`, updated in the same change that updated this entry.
 
 ### SEAR — Selection Engine Engineering Audit
 - **Short Description:** The audit format used for deep engineering reviews of a major subsystem (SEAR-001 is the first and so far only instance, covering the Selection Engine).
@@ -259,8 +259,9 @@ A repository-wide search (markdown, Python, TypeScript) was run for every propos
 | "AI Research Analyst" (proposed) — no corresponding separate code component found; behavior already named "Explainability" in SEAR-001 | **Explainability** is the established term for the capability; "AI Research Analyst" reserved for a possible future literal analyst-persona module. |
 | "Risk Engine" (proposed) — found two existing, *different* numbers (`risk_management_score` vs. `risk_penalty`) that both relate to "risk" | Kept as two distinct terms — **Risk Score** (`risk_management_score`) and **Risk Penalty** (`risk_penalty`) — rather than unifying them under one glossary entry without an actual code unification. |
 | "Business Quality Engine" listed twice in the glossary brief with two different descriptions | Merged into one canonical entry (see above). |
-| SSDS expansion: "System Design Specifications" (this brief) vs. "Specification & Design Standards" (already published) | Kept the already-published expansion. |
-| SEAR expansion: "StockSense360 Engineering Audit Report" (this brief) vs. "Selection Engine Engineering Audit" (already published) | Kept the already-published expansion. |
+| SSDS expansion: "System Design Specifications" (this glossary's original brief) vs. "Specification & Design Standards" (published at the time) | **Superseded.** The SSDS-000 commissioning task explicitly designated "StockSense360 System Design Specifications" as canonical going forward, now that the SSDS family includes an actual system-design document (SSDS-000) and not just scoping templates. "Specification & Design Standards" is now the deprecated former name. |
+| SEAR expansion: "StockSense360 Engineering Audit Report" (this brief) vs. "Selection Engine Engineering Audit" (already published) | Kept the already-published expansion — reconfirmed as canonical by the SSDS-000 commissioning task. |
+| "Daily Picks Engine" (proposed by the SSDS-000 task's Core Engine list) vs. "Daily Picks" (this glossary's existing Platform Feature entry) | The underlying pipeline (`daily_picks.py`) is part of the already-established **Selection Engine**, not a separate "Daily Picks Engine." **Daily Picks** remains the name for the user-facing feature/output. See SSDS-000 §11 for the full reasoning. |
 | "Portfolio Copilot," "Macro Intelligence Engine," "Risk Engine," "Technical/Fundamental/News & Sentiment Engine" (suffix), "Valuation Score" | No existing conflicting usage found anywhere in the repository — adopted as proposed, with status noted per entry above. |
 
 ### Deprecated / Disallowed Names
@@ -272,8 +273,9 @@ A repository-wide search (markdown, Python, TypeScript) was run for every propos
 | Watchlists (as the feature name) | Watchlist | Matches the live route/table name. |
 | Screeners (as the feature name) | Screener | Matches the live route name. |
 | "StockSense" (outside the out-of-scope list in SES-005 §6) | StockSense360 | Per SES-005. |
-| "StockSense360 System Design Specifications" (as the SSDS expansion) | StockSense360 Specification & Design Standards | Matches the already-published expansion. |
+| StockSense360 Specification & Design Standards (former SSDS expansion) | StockSense360 System Design Specifications | Superseded by the SSDS-000 commissioning task's explicit canonical-naming directive. |
 | "StockSense360 Engineering Audit Report" (as the SEAR expansion) | Selection Engine Engineering Audit | Matches the already-published expansion and accurately scopes it to the Selection Engine. |
+| "Daily Picks Engine" | Selection Engine (pipeline) / Daily Picks (feature) | Avoids a third name for a pipeline that already has an established umbrella term, while keeping "Daily Picks" for the user-facing feature. |
 
 ### Files Identified for Future Migration (not changed in this sprint)
 

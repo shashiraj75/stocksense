@@ -12,10 +12,9 @@ These are binding on all future implementation work, not reference material to c
 - [SES-004 — Documentation Standards](SES/SES-004-Documentation-Standards.md) — where documents live, what every audit/sprint-report/roadmap must contain.
 - [SES-005 — StockSense360 Branding Standard](SES/SES-005-StockSense360-Branding-Standard.md) — official product name, approved naming conventions, what's explicitly out of scope to rename.
 
-## Specification Templates
+## System Design Specifications (SSDS)
 
-Use these to scope work *before* implementation starts.
-
+- [SSDS-000 — StockSense360 System Architecture](SSDS/SSDS-000-StockSense360-System-Architecture.md) — the master architecture document; the single source of truth for how every component of the platform fits together. Read this before designing anything that spans more than one engine or service.
 - [SSDS-001 — Feature Specification Template](SSDS/SSDS-001-Feature-Specification-Template.md) — for any user-facing feature or material behavior change.
 - [SSDS-002 — Sprint Specification Template](SSDS/SSDS-002-Sprint-Specification-Template.md) — for scoping a numbered engineering sprint against the Roadmap.
 
@@ -45,6 +44,6 @@ Use these to scope work *before* implementation starts.
 
 1. Before starting any implementation task, read SES-001–005 if you haven't already internalized them this session.
 2. Check the [Product Glossary](Glossary/StockSense360-Product-Glossary.md) before naming any engine, score, or feature — use the name it specifies, don't invent a new one.
-3. Before starting a feature or a sprint, fill out the matching SSDS template.
+3. For anything spanning more than one engine or service, read [SSDS-000](SSDS/SSDS-000-StockSense360-System-Architecture.md) first. Before starting a feature or a sprint, fill out the matching SSDS-001/002 template.
 4. While working, follow the relevant SES standard for the kind of change you're making.
 5. When you finish a sprint, write its report under `Releases/` per SES-004 §3, and update this INDEX if you added a new governing document.
