@@ -24,11 +24,14 @@ by this number and pick the top BUY signals.
 Falls back to IC-weighted combined_alpha when training data < 100 rows.
 """
 
+import logging
 import os
 import pickle
 import threading
 
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 _MODEL_DIR = os.path.dirname(__file__)
 _lock = threading.Lock()
@@ -79,7 +82,7 @@ def train(horizon: str, market: str = "IN") -> bool:
 
         data = get_training_data(horizon, market=market)
         if len(data) < MIN_ROWS:
-            print(f"[meta_model] {market}/{horizon}: only {len(data)} rows (need {MIN_ROWS}) — skipping")
+            log.info(f"[meta_model] {market}/{horizon}: only {len(data)} rows (need {MIN_ROWS}) — skipping")
             return False
 
         X, y = [], []
@@ -124,11 +127,11 @@ def train(horizon: str, market: str = "IN") -> bool:
                 xgb.fit(X_arr, y_arr)
                 best_model = xgb
                 best_rmse  = xgb_rmse
-                print(f"[meta_model] {market}/{horizon}: XGBoost wins (RMSE {xgb_rmse:.4f} vs Ridge {ridge_cv**0.5:.4f})")
+                log.info(f"[meta_model] {market}/{horizon}: XGBoost wins (RMSE {xgb_rmse:.4f} vs Ridge {ridge_cv**0.5:.4f})")
             else:
-                print(f"[meta_model] {market}/{horizon}: Ridge wins (RMSE {best_rmse:.4f})")
+                log.info(f"[meta_model] {market}/{horizon}: Ridge wins (RMSE {best_rmse:.4f})")
         except ImportError:
-            print(f"[meta_model] {market}/{horizon}: Ridge trained (RMSE {best_rmse:.4f}), xgboost not installed")
+            log.info(f"[meta_model] {market}/{horizon}: Ridge trained (RMSE {best_rmse:.4f}), xgboost not installed")
 
         with open(_model_path(horizon, market), "wb") as f:
             pickle.dump(best_model, f)
@@ -136,11 +139,11 @@ def train(horizon: str, market: str = "IN") -> bool:
         with _lock:
             _cache[f"{market}:{horizon}"] = best_model
 
-        print(f"[meta_model] {market}/{horizon}: model saved ({len(X)} rows)")
+        log.info(f"[meta_model] {market}/{horizon}: model saved ({len(X)} rows)")
         return True
 
     except Exception as e:
-        print(f"[meta_model] Training error ({market}/{horizon}): {e}")
+        log.warning(f"[meta_model] Training error ({market}/{horizon}): {e}")
         return False
 
 
@@ -174,7 +177,7 @@ def predict(tech_z: float, fund_z: float, sentiment_z: float,
         ).reshape(1, -1)
         return float(model.predict(fv)[0])
     except Exception as e:
-        print(f"[meta_model] Predict error: {e}")
+        log.warning(f"[meta_model] Predict error: {e}")
         return None
 
 

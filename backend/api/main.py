@@ -2,11 +2,17 @@ import os
 import sys
 import asyncio
 import importlib
+import logging
 from contextlib import asynccontextmanager
+
+from services.logging_config import configure_logging
+configure_logging()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from api.routers import stocks, predictions, news, screener, watchlist, backtest, picks, validation, paper_trading, alerts, auth, feedback, portfolio, multibagger
+
+log = logging.getLogger(__name__)
 
 REFRESH_INTERVAL_SECONDS = 7 * 24 * 3600  # weekly
 
@@ -22,7 +28,7 @@ async def _refresh_universe():
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _do_refresh)
     except Exception as e:
-        print(f"[universe] Background refresh error: {e}")
+        log.warning(f"[universe] Background refresh error: {e}")
 
 
 def _do_refresh():
@@ -35,18 +41,18 @@ def _do_refresh():
             # Reload the universe module so the new data is live immediately
             import services.stock_universe as univ
             importlib.reload(univ)
-            print("[universe] Reload complete — search list is up to date.")
+            log.info("[universe] Reload complete — search list is up to date.")
     except Exception as e:
-        print(f"[universe] Refresh failed (existing list still active): {e}")
+        log.warning(f"[universe] Refresh failed (existing list still active): {e}")
 
 
 async def _weekly_refresh_loop():
     """Background task: refresh once on startup, then every 7 days."""
     await asyncio.sleep(30)          # let server fully start first
     while True:
-        print("[universe] Starting scheduled refresh …")
+        log.info("[universe] Starting scheduled refresh …")
         await _refresh_universe()
-        print(f"[universe] Next refresh in {REFRESH_INTERVAL_SECONDS // 3600}h.")
+        log.info(f"[universe] Next refresh in {REFRESH_INTERVAL_SECONDS // 3600}h.")
         await asyncio.sleep(REFRESH_INTERVAL_SECONDS)
 
 
@@ -74,9 +80,9 @@ async def _keepalive_loop():
                 stderr=asyncio.subprocess.DEVNULL,
             )
             await proc.wait()
-            print(f"[keepalive] pinged {url}")
+            log.info(f"[keepalive] pinged {url}")
         except Exception as e:
-            print(f"[keepalive] ping failed: {e}")
+            log.warning(f"[keepalive] ping failed: {e}")
         await asyncio.sleep(14 * 60)
 
 
@@ -93,9 +99,9 @@ async def _yfinance_crumb_loop():
                     yf.utils.get_crumb(force=True)
                 yf.Ticker("RELIANCE.NS").fast_info  # warm with an IN ticker too
             await loop.run_in_executor(None, _do)
-            print("[crumb] yfinance session refreshed")
+            log.info("[crumb] yfinance session refreshed")
         except Exception as e:
-            print(f"[crumb] refresh failed (non-fatal): {e}")
+            log.warning(f"[crumb] refresh failed (non-fatal): {e}")
         await asyncio.sleep(40 * 60)
 
 
@@ -108,7 +114,7 @@ async def _outcome_resolver_loop():
             from services.alpha_engine.outcome_logger import resolve_pending_outcomes
             await loop.run_in_executor(None, resolve_pending_outcomes)
         except Exception as e:
-            print(f"[outcome_resolver] error: {e}")
+            log.warning(f"[outcome_resolver] error: {e}")
         await asyncio.sleep(6 * 3600)
 
 
@@ -121,7 +127,7 @@ async def _paper_trade_notify_loop():
             from services.trade_notifier import check_and_notify
             await loop.run_in_executor(None, check_and_notify)
         except Exception as e:
-            print(f"[trade_notifier] error: {e}")
+            log.warning(f"[trade_notifier] error: {e}")
         await asyncio.sleep(15 * 60)  # every 15 minutes
 
 
@@ -142,7 +148,7 @@ async def _us_movers_refresh_loop():
             from services.screener_service import refresh_us_movers_cache
             await loop.run_in_executor(None, refresh_us_movers_cache)
         except Exception as e:
-            print(f"[us_movers_refresh] error: {e}")
+            log.warning(f"[us_movers_refresh] error: {e}")
         await asyncio.sleep(3 * 60)  # every 3 min — ahead of the 2-5 min movers cache TTL
 
 
@@ -168,7 +174,7 @@ async def _price_alerts_check_loop():
                 from services.price_alert_notifier import check_and_notify
                 await loop.run_in_executor(None, check_and_notify)
             except Exception as e:
-                print(f"[price_alerts] error: {e}")
+                log.warning(f"[price_alerts] error: {e}")
         await asyncio.sleep(90)  # every 90s — far more responsive than email needs to be, still cheap
 
 
@@ -182,7 +188,7 @@ async def _validation_schedule_loop():
     """
     from datetime import datetime, timezone, timedelta
     await asyncio.sleep(180)  # let server fully settle first
-    print("[validation_scheduler] started")
+    log.info("[validation_scheduler] started")
     IST = timezone(timedelta(hours=5, minutes=30))
     TARGET_HOUR = 6  # 6:00 AM IST
 
@@ -194,7 +200,7 @@ async def _validation_schedule_loop():
             if now_ist >= next_run:
                 next_run += timedelta(days=1)
             sleep_secs = (next_run - now_ist).total_seconds()
-            print(f"[validation_scheduler] next medium run at {next_run.isoformat()} IST (in {sleep_secs/3600:.1f}h)")
+            log.info(f"[validation_scheduler] next medium run at {next_run.isoformat()} IST (in {sleep_secs/3600:.1f}h)")
             await asyncio.sleep(sleep_secs)
 
             # Run medium validation for all three universes — staggered by 5 min each
@@ -202,26 +208,26 @@ async def _validation_schedule_loop():
             loop = asyncio.get_event_loop()
             for univ in ("nifty100", "midcap", "us"):
                 try:
-                    print(f"[validation_scheduler] starting medium/{univ} run…")
+                    log.info(f"[validation_scheduler] starting medium/{univ} run…")
                     await loop.run_in_executor(None, lambda u=univ: run_validation(horizon="medium", universe=u))
-                    print(f"[validation_scheduler] medium/{univ} complete")
+                    log.info(f"[validation_scheduler] medium/{univ} complete")
                 except Exception as e:
-                    print(f"[validation_scheduler] medium/{univ} error: {e}")
+                    log.warning(f"[validation_scheduler] medium/{univ} error: {e}")
                 await asyncio.sleep(5 * 60)  # 5-min gap between universe runs
 
             # Run long only on Sundays (weekday 6) — all three universes
             if datetime.now(IST).weekday() == 6:
                 for univ in ("nifty100", "midcap", "us"):
                     try:
-                        print(f"[validation_scheduler] Sunday — starting long/{univ} run…")
+                        log.info(f"[validation_scheduler] Sunday — starting long/{univ} run…")
                         await loop.run_in_executor(None, lambda u=univ: run_validation(horizon="long", universe=u))
-                        print(f"[validation_scheduler] long/{univ} complete")
+                        log.info(f"[validation_scheduler] long/{univ} complete")
                     except Exception as e:
-                        print(f"[validation_scheduler] long/{univ} error: {e}")
+                        log.warning(f"[validation_scheduler] long/{univ} error: {e}")
                     await asyncio.sleep(5 * 60)
 
         except Exception as e:
-            print(f"[validation_scheduler] scheduler error: {e}")
+            log.warning(f"[validation_scheduler] scheduler error: {e}")
             await asyncio.sleep(3600)  # back off 1h on unexpected error
 
 
@@ -241,7 +247,7 @@ async def _warmup_loop():
         ("HDFCBANK", "IN", "medium"), ("INFY",     "IN", "medium"),
         ("AAPL",     "US", "medium"), ("MSFT",     "US", "medium"),
     ]
-    print(f"[warmup] Pre-warming {len(warmup)} stocks…")
+    log.info(f"[warmup] Pre-warming {len(warmup)} stocks…")
     for sym, mkt, horizon in warmup:
         key = f"{sym}:{mkt}:{horizon}"
         if (_pred_cache.get(key) and (time.time() - _pred_cache[key][0]) < _PRED_TTL) or key in _computing:
@@ -249,9 +255,9 @@ async def _warmup_loop():
         _computing.add(key)
         t = threading.Thread(target=_bg_thread, args=(sym, mkt, horizon, key), daemon=True)
         t.start()
-        print(f"[warmup] kicked off {key}")
+        log.info(f"[warmup] kicked off {key}")
         await asyncio.sleep(45)  # stagger launches — don't hammer Yahoo all at once
-    print("[warmup] Pre-warm triggered.")
+    log.info("[warmup] Pre-warm triggered.")
 
 
 @asynccontextmanager
@@ -260,15 +266,15 @@ async def lifespan(app: FastAPI):
         try:
             from services.postgres_store import init_db
             init_db()
-            print("[startup] Postgres schema initialized")
+            log.info("[startup] Postgres schema initialized")
         except Exception as e:
-            print(f"[startup] Postgres init failed: {e}")
+            log.warning(f"[startup] Postgres init failed: {e}")
         try:
             from services.validation_engine import init_db as init_validation_db
             init_validation_db()
-            print("[startup] Validation schema initialized")
+            log.info("[startup] Validation schema initialized")
         except Exception as e:
-            print(f"[startup] Validation schema init failed: {e}")
+            log.warning(f"[startup] Validation schema init failed: {e}")
     # Force yfinance crumb refresh so cloud IP starts with a valid session
     try:
         import yfinance as yf
@@ -279,12 +285,12 @@ async def lifespan(app: FastAPI):
                     yf.utils.get_crumb(force=True)
                 yf.Ticker("AAPL").fast_info
                 yf.Ticker("RELIANCE.NS").fast_info   # warm Indian session too
-                print("[startup] yfinance session initialised")
+                log.info("[startup] yfinance session initialised")
             except Exception as e:
-                print(f"[startup] yfinance crumb refresh failed (non-fatal): {e}")
+                log.warning(f"[startup] yfinance crumb refresh failed (non-fatal): {e}")
         await asyncio.wait_for(loop.run_in_executor(None, _refresh_crumb), timeout=15.0)
     except asyncio.TimeoutError:
-        print("[startup] yfinance init timed out after 15s — continuing without pre-warm")
+        log.warning("[startup] yfinance init timed out after 15s — continuing without pre-warm")
     # Warm NSE session (non-blocking — homepage may return 403 on Render, that's ok)
     try:
         from services import nse_client
@@ -295,18 +301,18 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     except Exception as e:
-        print(f"[startup] yfinance init error: {e}")
+        log.warning(f"[startup] yfinance init error: {e}")
 
     # Pre-login to screener.in so first stock request is already authenticated
     try:
         from services.screener_data import _login
         loop = asyncio.get_running_loop()
         result = await asyncio.wait_for(loop.run_in_executor(None, _login), timeout=15.0)
-        print(f"[startup] screener.in login {'succeeded' if result else 'failed (check SCREENER_EMAIL/SCREENER_PASSWORD)'}")
+        log.warning(f"[startup] screener.in login {'succeeded' if result else 'failed (check SCREENER_EMAIL/SCREENER_PASSWORD)'}")
     except asyncio.TimeoutError:
-        print("[startup] screener.in login timed out after 15s — will retry on first request")
+        log.warning("[startup] screener.in login timed out after 15s — will retry on first request")
     except Exception as e:
-        print(f"[startup] screener.in login error: {e}")
+        log.warning(f"[startup] screener.in login error: {e}")
 
     # Pre-warm movers cache so dashboard is never blank on first load
     try:
@@ -323,15 +329,15 @@ async def lifespan(app: FastAPI):
                     import time as _t
                     _movers_cache["IN"] = (_t.time(), resp)
                     _last_good_movers["IN"] = resp
-                    print(f"[startup] movers pre-warm: {len(g)} gainers, {len(l)} losers")
+                    log.info(f"[startup] movers pre-warm: {len(g)} gainers, {len(l)} losers")
                 else:
-                    print("[startup] movers pre-warm: no data returned")
+                    log.info("[startup] movers pre-warm: no data returned")
             except Exception as e:
-                print(f"[startup] movers pre-warm error: {e}")
+                log.warning(f"[startup] movers pre-warm error: {e}")
 
         await asyncio.wait_for(loop.run_in_executor(None, _warmup_movers), timeout=35.0)
     except Exception as e:
-        print(f"[startup] movers pre-warm failed: {e}")
+        log.warning(f"[startup] movers pre-warm failed: {e}")
 
     # Catch-up picks: if server restarted after a market's scheduled generation
     # time on a market day and today's picks haven't been generated, run them
@@ -345,15 +351,15 @@ async def lifespan(app: FastAPI):
             now = datetime.now(tz)
             trigger_time = now.replace(hour=trigger_hour, minute=0, second=0, microsecond=0)
             if now < trigger_time:
-                print(f"[picks_catchup] [{market}] Before {trigger_hour:02d}:00 local — skipping")
+                log.info(f"[picks_catchup] [{market}] Before {trigger_hour:02d}:00 local — skipping")
                 return
             if now.weekday() >= 5:
-                print(f"[picks_catchup] [{market}] Weekend — skipping picks catchup")
+                log.info(f"[picks_catchup] [{market}] Weekend — skipping picks catchup")
                 return
             from services.daily_picks import picks_generated_today, generate_picks
             import services.daily_picks as _dp
             if picks_generated_today(market):
-                print(f"[picks_catchup] [{market}] Today's picks already exist — skipping")
+                log.info(f"[picks_catchup] [{market}] Today's picks already exist — skipping")
                 return
             # Use the same lock as POST /api/picks/generate so a cron-triggered
             # run and this startup catch-up can't both pass the check and run
@@ -361,18 +367,18 @@ async def lifespan(app: FastAPI):
             # close (see _generating_lock comment in daily_picks.py).
             with _dp._generating_lock:
                 if _dp._generating.get(market, False):
-                    print(f"[picks_catchup] [{market}] Generation already in progress — skipping")
+                    log.info(f"[picks_catchup] [{market}] Generation already in progress — skipping")
                     return
                 _dp._generating[market] = True
-            print(f"[picks_catchup] [{market}] No picks for today — generating now (this takes ~10-20 min)…")
+            log.info(f"[picks_catchup] [{market}] No picks for today — generating now (this takes ~10-20 min)…")
             try:
                 loop2 = asyncio.get_running_loop()
                 await loop2.run_in_executor(None, generate_picks, market)
-                print(f"[picks_catchup] [{market}] picks generation complete")
+                log.info(f"[picks_catchup] [{market}] picks generation complete")
             finally:
                 _dp._generating[market] = False
         except Exception as e:
-            print(f"[picks_catchup] [{market}] error: {e}")
+            log.warning(f"[picks_catchup] [{market}] error: {e}")
             import services.daily_picks as _dp2
             _dp2._generating[market] = False
 
@@ -391,15 +397,15 @@ async def lifespan(app: FastAPI):
             from services.validation_engine import get_last_run_time
             last_run = get_last_run_time("medium")
             if last_run and last_run >= today_6am:
-                print("[catchup] validation already ran today — skipping")
+                log.info("[catchup] validation already ran today — skipping")
                 return
             from services.validation_engine import run_validation
-            print("[catchup] missed today's 6 AM validation — running now…")
+            log.info("[catchup] missed today's 6 AM validation — running now…")
             loop2 = asyncio.get_running_loop()
             await loop2.run_in_executor(None, lambda: run_validation(horizon="medium"))
-            print("[catchup] catch-up validation complete")
+            log.info("[catchup] catch-up validation complete")
         except Exception as e:
-            print(f"[catchup] validation catch-up error: {e}")
+            log.warning(f"[catchup] validation catch-up error: {e}")
 
     task = asyncio.create_task(_weekly_refresh_loop())
     keepalive = asyncio.create_task(_keepalive_loop())

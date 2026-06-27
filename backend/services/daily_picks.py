@@ -14,6 +14,7 @@ Learning Alpha Engine integration:
 """
 
 import json
+import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -23,6 +24,8 @@ import numpy as np
 import yfinance as yf
 
 from services.prediction_engine import PredictionEngine
+
+log = logging.getLogger(__name__)
 
 def _cache_file(market: str) -> str:
     suffix = "" if market == "IN" else f"_{market.lower()}"
@@ -58,7 +61,7 @@ _US_MEGACAP_100 = [
 # 50 × 3 horizons × ~8s = ~20 min — reliable on Render free tier.
 _N_CANDIDATES = int(os.getenv("PICKS_CANDIDATES", 50))
 
-print(f"[picks] Universes: NSE {len(_ALL_NSE_SYMBOLS)} / US {len(_ALL_US_SYMBOLS)} stocks → "
+log.info(f"[picks] Universes: NSE {len(_ALL_NSE_SYMBOLS)} / US {len(_ALL_US_SYMBOLS)} stocks → "
       f"bulk-screen → top {_N_CANDIDATES} candidates for deep prediction")
 
 
@@ -235,10 +238,10 @@ def _get_universe_by_mcap(market: str) -> list[str]:
         syms = [q["symbol"].replace(suffix, "") if suffix else q["symbol"]
                 for q in quotes if q.get("symbol")]
         if syms:
-            print(f"[picks] [{market}] mcap filter {label}: {len(syms)} stocks qualify")
+            log.info(f"[picks] [{market}] mcap filter {label}: {len(syms)} stocks qualify")
             return syms
     except Exception as e:
-        print(f"[picks] [{market}] mcap screener failed ({e}), using full universe")
+        log.warning(f"[picks] [{market}] mcap screener failed ({e}), using full universe")
     return full_universe
 
 
@@ -262,7 +265,7 @@ def _bulk_screen(market: str, n_candidates: int = 50) -> list[str]:
     all_tickers = [s + suffix for s in universe]
     batches = [all_tickers[i:i + _SCREEN_BATCH_SIZE]
                for i in range(0, len(all_tickers), _SCREEN_BATCH_SIZE)]
-    print(f"[picks] [{market}] Phase-0: downloading {len(all_tickers)} tickers "
+    log.info(f"[picks] [{market}] Phase-0: downloading {len(all_tickers)} tickers "
           f"in {len(batches)} batches of {_SCREEN_BATCH_SIZE} …")
     t0 = time.time()
     scores: dict[str, float] = {}
@@ -306,20 +309,20 @@ def _bulk_screen(market: str, n_candidates: int = 50) -> list[str]:
                     continue
 
             del df  # free memory immediately
-            print(f"[picks] [{market}] Phase-0 batch {batch_idx+1}/{len(batches)}: "
+            log.info(f"[picks] [{market}] Phase-0 batch {batch_idx+1}/{len(batches)}: "
                   f"{len(scores)} scored so far")
         except Exception as e:
-            print(f"[picks] [{market}] Phase-0 batch {batch_idx+1} failed: {e}")
+            log.warning(f"[picks] [{market}] Phase-0 batch {batch_idx+1} failed: {e}")
             continue
 
     elapsed = round(time.time() - t0, 1)
     if not scores:
-        print(f"[picks] [{market}] Phase-0: no stocks scored — falling back to anchor list")
+        log.info(f"[picks] [{market}] Phase-0: no stocks scored — falling back to anchor list")
         return list(fallback[:n_candidates])
 
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     top_syms = [sym for sym, _ in ranked[:n_candidates]]
-    print(f"[picks] [{market}] Phase-0 complete in {elapsed}s: {len(scores)} scored, "
+    log.info(f"[picks] [{market}] Phase-0 complete in {elapsed}s: {len(scores)} scored, "
           f"top candidates: {top_syms[:10]} …")
     return top_syms
 
@@ -342,7 +345,7 @@ def _predict_stock(symbol: str, horizon: str, market: str = "IN") -> dict | None
 
         # Hard quality gate — silently skip, but log
         if result.get("signal") == "REJECTED":
-            print(f"[picks] {symbol} REJECTED ({horizon}): {result.get('rejection_reasons', [])}")
+            log.info(f"[picks] {symbol} REJECTED ({horizon}): {result.get('rejection_reasons', [])}")
             return None
 
         reasoning = result.get("reasoning", [])
@@ -401,7 +404,7 @@ def _write_score_snapshots(raw: dict[str, list], market: str = "IN"):
     try:
         from services.postgres_store import log_score_snapshot
     except Exception as e:
-        print(f"[snapshots] postgres_store unavailable: {e}")
+        log.warning(f"[snapshots] postgres_store unavailable: {e}")
         return
 
     snapshot_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -428,8 +431,8 @@ def _write_score_snapshots(raw: dict[str, list], market: str = "IN"):
                 )
                 written += 1
             except Exception as e:
-                print(f"[snapshots] {r.get('symbol')} ({horizon}) failed: {e}")
-    print(f"[snapshots] wrote {written} score snapshots for {snapshot_date}")
+                log.warning(f"[snapshots] {r.get('symbol')} ({horizon}) failed: {e}")
+    log.info(f"[snapshots] wrote {written} score snapshots for {snapshot_date}")
 
 
 def _zscore_and_rank(
@@ -553,7 +556,7 @@ def generate_picks(market: str = "IN") -> dict:
         return _generate_picks_inner(market)
     except Exception as e:
         _last_error[market] = traceback.format_exc()
-        print(f"[picks] [{market}] generate_picks CRASHED: {e}\n{_last_error[market]}")
+        log.error(f"[picks] [{market}] generate_picks CRASHED: {e}\n{_last_error[market]}")
         # Save a minimal payload so the UI shows "no signals today" instead of spinning
         payload = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -600,15 +603,15 @@ def _generate_picks_inner(market: str = "IN") -> dict:
             yf.utils.get_crumb(force=True)
         else:
             yf.download(regime_ticker, period="1d", progress=False, auto_adjust=True)
-        print(f"[picks] [{market}] Yahoo Finance session refreshed.")
+        log.info(f"[picks] [{market}] Yahoo Finance session refreshed.")
     except Exception as e:
-        print(f"[picks] [{market}] Session refresh failed (non-fatal): {e}")
+        log.warning(f"[picks] [{market}] Session refresh failed (non-fatal): {e}")
 
     # ── Phase 0b: Bulk screen the market's stock universe → top N momentum candidates ─
     # One yf.download() call for the full universe (~60s) then rank by
     # composite momentum score. Falls back to an anchor list if download fails.
     candidates = _bulk_screen(market, _N_CANDIDATES)
-    print(f"[picks] [{market}] Starting deep prediction for {len(candidates)} candidates × 3 horizons …")
+    log.info(f"[picks] [{market}] Starting deep prediction for {len(candidates)} candidates × 3 horizons …")
 
     # ── Phase 2: Detect market regime (done once, shared across all stocks) ──
     try:
@@ -619,7 +622,7 @@ def _generate_picks_inner(market: str = "IN") -> dict:
     regime = detect_regime(global_ctx_proxy)
     regime_id    = regime["regime_id"]
     regime_label = regime["label"]
-    print(f"[picks] [{market}] Regime: {regime_label} — {regime['description']}")
+    log.info(f"[picks] [{market}] Regime: {regime_label} — {regime['description']}")
 
     # ── Phase 1: Deep-predict candidates ─────────────────────────────────────
     # max_workers=1 to avoid Yahoo Finance rate-limiting Render's IP.
@@ -632,7 +635,7 @@ def _generate_picks_inner(market: str = "IN") -> dict:
         for future in as_completed(futures):
             done += 1
             if done % 30 == 0:
-                print(f"[picks] [{market}] {done}/{len(tasks)} done …")
+                log.info(f"[picks] [{market}] {done}/{len(tasks)} done …")
             r = future.result()
             if r:
                 raw[r["horizon"]].append(r)
@@ -657,7 +660,7 @@ def _generate_picks_inner(market: str = "IN") -> dict:
             market=market,
             regime_multipliers=regime.get("weight_multipliers"),
         )
-        print(f"[picks] [{market}] {horizon} IC weights: {ic_weights}")
+        log.info(f"[picks] [{market}] {horizon} IC weights: {ic_weights}")
 
         # Phase 4 — Z-score + alpha
         universe = _zscore_and_rank(items, ic_weights, regime, regime_id, market=market)
@@ -675,13 +678,13 @@ def _generate_picks_inner(market: str = "IN") -> dict:
         def _passes_quality_gate(r: dict, hz: str) -> bool:
             conf = r.get("confidence") or 0
             if conf < 25:
-                print(f"[picks] {r['symbol']} ({hz}) filtered: confidence {conf}% < 25%")
+                log.info(f"[picks] {r['symbol']} ({hz}) filtered: confidence {conf}% < 25%")
                 return False
             indicators = {
                 item.get("indicator") for item in r.get("reasoning", []) if isinstance(item, dict)
             }
             if "Risk/Reward" in indicators or "Governance Risk" in indicators:
-                print(f"[picks] {r['symbol']} ({hz}) filtered: unfavorable risk/reward or governance red flag")
+                log.info(f"[picks] {r['symbol']} ({hz}) filtered: unfavorable risk/reward or governance red flag")
                 return False
             if hz == "short":
                 reasons = " ".join(
@@ -689,7 +692,7 @@ def _generate_picks_inner(market: str = "IN") -> dict:
                     for item in r.get("reasoning", [])
                 )
                 if "Overbought" in reasons:
-                    print(f"[picks] {r['symbol']} ({hz}) filtered: overbought RSI in short-term")
+                    log.info(f"[picks] {r['symbol']} ({hz}) filtered: overbought RSI in short-term")
                     return False
             return True
 
@@ -724,7 +727,7 @@ def _generate_picks_inner(market: str = "IN") -> dict:
             "n_buy":       sum(1 for r in universe if r.get("signal") == "BUY"),
             "meta_model":  any(r.get("meta_alpha") is not None for r in top_buy),
         }
-        print(
+        log.info(
             f"[picks] [{market}] {horizon}: {len(universe)} scored, "
             f"{alpha_engine_meta[horizon]['n_buy']} BUY, "
             f"{len(top_buy)} picks | "
@@ -750,12 +753,12 @@ def _generate_picks_inner(market: str = "IN") -> dict:
                     market=market,
                 )
             except Exception as e:
-                print(f"[picks] [{market}] Log error for {pick['symbol']}: {e}")
+                log.warning(f"[picks] [{market}] Log error for {pick['symbol']}: {e}")
 
     elapsed = round(time.time() - start, 1)
     total = sum(len(v) for v in picks.values())
     universe_size = len(_UNIVERSE.get(market, []))
-    print(f"[picks] [{market}] Done in {elapsed}s — {total} BUY picks found across "
+    log.info(f"[picks] [{market}] Done in {elapsed}s — {total} BUY picks found across "
           f"{len(candidates)} candidates from {universe_size} stocks.")
 
     payload = {
@@ -774,23 +777,23 @@ def _generate_picks_inner(market: str = "IN") -> dict:
         with open(_cache_file(market), "w") as f:
             json.dump(payload, f)
     except Exception as e:
-        print(f"[picks] [{market}] Disk cache write failed: {e}")
+        log.warning(f"[picks] [{market}] Disk cache write failed: {e}")
 
     # Save to Postgres (survives redeploys)
     if os.getenv("USE_POSTGRES") == "1":
         try:
             from services.postgres_store import save_picks_to_db
             save_picks_to_db(payload, market=market)
-            print(f"[picks] [{market}] Saved to Postgres.")
+            log.info(f"[picks] [{market}] Saved to Postgres.")
         except Exception as e:
-            print(f"[picks] [{market}] Postgres save failed: {e}")
+            log.warning(f"[picks] [{market}] Postgres save failed: {e}")
 
     # ── Phase 8: Adapt weights in background ─────────────────────────────────
     try:
         import threading
         threading.Thread(target=run_adaptation, args=(market,), daemon=True).start()
     except Exception as e:
-        print(f"[weight_adapter] Could not start: {e}")
+        log.info(f"[weight_adapter] Could not start: {e}")
 
     # Send to Telegram if configured (IN only — channel is India-focused)
     if market == "IN":
@@ -798,7 +801,7 @@ def _generate_picks_inner(market: str = "IN") -> dict:
             from services.telegram_bot import send_picks_to_telegram
             send_picks_to_telegram(picks)
         except Exception as e:
-            print(f"[telegram] Error: {e}")
+            log.warning(f"[telegram] Error: {e}")
 
     return payload
 
@@ -816,7 +819,7 @@ def get_cached_picks(market: str = "IN") -> dict | None:
             if data:
                 return data
         except Exception as e:
-            print(f"[picks] [{market}] Postgres load failed, falling back to disk: {e}")
+            log.warning(f"[picks] [{market}] Postgres load failed, falling back to disk: {e}")
 
     # Disk fallback
     try:
