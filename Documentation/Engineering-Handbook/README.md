@@ -9,6 +9,8 @@ This handbook is the governing reference for how engineering work on StockSense3
 
 These two folders are not optional reading — they are the standard every audit, sprint, feature, and test in this repository is expected to be held to from this point forward.
 
+- **`Glossary/`** — [the StockSense360 Product Glossary](Glossary/StockSense360-Product-Glossary.md): the canonical name for every engine, score, and feature. Check it before naming anything new.
+
 ## What else lives here
 
 - **`Architecture/`** — system-level design and engineering audits, starting with SEAR-001 (the Selection Engine audit that the current Roadmap and most of the SES standards are derived from).

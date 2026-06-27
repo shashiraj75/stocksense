@@ -19,6 +19,10 @@ Use these to scope work *before* implementation starts.
 - [SSDS-001 — Feature Specification Template](SSDS/SSDS-001-Feature-Specification-Template.md) — for any user-facing feature or material behavior change.
 - [SSDS-002 — Sprint Specification Template](SSDS/SSDS-002-Sprint-Specification-Template.md) — for scoping a numbered engineering sprint against the Roadmap.
 
+## Glossary
+
+- [StockSense360 Product Glossary](Glossary/StockSense360-Product-Glossary.md) — the canonical name for every engine, score, and feature across the platform. No future document should invent an alternative name for a concept already named there.
+
 ## Engineering Audits
 
 - [SEAR-001 — Selection Engine Engineering Audit](Architecture/Sprint-001-Selection-Engine-Audit.md) — the founding audit; source of the Roadmap's phases and most named risks/gaps referenced throughout the standards above.
@@ -39,7 +43,8 @@ Use these to scope work *before* implementation starts.
 
 ## How to use this handbook
 
-1. Before starting any implementation task, read SES-001–004 if you haven't already internalized them this session.
-2. Before starting a feature or a sprint, fill out the matching SSDS template.
-3. While working, follow the relevant SES standard for the kind of change you're making.
-4. When you finish a sprint, write its report under `Releases/` per SES-004 §3, and update this INDEX if you added a new governing document.
+1. Before starting any implementation task, read SES-001–005 if you haven't already internalized them this session.
+2. Check the [Product Glossary](Glossary/StockSense360-Product-Glossary.md) before naming any engine, score, or feature — use the name it specifies, don't invent a new one.
+3. Before starting a feature or a sprint, fill out the matching SSDS template.
+4. While working, follow the relevant SES standard for the kind of change you're making.
+5. When you finish a sprint, write its report under `Releases/` per SES-004 §3, and update this INDEX if you added a new governing document.
