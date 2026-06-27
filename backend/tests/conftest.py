@@ -14,9 +14,136 @@ dicts from scratch in individual test files.
 import os
 import sys
 
+import pandas as pd
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+class MockTicker:
+    """
+    A yfinance.Ticker stand-in for tests that exercise functions reading
+    ticker.financials / .balance_sheet / .cashflow / .dividends / .actions
+    (quality_factors.py's buffett_munger_score, quality_metrics_score,
+    corporate_actions_score, and business_quality_engine.py's new metric
+    helpers all take a `ticker` object rather than raw DataFrames, mirroring
+    the real yfinance.Ticker interface).
+
+    Every attribute defaults to an empty DataFrame/Series so a test that
+    doesn't care about financial-statement history (e.g. testing the
+    REJECTED/insufficient-data path) doesn't need to construct one — the
+    functions under test already have defensive `if df.empty` guards for
+    exactly this case (confirmed by reading their source before writing
+    these fixtures, not assumed).
+    """
+
+    def __init__(self, financials=None, balance_sheet=None, cashflow=None,
+                 dividends=None, actions=None):
+        self.financials = financials if financials is not None else pd.DataFrame()
+        self.balance_sheet = balance_sheet if balance_sheet is not None else pd.DataFrame()
+        self.cashflow = cashflow if cashflow is not None else pd.DataFrame()
+        self.dividends = dividends if dividends is not None else pd.Series(dtype=float)
+        self.actions = actions if actions is not None else pd.DataFrame()
+
+
+@pytest.fixture
+def mock_ticker() -> MockTicker:
+    """An empty MockTicker — the "recent IPO / incomplete statements" case."""
+    return MockTicker()
+
+
+@pytest.fixture
+def mock_ticker_two_year_financials() -> MockTicker:
+    """A MockTicker with 2 full years of financials/balance_sheet/cashflow,
+    populated with internally-consistent, healthy-business figures —
+    enough data for quality_metrics_score's Piotroski checks, the Beneish
+    M-Score's 8 variables, and the standalone asset-turnover/working-
+    capital checks to all compute a real (non-None) value, so tests can
+    assert on actual numbers rather than just "didn't crash"."""
+    cols = pd.to_datetime(["2023-12-31", "2024-12-31"])
+
+    financials = pd.DataFrame({
+        cols[0]: {
+            "Total Revenue": 1_000_000_000,
+            "Cost Of Revenue": 600_000_000,
+            "Net Income": 150_000_000,
+            "Selling General And Administration": 100_000_000,
+            "Depreciation And Amortization": 40_000_000,
+            "Diluted Average Shares": 100_000_000,
+        },
+        cols[1]: {
+            "Total Revenue": 1_100_000_000,
+            "Cost Of Revenue": 640_000_000,
+            "Net Income": 170_000_000,
+            "Selling General And Administration": 105_000_000,
+            "Depreciation And Amortization": 42_000_000,
+            "Diluted Average Shares": 100_000_000,
+        },
+    })
+    balance_sheet = pd.DataFrame({
+        cols[0]: {
+            "Total Assets": 2_000_000_000,
+            "Current Assets": 700_000_000,
+            "Total Current Assets": 700_000_000,
+            "Current Liabilities": 400_000_000,
+            "Total Current Liabilities": 400_000_000,
+            "Net PPE": 600_000_000,
+            "Property Plant And Equipment Net": 600_000_000,
+            "Long Term Debt": 300_000_000,
+            "Receivables": 120_000_000,
+            "Accounts Receivable": 120_000_000,
+            "Net Receivables": 120_000_000,
+            "Ordinary Shares Number": 100_000_000,
+        },
+        cols[1]: {
+            "Total Assets": 2_150_000_000,
+            "Current Assets": 740_000_000,
+            "Total Current Assets": 740_000_000,
+            "Current Liabilities": 380_000_000,
+            "Total Current Liabilities": 380_000_000,
+            "Net PPE": 630_000_000,
+            "Property Plant And Equipment Net": 630_000_000,
+            "Long Term Debt": 280_000_000,
+            "Receivables": 125_000_000,
+            "Accounts Receivable": 125_000_000,
+            "Net Receivables": 125_000_000,
+            "Ordinary Shares Number": 100_000_000,
+        },
+    })
+    cashflow = pd.DataFrame({
+        cols[0]: {
+            "Operating Cash Flow": 180_000_000,
+            "Cash From Operations": 180_000_000,
+            "Repurchase Of Capital Stock": -20_000_000,
+        },
+        cols[1]: {
+            "Operating Cash Flow": 200_000_000,
+            "Cash From Operations": 200_000_000,
+            "Repurchase Of Capital Stock": -25_000_000,
+        },
+    })
+    dividends = pd.Series(
+        [1.0, 1.05, 1.10, 1.15, 1.20],
+        index=pd.to_datetime(["2020-06-01", "2021-06-01", "2022-06-01", "2023-06-01", "2024-06-01"]),
+    )
+    return MockTicker(financials=financials, balance_sheet=balance_sheet,
+                       cashflow=cashflow, dividends=dividends)
+
+
+@pytest.fixture
+def business_quality_info(base_info) -> dict:
+    """Extends base_info with the additional fields business_quality_engine.py
+    reads that aren't part of the original base_info fixture (margins, net
+    income, total revenue, payout ratio)."""
+    info = dict(base_info)
+    info.update({
+        "netIncome": 170_000_000,
+        "totalRevenue": 1_100_000_000,
+        "grossMargins": 0.42,
+        "operatingMargins": 0.25,
+        "payoutRatio": 0.30,
+    })
+    return info
 
 
 @pytest.fixture
