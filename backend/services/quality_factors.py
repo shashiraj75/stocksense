@@ -940,6 +940,27 @@ def quality_metrics_score(ticker, df: pd.DataFrame, info: dict) -> dict:
 
 # ── Altman Z-Score ────────────────────────────────────────────────────────────
 
+def _latest_statement_value(statement, *labels) -> float | None:
+    """
+    Generic "latest column, first matching row label" lookup across a
+    yfinance financials/balance_sheet DataFrame. Shared by every fallback
+    below — kept as one small helper rather than four copies of the same
+    try/except/sort_index boilerplate.
+    """
+    if statement is None or statement.empty:
+        return None
+    try:
+        sorted_statement = statement.sort_index(axis=1)
+        for label in labels:
+            if label in sorted_statement.index:
+                row = sorted_statement.loc[label].dropna()
+                if not row.empty:
+                    return float(row.sort_index().values[-1])
+        return None
+    except Exception:
+        return None
+
+
 def _total_assets_fallback(ticker) -> float | None:
     """
     Calibration fix (Business Quality Engine Production Readiness
@@ -957,16 +978,50 @@ def _total_assets_fallback(ticker) -> float | None:
     """
     if ticker is None:
         return None
-    try:
-        bs = ticker.balance_sheet
-        if bs is None or bs.empty or "Total Assets" not in bs.index:
-            return None
-        row = bs.sort_index(axis=1).loc["Total Assets"].dropna()
-        if row.empty:
-            return None
-        return float(row.sort_index().values[-1])
-    except Exception:
+    return _latest_statement_value(ticker.balance_sheet, "Total Assets")
+
+
+def _working_capital_fallback(ticker) -> float | None:
+    """
+    Follow-up calibration fix (HON/ORCL false-positive hard-rejection
+    investigation, Sprint #004a follow-up): info.get("workingCapital"),
+    .get("currentAssets"), and .get("currentLiabilities") are — like
+    totalAssets — never populated by yfinance's .info dict. The
+    Sprint #004a fix only added a fallback for totalAssets, leaving
+    X1 (Working Capital / Total Assets) silently zeroed for every real
+    company. Confirmed live: ticker.balance_sheet has a direct
+    "Working Capital" row for both HON and ORCL (and falls back to
+    Current Assets - Current Liabilities if that exact row is absent).
+    """
+    if ticker is None:
         return None
+    bs = ticker.balance_sheet
+    direct = _latest_statement_value(bs, "Working Capital")
+    if direct is not None:
+        return direct
+    curr_assets = _latest_statement_value(bs, "Current Assets", "Total Current Assets")
+    curr_liab = _latest_statement_value(bs, "Current Liabilities", "Total Current Liabilities")
+    if curr_assets is not None and curr_liab is not None:
+        return curr_assets - curr_liab
+    return None
+
+
+def _retained_earnings_fallback(ticker) -> float | None:
+    """Same fallback pattern, for X2 (Retained Earnings / Total Assets) —
+    confirmed live: ticker.balance_sheet has a "Retained Earnings" row
+    for both HON and ORCL."""
+    if ticker is None:
+        return None
+    return _latest_statement_value(ticker.balance_sheet, "Retained Earnings")
+
+
+def _ebit_fallback(ticker) -> float | None:
+    """Same fallback pattern, for X3 (EBIT / Total Assets) — confirmed
+    live: ticker.financials has both "EBIT" and "Operating Income" rows
+    for both HON and ORCL."""
+    if ticker is None:
+        return None
+    return _latest_statement_value(ticker.financials, "EBIT", "Operating Income")
 
 
 def altman_zscore_signal(info: dict, ticker=None) -> dict:
@@ -992,9 +1047,9 @@ def altman_zscore_signal(info: dict, ticker=None) -> dict:
 
     try:
         total_assets     = info.get("totalAssets") or _total_assets_fallback(ticker)
-        working_capital  = info.get("workingCapital")
-        retained_earn    = info.get("retainedEarnings")
-        ebit             = info.get("ebit") or info.get("operatingIncome")
+        working_capital  = info.get("workingCapital") if info.get("workingCapital") is not None else _working_capital_fallback(ticker)
+        retained_earn    = info.get("retainedEarnings") if info.get("retainedEarnings") is not None else _retained_earnings_fallback(ticker)
+        ebit             = info.get("ebit") or info.get("operatingIncome") or _ebit_fallback(ticker)
         market_cap       = info.get("marketCap")
         total_debt       = info.get("totalDebt") or 0
         total_revenue    = info.get("totalRevenue")
