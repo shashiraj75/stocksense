@@ -12,7 +12,7 @@ deliberately implemented as latest-snapshot checks instead, and labelled as
 such in the reason text — they are NOT claiming a trend we can't see.
 """
 
-from services.thresholds import DEBT_TO_EQUITY, PROFITABILITY, GROWTH, VALUATION, GOVERNANCE, CASH_FLOW
+from services.thresholds import DEBT_TO_EQUITY, PROFITABILITY, GROWTH, VALUATION, GOVERNANCE, CASH_FLOW, BUSINESS_QUALITY
 
 
 def _check(label: str, passed: bool) -> dict:
@@ -79,6 +79,19 @@ def compute_scorecard(stock: dict, market: str = "IN") -> dict:
     if de is not None and de > DEBT_TO_EQUITY.ELEVATED_PENALTY_MIN:
         red_flags.append(f"High leverage — Debt/Equity {de:.0f}% (latest)")
 
+    # StockSense360 Business Quality Engine (SSDS-003, Sprint #005) —
+    # additive negative evidence. A hard-gate rejection (fraud-risk or
+    # distress+aggressive-accruals — see business_quality_engine.py) is
+    # independent evidence this checklist has no equivalent for today (no
+    # Beneish M-Score, no computed Altman Z-Score anywhere in this file).
+    # Always None for IN today (see fundamentals_refresh.py for why) —
+    # this check is a no-op for every IN stock, by design, not an oversight.
+    bq_score = stock.get("business_quality_score")
+    bq_grade = stock.get("business_quality_grade")
+    bq_style = stock.get("business_quality_style")
+    if bq_grade == "rejected":
+        red_flags.append("Business Quality Engine hard-gate rejection — see stock detail for the specific reason")
+
     # Verdict thresholds scale proportionally to max_score (10/12=0.83,
     # 7/12=0.58) so a 10-check US scorecard and a 12-check IN one apply the
     # same relative bar, not the same absolute one.
@@ -109,6 +122,24 @@ def compute_scorecard(stock: dict, market: str = "IN") -> dict:
     if elite_strong_buy and verdict in ("strong_buy", "watchlist"):
         verdict = "elite_strong_buy"
 
+    # StockSense360 Business Quality Engine (SSDS-003, Sprint #005) —
+    # additive positive evidence, promotion-only (identical in spirit to
+    # elite_strong_buy above: never overrides an "avoid"/"watch" verdict,
+    # only promotes a scorecard that already cleared strong_buy/watchlist
+    # on its own checklist merits). "Quality Compounder" alone is not
+    # enough — per the Product Glossary, that label is only meaningful
+    # alongside a high underlying score, so this also requires the
+    # engine's own score to clear its "buy" bar (>= GRADE_BUY_MIN),
+    # exactly the bar the engine itself uses to decide the label means
+    # something (see SSDS-003 Production Readiness Validation: "Quality
+    # Compounder" never fires below a genuinely strong score in practice).
+    bq_confirms_quality_compounder = (
+        bq_style == "Quality Compounder"
+        and bq_score is not None and bq_score >= BUSINESS_QUALITY.GRADE_BUY_MIN
+    )
+    if bq_confirms_quality_compounder and verdict in ("strong_buy", "watchlist"):
+        verdict = "elite_strong_buy"
+
     return {
         "score": score,
         "max_score": max_score,
@@ -116,6 +147,10 @@ def compute_scorecard(stock: dict, market: str = "IN") -> dict:
         "checks": checks,
         "red_flags": red_flags,
         "elite_strong_buy": elite_strong_buy,
+        "business_quality_score": bq_score,
+        "business_quality_grade": bq_grade,
+        "business_quality_style": bq_style,
+        "business_quality_confirmed": bq_confirms_quality_compounder,
     }
 
 

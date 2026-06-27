@@ -46,10 +46,21 @@ def ensure_table():
                 ev_ebitda                NUMERIC,
                 price_to_sales           NUMERIC,
                 operating_cf_latest_cr   NUMERIC,
+                business_quality_score   NUMERIC,
+                business_quality_grade   TEXT,
+                business_quality_style   TEXT,
                 updated_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
                 PRIMARY KEY (symbol, market)
             )
         """)
+
+        # StockSense360 Business Quality Engine columns (SSDS-003,
+        # Sprint #005) — additive for installs that created this table
+        # before this sprint. IF NOT EXISTS makes this safe to run every
+        # time, matching the existing migration pattern below.
+        conn.execute("ALTER TABLE stock_fundamentals_cache ADD COLUMN IF NOT EXISTS business_quality_score NUMERIC")
+        conn.execute("ALTER TABLE stock_fundamentals_cache ADD COLUMN IF NOT EXISTS business_quality_grade TEXT")
+        conn.execute("ALTER TABLE stock_fundamentals_cache ADD COLUMN IF NOT EXISTS business_quality_style TEXT")
 
         # Migration path for a table created before the `market` column
         # existed (PRIMARY KEY was just `symbol`). Guarded by a cheap
@@ -107,6 +118,16 @@ FIELD_MAP = {
     "ev_ebitda":                 "ev_ebitda",
     "price_to_sales":           "price_to_sales",
     "operating_cf_latest_cr":   "operating_cf_latest_cr",
+    # StockSense360 Business Quality Engine (SSDS-003, Sprint #005) —
+    # additive. Always NULL for IN rows today (see fundamentals_refresh.py
+    # and us_fundamentals.py's _build() for why this is US-only this
+    # sprint) — NULL behaves correctly in every existing screen's WHERE
+    # clause (none of them reference these columns) and in the scorecard
+    # (multibagger_scorecard.py treats a missing value as "no additional
+    # evidence", not as a penalty).
+    "business_quality_score":  "business_quality_score",
+    "business_quality_grade":  "business_quality_grade",
+    "business_quality_style":  "business_quality_style",
 }
 
 _SELECT_COLS = ["symbol", "market", "company_name", "sector_name", "market_cap_cr", "market_cap_usd_m",
@@ -115,7 +136,9 @@ _SELECT_COLS = ["symbol", "market", "company_name", "sector_name", "market_cap_c
                 "sales_growth_3y_pct", "sales_growth_5y_pct",
                 "profit_growth_3y_pct", "profit_growth_5y_pct",
                 "opm_pct", "interest_coverage_ratio", "ev_ebitda", "price_to_sales",
-                "operating_cf_latest_cr", "updated_at"]
+                "operating_cf_latest_cr",
+                "business_quality_score", "business_quality_grade", "business_quality_style",
+                "updated_at"]
 
 
 def upsert(symbol: str, market: str, is_financial: bool, fields: dict):

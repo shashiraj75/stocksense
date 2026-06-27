@@ -200,6 +200,36 @@ def _build(sym: str) -> dict:
         except Exception:
             pass
 
+        # StockSense360 Business Quality Engine (SSDS-003) — additive only,
+        # Sprint #005. Sprint #005 deliberately scoped this to US: this
+        # function already has `ticker`/`info` in scope from the yfinance
+        # call above, so adding the engine here costs zero new network
+        # calls. The IN refresh path (fundamentals_refresh.py) sources
+        # fundamentals from screener.in and never constructs a yfinance
+        # Ticker at all — adding one there would be a new data-fetching
+        # pattern in an already rate-limited nightly job, which is exactly
+        # the "broad refactor" this sprint was told not to do. Tracked as
+        # an explicit, named follow-up, not silently done or silently
+        # skipped. `df` is passed as an empty DataFrame deliberately —
+        # confirmed by reading both buffett_munger_score's and
+        # quality_metrics_score's source: neither one actually reads the
+        # `df` parameter anywhere in its body, so fetching price history
+        # here would cost a network call for zero signal.
+        try:
+            import pandas as pd
+            from services.business_quality_engine import compute_business_quality
+            bq = compute_business_quality(sym, ticker, pd.DataFrame(), info, market="US")
+            data["business_quality_score"] = bq.get("score")
+            data["business_quality_grade"] = bq.get("grade")
+            data["business_quality_style"] = (bq.get("metadata") or {}).get("suitable_investment_style")
+        except Exception as e:
+            # Never let a Business Quality Engine failure break the
+            # existing fundamentals fetch this function has always
+            # provided - additive signal, not a new hard dependency.
+            data["business_quality_score"] = None
+            data["business_quality_grade"] = None
+            data["business_quality_style"] = None
+
         return data
     except Exception as e:
         return {"available": False, "reason": str(e), "symbol": sym}

@@ -85,6 +85,13 @@ def run_full_refresh() -> dict:
                 "ev_ebitda": data.get("ev_ebitda"),
                 "price_to_sales": data.get("price_to_sales"),
                 "operating_cf_latest_cr": data.get("operating_cashflow") / 1e6 if data.get("operating_cashflow") else None,
+                # StockSense360 Business Quality Engine (SSDS-003) — additive,
+                # Sprint #005. fetch_us_fundamentals already computes these
+                # via _build()'s in-scope ticker/info; just threading them
+                # through to the cache here, not computing anything new.
+                "business_quality_score": data.get("business_quality_score"),
+                "business_quality_grade": data.get("business_quality_grade"),
+                "business_quality_style": data.get("business_quality_style"),
             }
             cache.upsert(symbol, "US", is_fin, fields)
             refreshed += 1
