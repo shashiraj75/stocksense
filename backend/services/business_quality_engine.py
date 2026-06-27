@@ -232,8 +232,8 @@ def compute_business_quality(symbol: str, ticker, df: pd.DataFrame, info: dict, 
 
     # ── Reused, already-proven existing functions (SSDS-003 Finding 1) ───────
     buffett = buffett_munger_score(info, df)
-    altman = altman_zscore_signal(info)
-    sloan = sloan_accruals_signal(info)
+    altman = altman_zscore_signal(info, ticker)
+    sloan = sloan_accruals_signal(info, ticker)
     quality_metrics = quality_metrics_score(ticker, df, info)
     corp_actions = corporate_actions_score(ticker, info)
 
@@ -316,7 +316,12 @@ def compute_business_quality(symbol: str, ticker, df: pd.DataFrame, info: dict, 
 
     # ── Category scoring (SSDS-003 §2) ────────────────────────────────────────
     profitability = 0.0
-    profitability += _map_subscore(quality_metrics.get("score"), cap=12)
+    # Piotroski F-Score is discounted, not zeroed, for financial-sector
+    # companies — see thresholds.py's PIOTROSKI_FINANCIAL_SECTOR_WEIGHT
+    # for the live-data evidence behind this (Production Readiness
+    # Validation, Finding B).
+    piotroski_weight = BUSINESS_QUALITY.PIOTROSKI_FINANCIAL_SECTOR_WEIGHT if is_financial else 1.0
+    profitability += _map_subscore(quality_metrics.get("score"), cap=12) * piotroski_weight
     if info.get("returnOnEquity") is not None:
         roe = info["returnOnEquity"]
         if roe > PROFITABILITY.ROE_QUALITY_COMPOUNDER_MIN_PCT / 100:

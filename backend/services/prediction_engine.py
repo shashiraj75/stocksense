@@ -1119,7 +1119,7 @@ class PredictionEngine:
             info_with_market = dict(info)
             info_with_market.setdefault("market", market)
 
-            altman = altman_zscore_signal(info_with_market)
+            altman = altman_zscore_signal(info_with_market, ticker)
             z_zone = altman.get("z_zone", "unavailable")
             z      = altman.get("z_score")
             if z_zone == "distress":
@@ -1132,7 +1132,7 @@ class PredictionEngine:
                 balance_sheet += 3
                 reasons.append(f"Altman Z-Score {z} — Safe Zone: strong balance sheet")
 
-            accruals = sloan_accruals_signal(info_with_market)
+            accruals = sloan_accruals_signal(info_with_market, ticker)
             ar = accruals.get("accruals_ratio")
             if ar is not None:
                 if ar < -5:

@@ -134,14 +134,29 @@ def mock_ticker_two_year_financials() -> MockTicker:
 def business_quality_info(base_info) -> dict:
     """Extends base_info with the additional fields business_quality_engine.py
     reads that aren't part of the original base_info fixture (margins, net
-    income, total revenue, payout ratio)."""
+    income, total revenue, payout ratio, and — since the Production
+    Readiness Validation's calibration fix made Altman/Sloan actually
+    compute real values from ticker.balance_sheet — marketCap/ebit/
+    retainedEarnings, so this fixture's "healthy company" no longer
+    artificially lands in the Altman distress zone purely because those
+    fields were never set. operatingCashflow is also raised from
+    base_info's 8,000,000 to be consistent with netIncome=170,000,000 —
+    the original combination was never internally consistent, it just
+    happened not to matter before Altman/Sloan could compute anything
+    from it).
+    """
     info = dict(base_info)
     info.update({
         "netIncome": 170_000_000,
         "totalRevenue": 1_100_000_000,
+        "operatingCashflow": 200_000_000,
+        "operatingCashflows": 200_000_000,
         "grossMargins": 0.42,
         "operatingMargins": 0.25,
         "payoutRatio": 0.30,
+        "marketCap": 20_000_000_000,
+        "ebit": 300_000_000,
+        "retainedEarnings": 800_000_000,
     })
     return info
 

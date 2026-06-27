@@ -940,7 +940,36 @@ def quality_metrics_score(ticker, df: pd.DataFrame, info: dict) -> dict:
 
 # ── Altman Z-Score ────────────────────────────────────────────────────────────
 
-def altman_zscore_signal(info: dict) -> dict:
+def _total_assets_fallback(ticker) -> float | None:
+    """
+    Calibration fix (Business Quality Engine Production Readiness
+    Validation, Architecture/Business-Quality-Engine-Production-Readiness-
+    Validation.md): info.get("totalAssets") is never populated by
+    yfinance's .info dict for any ticker, in either market — confirmed
+    directly against live data. altman_zscore_signal and
+    sloan_accruals_signal both previously had no fallback for this one
+    field, so both always returned "unavailable" against real data (0/46
+    real companies in that validation run). This reads the same
+    ticker.balance_sheet DataFrame quality_metrics_score already fetches
+    successfully elsewhere in this file, as a fallback only — does not
+    change behavior for any caller that doesn't pass a ticker, or for any
+    info dict that already has totalAssets populated some other way.
+    """
+    if ticker is None:
+        return None
+    try:
+        bs = ticker.balance_sheet
+        if bs is None or bs.empty or "Total Assets" not in bs.index:
+            return None
+        row = bs.sort_index(axis=1).loc["Total Assets"].dropna()
+        if row.empty:
+            return None
+        return float(row.sort_index().values[-1])
+    except Exception:
+        return None
+
+
+def altman_zscore_signal(info: dict, ticker=None) -> dict:
     """
     Altman Z-Score bankruptcy predictor (Altman 1968; modified Z' for emerging markets).
 
@@ -962,7 +991,7 @@ def altman_zscore_signal(info: dict) -> dict:
     reasons: list[str] = []
 
     try:
-        total_assets     = info.get("totalAssets")
+        total_assets     = info.get("totalAssets") or _total_assets_fallback(ticker)
         working_capital  = info.get("workingCapital")
         retained_earn    = info.get("retainedEarnings")
         ebit             = info.get("ebit") or info.get("operatingIncome")
@@ -1031,7 +1060,7 @@ def altman_zscore_signal(info: dict) -> dict:
 
 # ── Sloan Accruals Ratio ──────────────────────────────────────────────────────
 
-def sloan_accruals_signal(info: dict) -> dict:
+def sloan_accruals_signal(info: dict, ticker=None) -> dict:
     """
     Sloan (1996) Accruals Ratio: (Net Income - Operating CF) / Total Assets.
 
@@ -1050,7 +1079,7 @@ def sloan_accruals_signal(info: dict) -> dict:
     try:
         net_income   = info.get("netIncome") or info.get("netIncomeToCommon")
         op_cf        = info.get("operatingCashflow") or info.get("operatingCashflows")
-        total_assets = info.get("totalAssets")
+        total_assets = info.get("totalAssets") or _total_assets_fallback(ticker)
 
         # Screener.in fallback for Indian stocks
         screener_d = info.get("_screener_data") or {}
@@ -1718,8 +1747,8 @@ def compute_all_quality_factors(symbol: str, ticker, df: pd.DataFrame, info: dic
         results["quality_metrics"]   = {"score": 50, "reasons": [], "piotroski": None}
 
     # ── Academic signal layer (all horizons — these are hard filters not just scores) ──
-    results["altman"]   = altman_zscore_signal(info)
-    results["accruals"] = sloan_accruals_signal(info)
+    results["altman"]   = altman_zscore_signal(info, ticker)
+    results["accruals"] = sloan_accruals_signal(info, ticker)
     results["buffett"]  = buffett_munger_score(info, df)
 
     # ── Horizon-adjusted weights ──────────────────────────────────────────────
