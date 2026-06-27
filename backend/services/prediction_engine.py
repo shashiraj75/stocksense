@@ -434,6 +434,7 @@ class PredictionEngine:
                 "fundamental_score": None,
                 "sentiment_score": None,
                 "quality_factors": None,
+                "business_quality": None,
                 "global_context": None,
             }
             _cache_set(_pred_cache, cache_key, (time.time(), result))
@@ -488,6 +489,23 @@ class PredictionEngine:
                 print(f"[global_ctx] failed for {symbol}: {e}")
                 return {}
 
+        def _get_business_quality():
+            # StockSense360 Business Quality Engine (SSDS-003, Sprint #004) —
+            # additive only. Never raises into the main predict() flow, and
+            # never modifies quality/signal/confidence — see
+            # Documentation/Engineering-Handbook/Releases/
+            # Sprint-004-Business-Quality-Engine.md for the migration notes
+            # explaining why this is deliberately a parallel field, not a
+            # replacement of the existing `quality_factors` output.
+            if market == "CRYPTO":
+                return None
+            try:
+                from services.business_quality_engine import compute_business_quality
+                return compute_business_quality(symbol, yf.Ticker(symbol + suffix), df, info, market)
+            except BaseException as e:
+                log.warning(f"[business_quality] failed for {symbol}: {e}")
+                return None
+
         def _get_deep_fund():
             if horizon not in ("medium", "long"):
                 return None
@@ -497,11 +515,12 @@ class PredictionEngine:
                 print(f"[deep_fund] failed for {symbol}: {e}")
                 return None
 
-        news_data, global_ctx, quality, deep_score_raw = await asyncio.gather(
+        news_data, global_ctx, quality, deep_score_raw, business_quality = await asyncio.gather(
             _get_news(),
             loop.run_in_executor(None, _get_global_ctx_safe),
             loop.run_in_executor(None, _get_quality),
             loop.run_in_executor(None, _get_deep_fund),
+            loop.run_in_executor(None, _get_business_quality),
         )
 
         sentiment_score = self._aggregate_sentiment(news_data["articles"])
@@ -592,6 +611,12 @@ class PredictionEngine:
                 "buffett_checklist": quality.get("buffett_checklist"),
                 "breakdown":         {k: v.get("score") for k, v in quality.get("breakdown", {}).items()},
             } if quality else None,
+            # StockSense360 Business Quality Engine (SSDS-003, Sprint #004) —
+            # additive, parallel to `quality_factors` above. Does not replace
+            # the `quality_score`/`quality_factors` field or influence
+            # `signal`/`confidence` in this sprint — see the Sprint #004
+            # migration notes for why this is deliberately staged.
+            "business_quality": business_quality,
             "weights_used": {k: v for k, v in weights.items() if k in ("tech", "fund", "sentiment", "vol_regime")},
         }
         _cache_set(_pred_cache, cache_key, (time.time(), result))
