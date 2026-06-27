@@ -26,6 +26,7 @@ These are binding on all future implementation work, not reference material to c
 ## Engineering Audits
 
 - [SEAR-001 — Selection Engine Engineering Audit](Architecture/Sprint-001-Selection-Engine-Audit.md) — the founding audit; source of the Roadmap's phases and most named risks/gaps referenced throughout the standards above.
+- [Business Quality Engine — Production Readiness Validation](Architecture/Business-Quality-Engine-Production-Readiness-Validation.md) — 55-company live validation run against the engine implemented in Sprint #004. **Verdict: not yet production-ready** — found that 2 of the 5 reused `quality_factors.py` functions (Altman Z-Score, Sloan Accruals) never compute a real value against live yfinance data (root cause: a field, `totalAssets`, that yfinance's `.info` dict never populates), which cascades into the hard quality gate never firing and the "Quality Compounder" style classification never firing (0/46 real companies tested). Do not integrate into any consumer until the fixes named in that report's Phase 9 land and are re-validated.
 
 ## Roadmap and Releases
 
