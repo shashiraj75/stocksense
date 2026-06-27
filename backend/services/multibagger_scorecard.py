@@ -72,7 +72,7 @@ def compute_scorecard(stock: dict, market: str = "IN") -> dict:
         red_flags.append(f"ROE well below its {roe_avg_label} — possible earnings deterioration")
     if profit_3y is not None and profit_3y < 0:
         red_flags.append("3Y profit growth is negative")
-    if ocf is not None and ocf < 0:
+    if ocf is not None and ocf < CASH_FLOW.OCF_MUST_BE_POSITIVE:
         red_flags.append("Negative operating cash flow (latest year)")
     if market == "IN" and pledge is not None and pledge > GOVERNANCE.PROMOTER_PLEDGE_RED_FLAG_MIN_PCT:
         red_flags.append(f"Promoter pledge at {pledge:.1f}% (latest)")

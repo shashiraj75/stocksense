@@ -11,7 +11,7 @@ from services.technical_indicators import compute_indicators, get_signal_summary
 from services.news_sentiment import NewsSentimentService
 from services.global_context import get_global_context
 from services.quality_factors import compute_all_quality_factors
-from services.thresholds import DEBT_TO_EQUITY, PROFITABILITY, GROWTH, RISK_PENALTY
+from services.thresholds import DEBT_TO_EQUITY, PROFITABILITY, GROWTH, RISK_PENALTY, CASH_FLOW
 
 MARKET_SUFFIX = {"US": "", "IN": ".NS"}
 _news_svc = NewsSentimentService()
@@ -1072,14 +1072,14 @@ class PredictionEngine:
         op_cf_series = screener_d.get("operating_cf_annual_cr") or []
         op_cf_latest = screener_d.get("operating_cf_latest_cr")
         if op_cf_latest is not None:
-            if op_cf_latest < 0:
+            if op_cf_latest < CASH_FLOW.OCF_MUST_BE_POSITIVE:
                 balance_sheet -= 5
                 reasons.append(f"Negative operating cash flow (₹{op_cf_latest:.0f} Cr) — earnings not converting to cash")
             elif len(op_cf_series) >= 3:
                 recent_cf = [v for v in op_cf_series[-3:] if v is not None]
                 if len(recent_cf) == 3 and recent_cf[0] > 0:
                     cf_growth = (recent_cf[-1] - recent_cf[0]) / abs(recent_cf[0]) * 100
-                    if cf_growth > 30:
+                    if cf_growth > CASH_FLOW.OCF_GROWTH_STRONG_MIN_PCT:
                         balance_sheet += 4
                         reasons.append(f"Operating cash flow grew {cf_growth:.0f}% over 3Y — strong cash generation")
                     elif cf_growth > 0:

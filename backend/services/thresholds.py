@@ -79,8 +79,13 @@ class ProfitabilityThresholds:
 @dataclass(frozen=True)
 class CashFlowThresholds:
     # multibagger_scorecard.py:46 — checklist "Operating cash flow positive"
+    # multibagger_scorecard.py:75 — Anti-Loss red-flag "negative OCF"
+    # prediction_engine.py:1075 — fundamental-score balance-sheet bucket OCF check
     # prediction_engine.py:1360 — quality-gate OCF check (medium/long horizons only)
     OCF_MUST_BE_POSITIVE = 0.0
+
+    # prediction_engine.py:1082 — fundamental-score balance-sheet bucket, 3Y OCF growth bonus
+    OCF_GROWTH_STRONG_MIN_PCT = 30.0
 
 
 @dataclass(frozen=True)
