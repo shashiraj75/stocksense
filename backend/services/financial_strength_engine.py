@@ -48,6 +48,31 @@ log = logging.getLogger(__name__)
 # not a new taxonomy, per SES-002 §2.
 V1_EXCLUDED_SECTOR_BUCKETS = {"FINANCIAL", "REAL_ESTATE"}
 
+# Confirmed defect, found live during Epic 002 Sprint #009's production
+# validation: capital-intensive, regulated utilities structurally run a
+# current ratio well below 1.0 as a normal, non-distress feature of
+# their business model — confirmed across 4 real companies in the same
+# sample (AEP 0.45x, DUK 0.55x, SO 0.65x, NEE 0.60x), with DUK and SO
+# *also* showing negative free cash flow (a normal capex-cycle feature
+# for utilities, not a liquidity emergency), exactly like AEP. AEP was
+# hard-rejected via liquidity_distress while DUK/SO were not, purely
+# because AEP's current ratio (0.4546x) happened to fall fractionally
+# below the 0.5x cutoff while DUK's (0.5518x) and SO's (0.6464x) happened
+# to fall fractionally above it — confirming the cutoff is operating as
+# noise within this sector's normal range, not as a real distress signal,
+# exactly the hypothesis SSDS-005's own Sector Adaptations section named
+# ("UTILITIES_ENERGY likely needs adjusted thresholds rather than
+# exemption... not a distress signal") but had not yet validated with
+# live data. This sector is NOT excluded from scoring (per
+# V1_EXCLUDED_SECTOR_BUCKETS, above) — only exempted from the single
+# highest-consequence error (an outright hard rejection); the underlying
+# soft Liquidity Adequacy category score is intentionally left
+# unrecalibrated this sprint (4 companies is enough evidence the hard
+# gate is miscalibrated for this sector, not enough to safely re-derive
+# numeric soft-scoring thresholds — named as a Sprint #010+ candidate,
+# not acted on here).
+LIQUIDITY_GATE_EXEMPT_SECTOR_BUCKETS = {"UTILITIES_ENERGY"}
+
 # The 16 SSDS-005-required unified fields (SSDS-006 §5) — every one is
 # Mandatory for v1's data-completeness gate; none has been found, in
 # Sprint #007's evidence, to need Optional/sector-adjusted treatment for
@@ -132,16 +157,38 @@ def _leverage_and_capital_structure(fields: dict) -> dict:
     equity = _val(fields, "shareholders_equity")
     short_term_debt = _val(fields, "short_term_debt")
 
+    score = 0.0
+    reasons = []
+
+    # Confirmed defect, found live during Epic 002 Sprint #009's
+    # production validation (real LUMN data): when shareholders_equity
+    # is negative (a real, known condition — a company whose accumulated
+    # losses exceed paid-in capital), total_debt / equity produces a
+    # large NEGATIVE percentage that the comparison logic below would
+    # read as "comfortably below the elevated-leverage tier" — exactly
+    # backwards, since negative equity is itself one of the most severe
+    # balance-sheet red flags possible. Debt-to-equity is not a
+    # meaningful ratio at all when equity <= 0 (the sign inverts what
+    # the ratio is supposed to measure) — left UNAVAILABLE for this
+    # sub-metric specifically, never computed with a sign that could
+    # invert the score. The real signal (negative equity itself) is
+    # already correctly captured by _balance_sheet_resilience's equity
+    # ratio check, so this is not a missed signal — it is avoiding a
+    # second, WRONG-direction signal from the same underlying fact.
     debt_to_equity_pct = None
-    if total_debt is not None and equity:
-        debt_to_equity_pct = (total_debt / equity) * 100
+    if total_debt is not None and equity is not None:
+        if equity > 0:
+            debt_to_equity_pct = (total_debt / equity) * 100
+        else:
+            reasons.append(
+                "Debt-to-equity not meaningful — negative shareholders' equity "
+                "(reflected separately in Balance Sheet Resilience)"
+            )
 
     short_term_share_pct = None
     if short_term_debt is not None and total_debt:
         short_term_share_pct = (short_term_debt / total_debt) * 100
 
-    score = 0.0
-    reasons = []
     if debt_to_equity_pct is not None:
         if debt_to_equity_pct < FS.DEBT_TO_EQUITY_ELEVATED_MIN_PCT:
             score += 10
@@ -349,7 +396,8 @@ def compute_financial_strength(symbol: str, fields: dict, sector_bucket: str, ma
     fcf = _val(fields, "free_cash_flow")
     short_term_debt = _val(fields, "short_term_debt")
     liquidity_distress = (
-        current_ratio is not None and current_ratio <= FS.LIQUIDITY_DISTRESS_CURRENT_RATIO_MAX
+        sector_bucket not in LIQUIDITY_GATE_EXEMPT_SECTOR_BUCKETS
+        and current_ratio is not None and current_ratio <= FS.LIQUIDITY_DISTRESS_CURRENT_RATIO_MAX
         and fcf is not None and fcf < 0
         and short_term_debt is not None and short_term_debt > 0
     )
