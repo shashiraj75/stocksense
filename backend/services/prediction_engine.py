@@ -11,7 +11,7 @@ from services.technical_indicators import compute_indicators, get_signal_summary
 from services.news_sentiment import NewsSentimentService
 from services.global_context import get_global_context
 from services.quality_factors import compute_all_quality_factors
-from services.thresholds import DEBT_TO_EQUITY, PROFITABILITY, GROWTH, RISK_PENALTY, CASH_FLOW
+from services.thresholds import DEBT_TO_EQUITY, PROFITABILITY, GROWTH, RISK_PENALTY, CASH_FLOW, FINANCIAL_STRENGTH
 
 MARKET_SUFFIX = {"US": "", "IN": ".NS"}
 _news_svc = NewsSentimentService()
@@ -435,6 +435,7 @@ class PredictionEngine:
                 "sentiment_score": None,
                 "quality_factors": None,
                 "business_quality": None,
+                "financial_strength": None,
                 "global_context": None,
             }
             _cache_set(_pred_cache, cache_key, (time.time(), result))
@@ -515,12 +516,33 @@ class PredictionEngine:
                 print(f"[deep_fund] failed for {symbol}: {e}")
                 return None
 
-        news_data, global_ctx, quality, deep_score_raw, business_quality = await asyncio.gather(
+        def _get_financial_strength():
+            # StockSense360 Financial Strength Intelligence Engine
+            # (SSDS-005, SSDS-006, Epic 002 Sprint #008/#010) — additive
+            # only, US equities only (v1 scope). Never raises into the
+            # main predict() flow, and never modifies composite_score/
+            # signal directly — only a bounded confidence adjustment via
+            # _apply_financial_strength_adjustment, mirroring exactly how
+            # business_quality (above) stays a parallel display field.
+            # Per SSDS-006's provider-independence rule, this calls only
+            # the adapter's public entry point — never a provider
+            # directly (no sec_edgar_adapter/yfinance import here).
+            if market != "US":
+                return None
+            try:
+                from services.us_financial_strength_adapter import compute_us_financial_strength
+                return compute_us_financial_strength(symbol)
+            except BaseException as e:
+                log.warning(f"[financial_strength] failed for {symbol}: {e}")
+                return None
+
+        news_data, global_ctx, quality, deep_score_raw, business_quality, financial_strength = await asyncio.gather(
             _get_news(),
             loop.run_in_executor(None, _get_global_ctx_safe),
             loop.run_in_executor(None, _get_quality),
             loop.run_in_executor(None, _get_deep_fund),
             loop.run_in_executor(None, _get_business_quality),
+            loop.run_in_executor(None, _get_financial_strength),
         )
 
         sentiment_score = self._aggregate_sentiment(news_data["articles"])
@@ -568,6 +590,9 @@ class PredictionEngine:
         trade_levels = self._trade_levels(current_price, signal, target_price, atr, horizon)
         confidence = self._apply_risk_reward_adjustment(signal, confidence, trade_levels, reasoning, bear_case)
         confidence = self._apply_pledge_adjustment(market, info or {}, signal, confidence, reasoning, bear_case)
+        confidence = self._apply_financial_strength_adjustment(
+            market, financial_strength, confidence, reasoning, bull_case, bear_case
+        )
 
         import datetime as _dt
         result = {
@@ -617,6 +642,17 @@ class PredictionEngine:
             # `signal`/`confidence` in this sprint — see the Sprint #004
             # migration notes for why this is deliberately staged.
             "business_quality": business_quality,
+            # StockSense360 Financial Strength Intelligence Engine
+            # (SSDS-005, SSDS-006, Epic 002 Sprint #008/#010) — additive,
+            # parallel field, US equities only. Its only influence on
+            # `signal`/`confidence` is the small, bounded, named
+            # adjustment applied by _apply_financial_strength_adjustment
+            # above (confidence only, never composite_score/signal) —
+            # the full score/grade/confidence/strengths/weaknesses/risks/
+            # explanation are exposed here unmodified so a consumer can
+            # see exactly why, mirroring `business_quality`'s own
+            # explainability pattern.
+            "financial_strength": financial_strength,
             "weights_used": {k: v for k, v in weights.items() if k in ("tech", "fund", "sentiment", "vol_regime")},
         }
         _cache_set(_pred_cache, cache_key, (time.time(), result))
@@ -759,6 +795,86 @@ class PredictionEngine:
             bear_case.append(msg)
             return min(confidence, 30)
         return confidence
+
+    def _apply_financial_strength_adjustment(
+        self, market: str, financial_strength: dict | None, confidence: int,
+        reasoning: list, bull_case: list, bear_case: list,
+    ) -> int:
+        """
+        StockSense360 Financial Strength Intelligence Engine (SSDS-005,
+        SSDS-006, Epic 002 Sprint #010) — additive integration into the
+        Prediction Engine. Mirrors the exact extension point
+        _apply_risk_reward_adjustment/_apply_pledge_adjustment already
+        use: confidence-only, never composite_score/signal, so Daily
+        Picks ranking and the IC learning engine stay unaffected — per
+        this sprint's explicit "do not redesign the Prediction Engine"
+        rule, this deliberately does NOT add a new term to
+        _composite_signal's raw_score the way the (much older)
+        `quality` factors blend already does; doing that would be
+        exactly the kind of redesign this sprint forbids.
+
+        Two tiers, both bounded so this signal can never dominate
+        Technical/Business Quality/Risk/Regime/News — see
+        FINANCIAL_STRENGTH.PREDICTION_ENGINE_CONFIDENCE_ADJUSTMENT_CAP's
+        own comment for why ±6 was chosen relative to the other
+        factors' typical swings:
+          1. Hard-gate influence — if Financial Strength's own
+             liquidity_distress gate fired, demote confidence to the
+             same severe-risk cap (30) the existing risk-reward/pledge
+             adjustments already use for a confirmed red flag.
+          2. Soft influence — otherwise, a small, capped nudge scaled
+             by Financial Strength's own 0-100 score, the same
+             base-50-capped-bucket convention every other factor in
+             this engine already uses.
+
+        Graceful degradation (SSDS-006 §2): returns confidence unchanged
+        for IN/CRYPTO markets, FINANCIAL/REAL_ESTATE-sector-excluded
+        companies, insufficient-data companies, or any upstream fetch/
+        compute failure — `financial_strength` is None or a
+        non-liquidity_distress REJECTED in every one of those cases.
+        """
+        if not financial_strength or market != "US":
+            return confidence
+
+        grade = financial_strength.get("grade")
+        metadata = financial_strength.get("metadata") or {}
+        rejection_reason = metadata.get("rejection_reason")
+
+        if grade == "rejected" and rejection_reason == "liquidity_distress":
+            current_ratio = metadata.get("current_ratio")
+            cr_text = f"{current_ratio:.2f}x" if current_ratio is not None else "n/a"
+            msg = (
+                f"Financial Strength Engine: liquidity distress hard gate triggered "
+                f"(current ratio {cr_text}, negative free cash flow) — confidence "
+                "demoted regardless of other fundamentals."
+            )
+            reasoning.append({"indicator": "Financial Strength", "signal": "BEARISH", "reason": msg})
+            bear_case.append(msg)
+            return min(confidence, FINANCIAL_STRENGTH.PREDICTION_ENGINE_LIQUIDITY_DISTRESS_CONFIDENCE_CAP)
+
+        if grade == "rejected":
+            # sector_not_yet_supported / insufficient_data — no real
+            # signal exists; never penalize a stock for data this engine
+            # doesn't have, per the same missing-data philosophy
+            # SSDS-003/SSDS-005 already share.
+            return confidence
+
+        fs_score = financial_strength.get("score")
+        if fs_score is None:
+            return confidence
+
+        adjustment = round((fs_score - 50) / 50 * FINANCIAL_STRENGTH.PREDICTION_ENGINE_CONFIDENCE_ADJUSTMENT_CAP)
+        if adjustment == 0:
+            return confidence
+
+        direction = "BULLISH" if adjustment > 0 else "BEARISH"
+        msg = (
+            f"Financial Strength Score {fs_score}/100 ({grade}) — confidence "
+            f"{'boosted' if adjustment > 0 else 'demoted'} by {abs(adjustment)} point(s)."
+        )
+        reasoning.append({"indicator": "Financial Strength", "signal": direction, "reason": msg})
+        (bull_case if adjustment > 0 else bear_case).append(msg)
+        return max(0, min(100, confidence + adjustment))
 
     def _deep_fundamental_score(self, ticker, horizon: str) -> dict:
         """

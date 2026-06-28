@@ -332,6 +332,25 @@ class FinancialStrengthThresholds:
     GRADE_HOLD_MIN = 50
     GRADE_WATCH_MIN = 35
 
+    # Prediction Engine integration (Epic 002 Sprint #010) — confidence-
+    # only adjustment caps, mirroring the existing _apply_risk_reward_
+    # adjustment/_apply_pledge_adjustment pattern exactly (both operate
+    # on confidence only, never the composite score/signal, so Daily
+    # Picks ranking and the IC learning engine stay unaffected). ±6 is
+    # deliberately small relative to the existing factors' typical
+    # swings (the quality-factors blend alone can move composite_score
+    # by up to ±10, before risk-penalty/regime/global-macro adjustments
+    # on top of that) — chosen so this signal is additive, not
+    # dominant, per this sprint's explicit rule.
+    PREDICTION_ENGINE_CONFIDENCE_ADJUSTMENT_CAP = 6.0
+
+    # Mirrors the existing severe-risk convention exactly
+    # (_apply_risk_reward_adjustment/_apply_pledge_adjustment both cap
+    # confidence at 30 for a confirmed red flag) — reused, not
+    # reinvented, for the liquidity_distress hard-gate's influence on
+    # the Prediction Engine's output.
+    PREDICTION_ENGINE_LIQUIDITY_DISTRESS_CONFIDENCE_CAP = 30
+
 
 # Singleton instances — import these, not the dataclasses, from call sites.
 DEBT_TO_EQUITY = DebtToEquityThresholds()
