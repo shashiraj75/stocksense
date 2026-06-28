@@ -122,7 +122,15 @@ def _eps_trend(fields: dict) -> dict:
         "decelerating": GI.EPS_TREND_DECELERATING_SCORE,
     }
     score = score_map.get(trend, 0.0)
-    reasons = [f"EPS trend: {trend}"] if trend else []
+    # Calibration Sprint #004 finding: the reason text used to read
+    # "EPS trend: {trend}", which combined with the category-name prefix
+    # callers add ("EPS Trend: ...") produced the literal, redundant
+    # "EPS Trend: EPS trend: mixed_positive" in real strengths/weaknesses
+    # output, found while reviewing explainability against the expanded
+    # validation sample. Reworded so the category-name prefix and the
+    # reason text don't repeat each other.
+    trend_label = trend.replace("_", " ") if trend else None
+    reasons = [f"{trend_label.capitalize()} EPS momentum"] if trend_label else []
     return {"score": score, "eps_trend": trend, "reasons": reasons}
 
 
@@ -290,8 +298,20 @@ def compute_growth_intelligence(symbol: str, fields: dict, sector_bucket: str = 
         "Margin Trend": (margin["score"], margin["reasons"]),
     }
     ranked = sorted(categories.items(), key=lambda kv: kv[1][0], reverse=True)
-    strengths = [f"{name}: {reasons[0]}" for name, (val, reasons) in ranked if val > 0 and reasons][:3]
-    weaknesses = [f"{name}: {reasons[0]}" for name, (val, reasons) in ranked if val < 0 and reasons][-3:]
+    # Calibration Sprint #004 finding: any val > 0 used to qualify as a
+    # "strength", including a marginal +3 mixed_positive EPS Trend signal
+    # — found in real validation output sitting as the ONLY listed
+    # "strength" for companies scoring 6/100 (avoid), e.g. COALINDIA/SRF.
+    # That's technically accurate (it's the only category that scored
+    # positive) but reads as a misleading endorsement for an overall weak
+    # company. MIN_NOTABLE_CONTRIBUTION (5.0) excludes only the ±3 EPS
+    # Trend "mixed" tiers while still surfacing every other category's
+    # strong/weak signal (±8 and up) — a presentation-layer filter, not a
+    # change to any scoring weight.
+    strengths = [f"{name}: {reasons[0]}" for name, (val, reasons) in ranked
+                 if val >= GI.MIN_NOTABLE_CONTRIBUTION and reasons][:3]
+    weaknesses = [f"{name}: {reasons[0]}" for name, (val, reasons) in ranked
+                  if val <= -GI.MIN_NOTABLE_CONTRIBUTION and reasons][-3:]
 
     risks = []
     if profit["profit_growth_3y_pct"] is not None and profit["profit_growth_3y_pct"] < GI.PROFIT_GROWTH_WEAK_MAX_PCT:

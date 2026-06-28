@@ -19,6 +19,53 @@ def _f(value):
 
 
 @pytest.mark.regression
+class TestExplainabilityDoesNotMisrepresentMarginalSignals:
+    """Calibration Sprint #004 finding: a marginal +-3 EPS Trend
+    'mixed_positive'/'mixed_negative' contribution used to qualify as a
+    headline strength/weakness even for companies whose every other
+    category scored on the opposite side -- found in real validation
+    output (COALINDIA, SRF: both scored 6/100 'avoid' yet listed
+    'EPS Trend: mixed_positive' as their only 'strength'). Reproduced
+    here with the same numeric shape, not just asserted from memory."""
+
+    def test_marginal_eps_trend_alone_does_not_qualify_as_a_strength(self):
+        from services.growth_intelligence_engine import compute_growth_intelligence
+        fields = {
+            "revenue_growth_3y_pct": _f(0.0),
+            "profit_growth_3y_pct": _f(-15.0),
+            "eps_trend": _f("mixed_positive"),  # the only positive-scoring category
+            "revenue_annual_series": _f([100, 130, 70, 150, 60]),  # erratic -> negative durability
+            "operating_profit_growth_3y_pct": _f(-10.0),
+        }
+        result = compute_growth_intelligence("X", fields, market="IN")
+        assert result["strengths"] == []
+        assert not any("EPS Trend" in s for s in result["strengths"])
+
+    def test_strong_categories_still_surface_normally(self):
+        """Confirms the filter only excludes the marginal +-3 tier, not
+        every strength/weakness -- a real ±15 Revenue Growth signal must
+        still appear."""
+        from services.growth_intelligence_engine import compute_growth_intelligence
+        fields = {
+            "revenue_growth_3y_pct": _f(20.0),
+            "profit_growth_3y_pct": _f(20.0),
+            "eps_trend": _f("mixed_positive"),
+            "revenue_annual_series": _f([100, 120, 144, 173]),
+        }
+        result = compute_growth_intelligence("X", fields, market="IN")
+        assert any("Revenue Growth" in s for s in result["strengths"])
+
+    def test_eps_trend_reason_text_is_not_redundant(self):
+        """Locks in the reworded reason text -- the old phrasing produced
+        the literal 'EPS Trend: EPS trend: mixed_positive' once the
+        category-name prefix was added by the caller."""
+        from services.growth_intelligence_engine import _eps_trend
+        result = _eps_trend({"eps_trend": _f("mixed_positive")})
+        assert result["reasons"] == ["Mixed positive EPS momentum"]
+        assert "EPS trend:" not in result["reasons"][0]
+
+
+@pytest.mark.regression
 class TestNoFabricationContract:
     """Sanity-checked: every assertion here fails loudly if the engine
     ever starts inventing a value for a field the adapter passed as None."""

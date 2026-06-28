@@ -375,6 +375,16 @@ class GrowthIntelligenceThresholds:
     GRADE_HOLD_MIN = 50
     GRADE_WATCH_MIN = 35
 
+    # Calibration Sprint #004 finding: a marginal ±3 EPS Trend
+    # "mixed_positive"/"mixed_negative" contribution was qualifying as a
+    # headline strength/weakness for companies whose every other category
+    # scored on the opposite side — a real, found misleading-statement
+    # defect (e.g. COALINDIA/SRF, both 6/100 avoid, listing "EPS Trend:
+    # mixed_positive" as their only "strength"). 5.0 excludes only that
+    # ±3 EPS-trend tier while still surfacing every other category's
+    # ±8-and-up signal — a presentation filter, not a scoring-weight change.
+    MIN_NOTABLE_CONTRIBUTION = 5.0
+
     # Revenue/Profit Growth (±15 base, ±18 with the acceleration bonus) —
     # 15% chosen as a round, moderately high bar consistent with the
     # pre-existing GROWTH registry's own
