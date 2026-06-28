@@ -216,6 +216,123 @@ class BusinessQualityThresholds:
     PIOTROSKI_FINANCIAL_SECTOR_WEIGHT = 0.5
 
 
+@dataclass(frozen=True)
+class FinancialStrengthThresholds:
+    """
+    Thresholds for the Financial Strength Intelligence Engine (SSDS-005,
+    SSDS-006, implemented Epic 002 Sprint #008 v1). Every value below is
+    a new, named constant — none are copied from BusinessQualityThresholds
+    even where a similar ratio (e.g. interest coverage) appears in both
+    engines, per SES-002 §1's "two genuinely different concepts get
+    separate named constants" rule: Business Quality's interest-coverage
+    check feeds a quality judgment; this engine's feeds a solvency
+    judgment — same ratio, different question, different constant.
+
+    v1 scope (Sprint #008): non-FINANCIAL, non-REAL_ESTATE companies only
+    (REAL_ESTATE used as this engine's proxy classification for REITs,
+    per Sprint #005/#007's confirmed finding that REITs share much of
+    FINANCIAL's structural data gap). Calibrated against a live run of
+    76 real US companies (the same universe Sprint #005/#007 validated)
+    — see the Sprint #008 Production Readiness Report for the evidence
+    behind each value, exactly as SSDS-003's own thresholds were
+    calibrated against live data before being trusted (Sprint #004 ->
+    #004a cycle).
+    """
+
+    # SSDS-005 §5 — minimum fraction of Mandatory fields (the 16-field
+    # unified schema, SSDS-006 §5) required before returning a real score
+    # rather than REJECTED/insufficient_data. Reuses the same 60% bar
+    # BusinessQualityThresholds already established as this codebase's
+    # standard "partial data is fine" line — not re-derived, since
+    # nothing in this engine's own validation gave a reason to pick a
+    # different number.
+    MIN_DATA_COMPLETENESS_PCT = 60.0
+
+    # Liquidity Adequacy — Current Ratio (current_assets / current_liabilities).
+    # >1.5 is a widely-used "comfortable" liquidity tier in standard
+    # credit-analysis practice (current assets cover current liabilities
+    # with real margin); <1.0 means current liabilities exceed current
+    # assets outright — a real, not just cautionary, liquidity concern.
+    CURRENT_RATIO_STRONG_MIN = 1.5
+    CURRENT_RATIO_WEAK_MAX = 1.0
+
+    # Liquidity Adequacy — Cash Ratio (cash_and_equivalents / current_liabilities).
+    # A stricter liquidity check than the Current Ratio (ignores
+    # receivables/inventory entirely) — >0.5 chosen as "cash alone covers
+    # half of current obligations," a real margin of safety; <0.2 as a
+    # thin-cash-cushion tier.
+    CASH_RATIO_STRONG_MIN = 0.5
+    CASH_RATIO_THIN_MAX = 0.2
+
+    # Hard gate — liquidity_distress (SSDS-005's own named trigger,
+    # distinct from Business Quality's gate). Current Ratio "far below 1"
+    # combined with negative free cash flow and real near-term debt
+    # obligations (short_term_debt > 0) — calibrated to be a narrow,
+    # deliberately rare AND-condition (mirroring SSDS-003 §2's "gate-
+    # sprawl is a risk to avoid" instruction), not triggered by ordinary
+    # cyclical softness alone.
+    LIQUIDITY_DISTRESS_CURRENT_RATIO_MAX = 0.5
+    LIQUIDITY_DISTRESS_REQUIRES_NEGATIVE_FCF = True
+
+    # Leverage & Capital Structure — Debt-to-Equity (total_debt / shareholders_equity).
+    # A different constant from DebtToEquityThresholds.QUALITY_COMPOUNDER_MAX
+    # (50%) even though both concern leverage: that one judges "is this a
+    # quality compounder's typical conservative leverage," this one judges
+    # "is this leverage level itself a solvency risk" — a structurally
+    # higher bar is appropriate for a pure solvency question. 100% (debt
+    # equal to equity) as the elevated-risk tier; 200% as the severe tier.
+    DEBT_TO_EQUITY_ELEVATED_MIN_PCT = 100.0
+    DEBT_TO_EQUITY_SEVERE_MIN_PCT = 200.0
+
+    # Leverage & Capital Structure — short-term debt as a fraction of
+    # total debt. >50% means more than half of all debt is due/repriced
+    # within the near term — a real refinancing-risk signal independent
+    # of the absolute leverage level.
+    SHORT_TERM_DEBT_SHARE_ELEVATED_MIN_PCT = 50.0
+
+    # Debt-Servicing Capacity — Interest Coverage (ebit / interest_expense).
+    # >3x chosen as comfortably covering interest several times over;
+    # <1.5x as a real debt-servicing concern (earnings barely/don't cover
+    # interest) — same numeric tiers Business Quality uses for its own,
+    # differently-named interest-coverage check (a coincidence of
+    # reasonable practitioner convention, not a shared constant; see this
+    # dataclass's own docstring on why they're still separate constants).
+    INTEREST_COVERAGE_STRONG_MIN = 3.0
+    INTEREST_COVERAGE_WEAK_MAX = 1.5
+
+    # Financial Stress Simulation (SSDS-005's named distinctive
+    # capability) — Earnings Shock scenario v1: EBIT down 20%, recompute
+    # interest coverage. 20% and the "still above 1.0x" pass bar are
+    # illustrative starting points carried directly from SSDS-005's own
+    # placeholder framing — calibrated no further than that in this
+    # sprint, since shock-magnitude calibration against real sector
+    # volatility data is explicitly named in SSDS-005 as future work, not
+    # this implementation sprint's job.
+    STRESS_EARNINGS_SHOCK_PCT = 20.0
+    STRESS_INTEREST_COVERAGE_PASS_MIN = 1.0
+
+    # Balance Sheet Resilience — Equity Ratio (shareholders_equity / total_assets).
+    # >40% chosen as a real equity cushion (less than 60% of the balance
+    # sheet is debt-or-liability-funded); <15% as a thin-cushion tier.
+    EQUITY_RATIO_STRONG_MIN_PCT = 40.0
+    EQUITY_RATIO_THIN_MAX_PCT = 15.0
+
+    # Cash Flow Durability Under Stress — Free Cash Flow Margin (free_cash_flow / revenue).
+    # >10% chosen as a healthy, self-funding margin; negative FCF margin
+    # as the clear concern tier (the business consumes cash rather than
+    # generating it, before any stress is even applied).
+    FCF_MARGIN_STRONG_MIN_PCT = 10.0
+    FCF_MARGIN_NEGATIVE_MAX_PCT = 0.0
+
+    # SSDS-003 §6-style grade bands, same base-50-plus-capped-buckets
+    # convention as Business Quality, reused for consistency rather than
+    # inventing a second grading scale.
+    GRADE_STRONG_BUY_MIN = 80
+    GRADE_BUY_MIN = 65
+    GRADE_HOLD_MIN = 50
+    GRADE_WATCH_MIN = 35
+
+
 # Singleton instances — import these, not the dataclasses, from call sites.
 DEBT_TO_EQUITY = DebtToEquityThresholds()
 PROFITABILITY = ProfitabilityThresholds()
@@ -224,4 +341,5 @@ GROWTH = GrowthThresholds()
 VALUATION = ValuationThresholds()
 GOVERNANCE = GovernanceThresholds()
 RISK_PENALTY = RiskPenaltyThresholds()
+FINANCIAL_STRENGTH = FinancialStrengthThresholds()
 BUSINESS_QUALITY = BusinessQualityThresholds()
