@@ -24,7 +24,7 @@ Nine intelligence domains are named here, each described accurately as it exists
 
 **Business Quality Intelligence — Completed.** Answers "is this fundamentally an outstanding business worthy of long-term ownership?" — profitability and capital efficiency, balance sheet strength, earnings quality, capital allocation discipline, and durable competitive position, each sector-adapted. Implemented as `backend/services/business_quality_engine.py`, live for both India and US markets, with a hard fraud/distress gate independent of the category score.
 
-**Financial Strength Intelligence — Specification (Epic 002, beginning).** Will answer a deliberately different question: "could this company survive a downturn and service its obligations?" — liquidity adequacy, leverage trend, debt-servicing capacity, and a proposed Financial Stress Simulation concept. A design study exists; SSDS-005 and implementation have not yet started.
+**Financial Strength Intelligence — Completed (Epic 002, closed).** Answers a deliberately different question from Business Quality: "could this company survive a downturn and service its obligations?" — liquidity adequacy, leverage trend, debt-servicing capacity, and the Financial Stress Simulation's Earnings Shock scenario. Implemented as `backend/services/financial_strength_engine.py`, live for US, non-FINANCIAL, non-REAL_ESTATE equities, integrated into `PredictionEngine` and Daily Picks as a bounded, additive confidence signal — see [EPIC-002 Closure](Engineering-Handbook/EPICS/EPIC-002-Financial-Strength-Intelligence-Closure.md).
 
 **Growth Intelligence — Future (not yet a dedicated engine).** Growth metrics (sales/profit growth, multi-year trends) exist today only as scattered inputs inside `quality_factors.py` and the Multibagger scorecard's screening logic — not as an independent, explainable engine with its own scoring contract.
 
@@ -47,7 +47,7 @@ Nine intelligence domains are named here, each described accurately as it exists
 | Epic | Name | Status | Dependencies | Completion Criteria | Next Milestone |
 |---|---|---|---|---|---|
 | **001** | Business Quality Intelligence | **Completed** | None | Engine implemented, live-validated (55-company and 65-company live studies), integrated into a first consumer (Multibagger, both markets), 262/262 tests passing, GitHub Actions green. All met — see [EPIC-001 Closure](Engineering-Handbook/EPICS/EPIC-001-Business-Quality-Intelligence-Closure.md). | Closed. No further action unless a named technical-debt item (Beneish M-Score, Altman financial-sector exemption) is prioritized. |
-| **002** | Financial Strength Intelligence | **Specification** | Epic 001 (architecture pattern reused) | SSDS-005 finalized; data-feasibility study completed for both markets; engine implemented and live-validated; first consumer integrated. | Draft SSDS-005 from the [design study](Engineering-Handbook/Architecture/Financial-Strength-Intelligence-Design-Study.md); then run a Sprint #006-style data-feasibility study before any implementation sprint. |
+| **002** | Financial Strength Intelligence | **Completed** | Epic 001 (architecture pattern reused) | SSDS-005 finalized; US data-feasibility study completed (India: feasibility-only, deferred); engine implemented and live-validated (76-company live studies); first consumer integrated (`PredictionEngine`, Daily Picks); 442/442 tests passing, GitHub Actions green. All met for the scoped US, non-FINANCIAL, non-REAL_ESTATE surface — see [EPIC-002 Closure](Engineering-Handbook/EPICS/EPIC-002-Financial-Strength-Intelligence-Closure.md). | Closed. No further action unless a named technical-debt item (FINANCIAL/REAL_ESTATE sector support, India implementation, UTILITIES_ENERGY soft-scoring recalibration) is prioritized. |
 | **003** *(proposed numbering)* | Growth Intelligence | **Planned** | Epic 002 (shared adapter/validation pattern) | A dedicated, explainable growth-scoring engine exists, separate from the scattered logic in `quality_factors.py` today. | Not started — no design study yet. |
 | **004** *(proposed numbering)* | Valuation Intelligence | **Planned** | Epic 002 or 003 (sequencing not yet decided) | Sector-relative/growth-adjusted valuation replaces the current static P/E cutoff, as an explainable engine. | Not started — no design study yet. |
 | **005** *(proposed numbering)* | Risk Intelligence | **Planned** | Epics 002–004 (consolidates risk signals those engines surface) | A single Risk Intelligence engine replaces today's scattered regime/risk-reward/penalty logic. | Not started — no design study yet. |
@@ -62,18 +62,19 @@ Nine intelligence domains are named here, each described accurately as it exists
 
 **Completed:**
 - Epic 001 — Business Quality Intelligence, both markets, closed.
+- Epic 002 — Financial Strength Intelligence, US (non-FINANCIAL, non-REAL_ESTATE) market, closed — see [EPIC-002 Closure](Engineering-Handbook/EPICS/EPIC-002-Financial-Strength-Intelligence-Closure.md).
 - Recommendation Intelligence (Prediction Engine + Ranking & Filtering) and Daily Picks, as pre-existing, mature platform capabilities — not products of the Epic-numbered engine architecture, but real and operational.
 
 **In Progress:**
-- Nothing is currently mid-implementation. **Epic 001 is formally closed. Epic 002 is beginning with SSDS-005** — the Financial Strength Intelligence design study is complete; drafting the formal specification is the next concrete action.
+- Nothing is currently mid-implementation. **Epic 002 is formally closed. Epic 003 — Growth Intelligence — is the recommended next epic**, beginning with a Design Study and SSDS-007.
 
 **Next Up:**
-- Finalize SSDS-005 from the existing design study.
-- Run a dedicated data-feasibility study (the open question of debt-maturity-split data availability, named explicitly in the design study, is the highest-priority unknown).
-- Implement, validate, and integrate the Financial Strength Engine following the exact sequence Epic 001 proved.
+- Begin Epic 003's Design Study, scoping Growth Intelligence's boundary against Business Quality's existing growth-consistency check and the scattered growth-percentage logic in `quality_factors.py`/`multibagger_scorecard.py`.
+- Run a data-feasibility study for both markets before committing to a scoring model, mirroring Epic 001/002's own proven sequencing.
+- Reuse the now-twice-proven Data Fabric pattern (provider adapter → resolution → engine adapter → pure engine) rather than re-deriving an architecture a third time.
 
 **Future:**
-- Epics 003–008 (Growth, Valuation, Risk, Recommendation Consolidation, Portfolio, AI Research Analyst) as proposed, unstarted, with no design study yet for any of them.
+- Epics 004–008 (Valuation, Risk, Recommendation Consolidation, Portfolio, AI Research Analyst) as proposed, unstarted, with no design study yet for any of them.
 
 ---
 
@@ -158,6 +159,6 @@ Epic Closure
 
 ---
 
-## Recommendation on Epic 002
+## Recommendation on Epic 003
 
-Epic 001 is formally closed (see [EPIC-001 Closure](Engineering-Handbook/EPICS/EPIC-001-Business-Quality-Intelligence-Closure.md)). Epic 002 should proceed, starting from drafting SSDS-005 against the existing Financial Strength Intelligence design study — not from a fresh design conversation, since the scope and boundary work is already done and evidenced in this roadmap's Section 3.
+Epic 001 and Epic 002 are both formally closed (see [EPIC-001 Closure](Engineering-Handbook/EPICS/EPIC-001-Business-Quality-Intelligence-Closure.md) and [EPIC-002 Closure](Engineering-Handbook/EPICS/EPIC-002-Financial-Strength-Intelligence-Closure.md)). Epic 003 — Growth Intelligence — should proceed next, starting with a Design Study and SSDS-007 — not skipping the design-then-spec sequence both prior epics proved necessary, even though the underlying Data Fabric / adapter pattern itself no longer needs to be re-derived.
