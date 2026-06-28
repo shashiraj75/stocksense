@@ -24,6 +24,7 @@ These are binding on all future implementation work, not reference material to c
 ## Epics
 
 - [EPIC-001 — Business Quality Intelligence (CLOSED)](EPICS/EPIC-001-Business-Quality-Intelligence-Closure.md) — the permanent closure record for the Business Quality Engine effort (Sprints #003–#007). Read this single document, not every sprint report below, to understand what was built, why, how it was validated, and what remains intentionally out of scope (Beneish M-Score, the Altman financial-sector-exemption refinement, switching on the Multibagger scorecard's IN consumption). Recommends proceeding to Epic 002 — Financial Strength Intelligence.
+- **Epic 002 — Financial Strength Intelligence (proposed, not started):** [Financial Strength Intelligence — Design Study](Architecture/Financial-Strength-Intelligence-Design-Study.md) — the official precursor to SSDS-005. Scopes the engine boundary against Business Quality Intelligence (no metric duplication — Altman/Sloan/Beneish/Piotroski/Buffett-Munger/Corporate-Actions all stay in BQE; Financial Strength owns liquidity, leverage trend, debt-servicing capacity, and a new Financial Stress Simulation concept), proposes architecture/categories/data requirements/validation strategy, and a full SSDS-005 outline. Design only — no code, no existing architecture changed. Lists open questions (debt-maturity-split data availability is the top one) that the next sprint's data-feasibility study should resolve before implementation begins.
 
 ## Glossary
 
