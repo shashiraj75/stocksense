@@ -686,6 +686,28 @@ def _generate_picks_inner(market: str = "IN") -> dict:
             if "Risk/Reward" in indicators or "Governance Risk" in indicators:
                 log.info(f"[picks] {r['symbol']} ({hz}) filtered: unfavorable risk/reward or governance red flag")
                 return False
+            # Confirmed live, Epic 002 Sprint #011: the Financial Strength
+            # Engine's hard liquidity_distress gate (Sprint #010) is the
+            # same severity class as Risk/Reward and Governance Risk above
+            # (confidence capped at 30 in the Prediction Engine) -- but
+            # without this check, that confidence still clears the >=25%
+            # floor above, so a liquidity-distress-flagged company could
+            # reach the curated Top 6 list despite a confirmed red flag,
+            # exactly what the two checks above already exist to prevent
+            # for their own red-flag types. Checking the indicator NAME
+            # alone (like the two checks above do) would be wrong here:
+            # "Financial Strength" is also the indicator name for a
+            # POSITIVE confidence boost (e.g. a fortress-balance-sheet
+            # company) -- a blanket name exclusion would wrongly filter
+            # out genuinely strong companies too, so this checks for the
+            # specific hard-gate phrase instead.
+            fs_reasons = " ".join(
+                item.get("reason", "") for item in r.get("reasoning", [])
+                if isinstance(item, dict) and item.get("indicator") == "Financial Strength"
+            )
+            if "liquidity distress" in fs_reasons.lower():
+                log.info(f"[picks] {r['symbol']} ({hz}) filtered: Financial Strength liquidity distress red flag")
+                return False
             if hz == "short":
                 reasons = " ".join(
                     item.get("reason", "") if isinstance(item, dict) else str(item)
