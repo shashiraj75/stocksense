@@ -46,7 +46,12 @@ log = logging.getLogger(__name__)
 # ── Provider Adapter Standard (SSDS-006 §4) ─────────────────────────────────
 
 PROVIDER_NAME = "sec_edgar"
-ADAPTER_VERSION = "sec_edgar_adapter_v1"  # bump if the field-mapping table
+ADAPTER_VERSION = "sec_edgar_adapter_v2"  # v2 (Sprint #005): fixed a confirmed
+                                           # defect where a stale, deprecated
+                                           # XBRL tag could win over a newer
+                                           # one with current data, and added
+                                           # full-year-duration validation —
+                                           # bump again if the field-mapping table
                                            # below changes in a way that would
                                            # alter previously-cached output
 
@@ -260,7 +265,13 @@ def fetch_company_facts(cik: int) -> Optional[dict]:
 # augment_info_with_screener's fallback chain (SSDS-004 §1).
 _DIRECT_FIELD_TAGS: dict[str, list[str]] = {
     "revenue": ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"],
-    "net_income": ["NetIncomeLoss"],
+    # "ProfitLoss" added in Sprint #005, confirmed live: a confirmed-broad
+    # pattern, not a one-off — TFC and CAT (and likely many others) have
+    # no "NetIncomeLoss" entries after ~2010, having migrated to
+    # "ProfitLoss" since. Cross-checked against yfinance for both
+    # companies (matched within rounding) before trusting this as the
+    # correct modern tag, not a guess.
+    "net_income": ["NetIncomeLoss", "ProfitLoss"],
     "ebit": ["OperatingIncomeLoss"],
     "interest_expense": ["InterestExpense", "InterestExpenseNonoperating", "InterestAndDebtExpense"],
     "cash_and_equivalents": ["CashAndCashEquivalentsAtCarryingValue",
@@ -273,7 +284,14 @@ _DIRECT_FIELD_TAGS: dict[str, list[str]] = {
     "long_term_debt": ["LongTermDebtNoncurrent"],
     "operating_cash_flow": ["NetCashProvidedByUsedInOperatingActivities",
                              "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"],
-    "capital_expenditure": ["PaymentsToAcquirePropertyPlantAndEquipment"],
+    # "PaymentsToAcquireProductiveAssets" added in Sprint #005, confirmed
+    # live: AMZN's filings have no recent PaymentsToAcquirePropertyPlant-
+    # AndEquipment entry (frozen at FY2016) but file current capex under
+    # this second tag instead (cross-checked against yfinance's own
+    # Capital Expenditure figure for the same fiscal year — same
+    # magnitude, confirming this is the correct modern tag, not a guess).
+    "capital_expenditure": ["PaymentsToAcquirePropertyPlantAndEquipment",
+                             "PaymentsToAcquireProductiveAssets"],
     "shareholders_equity": ["StockholdersEquity",
                              "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"],
     # "total_debt", "free_cash_flow" are DERIVED — see _derive_fields below,
@@ -283,47 +301,100 @@ _DIRECT_FIELD_TAGS: dict[str, list[str]] = {
 UNIFIED_FIELDS = list(_DIRECT_FIELD_TAGS.keys()) + ["total_debt", "free_cash_flow"]
 
 
+def _is_full_year_duration(entry: dict) -> bool:
+    """
+    Confirmed defect, found live during Epic 002 Sprint #005's large-scale
+    validation: a "duration" fact's `fp == "FY"` and `form == "10-K"`
+    labels do NOT guarantee the fact itself spans a full fiscal year — a
+    10-K's XBRL frequently also carries quarterly-breakdown facts under
+    the same fp/form labels (e.g. a "selected financial data" table).
+    Confirmed for MSFT's "Revenues" concept: several fp=="FY"/form=="10-K"
+    entries cover a single quarter (~90 days), not the year.
+
+    For any duration fact (one with a `start` key — instant facts like
+    Assets have none), require the start/end span to fall in a sensible
+    annual range (330-400 days) before treating it as the annual value.
+    Instant facts (no `start`) are unaffected — they have no duration to
+    validate.
+    """
+    start, end = entry.get("start"), entry.get("end")
+    if not start:
+        return True  # an instant fact (e.g. Assets) — no duration to check
+    try:
+        from datetime import date
+        s = date.fromisoformat(start)
+        e = date.fromisoformat(end)
+    except (TypeError, ValueError):
+        return False
+    return 330 <= (e - s).days <= 400
+
+
 def _best_entry(entries: list[dict]) -> Optional[dict]:
     """
     Picks the most relevant XBRL fact entry from a concept's USD unit list:
-    prefer annual (10-K, fp == "FY") filings, most recent `end` date first;
-    fall back to the most recent entry of any form if no 10-K exists.
+    prefer annual (10-K, fp == "FY") filings whose duration actually spans
+    a full year (see _is_full_year_duration — confirmed necessary, not a
+    theoretical concern), most recent `end` date first; falls back to the
+    most recent entry of any form if no validated annual entry exists.
     Never averages or guesses across entries — picks one, real, dated value.
     """
     if not entries:
         return None
-    annual = [e for e in entries if e.get("form") == "10-K" and e.get("fp") == "FY"]
-    pool = annual if annual else entries
-    pool = [e for e in pool if e.get("val") is not None and e.get("end")]
-    if not pool:
+    candidates = [e for e in entries if e.get("val") is not None and e.get("end")]
+    if not candidates:
         return None
+    annual = [e for e in candidates if e.get("form") == "10-K" and e.get("fp") == "FY"
+              and _is_full_year_duration(e)]
+    pool = annual if annual else candidates
     return max(pool, key=lambda e: (e.get("end", ""), e.get("filed", "")))
 
 
 def _extract_direct(facts: dict, tags: list[str]) -> Optional[dict]:
     """
-    Tries each tag in order against the company's us-gaap facts; returns
-    the first usable entry plus which tag/taxonomy produced it. Returns
-    None — UNAVAILABLE, not a fabricated value — if no tag has data.
+    Evaluates every tag in the priority list against the company's
+    us-gaap facts and returns the candidate with the most recent period
+    end date — NOT simply the first tag with any data at all.
+
+    Confirmed defect, found live during Epic 002 Sprint #005's
+    large-scale validation: companies frequently migrate away from an
+    older XBRL tag (e.g. MSFT stopped using "Revenues" after FY2010 in
+    favor of "RevenueFromContractWithCustomerExcludingAssessedTax", but
+    the old tag still has 2010-vintage entries). A first-non-empty-tag-
+    wins rule silently returns a years-stale value instead of falling
+    through to the tag the company actually uses today. Comparing every
+    tag's best candidate by recency, with tag-list order only as a
+    tiebreak for equal dates, fixes this without needing to hardcode a
+    per-company or per-era tag mapping.
+
+    Returns None — UNAVAILABLE, not a fabricated value — if no tag has
+    any usable data at all.
     """
     us_gaap = facts.get("facts", {}).get("us-gaap", {})
+    best_overall: Optional[dict] = None
+    best_tag: Optional[str] = None
     for tag in tags:
         concept = us_gaap.get(tag)
         if not concept:
             continue
         usd_entries = concept.get("units", {}).get("USD", [])
-        best = _best_entry(usd_entries)
-        if best is not None:
-            return {
-                "value": float(best["val"]),
-                "concept": tag,
-                "fiscal_year": best.get("fy"),
-                "fiscal_period": best.get("fp"),
-                "filed_date": best.get("filed"),
-                "period_end": best.get("end"),
-                "form": best.get("form"),
-            }
-    return None
+        candidate = _best_entry(usd_entries)
+        if candidate is None:
+            continue
+        if best_overall is None or candidate.get("end", "") > best_overall.get("end", ""):
+            best_overall, best_tag = candidate, tag
+
+    if best_overall is None:
+        return None
+
+    return {
+        "value": float(best_overall["val"]),
+        "concept": best_tag,
+        "fiscal_year": best_overall.get("fy"),
+        "fiscal_period": best_overall.get("fp"),
+        "filed_date": best_overall.get("filed"),
+        "period_end": best_overall.get("end"),
+        "form": best_overall.get("form"),
+    }
 
 
 def _provenance(
