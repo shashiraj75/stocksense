@@ -136,7 +136,9 @@ Reuses the existing `sector_quality_applicability.classify_sector()` taxonomy (a
 
 ## Cross-Market Feasibility
 
-| Capability | US Feasibility | India Feasibility |
+**Update (Sprint #002 — [India Data Feasibility Study](../Architecture/Growth-Intelligence-India-Data-Feasibility-Study.md)):** the "Unconfirmed" India rows below were resolved by a live fetch against 85 real Indian companies. The actual findings are **more permissive** than this table's original framing — the structural gap is specifically banks/NBFCs (not "Financials" broadly), and margin trend/dilution are solvable with scoped engineering work, not blocked on data availability. The table below is left as originally written, as the historical record of this design study's pre-evidence assumptions; the feasibility study is the current source of truth for India availability.
+
+| Capability | US Feasibility | India Feasibility (original Design Study assumption — see update above for resolved findings) |
 |---|---|---|
 | Revenue growth (3Y/5Y CAGR) | **High** — SEC EDGAR provides ample history; straightforward to compute | **High** — already computed and validated by screener.in |
 | EPS growth (quantitative) | **High** — SEC EDGAR/yfinance both expose multi-year diluted EPS | **Low/Unconfirmed** — only a qualitative trend exists today; quantitative CAGR would need a new derivation or new data source, unvalidated |
@@ -167,7 +169,7 @@ Mirrors the now-twice-proven sequence from Section 7 of the Master Roadmap exact
 
 ## Production Readiness Assessment
 
-**Growth Intelligence is not ready for implementation today, and this design study does not recommend treating it as ready.** The specific, named blockers:
+**Status at time of writing (Sprint #001): not ready for implementation.** The specific, named blockers:
 
 1. **India's data feasibility is genuinely unconfirmed** for roughly half the metric catalogue (operating-profit/FCF multi-year history, share-count/dilution, quantitative EPS growth) — this is not a calibration question, it's an open "does the data exist at all in a usable form" question that must be answered before any IN-side implementation commitment, exactly the kind of question SSDS-004's own feasibility-study precedent exists to answer first.
 2. **Two genuinely new derived metrics** (Reinvestment Efficiency / incremental ROIC, and the trend-reliability confidence model) have no prior implementation or validation precedent anywhere in this codebase — they are reasoned proposals grounded in financial-research logic, not yet evidence-tested against real company data.
@@ -175,6 +177,8 @@ Mirrors the now-twice-proven sequence from Section 7 of the Master Roadmap exact
 4. **Sector-specific cyclicality calibration** requires its own live-data evidence pass and cannot be responsibly hardcoded from this design study's reasoning alone.
 
 None of this means Growth Intelligence is poorly scoped — it means the **next sprint should be the India data-feasibility study + US-side metric implementation in parallel**, exactly as sequenced in the Implementation Roadmap above, not full implementation across both markets simultaneously.
+
+**Update (Sprint #002 — completed):** Blocker #1 has been resolved by live evidence — see the [India Data Feasibility Study](../Architecture/Growth-Intelligence-India-Data-Feasibility-Study.md), which fetched real data for 85 Indian companies and found India's data situation **materially better than this design study assumed**: revenue/profit growth and EPS-trend are excellent across the entire market including banks; the only structural gap is operating-profit-dependent metrics for banks/NBFCs specifically (not "Financials" broadly); margin trend and share-count dilution are each one scoped engineering task away from being usable, not blocked on data availability. Blockers #2-4 remain open, unaffected by Sprint #002's India-specific scope.
 
 ## Testing Strategy (for the eventual implementation sprint)
 
