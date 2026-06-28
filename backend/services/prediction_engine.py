@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import random
 import threading
 import time
@@ -12,10 +13,43 @@ from services.technical_indicators import compute_indicators, get_signal_summary
 from services.news_sentiment import NewsSentimentService
 from services.global_context import get_global_context
 from services.quality_factors import compute_all_quality_factors
-from services.thresholds import DEBT_TO_EQUITY, PROFITABILITY, GROWTH, RISK_PENALTY, CASH_FLOW, FINANCIAL_STRENGTH
+from services.thresholds import DEBT_TO_EQUITY, PROFITABILITY, GROWTH, RISK_PENALTY, CASH_FLOW, FINANCIAL_STRENGTH, GROWTH_INTELLIGENCE
 
 MARKET_SUFFIX = {"US": "", "IN": ".NS"}
 _news_svc = NewsSentimentService()
+
+
+def _growth_intelligence_confidence_enabled(market: str) -> bool:
+    """
+    Growth Intelligence confidence-adjustment kill switch (Epic 003,
+    Sprint #006's decision, implemented Sprint #007). Independent of
+    any deployment step — a runtime env var, not a code change — and
+    independent of Financial Strength's own integration (which has no
+    comparable toggle, confirmed by inspection; this is a new, separate
+    mechanism, not a reuse of anything Financial-Strength-specific).
+
+    Gates ONLY whether the computed Growth Intelligence result is
+    allowed to numerically adjust confidence — it does not gate
+    computation itself. Per Sprint #007's explicit scope, Growth
+    Intelligence is computed for BOTH markets unconditionally (so US
+    still gets explainability and telemetry); this switch is the
+    second, independent layer (alongside the hard `market == "IN"`
+    check inside `_apply_growth_intelligence_adjustment`) controlling
+    whether that computed result can change the confidence number.
+
+    Defaults, per Sprint #006: enabled for India, disabled for US.
+    Fails SAFE on any malformed env var value — "disabled" (no
+    adjustment applied) is always the lower-risk direction than
+    silently applying one based on a misread flag.
+    """
+    if market == "IN":
+        env_var, default = "GROWTH_INTELLIGENCE_CONFIDENCE_ENABLED_IN", "1"
+    elif market == "US":
+        env_var, default = "GROWTH_INTELLIGENCE_CONFIDENCE_ENABLED_US", "0"
+    else:
+        return False
+    raw = os.getenv(env_var, default).strip().lower()
+    return raw in ("1", "true", "yes", "on")
 
 
 class _SharedTickerCache:
@@ -609,13 +643,48 @@ class PredictionEngine:
                 log.warning(f"[financial_strength] failed for {symbol}: {e}")
                 return None
 
-        news_data, global_ctx, quality, deep_score_raw, business_quality, financial_strength = await asyncio.gather(
+        def _get_growth_intelligence():
+            # StockSense360 Growth Intelligence Engine (SSDS-007, Epic 003
+            # Sprints #003-#007) — computed for BOTH markets, per Sprint
+            # #006's explicit decision that US still needs explainability/
+            # telemetry even though its confidence adjustment is hard-
+            # zeroed (see _growth_intelligence_confidence_enabled and
+            # _apply_growth_intelligence_adjustment below for the two
+            # independent gates controlling the *numeric* influence).
+            # Never raises into the main predict() flow, mirroring every
+            # other additive engine closure in this function.
+            try:
+                from services.growth_intelligence_engine import compute_growth_intelligence
+                if market == "IN":
+                    from services.screener_data import fetch_screener_data
+                    from services.india_growth_adapter import build_india_growth_fields
+                    # fetch_screener_data has its own 4-hour cache (Sprint
+                    # #002's confirmed behavior) — this is a cheap, cached
+                    # re-read in the common case, not a second live fetch;
+                    # the raw fetch return (not the narrower `_screener_data`
+                    # sub-dict already attached to `info` above) is what the
+                    # adapter needs, per Sprint #003's own adapter design.
+                    screener_data = fetch_screener_data(symbol)
+                    fields = build_india_growth_fields(screener_data)
+                    return compute_growth_intelligence(symbol, fields, sector_bucket="", market=market)
+                elif market == "US":
+                    from services.us_growth_adapter import build_us_growth_fields
+                    fields = build_us_growth_fields(shared_statement_ticker)
+                    return compute_growth_intelligence(symbol, fields, sector_bucket="", market=market)
+                else:
+                    return None
+            except BaseException as e:
+                log.warning(f"[growth_intelligence] failed for {symbol}: {e}")
+                return None
+
+        news_data, global_ctx, quality, deep_score_raw, business_quality, financial_strength, growth_intelligence = await asyncio.gather(
             _get_news(),
             loop.run_in_executor(None, _get_global_ctx_safe),
             loop.run_in_executor(None, _get_quality),
             loop.run_in_executor(None, _get_deep_fund),
             loop.run_in_executor(None, _get_business_quality),
             loop.run_in_executor(None, _get_financial_strength),
+            loop.run_in_executor(None, _get_growth_intelligence),
         )
 
         sentiment_score = self._aggregate_sentiment(news_data["articles"])
@@ -665,6 +734,9 @@ class PredictionEngine:
         confidence = self._apply_pledge_adjustment(market, info or {}, signal, confidence, reasoning, bear_case)
         confidence = self._apply_financial_strength_adjustment(
             market, financial_strength, confidence, reasoning, bull_case, bear_case
+        )
+        confidence = self._apply_growth_intelligence_adjustment(
+            market, growth_intelligence, confidence, reasoning, bull_case, bear_case
         )
 
         import datetime as _dt
@@ -726,6 +798,20 @@ class PredictionEngine:
             # see exactly why, mirroring `business_quality`'s own
             # explainability pattern.
             "financial_strength": financial_strength,
+            # StockSense360 Growth Intelligence Engine (SSDS-007, Epic 003
+            # Sprints #003-#007) — additive, parallel field, computed for
+            # BOTH markets (Sprint #006's explicit decision: US still gets
+            # explainability/telemetry even with zero numeric influence).
+            # Its only influence on `signal`/`confidence` is the small,
+            # bounded, India-only adjustment applied by
+            # _apply_growth_intelligence_adjustment above (confidence
+            # only, never composite_score/signal, and hard-gated to zero
+            # for US by both the market check and the independent kill
+            # switch) — the full score/grade/confidence/strengths/
+            # weaknesses/risks/explanation are exposed here unmodified for
+            # both markets so a consumer can see exactly why, mirroring
+            # `financial_strength`'s own explainability pattern.
+            "growth_intelligence": growth_intelligence,
             "weights_used": {k: v for k, v in weights.items() if k in ("tech", "fund", "sentiment", "vol_regime")},
         }
         _cache_set(_pred_cache, cache_key, (time.time(), result))
@@ -948,6 +1034,100 @@ class PredictionEngine:
         reasoning.append({"indicator": "Financial Strength", "signal": direction, "reason": msg})
         (bull_case if adjustment > 0 else bear_case).append(msg)
         return max(0, min(100, confidence + adjustment))
+
+    def _apply_growth_intelligence_adjustment(
+        self, market: str, growth_intelligence: dict | None, confidence: int,
+        reasoning: list, bull_case: list, bear_case: list,
+    ) -> int:
+        """
+        StockSense360 Growth Intelligence Engine (SSDS-007, Epic 003,
+        Sprint #006's integration decision, implemented Sprint #007).
+        Mirrors `_apply_financial_strength_adjustment`'s exact shape —
+        confidence-only, never composite_score/signal, so Daily Picks
+        ranking stays unaffected, per Sprint #007's explicit "no
+        redesign" rule.
+
+        India-only numeric influence, per Sprint #006's decision (US
+        remains explainability-only): gated by TWO independent checks,
+        not one — the hard `market == "IN"` condition below, and the
+        separate kill switch `_growth_intelligence_confidence_enabled`
+        (module-level function, env-var-backed, defaults enabled for
+        IN / disabled for US). Either gate alone would be sufficient
+        for today's scope; both exist so a future change to one doesn't
+        silently re-enable US numeric influence without an explicit,
+        separate decision to flip the other.
+
+        Cap is GROWTH_INTELLIGENCE.PREDICTION_ENGINE_CONFIDENCE_ADJUSTMENT_CAP
+        (±3) — deliberately smaller than Financial Strength's own ±6,
+        per Sprint #006's explicit "proportionate to weaker, earlier-
+        stage evidence" reasoning (Growth Intelligence's outcome-
+        correlation evidence, Sprint #005, was real but modest in
+        magnitude for India, and is the first time any engine in this
+        codebase has had its forward-outcome relationship measured at
+        all).
+
+        No hard-gate/rejection-based demotion exists for Growth
+        Intelligence (unlike Financial Strength's liquidity_distress
+        tier) — Sprint #006 did not authorize one, and Sprint #007 does
+        not add one; a REJECTED grade here is graceful no-op territory
+        only, same as Financial Strength's own non-liquidity rejections.
+
+        Telemetry (Sprint #007's explicit requirement: market,
+        adjustment, confidence delta, enabled/disabled state, graceful
+        degradation, rejection reason — captured for EVERY evaluation,
+        never affecting the returned value) is emitted via a single
+        structured log line at the end of this function, after the
+        return value is already determined — logging happens, but
+        never participates in computing the result.
+        """
+        confidence_enabled = _growth_intelligence_confidence_enabled(market)
+        original_confidence = confidence
+        adjustment = 0
+        rejection_reason = None
+        degraded = False
+
+        if not growth_intelligence:
+            degraded = True
+        elif market != "IN" or not confidence_enabled:
+            pass  # computed (for explainability/telemetry) but not applied — by design, not a gap
+        else:
+            grade = growth_intelligence.get("grade")
+            gi_metadata = growth_intelligence.get("metadata") or {}
+            rejection_reason = gi_metadata.get("rejection_reason")
+
+            if grade == "rejected":
+                # insufficient_data — no real signal exists; never penalize
+                # a stock for data this engine doesn't have, same missing-
+                # data philosophy SSDS-003/SSDS-005/SSDS-007 all share.
+                degraded = True
+            else:
+                gi_score = growth_intelligence.get("score")
+                if gi_score is None:
+                    degraded = True
+                else:
+                    adjustment = round((gi_score - 50) / 50 * GROWTH_INTELLIGENCE.PREDICTION_ENGINE_CONFIDENCE_ADJUSTMENT_CAP)
+                    if adjustment != 0:
+                        direction = "BULLISH" if adjustment > 0 else "BEARISH"
+                        msg = (
+                            f"Growth Intelligence Score {gi_score}/100 ({grade}) — confidence "
+                            f"{'boosted' if adjustment > 0 else 'demoted'} by {abs(adjustment)} point(s)."
+                        )
+                        reasoning.append({"indicator": "Growth Intelligence", "signal": direction, "reason": msg})
+                        (bull_case if adjustment > 0 else bear_case).append(msg)
+
+        new_confidence = max(0, min(100, confidence + adjustment))
+
+        try:
+            log.info(
+                "[growth_intelligence_telemetry] symbol_market=%s confidence_enabled=%s "
+                "adjustment=%s confidence_delta=%s degraded=%s rejection_reason=%s",
+                market, confidence_enabled, adjustment, new_confidence - original_confidence,
+                degraded, rejection_reason,
+            )
+        except Exception:
+            pass  # telemetry must never affect the returned confidence value
+
+        return new_confidence
 
     def _deep_fundamental_score(self, ticker, horizon: str) -> dict:
         """

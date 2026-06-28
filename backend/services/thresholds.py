@@ -444,6 +444,19 @@ class GrowthIntelligenceThresholds:
     MARGIN_TREND_STRONG_SCORE = 8.0
     MARGIN_TREND_WEAK_SCORE = -8.0
 
+    # Prediction Engine integration (Epic 003 Sprint #006's decision,
+    # implemented Sprint #007) — deliberately smaller than
+    # FINANCIAL_STRENGTH.PREDICTION_ENGINE_CONFIDENCE_ADJUSTMENT_CAP's own
+    # ±6, proportionate to weaker, earlier-stage evidence: Growth
+    # Intelligence's Sprint #005 outcome-correlation result for India was
+    # real and positive but modest in magnitude (Spearman rho +0.15 to
+    # +0.17, not a strong correlation), and is the first time any engine
+    # in this codebase has had its forward-outcome relationship measured
+    # at all. India-only by Sprint #006's explicit decision — applied
+    # only inside _apply_growth_intelligence_adjustment's market=="IN"
+    # branch, never for US.
+    PREDICTION_ENGINE_CONFIDENCE_ADJUSTMENT_CAP = 3.0
+
 
 # Singleton instances — import these, not the dataclasses, from call sites.
 DEBT_TO_EQUITY = DebtToEquityThresholds()
