@@ -10,7 +10,10 @@ configure_logging()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi.errors import RateLimitExceeded
+from slowapi import _rate_limit_exceeded_handler
 from api.routers import stocks, predictions, news, screener, watchlist, backtest, picks, validation, paper_trading, alerts, auth, feedback, portfolio, multibagger
+from services.rate_limit import limiter
 
 log = logging.getLogger(__name__)
 
@@ -454,7 +457,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Allow localhost in dev + any Vercel deployment URL in production
+# Local development exception: only plain http(s)://localhost:3000 is
+# allowed unconditionally. Every other origin must be the project's own,
+# explicitly-configured production/staging frontend — never a shared
+# wildcard domain. (Security Remediation Sprint #001, H-1: the previous
+# `allow_origin_regex=r"https://.*\.vercel\.app"` matched ANY app hosted
+# on Vercel's shared domain, not just this project's own deployment; combined
+# with allow_credentials=True that was a real cross-tenant risk, especially
+# once real bearer-token auth — added in this same sprint — exists for an
+# attacker-controlled *.vercel.app page to send.)
 ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "https://localhost:3000",
@@ -462,15 +473,27 @@ ALLOWED_ORIGINS = [
 frontend_url = os.getenv("FRONTEND_URL", "")
 if frontend_url:
     ALLOWED_ORIGINS.append(frontend_url)
+staging_frontend_url = os.getenv("STAGING_FRONTEND_URL", "")
+if staging_frontend_url:
+    ALLOWED_ORIGINS.append(staging_frontend_url)
+
+# Optional, project-scoped Vercel preview-deployment pattern (e.g.
+# r"https://stocksense360-[a-z0-9-]+\.vercel\.app" for this project's own
+# preview URLs only) — unset by default. Never set this to a bare
+# `.*\.vercel\.app` pattern; that reintroduces the exact H-1 finding.
+preview_origin_regex = os.getenv("VERCEL_PREVIEW_ORIGIN_REGEX", "")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_origin_regex=preview_origin_regex or None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.include_router(stocks.router,      prefix="/api/stocks",      tags=["Stocks"])
 app.include_router(predictions.router, prefix="/api/predictions", tags=["Predictions"])

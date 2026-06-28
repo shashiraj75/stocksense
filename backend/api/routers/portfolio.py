@@ -6,9 +6,12 @@ other device or browser for that same account.
 """
 import os
 import uuid
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from typing import Literal
+
+from services.auth import require_owner
+from services.rate_limit import USER_DATA_RATE_LIMIT, limiter
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 
@@ -76,7 +79,8 @@ def startup():
 
 
 @router.get("/{user_id}")
-def get_holdings(user_id: str):
+@limiter.limit(USER_DATA_RATE_LIMIT)
+def get_holdings(request: Request, user_id: str, _owner: str = Depends(require_owner)):
     try:
         _ensure_table()
         with _conn() as conn:
@@ -93,7 +97,8 @@ def get_holdings(user_id: str):
 
 
 @router.post("/{user_id}")
-def add_holding(user_id: str, body: HoldingCreate):
+@limiter.limit(USER_DATA_RATE_LIMIT)
+def add_holding(request: Request, user_id: str, body: HoldingCreate, _owner: str = Depends(require_owner)):
     try:
         _ensure_table()
         holding_id = str(uuid.uuid4())
@@ -109,7 +114,8 @@ def add_holding(user_id: str, body: HoldingCreate):
 
 
 @router.post("/{user_id}/import")
-def import_holdings(user_id: str, body: ImportRequest):
+@limiter.limit(USER_DATA_RATE_LIMIT)
+def import_holdings(request: Request, user_id: str, body: ImportRequest, _owner: str = Depends(require_owner)):
     """
     Bulk import from a broker export (CSV/Excel) or pasted text, parsed
     client-side into normalized rows. Merges rather than replaces: a symbol
@@ -168,7 +174,8 @@ def import_holdings(user_id: str, body: ImportRequest):
 
 
 @router.patch("/{user_id}/{holding_id}")
-def update_holding(user_id: str, holding_id: str, body: HoldingUpdate):
+@limiter.limit(USER_DATA_RATE_LIMIT)
+def update_holding(request: Request, user_id: str, holding_id: str, body: HoldingUpdate, _owner: str = Depends(require_owner)):
     try:
         with _conn() as conn:
             conn.execute(
@@ -181,7 +188,8 @@ def update_holding(user_id: str, holding_id: str, body: HoldingUpdate):
 
 
 @router.delete("/{user_id}/{holding_id}")
-def delete_holding(user_id: str, holding_id: str):
+@limiter.limit(USER_DATA_RATE_LIMIT)
+def delete_holding(request: Request, user_id: str, holding_id: str, _owner: str = Depends(require_owner)):
     try:
         with _conn() as conn:
             conn.execute(

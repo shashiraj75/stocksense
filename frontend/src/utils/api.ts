@@ -1,8 +1,25 @@
 import axios from "axios";
+import { supabase } from "@/lib/supabase";
 
 export const api = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000",
   timeout: 120000,  // 120s — Render prediction can take 90s+ under load
+});
+
+// Security Remediation Sprint #001 (fixes the Mini Security Audit's C-1
+// finding): the backend's Portfolio/Watchlist/Alerts/Terms-Acceptance
+// endpoints now require a verified Supabase JWT and check it matches the
+// `user_id` in the request — previously no token was ever sent. Attaching it
+// here, once, on the shared axios instance covers every caller (portfolio,
+// watchlist, alerts pages, acceptTerms/getTermsStatus, importPortfolioHoldings)
+// without touching each call site individually.
+api.interceptors.request.use(async (config) => {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
 });
 
 export type Market = "US" | "IN";

@@ -4,9 +4,12 @@ Uses same "default" user_id pattern as watchlist and paper trading.
 """
 import os
 import uuid
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from typing import Literal
+
+from services.auth import require_owner
+from services.rate_limit import USER_DATA_RATE_LIMIT, limiter
 
 router = APIRouter(prefix="/api/alerts", tags=["alerts"])
 
@@ -65,7 +68,8 @@ def startup():
 
 
 @router.get("/{user_id}")
-def get_alerts(user_id: str):
+@limiter.limit(USER_DATA_RATE_LIMIT)
+def get_alerts(request: Request, user_id: str, _owner: str = Depends(require_owner)):
     try:
         _ensure_table()
         with _conn() as conn:
@@ -86,7 +90,8 @@ def get_alerts(user_id: str):
 
 
 @router.post("/{user_id}")
-def create_alert(user_id: str, body: AlertCreate):
+@limiter.limit(USER_DATA_RATE_LIMIT)
+def create_alert(request: Request, user_id: str, body: AlertCreate, _owner: str = Depends(require_owner)):
     try:
         _ensure_table()
         alert_id = str(uuid.uuid4())
@@ -103,7 +108,8 @@ def create_alert(user_id: str, body: AlertCreate):
 
 
 @router.patch("/{user_id}/{alert_id}")
-def update_alert(user_id: str, alert_id: str, body: AlertTrigger):
+@limiter.limit(USER_DATA_RATE_LIMIT)
+def update_alert(request: Request, user_id: str, alert_id: str, body: AlertTrigger, _owner: str = Depends(require_owner)):
     try:
         with _conn() as conn:
             if body.triggered:
@@ -122,7 +128,8 @@ def update_alert(user_id: str, alert_id: str, body: AlertTrigger):
 
 
 @router.delete("/{user_id}/{alert_id}")
-def delete_alert(user_id: str, alert_id: str):
+@limiter.limit(USER_DATA_RATE_LIMIT)
+def delete_alert(request: Request, user_id: str, alert_id: str, _owner: str = Depends(require_owner)):
     try:
         with _conn() as conn:
             conn.execute("DELETE FROM price_alerts WHERE id = %s AND user_id = %s", (alert_id, user_id))

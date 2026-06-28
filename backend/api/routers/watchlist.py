@@ -1,9 +1,12 @@
 import json
 import os
 import logging
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from typing import Literal
+
+from services.auth import require_owner
+from services.rate_limit import USER_DATA_RATE_LIMIT, limiter
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -76,7 +79,8 @@ class WatchlistItem(BaseModel):
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.get("/{user_id}")
-async def get_watchlist(user_id: str):
+@limiter.limit(USER_DATA_RATE_LIMIT)
+async def get_watchlist(request: Request, user_id: str, _owner: str = Depends(require_owner)):
     if _USE_PG:
         try:
             return {"items": _pg_get(user_id)}
@@ -86,7 +90,8 @@ async def get_watchlist(user_id: str):
 
 
 @router.post("/{user_id}")
-async def add_to_watchlist(user_id: str, item: WatchlistItem):
+@limiter.limit(USER_DATA_RATE_LIMIT)
+async def add_to_watchlist(request: Request, user_id: str, item: WatchlistItem, _owner: str = Depends(require_owner)):
     if _USE_PG:
         try:
             _pg_add(user_id, item.symbol, item.market, item.notes)
@@ -104,7 +109,8 @@ async def add_to_watchlist(user_id: str, item: WatchlistItem):
 
 
 @router.delete("/{user_id}/{symbol}")
-async def remove_from_watchlist(user_id: str, symbol: str):
+@limiter.limit(USER_DATA_RATE_LIMIT)
+async def remove_from_watchlist(request: Request, user_id: str, symbol: str, _owner: str = Depends(require_owner)):
     if _USE_PG:
         try:
             _pg_remove(user_id, symbol)

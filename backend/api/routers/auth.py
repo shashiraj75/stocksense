@@ -1,6 +1,9 @@
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from typing import Optional
+
+from services.auth import get_current_user_id, require_matching_body_user, require_owner
+from services.rate_limit import USER_DATA_RATE_LIMIT, limiter
 
 router = APIRouter()
 
@@ -16,7 +19,9 @@ class TermsAcceptance(BaseModel):
 
 
 @router.post("/api/auth/accept-terms")
-async def accept_terms(body: TermsAcceptance, request: Request):
+@limiter.limit(USER_DATA_RATE_LIMIT)
+async def accept_terms(body: TermsAcceptance, request: Request, current_user_id: str = Depends(get_current_user_id)):
+    require_matching_body_user(body.user_id, current_user_id)
     ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown")
     ip = ip.split(",")[0].strip()
 
@@ -51,7 +56,8 @@ async def accept_terms(body: TermsAcceptance, request: Request):
 
 
 @router.get("/api/auth/terms-status/{user_id}")
-async def terms_status(user_id: str):
+@limiter.limit(USER_DATA_RATE_LIMIT)
+async def terms_status(request: Request, user_id: str, _owner: str = Depends(require_owner)):
     USE_POSTGRES = __import__("os").getenv("USE_POSTGRES") == "1"
     if USE_POSTGRES:
         try:
