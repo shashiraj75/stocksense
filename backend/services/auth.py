@@ -44,6 +44,24 @@ Fails CLOSED, not open: if neither `SUPABASE_URL` (for ES256/RS256) nor
 given token actually uses, that request is rejected (401) rather than
 silently accepted unverified — the opposite of the bug this sprint and
 this follow-up both fix.
+
+Security Closure Sprint — Task 1 (JWT issuer validation): the
+Production Validation Sprint found `iss` was never checked. Both
+branches now also validate it via `jwt.decode`'s own `issuer=`
+parameter, against `f"{SUPABASE_URL}/auth/v1"` — Supabase's issuer is
+the same Auth service URL regardless of which signing method issued
+the token, so one expected value covers both branches; no separate
+config knob was introduced. Fails closed the same way as the secret/
+JWKS checks above: if `SUPABASE_URL` isn't configured, no expected
+issuer can be derived, so the request is rejected rather than skipping
+the check silently — `SUPABASE_URL` is already a documented production
+requirement for the ES256/JWKS path, so this introduces no practical
+regression for this deployment (confirmed live and reachable during
+the Production Validation Sprint); it only means a hypothetical
+HS256-only deployment that never set `SUPABASE_URL` would need to set
+it to keep authenticating after this change — named explicitly as the
+one backward-compatibility tradeoff this fix makes, not discovered
+after the fact.
 """
 
 import functools
@@ -75,6 +93,21 @@ def _jwt_secret() -> str:
             "has migrated to JWT Signing Keys (ES256) and only ES256 tokens are issued."
         )
     return secret
+
+
+def _expected_issuer() -> str:
+    """
+    Derived from `SUPABASE_URL` rather than a separate env var — Supabase's
+    token issuer is always `<project-url>/auth/v1`, identical for both
+    HS256 and ES256/RS256 tokens, since it names the Auth *service* that
+    issued the token, not the signing method used. Returns "" if
+    `SUPABASE_URL` is unset, which callers treat as fail-closed (no
+    expected issuer to validate against -> reject), not as "skip the check."
+    """
+    supabase_url = os.getenv("SUPABASE_URL", "").rstrip("/")
+    if not supabase_url:
+        return ""
+    return f"{supabase_url}/auth/v1"
 
 
 @functools.lru_cache(maxsize=1)
@@ -120,18 +153,22 @@ def decode_supabase_jwt(token: str) -> dict:
     header = jwt.get_unverified_header(token)  # raises jwt.DecodeError on malformed tokens
     alg = header.get("alg")
 
+    issuer = _expected_issuer()
+    if not issuer:
+        raise jwt.PyJWTError("server issuer (SUPABASE_URL) not configured")
+
     if alg == "HS256":
         secret = _jwt_secret()
         if not secret:
             raise jwt.PyJWTError("server JWT secret not configured")
-        return jwt.decode(token, secret, algorithms=["HS256"], audience=_EXPECTED_AUDIENCE)
+        return jwt.decode(token, secret, algorithms=["HS256"], audience=_EXPECTED_AUDIENCE, issuer=issuer)
 
     if alg in _JWKS_ALGORITHMS:
         client = _jwks_client()
         if client is None:
             raise jwt.PyJWTError("server JWKS endpoint not configured")
         signing_key = client.get_signing_key_from_jwt(token)
-        return jwt.decode(token, signing_key.key, algorithms=[alg], audience=_EXPECTED_AUDIENCE)
+        return jwt.decode(token, signing_key.key, algorithms=[alg], audience=_EXPECTED_AUDIENCE, issuer=issuer)
 
     raise jwt.InvalidAlgorithmError(f"unsupported token algorithm: {alg}")
 

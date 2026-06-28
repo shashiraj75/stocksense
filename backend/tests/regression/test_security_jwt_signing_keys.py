@@ -26,6 +26,8 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
 KID = "test-signing-key-1"
+TEST_SUPABASE_URL = "https://test-project.supabase.co"
+TEST_ISSUER = f"{TEST_SUPABASE_URL}/auth/v1"
 
 
 @pytest.fixture(scope="module")
@@ -39,7 +41,7 @@ def _no_hs256_secret(monkeypatch):
     # Confirms the ES256 path doesn't depend on the HS256 legacy secret
     # being configured at all — they're independent verification paths.
     monkeypatch.delenv("SUPABASE_JWT_SECRET", raising=False)
-    monkeypatch.setenv("SUPABASE_URL", "https://test-project.supabase.co")
+    monkeypatch.setenv("SUPABASE_URL", TEST_SUPABASE_URL)
 
 
 @pytest.fixture
@@ -49,9 +51,12 @@ def client():
 
 
 def _es256_token(private_key, sub: str = "user-aaa", exp_delta: float = 3600,
-                  aud: str = "authenticated", kid: str = KID) -> str:
+                  aud: str = "authenticated", kid: str = KID, iss: str = TEST_ISSUER) -> str:
+    # Security Closure Sprint, Task 1: decode_supabase_jwt now validates
+    # `iss` too — every token here includes one matching SUPABASE_URL,
+    # mirroring a real Supabase-issued ES256 token.
     return jwt.encode(
-        {"sub": sub, "aud": aud, "exp": time.time() + exp_delta},
+        {"sub": sub, "aud": aud, "iss": iss, "exp": time.time() + exp_delta},
         private_key,
         algorithm="ES256",
         headers={"kid": kid},

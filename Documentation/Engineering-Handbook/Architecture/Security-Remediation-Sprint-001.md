@@ -151,4 +151,51 @@ Recorded below, after this follow-up's commit.
 
 ---
 
-*This sprint fixed exactly the Critical and High findings named in the Mini Security Audit, plus H-2's rate-limiting recommendation as explicitly scoped in its own brief. No investment logic, scoring, recommendation, confidence calculation, explainability, or provider logic was touched — confirmed by the diff's scope, not assumed. The JWT Signing Keys follow-up fixed a production-only compatibility defect inside the same `decode_supabase_jwt` function this sprint introduced, without touching authentication's existence, CORS, or any ownership check.*
+## Security Closure Sprint — Final Hardening
+
+**Status:** Complete. Resolves the two genuine findings the [Production Validation Sprint](Production-Validation-Sprint-Pre-Epic-003.md) confirmed remained — the only two items standing between "fixed" and "fully closed." **Security Workstream Complete** — see verdict below.
+
+### Task 1 — JWT Issuer Validation
+
+**Root cause:** `decode_supabase_jwt` never passed an `issuer=` argument to `jwt.decode()`, so the `iss` claim was accepted unconditionally.
+
+**Fix:** both branches (HS256 legacy, ES256/RS256 JWKS) now validate `issuer=f"{SUPABASE_URL}/auth/v1"` — Supabase's issuer is the same Auth-service URL regardless of signing method, so one derived value covers both; no new config knob. Fails closed exactly like the existing secret/JWKS checks: if `SUPABASE_URL` is unconfigured, no expected issuer can be derived and the request is rejected, not silently let through. `SUPABASE_URL` is already a documented production requirement for the ES256 path (confirmed live and reachable during the Production Validation Sprint), so this introduces no practical regression for this deployment — only a named tradeoff for a hypothetical HS256-only deployment that never set it.
+
+**Tests:** 9 tests across `test_security_auth.py` (existing fixtures updated to include a matching `iss`, mirroring real Supabase tokens), `test_security_jwt_signing_keys.py` (same), and `test_production_validation_security_regression.py` (correct/wrong/missing/malformed issuer, both algorithms, plus fail-closed-when-unconfigured — the former "finding" test renamed to confirm the fix). **Sanity-checked**: reverted the issuer check, confirmed exactly the 4 new issuer-specific tests failed, restored it, all pass.
+
+### Task 2 — Railway Rate Limiter Client-IP Detection
+
+**Root cause, confirmed not assumed:** `services/rate_limit.py` used slowapi's default `get_remote_address`, which reads `request.client.host` — Railway's edge-proxy address, not the real client's. This codebase's own pre-existing `accept_terms` route already needed `X-Forwarded-For` for correct IP logging for the identical reason, confirming the failure mode was real for this exact deployment, not theoretical.
+
+**Fix:** new `get_client_ip()` reads the **rightmost** entry in `X-Forwarded-For` when present (Railway's own proxy appends the real connecting peer to the end of the chain — confirmed against Railway's own support guidance for exactly this spoofing concern: "the rightmost value... is trustworthy," a more specific answer than their separate cross-routing-path "take the first IP" recommendation, which doesn't address spoofing). Falls back to `request.client.host` when `X-Forwarded-For` is absent — unchanged behavior for local development and any non-Railway deployment. **One assumption is named explicitly in the code**, per the brief's own requirement: this trusts Railway as the sole reverse-proxy hop in front of the service; if a future topology change ever exposed a path that bypassed Railway's proxy, this assumption would need re-verification.
+
+**Tests:** 7 tests in `test_rate_limiter_client_ip.py` — local request, Railway-forwarded single client, multiple clients correctly distinguished, malformed header, missing header/client, and two spoofing-attempt variants (the exact attack the fix defends against). **Sanity-checked**: reverted to the naive `client.host`-only behavior, confirmed exactly the 4 tests that depend on `X-Forwarded-For` failed (the two-client test produced the literal symptom: both "different" clients resolved to the same key), restored the fix, all 7 pass.
+
+### Performance Impact
+
+| Measurement | Result |
+|---|---|
+| ES256 verification + audience + issuer check (warm key) | **0.075ms/request** — identical to the pre-issuer-check baseline; adding the issuer comparison is not measurably different from noise. |
+| `get_client_ip()` overhead | **0.0006ms/call** — header-string parsing, negligible next to anything else in the request path. |
+
+**No measurable performance regression from either fix.**
+
+### Test Summary
+
+536/536 full backend suite passing (529 after Task 1 + 7 new for Task 2). Every new test sanity-checked by reverting its corresponding fix and confirming the expected subset fails.
+
+### Production Validation
+
+Re-ran the full regression suite covering Portfolio, Watchlist, Alerts, and Authentication after both fixes — all pass, confirming neither change broke the behavior the Production Validation Sprint had already confirmed working. Live, production smoke testing against the deployed Railway URL was not re-run this session (no browser/production-URL access available, same scope limitation as the Production Validation Sprint) — this sprint's evidence is the full regression suite plus the two sanity-check reverts above.
+
+### Remaining Technical Debt
+
+None identified as security-relevant. The four pre-existing, Low-severity, unrelated items named in the Production Validation Sprint (Portfolio duplicate prevention, symbol validation, missing FK constraints, 200-not-404 on no-op updates) remain open as product/data-hygiene items, not security debt — unchanged by this sprint, per its explicit "only address the two confirmed findings" scope.
+
+### Final Recommendation
+
+**Security Workstream Complete.** Both genuine findings from the Production Validation Sprint are now resolved, tested, sanity-checked, and confirmed to introduce no regression and no measurable performance cost. No further genuine security issues remain identified. **Recommend beginning Epic 003 — Growth Intelligence.**
+
+---
+
+*This sprint fixed exactly the Critical and High findings named in the Mini Security Audit, plus H-2's rate-limiting recommendation as explicitly scoped in its own brief. No investment logic, scoring, recommendation, confidence calculation, explainability, or provider logic was touched — confirmed by the diff's scope, not assumed. The JWT Signing Keys follow-up fixed a production-only compatibility defect inside the same `decode_supabase_jwt` function this sprint introduced, without touching authentication's existence, CORS, or any ownership check. The Security Closure Sprint resolved the two remaining genuine findings (JWT issuer validation, rate-limiter client-IP detection) with the same narrow, evidence-backed discipline, closing the security workstream ahead of Epic 003.*

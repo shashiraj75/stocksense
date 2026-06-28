@@ -8,8 +8,14 @@ covered by test_security_auth.py / test_security_jwt_signing_keys.py
 signature, algorithm confusion, missing header, malformed bearer
 formatting). No production code is modified by this file — it only
 reproduces attacks against the fix already shipped in Sprint #001 and its
-ES256/JWKS follow-up, to confirm (or, for wrong-issuer, to honestly report
-the absence of) a defense.
+ES256/JWKS follow-up.
+
+UPDATE (Security Closure Sprint, Task 1): at the time this file was first
+written, `test_wrong_issuer_NOT_REJECTED_finding` documented a genuine gap —
+`iss` was never validated. That gap is now closed in `services/auth.py`
+(`decode_supabase_jwt` validates `issuer=` for both branches); the test
+below has been updated to confirm the fix rather than document the gap —
+renamed to `test_wrong_issuer_now_rejected`.
 """
 
 import base64
@@ -22,12 +28,14 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 TEST_SECRET = "validation-sprint-jwt-secret-at-least-32-bytes-long"
 KID = "validation-test-kid"
+TEST_SUPABASE_URL = "https://test-project.supabase.co"
+TEST_ISSUER = f"{TEST_SUPABASE_URL}/auth/v1"
 
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
     monkeypatch.setenv("SUPABASE_JWT_SECRET", TEST_SECRET)
-    monkeypatch.setenv("SUPABASE_URL", "https://test-project.supabase.co")
+    monkeypatch.setenv("SUPABASE_URL", TEST_SUPABASE_URL)
 
 
 @pytest.fixture(scope="module")
@@ -36,8 +44,8 @@ def keypair():
     return private_key, private_key.public_key()
 
 
-def _hs256_token(sub="user-aaa", aud="authenticated", exp_delta=3600, **extra_claims) -> str:
-    claims = {"sub": sub, "aud": aud, "exp": time.time() + exp_delta, **extra_claims}
+def _hs256_token(sub="user-aaa", aud="authenticated", exp_delta=3600, iss=TEST_ISSUER, **extra_claims) -> str:
+    claims = {"sub": sub, "aud": aud, "iss": iss, "exp": time.time() + exp_delta, **extra_claims}
     return jwt.encode(claims, TEST_SECRET, algorithm="HS256")
 
 
@@ -103,27 +111,95 @@ class TestProductionSecurityRegression:
             get_current_user_id(f"Bearer {wrong_aud}")
         assert exc.value.status_code == 401  # Evidence: rejected (PyJWT's own aud check).
 
-    def test_wrong_issuer_NOT_REJECTED_finding(self):
+    def test_wrong_issuer_now_rejected(self):
         """
-        FINDING, not a clean pass: `decode_supabase_jwt` never passes an
-        `issuer=` argument to `jwt.decode`, so the `iss` claim is never
-        checked at all. This test reproduces that — a correctly-signed,
+        Security Closure Sprint, Task 1: this used to be a documented
+        FINDING (the Production Validation Sprint found `iss` was never
+        checked). `decode_supabase_jwt` now passes `issuer=` to `jwt.decode`
+        for both branches — this test confirms the fix: a correctly-signed,
         non-expired, correct-audience token whose `iss` claims to be a
-        completely unrelated project is currently ACCEPTED.
-
-        Reported in the Production Validation Sprint report as a real,
-        Low-severity defense-in-depth gap — not auto-fixed here, per this
-        sprint's explicit "validation only" rule. Practical exploitability
-        is low: for the ES256/JWKS path, the public key resolved by `kid`
-        is already scoped to this exact Supabase project's own key set, so
-        a token actually signed by this project's key (the only way to
-        pass signature verification) already implies it came from this
-        project regardless of what its own `iss` claims.
+        completely unrelated project is now REJECTED.
         """
         from services.auth import get_current_user_id
         wrong_issuer_token = _hs256_token(iss="https://a-completely-different-project.supabase.co/auth/v1")
-        user_id = get_current_user_id(f"Bearer {wrong_issuer_token}")
-        assert user_id == "user-aaa"  # Confirms the gap: this is currently ACCEPTED, not rejected.
+        with pytest.raises(Exception) as exc:
+            get_current_user_id(f"Bearer {wrong_issuer_token}")
+        assert exc.value.status_code == 401  # Evidence: rejected.
+
+    def test_missing_issuer_rejected(self):
+        """A token with no `iss` claim at all — PyJWT's `issuer=` check
+        requires the claim to be present, not just non-mismatched."""
+        from services.auth import get_current_user_id
+        no_issuer_token = jwt.encode(
+            {"sub": "user-aaa", "aud": "authenticated", "exp": time.time() + 3600},
+            TEST_SECRET, algorithm="HS256",
+        )
+        with pytest.raises(Exception) as exc:
+            get_current_user_id(f"Bearer {no_issuer_token}")
+        assert exc.value.status_code == 401  # Evidence: rejected.
+
+    def test_malformed_issuer_rejected(self):
+        """A non-string `iss` claim (e.g. an integer) — confirms the check
+        rejects type-malformed issuers, not only string mismatches. Built
+        by hand (raw HMAC, not jwt.encode) because PyJWT's own encoder
+        refuses to build a token with a non-string `iss` at all — a real
+        attacker isn't constrained by that safety rail, so this constructs
+        the malformed token the way one actually could."""
+        from services.auth import get_current_user_id
+        import hashlib
+        import hmac as hmac_lib
+
+        header_b64 = base64.urlsafe_b64encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode()).rstrip(b"=").decode()
+        payload_b64 = base64.urlsafe_b64encode(
+            json.dumps({"sub": "user-aaa", "aud": "authenticated", "iss": 12345, "exp": time.time() + 3600}).encode()
+        ).rstrip(b"=").decode()
+        signing_input = f"{header_b64}.{payload_b64}".encode()
+        sig = hmac_lib.new(TEST_SECRET.encode(), signing_input, hashlib.sha256).digest()
+        sig_b64 = base64.urlsafe_b64encode(sig).rstrip(b"=").decode()
+        malformed_token = f"{header_b64}.{payload_b64}.{sig_b64}"
+
+        with pytest.raises(Exception) as exc:
+            get_current_user_id(f"Bearer {malformed_token}")
+        assert exc.value.status_code == 401  # Evidence: rejected.
+
+    def test_correct_issuer_hs256_accepted(self):
+        """Confirms the fix doesn't break the legitimate HS256 case."""
+        from services.auth import get_current_user_id
+        token = _hs256_token()  # default iss=TEST_ISSUER, matching SUPABASE_URL
+        assert get_current_user_id(f"Bearer {token}") == "user-aaa"
+
+    def test_correct_issuer_es256_accepted(self, keypair):
+        """Confirms the fix doesn't break the legitimate ES256/JWKS case."""
+        from services.auth import get_current_user_id
+        import services.auth as auth
+        from unittest.mock import patch as _patch
+
+        private_key, public_key = keypair
+        token = jwt.encode(
+            {"sub": "user-aaa", "aud": "authenticated", "iss": TEST_ISSUER, "exp": time.time() + 3600},
+            private_key, algorithm="ES256", headers={"kid": KID},
+        )
+
+        class _FakeKey:
+            key = public_key
+
+        class _FakeClient:
+            def get_signing_key_from_jwt(self, _t):
+                return _FakeKey()
+
+        with _patch.object(auth, "_jwks_client", return_value=_FakeClient()):
+            assert get_current_user_id(f"Bearer {token}") == "user-aaa"
+
+    def test_issuer_unconfigured_fails_closed(self, monkeypatch):
+        """SUPABASE_URL unset entirely — no expected issuer can be derived,
+        so the request must be rejected, not silently allowed through with
+        the issuer check skipped."""
+        from services.auth import get_current_user_id
+        monkeypatch.delenv("SUPABASE_URL", raising=False)
+        token = _hs256_token()
+        with pytest.raises(Exception) as exc:
+            get_current_user_id(f"Bearer {token}")
+        assert exc.value.status_code == 401  # Evidence: fails closed.
 
     def test_algorithm_confusion_hs256_with_public_key_as_secret_rejected(self, keypair):
         """

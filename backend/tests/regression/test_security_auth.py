@@ -24,11 +24,18 @@ import pytest
 from fastapi.testclient import TestClient
 
 TEST_SECRET = "regression-test-jwt-secret-at-least-32-bytes-long"
+TEST_SUPABASE_URL = "https://test-project.supabase.co"
+TEST_ISSUER = f"{TEST_SUPABASE_URL}/auth/v1"
 
 
 @pytest.fixture(autouse=True)
 def _jwt_secret(monkeypatch):
     monkeypatch.setenv("SUPABASE_JWT_SECRET", TEST_SECRET)
+    # Security Closure Sprint, Task 1: decode_supabase_jwt now also validates
+    # `iss`, derived from SUPABASE_URL — every token built by this file's
+    # _token() helper includes a matching `iss`, mirroring what a real
+    # Supabase-issued token always carries regardless of signing algorithm.
+    monkeypatch.setenv("SUPABASE_URL", TEST_SUPABASE_URL)
 
 
 @pytest.fixture
@@ -39,9 +46,9 @@ def client():
     return TestClient(app)
 
 
-def _token(sub: str = "user-aaa", exp_delta: float = 3600, aud: str = "authenticated") -> str:
+def _token(sub: str = "user-aaa", exp_delta: float = 3600, aud: str = "authenticated", iss: str = TEST_ISSUER) -> str:
     return jwt.encode(
-        {"sub": sub, "aud": aud, "exp": time.time() + exp_delta},
+        {"sub": sub, "aud": aud, "iss": iss, "exp": time.time() + exp_delta},
         TEST_SECRET,
         algorithm="HS256",
     )
