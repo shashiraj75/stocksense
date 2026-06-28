@@ -96,4 +96,59 @@ Recorded below, after this sprint's commit.
 
 ---
 
-*This sprint fixed exactly the Critical and High findings named in the Mini Security Audit, plus H-2's rate-limiting recommendation as explicitly scoped in its own brief. No investment logic, scoring, recommendation, confidence calculation, explainability, or provider logic was touched — confirmed by the diff's scope, not assumed.*
+## Follow-up — Supabase JWT Signing Keys Compatibility
+
+**Status:** Complete. Fixes a production-only defect surfaced after this sprint's deploy: legitimate, correctly-formed requests were rejected with 401 despite a present, correct `Authorization` header.
+
+### Root Cause
+
+`services/auth.py`'s `decode_supabase_jwt` only ever attempted HS256 verification against `SUPABASE_JWT_SECRET`. Confirmed via DevTools that production Supabase tokens carry `alg=ES256` with a `kid` in the header — issued by Supabase's current **JWT Signing Keys** feature, an asymmetric scheme this module had no path for at all. Every real token was rejected not because the signature was invalid, but because the verification function never tried the algorithm the token actually used.
+
+### Minimal Fix
+
+`decode_supabase_jwt` now dispatches on the token's own (unverified) `alg` header to select verification material, while keeping each branch locked to exactly one algorithm via `jwt.decode`'s `algorithms=[...]` parameter — an HS256 token can never be verified against asymmetric key material or vice versa, which is what actually prevents algorithm-confusion attacks (the dispatch only picks *which* key to fetch, never weakens the check):
+
+- **ES256/RS256** (current default): public key fetched by `kid` from `<SUPABASE_URL>/auth/v1/.well-known/jwks.json` via `jwt.PyJWKClient` (in-process key caching, no per-request network round trip once warm).
+- **HS256** (legacy): preserved only if `SUPABASE_JWT_SECRET` is explicitly configured, for projects that haven't migrated. Not assumed present — absent the secret, HS256 tokens are still rejected, never silently allowed through.
+
+New env var: `SUPABASE_URL` (documented in `.env.example`, same value as the frontend's `NEXT_PUBLIC_SUPABASE_URL`). New dependency: `PyJWT[crypto]` (adds `cryptography`, required for ES256 signature verification).
+
+Authentication was never disabled or bypassed, CORS was not loosened, and `user_id` ownership checks (`require_owner`/`require_matching_body_user`) are untouched — this fix is entirely inside `decode_supabase_jwt`, the one function responsible for verifying a token's signature.
+
+### Verification
+
+| Case | Result |
+|---|---|
+| Valid ES256 Supabase-shaped token (local EC keypair standing in for a real Signing Key, mocked JWKS client) | Accepted |
+| Missing token | 401 |
+| Invalid token (malformed string) | 401 |
+| Invalid token (ES256, signed by the wrong key for its claimed `kid`) | 401 |
+| Expired ES256 token | 401 |
+| `SUPABASE_URL` unconfigured, ES256 token presented | 401 (fails closed) |
+| Valid ES256 token, mismatched `user_id` | 403 |
+| End-to-end through `require_owner` on the Portfolio router (representative — same wiring as Watchlist/Alerts/Terms) | Allowed for matching user, 403 for cross-user, 401 for missing token |
+| Existing HS256 legacy-path tests (`test_security_auth.py`) | Unmodified, still pass |
+
+### Tests Added
+
+New file: [`backend/tests/regression/test_security_jwt_signing_keys.py`](../../../backend/tests/regression/test_security_jwt_signing_keys.py) — 10 tests, using a locally-generated EC keypair (no live Supabase project or network call needed) and a mocked `PyJWKClient` stand-in. **Sanity-checked** by reverting `decode_supabase_jwt` to its original HS256-only form and re-running: exactly the 3 "valid ES256 token accepted" tests failed (the other 7 — missing/malformed/expired/mismatched-user/unconfigured-JWKS — still passed, correctly, since they don't depend on the ES256 branch existing), reproducing the exact production symptom. Restored the fix; all 10 passed again.
+
+### Full Suite
+
+510/510 passing (500 from Sprint #001 + 10 new).
+
+### Production Verification
+
+Pending deployment of `SUPABASE_URL` to Railway's production environment — recorded here once confirmed live.
+
+### GitHub Actions Result
+
+Recorded below, after this follow-up's commit is pushed and confirmed.
+
+### Final Commit Hash
+
+Recorded below, after this follow-up's commit.
+
+---
+
+*This sprint fixed exactly the Critical and High findings named in the Mini Security Audit, plus H-2's rate-limiting recommendation as explicitly scoped in its own brief. No investment logic, scoring, recommendation, confidence calculation, explainability, or provider logic was touched — confirmed by the diff's scope, not assumed. The JWT Signing Keys follow-up fixed a production-only compatibility defect inside the same `decode_supabase_jwt` function this sprint introduced, without touching authentication's existence, CORS, or any ownership check.*
