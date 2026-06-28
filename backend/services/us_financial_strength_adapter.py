@@ -98,7 +98,7 @@ def fetch_yfinance_unified_fields(ticker) -> tuple[dict, dict]:
     return values, info
 
 
-def build_us_financial_strength_fields(symbol: str) -> dict:
+def build_us_financial_strength_fields(symbol: str, ticker=None) -> dict:
     """
     Fetches both providers, resolves every field via the finalized
     precedence module, and returns
@@ -109,6 +109,14 @@ def build_us_financial_strength_fields(symbol: str) -> dict:
     single-provider failure: a failed EDGAR fetch still allows yfinance-
     only resolution (and vice versa), never an exception that would
     break a caller iterating many symbols.
+
+    `ticker` (Epic 002 Sprint #012, performance only): an optional,
+    already-constructed yfinance-Ticker-shaped object (duck-typed — no
+    isinstance check anywhere in this codebase relies on the concrete
+    type) to reuse instead of constructing a new one. Defaults to None,
+    preserving this function's exact original behavior (construct its
+    own) for any caller that doesn't pass one — no existing caller's
+    behavior changes.
     """
     sym = symbol.upper().strip()
 
@@ -120,8 +128,8 @@ def build_us_financial_strength_fields(symbol: str) -> dict:
     edgar_fields_raw = edgar_result.get("fields", {}) if edgar_result.get("available") else {}
 
     try:
-        ticker = yf.Ticker(sym)
-        yfinance_values, info = fetch_yfinance_unified_fields(ticker)
+        resolved_ticker = ticker if ticker is not None else yf.Ticker(sym)
+        yfinance_values, info = fetch_yfinance_unified_fields(resolved_ticker)
     except Exception as e:
         log.warning("[us_fs_adapter] yfinance fetch failed for %s: %s", sym, e)
         yfinance_values, info = {}, {}
@@ -161,14 +169,18 @@ def build_us_financial_strength_fields(symbol: str) -> dict:
     }
 
 
-def compute_us_financial_strength(symbol: str) -> dict:
+def compute_us_financial_strength(symbol: str, ticker=None) -> dict:
     """
     The adapter's single public entry point — fetches, resolves, and
     scores a US symbol's Financial Strength in one call. Mirrors the
     shape of india_business_quality_adapter.compute_india_business_quality()'s
     role for its own engine.
+
+    `ticker` (Epic 002 Sprint #012, performance only): optional, passed
+    straight through to build_us_financial_strength_fields — see that
+    function's own docstring. Defaults to None (unchanged behavior).
     """
-    built = build_us_financial_strength_fields(symbol)
+    built = build_us_financial_strength_fields(symbol, ticker=ticker)
     return compute_financial_strength(
         symbol=built["symbol"],
         fields=built["fields"],

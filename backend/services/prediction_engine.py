@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import random
+import threading
 import time
 import yfinance as yf
 
@@ -15,6 +16,69 @@ from services.thresholds import DEBT_TO_EQUITY, PROFITABILITY, GROWTH, RISK_PENA
 
 MARKET_SUFFIX = {"US": "", "IN": ".NS"}
 _news_svc = NewsSentimentService()
+
+
+class _SharedTickerCache:
+    """
+    Epic 002 Sprint #012 (performance only — no scoring/recommendation
+    logic changed). Confirmed live: within one predict() call, the
+    Business Quality, Deep Fundamentals, and Financial Strength closures
+    each independently constructed their own `yf.Ticker(symbol+suffix)`
+    and each independently fetched `.balance_sheet`/`.financials`/
+    `.cashflow` for the SAME symbol — measured at 4.12s for 4 independent
+    fetches of the same statements vs. 2.76s for one shared Ticker
+    object accessed 4 times (yfinance memoizes each property per
+    instance, confirmed live: a second access on the same instance is
+    0.0s). This wrapper makes that sharing safe across the concurrent
+    executor threads `asyncio.gather`/`run_in_executor` actually uses
+    for these closures — a per-property lock ensures only the first
+    caller to touch a given property pays the real fetch cost; any
+    concurrent caller waits for that fetch's own lock, then reads the
+    now-cached value, rather than racing yfinance's own per-instance
+    caching (not verified thread-safe, so not relied upon).
+
+    Duck-typed: every consumer (the Business Quality Engine module,
+    quality_factors.py, _deep_fundamental_score,
+    us_financial_strength_adapter.py) accesses these as plain
+    attributes/properties — none of them type-check against
+    `yfinance.Ticker` (confirmed by source search), so this is a
+    transparent drop-in wherever a real Ticker was passed before.
+    """
+
+    def __init__(self, ticker):
+        self._ticker = ticker
+        self._locks: dict[str, threading.Lock] = {
+            name: threading.Lock()
+            for name in ("balance_sheet", "financials", "cashflow", "dividends", "actions", "info")
+        }
+
+    def _locked(self, name: str):
+        with self._locks[name]:
+            return getattr(self._ticker, name)
+
+    @property
+    def balance_sheet(self):
+        return self._locked("balance_sheet")
+
+    @property
+    def financials(self):
+        return self._locked("financials")
+
+    @property
+    def cashflow(self):
+        return self._locked("cashflow")
+
+    @property
+    def dividends(self):
+        return self._locked("dividends")
+
+    @property
+    def actions(self):
+        return self._locked("actions")
+
+    @property
+    def info(self):
+        return self._locked("info")
 
 # Market regime index tickers
 REGIME_TICKER = {"US": "^GSPC", "IN": "^NSEI"}
@@ -490,6 +554,15 @@ class PredictionEngine:
                 print(f"[global_ctx] failed for {symbol}: {e}")
                 return {}
 
+        # Epic 002 Sprint #012 (performance only): one shared, lock-guarded
+        # ticker object for the three closures below that each
+        # independently re-fetched the same .balance_sheet/.financials/
+        # .cashflow for this symbol — see _SharedTickerCache's own
+        # docstring for the measured evidence. Lazy construction (no I/O
+        # here) — identical to how each closure already built its own
+        # `yf.Ticker(symbol + suffix)` lazily before this change.
+        shared_statement_ticker = _SharedTickerCache(yf.Ticker(symbol + suffix))
+
         def _get_business_quality():
             # StockSense360 Business Quality Engine (SSDS-003, Sprint #004) —
             # additive only. Never raises into the main predict() flow, and
@@ -502,7 +575,7 @@ class PredictionEngine:
                 return None
             try:
                 from services.business_quality_engine import compute_business_quality
-                return compute_business_quality(symbol, yf.Ticker(symbol + suffix), df, info, market)
+                return compute_business_quality(symbol, shared_statement_ticker, df, info, market)
             except BaseException as e:
                 log.warning(f"[business_quality] failed for {symbol}: {e}")
                 return None
@@ -511,7 +584,7 @@ class PredictionEngine:
             if horizon not in ("medium", "long"):
                 return None
             try:
-                return self._deep_fundamental_score(yf.Ticker(symbol + suffix), horizon)
+                return self._deep_fundamental_score(shared_statement_ticker, horizon)
             except BaseException as e:
                 print(f"[deep_fund] failed for {symbol}: {e}")
                 return None
@@ -531,7 +604,7 @@ class PredictionEngine:
                 return None
             try:
                 from services.us_financial_strength_adapter import compute_us_financial_strength
-                return compute_us_financial_strength(symbol)
+                return compute_us_financial_strength(symbol, ticker=shared_statement_ticker)
             except BaseException as e:
                 log.warning(f"[financial_strength] failed for {symbol}: {e}")
                 return None
