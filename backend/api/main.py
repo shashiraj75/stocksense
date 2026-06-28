@@ -448,7 +448,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="StockSense API",
+    title="StockSense360 API",
     description="AI-powered stock prediction for US & India markets",
     version="1.0.0",
     lifespan=lifespan,

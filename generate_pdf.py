@@ -141,7 +141,7 @@ def cover_page(styles):
     elements.append(Spacer(1, 20 * mm))
 
     # Title block
-    title_data = [[Paragraph("StockSense", styles["cover_title"]),]]
+    title_data = [[Paragraph("StockSense360", styles["cover_title"]),]]
     title_table = Table(title_data, colWidths=[PAGE_W - 2 * MARGIN], rowHeights=[50])
     title_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), PRIMARY),
@@ -351,7 +351,7 @@ def add_page_numbers(canvas, doc):
     canvas.setLineWidth(0.5)
     canvas.line(MARGIN, 14 * mm, PAGE_W - MARGIN, 14 * mm)
     # Left: product name
-    canvas.drawString(MARGIN, 10 * mm, "StockSense — Confidential")
+    canvas.drawString(MARGIN, 10 * mm, "StockSense360 — Confidential")
     # Centre: page number
     canvas.drawCentredString(PAGE_W / 2, 10 * mm, f"Page {doc.page}")
     # Right: date
@@ -370,8 +370,8 @@ def main():
         pagesize=A4,
         leftMargin=MARGIN, rightMargin=MARGIN,
         topMargin=18 * mm, bottomMargin=22 * mm,
-        title="StockSense — Complete Product & Technical Documentation",
-        author="StockSense",
+        title="StockSense360 — Complete Product & Technical Documentation",
+        author="StockSense360",
         subject="AI-Powered Stock Prediction Platform",
     )
 

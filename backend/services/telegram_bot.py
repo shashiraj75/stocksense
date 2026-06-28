@@ -15,7 +15,7 @@ def send_picks_to_telegram(picks: dict) -> bool:
         print("[telegram] TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set — skipping.")
         return False
 
-    lines = ["🇮🇳 *StockSense Daily Picks* — Top BUY Calls\n"]
+    lines = ["🇮🇳 *StockSense360 Daily Picks* — Top BUY Calls\n"]
 
     labels = {"short": "⚡ Short Term (1–10 days)", "medium": "📈 Medium Term (1–3 months)", "long": "🏦 Long Term (6M–3Y)"}
     for horizon, label in labels.items():

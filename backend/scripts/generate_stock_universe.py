@@ -18,7 +18,7 @@ import pandas as pd
 
 OUT_FILE = os.path.join(os.path.dirname(__file__), "../services/stock_universe.py")
 
-HEADERS = {"User-Agent": "Mozilla/5.0 StockSense/1.0 (educational project)"}
+HEADERS = {"User-Agent": "Mozilla/5.0 StockSense360/1.0 (educational project)"}
 
 # ── Major US ETFs (static — always included regardless of Wikipedia scrape) ───
 US_ETFS = [
@@ -364,7 +364,7 @@ def run() -> bool:
 
 if __name__ == "__main__":
     print("=" * 55)
-    print("StockSense — stock universe generator")
+    print("StockSense360 — stock universe generator")
     print("=" * 55)
     success = run()
     if success:

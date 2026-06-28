@@ -52,13 +52,13 @@ export function NpsPopup() {
         <div className="text-center py-2">
           <p className="text-2xl mb-1">🙏</p>
           <p className="text-sm font-semibold text-white">Thank you for your feedback!</p>
-          <p className="text-xs text-gray-500 mt-1">It helps us improve StockSense.</p>
+          <p className="text-xs text-gray-500 mt-1">It helps us improve StockSense360.</p>
         </div>
       ) : (
         <>
           <p className="text-xs text-gray-400 mb-0.5">Quick feedback</p>
           <p className="text-sm font-semibold text-white mb-3">
-            How likely are you to recommend StockSense to a friend?
+            How likely are you to recommend StockSense360 to a friend?
           </p>
 
           <div className="flex gap-1 mb-1">
