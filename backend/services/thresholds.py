@@ -352,6 +352,89 @@ class FinancialStrengthThresholds:
     PREDICTION_ENGINE_LIQUIDITY_DISTRESS_CONFIDENCE_CAP = 30
 
 
+@dataclass(frozen=True)
+class GrowthIntelligenceThresholds:
+    """Thresholds for the Growth Intelligence Engine v1 (SSDS-007, Epic 003
+    Sprint #003). Deliberately a SEPARATE registry entry from the
+    pre-existing GrowthThresholds/GROWTH above (owned by the Multibagger
+    scorecard and the prediction-engine quality gate's turnaround
+    exception) — SSDS-007's own Open Question #1 named this as undecided;
+    this sprint resolves it by NOT reusing or renaming GROWTH, per
+    SES-002 §1's "two genuinely different concepts get separate named
+    constants" even where the underlying ratio (e.g. sales growth %)
+    looks similar. Every value below is a first-pass, uncalibrated
+    estimate (no backtested/outcome-validated calibration exists yet for
+    this brand-new engine) — named explicitly as a Known Limitation in
+    the v1 implementation report, not presented as production-calibrated."""
+
+    MIN_CORE_FIELDS_PRESENT = 2  # of 4 core fields (revenue/profit growth, eps_trend, durability series) — below this, REJECTED
+    MIN_DATA_COMPLETENESS_PCT = 60.0  # over all 7 possible fields — drives the `confidence` output, not the reject gate
+
+    GRADE_STRONG_BUY_MIN = 80
+    GRADE_BUY_MIN = 65
+    GRADE_HOLD_MIN = 50
+    GRADE_WATCH_MIN = 35
+
+    # Revenue/Profit Growth (±15 base, ±18 with the acceleration bonus) —
+    # 15% chosen as a round, moderately high bar consistent with the
+    # pre-existing GROWTH registry's own
+    # SALES_GROWTH_3Y_QUALITY_COMPOUNDER_MIN_PCT=12.0 (a different,
+    # independently-calibrated consumer's bar) without copying its value.
+    # The acceleration cap is intentionally higher than the base cap —
+    # caught during unit testing (test_growth_acceleration_bonus_applied):
+    # clamping the bonus to the same ±15 ceiling as the base score made
+    # the bonus dead code for every company already at or above the
+    # strong threshold, which is the most common case it's meant to
+    # apply to. A real, fixed defect, not a design choice.
+    REVENUE_GROWTH_STRONG_MIN_PCT = 15.0
+    REVENUE_GROWTH_WEAK_MAX_PCT = 0.0
+    REVENUE_GROWTH_ACCELERATION_BONUS = 3.0
+    REVENUE_GROWTH_ACCELERATION_CAP = 18.0
+    PROFIT_GROWTH_STRONG_MIN_PCT = 15.0
+    PROFIT_GROWTH_WEAK_MAX_PCT = 0.0
+    PROFIT_GROWTH_ACCELERATION_BONUS = 3.0
+    PROFIT_GROWTH_ACCELERATION_CAP = 18.0
+
+    # EPS Trend (±8) — categorical, smaller cap than the numeric
+    # Revenue/Profit Growth categories since it's a coarser 4-bucket signal.
+    EPS_TREND_ACCELERATING_SCORE = 8.0
+    EPS_TREND_MIXED_POSITIVE_SCORE = 3.0
+    EPS_TREND_MIXED_NEGATIVE_SCORE = -3.0
+    EPS_TREND_DECELERATING_SCORE = -8.0
+
+    # Growth Durability (±12) — coefficient of variation of YoY growth
+    # rates computed from the revenue history series. Below LOW_CV: a
+    # consistent, low-volatility trend. Above HIGH_CV: an erratic one.
+    DURABILITY_LOW_CV = 0.25
+    DURABILITY_HIGH_CV = 0.75
+    DURABILITY_STRONG_SCORE = 12.0
+    DURABILITY_WEAK_SCORE = -12.0
+
+    # Operating Profit Growth (±12) — same bar shape as Revenue/Profit
+    # Growth, independently named (not reused) since this is a distinct
+    # metric per SSDS-007's Metric Catalogue.
+    OPERATING_PROFIT_GROWTH_STRONG_MIN_PCT = 15.0
+    OPERATING_PROFIT_GROWTH_WEAK_MAX_PCT = 0.0
+    OPERATING_PROFIT_GROWTH_STRONG_SCORE = 12.0
+    OPERATING_PROFIT_GROWTH_WEAK_SCORE = -12.0
+
+    # Reinvestment Efficiency (±8) — ratio of operating-profit growth to
+    # invested-capital growth. >=1.2x: profit growing meaningfully faster
+    # than the capital base funding it (efficient). <=0.5x: capital
+    # growing faster than the profit it's producing (inefficient).
+    REINVESTMENT_EFFICIENCY_STRONG_MIN_RATIO = 1.2
+    REINVESTMENT_EFFICIENCY_WEAK_MAX_RATIO = 0.5
+    REINVESTMENT_EFFICIENCY_STRONG_SCORE = 8.0
+    REINVESTMENT_EFFICIENCY_WEAK_SCORE = -8.0
+
+    # Margin Trend (±8) — percentage-point change in operating margin
+    # across the available history window.
+    MARGIN_EXPANSION_STRONG_MIN_PCT = 2.0
+    MARGIN_CONTRACTION_WEAK_MAX_PCT = -2.0
+    MARGIN_TREND_STRONG_SCORE = 8.0
+    MARGIN_TREND_WEAK_SCORE = -8.0
+
+
 # Singleton instances — import these, not the dataclasses, from call sites.
 DEBT_TO_EQUITY = DebtToEquityThresholds()
 PROFITABILITY = ProfitabilityThresholds()
@@ -362,3 +445,4 @@ GOVERNANCE = GovernanceThresholds()
 RISK_PENALTY = RiskPenaltyThresholds()
 FINANCIAL_STRENGTH = FinancialStrengthThresholds()
 BUSINESS_QUALITY = BusinessQualityThresholds()
+GROWTH_INTELLIGENCE = GrowthIntelligenceThresholds()

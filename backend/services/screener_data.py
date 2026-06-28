@@ -21,6 +21,8 @@ from typing import Optional
 import requests
 from bs4 import BeautifulSoup
 
+from services.growth_utils import compute_categorical_trend
+
 log = logging.getLogger(__name__)
 
 _cache: dict[str, tuple[float, dict]] = {}
@@ -447,6 +449,17 @@ def _parse_screener_page(soup: BeautifulSoup, symbol: str) -> dict:
                     data["operating_profit_latest_cr"] = vals[-1]
                 elif label == "opm %":
                     data["opm_pct"] = vals[-1]
+                    # Epic 003 Sprint #003 (Growth Intelligence): the full
+                    # multi-year series was already parsed into `vals` above
+                    # and previously discarded down to the latest value
+                    # alone. Preserving it additively here (existing
+                    # opm_pct's behavior is unchanged) is the one scraper
+                    # change the Growth Intelligence India Data Feasibility
+                    # Study named as safe without a broad refactor — margin
+                    # trend was otherwise rated "Poor, as currently coded"
+                    # purely because of this one line discarding real,
+                    # already-parsed history.
+                    data["opm_annual_pct"] = vals
                 elif label == "interest":
                     data["interest_latest_cr"] = vals[-1]
                 elif label == "depreciation":
@@ -695,24 +708,13 @@ def augment_info_with_screener(info: dict, symbol: str) -> dict:
             enriched["heldPercentInstitutions"] = (fii + dii) / 100
 
         # ── Derive quarterly EPS trend for prediction engine ──────────────────
-        # Convert quarterly PAT (Cr) → relative QoQ acceleration signal
-        eps_trend = None
-        if len(quarterly_pat) >= 4:
-            recent = quarterly_pat[-4:]
-            try:
-                # Check if PAT is consistently growing over last 4 quarters
-                diffs = [recent[i+1] - recent[i] for i in range(len(recent)-1)]
-                positive_diffs = sum(1 for d in diffs if d > 0)
-                if positive_diffs == 3:
-                    eps_trend = "accelerating"
-                elif positive_diffs == 0:
-                    eps_trend = "decelerating"
-                elif positive_diffs >= 2:
-                    eps_trend = "mixed_positive"
-                else:
-                    eps_trend = "mixed_negative"
-            except Exception:
-                pass
+        # Convert quarterly PAT (Cr) → relative QoQ acceleration signal.
+        # Logic extracted to services.growth_utils.compute_categorical_trend
+        # (Epic 003 Sprint #003) so the Growth Intelligence Engine's US
+        # adapter can reuse the identical bucketing on annual EPS data,
+        # instead of each adapter re-deriving its own copy — behavior at
+        # this call site is unchanged, same inputs produce the same labels.
+        eps_trend = compute_categorical_trend(quarterly_pat)
 
         # Tag all enrichment metadata for use in scoring functions
         enriched["_screener_available"] = True
