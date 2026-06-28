@@ -245,3 +245,26 @@ def multibagger_stock_in() -> dict:
         "ev_ebitda": 15.0,
         "promoter_pledge_pct": 0.0,
     }
+
+
+def make_companyfacts(tags: dict[str, dict], entity_name: str = "TEST CORP") -> dict:
+    """
+    Builds a SEC EDGAR `companyfacts`-shaped fixture (services/sec_edgar_adapter.py,
+    SSDS-006 Sprint #004) for a us-gaap concept set, without any live network call.
+
+    `tags` maps an XBRL concept name (e.g. "AssetsCurrent") to a single fact
+    entry dict (val/end/fy/fp/form/filed) — the shape confirmed live against
+    SEC EDGAR's real API for AAPL during this sprint, not invented. Pass only
+    the concepts a given test case needs; everything else is correctly absent,
+    matching how a real company's filing can omit a tag entirely (e.g. JPM's
+    real, confirmed-live absence of AssetsCurrent/LiabilitiesCurrent).
+    """
+    return {
+        "cik": 9999999999,
+        "entityName": entity_name,
+        "facts": {
+            "us-gaap": {
+                concept: {"units": {"USD": [entry]}} for concept, entry in tags.items()
+            }
+        },
+    }
