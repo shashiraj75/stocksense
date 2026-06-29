@@ -47,6 +47,7 @@ def picks_status(market: str = "IN"):
         "generating": _dp._generating.get(market, False),
         "has_today": _dp.picks_generated_today(market),
         "last_error": _dp._last_error.get(market),
+        "last_trigger_received_at": _dp._last_trigger_received_at.get(market),
     }
 
 
@@ -66,13 +67,20 @@ def trigger_generation(background_tasks: BackgroundTasks, market: str = "IN", x_
     """
     Trigger a fresh pick generation run in the background, for one market at a time.
     Protected by X-Secret header to prevent abuse.
-    Called by GitHub Actions cron: IN at 20:30 UTC (2 AM IST), US at 13:00 UTC (9 AM ET).
+    Called by GitHub Actions cron: IN at 20:30 UTC (2 AM IST), US at 12:30 UTC (~8:30 AM ET).
     """
     if x_secret != PICKS_SECRET:
         raise HTTPException(status_code=401, detail="Invalid secret")
     market = _norm_market(market)
 
     import services.daily_picks as _dp
+    from datetime import datetime, timezone
+    # Product Integrity Workstream #001B: recorded the instant a valid
+    # trigger is accepted, before the background task runs — so a future
+    # incident can tell "the scheduled trigger never reached the backend"
+    # apart from "it reached the backend but generate_picks() never wrote
+    # a fresh generated_at" (e.g. a crash before its own except-handler ran).
+    _dp._last_trigger_received_at[market] = datetime.now(timezone.utc).isoformat()
     with _dp._generating_lock:
         if _dp._generating.get(market, False):
             return {"status": "already running", "message": f"{market} picks generation is already in progress."}

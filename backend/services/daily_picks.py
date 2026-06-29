@@ -580,6 +580,20 @@ def generate_picks(market: str = "IN") -> dict:
 # Module-level last error per market (exposed via /api/picks/status)
 _last_error: dict[str, str | None] = {"IN": None, "US": None}
 
+# Product Integrity Workstream #001B: the only prior way to tell "the
+# scheduled trigger never reached the backend" apart from "it reached the
+# backend but generate_picks() crashed before writing anything" was to
+# compare generated_at against today's date — which proves SOMETHING
+# didn't happen, but not which stage. This records the instant a valid
+# POST /api/picks/generate request is accepted, before the background task
+# runs, so a future incident can directly distinguish a missed/failed
+# GitHub Actions trigger (this stays None or stale) from a trigger that
+# reached the backend but never completed (this updates; generated_at
+# doesn't). In-memory only, like _generating/_last_error above — does not
+# survive a Railway restart; a durable, persisted version is a recommended
+# future follow-up if this gap recurs.
+_last_trigger_received_at: dict[str, str | None] = {"IN": None, "US": None}
+
 
 def _generate_picks_inner(market: str = "IN") -> dict:
     from services.alpha_engine.outcome_logger import resolve_pending_outcomes
