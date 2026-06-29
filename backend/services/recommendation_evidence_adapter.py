@@ -40,22 +40,33 @@ _GRADE_TO_STATUS = {
     "avoid": EvidenceStatus.AVOID,
 }
 
-# rejection_reason -> (status, hard_gate) mapping, confirmed against the
-# real reason strings each engine's own code emits (grepped directly, not
-# assumed) — see Sprint #002's Evidence Contract §6 Hard-Gate table.
+# rejection_reason -> (status, hard_gate, currently_enforced) mapping,
+# confirmed against the real reason strings each engine's own code emits
+# (grepped directly, not assumed) — see Sprint #002's Evidence Contract §6
+# Hard-Gate table, refined by Sprint #004's Contract Integrity Review.
+#
+# `currently_enforced=True` for liquidity_distress is a real, confirmed
+# fact, not a default: prediction_engine.py caps confidence at 30 AND
+# daily_picks.py's own quality gate excludes any stock whose Financial
+# Strength reasoning contains the phrase "liquidity distress" (grepped
+# directly at daily_picks.py:708). Business Quality's fraud_risk/
+# distress_and_aggressive_accruals path has NO equivalent downstream
+# check anywhere (confirmed: daily_picks.py never references
+# business_quality at all) -- Sprint #003 tagged both states identically
+# as HardGateType.TRUE_VETO with no way to tell them apart, a real defect
+# Sprint #004's review found and this table now corrects.
 _REJECTION_REASON_MAP = {
-    "insufficient_data": (EvidenceStatus.UNAVAILABLE, HardGateType.NONE),
-    "sector_not_yet_supported": (EvidenceStatus.NOT_APPLICABLE, HardGateType.NONE),
-    "liquidity_distress": (EvidenceStatus.AVOID, HardGateType.TRUE_VETO),
+    "insufficient_data": (EvidenceStatus.UNAVAILABLE, HardGateType.NONE, False),
+    "sector_not_yet_supported": (EvidenceStatus.NOT_APPLICABLE, HardGateType.NONE, False),
+    "liquidity_distress": (EvidenceStatus.AVOID, HardGateType.TRUE_VETO, True),
     # Business Quality's own fraud-risk path: computed and DESCRIBABLE per
     # Sprint #002's Evidence Contract §6 ("RCI may treat it as a veto in
-    # its own narrative"), but per THIS sprint's explicit rule ("do not
-    # add it as a new veto... do not change any production behavior"),
-    # this adapter tags it descriptively (true_veto) without enforcing
-    # anything -- no code path anywhere in this package excludes or
-    # filters based on this tag; it is observed, not acted on.
-    "fraud_risk": (EvidenceStatus.AVOID, HardGateType.TRUE_VETO),
-    "distress_and_aggressive_accruals": (EvidenceStatus.AVOID, HardGateType.TRUE_VETO),
+    # its own narrative"), but per the original Sprint #003 rule ("do not
+    # add it as a new veto... do not change any production behavior") --
+    # currently_enforced=False makes that distinction machine-readable
+    # rather than only a comment, the specific gap Sprint #004 found.
+    "fraud_risk": (EvidenceStatus.AVOID, HardGateType.TRUE_VETO, False),
+    "distress_and_aggressive_accruals": (EvidenceStatus.AVOID, HardGateType.TRUE_VETO, False),
 }
 
 
@@ -86,18 +97,20 @@ def _normalize(
     every existing engine closure's own BaseException-guarded philosophy."""
     if not applicable:
         return EngineEvidence(
-            engine_name=engine_name, engine_version=default_engine_version, market=market,
-            sector_bucket=None, score=None, grade=None, confidence=None,
-            status=EvidenceStatus.NOT_APPLICABLE, hard_gate=HardGateType.NONE,
+            engine_name=engine_name, engine_version=default_engine_version,
+            engine_version_provenance="adapter_supplied_default" if default_engine_version else "unknown",
+            market=market, sector_bucket=None, score=None, grade=None, confidence=None,
+            status=EvidenceStatus.NOT_APPLICABLE, hard_gate=HardGateType.NONE, currently_enforced=False,
             positive_evidence=(), negative_evidence=(), warnings=(),
             reason_code="not_applicable_for_market", data_completeness_pct=None,
         )
 
     if not engine_response:
         return EngineEvidence(
-            engine_name=engine_name, engine_version=default_engine_version, market=market,
-            sector_bucket=None, score=None, grade=None, confidence=None,
-            status=EvidenceStatus.UNAVAILABLE, hard_gate=HardGateType.NONE,
+            engine_name=engine_name, engine_version=default_engine_version,
+            engine_version_provenance="adapter_supplied_default" if default_engine_version else "unknown",
+            market=market, sector_bucket=None, score=None, grade=None, confidence=None,
+            status=EvidenceStatus.UNAVAILABLE, hard_gate=HardGateType.NONE, currently_enforced=False,
             positive_evidence=(), negative_evidence=(), warnings=(),
             reason_code="no_result", data_completeness_pct=None,
         )
@@ -108,16 +121,16 @@ def _normalize(
         rejection_reason = _val(metadata, "rejection_reason")
 
         if grade == "rejected" and rejection_reason in _REJECTION_REASON_MAP:
-            status, hard_gate = _REJECTION_REASON_MAP[rejection_reason]
+            status, hard_gate, currently_enforced = _REJECTION_REASON_MAP[rejection_reason]
         elif grade == "rejected":
             # An engine-specific rejection reason this adapter doesn't yet
             # recognize -- degrade to UNAVAILABLE (never fabricate a guess
             # at severity), per this sprint's "never silently convert to
             # negative evidence" rule.
-            status, hard_gate = EvidenceStatus.UNAVAILABLE, HardGateType.NONE
+            status, hard_gate, currently_enforced = EvidenceStatus.UNAVAILABLE, HardGateType.NONE, False
         else:
             status = _GRADE_TO_STATUS.get(grade, EvidenceStatus.UNAVAILABLE)
-            hard_gate = HardGateType.NONE
+            hard_gate, currently_enforced = HardGateType.NONE, False
 
         if feature_disabled:
             # The engine computed a real result, but a kill switch
@@ -127,11 +140,17 @@ def _normalize(
             # context, but status must say so explicitly.
             status = EvidenceStatus.FEATURE_DISABLED
 
-        engine_version = _val(metadata, "engine_version") or default_engine_version
+        real_engine_version = _val(metadata, "engine_version")
+        engine_version = real_engine_version or default_engine_version
+        engine_version_provenance = (
+            "engine_reported" if real_engine_version
+            else ("adapter_supplied_default" if default_engine_version else "unknown")
+        )
 
         return EngineEvidence(
             engine_name=engine_name,
             engine_version=engine_version,
+            engine_version_provenance=engine_version_provenance,
             market=_val(metadata, "market") or market,
             sector_bucket=_val(metadata, "sector_bucket"),
             score=engine_response.get("score"),
@@ -139,6 +158,7 @@ def _normalize(
             confidence=engine_response.get("confidence"),
             status=status,
             hard_gate=hard_gate,
+            currently_enforced=currently_enforced,
             positive_evidence=tuple(engine_response.get("strengths") or ()),
             negative_evidence=tuple(engine_response.get("weaknesses") or ()),
             warnings=tuple(engine_response.get("risks") or ()),
@@ -147,9 +167,10 @@ def _normalize(
         )
     except BaseException:
         return EngineEvidence(
-            engine_name=engine_name, engine_version=default_engine_version, market=market,
-            sector_bucket=None, score=None, grade=None, confidence=None,
-            status=EvidenceStatus.EXECUTION_ERROR, hard_gate=HardGateType.NONE,
+            engine_name=engine_name, engine_version=default_engine_version,
+            engine_version_provenance="adapter_supplied_default" if default_engine_version else "unknown",
+            market=market, sector_bucket=None, score=None, grade=None, confidence=None,
+            status=EvidenceStatus.EXECUTION_ERROR, hard_gate=HardGateType.NONE, currently_enforced=False,
             positive_evidence=(), negative_evidence=(), warnings=(),
             reason_code="adapter_error", data_completeness_pct=None,
         )

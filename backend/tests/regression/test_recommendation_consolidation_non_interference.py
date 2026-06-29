@@ -40,8 +40,15 @@ class TestNoWiringIntoExistingModules:
         assert "import services.prediction_engine" not in source
 
     def test_rci_adapter_does_not_import_daily_picks(self):
+        """Checks for an actual import statement, not any mention of the
+        string -- Sprint #004's Contract Integrity Review added code
+        comments that cite daily_picks.py:708 as evidence (confirming
+        liquidity_distress's real enforcement), which is documentation,
+        not a dependency."""
         source = pathlib.Path(rci_adapter.__file__).read_text()
-        assert "daily_picks" not in source
+        assert "import services.daily_picks" not in source
+        assert "from services.daily_picks" not in source
+        assert "from services import daily_picks" not in source
 
 
 @pytest.mark.regression

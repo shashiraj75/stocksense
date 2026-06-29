@@ -211,9 +211,21 @@ def compute_recommendation_consolidation(
         else f"{_label(e.engine_name)} raises concerns"
         for e in by_name.values() if e.status in OPPOSING_STATUSES
     )
+    # Sprint #004's Contract Integrity Review finding: a hard_gate tag
+    # alone does not mean it is acted on anywhere in production today.
+    # `active_gates` is restricted to currently_enforced=True (confirmed,
+    # real examples: Financial Strength's liquidity_distress) -- never
+    # claiming a gate is active unless it genuinely is, per this engine's
+    # own permanent principle. A computed-but-unenforced flag (Business
+    # Quality's fraud_risk) is surfaced separately, honestly, as
+    # `unresolved_risk_flags`, never mislabeled as an active gate.
     active_gates = tuple(
-        f"{_label(e.engine_name)}: {e.hard_gate.value}"
-        for e in by_name.values() if e.hard_gate.value != "none"
+        f"{_label(e.engine_name)}: {e.hard_gate.value} (enforced)"
+        for e in by_name.values() if e.hard_gate.value != "none" and e.currently_enforced
+    )
+    unresolved_risk_flags = tuple(
+        f"{_label(e.engine_name)}: {e.hard_gate.value} flag present, not currently enforced as an exclusion"
+        for e in by_name.values() if e.hard_gate.value != "none" and not e.currently_enforced
     )
     material_warnings = tuple(
         f"{_label(e.engine_name)}: {e.warnings[0]}"
@@ -243,6 +255,7 @@ def compute_recommendation_consolidation(
         supporting_evidence=supporting_evidence,
         opposing_evidence=opposing_evidence,
         active_gates=active_gates,
+        unresolved_risk_flags=unresolved_risk_flags,
         material_warnings=material_warnings,
         evidence_completeness_pct=evidence_completeness_pct,
         explanation_confidence_category=explanation_confidence_category,

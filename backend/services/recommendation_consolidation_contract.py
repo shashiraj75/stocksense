@@ -78,10 +78,32 @@ class EngineEvidence:
     `score`/`grade`/`confidence` are passed through UNCHANGED from the
     source engine — RCI never recomputes them, only reads and tags them
     with a normalized status.
+
+    `engine_version_provenance` and `currently_enforced` were added in
+    Sprint #004's Contract Integrity Review, after that review found Sprint
+    #003's original implementation conflated two genuinely different real
+    states under one identical tag:
+
+    - `engine_version_provenance` ("engine_reported" | "adapter_supplied_default"
+      | "unknown") makes explicit when `engine_version` was supplied by the
+      adapter (Business Quality, today) rather than reported by the engine
+      itself — confirmed by Sprint #004's review that the un-flagged Sprint
+      #003 shape could let an auditor wrongly believe Business Quality had
+      emitted that version itself.
+    - `currently_enforced` (bool) distinguishes a hard-gate tag that is
+      genuinely acted on somewhere in production TODAY (Financial Strength's
+      `liquidity_distress`, confirmed enforced via `daily_picks.py`'s own
+      `"liquidity distress"` phrase check) from one that is merely computed
+      and DESCRIBED, never enforced (Business Quality's `fraud_risk`/
+      `distress_and_aggressive_accruals`, confirmed via Sprint #002/#003's
+      own review that no downstream code references Business Quality at
+      all). Sprint #003 tagged both identically as `HardGateType.TRUE_VETO`
+      — a real, found defect, corrected here, not a hypothetical concern.
     """
 
     engine_name: str
     engine_version: str | None
+    engine_version_provenance: str
     market: str | None
     sector_bucket: str | None
     score: float | None
@@ -89,6 +111,7 @@ class EngineEvidence:
     confidence: float | None
     status: EvidenceStatus
     hard_gate: HardGateType
+    currently_enforced: bool
     positive_evidence: tuple[str, ...]
     negative_evidence: tuple[str, ...]
     warnings: tuple[str, ...]
@@ -146,7 +169,8 @@ class RecommendationConsolidationResponse:
     conflicts: tuple[ConflictMatch, ...]
     supporting_evidence: tuple[str, ...]
     opposing_evidence: tuple[str, ...]
-    active_gates: tuple[str, ...]
+    active_gates: tuple[str, ...]  # ONLY gates confirmed `currently_enforced=True` in production today
+    unresolved_risk_flags: tuple[str, ...]  # computed, described, but NOT enforced anywhere (e.g. Business Quality fraud-risk)
     material_warnings: tuple[str, ...]
     evidence_completeness_pct: float | None
     explanation_confidence_category: str  # "high" | "moderate" | "low"
