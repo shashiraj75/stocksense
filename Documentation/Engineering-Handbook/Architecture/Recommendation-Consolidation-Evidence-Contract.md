@@ -2,6 +2,8 @@
 
 **Status:** Contract-design sprint only. No production code modified — per this sprint's explicit "do not implement, do not modify Prediction Engine/Daily Picks/Portfolio/UI behavior, do not add providers, do not activate kill switches, do not alter thresholds/weights/grades" rule, this document and its companion Traceability & Versioning specification are the entirety of this sprint's output.
 
+> **Update (Epic 005, Sprint #003 — Evidence Contract Implementation):** This contract has been implemented as designed in `services/recommendation_consolidation_contract.py` and `services/recommendation_evidence_adapter.py` — see [Sprint #003's report](../Releases/Sprint-003-Recommendation-Consolidation-Evidence-Contract-Implementation.md) for the field-by-field implemented-vs-deferred breakdown. The §7 conflict taxonomy's V1 implementation covers 5 of the 8 patterns specified below (`CP-01`, `CP-02`, `CP-03`, `CP-07`, `CP-08`); `CP-04`/`CP-05`/`CP-06` remain deferred, named explicitly in the Sprint #003 report, not silently dropped. This document's own specification is otherwise unchanged and remains the authoritative design reference.
+
 ## Evidence Checkpoint (Mandatory — performed before any contract design below)
 
 Re-reviewed SSDS-009, the Recommendation Consolidation Research Report, all four Epic closure reports, and — critically — **read the current code directly** (`prediction_engine.py`, `business_quality_engine.py`, `financial_strength_engine.py`, `growth_intelligence_engine.py`, `valuation_intelligence_engine.py`, `daily_picks.py`, `postgres_store.py`) rather than relying on SSDS-009's own conceptual descriptions.
