@@ -51,6 +51,51 @@ export interface OHLCVBar {
   volume: number;
 }
 
+// Recommendation Consolidation Intelligence (Epic 005) — the additive,
+// read-only "Evidence Summary" field. Defined per Sprint #011's contract
+// spec: every field below is the exact backend shape (no frontend-invented
+// replacement), `contract_version` is the only field this client currently
+// understands (SUPPORTED_RCI_CONTRACT_VERSION), and the whole object is
+// optional/absent whenever the Railway flag is disabled, the backend's own
+// error-isolation path omits it, or an older API response predates RCI.
+// `coverage_notices` / `unresolved_risk_flags` / `material_warnings` are
+// confirmed (Sprint #011, direct pipeline execution) to be bare strings
+// with NO stable identifier — unlike `conflicts`, which has `conflict_id`.
+// Do not add any text-matching de-duplication beyond a single response.
+export const SUPPORTED_RCI_CONTRACT_VERSION = 1;
+
+export type RciThesisState = "supported" | "mixed" | "conflicted" | "insufficient_evidence";
+export type RciExplanationConfidenceCategory = "high" | "moderate" | "low";
+
+export interface RciConflict {
+  conflict_id: string;
+  headline: string;
+  narrative: string;
+  supporting_engines: string[];
+  opposing_engines: string[];
+  severity: string;
+}
+
+export interface RecommendationConsolidation {
+  contract_version: number;
+  snapshot_id: string;
+  computed_at: string;
+  is_snapshot: boolean;
+  thesis_state: RciThesisState;
+  engine_agreement: string;
+  conflicts: RciConflict[];
+  coverage_notices: string[];
+  supporting_evidence: string[];
+  opposing_evidence: string[];
+  active_gates: string[];
+  unresolved_risk_flags: string[];
+  material_warnings: string[];
+  evidence_completeness_pct: number | null;
+  explanation_confidence_category: RciExplanationConfidenceCategory;
+  narrative: string;
+  engine_versions_used: Record<string, string | null>;
+}
+
 export interface Prediction {
   symbol: string;
   market: Market;
@@ -65,6 +110,9 @@ export interface Prediction {
   fundamental_score: { score: number; reasons: string[] };
   sentiment_score: { score: number; label: string; bullish: number; bearish: number };
   market_regime?: { trend: string; score_adj: number; reason: string };
+  // Optional per Sprint #011 §3A — absent today in every production response
+  // since RCI_LIVE_STOCK_ANALYSIS_ENABLED is disabled in Railway.
+  recommendation_consolidation?: RecommendationConsolidation;
 }
 
 export interface NewsArticle {
@@ -77,6 +125,34 @@ export interface NewsArticle {
 }
 
 // ─── API calls ────────────────────────────────────────────────
+
+// Per Sprint #011 §3A/§3C: absent, null, malformed, incomplete, or an
+// unsupported future contract version must all degrade to "do not render" —
+// never an error state. `narrative` is treated as the one load-bearing
+// field; its absence (or a non-array on any evidence list) means the object
+// is unusable. This is the ONLY place that decides whether Evidence Summary
+// renders at all — callers never need their own absence/validity checks.
+export function getValidRecommendationConsolidation(
+  prediction: Prediction | null | undefined,
+): RecommendationConsolidation | null {
+  const rci = prediction?.recommendation_consolidation;
+  if (!rci || typeof rci !== "object") return null;
+  if (rci.contract_version !== SUPPORTED_RCI_CONTRACT_VERSION) return null;
+  if (typeof rci.narrative !== "string" || !rci.narrative) return null;
+  const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === "string");
+  if (
+    !isStringArray(rci.coverage_notices) ||
+    !isStringArray(rci.supporting_evidence) ||
+    !isStringArray(rci.opposing_evidence) ||
+    !isStringArray(rci.active_gates) ||
+    !isStringArray(rci.unresolved_risk_flags) ||
+    !isStringArray(rci.material_warnings) ||
+    !Array.isArray(rci.conflicts)
+  ) {
+    return null;
+  }
+  return rci;
+}
 
 export const fetchQuote = (symbol: string, market: Market) =>
   api.get<StockQuote>(`/api/stocks/quote/${symbol}`, { params: { market } }).then((r) => r.data);

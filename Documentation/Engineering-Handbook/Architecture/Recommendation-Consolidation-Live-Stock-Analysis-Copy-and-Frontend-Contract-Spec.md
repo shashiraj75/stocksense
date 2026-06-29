@@ -2,6 +2,8 @@
 
 **Status:** Copy/contract specification only. No backend code, frontend code, TypeScript interfaces, React components, API payloads, Railway configuration, or visual assets were created or modified.
 
+> **Update (Sprint #012):** Implementation found that state 8 ("Feature-disabled engine state," §4/§5 case 8) has no backend field to render — `EvidenceStatus.FEATURE_DISABLED` is used only internally by `recommendation_consolidation_engine.py` to gate conflict detection and is never serialized into the public response. The Sprint #012 implementation therefore renders nothing for this state, the same safe default as full RCI absence, rather than inventing frontend-only copy. See [Sprint #012's release report](../Releases/Sprint-012-Recommendation-Consolidation-Live-Stock-Analysis-Frontend-Implementation.md) for the recommended minimal backend addition. This original section is left unchanged below, per this engagement's non-destructive "Update" pointer convention.
+
 ## Evidence Checkpoint
 
 Reviewed directly: Sprint #001–#010 reports, SSDS-009, the Evidence Contract, Traceability/Versioning doc, the Integration Readiness doc, the Operational Activation decision, the UI Consumer Design doc, `recommendation_consolidation_contract.py`, `recommendation_consolidation_engine.py`, `recommendation_consolidation_api_composer.py`, and `frontend/src/utils/api.ts`.

@@ -17,6 +17,7 @@ import { PaperTradeModal } from "@/components/PaperTradeModal";
 import { useAuth } from "@/lib/AuthContext";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { TradeLevelVisualizer } from "@/components/TradeLevelVisualizer";
+import { EvidenceSummary } from "@/components/EvidenceSummary";
 
 // Kill switch — set back to true to restore the "Was this signal useful?"
 // thumbs up/down prompt. Hidden per user feedback that it looked annoying.
@@ -672,6 +673,12 @@ export default function StockPage() {
                   </div>
                 );
               })()}
+
+              {/* Evidence Summary — Epic 005 RCI. Renders nothing while
+                  RCI_LIVE_STOCK_ANALYSIS_ENABLED is disabled in Railway,
+                  since the backend then never includes
+                  recommendation_consolidation on the prediction object. */}
+              {!predLoading && <EvidenceSummary prediction={prediction} />}
 
               {/* Tabs row */}
               <div className="flex gap-2 flex-wrap mt-4 pt-4 border-t border-white/[0.06]">
