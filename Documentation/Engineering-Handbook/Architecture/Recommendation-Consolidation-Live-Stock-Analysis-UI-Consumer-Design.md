@@ -2,6 +2,8 @@
 
 **Status:** Design study only. No frontend code, backend code, API behavior, or Railway configuration was modified. No TypeScript interfaces or React components were added. No mockups or visual assets were created — all layout/placement decisions below are described in prose/tables, not rendered.
 
+> **Update (Sprint #011):** §6's assumption that coverage notices might carry a reason code was not verified against the real, executed serialized contract. Sprint #011's direct execution of the actual RCI pipeline confirmed `coverage_notices` (and `unresolved_risk_flags`/`material_warnings`) are bare `tuple[str, ...]` with no identifier of any kind — only `conflicts` items carry a stable `conflict_id`. See [Live Stock Analysis Copy and Frontend Contract Spec, §6](Recommendation-Consolidation-Live-Stock-Analysis-Copy-and-Frontend-Contract-Spec.md) for the confirmed shape, the resulting de-duplication scope limitation, and the recommended backend-contract addition. This original section is left unchanged below, per this engagement's non-destructive "Update" pointer convention.
+
 ## Evidence Checkpoint
 
 Reviewed directly: Sprint #001-#009 reports, SSDS-009, the Evidence Contract (`recommendation_consolidation_contract.py`), Traceability/Versioning doc, the Integration Readiness doc, Sprint #008's implementation report, Sprint #009's Operational Activation decision, the current `recommendation_consolidation_contract.py`/`recommendation_consolidation_api_composer.py`, and the current frontend: `frontend/src/utils/api.ts`'s `Prediction` interface, `frontend/src/app/stock/[symbol]/page.tsx` (1,838 lines), and `frontend/src/components/BullBearCase.tsx`.
