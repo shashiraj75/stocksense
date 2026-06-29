@@ -230,8 +230,20 @@ def _get_universe_by_mcap(market: str) -> list[str]:
             exch_query,
             yf.EquityQuery("gt", ["intradaymarketcap", min_mcap]),
         ])
+        # Product Integrity Workstream #002A: Yahoo's screen() endpoint now
+        # hard-rejects count > 250 ("Yahoo limits query count to 250, reduce
+        # count") -- confirmed live, reproduced directly against the same
+        # query this function issues. Before this fix, every single call
+        # raised that ValueError, was silently caught below, and fell back
+        # to the FULL static universe (2,300+ IN / ~1,500+ US stocks) on
+        # every run -- the market-cap pre-filter this function exists to
+        # provide had not actually been narrowing the universe at all,
+        # materially inflating Phase-0's yf.download() workload and likely
+        # contributing to the unusually long batch runtimes observed in
+        # Workstreams #001B/#001C. 250 is Yahoo's own current maximum, not
+        # an arbitrary guess.
         result = yf.screen(
-            query, sortField="intradaymarketcap", sortAsc=False, count=1000
+            query, sortField="intradaymarketcap", sortAsc=False, count=250
         )
         quotes = result.get("quotes", [])
         suffix = cfg["suffix"]
