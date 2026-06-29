@@ -3,6 +3,8 @@
 **Status:** Design Study only. No production code modified — per this sprint's explicit "no engine implementation, no scoring, no threshold calibration" rule, this document, its companion Methodology Comparison/Research Report, and the metric catalogue are the entirety of this sprint's output.
 **Governed by:** SES-001 through SES-005, mirroring SSDS-007's own structure (the most recently proven template), since that design study's discipline — Evidence Checkpoint, Methodology Checkpoint before metric selection, explicit scope boundaries against every existing engine — is exactly what this sprint's brief asks for again.
 
+> **Update (Epic 004, Sprint #002 — India Data Feasibility Study):** Live evidence against 113 real Indian companies found this document's India-side Cross-Market Feasibility Assessment was **too pessimistic for three specific items**, because Sprint #001 evaluated India through screener.in alone and never tested yfinance's own India coverage (which `prediction_engine.py` already uses as the *base* India source). **Forward P/E (100%), Dividend Sustainability / payout ratio (100%), and a ~5-year historical valuation band are all feasible for India** — corrected upward from this document's "Not currently available" / "Unconfirmed" ratings. This document's original text is deliberately left unchanged, per the "do not silently revise" rule; the corrected record is [Valuation Intelligence — India Data Feasibility Study](../Architecture/Valuation-Intelligence-India-Data-Feasibility-Study.md). The Evidence Checkpoint, Methodology Checkpoint, and all engine-overlap findings below are **unaffected and confirmed** by Sprint #002's evidence.
+
 ---
 
 ## Evidence Checkpoint (Mandatory — performed before any methodology or metric work below)
