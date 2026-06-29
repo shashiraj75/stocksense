@@ -90,8 +90,14 @@ export default function MultibaggerPage() {
     placeholderData: keepPreviousData,
   });
 
+  // Product Integrity Workstream #001: `last_refreshed` is a server-side
+  // operational timestamp (when the nightly fundamentals-refresh job ran),
+  // not a client fetch time — explicitly converted to IST (rather than
+  // left to silently default to the browser's local zone while looking
+  // like IST via the "en-IN" locale) so it can never quietly disagree with
+  // other explicitly-IST-labeled timestamps elsewhere on the page.
   const lastRefreshed = data?.last_refreshed
-    ? new Date(data.last_refreshed).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: true })
+    ? new Date(data.last_refreshed).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: true })
     : null;
 
   return (
@@ -125,7 +131,7 @@ export default function MultibaggerPage() {
             </span>
           ) : lastRefreshed && (
             <span className="flex items-center gap-1.5 text-xs text-gray-500 bg-dark-card border border-dark-border rounded-lg px-3 py-1.5">
-              <Clock size={12} /> Refreshed {lastRefreshed}
+              <Clock size={12} /> Refreshed {lastRefreshed} IST
             </span>
           )}
         </div>

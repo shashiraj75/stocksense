@@ -63,8 +63,8 @@ type LivePick = {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const MARKETS = [
-  { key: "IN" as const, short: "🇮🇳 IN", label: "🇮🇳 NSE India",  currency: "₹", locale: "en-IN", tz: "Asia/Kolkata",     genTime: "2 AM IST" },
-  { key: "US" as const, short: "🇺🇸 US", label: "🇺🇸 NYSE/NASDAQ", currency: "$", locale: "en-US", tz: "America/New_York", genTime: "6:00 PM IST" },
+  { key: "IN" as const, short: "🇮🇳 IN", label: "🇮🇳 NSE India",  currency: "₹", locale: "en-IN", tz: "Asia/Kolkata",     genTime: "2 AM IST",   tzLabel: "IST" },
+  { key: "US" as const, short: "🇺🇸 US", label: "🇺🇸 NYSE/NASDAQ", currency: "$", locale: "en-US", tz: "America/New_York", genTime: "6:00 PM IST", tzLabel: "ET" },
 ];
 
 const HORIZONS = [
@@ -644,11 +644,17 @@ export default function DailyPicksPage() {
 
   const currency = data?.currency ?? marketCfg.currency;
   const picks = data?.picks?.[horizon] ?? [];
+  // Product Integrity Workstream #001: already explicitly converted to
+  // this market's own timezone (correct, predating this workstream) — the
+  // only fix needed here is disclosing WHICH timezone, via tzLabel, since
+  // the global header clock and this label can legitimately show two
+  // different timezones (e.g. ET for the US tab vs IST for the header) and
+  // previously neither was labeled, making the gap look like a defect.
   const generatedAt = data?.generated_at
-    ? new Date(data.generated_at).toLocaleString(marketCfg.locale, {
+    ? `${new Date(data.generated_at).toLocaleString(marketCfg.locale, {
         timeZone: marketCfg.tz, day: "2-digit", month: "short",
         year: "numeric", hour: "2-digit", minute: "2-digit", hour12: true,
-      }) : null;
+      })} ${marketCfg.tzLabel}` : null;
   const alphaForHorizon = data?.alpha_engine?.[horizon];
 
   return (

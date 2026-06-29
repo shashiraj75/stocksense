@@ -936,9 +936,15 @@ export default function StockPage() {
                       : `Price · Yahoo Finance · Fundamentals · SEC filings${prediction.market_regime ? " · Market regime" : ""} · News`
                     }
                     {" · "}
-                    <span title="Time when this prediction was computed">
+                    {/* Product Integrity Workstream #001: generated_at is a
+                        backend computation timestamp (UTC ISO from the
+                        Prediction Engine's cache), not a client fetch time —
+                        explicitly converted to IST rather than left to
+                        silently default to the browser's local zone while
+                        formatted with "en-IN" conventions. */}
+                    <span title="Time when this prediction was computed (IST)">
                       Updated {prediction.generated_at
-                        ? new Date(prediction.generated_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true })
+                        ? `${new Date(prediction.generated_at).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: true })} IST`
                         : "recently"}
                     </span>
                   </p>
