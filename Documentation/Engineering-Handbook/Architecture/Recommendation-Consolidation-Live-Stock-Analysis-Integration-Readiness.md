@@ -2,6 +2,8 @@
 
 **Status:** Integration-readiness decision sprint only. No production code, API response, UI, persistence, confidence, signal, score, gate, or engine behavior was changed — this document is the entirety of this sprint's output.
 
+> **Update (Epic 005, Sprint #008 — Live Stock Analysis API Implementation):** This decision's recommended boundary (Option C, a dedicated read-only composer) and cache-safety rule were implemented exactly as specified — see [Sprint #008's report](../Releases/Sprint-008-Recommendation-Consolidation-Live-Stock-Analysis-API-Implementation.md). A real, live spot-check found that `CP-02`/`CP-03` are currently dormant in production because Valuation Intelligence's kill switch defaults disabled (confirmed by the composer correctly reading the real switch state) — a genuine, evidence-based finding this decision document's own analysis did not anticipate, named explicitly in Sprint #008, not a contradiction of anything decided here.
+
 ## Evidence Checkpoint (Mandatory)
 
 Reviewed Sprints #001–#006's reports and code directly. **All non-negotiable invariants reconfirmed true.** Per this sprint's own explicit instruction to verify from code, not assumption, the following were inspected directly:

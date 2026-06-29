@@ -8,6 +8,9 @@ from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 from services.prediction_engine import PredictionEngine, _pred_cache, _PRED_TTL
 from services.crypto_engine import predict_crypto
+from services.recommendation_consolidation_api_composer import (
+    compose_prediction_response_with_rci, rci_live_stock_analysis_enabled,
+)
 from typing import Literal
 
 log = logging.getLogger(__name__)
@@ -116,7 +119,18 @@ async def get_prediction(
     # ── 1. Cache hit — return instantly, no compute needed ──────────────────
     cached = _pred_cache.get(key)
     if cached and (time.time() - cached[0]) < _PRED_TTL:
-        return JSONResponse(content=_to_python(cached[1]))
+        result = cached[1]
+        # Recommendation Consolidation Intelligence (Epic 005, Sprint #008) —
+        # the one, approved integration boundary (Sprint #007's decision):
+        # an opt-in, read-only, additive composer invoked ONLY here, in the
+        # live API route, never inside PredictionEngine.predict() itself.
+        # `result` here is the SAME object reference stored in `_pred_cache`
+        # (confirmed, Sprint #007's own decisive finding) — the composer is
+        # built to never mutate it, returning a new dict instead; `result`
+        # itself, and therefore the cache entry, is never written to below.
+        if rci_live_stock_analysis_enabled():
+            result = compose_prediction_response_with_rci(result, symbol=sym, market=market)
+        return JSONResponse(content=_to_python(result))
 
     # ── 2. Already computing — tell client to poll back in 5 s ──────────────
     if key in _computing:
