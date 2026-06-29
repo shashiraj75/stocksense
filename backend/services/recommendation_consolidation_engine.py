@@ -108,19 +108,29 @@ def _detect_conflicts(by_name: dict[str, EngineEvidence]) -> list[ConflictMatch]
             severity="moderate",
         ))
 
-    # CP-07 — a key engine unavailable/not applicable. Purely descriptive,
-    # never a judgment — explicitly allowed to fire even with only one
-    # engine present, per Sprint #002's own taxonomy.
-    missing = [e for e in by_name.values() if e.status in (EvidenceStatus.UNAVAILABLE, EvidenceStatus.NOT_APPLICABLE)]
+    # CP-07 — a key engine unavailable for THIS COMPANY SPECIFICALLY.
+    # Purely descriptive, never a judgment.
+    #
+    # Sprint #005's Structural Coverage Narrative Refinement found a real
+    # usefulness defect here, confirmed by Sprint #004's own 274-company
+    # real-data validation: this pattern previously also fired for
+    # EvidenceStatus.NOT_APPLICABLE, which for Financial Strength in India
+    # is a MARKET-STRUCTURAL fact (confirmed: the adapter's `applicable`
+    # parameter is False for every India company, unconditionally — not a
+    # company-specific data gap) -- causing CP-07 to fire for 100% of
+    # India companies for one always-true reason, never an informative
+    # signal. UNAVAILABLE (a genuine, company-specific data gap) and
+    # EXECUTION_ERROR remain here; NOT_APPLICABLE is handled separately
+    # below as a coverage notice, never as a "conflict."
+    missing = [e for e in by_name.values() if e.status in (EvidenceStatus.UNAVAILABLE, EvidenceStatus.EXECUTION_ERROR)]
     if missing:
         names = ", ".join(_label(e.engine_name) for e in missing)
         conflicts.append(ConflictMatch(
             conflict_id="CP-07-missing-engine",
             headline=f"{names} evidence not available for this company",
             narrative=(
-                f"{names} could not be evaluated for this company (unavailable or not "
-                "applicable for its market/sector) — this is an informational limitation, "
-                "not treated as supporting or opposing evidence."
+                f"{names} could not be evaluated for this specific company — this is an "
+                "informational limitation, not treated as supporting or opposing evidence."
             ),
             supporting_engines=(), opposing_engines=(),
             severity="informational",
@@ -191,6 +201,30 @@ def _explanation_confidence_category(by_name: dict[str, EngineEvidence], conflic
     return "low"
 
 
+def _coverage_notices(by_name: dict[str, EngineEvidence]) -> tuple[str, ...]:
+    """Market-structural unavailability (NOT_APPLICABLE with
+    reason_code="not_applicable_for_market") is surfaced here, as a
+    platform-level fact — never a per-company conflict, never opposing
+    evidence, never a reason a thesis's standing is lowered. Confirmed
+    distinct from a genuine, company-specific data gap (UNAVAILABLE,
+    handled by CP-07) and from a sector-specific gate (NOT_APPLICABLE
+    with a different reason_code, e.g. a future Bank/NBFC whole-engine
+    gate, which this function deliberately does NOT treat as a coverage
+    notice — only the market-wide case is, using the existing,
+    already-set reason_code as the discriminator, per this sprint's own
+    "smallest correct, versioned, traceable implementation" instruction
+    — no new EvidenceStatus value was needed."""
+    notices = []
+    for e in by_name.values():
+        if e.status == EvidenceStatus.NOT_APPLICABLE and e.reason_code == "not_applicable_for_market":
+            notices.append(
+                f"{_label(e.engine_name)} analysis is not currently available for this market "
+                "(a StockSense360 coverage limitation, not a company-specific finding) — this "
+                "assessment uses the available engines only."
+            )
+    return tuple(notices)
+
+
 def compute_recommendation_consolidation(
     snapshot: RecommendationEvidenceSnapshot,
 ) -> RecommendationConsolidationResponse:
@@ -200,6 +234,7 @@ def compute_recommendation_consolidation(
 
     conflicts = _detect_conflicts(by_name)
     thesis_state, engine_agreement = _thesis_state(by_name)
+    coverage_notices = _coverage_notices(by_name)
 
     supporting_evidence = tuple(
         f"{_label(e.engine_name)}: {e.positive_evidence[0]}" if e.positive_evidence
@@ -252,6 +287,7 @@ def compute_recommendation_consolidation(
         thesis_state=thesis_state,
         engine_agreement=engine_agreement,
         conflicts=tuple(conflicts),
+        coverage_notices=coverage_notices,
         supporting_evidence=supporting_evidence,
         opposing_evidence=opposing_evidence,
         active_gates=active_gates,

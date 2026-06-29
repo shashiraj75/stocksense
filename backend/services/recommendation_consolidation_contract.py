@@ -167,6 +167,15 @@ class RecommendationConsolidationResponse:
     thesis_state: str  # "supported" | "mixed" | "conflicted" | "insufficient_evidence"
     engine_agreement: str  # e.g. "3 of 4 applicable engines support this thesis"
     conflicts: tuple[ConflictMatch, ...]
+    # Sprint #005's Structural Coverage Narrative Refinement: a market-
+    # structural unavailability (e.g. Financial Strength has no India
+    # coverage at all) is NEVER a "conflict" — it is a platform-level
+    # coverage fact, true for every company in that market, never
+    # evidence that THIS company has a weakness. Surfaced here,
+    # separately from `conflicts`, using cautious, evidence-led wording
+    # — never counted toward thesis_state, engine_agreement, or any
+    # supporting/opposing evidence list.
+    coverage_notices: tuple[str, ...]
     supporting_evidence: tuple[str, ...]
     opposing_evidence: tuple[str, ...]
     active_gates: tuple[str, ...]  # ONLY gates confirmed `currently_enforced=True` in production today
