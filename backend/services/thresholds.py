@@ -458,6 +458,103 @@ class GrowthIntelligenceThresholds:
     PREDICTION_ENGINE_CONFIDENCE_ADJUSTMENT_CAP = 3.0
 
 
+@dataclass(frozen=True)
+class ValuationIntelligenceThresholds:
+    """Thresholds for the Valuation Intelligence Engine v1 (SSDS-008,
+    Epic 004 Sprint #003). Deliberately a SEPARATE registry entry from the
+    pre-existing ValuationThresholds/VALUATION above (owned by the
+    Multibagger scorecard's PE_QUALITY_COMPOUNDER_MAX/
+    EV_EBITDA_QUALITY_COMPOUNDER_MAX checklist) — SSDS-008's Evidence
+    Checkpoint named this exact naming collision and resolved it the same
+    way SSDS-007 resolved GROWTH/GROWTH_INTELLIGENCE: a new name, never a
+    reuse. Every band below is a standard, widely-cited equity-valuation
+    convention (Graham's P/E<15, Damodaran-style EV/EBITDA bands, etc.) —
+    chosen because this sprint's brief explicitly excludes "threshold
+    optimisation"/calibration; these are reasonable v1 starting points,
+    not backtested or outcome-calibrated, named as a Known Limitation in
+    the v1 implementation report, mirroring exactly how
+    GrowthIntelligenceThresholds entered production uncalibrated."""
+
+    MIN_CORE_FIELDS_PRESENT = 2  # of 4 core fields — below this, REJECTED
+    MIN_DATA_COMPLETENESS_PCT = 60.0
+
+    GRADE_STRONG_BUY_MIN = 80  # heavily undervalued
+    GRADE_BUY_MIN = 65
+    GRADE_HOLD_MIN = 50
+    GRADE_WATCH_MIN = 35  # below this: AVOID — richly valued
+
+    MIN_NOTABLE_CONTRIBUTION = 5.0
+
+    # Earnings Multiple (±15) — Graham's classic <15 "cheap" anchor;
+    # >30 is the conventional "richly valued" line cited across general
+    # equity-research practice (not specific to any single methodology).
+    PE_CHEAP_MAX = 15.0
+    PE_EXPENSIVE_MIN = 30.0
+    EARNINGS_MULTIPLE_STRONG_SCORE = 15.0
+    EARNINGS_MULTIPLE_WEAK_SCORE = -15.0
+
+    # EV/Sales (±12) — capital-structure-neutral; <1.5 and >5 are
+    # conventional general-market bands (richer multiples are normal and
+    # expected for high-growth/SaaS-style businesses specifically, which
+    # is exactly why this is a secondary signal, not the primary one).
+    EV_SALES_CHEAP_MAX = 1.5
+    EV_SALES_EXPENSIVE_MIN = 5.0
+    EV_SALES_STRONG_SCORE = 12.0
+    EV_SALES_WEAK_SCORE = -12.0
+
+    # Price/Book (±10) — sector-gated to FINANCIAL/REAL_ESTATE only, per
+    # SSDS-008's Design Philosophy ("no single-ratio reduction" + the
+    # Research Report's own asset-based-valuation sector-gating rationale).
+    # <1 is the classic Graham net-net-adjacent anchor; >3 is the
+    # conventional bank-analyst "expensive" line.
+    PRICE_BOOK_CHEAP_MAX = 1.0
+    PRICE_BOOK_EXPENSIVE_MIN = 3.0
+    PRICE_BOOK_STRONG_SCORE = 10.0
+    PRICE_BOOK_WEAK_SCORE = -10.0
+
+    # EV/EBITDA (±12) — population-gated to non-FINANCIAL companies per
+    # Sprint #002's live evidence (Banks/NBFC structurally lack
+    # EBITDA-shaped income statements: 0/10 Banks, 1/9 NBFC in the
+    # 113-company sample). <8 and >15 are standard Damodaran-style bands.
+    EV_EBITDA_CHEAP_MAX = 8.0
+    EV_EBITDA_EXPENSIVE_MIN = 15.0
+    EV_EBITDA_STRONG_SCORE = 12.0
+    EV_EBITDA_WEAK_SCORE = -12.0
+
+    # Dividend Income (±10 yield, ±5 sustainability modifier) — a high
+    # yield is rewarded; absence of a dividend is NOT penalized (many
+    # legitimate growth companies pay none), only a genuinely unsustainable
+    # payout ratio on top of a yield is. 3% is a commonly cited "attractive
+    # income" threshold; 60%/90% payout-ratio bands are standard
+    # sustainability conventions (Research Report §5).
+    DIVIDEND_YIELD_ATTRACTIVE_MIN_PCT = 3.0
+    DIVIDEND_YIELD_STRONG_SCORE = 10.0
+    PAYOUT_RATIO_SUSTAINABLE_MAX = 0.60
+    PAYOUT_RATIO_RISKY_MIN = 0.90
+    DIVIDEND_SUSTAINABILITY_BONUS = 5.0
+    DIVIDEND_SUSTAINABILITY_PENALTY = -5.0
+
+    # Free Cash Flow Yield (±10) — population-gated the same way as
+    # EV/EBITDA (inherits Growth Intelligence's own confirmed FCF-
+    # approximation imprecision for India). >=8% attractive, <2% weak —
+    # conventional FCF-yield bands.
+    FCF_YIELD_ATTRACTIVE_MIN_PCT = 8.0
+    FCF_YIELD_WEAK_MAX_PCT = 2.0
+    FCF_YIELD_STRONG_SCORE = 10.0
+    FCF_YIELD_WEAK_SCORE = -10.0
+
+    # PEG Ratio (±8) — population-gated (inherits EV/EBITDA's gate) and
+    # additionally depends on Growth Intelligence's own validated growth
+    # output (SSDS-008's "read, don't recompute" rule) or, where that is
+    # unavailable, the provider's own pre-computed field (confirmed only
+    # 3.5% available for India, ~reliable for US). <1 and >2 are Peter
+    # Lynch's own commonly cited PEG conventions.
+    PEG_CHEAP_MAX = 1.0
+    PEG_EXPENSIVE_MIN = 2.0
+    PEG_STRONG_SCORE = 8.0
+    PEG_WEAK_SCORE = -8.0
+
+
 # Singleton instances — import these, not the dataclasses, from call sites.
 DEBT_TO_EQUITY = DebtToEquityThresholds()
 PROFITABILITY = ProfitabilityThresholds()
@@ -469,3 +566,4 @@ RISK_PENALTY = RiskPenaltyThresholds()
 FINANCIAL_STRENGTH = FinancialStrengthThresholds()
 BUSINESS_QUALITY = BusinessQualityThresholds()
 GROWTH_INTELLIGENCE = GrowthIntelligenceThresholds()
+VALUATION_INTELLIGENCE = ValuationIntelligenceThresholds()
