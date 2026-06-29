@@ -554,6 +554,21 @@ class ValuationIntelligenceThresholds:
     PEG_STRONG_SCORE = 8.0
     PEG_WEAK_SCORE = -8.0
 
+    # Prediction Engine integration (Epic 004 Sprint #006's decision,
+    # implemented Sprint #007) — ASYMMETRIC, the first such cap in this
+    # codebase, directly reflecting Sprint #006's Standalone Consumption
+    # Rule: undervaluation may only ever apply a small, cross-engine-
+    # gated boost (smaller than Growth Intelligence India's own +3,
+    # proportionate to this engine's uniquely severe demonstrated
+    # downside — Sprint #005's RELINFRA case: a 73/100 score followed by
+    # a real, measured -82.0% return); overvaluation may apply a larger,
+    # UNGATED demotion, since "warn against an expensive one" carries
+    # none of the boost side's promotion risk (Sprint #004/#005 found
+    # zero cases of a confirmed-expensive premium compounder being
+    # wrongly penalized).
+    PREDICTION_ENGINE_CONFIDENCE_ADJUSTMENT_CAP_POSITIVE = 2.0
+    PREDICTION_ENGINE_CONFIDENCE_ADJUSTMENT_CAP_NEGATIVE = 4.0
+
 
 # Singleton instances — import these, not the dataclasses, from call sites.
 DEBT_TO_EQUITY = DebtToEquityThresholds()

@@ -13,7 +13,7 @@ from services.technical_indicators import compute_indicators, get_signal_summary
 from services.news_sentiment import NewsSentimentService
 from services.global_context import get_global_context
 from services.quality_factors import compute_all_quality_factors
-from services.thresholds import DEBT_TO_EQUITY, PROFITABILITY, GROWTH, RISK_PENALTY, CASH_FLOW, FINANCIAL_STRENGTH, GROWTH_INTELLIGENCE
+from services.thresholds import DEBT_TO_EQUITY, PROFITABILITY, GROWTH, RISK_PENALTY, CASH_FLOW, FINANCIAL_STRENGTH, GROWTH_INTELLIGENCE, VALUATION_INTELLIGENCE
 
 MARKET_SUFFIX = {"US": "", "IN": ".NS"}
 _news_svc = NewsSentimentService()
@@ -46,6 +46,41 @@ def _growth_intelligence_confidence_enabled(market: str) -> bool:
         env_var, default = "GROWTH_INTELLIGENCE_CONFIDENCE_ENABLED_IN", "1"
     elif market == "US":
         env_var, default = "GROWTH_INTELLIGENCE_CONFIDENCE_ENABLED_US", "0"
+    else:
+        return False
+    raw = os.getenv(env_var, default).strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def _valuation_intelligence_confidence_enabled(market: str) -> bool:
+    """
+    Valuation Intelligence confidence-adjustment kill switch (Epic 004,
+    Sprint #006's decision, implemented Sprint #007). Same independent,
+    env-var-backed mechanism as `_growth_intelligence_confidence_enabled`
+    above — a runtime toggle, not a code change.
+
+    Unlike Growth Intelligence's own switch (enabled by default for
+    India), this one **defaults to disabled for BOTH markets** — Sprint
+    #006's explicit, more conservative posture, justified by this
+    engine's uniquely severe demonstrated downside risk (Sprint #005's
+    RELINFRA case: a 73/100 score followed by a real -82.0% return).
+    Integration requires an explicit operator opt-in via the env var,
+    not an assumed-on default.
+
+    Gates ONLY whether the computed Valuation Intelligence result is
+    allowed to numerically adjust confidence — it does not gate
+    computation itself. Valuation Intelligence is computed for BOTH
+    markets unconditionally (so both still get explainability/telemetry
+    even while disabled), mirroring Growth Intelligence's own pattern.
+
+    Fails SAFE on any malformed env var value — "disabled" is always
+    the lower-risk direction than silently applying an adjustment based
+    on a misread flag.
+    """
+    if market == "IN":
+        env_var, default = "VALUATION_INTELLIGENCE_CONFIDENCE_ENABLED_IN", "0"
+    elif market == "US":
+        env_var, default = "VALUATION_INTELLIGENCE_CONFIDENCE_ENABLED_US", "0"
     else:
         return False
     raw = os.getenv(env_var, default).strip().lower()
@@ -677,7 +712,52 @@ class PredictionEngine:
                 log.warning(f"[growth_intelligence] failed for {symbol}: {e}")
                 return None
 
-        news_data, global_ctx, quality, deep_score_raw, business_quality, financial_strength, growth_intelligence = await asyncio.gather(
+        def _get_valuation_intelligence():
+            # StockSense360 Valuation Intelligence Engine (SSDS-008, Epic
+            # 004 Sprints #003-#007) — computed for BOTH markets, per
+            # Sprint #006's explicit decision (both markets get
+            # explainability/telemetry; numeric confidence influence is
+            # additionally gated by _valuation_intelligence_confidence_
+            # enabled below, which defaults to DISABLED for both markets
+            # — a more conservative default than Growth Intelligence's
+            # own India-enabled-by-default rollout). Never raises into
+            # the main predict() flow, mirroring every other additive
+            # engine closure in this function.
+            #
+            # sector_bucket is computed here (unlike Growth Intelligence's
+            # own closure, which passes ""): Valuation Intelligence's
+            # EV/EBITDA, FCF Yield, PEG, and Price/Book categories all key
+            # off sector_bucket for population-gating (Bank/NBFC vs.
+            # FINANCIAL/REAL_ESTATE) — passing an empty string would
+            # silently defeat the gating Sprints #002-#004 specifically
+            # validated, which would be a real, undetected correctness
+            # regression, not a harmless simplification.
+            try:
+                from services.valuation_intelligence_engine import compute_valuation_intelligence
+                from services.sector_quality_applicability import classify_sector
+                sector_bucket = classify_sector(info)
+                if market == "IN":
+                    from services.screener_data import fetch_screener_data
+                    from services.india_valuation_adapter import build_india_valuation_fields
+                    # fetch_screener_data has its own 4-hour cache (Sprint
+                    # #002's confirmed behavior) — this is a cheap, cached
+                    # re-read in the common case, mirroring Growth
+                    # Intelligence's own closure exactly.
+                    screener_data = fetch_screener_data(symbol)
+                    fields = build_india_valuation_fields(screener_data if screener_data.get("available") else {}, info)
+                    return compute_valuation_intelligence(symbol, fields, sector_bucket=sector_bucket, market=market)
+                elif market == "US":
+                    from services.us_valuation_adapter import build_us_valuation_fields
+                    fields = build_us_valuation_fields(info)
+                    return compute_valuation_intelligence(symbol, fields, sector_bucket=sector_bucket, market=market)
+                else:
+                    return None
+            except BaseException as e:
+                log.warning(f"[valuation_intelligence] failed for {symbol}: {e}")
+                return None
+
+        (news_data, global_ctx, quality, deep_score_raw, business_quality, financial_strength,
+         growth_intelligence, valuation_intelligence) = await asyncio.gather(
             _get_news(),
             loop.run_in_executor(None, _get_global_ctx_safe),
             loop.run_in_executor(None, _get_quality),
@@ -685,6 +765,7 @@ class PredictionEngine:
             loop.run_in_executor(None, _get_business_quality),
             loop.run_in_executor(None, _get_financial_strength),
             loop.run_in_executor(None, _get_growth_intelligence),
+            loop.run_in_executor(None, _get_valuation_intelligence),
         )
 
         sentiment_score = self._aggregate_sentiment(news_data["articles"])
@@ -737,6 +818,10 @@ class PredictionEngine:
         )
         confidence = self._apply_growth_intelligence_adjustment(
             market, growth_intelligence, confidence, reasoning, bull_case, bear_case
+        )
+        confidence = self._apply_valuation_intelligence_adjustment(
+            market, valuation_intelligence, business_quality, financial_strength, growth_intelligence,
+            confidence, reasoning, bull_case, bear_case,
         )
 
         import datetime as _dt
@@ -812,6 +897,20 @@ class PredictionEngine:
             # both markets so a consumer can see exactly why, mirroring
             # `financial_strength`'s own explainability pattern.
             "growth_intelligence": growth_intelligence,
+            # StockSense360 Valuation Intelligence Engine (SSDS-008, Epic
+            # 004 Sprints #003-#007) — additive, parallel field, computed
+            # for BOTH markets (Sprint #006's explicit decision). Its only
+            # influence on `signal`/`confidence` is the small, ASYMMETRIC,
+            # cross-engine-gated adjustment applied by
+            # _apply_valuation_intelligence_adjustment above (confidence
+            # only, never composite_score/signal, and numerically zeroed
+            # by default in both markets via the independent kill switch
+            # — see _valuation_intelligence_confidence_enabled) — the
+            # full score/grade/confidence/strengths/weaknesses/risks/
+            # explanation are exposed here unmodified for both markets so
+            # a consumer can see exactly why, mirroring `growth_
+            # intelligence`'s own explainability pattern.
+            "valuation_intelligence": valuation_intelligence,
             "weights_used": {k: v for k, v in weights.items() if k in ("tech", "fund", "sentiment", "vol_regime")},
         }
         _cache_set(_pred_cache, cache_key, (time.time(), result))
@@ -1123,6 +1222,156 @@ class PredictionEngine:
                 "adjustment=%s confidence_delta=%s degraded=%s rejection_reason=%s",
                 market, confidence_enabled, adjustment, new_confidence - original_confidence,
                 degraded, rejection_reason,
+            )
+        except Exception:
+            pass  # telemetry must never affect the returned confidence value
+
+        return new_confidence
+
+    def _apply_valuation_intelligence_adjustment(
+        self, market: str, valuation_intelligence: dict | None,
+        business_quality: dict | None, financial_strength: dict | None, growth_intelligence: dict | None,
+        confidence: int, reasoning: list, bull_case: list, bear_case: list,
+    ) -> int:
+        """
+        StockSense360 Valuation Intelligence Engine (SSDS-008, Epic 004,
+        Sprint #006's integration decision, implemented Sprint #007).
+        Mirrors `_apply_growth_intelligence_adjustment`'s exact shape —
+        confidence-only, never composite_score/signal, so Daily Picks
+        ranking stays unaffected, per this sprint's explicit "no
+        redesign" rule.
+
+        ASYMMETRIC by design — the first such adjustment in this
+        codebase — directly implementing Sprint #006's Standalone
+        Consumption Rule: "Valuation Intelligence must never
+        independently promote a stock. It may only strengthen an
+        already-good investment thesis, or warn against an expensive
+        one." Concretely:
+
+          UNDERVALUATION (score > 50, a boost candidate): capped at
+          +VALUATION_INTELLIGENCE.PREDICTION_ENGINE_CONFIDENCE_
+          ADJUSTMENT_CAP_POSITIVE (+2), and ONLY applied if a cross-
+          engine gate clears — Business Quality, Financial Strength
+          (US only — it has no India coverage, confirmed unchanged
+          since Epic 002), and Growth Intelligence must ALL report a
+          grade other than "avoid"/"rejected" (an engine that is simply
+          unavailable for this company — None — does not block; only an
+          explicit hard-negative grade does, per this codebase's
+          established "never penalize missing data" philosophy). This
+          is Sprint #007's literal "Business Quality, Financial
+          Strength, Growth Intelligence do NOT produce AVOID/REJECTED"
+          specification — an ALL-clear (AND) gate, intentionally
+          STRICTER than Sprint #006's own decision text (which proposed
+          an at-least-one-agrees / OR gate). Documented explicitly, not
+          silently implemented either way: this sprint's literal
+          Mandatory Confidence Behaviour section is treated as the
+          authoritative, more conservative specification — it
+          strengthens, never weakens, the Standalone Consumption Rule,
+          so adopting it is consistent with "do not weaken the
+          standalone-consumption rule" and "if evidence is mixed, choose
+          the safer integration path," not a contradiction requiring a
+          paused implementation.
+
+          OVERVALUATION (score < 50, a demote candidate): capped at
+          -VALUATION_INTELLIGENCE.PREDICTION_ENGINE_CONFIDENCE_
+          ADJUSTMENT_CAP_NEGATIVE (-4), applied UNCONDITIONALLY — no
+          cross-engine gate, per Sprint #007's explicit "No supporting
+          engine required. The warning must always apply."
+
+        Gated by TWO independent checks, not one — the per-market kill
+        switch `_valuation_intelligence_confidence_enabled` (defaults
+        DISABLED for both markets, Sprint #006's explicit, more
+        conservative posture) and the cross-engine gate above (boost
+        side only). Either layer alone is sufficient to suppress a
+        boost; both exist so a future change to one doesn't silently
+        re-enable the other's protection.
+
+        No hard-gate/rejection-based demotion exists beyond the normal
+        score-based demotion above — Sprint #006 did not authorize a
+        separate hard-reject tier (unlike Financial Strength's
+        liquidity_distress tier), and Sprint #007 does not add one.
+
+        Telemetry (market, adjustment, confidence delta, enabled/
+        disabled state, gate-blocked state and which engine(s) blocked
+        it, graceful degradation, rejection reason) is emitted via a
+        single structured log line at the end of this function, after
+        the return value is already determined — logging never
+        participates in computing the result.
+        """
+        confidence_enabled = _valuation_intelligence_confidence_enabled(market)
+        original_confidence = confidence
+        adjustment = 0
+        rejection_reason = None
+        degraded = False
+        gate_blocked = False
+        blocking_engines: list[str] = []
+
+        if not valuation_intelligence:
+            degraded = True
+        elif not confidence_enabled:
+            pass  # computed (for explainability/telemetry) but not applied — by design, not a gap
+        else:
+            grade = valuation_intelligence.get("grade")
+            vi_metadata = valuation_intelligence.get("metadata") or {}
+            rejection_reason = vi_metadata.get("rejection_reason")
+
+            if grade == "rejected":
+                # insufficient_data — no real signal exists; never penalize
+                # a stock for data this engine doesn't have, same missing-
+                # data philosophy every other additive engine here shares.
+                degraded = True
+            else:
+                vi_score = valuation_intelligence.get("score")
+                if vi_score is None:
+                    degraded = True
+                elif vi_score > 50:
+                    # Undervaluation candidate — gated.
+                    hard_negative = {"avoid", "rejected"}
+                    gate_checks = [("Business Quality", business_quality)]
+                    if market == "US":
+                        gate_checks.append(("Financial Strength", financial_strength))
+                    gate_checks.append(("Growth Intelligence", growth_intelligence))
+                    blocking_engines = [
+                        name for name, result in gate_checks
+                        if result is not None and result.get("grade") in hard_negative
+                    ]
+                    if blocking_engines:
+                        gate_blocked = True
+                    else:
+                        adjustment = round(
+                            (vi_score - 50) / 50 * VALUATION_INTELLIGENCE.PREDICTION_ENGINE_CONFIDENCE_ADJUSTMENT_CAP_POSITIVE
+                        )
+                elif vi_score < 50:
+                    # Overvaluation candidate — ungated, always applies.
+                    adjustment = round(
+                        (vi_score - 50) / 50 * VALUATION_INTELLIGENCE.PREDICTION_ENGINE_CONFIDENCE_ADJUSTMENT_CAP_NEGATIVE
+                    )
+
+                if adjustment != 0:
+                    direction = "BULLISH" if adjustment > 0 else "BEARISH"
+                    msg = (
+                        f"Valuation Intelligence Score {vi_score}/100 ({grade}) — confidence "
+                        f"{'boosted' if adjustment > 0 else 'demoted'} by {abs(adjustment)} point(s)."
+                    )
+                    reasoning.append({"indicator": "Valuation Intelligence", "signal": direction, "reason": msg})
+                    (bull_case if adjustment > 0 else bear_case).append(msg)
+                elif gate_blocked:
+                    msg = (
+                        f"Valuation Intelligence Score {vi_score}/100 ({grade}) suggests undervaluation, "
+                        f"but no confidence boost was applied — {', '.join(blocking_engines)} "
+                        "flagged this company as a hard-negative risk (Standalone Consumption Rule)."
+                    )
+                    reasoning.append({"indicator": "Valuation Intelligence", "signal": "NEUTRAL", "reason": msg})
+
+        new_confidence = max(0, min(100, confidence + adjustment))
+
+        try:
+            log.info(
+                "[valuation_intelligence_telemetry] symbol_market=%s confidence_enabled=%s "
+                "adjustment=%s confidence_delta=%s degraded=%s gate_blocked=%s blocking_engines=%s "
+                "rejection_reason=%s",
+                market, confidence_enabled, adjustment, new_confidence - original_confidence,
+                degraded, gate_blocked, blocking_engines, rejection_reason,
             )
         except Exception:
             pass  # telemetry must never affect the returned confidence value
