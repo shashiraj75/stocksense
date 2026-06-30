@@ -1,10 +1,17 @@
 import os
+import uuid
+from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
+from fastapi.responses import JSONResponse
 
 router = APIRouter()
 
 PICKS_SECRET = os.getenv("PICKS_SECRET", "")  # must be set in Render environment variables
 _VALID_MARKETS = ("IN", "US")
+
+# Heartbeat considered slow after 90 s, unresponsive after 180 s
+_HEARTBEAT_SLOW_SECS = 90
+_HEARTBEAT_UNRESPONSIVE_SECS = 180
 
 
 def _norm_market(market: str) -> str:
@@ -14,14 +21,42 @@ def _norm_market(market: str) -> str:
     return m
 
 
+def _derive_job_health(job: dict | None) -> str | None:
+    """Return 'ok' | 'slow' | 'unresponsive' | None based on last heartbeat."""
+    if not job or job.get("status") != "running":
+        return None
+    hb = job.get("last_runner_heartbeat_at")
+    if not hb:
+        return "slow"
+    if isinstance(hb, str):
+        hb = datetime.fromisoformat(hb.replace("Z", "+00:00"))
+    age = (datetime.now(timezone.utc) - hb).total_seconds()
+    if age >= _HEARTBEAT_UNRESPONSIVE_SECS:
+        return "unresponsive"
+    if age >= _HEARTBEAT_SLOW_SECS:
+        return "slow"
+    return "ok"
+
+
 @router.get("/daily")
 def daily_picks(market: str = "IN"):
     """Return today's cached BUY picks for a market. Instant — reads from disk/Postgres."""
     market = _norm_market(market)
     import services.daily_picks as _dp
+
+    in_memory = _dp._generating.get(market, False)
+    db_active = False
+    if os.getenv("USE_POSTGRES") == "1":
+        try:
+            from services.postgres_store import get_active_daily_picks_job
+            active = get_active_daily_picks_job(market)
+            db_active = active is not None
+        except Exception:
+            pass
+    generating = in_memory or db_active
+
     data = _dp.get_cached_picks(market)
     if not data:
-        generating = _dp._generating.get(market, False)
         next_run = "2 AM IST" if market == "IN" else "9 AM ET (pre-market)"
         return {
             "generated_at": None,
@@ -34,7 +69,7 @@ def daily_picks(market: str = "IN"):
                 f"Picks not yet generated. Generated at {next_run} daily — check back then."
             ),
         }
-    return {**data, "generating": _dp._generating.get(market, False)}
+    return {**data, "generating": generating}
 
 
 @router.get("/status")
@@ -42,13 +77,40 @@ def picks_status(market: str = "IN"):
     """Quick check: are picks available and/or is generation running?"""
     market = _norm_market(market)
     import services.daily_picks as _dp
-    return {
+
+    in_memory = _dp._generating.get(market, False)
+    job = None
+    if os.getenv("USE_POSTGRES") == "1":
+        try:
+            from services.postgres_store import get_latest_daily_picks_job
+            job = get_latest_daily_picks_job(market)
+        except Exception:
+            pass
+
+    db_active = job is not None and job.get("status") in ("queued", "running")
+    generating = in_memory or db_active
+
+    resp = {
         "market": market,
-        "generating": _dp._generating.get(market, False),
+        "generating": generating,
         "has_today": _dp.picks_generated_today(market),
         "last_error": _dp._last_error.get(market),
         "last_trigger_received_at": _dp._last_trigger_received_at.get(market),
     }
+    if job:
+        resp.update({
+            "job_id": job.get("job_id"),
+            "job_status": job.get("status"),
+            "phase": job.get("current_phase"),
+            "processed": job.get("processed"),
+            "total": job.get("total"),
+            "last_runner_heartbeat_at": job.get("last_runner_heartbeat_at"),
+            "last_progress_at": job.get("last_progress_at"),
+            "universe_used": job.get("universe_used"),
+            "universe_degraded": job.get("universe_degraded"),
+            "derived_job_health": _derive_job_health(job),
+        })
+    return resp
 
 
 @router.get("/performance")
@@ -68,30 +130,110 @@ def trigger_generation(background_tasks: BackgroundTasks, market: str = "IN", x_
     Trigger a fresh pick generation run in the background, for one market at a time.
     Protected by X-Secret header to prevent abuse.
     Called by GitHub Actions cron: IN at 20:30 UTC (2 AM IST), US at 12:30 UTC (~8:30 AM ET).
+
+    HTTP contract:
+      202 — accepted and queued
+      200 — already_fresh (picks exist for today; idempotent success)
+      409 — already_running (a job is already queued/running)
+      503 — durable_job_state_unavailable (USE_POSTGRES=1 but DB insert failed)
     """
     if x_secret != PICKS_SECRET:
         raise HTTPException(status_code=401, detail="Invalid secret")
     market = _norm_market(market)
 
     import services.daily_picks as _dp
-    from datetime import datetime, timezone
-    # Product Integrity Workstream #001B: recorded the instant a valid
-    # trigger is accepted, before the background task runs — so a future
-    # incident can tell "the scheduled trigger never reached the backend"
-    # apart from "it reached the backend but generate_picks() never wrote
-    # a fresh generated_at" (e.g. a crash before its own except-handler ran).
+
+    # Step 1: Record trigger receipt timestamp
     _dp._last_trigger_received_at[market] = datetime.now(timezone.utc).isoformat()
-    with _dp._generating_lock:
-        if _dp._generating.get(market, False):
-            return {"status": "already running", "message": f"{market} picks generation is already in progress."}
-        _dp._generating[market] = True
 
-    def _run():
+    # Step 2: Check picks_generated_today — return 200 if already fresh
+    if _dp.picks_generated_today(market):
+        return JSONResponse(
+            status_code=200,
+            content={"status": "already_fresh", "market": market,
+                     "message": f"{market} picks already generated for today."},
+        )
+
+    use_postgres = os.getenv("USE_POSTGRES") == "1"
+
+    if use_postgres:
+        # Step 3: Check in-memory flag (fast path before DB round-trip)
+        with _dp._generating_lock:
+            if _dp._generating.get(market, False):
+                return JSONResponse(
+                    status_code=409,
+                    content={"status": "already_running", "market": market,
+                             "message": f"{market} picks generation is already in progress."},
+                )
+
+        # Step 4: Try to reserve the job in Postgres (atomic via partial unique index)
+        job_id = str(uuid.uuid4())
         try:
-            _dp.generate_picks(market)
-        finally:
-            with _dp._generating_lock:
-                _dp._generating[market] = False
+            from services.postgres_store import (
+                try_reserve_daily_picks_job,
+                get_active_daily_picks_job,
+            )
+            reserved = try_reserve_daily_picks_job(job_id, market, _dp._RUNNER_ID)
+        except Exception as e:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "durable_job_state_unavailable", "market": market,
+                         "message": f"Could not write durable job state: {e}"},
+            )
 
-    background_tasks.add_task(_run)
-    return {"status": "generation started", "market": market, "message": f"{market} picks will be ready in ~10-20 minutes."}
+        # Step 5: Conflict — another process reserved before us
+        if not reserved:
+            active = get_active_daily_picks_job(market)
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "status": "already_running",
+                    "market": market,
+                    "job_id": active.get("job_id") if active else None,
+                    "message": f"{market} picks generation is already in progress (reserved by another process).",
+                },
+            )
+
+        # Step 6: Set in-memory flag AFTER successful DB reservation
+        with _dp._generating_lock:
+            _dp._generating[market] = True
+
+        # Step 7: Launch background task
+        def _run():
+            try:
+                _dp.generate_picks(market, job_id=job_id)
+            finally:
+                with _dp._generating_lock:
+                    _dp._generating[market] = False
+
+        background_tasks.add_task(_run)
+        return JSONResponse(
+            status_code=202,
+            content={"status": "accepted", "market": market, "job_id": job_id,
+                     "message": f"{market} picks will be ready in ~10-20 minutes."},
+        )
+
+    else:
+        # No Postgres — in-memory only path (legacy behaviour)
+        with _dp._generating_lock:
+            if _dp._generating.get(market, False):
+                return JSONResponse(
+                    status_code=409,
+                    content={"status": "already_running", "market": market,
+                             "message": f"{market} picks generation is already in progress."},
+                )
+            _dp._generating[market] = True
+
+        def _run_no_pg():
+            try:
+                _dp.generate_picks(market)
+            finally:
+                with _dp._generating_lock:
+                    _dp._generating[market] = False
+
+        background_tasks.add_task(_run_no_pg)
+        return JSONResponse(
+            status_code=202,
+            content={"status": "accepted", "market": market,
+                     "message": f"{market} picks will be ready in ~10-20 minutes."},
+        )

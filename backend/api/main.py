@@ -348,6 +348,7 @@ async def lifespan(app: FastAPI):
     # and from GitHub Actions PICKS_SECRET mismatches. Same recovery logic for
     # both markets — only the trigger-time/timezone/weekday rule differs.
     async def _catchup_picks(market: str, tz, trigger_hour: int, settle_secs: int):
+        import uuid as _uuid
         from datetime import datetime
         await asyncio.sleep(settle_secs)  # let server settle first
         try:
@@ -364,19 +365,43 @@ async def lifespan(app: FastAPI):
             if picks_generated_today(market):
                 log.info(f"[picks_catchup] [{market}] Today's picks already exist — skipping")
                 return
-            # Use the same lock as POST /api/picks/generate so a cron-triggered
-            # run and this startup catch-up can't both pass the check and run
-            # concurrently — this is the exact TOCTOU race the lock exists to
-            # close (see _generating_lock comment in daily_picks.py).
-            with _dp._generating_lock:
-                if _dp._generating.get(market, False):
-                    log.info(f"[picks_catchup] [{market}] Generation already in progress — skipping")
+
+            use_postgres = os.getenv("USE_POSTGRES") == "1"
+            job_id = None
+
+            if use_postgres:
+                # Durable reservation gate — same mutual-exclusion path as POST /generate
+                with _dp._generating_lock:
+                    if _dp._generating.get(market, False):
+                        log.info(f"[picks_catchup] [{market}] Generation already in progress — skipping")
+                        return
+
+                job_id = str(_uuid.uuid4())
+                try:
+                    from services.postgres_store import try_reserve_daily_picks_job
+                    reserved = try_reserve_daily_picks_job(job_id, market, _dp._RUNNER_ID)
+                except Exception as exc:
+                    log.warning(f"[picks_catchup] [{market}] DB reservation failed: {exc} — skipping")
                     return
-                _dp._generating[market] = True
+
+                if not reserved:
+                    log.info(f"[picks_catchup] [{market}] Job already reserved by another process — skipping")
+                    return
+
+                with _dp._generating_lock:
+                    _dp._generating[market] = True
+            else:
+                # In-memory only path
+                with _dp._generating_lock:
+                    if _dp._generating.get(market, False):
+                        log.info(f"[picks_catchup] [{market}] Generation already in progress — skipping")
+                        return
+                    _dp._generating[market] = True
+
             log.info(f"[picks_catchup] [{market}] No picks for today — generating now (this takes ~10-20 min)…")
             try:
                 loop2 = asyncio.get_running_loop()
-                await loop2.run_in_executor(None, generate_picks, market)
+                await loop2.run_in_executor(None, generate_picks, market, job_id)
                 log.info(f"[picks_catchup] [{market}] picks generation complete")
             finally:
                 _dp._generating[market] = False

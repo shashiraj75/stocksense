@@ -277,6 +277,41 @@ CREATE TABLE IF NOT EXISTS nps_responses (
 );
 CREATE INDEX IF NOT EXISTS idx_nps_user ON nps_responses(user_id, submitted_at);
 
+-- Durable Daily Picks job state — survives Railway restarts and cross-process
+-- duplicate-run prevention. The partial unique index on (market) WHERE
+-- status IN ('queued','running') is the only cross-process mutual-exclusion
+-- gate: an INSERT with ON CONFLICT DO NOTHING atomically returns rowcount=0
+-- if another process already holds the active slot for that market.
+-- 'interrupted' is a manual-only operator recovery status; no code path
+-- writes it automatically. 'slow' and 'unresponsive' are computed
+-- presentation states derived from timestamp gaps, never stored here.
+CREATE TABLE IF NOT EXISTS daily_picks_jobs (
+    id                        BIGSERIAL PRIMARY KEY,
+    job_id                    TEXT NOT NULL UNIQUE,
+    market                    TEXT NOT NULL CHECK (market IN ('IN', 'US')),
+    status                    TEXT NOT NULL CHECK (
+        status IN ('queued', 'running', 'completed', 'failed', 'interrupted')
+    ),
+    runner_instance_id        TEXT NOT NULL,
+    started_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_runner_heartbeat_at  TIMESTAMPTZ,
+    last_progress_at          TIMESTAMPTZ,
+    phase                     TEXT,
+    processed                 INTEGER,
+    total                     INTEGER,
+    universe_used             TEXT,
+    universe_degraded         BOOLEAN,
+    last_error                TEXT,
+    completed_at              TIMESTAMPTZ,
+    persisted_picks_timestamp TIMESTAMPTZ
+);
+-- Cross-process exclusion: at most one queued/running row per market.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_picks_jobs_one_active_per_market
+    ON daily_picks_jobs (market)
+    WHERE status IN ('queued', 'running');
+CREATE INDEX IF NOT EXISTS idx_daily_picks_jobs_market_status
+    ON daily_picks_jobs (market, status, started_at DESC);
+
 -- Every table above had Row-Level Security disabled, meaning anyone with
 -- this project's URL + anon key (normally embedded in frontend JS by
 -- design, for Supabase Auth) could read/write/delete all of them directly
@@ -300,6 +335,7 @@ ALTER TABLE terms_acceptance     ENABLE ROW LEVEL SECURITY;
 ALTER TABLE market_cache         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE signal_feedback      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE nps_responses        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE daily_picks_jobs     ENABLE ROW LEVEL SECURITY;
 """
 
 
@@ -583,21 +619,35 @@ def get_factor_ic_history(horizon: str) -> list[dict]:
 
 # ── New: Daily picks performance (section 5) ────────────────────────────────
 
-def save_picks_to_db(payload: dict, market: str = "IN") -> None:
-    """Persist the full picks payload to Postgres so it survives Render redeploys."""
-    with _get_pool().connection() as conn:
-        conn.execute(
-            "INSERT INTO daily_picks_cache (generated_at, payload, market) VALUES (%s, %s, %s)",
-            (datetime.now(timezone.utc), json.dumps(payload), market),
-        )
-        # Keep only last 10 rows per market to avoid bloat
-        conn.execute("""
-            DELETE FROM daily_picks_cache
-            WHERE market = %s AND id NOT IN (
-                SELECT id FROM daily_picks_cache WHERE market = %s
-                ORDER BY generated_at DESC LIMIT 10
+def save_picks_to_db(payload: dict, market: str = "IN") -> bool:
+    """
+    Persist the full picks payload to Postgres so it survives Railway redeploys.
+
+    Returns True on success, False on any failure (exception is logged, not raised).
+    Callers must check the return value to determine whether durable persistence
+    succeeded before marking a Daily Picks job as completed.
+    """
+    try:
+        with _get_pool().connection() as conn:
+            conn.execute(
+                "INSERT INTO daily_picks_cache (generated_at, payload, market) VALUES (%s, %s, %s)",
+                (datetime.now(timezone.utc), json.dumps(payload), market),
             )
-        """, (market, market))
+            # Keep only last 10 rows per market to avoid bloat
+            conn.execute("""
+                DELETE FROM daily_picks_cache
+                WHERE market = %s AND id NOT IN (
+                    SELECT id FROM daily_picks_cache WHERE market = %s
+                    ORDER BY generated_at DESC LIMIT 10
+                )
+            """, (market, market))
+        return True
+    except Exception as e:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            f"[postgres_store] save_picks_to_db failed for {market}: {e}"
+        )
+        return False
 
 
 def load_picks_from_db(market: str = "IN") -> dict | None:
@@ -636,3 +686,187 @@ def get_daily_picks_performance(horizon: str, window_days: int = 90) -> list[dic
             "return_5d", "return_20d", "return_60d",
             "benchmark_return_5d", "benchmark_return_20d", "benchmark_return_60d"]
     return [dict(zip(cols, r)) for r in rows]
+
+
+# ── Daily Picks job-state helpers (#002D-E) ──────────────────────────────────
+# These functions use only explicit, hardcoded column names — no dynamic SQL
+# construction from caller-provided input. All column names in UPDATE/INSERT
+# statements are literals in this file, not derived from arguments.
+
+def try_reserve_daily_picks_job(
+    job_id: str, market: str, runner_instance_id: str
+) -> bool:
+    """
+    Atomically insert a new 'queued' job row for the given market.
+
+    Uses ON CONFLICT DO NOTHING so the partial unique index
+    (market) WHERE status IN ('queued','running') acts as the gate:
+      - Returns True  → insertion succeeded; caller owns the reservation.
+      - Returns False → a conflicting active row exists; caller must not start.
+      - Raises        → genuine DB error; caller should treat as 503.
+    """
+    with _get_pool().connection() as conn:
+        result = conn.execute(
+            """INSERT INTO daily_picks_jobs
+                   (job_id, market, status, runner_instance_id, started_at)
+               VALUES (%s, %s, 'queued', %s, now())
+               ON CONFLICT DO NOTHING""",
+            (job_id, market, runner_instance_id),
+        )
+        return result.rowcount == 1
+
+
+def mark_daily_picks_job_running(job_id: str) -> None:
+    """Transition a queued job to running. Called at the start of the background task."""
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "UPDATE daily_picks_jobs SET status = 'running' WHERE job_id = %s",
+            (job_id,),
+        )
+
+
+def record_daily_picks_job_progress(
+    job_id: str,
+    phase: str,
+    processed: int,
+    total: int,
+    universe_used: str | None = None,
+    universe_degraded: bool | None = None,
+    last_progress_at=None,
+) -> None:
+    """
+    Record genuine forward progress: a batch or candidate completed.
+    last_progress_at defaults to now() if not supplied.
+    universe_used / universe_degraded are written only when provided (Phase 0b only).
+    """
+    if last_progress_at is None:
+        last_progress_at = datetime.now(timezone.utc)
+    with _get_pool().connection() as conn:
+        if universe_used is not None and universe_degraded is not None:
+            conn.execute(
+                """UPDATE daily_picks_jobs
+                   SET phase = %s, processed = %s, total = %s,
+                       universe_used = %s, universe_degraded = %s,
+                       last_progress_at = %s
+                   WHERE job_id = %s""",
+                (phase, processed, total,
+                 universe_used, universe_degraded, last_progress_at, job_id),
+            )
+        else:
+            conn.execute(
+                """UPDATE daily_picks_jobs
+                   SET phase = %s, processed = %s, total = %s,
+                       last_progress_at = %s
+                   WHERE job_id = %s""",
+                (phase, processed, total, last_progress_at, job_id),
+            )
+
+
+def record_daily_picks_job_heartbeat(job_id: str, timestamp) -> None:
+    """Write last_runner_heartbeat_at. Never changes status or releases locks."""
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "UPDATE daily_picks_jobs SET last_runner_heartbeat_at = %s WHERE job_id = %s",
+            (timestamp, job_id),
+        )
+
+
+def mark_daily_picks_job_completed(
+    job_id: str,
+    completed_at,
+    persisted_picks_timestamp,
+) -> None:
+    """
+    Mark a job completed. Only called after save_picks_to_db() returned True.
+    Both completed_at and persisted_picks_timestamp must be non-None.
+    """
+    with _get_pool().connection() as conn:
+        conn.execute(
+            """UPDATE daily_picks_jobs
+               SET status = 'completed',
+                   completed_at = %s,
+                   persisted_picks_timestamp = %s
+               WHERE job_id = %s""",
+            (completed_at, persisted_picks_timestamp, job_id),
+        )
+
+
+def mark_daily_picks_job_failed(
+    job_id: str,
+    completed_at,
+    last_error: str,
+) -> None:
+    """
+    Mark a job failed. Called on any exception inside generate_picks() or
+    when save_picks_to_db() returns False (durable persistence failed).
+    persisted_picks_timestamp remains NULL.
+    """
+    with _get_pool().connection() as conn:
+        conn.execute(
+            """UPDATE daily_picks_jobs
+               SET status = 'failed',
+                   completed_at = %s,
+                   last_error = %s
+               WHERE job_id = %s""",
+            (completed_at, last_error, job_id),
+        )
+
+
+def get_active_daily_picks_job(market: str) -> dict | None:
+    """
+    Return the most recent queued/running job row for a market, or None.
+    Used for 409 conflict detail and the 'generating' flag in /status.
+    Swallows DB errors — callers must not treat None as "no DB".
+    """
+    try:
+        with _get_pool().connection() as conn:
+            row = conn.execute(
+                """SELECT job_id, status, phase, processed, total,
+                          last_runner_heartbeat_at, last_progress_at,
+                          started_at, runner_instance_id,
+                          universe_used, universe_degraded
+                   FROM daily_picks_jobs
+                   WHERE market = %s AND status IN ('queued', 'running')
+                   ORDER BY started_at DESC LIMIT 1""",
+                (market,),
+            ).fetchone()
+        if not row:
+            return None
+        cols = ["job_id", "status", "phase", "processed", "total",
+                "last_runner_heartbeat_at", "last_progress_at",
+                "started_at", "runner_instance_id",
+                "universe_used", "universe_degraded"]
+        return dict(zip(cols, row))
+    except Exception:
+        return None
+
+
+def get_latest_daily_picks_job(market: str) -> dict | None:
+    """
+    Return the most recent job row for a market regardless of status, or None.
+    Used by GET /api/picks/status so completed/failed job details remain visible.
+    Swallows DB errors.
+    """
+    try:
+        with _get_pool().connection() as conn:
+            row = conn.execute(
+                """SELECT job_id, status, phase, processed, total,
+                          last_runner_heartbeat_at, last_progress_at,
+                          started_at, completed_at, persisted_picks_timestamp,
+                          runner_instance_id, universe_used, universe_degraded,
+                          last_error
+                   FROM daily_picks_jobs
+                   WHERE market = %s
+                   ORDER BY started_at DESC LIMIT 1""",
+                (market,),
+            ).fetchone()
+        if not row:
+            return None
+        cols = ["job_id", "status", "phase", "processed", "total",
+                "last_runner_heartbeat_at", "last_progress_at",
+                "started_at", "completed_at", "persisted_picks_timestamp",
+                "runner_instance_id", "universe_used", "universe_degraded",
+                "last_error"]
+        return dict(zip(cols, row))
+    except Exception:
+        return None

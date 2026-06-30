@@ -41,7 +41,7 @@ def test_valid_trigger_records_received_at_before_generation_runs(client):
     dp._last_trigger_received_at["US"] = None
     with patch.object(dp, "generate_picks") as mock_generate:
         resp = client.post("/api/picks/generate", params={"market": "US"}, headers={"x-secret": TEST_SECRET})
-    assert resp.status_code == 200
+    assert resp.status_code in (200, 202)  # 202 = accepted (Workstream #002D-E), 200 = already_fresh
     # Recorded synchronously, in the request itself — not dependent on the
     # background task (mocked above) ever running.
     assert dp._last_trigger_received_at["US"] is not None

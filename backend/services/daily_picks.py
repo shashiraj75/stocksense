@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import time
+import uuid as _uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
@@ -392,7 +393,9 @@ def _get_universe_by_mcap(market: str) -> tuple[list[str], str, bool]:
     return (_UNIVERSE["IN"], "full_universe", False)
 
 
-def _bulk_screen(market: str, n_candidates: int = 50) -> tuple[list[str], int, str, bool]:
+def _bulk_screen(
+    market: str, n_candidates: int = 50, job_id: str | None = None
+) -> tuple[list[str], int, str, bool]:
     """
     Phase-0 screener: batched yf.download() → momentum rank.
 
@@ -468,7 +471,8 @@ def _bulk_screen(market: str, n_candidates: int = 50) -> tuple[list[str], int, s
                   f"{len(scores)} scored so far")
         except Exception as e:
             log.warning(f"[picks] [{market}] Phase-0 batch {batch_idx+1} failed: {e}")
-            continue
+        # Progress after every batch regardless of success/failure
+        _try_job_progress(job_id, "phase_0b", batch_idx + 1, len(batches))
 
     elapsed = round(time.time() - t0, 1)
     if not scores:
@@ -684,7 +688,7 @@ def _fetch_returns_matrix(symbols: list[str], market: str = "IN", days: int = 12
         return None
 
 
-def generate_picks(market: str = "IN") -> dict:
+def generate_picks(market: str = "IN", job_id: str | None = None) -> dict:
     """
     Learning Alpha Engine pipeline:
 
@@ -699,19 +703,76 @@ def generate_picks(market: str = "IN") -> dict:
       Phase 5 — Select picks: rank by ranking_alpha; keep top 6 BUY per horizon
       Phase 6 — Optimise: mean-variance portfolio weights for the selected picks
       Phase 7 — Log predictions: store factor z-scores for future IC computation
-      Phase 8 — Adapt: retrain IC/meta-model/regime after picks are published
+      Phase 8 — Adapt (non-critical, post-persistence): retrain weights in background
 
+    job_id: the durable Postgres job row reserved by the caller.  If provided and
+    USE_POSTGRES=1, this function manages the full job lifecycle (running →
+    completed/failed) and runs a heartbeat daemon thread.
     market: "IN" (NSE, default) or "US" (NYSE/NASDAQ).
     """
     import traceback
     global _last_error
     _last_error[market] = None
 
+    use_job = bool(job_id and os.getenv("USE_POSTGRES") == "1")
+
+    # ── Heartbeat setup ───────────────────────────────────────────────────────
+    _hb_stop = _threading.Event()
+    _hb_thread = None
+
+    if use_job:
+        try:
+            from services.postgres_store import mark_daily_picks_job_running
+            mark_daily_picks_job_running(job_id)
+        except Exception as e:
+            log.warning(f"[picks] [{market}] Could not mark job running: {e}")
+        _hb_thread = _threading.Thread(
+            target=_heartbeat_loop, args=(job_id, _hb_stop), daemon=True
+        )
+        _hb_thread.start()
+
+    # Track post-success non-critical work so finally can run it after
+    # the job is marked terminal (preventing it from overwriting 'completed').
+    _post_success_market = None
+
     try:
-        return _generate_picks_inner(market)
+        payload, persisted_at = _generate_picks_inner(market, job_id=job_id)
+
+        # ── Mark job terminal ─────────────────────────────────────────────────
+        if use_job:
+            try:
+                from services.postgres_store import (
+                    mark_daily_picks_job_completed,
+                    mark_daily_picks_job_failed,
+                )
+                now = datetime.now(timezone.utc)
+                if persisted_at:
+                    mark_daily_picks_job_completed(job_id, now, persisted_at)
+                else:
+                    mark_daily_picks_job_failed(
+                        job_id, now,
+                        "persistence_failed: Postgres picks save returned False",
+                    )
+            except Exception as e:
+                log.warning(f"[picks] [{market}] Could not mark job terminal: {e}")
+
+        _post_success_market = market  # signal finally to run Phase 8 + Telegram
+        return payload
+
     except Exception as e:
         _last_error[market] = traceback.format_exc()
         log.error(f"[picks] [{market}] generate_picks CRASHED: {e}\n{_last_error[market]}")
+
+        if use_job:
+            try:
+                from services.postgres_store import mark_daily_picks_job_failed
+                mark_daily_picks_job_failed(
+                    job_id, datetime.now(timezone.utc),
+                    _last_error[market] or str(e),
+                )
+            except Exception:
+                pass
+
         # Save a minimal payload so the UI shows "no signals today" instead of spinning
         payload = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -726,10 +787,34 @@ def generate_picks(market: str = "IN") -> dict:
         if os.getenv("USE_POSTGRES") == "1":
             try:
                 from services.postgres_store import save_picks_to_db
-                save_picks_to_db(payload, market=market)
+                save_picks_to_db(payload, market=market)  # best-effort; bool return ignored for error payloads
             except Exception:
                 pass
         return payload
+
+    finally:
+        # Stop the heartbeat before any post-success non-critical work.
+        _hb_stop.set()
+        if _hb_thread is not None:
+            _hb_thread.join(timeout=2.0)
+
+        # ── Phase 8 + Telegram: non-critical, post-persistence ────────────────
+        # Runs only on success (_post_success_market set).  Isolated here so
+        # any exception cannot overwrite the already-written job terminal status.
+        if _post_success_market:
+            try:
+                from services.alpha_engine.weight_adapter import run_adaptation
+                _threading.Thread(
+                    target=run_adaptation, args=(_post_success_market,), daemon=True
+                ).start()
+            except Exception as exc:
+                log.info(f"[weight_adapter] Could not start: {exc}")
+            if _post_success_market == "IN":
+                try:
+                    from services.telegram_bot import send_picks_to_telegram
+                    send_picks_to_telegram(payload.get("picks", {}))
+                except Exception as exc:
+                    log.warning(f"[telegram] Error: {exc}")
 
 
 # Module-level last error per market (exposed via /api/picks/status)
@@ -750,13 +835,22 @@ _last_error: dict[str, str | None] = {"IN": None, "US": None}
 _last_trigger_received_at: dict[str, str | None] = {"IN": None, "US": None}
 
 
-def _generate_picks_inner(market: str = "IN") -> dict:
+def _generate_picks_inner(
+    market: str = "IN", job_id: str | None = None
+) -> tuple[dict, datetime | None]:
+    """
+    Run all mandatory Daily Picks phases (0–7) and persist the payload.
+
+    Returns (payload, persisted_at) where persisted_at is a datetime when
+    Postgres save succeeded or None when it failed.  Phase 8 (weight adaptation)
+    and Telegram are intentionally NOT run here — they run in generate_picks()
+    after the job is marked terminal so they cannot overwrite the job status.
+    """
     from services.alpha_engine.outcome_logger import resolve_pending_outcomes
     from services.alpha_engine.ic_engine import get_ic_weights
     from services.alpha_engine.regime_cluster import detect_regime
     from services.alpha_engine.optimizer import optimize
     from services.alpha_engine.store import log_prediction
-    from services.alpha_engine.weight_adapter import run_adaptation
     from services.global_context import get_global_context
 
     start = time.time()
@@ -781,8 +875,15 @@ def _generate_picks_inner(market: str = "IN") -> dict:
     # momentum score. For US: uses _US_DAILY_PICKS_HEURISTIC_FILTERED intersection;
     # never falls back to the raw 12k universe. Falls back to anchor megacap
     # list (US) / Nifty 100 (IN) if all scoring fails.
-    candidates, _phase0_universe_size, _universe_used, _universe_degraded = _bulk_screen(market, _N_CANDIDATES)
+    candidates, _phase0_universe_size, _universe_used, _universe_degraded = _bulk_screen(
+        market, _N_CANDIDATES, job_id=job_id
+    )
     log.info(f"[picks] [{market}] Starting deep prediction for {len(candidates)} candidates × 3 horizons …")
+    # Phase 0b complete: record universe metadata and candidate count
+    _try_job_progress(
+        job_id, "phase_0b_done", len(candidates), len(candidates),
+        universe_used=_universe_used, universe_degraded=_universe_degraded,
+    )
 
     # ── Phase 2: Detect market regime (done once, shared across all stocks) ──
     try:
@@ -800,6 +901,7 @@ def _generate_picks_inner(market: str = "IN") -> dict:
     tasks = [(sym, h) for sym in candidates for h in ("short", "medium", "long")]
     raw: dict[str, list] = {"short": [], "medium": [], "long": []}
 
+    _try_job_progress(job_id, "phase_1", 0, len(tasks))
     with ThreadPoolExecutor(max_workers=1) as pool:
         futures = {pool.submit(_predict_stock, sym, h, market): (sym, h) for sym, h in tasks}
         done = 0
@@ -810,6 +912,8 @@ def _generate_picks_inner(market: str = "IN") -> dict:
             r = future.result()
             if r:
                 raw[r["horizon"]].append(r)
+            # Progress after each completed task (candidate × horizon)
+            _try_job_progress(job_id, "phase_1", done, len(tasks))
 
     # ── Score snapshots (section 4) — persist every scored stock for history ──
     # Piggybacks on the universe scan above so we don't re-fetch anything.
@@ -981,30 +1085,16 @@ def _generate_picks_inner(market: str = "IN") -> dict:
         log.warning(f"[picks] [{market}] Disk cache write failed: {e}")
 
     # Save to Postgres (survives redeploys)
+    persisted_at = None
     if os.getenv("USE_POSTGRES") == "1":
-        try:
-            from services.postgres_store import save_picks_to_db
-            save_picks_to_db(payload, market=market)
+        from services.postgres_store import save_picks_to_db
+        if save_picks_to_db(payload, market=market):
+            persisted_at = datetime.now(timezone.utc)
             log.info(f"[picks] [{market}] Saved to Postgres.")
-        except Exception as e:
-            log.warning(f"[picks] [{market}] Postgres save failed: {e}")
+        else:
+            log.warning(f"[picks] [{market}] Postgres save returned False — picks not durably persisted.")
 
-    # ── Phase 8: Adapt weights in background ─────────────────────────────────
-    try:
-        import threading
-        threading.Thread(target=run_adaptation, args=(market,), daemon=True).start()
-    except Exception as e:
-        log.info(f"[weight_adapter] Could not start: {e}")
-
-    # Send to Telegram if configured (IN only — channel is India-focused)
-    if market == "IN":
-        try:
-            from services.telegram_bot import send_picks_to_telegram
-            send_picks_to_telegram(picks)
-        except Exception as e:
-            log.warning(f"[telegram] Error: {e}")
-
-    return payload
+    return payload, persisted_at
 
 
 def get_cached_picks(market: str = "IN") -> dict | None:
@@ -1056,10 +1146,49 @@ def picks_generated_today(market: str = "IN") -> bool:
         return False
 
 
+# Unique identifier for this process instance.  Used as runner_instance_id in the
+# daily_picks_jobs table so a newly-started Railway process can see which rows
+# belong to a previous (now-dead) process vs. itself.
+import threading as _threading
+_RUNNER_ID: str = str(_uuid.uuid4())
+
+
+def _heartbeat_loop(job_id: str, stop_event: _threading.Event) -> None:
+    """
+    Daemon thread: write last_runner_heartbeat_at every 30 seconds until
+    stop_event is set.  Uses Event.wait() so it exits promptly on shutdown
+    rather than sleeping a full interval.  Never changes job status.
+    """
+    while not stop_event.wait(30):
+        try:
+            from services.postgres_store import record_daily_picks_job_heartbeat
+            record_daily_picks_job_heartbeat(job_id, datetime.now(timezone.utc))
+        except Exception:
+            pass  # heartbeat failure must never affect generation
+
+
+def _try_job_progress(
+    job_id: str | None,
+    phase: str,
+    processed: int,
+    total: int,
+    **kwargs,
+) -> None:
+    """Best-effort progress write; silently swallows all errors."""
+    if not job_id or os.getenv("USE_POSTGRES") != "1":
+        return
+    try:
+        from services.postgres_store import record_daily_picks_job_progress
+        record_daily_picks_job_progress(
+            job_id, phase, processed, total, **kwargs
+        )
+    except Exception:
+        pass
+
+
 # Guard to prevent concurrent generation runs (module-level, shared across threads,
 # keyed by market so an IN run and a US run can't trip each other's flag).
 # Lock makes the check-then-set atomic — plain bool had a TOCTOU race where two
 # concurrent POST /picks/generate requests both passed the guard simultaneously.
-import threading as _threading
 _generating: dict[str, bool] = {"IN": False, "US": False}
 _generating_lock = _threading.Lock()
