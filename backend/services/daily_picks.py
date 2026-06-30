@@ -57,11 +57,95 @@ _US_MEGACAP_100 = [
     "MU", "SLB", "EOG", "AON", "ITW", "APD", "CME", "FI", "EQIX", "WM",
 ][:100]
 
+# ── Daily-Picks-only eligible US common-equity universe ────────────────────
+# Derived deterministically from _US_STOCKS at import time. Kept separate so
+# _US_STOCKS / _ALL_US_SYMBOLS remain intact for any non-Daily-Picks features.
+def _build_us_daily_picks_eligible(raw_universe: list) -> list[str]:
+    """
+    Return only plain US common-equity tickers from the raw static universe.
+    No provider calls — purely local name/symbol keyword matching.
+
+    Excluded categories (applied in order; first match wins):
+      1. Preferred shares    — ticker symbol contains '$'
+      2. ETFs                — name contains 'ETF' (CASE-SENSITIVE to avoid
+                               catching 'Netflix' which lowercases to 'n-e-t-f…')
+      3. ETNs                — name contains 'ETN' (case-sensitive, same reason)
+      4. Leveraged/inverse   — name contains ' 2x' or ' 3x' (space-prefixed to
+                               avoid 'V2X, Inc. Common Stock' as a false positive;
+                               all proper levered products use this spacing)
+      5. UltraPro products   — name contains 'ultrapro' (case-insensitive);
+                               ProShares 3x levered/inverse products that omit
+                               the 'ETF' label in the static universe name,
+                               e.g. TQQQ='ProShares UltraPro QQQ'
+      6. Daily bull/bear     — name contains 'daily' AND ('bull' OR 'bear')
+                               (safety net for any non-ETF levered reset product
+                               not caught by rules 4 or 5)
+      7. Index funds         — name contains 'index fund' (case-insensitive);
+                               catches iShares/FlexShares etc. whose static name
+                               says 'Index Fund' instead of 'ETF',
+                               e.g. IWM='iShares Russell 2000 Index Fund'
+      8. SPACs               — name contains 'acquisition corp',
+                               'acquisition corporation', 'acquisition inc', or
+                               'special purpose acquisition' (case-insensitive)
+      9. Units               — name contains '- unit' or ends with ' units'
+                               (case-insensitive)
+     10. Closed-end funds    — name contains 'closed-end' or 'closed end'
+                               (case-insensitive)
+
+    Known limitation: ETFs/funds whose static-universe names contain none of the
+    above keywords (e.g. QQQ='Invesco QQQ Trust, Series 1', GLD='SPDR Gold
+    Shares') remain in the eligible list. These will normally be absent from the
+    live screener's exchange-filtered results; eliminating them fully requires a
+    curated symbol list (a separate product decision / Stage-B follow-up).
+
+    ADR handling is a separate product decision — not excluded here.
+    """
+    result: list[str] = []
+    for sym, name in raw_universe:
+        n = name.lower()
+        if "$" in sym:
+            continue                                            # preferred share
+        if "ETF" in name:
+            continue                                            # exchange-traded fund (case-sensitive)
+        if "ETN" in name:
+            continue                                            # exchange-traded note (case-sensitive)
+        if " 2x" in n or " 3x" in n:
+            continue                                            # leveraged/inverse daily
+        if "ultrapro" in n:
+            continue                                            # ProShares 3x levered (non-ETF-labeled)
+        if "daily" in n and ("bull" in n or "bear" in n):
+            continue                                            # non-ETF levered reset product
+        if "index fund" in n:
+            continue                                            # investment index fund (non-ETF-labeled)
+        if (
+            "acquisition corp" in n
+            or "acquisition corporation" in n
+            or "special purpose acquisition" in n
+            or "acquisition inc" in n
+        ):
+            continue                                            # blank-check SPAC
+        if "- unit" in n or n.endswith(" units") or n.endswith("- units"):
+            continue                                            # bundled unit instrument
+        if "closed-end" in n or "closed end" in n:
+            continue                                            # closed-end fund
+        result.append(sym)
+    return result
+
+
+_US_DAILY_PICKS_ELIGIBLE: list[str] = _build_us_daily_picks_eligible(_US_STOCKS)
+# Frozen set for O(1) intersection checks inside _get_universe_by_mcap.
+_US_DAILY_PICKS_ELIGIBLE_SET: frozenset[str] = frozenset(_US_DAILY_PICKS_ELIGIBLE)
+
 # PICKS_CANDIDATES env var: how many top-momentum stocks to deep-predict (default 50).
 # 50 × 3 horizons × ~8s = ~20 min — reliable on Render free tier.
 _N_CANDIDATES = int(os.getenv("PICKS_CANDIDATES", 50))
 
-log.info(f"[picks] Universes: NSE {len(_ALL_NSE_SYMBOLS)} / US {len(_ALL_US_SYMBOLS)} stocks → "
+log.info(
+    f"[picks] US eligible common-equity universe: {len(_US_DAILY_PICKS_ELIGIBLE)} "
+    f"of {len(_ALL_US_SYMBOLS)} raw symbols "
+    f"({len(_ALL_US_SYMBOLS) - len(_US_DAILY_PICKS_ELIGIBLE)} ETFs/preferreds/SPACs excluded)"
+)
+log.info(f"[picks] Universes: NSE {len(_ALL_NSE_SYMBOLS)} / US {len(_US_DAILY_PICKS_ELIGIBLE)} eligible stocks → "
       f"bulk-screen → top {_N_CANDIDATES} candidates for deep prediction")
 
 
@@ -208,13 +292,29 @@ _SCREEN_CONFIG = {
 }
 
 
-def _get_universe_by_mcap(market: str) -> list[str]:
+def _get_universe_by_mcap(market: str) -> tuple[list[str], str, bool]:
     """
     Use yfinance equity screener to get stocks above a market-cap floor.
-    Falls back to the full static universe if the screener fails.
+    Returns ``(symbols, universe_used, universe_degraded)``.
+
+    For US  — Product Integrity Workstream #002D-B:
+      On screener success: intersects result with _US_DAILY_PICKS_ELIGIBLE to
+      strip preferred shares, ETFs, SPACs, and other non-common-equity
+      instruments that Yahoo may return.  If the intersection is empty (screener
+      succeeded but returned no eligible symbols), falls through to the anchor.
+
+      On any screener exception OR zero eligible symbols after intersection:
+      returns _US_MEGACAP_100 ∩ _US_DAILY_PICKS_ELIGIBLE as the anchor
+      (``universe_used="anchor"``, ``universe_degraded=True``).  The raw 12k
+      universe is NEVER returned for US after this change.
+
+    For IN — behavior is unchanged: screener success → screener symbols;
+      screener failure → full NSE static universe.  ``universe_degraded`` is
+      always False for IN (the NSE full list is the intended fallback).
+
+    #002A note: Yahoo's screen() now hard-rejects count > 250 — fixed to 250.
     """
     cfg = _SCREEN_CONFIG[market]
-    full_universe = _UNIVERSE[market]
     if market == "IN":
         min_mcap = _MIN_MCAP_CR * 10_000_000  # 1 Cr INR = 10,000,000 INR
         label = f"≥{_MIN_MCAP_CR}Cr"
@@ -222,6 +322,8 @@ def _get_universe_by_mcap(market: str) -> list[str]:
         min_mcap = _MIN_MCAP_USD_M * 1_000_000
         label = f"≥${_MIN_MCAP_USD_M}M"
 
+    screener_syms: list[str] = []
+    screener_error: str | None = None
     try:
         exch_query = yf.EquityQuery("or", [
             yf.EquityQuery("eq", ["exchange", ex]) for ex in cfg["exchanges"]
@@ -230,51 +332,78 @@ def _get_universe_by_mcap(market: str) -> list[str]:
             exch_query,
             yf.EquityQuery("gt", ["intradaymarketcap", min_mcap]),
         ])
-        # Product Integrity Workstream #002A: Yahoo's screen() endpoint now
-        # hard-rejects count > 250 ("Yahoo limits query count to 250, reduce
-        # count") -- confirmed live, reproduced directly against the same
-        # query this function issues. Before this fix, every single call
-        # raised that ValueError, was silently caught below, and fell back
-        # to the FULL static universe (2,300+ IN / ~1,500+ US stocks) on
-        # every run -- the market-cap pre-filter this function exists to
-        # provide had not actually been narrowing the universe at all,
-        # materially inflating Phase-0's yf.download() workload and likely
-        # contributing to the unusually long batch runtimes observed in
-        # Workstreams #001B/#001C. 250 is Yahoo's own current maximum, not
-        # an arbitrary guess.
         result = yf.screen(
             query, sortField="intradaymarketcap", sortAsc=False, count=250
         )
         quotes = result.get("quotes", [])
         suffix = cfg["suffix"]
-        syms = [q["symbol"].replace(suffix, "") if suffix else q["symbol"]
-                for q in quotes if q.get("symbol")]
-        if syms:
-            log.info(f"[picks] [{market}] mcap filter {label}: {len(syms)} stocks qualify")
-            return syms
+        screener_syms = [
+            q["symbol"].replace(suffix, "") if suffix else q["symbol"]
+            for q in quotes if q.get("symbol")
+        ]
     except Exception as e:
-        log.warning(f"[picks] [{market}] mcap screener failed ({e}), using full universe")
-    return full_universe
+        screener_error = str(e)
+        log.warning(f"[picks] [{market}] mcap screener failed ({e})")
+
+    if market == "US":
+        # Intersect live screener result with Daily-Picks eligible common-equity
+        # universe regardless of whether the screener succeeded — preferred
+        # shares, ETFs, SPACs etc. can appear in Yahoo screener output.
+        if screener_syms:
+            eligible_from_screener = [s for s in screener_syms if s in _US_DAILY_PICKS_ELIGIBLE_SET]
+            if eligible_from_screener:
+                log.info(
+                    f"[picks] [US] mcap filter {label}: {len(eligible_from_screener)} eligible "
+                    f"of {len(screener_syms)} screener symbols"
+                )
+                return (eligible_from_screener, "screener", False)
+            log.warning(
+                f"[picks] [US] screener returned {len(screener_syms)} symbols but "
+                f"0 after eligible-universe intersection — using anchor fallback"
+            )
+        # Anchor fallback: _US_MEGACAP_100 intersected with eligible (never raw universe)
+        anchor = [s for s in _US_MEGACAP_100 if s in _US_DAILY_PICKS_ELIGIBLE_SET]
+        reason = screener_error or "0 eligible symbols from screener"
+        log.warning(
+            f"[picks] [US] DEGRADED UNIVERSE — anchor fallback ({len(anchor)} symbols). "
+            f"Reason: {reason}"
+        )
+        return (anchor, "anchor", True)
+
+    # IN: existing behavior — screener symbols or full NSE universe
+    if screener_syms:
+        log.info(f"[picks] [IN] mcap filter {label}: {len(screener_syms)} stocks qualify")
+        return (screener_syms, "screener", False)
+    log.warning(f"[picks] [IN] mcap screener failed, using full NSE universe")
+    return (_UNIVERSE["IN"], "full_universe", False)
 
 
-def _bulk_screen(market: str, n_candidates: int = 50) -> list[str]:
+def _bulk_screen(market: str, n_candidates: int = 50) -> tuple[list[str], int, str, bool]:
     """
     Phase-0 screener: batched yf.download() → momentum rank.
 
+    Returns ``(candidates, phase0_universe_size, universe_used, universe_degraded)``.
+    ``phase0_universe_size`` is the ACTUAL count of tickers passed to yf.download
+    (post-eligibility-filter, post-screener-intersection for US) and is the
+    value that should appear in ``screened_from`` in the final payload.
+
     1. Filter to stocks with market cap above a floor (per-market threshold)
        using yfinance equity screener — removes illiquid micro-caps.
+       For US: also intersects with _US_DAILY_PICKS_ELIGIBLE; never uses
+       the raw 12k universe; falls back to anchor on screener failure.
     2. Batch-download in groups of SCREEN_BATCH_SIZE to avoid OOM on Render
        (512 MB RAM). Free each batch's DataFrame immediately after processing.
     3. Rank by composite momentum and return top n_candidates.
 
-    Falls back to Nifty 100 (IN) / mega-cap 100 (US) if all else fails.
+    Falls back to Nifty 100 (IN) / anchor megacap (US) if no scores result.
     """
     import math
     suffix = _SCREEN_CONFIG[market]["suffix"]
     fallback = _NIFTY_100 if market == "IN" else _US_MEGACAP_100
 
-    universe = _get_universe_by_mcap(market)
+    universe, universe_used, universe_degraded = _get_universe_by_mcap(market)
     all_tickers = [s + suffix for s in universe]
+    phase0_universe_size = len(all_tickers)
     batches = [all_tickers[i:i + _SCREEN_BATCH_SIZE]
                for i in range(0, len(all_tickers), _SCREEN_BATCH_SIZE)]
     log.info(f"[picks] [{market}] Phase-0: downloading {len(all_tickers)} tickers "
@@ -330,13 +459,13 @@ def _bulk_screen(market: str, n_candidates: int = 50) -> list[str]:
     elapsed = round(time.time() - t0, 1)
     if not scores:
         log.info(f"[picks] [{market}] Phase-0: no stocks scored — falling back to anchor list")
-        return list(fallback[:n_candidates])
+        return (list(fallback[:n_candidates]), phase0_universe_size, universe_used, universe_degraded)
 
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     top_syms = [sym for sym, _ in ranked[:n_candidates]]
     log.info(f"[picks] [{market}] Phase-0 complete in {elapsed}s: {len(scores)} scored, "
           f"top candidates: {top_syms[:10]} …")
-    return top_syms
+    return (top_syms, phase0_universe_size, universe_used, universe_degraded)
 
 
 def _predict_stock(symbol: str, horizon: str, market: str = "IN") -> dict | None:
@@ -634,9 +763,11 @@ def _generate_picks_inner(market: str = "IN") -> dict:
         log.warning(f"[picks] [{market}] Session refresh failed (non-fatal): {e}")
 
     # ── Phase 0b: Bulk screen the market's stock universe → top N momentum candidates ─
-    # One yf.download() call for the full universe (~60s) then rank by
-    # composite momentum score. Falls back to an anchor list if download fails.
-    candidates = _bulk_screen(market, _N_CANDIDATES)
+    # One yf.download() call for the eligible universe then rank by composite
+    # momentum score. For US: uses _US_DAILY_PICKS_ELIGIBLE intersection;
+    # never falls back to the raw 12k universe. Falls back to anchor megacap
+    # list (US) / Nifty 100 (IN) if all scoring fails.
+    candidates, _phase0_universe_size, _universe_used, _universe_degraded = _bulk_screen(market, _N_CANDIDATES)
     log.info(f"[picks] [{market}] Starting deep prediction for {len(candidates)} candidates × 3 horizons …")
 
     # ── Phase 2: Detect market regime (done once, shared across all stocks) ──
@@ -805,19 +936,27 @@ def _generate_picks_inner(market: str = "IN") -> dict:
 
     elapsed = round(time.time() - start, 1)
     total = sum(len(v) for v in picks.values())
-    universe_size = len(_UNIVERSE.get(market, []))
+    # _phase0_universe_size: the ACTUAL count of symbols passed to Phase-0
+    # bulk screening for this run (post-eligibility-filter and post-screener-
+    # intersection). Replaces the former `len(_UNIVERSE.get(market, []))` which
+    # always returned the raw static-universe size (12,011 for US) regardless
+    # of what the screener returned — the root cause of the UI showing
+    # "screened from 12,079 US stocks" even when the screener narrowed it.
     log.info(f"[picks] [{market}] Done in {elapsed}s — {total} BUY picks found across "
-          f"{len(candidates)} candidates from {universe_size} stocks.")
+          f"{len(candidates)} candidates from {_phase0_universe_size} stocks "
+          f"(universe_used={_universe_used}, degraded={_universe_degraded}).")
 
     payload = {
-        "generated_at":    datetime.now(timezone.utc).isoformat(),
-        "market":          market,
-        "currency":        currency,
-        "picks":           picks,
-        "alpha_engine":    alpha_engine_meta,
-        "regime":          {"label": regime_label, "description": regime["description"]},
-        "screened_from":   universe_size,
-        "candidates":      len(candidates),
+        "generated_at":      datetime.now(timezone.utc).isoformat(),
+        "market":            market,
+        "currency":          currency,
+        "picks":             picks,
+        "alpha_engine":      alpha_engine_meta,
+        "regime":            {"label": regime_label, "description": regime["description"]},
+        "screened_from":     _phase0_universe_size,   # actual count, not raw static-universe size
+        "universe_used":     _universe_used,          # "screener" | "anchor" | "full_universe"
+        "universe_degraded": _universe_degraded,      # True when not using live screener (US)
+        "candidates":        len(candidates),
     }
 
     # Save to disk (best-effort — ephemeral on Render free tier)
