@@ -994,12 +994,14 @@ def _generate_picks_inner(
             # Progress after each completed task (candidate × horizon)
             _try_job_progress(job_id, "phase_1", done, len(tasks))
 
+    # State: all Phase-1 prediction tasks done; ranking/selection about to begin.
+    # Written before score-snapshot I/O so the phase is truthful immediately
+    # after the ThreadPoolExecutor exits.
+    _try_job_progress(job_id, "ranking", None, None)
+
     # ── Score snapshots (section 4) — persist every scored stock for history ──
     # Piggybacks on the universe scan above so we don't re-fetch anything.
     _write_score_snapshots(raw, market)
-
-    # State: all Phase-1 prediction tasks done; ranking/selection about to begin.
-    _try_job_progress(job_id, "ranking", None, None)
 
     # ── Phases 3-6 per horizon ────────────────────────────────────────────────
     picks: dict[str, list] = {}

@@ -279,22 +279,31 @@ def test_phase_1_progress_uses_real_task_counts():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6. ranking written after all Phase 1 work, before persisting
+# 6. ranking written immediately after Phase 1, before score snapshots
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_ranking_written_after_phase1_before_persisting():
-    """ranking must appear after the last phase_1 update and before persisting."""
+def test_ranking_written_before_score_snapshots_and_before_persisting():
+    """ranking must appear after the last phase_1 update, before _write_score_snapshots,
+    and before persisting.
+
+    This test will FAIL if _write_score_snapshots is called before the ranking
+    progress write — the ordering that was flagged as incorrect in the pre-push audit.
+    """
     import services.daily_picks as dp
 
     call_order = []
 
     def fake_progress(job_id, phase, processed, total, **kw):
-        call_order.append(phase)
+        call_order.append(("progress", phase))
+
+    def fake_score_snapshots(raw, market):
+        call_order.append(("write_score_snapshots",))
 
     with patch("services.daily_picks._try_job_progress", side_effect=fake_progress), \
          patch("services.daily_picks._bulk_screen",
                return_value=(["AAPL"], 5, "screener", False, 10)), \
-         patch("services.daily_picks._write_score_snapshots"), \
+         patch("services.daily_picks._write_score_snapshots",
+               side_effect=fake_score_snapshots), \
          patch("services.daily_picks._zscore_and_rank", return_value=[]), \
          patch("services.daily_picks._predict_stock", return_value=None), \
          patch("services.alpha_engine.outcome_logger.resolve_pending_outcomes"), \
@@ -311,19 +320,31 @@ def test_ranking_written_after_phase1_before_persisting():
         except Exception:
             pass
 
-    assert "ranking" in call_order, "ranking was never written"
-    assert "phase_1" in call_order
-    assert "persisting" in call_order
+    # Verify all expected events appeared
+    phases = [e[1] for e in call_order if e[0] == "progress"]
+    events = call_order  # mixed ("progress", phase) and ("write_score_snapshots",)
 
-    last_phase1_pos = max(i for i, ph in enumerate(call_order) if ph == "phase_1")
-    pos_ranking     = call_order.index("ranking")
-    pos_persisting  = call_order.index("persisting")
+    assert ("progress", "ranking") in events, "ranking was never written"
+    assert ("write_score_snapshots",) in events, "_write_score_snapshots was never called"
+    assert ("progress", "persisting") in events, "persisting was never written"
+    assert "phase_1" in phases, "phase_1 was never written"
+
+    last_phase1_pos     = max(i for i, e in enumerate(events) if e == ("progress", "phase_1"))
+    pos_ranking         = events.index(("progress", "ranking"))
+    pos_score_snapshots = events.index(("write_score_snapshots",))
+    pos_persisting      = events.index(("progress", "persisting"))
 
     assert last_phase1_pos < pos_ranking, (
         f"ranking (pos {pos_ranking}) must come after last phase_1 (pos {last_phase1_pos})"
     )
-    assert pos_ranking < pos_persisting, (
-        f"ranking (pos {pos_ranking}) must come before persisting (pos {pos_persisting})"
+    # Critical: ranking must precede score snapshots
+    assert pos_ranking < pos_score_snapshots, (
+        f"ranking (pos {pos_ranking}) must come BEFORE _write_score_snapshots "
+        f"(pos {pos_score_snapshots}) — test fails if ordering is reversed"
+    )
+    assert pos_score_snapshots < pos_persisting, (
+        f"_write_score_snapshots (pos {pos_score_snapshots}) must come before "
+        f"persisting (pos {pos_persisting})"
     )
 
 
