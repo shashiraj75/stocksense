@@ -924,6 +924,9 @@ def _generate_picks_inner(
     start = time.time()
     currency = _CURRENCY.get(market, "₹")
 
+    # State: job is now executing — no work counts to report yet.
+    _try_job_progress(job_id, "initializing", None, None)
+
     # ── Phase 0: Resolve outcomes from previous prediction runs ──────────────
     resolve_pending_outcomes()
 
@@ -937,6 +940,9 @@ def _generate_picks_inner(
         log.info(f"[picks] [{market}] Yahoo Finance session refreshed.")
     except Exception as e:
         log.warning(f"[picks] [{market}] Session refresh failed (non-fatal): {e}")
+
+    # State: about to resolve the eligible stock universe — no candidate count yet.
+    _try_job_progress(job_id, "universe_selection", None, None)
 
     # ── Phase 0b: Bulk screen the market's stock universe → top N momentum candidates ─
     # One yf.download() call for the eligible universe then rank by composite
@@ -964,6 +970,10 @@ def _generate_picks_inner(
     regime_label = regime["label"]
     log.info(f"[picks] [{market}] Regime: {regime_label} — {regime['description']}")
 
+    # State: shortlist of N candidates known; deep-prediction about to begin.
+    # No task count to report yet — phase_1 will report 0/total once tasks are built.
+    _try_job_progress(job_id, "shortlist_ready", None, None)
+
     # ── Phase 1: Deep-predict candidates ─────────────────────────────────────
     # max_workers=1 to avoid Yahoo Finance rate-limiting Render's IP.
     tasks = [(sym, h) for sym in candidates for h in ("short", "medium", "long")]
@@ -987,6 +997,9 @@ def _generate_picks_inner(
     # ── Score snapshots (section 4) — persist every scored stock for history ──
     # Piggybacks on the universe scan above so we don't re-fetch anything.
     _write_score_snapshots(raw, market)
+
+    # State: all Phase-1 prediction tasks done; ranking/selection about to begin.
+    _try_job_progress(job_id, "ranking", None, None)
 
     # ── Phases 3-6 per horizon ────────────────────────────────────────────────
     picks: dict[str, list] = {}
@@ -1184,6 +1197,9 @@ def _generate_picks_inner(
         "issuer_duplicates_suppressed":  _issuer_duplicates_suppressed,
     }
 
+    # State: payload fully constructed; about to write to durable storage.
+    _try_job_progress(job_id, "persisting", None, None)
+
     # Save to disk (best-effort — ephemeral on Render free tier)
     try:
         with open(_cache_file(market), "w") as f:
@@ -1277,11 +1293,16 @@ def _heartbeat_loop(job_id: str, stop_event: _threading.Event) -> None:
 def _try_job_progress(
     job_id: str | None,
     phase: str,
-    processed: int,
-    total: int,
+    processed: int | None,
+    total: int | None,
     **kwargs,
 ) -> None:
-    """Best-effort progress write; silently swallows all errors."""
+    """Best-effort progress write; silently swallows all errors.
+
+    processed and total may be None for state-only phases (initializing,
+    universe_selection, shortlist_ready, ranking, persisting) where no
+    countable workload exists yet.  The DB column is INTEGER (nullable).
+    """
     if not job_id or os.getenv("USE_POSTGRES") != "1":
         return
     try:

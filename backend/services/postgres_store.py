@@ -728,8 +728,8 @@ def mark_daily_picks_job_running(job_id: str) -> None:
 def record_daily_picks_job_progress(
     job_id: str,
     phase: str,
-    processed: int,
-    total: int,
+    processed: int | None,
+    total: int | None,
     universe_used: str | None = None,
     universe_degraded: bool | None = None,
     last_progress_at=None,
