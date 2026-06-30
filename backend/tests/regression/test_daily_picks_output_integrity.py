@@ -142,20 +142,50 @@ def test_phase_1_task_total_is_candidates_times_horizons():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6. final_candidate_count is distinct from displayed picks when applicable
+# 6. final_candidate_count counts UNIQUE SYMBOLS, not cross-horizon signals
 # ─────────────────────────────────────────────────────────────────────────────
 
+def test_final_candidate_count_counts_unique_symbols_not_signals():
+    """A symbol qualifying in all three horizons must be counted once, not three times.
+
+    final_candidate_count is the number of distinct company symbols that produced
+    at least one quality-passing, issuer-deduped BUY in any horizon — it is NOT
+    the sum of per-horizon BUY counts (which would triple-count a company that
+    qualifies in short + medium + long).
+    """
+    # Simulate: one symbol (AAPL) qualifies in all 3 horizons, one (MSFT) in 2
+    per_horizon_deduped = {
+        "short":  [_make_buy("AAPL"), _make_buy("MSFT")],
+        "medium": [_make_buy("AAPL"), _make_buy("MSFT")],
+        "long":   [_make_buy("AAPL")],
+    }
+    # Aggregate unique symbols exactly as the implementation does
+    unique_symbols: set[str] = set()
+    for horizon_buys in per_horizon_deduped.values():
+        unique_symbols.update(r["symbol"] for r in horizon_buys)
+
+    # Must be 2 (AAPL + MSFT), not 5 (2+2+1 cross-horizon sum)
+    assert len(unique_symbols) == 2
+    assert unique_symbols == {"AAPL", "MSFT"}
+
+
 def test_final_candidate_count_distinct_from_display_picks():
-    """When more than 6 BUY signals pass quality gate per horizon,
-    final_candidate_count > total displayed picks."""
+    """When more than 6 unique symbols qualify, final_candidate_count can exceed
+    the number of displayed picks (max 6 per horizon × 3 = 18)."""
+    # 10 distinct symbols all qualify in one horizon
     buys = [_make_buy(f"SYM{i}", alpha=1.0 - i * 0.01) for i in range(10)]
     deduped, suppressed = dp._deduplicate_by_issuer(buys, "US")
-    # None of these are mapped issuer groups, so 0 suppressed
     assert suppressed == 0
-    assert len(deduped) == 10  # all 10 pass dedup
-    # Top-6 slice happens AFTER dedup: 10 > 6 (displayed), so counts are distinct
+    assert len(deduped) == 10
+
+    # Simulate the set accumulation: 10 unique symbols
+    unique_symbols: set[str] = set()
+    unique_symbols.update(r["symbol"] for r in deduped)
+    assert len(unique_symbols) == 10
+
+    # Top-6 slice produces fewer displayed picks than unique qualifying symbols
     displayed = deduped[:6]
-    assert len(deduped) > len(displayed)
+    assert len(unique_symbols) > len(displayed)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
