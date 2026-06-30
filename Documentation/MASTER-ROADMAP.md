@@ -54,6 +54,7 @@ Nine intelligence domains are named here, each described accurately as it exists
 | **006** *(proposed numbering)* | Recommendation Intelligence Consolidation | **Future** | Epics 002–005 | The existing Prediction Engine evolves to consume Business Quality, Financial Strength, Growth, Valuation, and Risk as first-class engine inputs, rather than its current internal ad hoc factor blend. | Not started — explicitly sequenced after the component engines exist, per the same "validate the parts before integrating" discipline used throughout Epic 001. |
 | **007** *(proposed numbering)* | Portfolio Intelligence | **Future** | Epic 006 (needs a stable, consolidated recommendation signal to be portfolio-aware about) | Concentration-risk and correlation-aware recommendations against a user's actual holdings — the "Portfolio Copilot" capability, confirmed not to exist today. | Not started — requires product scoping before any engineering, per the existing engineering roadmap's own assessment. |
 | **008** *(proposed numbering)* | AI Research Analyst | **Future** | Epic 006/007 (needs richer, consolidated explainability data to be grounded in) | A true conversational analyst layer, distinct from today's rule-based Explainability Layer. | Not started — deliberately last; explicitly gated on richer explainability data existing first. |
+| — | Mutual Fund Intelligence & Portfolio-Fit Support | **Planned Future Product Area** | Portfolio and Watchlist Intelligence (Epic 007) — fund-fit analysis requires the platform to have portfolio-context awareness before it can evaluate overlap, concentration, and suitability against what a user already holds. | Fund discovery, quality and risk analysis, portfolio-fit overlap detection, goal-based suitability assessment, explainable fund summaries, and monitoring alerts. Evaluated on quality, consistency, risk, cost, concentration, overlap, and goal alignment — not on recent return alone. No generic "best fund" claims. | Not started. Sequenced after Portfolio Intelligence ships. Exact timing subject to data-provider feasibility, regulatory constraints, and evidence from prior phases. See [Section 10](#section-10--future-product-area-mutual-fund-intelligence--portfolio-fit-support) for full scope. |
 | — | Daily Picks Intelligence | **Completed** (as a product feature; not a separate epic) | Recommendation Intelligence (Epic 006 will indirectly improve it) | N/A — already shipped. | No dedicated epic planned; improves automatically as upstream engines mature. |
 
 ---
@@ -88,6 +89,7 @@ Nine intelligence domains are named here, each described accurately as it exists
 - **Risk Intelligence** — deferred, not rejected, pending Recommendation Consolidation's own findings about which risk dimensions are genuinely missing, and pending confirmed data/NLP feasibility for its most distinguishing sub-areas (litigation, concentration, regulatory) — see the decision document's Special Analysis section.
 - **Macro/Market-Regime Intelligence** — deferred; blocked by an already-confirmed Data Fabric gap (no aggregated index-level valuation/rate history), named originally in Valuation Intelligence's own Sprint #001.
 - **Portfolio Intelligence** — deferred; structurally downstream of Recommendation Consolidation (needs clean, synthesized per-stock theses to aggregate).
+- **Mutual Fund Intelligence & Portfolio-Fit Support** — planned future product area; sequenced after Portfolio and Watchlist Intelligence ships. Requires portfolio-context awareness before fund overlap and suitability analysis are meaningful. Will evaluate funds on quality, consistency, risk, cost, concentration, overlap, investor suitability, and goal alignment — not on recent return alone. Subject to data-provider feasibility and regulatory constraints at the time of scoping. See [Section 10](#section-10--future-product-area-mutual-fund-intelligence--portfolio-fit-support) for full planned scope.
 - **AI Research Analyst** — deferred, lowest priority; no clean way to validate against real outcomes with this engagement's own established evidence-validation discipline.
 
 ---
@@ -180,3 +182,115 @@ Epic Closure
 Epics 001, 002, 003, and 004 are all now formally closed (see [EPIC-001 Closure](Engineering-Handbook/EPICS/EPIC-001-Business-Quality-Intelligence-Closure.md), [EPIC-002 Closure](Engineering-Handbook/EPICS/EPIC-002-Financial-Strength-Intelligence-Closure.md), [EPIC-003 Closure](Engineering-Handbook/EPICS/EPIC-003-Growth-Intelligence-Closure.md), and [EPIC-004 Closure](Engineering-Handbook/Releases/EPIC-004-Valuation-Intelligence-Closure.md)). **Epic 005 may begin** — per EPIC-004 Closure's own evidence-based recommendation, conditioned on (not blocked by) a short, separately-scoped operational decision about activating Valuation Intelligence's currently-disabled-by-default kill switches, which can proceed in parallel with Epic 005's own first sprint rather than gating it.
 
 **Epic 005 selection, made via a dedicated strategic decision sprint, not assumed**: a full evidence-based comparison of Risk Intelligence, Recommendation Consolidation, Macro/Market-Regime Intelligence, Portfolio Intelligence, and AI Research Analyst — see the [full decision document](Engineering-Handbook/Architecture/StockSense360-Next-Intelligence-Epic-Decision.md) — selected **Recommendation Consolidation Intelligence**. Rationale, in brief: it fills the most concretely evidenced gap (four validated engines exist with no synthesis layer reconciling them); carries the lowest cross-engine duplication risk (reads existing outputs only, never recomputes); requires no new provider data in either market (the lowest feasibility risk of any candidate); and its sole prerequisite — four stable, validated engines — is already satisfied today. Risk Intelligence was the leading alternative but was deferred (not rejected) because its most differentiating sub-areas (litigation, concentration, regulatory risk) depend on an unconfirmed NLP/free-text-extraction capability this codebase has never built, materially different from every prior engine's structured-numeric-field approach.
+
+---
+
+## Section 10 — Future Product Area: Mutual Fund Intelligence & Portfolio-Fit Support
+
+**Status: Planned Future Product Area — not started, not scheduled, not production-ready.**
+
+This section documents the planned scope and philosophy for Mutual Fund Intelligence. It is recorded here to establish intent and design constraints, not to imply that any of this capability exists today. The platform currently covers equities only. No mutual fund analysis, screening, or recommendation logic has been built.
+
+### Sequencing
+
+Mutual Fund Intelligence is explicitly sequenced **after Portfolio and Watchlist Intelligence (Epic 007)**. Portfolio-context awareness — knowing what a user already holds — is a prerequisite for meaningful fund-fit analysis. Recommending a fund without knowing an investor's existing exposure, risk capacity, and goal horizon is the same error the platform already avoids for equity recommendations: opinion without context.
+
+**Planning direction (subject to revision based on evidence, user needs, data-provider feasibility, and compliance requirements):**
+
+| Priority | Area |
+|---|---|
+| Current | Daily Picks reliability and validation |
+| Next | Daily Picks runtime and provider hardening |
+| Future | Momentum Radar / Early Strength Scanner |
+| Future | Portfolio and Watchlist Intelligence (Epic 007) |
+| Future | **Mutual Fund Intelligence & Portfolio-Fit Support** |
+| Future | Multi-broker read-only integrations |
+
+This sequence is a planning direction, not a release commitment. It may be revised at any phase boundary based on evidence, data feasibility, regulatory considerations, or shifts in user need.
+
+### Positioning
+
+StockSense360 will not promote a fund simply because it delivered the highest recent return.
+
+Mutual Fund Intelligence will evaluate quality, consistency, risk, cost, concentration, portfolio overlap, investor suitability, and goal alignment. Past return alone is not a recommendation. Every shortlisted fund must be explainable — what it does well, where its risks lie, who it suits, and when an investor should avoid or reconsider it.
+
+No generic "best mutual funds" claim will be made. Suitability is individual and context-dependent.
+
+### Planned Capabilities
+
+**1. Fund Discovery and Screening**
+
+- Category-wise screening: equity, debt, hybrid, index, ELSS, international, sectoral, and thematic funds where data coverage permits.
+- Filters for investment horizon, risk level, expense ratio, AUM, and fund age.
+- Direct Plan versus Regular Plan comparison where data is available.
+- Data limitations shown honestly; coverage gaps named explicitly, not papered over.
+
+**2. Fund Quality and Risk Analysis**
+
+- Multi-period and multi-market-cycle return consistency — not a single trailing period.
+- Benchmark-relative performance; alpha generated after accounting for benchmark and category beta.
+- Risk-adjusted returns: Sharpe, Sortino, and similar measures where feasible.
+- Volatility, maximum drawdown, downside risk, and recovery behaviour.
+- Fund-manager tenure and strategy consistency; flagged if the manager who built the track record is no longer running the fund.
+- Expense ratio evaluated as a structural drag on net return, not a footnote.
+- Portfolio concentration (top-10 stock weight, sector weight) and evidence of style drift over time.
+
+**3. Portfolio-Fit Analysis**
+
+- Overlap detection between a fund's holdings and a user's direct-stock holdings.
+- Overlap detection between multiple funds in the user's portfolio.
+- Sector, market-cap, fund-house, and thematic concentration view across the combined equity exposure.
+- Consolidated allocation view: equity, debt, gold, international, and cash.
+- Duplicate-exposure warnings and diversification analysis — adding a new fund that replicates existing exposure is named as such.
+
+**4. Goal-Based Investment Support**
+
+- Suitability by investment horizon, risk capacity, and named goal.
+- Goal categories: retirement, education, long-term wealth creation, emergency reserve, and income-oriented planning — each with appropriate fund-type guidance.
+- SIP versus lump-sum decision-support; market-level context for lump-sum timing where relevant.
+- Separation of short-term goals (where capital preservation dominates) from long-term equity investing (where return consistency matters more than short-term volatility).
+- No automated investment execution; all fund actions remain the investor's own decision.
+
+**5. Explainable Fund Summary**
+
+Every shortlisted fund will explain:
+- Why it is shortlisted — which specific quality, consistency, or fit criteria it satisfies.
+- Key strengths — what the fund does well relative to category peers and benchmark.
+- Key risks — what could go wrong; not buried, not minimised.
+- Suitable investor profile — horizon, risk tolerance, and goal type this fund fits.
+- Expected holding horizon — the minimum time period for which this fund's risk/return profile makes sense.
+- Portfolio overlap impact — how this fund changes the user's existing exposure.
+- When to avoid or reconsider — conditions under which this fund is unsuitable despite scoring well overall.
+
+**6. Monitoring and Alerts**
+
+- Fund-manager change alerts.
+- Material strategy or style drift — identified from portfolio composition shifts, not just stated mandate.
+- Sustained benchmark underperformance — named threshold, not a vague flag.
+- Rising expense ratio — particularly if the Direct Plan gap is narrowing without justification.
+- Excessive concentration in the fund's own holdings.
+- Category and market-risk changes affecting the fund's risk profile.
+- Portfolio overlap and rebalancing-review alerts when the user's combined exposure drifts.
+
+### Philosophy Constraints
+
+These constraints must hold regardless of what data sources become available:
+
+- **No return chasing.** A fund's 1-year return will never be the primary or sole recommendation signal.
+- **Capital preservation before return chasing.** For any goal horizon under three years, downside risk and consistency matter more than peak return.
+- **Evidence before opinion.** Every fund assessment traces to named, inspectable metrics — not a proprietary black-box score.
+- **Confidence is not certainty.** Past fund performance, however consistent, does not guarantee future returns. This will be stated clearly wherever fund summaries are shown.
+- **Portfolio context matters.** A fund's suitability depends on what the investor already holds. Generic recommendations without portfolio context violate the platform's core design principle.
+- **Human judgment remains in control.** No autonomous fund selection or investment execution. StockSense360 provides analysis; the investor makes the decision.
+- **Data limitations shown honestly.** If a fund's full history is unavailable, if the benchmark data is incomplete, or if the manager tenure is unverifiable, those limitations are stated explicitly rather than silently omitted.
+
+### Prerequisites and Open Feasibility Questions
+
+Before this product area is scoped into an engineering epic, the following must be confirmed:
+
+- Data provider availability for Indian mutual fund holdings, AUM, NAV history, expense ratios, and manager tenures at the required depth and update frequency.
+- Data provider availability for US mutual fund and ETF equivalents (where applicable).
+- Regulatory constraints on presenting fund analysis in a way that does not constitute regulated investment advice in either market.
+- Whether the existing Data Fabric adapter pattern (provider adapter → resolution → engine adapter → pure engine) transfers cleanly to fund data, or whether a new ingestion architecture is needed.
+
+None of these are assumed to be straightforward. This section records the intended product direction; the Design Study (when this area is prioritised) will confirm or adjust scope based on what is actually feasible.
