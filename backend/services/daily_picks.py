@@ -756,7 +756,9 @@ def generate_picks(market: str = "IN", job_id: str | None = None) -> dict:
             except Exception as e:
                 log.warning(f"[picks] [{market}] Could not mark job terminal: {e}")
 
-        _post_success_market = market  # signal finally to run Phase 8 + Telegram
+        # Phase 8 + Telegram require durable persistence — never run on a failed save
+        if persisted_at is not None:
+            _post_success_market = market
         return payload
 
     except Exception as e:

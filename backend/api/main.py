@@ -366,37 +366,36 @@ async def lifespan(app: FastAPI):
                 log.info(f"[picks_catchup] [{market}] Today's picks already exist — skipping")
                 return
 
-            use_postgres = os.getenv("USE_POSTGRES") == "1"
+            # Durable Postgres state is mandatory — no legacy in-memory fallback
+            if os.getenv("USE_POSTGRES") != "1":
+                log.warning(
+                    f"[picks_catchup] [{market}] durable_job_state_unavailable: "
+                    f"USE_POSTGRES is not enabled — skipping catch-up"
+                )
+                return
+
             job_id = None
 
-            if use_postgres:
-                # Durable reservation gate — same mutual-exclusion path as POST /generate
-                with _dp._generating_lock:
-                    if _dp._generating.get(market, False):
-                        log.info(f"[picks_catchup] [{market}] Generation already in progress — skipping")
-                        return
-
-                job_id = str(_uuid.uuid4())
-                try:
-                    from services.postgres_store import try_reserve_daily_picks_job
-                    reserved = try_reserve_daily_picks_job(job_id, market, _dp._RUNNER_ID)
-                except Exception as exc:
-                    log.warning(f"[picks_catchup] [{market}] DB reservation failed: {exc} — skipping")
+            # Durable reservation gate — same mutual-exclusion path as POST /generate
+            with _dp._generating_lock:
+                if _dp._generating.get(market, False):
+                    log.info(f"[picks_catchup] [{market}] Generation already in progress — skipping")
                     return
 
-                if not reserved:
-                    log.info(f"[picks_catchup] [{market}] Job already reserved by another process — skipping")
-                    return
+            job_id = str(_uuid.uuid4())
+            try:
+                from services.postgres_store import try_reserve_daily_picks_job
+                reserved = try_reserve_daily_picks_job(job_id, market, _dp._RUNNER_ID)
+            except Exception as exc:
+                log.warning(f"[picks_catchup] [{market}] DB reservation failed: {exc} — skipping")
+                return
 
-                with _dp._generating_lock:
-                    _dp._generating[market] = True
-            else:
-                # In-memory only path
-                with _dp._generating_lock:
-                    if _dp._generating.get(market, False):
-                        log.info(f"[picks_catchup] [{market}] Generation already in progress — skipping")
-                        return
-                    _dp._generating[market] = True
+            if not reserved:
+                log.info(f"[picks_catchup] [{market}] Job already reserved by another process — skipping")
+                return
+
+            with _dp._generating_lock:
+                _dp._generating[market] = True
 
             log.info(f"[picks_catchup] [{market}] No picks for today — generating now (this takes ~10-20 min)…")
             try:

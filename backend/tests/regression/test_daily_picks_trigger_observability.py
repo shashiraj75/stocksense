@@ -35,13 +35,17 @@ def client(monkeypatch):
     return TestClient(app)
 
 
-def test_valid_trigger_records_received_at_before_generation_runs(client):
+def test_valid_trigger_records_received_at_before_generation_runs(client, monkeypatch):
     import services.daily_picks as dp
 
+    # #002D-G Fix 3: USE_POSTGRES=1 is now mandatory; test must reflect that.
+    monkeypatch.setenv("USE_POSTGRES", "1")
     dp._last_trigger_received_at["US"] = None
-    with patch.object(dp, "generate_picks") as mock_generate:
+    with patch.object(dp, "generate_picks"), \
+         patch("services.postgres_store.try_reserve_daily_picks_job", return_value=True), \
+         patch("services.daily_picks.picks_generated_today", return_value=False):
         resp = client.post("/api/picks/generate", params={"market": "US"}, headers={"x-secret": TEST_SECRET})
-    assert resp.status_code in (200, 202)  # 202 = accepted (Workstream #002D-E), 200 = already_fresh
+    assert resp.status_code in (200, 202)  # 202 = accepted, 200 = already_fresh
     # Recorded synchronously, in the request itself — not dependent on the
     # background task (mocked above) ever running.
     assert dp._last_trigger_received_at["US"] is not None

@@ -1,12 +1,12 @@
 import os
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
 from fastapi.responses import JSONResponse
 
 router = APIRouter()
 
-PICKS_SECRET = os.getenv("PICKS_SECRET", "")  # must be set in Render environment variables
+PICKS_SECRET = os.getenv("PICKS_SECRET", "")  # must be set in production environment
 _VALID_MARKETS = ("IN", "US")
 
 # Heartbeat considered slow after 90 s, unresponsive after 180 s
@@ -101,7 +101,7 @@ def picks_status(market: str = "IN"):
         resp.update({
             "job_id": job.get("job_id"),
             "job_status": job.get("status"),
-            "phase": job.get("current_phase"),
+            "phase": job.get("phase"),          # key matches postgres_store dict output
             "processed": job.get("processed"),
             "total": job.get("total"),
             "last_runner_heartbeat_at": job.get("last_runner_heartbeat_at"),
@@ -135,18 +135,26 @@ def trigger_generation(background_tasks: BackgroundTasks, market: str = "IN", x_
       202 — accepted and queued
       200 — already_fresh (picks exist for today; idempotent success)
       409 — already_running (a job is already queued/running)
-      503 — durable_job_state_unavailable (USE_POSTGRES=1 but DB insert failed)
+      503 — durable_job_state_unavailable (USE_POSTGRES != "1" OR DB insert failed)
     """
     if x_secret != PICKS_SECRET:
         raise HTTPException(status_code=401, detail="Invalid secret")
     market = _norm_market(market)
 
+    # Step 1: Require durable Postgres state — no legacy in-memory fallback in production
+    if os.getenv("USE_POSTGRES") != "1":
+        return JSONResponse(
+            status_code=503,
+            content={"status": "durable_job_state_unavailable", "market": market,
+                     "message": "USE_POSTGRES is not enabled; Daily Picks requires durable job state."},
+        )
+
     import services.daily_picks as _dp
 
-    # Step 1: Record trigger receipt timestamp
+    # Step 2: Record trigger receipt timestamp
     _dp._last_trigger_received_at[market] = datetime.now(timezone.utc).isoformat()
 
-    # Step 2: Check picks_generated_today — return 200 if already fresh
+    # Step 3: Check picks_generated_today — return 200 if already fresh
     if _dp.picks_generated_today(market):
         return JSONResponse(
             status_code=200,
@@ -154,86 +162,77 @@ def trigger_generation(background_tasks: BackgroundTasks, market: str = "IN", x_
                      "message": f"{market} picks already generated for today."},
         )
 
-    use_postgres = os.getenv("USE_POSTGRES") == "1"
-
-    if use_postgres:
-        # Step 3: Check in-memory flag (fast path before DB round-trip)
-        with _dp._generating_lock:
-            if _dp._generating.get(market, False):
-                return JSONResponse(
-                    status_code=409,
-                    content={"status": "already_running", "market": market,
-                             "message": f"{market} picks generation is already in progress."},
-                )
-
-        # Step 4: Try to reserve the job in Postgres (atomic via partial unique index)
-        job_id = str(uuid.uuid4())
-        try:
-            from services.postgres_store import (
-                try_reserve_daily_picks_job,
-                get_active_daily_picks_job,
-            )
-            reserved = try_reserve_daily_picks_job(job_id, market, _dp._RUNNER_ID)
-        except Exception as e:
-            return JSONResponse(
-                status_code=503,
-                content={"status": "durable_job_state_unavailable", "market": market,
-                         "message": f"Could not write durable job state: {e}"},
-            )
-
-        # Step 5: Conflict — another process reserved before us
-        if not reserved:
-            active = get_active_daily_picks_job(market)
+    # Step 4: Fast-path in-memory check (avoids DB round-trip if local flag is already set)
+    with _dp._generating_lock:
+        if _dp._generating.get(market, False):
             return JSONResponse(
                 status_code=409,
-                content={
-                    "status": "already_running",
-                    "market": market,
-                    "job_id": active.get("job_id") if active else None,
-                    "message": f"{market} picks generation is already in progress (reserved by another process).",
-                },
+                content={"status": "already_running", "market": market,
+                         "message": f"{market} picks generation is already in progress."},
             )
 
-        # Step 6: Set in-memory flag AFTER successful DB reservation
-        with _dp._generating_lock:
-            _dp._generating[market] = True
+    # Step 5: Atomic durable reservation via partial unique index
+    job_id = str(uuid.uuid4())
+    try:
+        from services.postgres_store import (
+            try_reserve_daily_picks_job,
+            get_active_daily_picks_job,
+            mark_daily_picks_job_failed,
+        )
+        reserved = try_reserve_daily_picks_job(job_id, market, _dp._RUNNER_ID)
+    except Exception as e:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "durable_job_state_unavailable", "market": market,
+                     "message": f"Could not write durable job state: {e}"},
+        )
 
-        # Step 7: Launch background task
-        def _run():
-            try:
-                _dp.generate_picks(market, job_id=job_id)
-            finally:
-                with _dp._generating_lock:
-                    _dp._generating[market] = False
+    # Step 6: Conflict — another process holds the active slot
+    if not reserved:
+        active = get_active_daily_picks_job(market)
+        return JSONResponse(
+            status_code=409,
+            content={
+                "status": "already_running",
+                "market": market,
+                "job_id": active.get("job_id") if active else None,
+                "message": f"{market} picks generation is already in progress (reserved by another process).",
+            },
+        )
 
+    # Step 7: Set in-memory flag AFTER successful DB reservation
+    with _dp._generating_lock:
+        _dp._generating[market] = True
+
+    # Step 8: Launch background task; clean up durable reservation if dispatch itself fails
+    def _run():
+        try:
+            _dp.generate_picks(market, job_id=job_id)
+        finally:
+            with _dp._generating_lock:
+                _dp._generating[market] = False
+
+    try:
         background_tasks.add_task(_run)
-        return JSONResponse(
-            status_code=202,
-            content={"status": "accepted", "market": market, "job_id": job_id,
-                     "message": f"{market} picks will be ready in ~10-20 minutes."},
-        )
-
-    else:
-        # No Postgres — in-memory only path (legacy behaviour)
+    except Exception as dispatch_err:
+        # Dispatch failure: mark the reserved row failed so it does not block future runs
         with _dp._generating_lock:
-            if _dp._generating.get(market, False):
-                return JSONResponse(
-                    status_code=409,
-                    content={"status": "already_running", "market": market,
-                             "message": f"{market} picks generation is already in progress."},
-                )
-            _dp._generating[market] = True
-
-        def _run_no_pg():
-            try:
-                _dp.generate_picks(market)
-            finally:
-                with _dp._generating_lock:
-                    _dp._generating[market] = False
-
-        background_tasks.add_task(_run_no_pg)
+            _dp._generating[market] = False
+        try:
+            mark_daily_picks_job_failed(
+                job_id, datetime.now(timezone.utc),
+                f"failed_to_start: {dispatch_err}",
+            )
+        except Exception:
+            pass
         return JSONResponse(
-            status_code=202,
-            content={"status": "accepted", "market": market,
-                     "message": f"{market} picks will be ready in ~10-20 minutes."},
+            status_code=503,
+            content={"status": "durable_job_state_unavailable", "market": market,
+                     "message": f"Background task dispatch failed: {dispatch_err}"},
         )
+
+    return JSONResponse(
+        status_code=202,
+        content={"status": "accepted", "market": market, "job_id": job_id,
+                 "message": f"{market} picks will be ready in ~10-20 minutes."},
+    )
