@@ -14,14 +14,14 @@ is still used (not the fallback) when the screener call succeeds.
 
 Updated in Product Integrity Workstream #002D-B: `_get_universe_by_mcap`
 now returns a (symbols, universe_used, universe_degraded) 3-tuple.
-For US: screener symbols are intersected with _US_DAILY_PICKS_ELIGIBLE
+For US: screener symbols are intersected with _US_DAILY_PICKS_HEURISTIC_FILTERED
 before being returned; the raw 12k universe is never returned for US.
 Tests updated to destructure the tuple and verify the new behavior.
 """
 
 from unittest.mock import MagicMock, patch
 
-from services.daily_picks import _get_universe_by_mcap, _US_DAILY_PICKS_ELIGIBLE_SET
+from services.daily_picks import _get_universe_by_mcap, _US_DAILY_PICKS_HEURISTIC_FILTERED_SET
 
 
 def test_screen_is_called_with_yahoo_accepted_count():
@@ -49,14 +49,14 @@ def test_screen_count_value_error_falls_back_to_full_universe():
 def test_us_screen_also_uses_yahoo_accepted_count():
     """
     yf.screen() must be called with count <= 250 for US (#002A regression).
-    After #002D-B: result is intersected with _US_DAILY_PICKS_ELIGIBLE — AAPL
+    After #002D-B: result is intersected with _US_DAILY_PICKS_HEURISTIC_FILTERED — AAPL
     and MSFT are valid common-equity tickers and must survive the intersection.
     """
     fake_result = {"quotes": [{"symbol": "AAPL"}, {"symbol": "MSFT"}]}
     with patch("services.daily_picks.yf.screen", return_value=fake_result) as mock_screen:
         syms, universe_used, universe_degraded = _get_universe_by_mcap("US")
     assert mock_screen.call_args.kwargs["count"] <= 250
-    # Both AAPL and MSFT are in _US_DAILY_PICKS_ELIGIBLE and must be present
+    # Both AAPL and MSFT are in _US_DAILY_PICKS_HEURISTIC_FILTERED and must be present
     assert "AAPL" in syms
     assert "MSFT" in syms
     assert universe_used == "screener"

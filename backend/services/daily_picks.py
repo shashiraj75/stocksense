@@ -16,6 +16,7 @@ Learning Alpha Engine integration:
 import json
 import logging
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -57,19 +58,27 @@ _US_MEGACAP_100 = [
     "MU", "SLB", "EOG", "AON", "ITW", "APD", "CME", "FI", "EQIX", "WM",
 ][:100]
 
-# ── Daily-Picks-only eligible US common-equity universe ────────────────────
+# ── Daily-Picks-only heuristic US common-equity filter ────────────────────
 # Derived deterministically from _US_STOCKS at import time. Kept separate so
 # _US_STOCKS / _ALL_US_SYMBOLS remain intact for any non-Daily-Picks features.
-def _build_us_daily_picks_eligible(raw_universe: list) -> list[str]:
+
+# Whole-word, case-insensitive patterns for exchange-traded fund/note exclusion.
+# Using \b word boundaries avoids the 'Netflix' false positive that a plain
+# .lower()/'etf' substring check would produce ('n-e-t-f' is inside 'netflix').
+_RE_ETF = re.compile(r"\bETF\b", re.IGNORECASE)
+_RE_ETN = re.compile(r"\bETN\b", re.IGNORECASE)
+
+
+def _build_us_daily_picks_heuristic_filtered(raw_universe: list) -> list[str]:
     """
     Return only plain US common-equity tickers from the raw static universe.
     No provider calls — purely local name/symbol keyword matching.
 
     Excluded categories (applied in order; first match wins):
       1. Preferred shares    — ticker symbol contains '$'
-      2. ETFs                — name contains 'ETF' (CASE-SENSITIVE to avoid
-                               catching 'Netflix' which lowercases to 'n-e-t-f…')
-      3. ETNs                — name contains 'ETN' (case-sensitive, same reason)
+      2. ETFs                — name matches whole-word /ETF/ (case-insensitive);
+                               whole-word boundary avoids 'Netflix' false positive
+      3. ETNs                — name matches whole-word /ETN/ (case-insensitive)
       4. Leveraged/inverse   — name contains ' 2x' or ' 3x' (space-prefixed to
                                avoid 'V2X, Inc. Common Stock' as a false positive;
                                all proper levered products use this spacing)
@@ -92,12 +101,6 @@ def _build_us_daily_picks_eligible(raw_universe: list) -> list[str]:
      10. Closed-end funds    — name contains 'closed-end' or 'closed end'
                                (case-insensitive)
 
-    Known limitation: ETFs/funds whose static-universe names contain none of the
-    above keywords (e.g. QQQ='Invesco QQQ Trust, Series 1', GLD='SPDR Gold
-    Shares') remain in the eligible list. These will normally be absent from the
-    live screener's exchange-filtered results; eliminating them fully requires a
-    curated symbol list (a separate product decision / Stage-B follow-up).
-
     ADR handling is a separate product decision — not excluded here.
     """
     result: list[str] = []
@@ -105,10 +108,10 @@ def _build_us_daily_picks_eligible(raw_universe: list) -> list[str]:
         n = name.lower()
         if "$" in sym:
             continue                                            # preferred share
-        if "ETF" in name:
-            continue                                            # exchange-traded fund (case-sensitive)
-        if "ETN" in name:
-            continue                                            # exchange-traded note (case-sensitive)
+        if _RE_ETF.search(name):
+            continue                                            # exchange-traded fund (whole-word, case-insensitive)
+        if _RE_ETN.search(name):
+            continue                                            # exchange-traded note (whole-word, case-insensitive)
         if " 2x" in n or " 3x" in n:
             continue                                            # leveraged/inverse daily
         if "ultrapro" in n:
@@ -132,20 +135,29 @@ def _build_us_daily_picks_eligible(raw_universe: list) -> list[str]:
     return result
 
 
-_US_DAILY_PICKS_ELIGIBLE: list[str] = _build_us_daily_picks_eligible(_US_STOCKS)
+_US_DAILY_PICKS_HEURISTIC_FILTERED: list[str] = _build_us_daily_picks_heuristic_filtered(_US_STOCKS)
 # Frozen set for O(1) intersection checks inside _get_universe_by_mcap.
-_US_DAILY_PICKS_ELIGIBLE_SET: frozenset[str] = frozenset(_US_DAILY_PICKS_ELIGIBLE)
+_US_DAILY_PICKS_HEURISTIC_FILTERED_SET: frozenset[str] = frozenset(_US_DAILY_PICKS_HEURISTIC_FILTERED)
+# Known limitation — not common-equity master:
+#   This list is built by local keyword exclusion on static names in US_STOCKS.
+#   It is NOT a verified common-equity master: instruments whose static name
+#   contains none of the excluded keywords (e.g. QQQ='Invesco QQQ Trust,
+#   Series 1', GLD='SPDR Gold Shares') pass through undetected. The live
+#   screener's exchange/mcap filter usually removes such instruments before
+#   Phase-0; the _US_MEGACAP_100 anchor contains no ETFs or non-equities.
+#   Eliminating residual non-equity pass-throughs requires a curated
+#   common-equity master (Option B — separate product decision).
 
 # PICKS_CANDIDATES env var: how many top-momentum stocks to deep-predict (default 50).
 # 50 × 3 horizons × ~8s = ~20 min — reliable on Render free tier.
 _N_CANDIDATES = int(os.getenv("PICKS_CANDIDATES", 50))
 
 log.info(
-    f"[picks] US eligible common-equity universe: {len(_US_DAILY_PICKS_ELIGIBLE)} "
+    f"[picks] US heuristic-filtered common-equity universe: {len(_US_DAILY_PICKS_HEURISTIC_FILTERED)} "
     f"of {len(_ALL_US_SYMBOLS)} raw symbols "
-    f"({len(_ALL_US_SYMBOLS) - len(_US_DAILY_PICKS_ELIGIBLE)} ETFs/preferreds/SPACs excluded)"
+    f"({len(_ALL_US_SYMBOLS) - len(_US_DAILY_PICKS_HEURISTIC_FILTERED)} ETFs/preferreds/SPACs excluded)"
 )
-log.info(f"[picks] Universes: NSE {len(_ALL_NSE_SYMBOLS)} / US {len(_US_DAILY_PICKS_ELIGIBLE)} eligible stocks → "
+log.info(f"[picks] Universes: NSE {len(_ALL_NSE_SYMBOLS)} / US {len(_US_DAILY_PICKS_HEURISTIC_FILTERED)} heuristic-filtered stocks → "
       f"bulk-screen → top {_N_CANDIDATES} candidates for deep prediction")
 
 
@@ -297,14 +309,14 @@ def _get_universe_by_mcap(market: str) -> tuple[list[str], str, bool]:
     Use yfinance equity screener to get stocks above a market-cap floor.
     Returns ``(symbols, universe_used, universe_degraded)``.
 
-    For US  — Product Integrity Workstream #002D-B:
-      On screener success: intersects result with _US_DAILY_PICKS_ELIGIBLE to
-      strip preferred shares, ETFs, SPACs, and other non-common-equity
+    For US  — Product Integrity Workstream #002D-B/C2:
+      On screener success: intersects result with _US_DAILY_PICKS_HEURISTIC_FILTERED
+      to strip preferred shares, ETFs, SPACs, and other non-common-equity
       instruments that Yahoo may return.  If the intersection is empty (screener
       succeeded but returned no eligible symbols), falls through to the anchor.
 
       On any screener exception OR zero eligible symbols after intersection:
-      returns _US_MEGACAP_100 ∩ _US_DAILY_PICKS_ELIGIBLE as the anchor
+      returns the curated _US_MEGACAP_100 anchor directly (all 100 symbols)
       (``universe_used="anchor"``, ``universe_degraded=True``).  The raw 12k
       universe is NEVER returned for US after this change.
 
@@ -350,7 +362,7 @@ def _get_universe_by_mcap(market: str) -> tuple[list[str], str, bool]:
         # universe regardless of whether the screener succeeded — preferred
         # shares, ETFs, SPACs etc. can appear in Yahoo screener output.
         if screener_syms:
-            eligible_from_screener = [s for s in screener_syms if s in _US_DAILY_PICKS_ELIGIBLE_SET]
+            eligible_from_screener = [s for s in screener_syms if s in _US_DAILY_PICKS_HEURISTIC_FILTERED_SET]
             if eligible_from_screener:
                 log.info(
                     f"[picks] [US] mcap filter {label}: {len(eligible_from_screener)} eligible "
@@ -361,8 +373,10 @@ def _get_universe_by_mcap(market: str) -> tuple[list[str], str, bool]:
                 f"[picks] [US] screener returned {len(screener_syms)} symbols but "
                 f"0 after eligible-universe intersection — using anchor fallback"
             )
-        # Anchor fallback: _US_MEGACAP_100 intersected with eligible (never raw universe)
-        anchor = [s for s in _US_MEGACAP_100 if s in _US_DAILY_PICKS_ELIGIBLE_SET]
+        # Anchor fallback: complete curated 100-symbol list, independent of the
+        # heuristic-filtered set. All _US_MEGACAP_100 symbols are known common
+        # equities and verified by the test suite to pass the exclusion rules.
+        anchor = list(_US_MEGACAP_100)
         reason = screener_error or "0 eligible symbols from screener"
         log.warning(
             f"[picks] [US] DEGRADED UNIVERSE — anchor fallback ({len(anchor)} symbols). "
@@ -389,7 +403,7 @@ def _bulk_screen(market: str, n_candidates: int = 50) -> tuple[list[str], int, s
 
     1. Filter to stocks with market cap above a floor (per-market threshold)
        using yfinance equity screener — removes illiquid micro-caps.
-       For US: also intersects with _US_DAILY_PICKS_ELIGIBLE; never uses
+       For US: also intersects with _US_DAILY_PICKS_HEURISTIC_FILTERED; never uses
        the raw 12k universe; falls back to anchor on screener failure.
     2. Batch-download in groups of SCREEN_BATCH_SIZE to avoid OOM on Render
        (512 MB RAM). Free each batch's DataFrame immediately after processing.
@@ -764,7 +778,7 @@ def _generate_picks_inner(market: str = "IN") -> dict:
 
     # ── Phase 0b: Bulk screen the market's stock universe → top N momentum candidates ─
     # One yf.download() call for the eligible universe then rank by composite
-    # momentum score. For US: uses _US_DAILY_PICKS_ELIGIBLE intersection;
+    # momentum score. For US: uses _US_DAILY_PICKS_HEURISTIC_FILTERED intersection;
     # never falls back to the raw 12k universe. Falls back to anchor megacap
     # list (US) / Nifty 100 (IN) if all scoring fails.
     candidates, _phase0_universe_size, _universe_used, _universe_degraded = _bulk_screen(market, _N_CANDIDATES)
