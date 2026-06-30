@@ -732,7 +732,7 @@ def test_phase0_progress_updates_after_each_completed_bulk_batch():
          patch("services.daily_picks.yf.download",
                side_effect=Exception("batch download failed")), \
          patch("services.daily_picks._get_universe_by_mcap",
-               return_value=(["AAPL", "MSFT", "GOOGL"], "screener", False)), \
+               return_value=(["AAPL", "MSFT", "GOOGL"], "screener", False, 5)), \
          patch("services.daily_picks._try_job_progress", side_effect=_capture_progress):
 
         _dp._bulk_screen("US", n_candidates=2, job_id="job-p0")

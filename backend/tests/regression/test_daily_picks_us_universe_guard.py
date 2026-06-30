@@ -119,7 +119,7 @@ def test_us_screener_failure_uses_anchor_not_raw_universe():
     (e.g. MMC, FI) are still included.
     """
     with patch("services.daily_picks.yf.screen", side_effect=RuntimeError("provider down")):
-        syms, universe_used, universe_degraded = _get_universe_by_mcap("US")
+        syms, universe_used, universe_degraded, _ = _get_universe_by_mcap("US")
 
     raw_us_count = len([sym for sym, _ in US_STOCKS])  # 12,011
     assert len(syms) < raw_us_count, (
@@ -152,7 +152,7 @@ def test_us_empty_eligible_screener_result_uses_anchor_not_raw_universe():
         {"symbol": "PEB$F"},   # Pebblebrook preferred
     ]}
     with patch("services.daily_picks.yf.screen", return_value=fake_result):
-        syms, universe_used, universe_degraded = _get_universe_by_mcap("US")
+        syms, universe_used, universe_degraded, _ = _get_universe_by_mcap("US")
 
     assert universe_used == "anchor"
     assert universe_degraded is True
@@ -176,7 +176,7 @@ def test_us_screener_success_intersects_with_daily_picks_eligible_universe():
         {"symbol": "AACB"},      # NOT eligible — SPAC
     ]}
     with patch("services.daily_picks.yf.screen", return_value=fake_result):
-        syms, universe_used, universe_degraded = _get_universe_by_mcap("US")
+        syms, universe_used, universe_degraded, _ = _get_universe_by_mcap("US")
 
     assert universe_used == "screener"
     assert universe_degraded is False
@@ -211,7 +211,7 @@ def test_screened_from_equals_actual_phase_zero_universe_size():
             # Make download return an empty DataFrame so _bulk_screen falls back
             # to anchor — we only care about phase0_universe_size, not candidates
             mock_dl.return_value = MagicMock(empty=True)
-            candidates, phase0_size, universe_used, universe_degraded = _bulk_screen("US", 50)
+            candidates, phase0_size, universe_used, universe_degraded, _ = _bulk_screen("US", 50)
 
     # The screener returned 5 eligible symbols; that is the phase-0 universe size
     assert phase0_size == len(eligible_symbols), (
@@ -243,7 +243,7 @@ def test_universe_used_and_universe_degraded_are_present_in_payload():
     with patch("services.daily_picks.yf.screen", side_effect=RuntimeError("down")):
         with patch("services.daily_picks.yf.download") as mock_dl:
             mock_dl.return_value = MagicMock(empty=True)
-            candidates, phase0_size, universe_used, universe_degraded = _bulk_screen("US", 50)
+            candidates, phase0_size, universe_used, universe_degraded, _ = _bulk_screen("US", 50)
 
     # Confirm the metadata is present and correctly typed
     assert isinstance(universe_used, str), "universe_used must be a string"
@@ -263,7 +263,7 @@ def test_universe_used_and_universe_degraded_are_present_in_payload():
     with patch("services.daily_picks.yf.screen", return_value=fake_result):
         with patch("services.daily_picks.yf.download") as mock_dl2:
             mock_dl2.return_value = MagicMock(empty=True)
-            _, _, universe_used_ok, universe_degraded_ok = _bulk_screen("US", 50)
+            _, _, universe_used_ok, universe_degraded_ok, _ = _bulk_screen("US", 50)
 
     assert universe_used_ok == "screener"
     assert universe_degraded_ok is False
@@ -280,7 +280,7 @@ def test_india_universe_fallback_behavior_is_unchanged():
     from services.daily_picks import _UNIVERSE
 
     with patch("services.daily_picks.yf.screen", side_effect=Exception("screener down")):
-        syms, universe_used, universe_degraded = _get_universe_by_mcap("IN")
+        syms, universe_used, universe_degraded, _ = _get_universe_by_mcap("IN")
 
     # Should return the full IN static universe
     assert syms is _UNIVERSE["IN"], (
@@ -310,7 +310,7 @@ def test_anchor_has_exactly_100_unique_symbols():
     heuristic-filtered set (#002D-C2 fix: intersection removed).
     """
     with patch("services.daily_picks.yf.screen", side_effect=RuntimeError("down")):
-        syms, universe_used, _ = _get_universe_by_mcap("US")
+        syms, universe_used, _, _ = _get_universe_by_mcap("US")
     assert universe_used == "anchor"
     assert len(syms) == 100, (
         f"Anchor must have 100 symbols, got {len(syms)}. "
@@ -334,7 +334,7 @@ def test_anchor_includes_symbols_absent_from_heuristic_filtered_set():
         "_US_DAILY_PICKS_HEURISTIC_FILTERED_SET (e.g. MMC or FI absent from US_STOCKS)"
     )
     with patch("services.daily_picks.yf.screen", side_effect=RuntimeError("down")):
-        syms, universe_used, _ = _get_universe_by_mcap("US")
+        syms, universe_used, _, _ = _get_universe_by_mcap("US")
     assert universe_used == "anchor"
     for sym in symbols_not_in_filtered:
         assert sym in syms, (
@@ -432,7 +432,7 @@ def test_anchor_phase0_size_is_100_not_raw_count():
     with patch("services.daily_picks.yf.screen", side_effect=RuntimeError("down")):
         with patch("services.daily_picks.yf.download") as mock_dl:
             mock_dl.return_value = MagicMock(empty=True)
-            _, phase0_size, universe_used, _ = _bulk_screen("US", 50)
+            _, phase0_size, universe_used, _, _ = _bulk_screen("US", 50)
 
     assert universe_used == "anchor"
     assert phase0_size == 100, (

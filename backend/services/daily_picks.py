@@ -305,10 +305,14 @@ _SCREEN_CONFIG = {
 }
 
 
-def _get_universe_by_mcap(market: str) -> tuple[list[str], str, bool]:
+def _get_universe_by_mcap(market: str) -> tuple[list[str], str, bool, int | None]:
     """
     Use yfinance equity screener to get stocks above a market-cap floor.
-    Returns ``(symbols, universe_used, universe_degraded)``.
+    Returns ``(symbols, universe_used, universe_degraded, screener_raw_count)``.
+
+    ``screener_raw_count`` is the number of symbols returned by Yahoo screener
+    *before* local eligibility filtering.  None when screener was not used
+    (anchor fallback or full-NSE fallback).
 
     For US  — Product Integrity Workstream #002D-B/C2:
       On screener success: intersects result with _US_DAILY_PICKS_HEURISTIC_FILTERED
@@ -369,7 +373,7 @@ def _get_universe_by_mcap(market: str) -> tuple[list[str], str, bool]:
                     f"[picks] [US] mcap filter {label}: {len(eligible_from_screener)} eligible "
                     f"of {len(screener_syms)} screener symbols"
                 )
-                return (eligible_from_screener, "screener", False)
+                return (eligible_from_screener, "screener", False, len(screener_syms))
             log.warning(
                 f"[picks] [US] screener returned {len(screener_syms)} symbols but "
                 f"0 after eligible-universe intersection — using anchor fallback"
@@ -383,26 +387,30 @@ def _get_universe_by_mcap(market: str) -> tuple[list[str], str, bool]:
             f"[picks] [US] DEGRADED UNIVERSE — anchor fallback ({len(anchor)} symbols). "
             f"Reason: {reason}"
         )
-        return (anchor, "anchor", True)
+        return (anchor, "anchor", True, None)  # screener_raw_count=None: screener not used
 
     # IN: existing behavior — screener symbols or full NSE universe
     if screener_syms:
         log.info(f"[picks] [IN] mcap filter {label}: {len(screener_syms)} stocks qualify")
-        return (screener_syms, "screener", False)
+        return (screener_syms, "screener", False, len(screener_syms))
     log.warning(f"[picks] [IN] mcap screener failed, using full NSE universe")
-    return (_UNIVERSE["IN"], "full_universe", False)
+    return (_UNIVERSE["IN"], "full_universe", False, None)  # screener_raw_count=None: screener not used
 
 
 def _bulk_screen(
     market: str, n_candidates: int = 50, job_id: str | None = None
-) -> tuple[list[str], int, str, bool]:
+) -> tuple[list[str], int, str, bool, int | None]:
     """
     Phase-0 screener: batched yf.download() → momentum rank.
 
-    Returns ``(candidates, phase0_universe_size, universe_used, universe_degraded)``.
+    Returns ``(candidates, phase0_universe_size, universe_used, universe_degraded,
+    screener_raw_count)``.
     ``phase0_universe_size`` is the ACTUAL count of tickers passed to yf.download
     (post-eligibility-filter, post-screener-intersection for US) and is the
-    value that should appear in ``screened_from`` in the final payload.
+    value that should appear in ``screened_from`` / ``universe_eligible_size``
+    in the final payload.  ``screener_raw_count`` is the raw Yahoo screener
+    result count before local eligibility filtering, or None when the screener
+    was not used (anchor / full-NSE fallback).
 
     1. Filter to stocks with market cap above a floor (per-market threshold)
        using yfinance equity screener — removes illiquid micro-caps.
@@ -418,7 +426,7 @@ def _bulk_screen(
     suffix = _SCREEN_CONFIG[market]["suffix"]
     fallback = _NIFTY_100 if market == "IN" else _US_MEGACAP_100
 
-    universe, universe_used, universe_degraded = _get_universe_by_mcap(market)
+    universe, universe_used, universe_degraded, _screener_raw_count = _get_universe_by_mcap(market)
     all_tickers = [s + suffix for s in universe]
     phase0_universe_size = len(all_tickers)
     batches = [all_tickers[i:i + _SCREEN_BATCH_SIZE]
@@ -477,13 +485,13 @@ def _bulk_screen(
     elapsed = round(time.time() - t0, 1)
     if not scores:
         log.info(f"[picks] [{market}] Phase-0: no stocks scored — falling back to anchor list")
-        return (list(fallback[:n_candidates]), phase0_universe_size, universe_used, universe_degraded)
+        return (list(fallback[:n_candidates]), phase0_universe_size, universe_used, universe_degraded, _screener_raw_count)
 
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     top_syms = [sym for sym, _ in ranked[:n_candidates]]
     log.info(f"[picks] [{market}] Phase-0 complete in {elapsed}s: {len(scores)} scored, "
           f"top candidates: {top_syms[:10]} …")
-    return (top_syms, phase0_universe_size, universe_used, universe_degraded)
+    return (top_syms, phase0_universe_size, universe_used, universe_degraded, _screener_raw_count)
 
 
 def _predict_stock(symbol: str, horizon: str, market: str = "IN") -> dict | None:
@@ -688,6 +696,64 @@ def _fetch_returns_matrix(symbols: list[str], market: str = "IN", days: int = 12
         return None
 
 
+# ── Issuer-level deduplication for US Daily Picks final selection ─────────────
+# Static local mapping: ticker → canonical issuer group name.
+# Prevents two share classes of the same underlying company from both appearing
+# in the same horizon's final Daily Picks, which would create undisclosed
+# concentrated exposure (e.g. GOOG + GOOGL = double Alphabet exposure).
+# No external data source — deterministic and provider-independent.
+_US_ISSUER_GROUP: dict[str, str] = {
+    "GOOG":  "ALPHABET",
+    "GOOGL": "ALPHABET",
+    "BRK-A": "BERKSHIRE_HATHAWAY",
+    "BRK-B": "BERKSHIRE_HATHAWAY",
+    "FOX":   "FOX_CORP",
+    "FOXA":  "FOX_CORP",
+    "NWS":   "NEWS_CORP",
+    "NWSA":  "NEWS_CORP",
+}
+
+
+def _deduplicate_by_issuer(
+    ranked_buys: list[dict], market: str
+) -> tuple[list[dict], int]:
+    """
+    Remove duplicate issuer exposure from a ranked BUY list before the
+    final per-horizon top-6 slice.
+
+    Applies only when ``_US_ISSUER_GROUP`` is populated and market is "US".
+    For non-US markets returns the list unchanged with zero suppressed count.
+
+    Algorithm: walk candidates in existing rank order (highest-alpha first).
+    Keep the first qualifying candidate per issuer group; suppress all later
+    candidates whose ticker maps to the same group.  Never substitutes or
+    creates a candidate — only suppresses extras.
+
+    Returns ``(deduped_list, n_suppressed)``.
+    """
+    if market != "US":
+        return ranked_buys, 0
+
+    seen_groups: set[str] = set()
+    deduped: list[dict] = []
+    suppressed = 0
+
+    for candidate in ranked_buys:
+        sym = candidate.get("symbol", "")
+        group = _US_ISSUER_GROUP.get(sym, sym)  # unmapped ticker → own singleton group
+        if group in seen_groups:
+            suppressed += 1
+            log.info(
+                f"[picks] [US] issuer dedup: suppressed {sym!r} "
+                f"(group={group}) — same issuer already selected"
+            )
+        else:
+            seen_groups.add(group)
+            deduped.append(candidate)
+
+    return deduped, suppressed
+
+
 def generate_picks(market: str = "IN", job_id: str | None = None) -> dict:
     """
     Learning Alpha Engine pipeline:
@@ -877,7 +943,7 @@ def _generate_picks_inner(
     # momentum score. For US: uses _US_DAILY_PICKS_HEURISTIC_FILTERED intersection;
     # never falls back to the raw 12k universe. Falls back to anchor megacap
     # list (US) / Nifty 100 (IN) if all scoring fails.
-    candidates, _phase0_universe_size, _universe_used, _universe_degraded = _bulk_screen(
+    candidates, _phase0_universe_size, _universe_used, _universe_degraded, _screener_raw_count = _bulk_screen(
         market, _N_CANDIDATES, job_id=job_id
     )
     log.info(f"[picks] [{market}] Starting deep prediction for {len(candidates)} candidates × 3 horizons …")
@@ -901,6 +967,7 @@ def _generate_picks_inner(
     # ── Phase 1: Deep-predict candidates ─────────────────────────────────────
     # max_workers=1 to avoid Yahoo Finance rate-limiting Render's IP.
     tasks = [(sym, h) for sym in candidates for h in ("short", "medium", "long")]
+    _phase1_task_total = len(tasks)  # deep_prediction_candidates × 3 horizons
     raw: dict[str, list] = {"short": [], "medium": [], "long": []}
 
     _try_job_progress(job_id, "phase_1", 0, len(tasks))
@@ -924,6 +991,8 @@ def _generate_picks_inner(
     # ── Phases 3-6 per horizon ────────────────────────────────────────────────
     picks: dict[str, list] = {}
     alpha_engine_meta: dict[str, dict] = {}  # diagnostics for API
+    _issuer_duplicates_suppressed = 0        # total across all horizons
+    _final_candidate_count = 0              # quality-passing+deduped BUY count across all horizons
 
     for horizon in ("short", "medium", "long"):
         items = raw[horizon]
@@ -995,10 +1064,17 @@ def _generate_picks_inner(
                     return False
             return True
 
-        top_buy = [
+        # Quality gate (unchanged) → issuer dedup → per-horizon top-6 slice
+        all_buy = [
             r for r in ranked
             if r.get("signal") == "BUY" and _passes_quality_gate(r, horizon)
-        ][:6]
+        ]
+        # Issuer-level dedup: prevent two share classes of the same company
+        # from both appearing as separate Daily Picks opportunities.
+        all_buy_deduped, _n_suppressed = _deduplicate_by_issuer(all_buy, market)
+        _issuer_duplicates_suppressed += _n_suppressed
+        _final_candidate_count += len(all_buy_deduped)
+        top_buy = all_buy_deduped[:6]
 
         # Phase 6 — Portfolio optimisation
         if len(top_buy) > 1:
@@ -1073,10 +1149,36 @@ def _generate_picks_inner(
         "picks":             picks,
         "alpha_engine":      alpha_engine_meta,
         "regime":            {"label": regime_label, "description": regime["description"]},
-        "screened_from":     _phase0_universe_size,   # actual count, not raw static-universe size
-        "universe_used":     _universe_used,          # "screener" | "anchor" | "full_universe"
-        "universe_degraded": _universe_degraded,      # True when not using live screener (US)
-        "candidates":        len(candidates),
+        # ── Legacy field — kept for backward compatibility ─────────────────────
+        # Represents the size of the eligible universe entering Phase-0 bulk
+        # screening (equivalent to universe_eligible_size below).  New callers
+        # should prefer the explicit count fields added below.
+        "screened_from":              _phase0_universe_size,
+        # ── Truthful pipeline-count fields ─────────────────────────────────────
+        # screener_raw_count: symbols returned by Yahoo screener before local
+        #   eligibility filtering.  null when screener was not used (anchor or
+        #   full-NSE fallback).  Never fabricated from a configured cap.
+        "screener_raw_count":         _screener_raw_count,
+        # universe_eligible_size: symbols remaining after local US heuristic
+        #   eligibility filter (or raw screener count for IN); these are the
+        #   symbols that entered Phase-0 bulk momentum scoring.
+        "universe_eligible_size":     _phase0_universe_size,
+        # deep_prediction_candidates: symbols actually sent to full PredictionEngine.
+        #   Equals min(universe_eligible_size, PICKS_CANDIDATES env-var cap).
+        "deep_prediction_candidates": len(candidates),
+        # phase_1_task_total: deep_prediction_candidates × evaluated horizons (3).
+        "phase_1_task_total":         _phase1_task_total,
+        # final_candidate_count: total quality-passing, issuer-deduped BUY signals
+        #   across all horizons before per-horizon top-6 slice.  Can exceed
+        #   displayed picks (max 6 per horizon × 3 = 18) when many qualify.
+        "final_candidate_count":      _final_candidate_count,
+        # ── Universe metadata ──────────────────────────────────────────────────
+        "universe_used":     _universe_used,   # "screener" | "anchor" | "full_universe"
+        "universe_degraded": _universe_degraded,  # True when live screener not used (US)
+        "candidates":        len(candidates),  # legacy alias for deep_prediction_candidates
+        # ── Issuer deduplication metadata ─────────────────────────────────────
+        "issuer_dedup_applied":          True,
+        "issuer_duplicates_suppressed":  _issuer_duplicates_suppressed,
     }
 
     # Save to disk (best-effort — ephemeral on Render free tier)
