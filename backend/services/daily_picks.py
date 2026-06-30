@@ -991,8 +991,7 @@ def _generate_picks_inner(
     # ── Phases 3-6 per horizon ────────────────────────────────────────────────
     picks: dict[str, list] = {}
     alpha_engine_meta: dict[str, dict] = {}  # diagnostics for API
-    _issuer_duplicates_suppressed = 0            # total across all horizons
-    _final_candidate_symbols: set[str] = set()  # unique symbols qualifying in ≥1 horizon
+    _issuer_duplicates_suppressed = 0  # suppressed display entries across all horizons
 
     for horizon in ("short", "medium", "long"):
         items = raw[horizon]
@@ -1073,7 +1072,6 @@ def _generate_picks_inner(
         # from both appearing as separate Daily Picks opportunities.
         all_buy_deduped, _n_suppressed = _deduplicate_by_issuer(all_buy, market)
         _issuer_duplicates_suppressed += _n_suppressed
-        _final_candidate_symbols.update(r["symbol"] for r in all_buy_deduped)
         top_buy = all_buy_deduped[:6]
 
         # Phase 6 — Portfolio optimisation
@@ -1168,17 +1166,21 @@ def _generate_picks_inner(
         "deep_prediction_candidates": len(candidates),
         # phase_1_task_total: deep_prediction_candidates × evaluated horizons (3).
         "phase_1_task_total":         _phase1_task_total,
-        # final_candidate_count: number of DISTINCT symbols that produced at
-        #   least one quality-passing, issuer-deduped BUY signal across any
-        #   horizon, before per-horizon top-6 slicing.  Each company is counted
-        #   once even if it qualifies in short, medium, AND long horizons.
-        "final_candidate_count":      len(_final_candidate_symbols),
+        # final_candidate_count: number of unique candidate objects that entered
+        #   Phase-1 deep prediction.  Equals deep_prediction_candidates and
+        #   payload["candidates"]; each symbol is counted once regardless of
+        #   how many horizons it qualifies in.  Never derived from BUY-signal
+        #   counts, per-horizon displayed picks, or issuer-dedup pass counts.
+        "final_candidate_count":      len(candidates),
         # ── Universe metadata ──────────────────────────────────────────────────
         "universe_used":     _universe_used,   # "screener" | "anchor" | "full_universe"
         "universe_degraded": _universe_degraded,  # True when live screener not used (US)
         "candidates":        len(candidates),  # legacy alias for deep_prediction_candidates
         # ── Issuer deduplication metadata ─────────────────────────────────────
         "issuer_dedup_applied":          True,
+        # issuer_duplicates_suppressed: total display entries removed across all
+        #   horizons because their issuer already appeared earlier in that
+        #   horizon's ranked list.  Not the count of unique issuers suppressed.
         "issuer_duplicates_suppressed":  _issuer_duplicates_suppressed,
     }
 
