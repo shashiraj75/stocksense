@@ -263,6 +263,13 @@ async def _warmup_loop():
     log.info("[warmup] Pre-warm triggered.")
 
 
+def startup_catchup_enabled() -> bool:
+    """Return True only when DAILY_PICKS_STARTUP_CATCHUP_ENABLED is 1/true/yes.
+    Reads env at call time so tests can patch os.environ deterministically."""
+    value = os.getenv("DAILY_PICKS_STARTUP_CATCHUP_ENABLED", "0")
+    return value.strip().lower() in {"1", "true", "yes"}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if os.getenv("USE_POSTGRES") == "1":
@@ -348,6 +355,9 @@ async def lifespan(app: FastAPI):
     # and from GitHub Actions PICKS_SECRET mismatches. Same recovery logic for
     # both markets — only the trigger-time/timezone/weekday rule differs.
     async def _catchup_picks(market: str, tz, trigger_hour: int, settle_secs: int):
+        if not startup_catchup_enabled():
+            log.info(f"[picks_catchup] [{market}] Startup catch-up disabled by configuration — skipping.")
+            return
         import uuid as _uuid
         from datetime import datetime
         await asyncio.sleep(settle_secs)  # let server settle first
@@ -446,10 +456,16 @@ async def lifespan(app: FastAPI):
     _IST = _tz(_td(hours=5, minutes=30))
     _ET = ZoneInfo("America/New_York")  # DST-aware, matches services/market_hours.py
     # IN: catch up any time after 2 AM IST (the scheduled run time) on a weekday.
-    picks_catchup_task = asyncio.create_task(_catchup_picks("IN", _IST, 2, 60))
     # US: cron fires ~12:30 UTC (8:30 AM ET / 7:30 AM ET depending on DST).
     # trigger_hour=9 leaves margin either way before declaring the run missed.
-    picks_catchup_task_us = asyncio.create_task(_catchup_picks("US", _ET, 9, 90))
+    if startup_catchup_enabled():
+        picks_catchup_task = asyncio.create_task(_catchup_picks("IN", _IST, 2, 60))
+        picks_catchup_task_us = asyncio.create_task(_catchup_picks("US", _ET, 9, 90))
+    else:
+        log.info("[startup] Daily Picks startup catch-up disabled by configuration.")
+        async def _no_catchup(): pass
+        picks_catchup_task = asyncio.create_task(_no_catchup())
+        picks_catchup_task_us = asyncio.create_task(_no_catchup())
     trade_notify_task = asyncio.create_task(_paper_trade_notify_loop())
     us_movers_task = asyncio.create_task(_us_movers_refresh_loop())
     price_alerts_task = asyncio.create_task(_price_alerts_check_loop())
