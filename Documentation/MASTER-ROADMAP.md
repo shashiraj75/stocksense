@@ -497,3 +497,97 @@ Covers: Paper Trade performance history, outcome analysis, learning insights, an
 - Changes to RCI logic
 - Changes to existing Paper Trade auto-trigger logic beyond documenting this future scope
 - Backend, API, frontend, database, workflow, or infrastructure implementation of any kind — this section is documentation only
+
+---
+
+## Section 12 — Platform-Wide Standard: User Local Time and Timestamp Display
+
+**Status: Planned / Not Started.** This is a cross-cutting product standard, not scoped to any single Epic or feature area. It applies to every user-facing date, time, timestamp, schedule, alert, event, activity record, notification, generated result, simulated execution, validation result, and market-data freshness indicator across the platform — Daily Picks, Portfolio, Paper Trade, Watchlist, Alerts, and any future feature. Nothing in this section describes current behavior unless explicitly noted; it is a planning record for a documentation-only requirements review, not an implementation commitment or timeline.
+
+### Core Product Principle
+
+StockSense360 must show user-facing times in the individual user's own local timezone by default — a user in California sees Pacific Time, a user in the UAE sees Gulf Standard Time, a user in India sees India Standard Time, a user in Australia sees the applicable local Australian timezone, and a user travelling internationally sees their currently selected or browser-detected timezone unless they have manually selected a timezone preference. The platform must not force all users to interpret timestamps in IST, ET, UTC, or any single market timezone.
+
+### Timestamp Storage and Data Contract Rules
+
+1. Store all system timestamps as UTC instants.
+2. APIs and persistence layers must preserve machine-readable timestamps using UTC or an unambiguous ISO-8601 timestamp with timezone offset.
+3. Backend services must not pre-format user-facing timestamps in a fixed timezone such as IST, ET, GST, PST, EST, or EDT.
+4. User-facing applications must convert timestamps for display only.
+5. Timestamp conversion must not alter: source event time; market-session classification; exchange calendar logic; Daily Picks freshness logic; generation ownership; outcome-resolution logic; price-history interpretation; portfolio transaction ordering; audit-trail ordering.
+
+### Default Timezone and User Control
+
+1. Use the user's explicitly saved timezone preference when one exists.
+2. Otherwise, use the browser or device timezone.
+3. Otherwise, fall back safely to UTC.
+4. Allow the user to manually select and change a timezone preference in settings.
+5. Do not require GPS location, precise physical location, or personal location tracking merely to display local time.
+6. Preserve the user's manually selected timezone preference across sessions when account settings support it.
+7. Support both 12-hour and 24-hour time formatting according to the user's locale or explicit display preference where available.
+
+### Daylight Saving Time Requirements
+
+The system must use recognised IANA timezone identifiers and automatic daylight-saving handling — e.g. `America/Los_Angeles`, `America/New_York`, `Asia/Dubai`, `Asia/Kolkata`, `Australia/Sydney`. Do not rely on manually hard-coded UTC offsets for user-facing time display.
+
+The platform must correctly handle: daylight-saving time changes; users travelling across timezones; dates that shift to the previous or next calendar day after conversion; historical timestamps displayed after daylight-saving changes; markets whose local exchange time differs from the user's personal timezone.
+
+### Default User-Facing Display Pattern
+
+Preferred visible pattern:
+
+```
+Updated: 01 Jul 2026, 06:55 PM GST · 4h ago
+```
+
+or:
+
+```
+Generated: 01 Jul 2026, 06:55 PM GST
+```
+
+The absolute local timestamp and the relative-age indicator must agree. Do not show only a relative value such as `4h ago` when a precise timestamp is material to investment interpretation.
+
+### Market Time as Secondary Context
+
+Market or exchange timezone may be shown only as secondary context when it helps explain: market open or close; Daily Picks generation schedule; prior official close; exchange holiday or weekend status; end-of-day portfolio values; price-alert trigger context; Paper Trade simulated execution conditions. Example:
+
+```
+Your time: 01 Jul 2026, 06:55 PM GST
+Market time: 01 Jul 2026, 10:55 AM ET
+```
+
+The user's own local timezone remains the primary displayed time.
+
+### Daily Picks Rules
+
+1. The actual generation timestamp must come from the recorded `generated_at` event time and display in the user's local timezone.
+2. The intended generation schedule must be displayed separately from the actual generation time.
+3. Do not use a fixed sentence such as `Generated daily at 2:00 AM IST` as the primary visible timestamp for all users.
+4. Instead, present concepts separately: **Last generated** (actual user-local timestamp), **Normal schedule** (converted user-local schedule), **Market reference time** (optional secondary context).
+5. A scheduled event that occurs on a different calendar day after conversion must show the correct local day for that user.
+6. Daily Picks freshness, `has_today`, market-day logic, scheduled trigger rules, holiday rules, and trading-session logic must remain based on the relevant market calendar and backend rules.
+7. User-local timezone must never cause a Daily Picks run to be incorrectly treated as stale, fresh, missing, completed, or belonging to another market day.
+
+### Portfolio, Alerts and Paper Trade Rules
+
+The same standard applies to: Portfolio transaction timestamps; holdings refresh timestamps; Day P&L and portfolio-value timestamps; Watchlist updates; price alerts; Paper Trade trigger armed time; Paper Trade trigger condition time; simulated execution time; pause, resume, cancellation and close events; notifications; validation results; activity and audit logs.
+
+Paper Trade and alert audit trails must preserve the original UTC event timestamp while displaying each event in the user's local timezone.
+
+### Timezone Safety and Trust Rules
+
+1. Never silently relabel a timestamp as local time without converting the original UTC instant correctly.
+2. Never use the user's timezone to alter market prices, prior-close logic, trading-day calculations, daily return calculations, or historical event ordering.
+3. Never infer a user's country, residence, tax status, market eligibility, or investment profile from timezone alone.
+4. When timezone data is unavailable or invalid, show a safe fallback timezone such as UTC and make the fallback clear.
+5. When a stored timestamp lacks timezone information and cannot be interpreted safely, do not present it as a precise local time without an explicit source-time assumption.
+6. Timestamp presentation must remain explainable and auditable.
+
+### Required Future Implementation Validation
+
+Implementation must include deterministic coverage for: California user timezone display; UAE user timezone display; India user timezone display; Australian user timezone display; daylight-saving transitions; timestamps that move to a different local calendar day; user-selected timezone override; browser timezone fallback; UTC fallback; Daily Picks market freshness remaining independent of user timezone; correct ordering of audit-log and Paper Trade events; correct display of actual generation time separately from normal schedule time.
+
+### Scope Boundary
+
+This standard governs timestamp storage, conversion, display, settings preference, auditability, and test coverage. It does not by itself introduce: geolocation tracking; real-time location monitoring; broker integrations; trading automation; changes to Daily Picks scoring; changes to market-data providers; changes to Prediction Engine logic; changes to RCI; changes to Paper Trade trigger rules; changes to portfolio calculations; changes to market-calendar logic.
