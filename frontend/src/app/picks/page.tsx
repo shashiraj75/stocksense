@@ -731,9 +731,22 @@ export default function DailyPicksPage() {
             <>
               <span className="h-4 w-px bg-dark-border hidden sm:block" />
               <span className="text-gray-500 font-medium">AI Engine</span>
-              <span className={clsx("px-2 py-0.5 rounded font-semibold",
-                alphaForHorizon.meta_model ? "text-green-400 bg-green-500/10" : "text-gray-400 bg-dark-border")}>
-                {alphaForHorizon.meta_model ? "✓ Meta-model active" : "Learning…"}
+              <span
+                tabIndex={0}
+                role="note"
+                aria-label={
+                  alphaForHorizon.meta_model
+                    ? "Meta-model active. Historical market prediction outcomes contributed to ranking this Daily Picks batch. The meta-model is updated only through controlled batch processing. No personal Portfolio, Watchlist, Paper Trade, alert, or user-behaviour data is used."
+                    : "IC-weighted ranking active. The trained meta-model was not applied to this Daily Picks batch. Ranking uses validated IC-weighted factor signals instead. No personal Portfolio, Watchlist, Paper Trade, alert, or user-behaviour data is used."
+                }
+                title={
+                  alphaForHorizon.meta_model
+                    ? "Historical market prediction outcomes contributed to ranking this Daily Picks batch. The meta-model is updated only through controlled batch processing. No personal Portfolio, Watchlist, Paper Trade, alert, or user-behaviour data is used."
+                    : "The trained meta-model was not applied to this Daily Picks batch. Ranking uses validated IC-weighted factor signals instead. No personal Portfolio, Watchlist, Paper Trade, alert, or user-behaviour data is used."
+                }
+                className={clsx("px-2 py-0.5 rounded font-semibold cursor-help focus:outline-none focus-visible:ring-1 focus-visible:ring-gray-400",
+                  alphaForHorizon.meta_model ? "text-green-400 bg-green-500/10" : "text-gray-400 bg-dark-border")}>
+                {alphaForHorizon.meta_model ? "✓ Meta-model active" : "IC-weighted ranking active"}
               </span>
               {alphaForHorizon.n_buy != null && alphaForHorizon.n_scored != null && (
                 <span className="text-gray-600">{alphaForHorizon.n_buy} BUY signals from {alphaForHorizon.n_scored} stocks</span>
