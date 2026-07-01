@@ -52,7 +52,7 @@ Nine intelligence domains are named here, each described accurately as it exists
 | **004** | Valuation Intelligence | **Completed** | Epics 002 and 003 (shared adapter/validation pattern) | A dedicated, explainable valuation-scoring engine exists, answering "is this stock trading below, near, or above fair value?" — a question none of the prior three engines own. Engine implemented and live-validated (406-company calibration, then outcome-validated against real forward returns); integrated into `PredictionEngine` as a confidence-only signal in **both** markets with an asymmetric +2/-4 cap and cross-engine safeguard gate; Daily Picks ranking empirically confirmed unaffected (361-company validation); 770/770 tests passing. All met for the scoped V1 metric set — see [EPIC-004 Closure](Engineering-Handbook/Releases/EPIC-004-Valuation-Intelligence-Closure.md). | Closed. Kill switches currently disabled by default in both markets — a short operational decision on activation (not a new validation sprint) is the one open item before Epic 005 should be considered fully unblocked, named explicitly in the closure report. |
 | **005** *(proposed numbering)* | Recommendation Consolidation Intelligence | **In Progress — Evidence Summary frontend implemented, dormant (RCI flag remains disabled in Railway)** | Epics 001–004 (synthesizes their existing, validated outputs — adds no new provider data) | Four validated engines' outputs are synthesized into one transparent, explainable investment thesis per stock, replacing today's opaque accumulation of small confidence nudges. | Sprints #001–#011 complete; Sprint #012 ([Live Stock Analysis Frontend Implementation](Engineering-Handbook/Releases/Sprint-012-Recommendation-Consolidation-Live-Stock-Analysis-Frontend-Implementation.md)) implements and wires in the Evidence Summary component (`frontend/src/components/EvidenceSummary.tsx` + a new `DisclosurePanel` primitive + the `RecommendationConsolidation` TypeScript contract in `api.ts`) below the AI Signal card, above the horizon tabs. **Two real findings disclosed, not worked around**: the backend has no field for a "feature-disabled engine" notice (renders nothing for that state, same as full RCI absence); the frontend has no test framework at all today, so validation used `tsc --noEmit`, a full production build, and direct script execution of the core logic against the brief's mocked scenarios, instead of a committed test suite. RCI remains disabled in Railway — the component is implemented but renders nothing in production. **Recommendation: a visual-QA-and-tooling sprint next, not a Railway flag enable.** 886/886 backend suite still passing (no backend changes this sprint). |
 | **006** *(proposed numbering)* | Recommendation Intelligence Consolidation | **Future** | Epics 002–005 | The existing Prediction Engine evolves to consume Business Quality, Financial Strength, Growth, Valuation, and Risk as first-class engine inputs, rather than its current internal ad hoc factor blend. | Not started — explicitly sequenced after the component engines exist, per the same "validate the parts before integrating" discipline used throughout Epic 001. |
-| **007** *(proposed numbering)* | Portfolio Intelligence | **Future** | Epic 006 (needs a stable, consolidated recommendation signal to be portfolio-aware about) | Concentration-risk and correlation-aware recommendations against a user's actual holdings — the "Portfolio Copilot" capability, confirmed not to exist today. | Not started — requires product scoping before any engineering, per the existing engineering roadmap's own assessment. |
+| **007** *(proposed numbering)* | Portfolio Intelligence | **Future** | Epic 006 (needs a stable, consolidated recommendation signal to be portfolio-aware about) | Concentration-risk and correlation-aware recommendations against a user's actual holdings — the "Portfolio Copilot" capability, confirmed not to exist today. | Not started — requires product scoping before any engineering, per the existing engineering roadmap's own assessment. A four-sprint plan (Portfolio Foundation, Paper Trade Foundation and Daily Picks Sync, Paper Trade Auto-Trigger/Simulated Execution/Notifications, Post-Trade Analysis) is documented in [Section 11](#section-11--epic-007-sprint-plan-portfolio-intelligence). |
 | **008** *(proposed numbering)* | AI Research Analyst | **Future** | Epic 006/007 (needs richer, consolidated explainability data to be grounded in) | A true conversational analyst layer, distinct from today's rule-based Explainability Layer. | Not started — deliberately last; explicitly gated on richer explainability data existing first. |
 | **009** *(proposed numbering)* | Mutual Fund Intelligence & Portfolio-Fit Support | **Planned / Not Started** | Portfolio and Watchlist Intelligence (Epic 007) — fund-fit analysis requires the platform to have portfolio-context awareness before it can evaluate overlap, concentration, and suitability against what a user already holds. | Fund discovery, quality and risk analysis, portfolio-fit overlap detection, goal-based suitability assessment, explainable fund summaries, and monitoring alerts. Evaluated on quality, consistency, risk, cost, concentration, overlap, and goal alignment — not on recent return alone. No generic "best fund" claims. | Not started. Sequenced after Portfolio Intelligence ships. Exact timing subject to data-provider feasibility, regulatory constraints, and evidence from prior phases. See [Section 10](#section-10--future-product-area-mutual-fund-intelligence--portfolio-fit-support) for full scope. |
 | — | Daily Picks Intelligence | **Completed** (as a product feature; not a separate epic) | Recommendation Intelligence (Epic 006 will indirectly improve it) | N/A — already shipped. | No dedicated epic planned; improves automatically as upstream engines mature. |
@@ -295,3 +295,205 @@ Before this product area is scoped into an engineering epic, the following must 
 - Whether the existing Data Fabric adapter pattern (provider adapter → resolution → engine adapter → pure engine) transfers cleanly to fund data, or whether a new ingestion architecture is needed.
 
 None of these are assumed to be straightforward. This section records the intended product direction; the Design Study (when this area is prioritised) will confirm or adjust scope based on what is actually feasible.
+
+---
+
+## Section 11 — Epic 007 Sprint Plan: Portfolio Intelligence
+
+**Status: Planned / Not Started.** This section documents the intended sprint-level requirements for Epic 007 — Portfolio Intelligence, ahead of any implementation. Nothing described here exists in the product today unless explicitly noted as already-shipped Portfolio Tracker or Paper Trading behavior (see `Documentation/STOCKSENSE_DOCUMENTATION.md` §17–18 for the current, already-live baseline). This is a documentation-only planning record, not an implementation commitment, timeline, or engineering estimate.
+
+### Sprint Sequence
+
+| Sprint | Name | Status |
+|---|---|---|
+| 001 | Portfolio Foundation | Planned / Not Started |
+| 002 | Paper Trade Foundation and Daily Picks Sync | Planned / Not Started |
+| 003 | Paper Trade Auto-Trigger, Simulated Execution and Notifications | Planned / Not Started |
+| 004 | Post-Trade Analysis, Performance History and Learning Insights | Planned / Not Started |
+
+---
+
+### Sprint 001 — Portfolio Foundation
+
+Covers: Holdings table, portfolio summary cards, Day P&L and Day Change %, currency normalization and data freshness, Edit Holdings usability and input-layout requirements.
+
+#### Holdings Table
+
+Intended column sequence:
+
+```
+Symbol | Quantity | Average Buy | Current | Invested | Value | Day P&L | Day Change % | P&L | P&L % | Signal | Actions
+```
+
+**Cumulative performance fields (existing concept, already used by Portfolio Tracker and Paper Trading today):**
+
+- **P&L** — total unrealized gain or loss compared with the holding's average purchase price.
+- **P&L %** — total unrealized gain or loss percentage compared with the holding's average purchase price.
+
+**New daily performance fields:**
+
+- **Day P&L** — monetary gain or loss for the user's actual holding quantity during the current trading day.
+- **Day Change %** — percentage movement of the underlying security's current price compared with its prior official market close.
+
+**Calculation principles:**
+
+```
+Day P&L      = Quantity × (Current Price − Previous Official Close)
+Day Change % = ((Current Price − Previous Official Close) ÷ Previous Official Close) × 100
+```
+
+**Clarifications:**
+
+- Day P&L reflects the user's actual holding quantity; Day Change % reflects the underlying security's daily price movement, independent of position size.
+- Day P&L and Day Change % are current-trading-day metrics; P&L and P&L % are cumulative metrics since average purchase price. Users must be able to distinguish the two without ambiguity.
+- Positive and negative values must remain semantically distinct as gains and losses.
+- Missing market data must never be represented as a gain, loss, or zero movement.
+
+#### Portfolio Summary Cards
+
+Intended card sequence:
+
+```
+Holdings | Invested | Current Value | Day P&L | Day Change % | P&L
+```
+
+- **Holdings** — number of active holdings in the selected market or portfolio view.
+- **Invested** — total original investment cost of included holdings.
+- **Current Value** — latest calculated value of included holdings using the most recent valid market price.
+- **Day P&L** — total monetary gain or loss for the included holdings during the current trading day.
+- **Day Change %** — portfolio-level percentage movement during the current trading day.
+- **P&L** — total cumulative unrealized profit or loss compared with investment cost.
+
+**Calculation principles:**
+
+```
+Portfolio Day P&L      = Current Portfolio Value − Portfolio Value at Previous Official Close
+Portfolio Day Change % = ((Current Portfolio Value − Portfolio Value at Previous Official Close)
+                           ÷ Portfolio Value at Previous Official Close) × 100
+```
+
+**Clarifications:**
+
+- Portfolio Day Change % must be calculated from portfolio values, never created by adding, averaging, or summing individual holdings' percentage changes.
+- Daily portfolio cards must remain clearly separate from cumulative P&L.
+- Daily metrics are informational portfolio-monitoring metrics only.
+
+#### Market Data, Freshness and Multi-Currency Rules
+
+Applies to both the Holdings table and the Portfolio summary cards:
+
+1. Use the most recent valid market price and the prior official close for the relevant listing and exchange.
+2. Preserve correct market and listing normalization: US holdings in USD, India holdings in INR, correct listing symbol, correct market suffix, correct market/exchange context where supported.
+3. When a market is closed: show the latest completed trading-day movement, do not imply the price is live, and retain or expose a data-freshness timestamp where the product supports it.
+4. When the current price, prior close, market, symbol, listing, currency, or exchange mapping is missing, stale, invalid, unavailable, or cannot be normalized safely: do not fabricate Day P&L or Day Change %, do not show zero as a substitute for unavailable data — show an unavailable/insufficient-data state instead.
+5. Each holding's Day P&L must first be calculated in its native trading currency.
+6. A market-specific view (e.g. US Holdings or India Holdings) should show daily values in that market's native currency.
+7. A combined multi-market portfolio must not directly add USD and INR daily values.
+8. Any cross-market aggregation must use the established reporting-currency and exchange-rate-normalization layer.
+9. When converted portfolio figures are shown: the native-currency holding result remains unchanged, conversion changes only the reporting presentation, and daily performance in reporting currency may include foreign-exchange movement.
+
+#### Edit Holdings — Numeric Input Usability
+
+The Edit Holdings interface must support clear, comfortable, and accessible numeric entry for fields such as Quantity, Average Buy, Entry Price, Stop Loss, Target Price, and any other numeric portfolio or Paper Trade input.
+
+Usability requirements:
+
+1. Numeric values must not appear cramped against increment/decrement spinner controls.
+2. Quantity inputs using increment/decrement arrows must provide a clearly visible internal gap or separated control area between the displayed number and the up/down spinner controls.
+3. Arrow controls must not visually overlap, crowd, obscure, or touch the entered value.
+4. The numeric value area and spinner-control area must remain visually distinct through appropriate spacing, padding, divider treatment, or a clearly separated control zone.
+5. Users must be able to read multi-digit quantities easily without the spinner controls making the field appear compressed.
+6. Quantity and Average Buy fields must have enough width for normal values, including decimals, without truncation, overlap, or visual crowding.
+7. Numeric fields must align consistently across the Edit Holdings form.
+8. The form must remain usable on desktop, tablet, and mobile widths.
+9. Numeric controls must support keyboard input and accessible increment/decrement behavior.
+10. Clear field labels, validation messages, and error states must remain visible without shifting or overlapping adjacent controls.
+11. This is a usability and readability requirement only — it does not change any Portfolio calculation, validation rule, stock signal, Paper Trade trigger, or data model.
+
+No specific pixel value, CSS framework, component library, or icon style is prescribed here — these are business-readable UX requirements so a future implementation can select the appropriate design-system solution.
+
+---
+
+### Sprint 002 — Paper Trade Foundation and Daily Picks Sync
+
+Covers: create, edit, manage, and close simulated positions; Daily Picks-linked Paper Trade ideas; manual Paper Trade controls. This sprint's scope is a planning placeholder above and beyond the already-shipped Paper Trading module described in `Documentation/STOCKSENSE_DOCUMENTATION.md` §17 — no new requirements beyond the sprint name and sequencing are specified in this update.
+
+---
+
+### Sprint 003 — Paper Trade Auto-Trigger, Simulated Execution and Notifications
+
+**Status: Planned / Not Started.**
+
+A planned, paper-only capability allowing a user to define optional simulated-entry and exit conditions for a Paper Trade idea.
+
+**Example user-defined conditions:**
+
+- Simulated buy when price falls to or below a chosen entry price.
+- Simulated buy when price rises above a chosen breakout price.
+- Simulated close when a target price is reached.
+- Simulated close when a stop-loss price is breached.
+- Manually cancel an unfilled Paper Trade trigger.
+- Pause or reactivate an existing Paper Trade trigger.
+
+**A triggered action must:**
+
+1. Create or update only a simulated Paper Trade position.
+2. Never place a real broker order.
+3. Never connect to a brokerage account.
+4. Never execute or imply execution of a real investment transaction.
+5. Clearly record the trigger price, observed market price, trigger time, simulated execution time, and source of the idea.
+6. Preserve a durable audit history of trigger, cancel, pause, resume, and simulated-execution events.
+7. Be protected against duplicate simulated execution when the same condition is checked more than once.
+8. Respect market, symbol, and currency-normalization rules.
+9. Allow manual user control at all times.
+10. Clearly state that simulated fills may differ from real-market fills because of liquidity, slippage, brokerage fees, taxes, delays, market impact, and price movement.
+
+**Optional informational notifications** (user opt-in/opt-out):
+
+- Trigger armed
+- Trigger condition met
+- Simulated entry created
+- Target reached
+- Stop-loss reached
+- Trigger cancelled
+- Trigger paused
+- Trigger resumed
+- Data unavailable or stale, where a condition cannot be evaluated safely
+
+Notifications are informational only — never framed as investment advice, real-order confirmation, or evidence of an executable live trade. This capability is a simulated-condition-monitoring feature, not trading automation: it never connects to a brokerage, never places a real order, and never manages real capital.
+
+---
+
+### Sprint 004 — Post-Trade Analysis, Performance History and Learning Insights
+
+Covers: Paper Trade performance history, outcome analysis, learning insights, and a clear distinction between manual, Daily Picks-linked, and auto-triggered Paper Trades. This sprint's scope is a planning placeholder — no additional requirements beyond the sprint name and sequencing are specified in this update.
+
+**Paper Trade daily-performance clarification** (applies wherever Paper Trade performance is documented or shown):
+
+- Paper Trade positions should show daily simulated P&L separately from cumulative simulated P&L.
+- Paper Trade summary views should preserve the same distinction used in the Holdings table and Portfolio summary cards: Day P&L, Day Change %, P&L, and P&L %.
+- Paper Trade values remain simulated and must not imply real fills, achievable returns, live execution, brokerage charges, tax outcomes, liquidity, or slippage.
+- This daily-performance clarification does not expand Sprint 003's Auto-Trigger functionality — it only clarifies how Paper Trade performance should be presented.
+
+---
+
+### Explicitly Out of Scope (Epic 007, all sprints documented in this section)
+
+- Real brokerage account linking
+- Real order placement
+- Broker execution
+- Automated real-money trading
+- Trading automation
+- Margin, leverage, futures, options, or derivatives execution
+- Automatic capital allocation
+- Portfolio rebalancing automation
+- Tax calculation
+- Guaranteed fills, prices, returns, or performance
+- Intraday charting
+- Advanced intraday performance attribution
+- New market-data providers
+- Changes to Daily Picks scoring, ranking, signal logic, or confidence
+- Changes to Prediction Engine logic
+- Changes to RCI logic
+- Changes to existing Paper Trade auto-trigger logic beyond documenting this future scope
+- Backend, API, frontend, database, workflow, or infrastructure implementation of any kind — this section is documentation only
