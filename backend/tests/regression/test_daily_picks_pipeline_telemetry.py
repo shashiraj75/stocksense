@@ -47,11 +47,14 @@ def _inner_patches(*, use_postgres=False, predict_return=None):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1. initializing is recorded before outcome resolution
+# 1. initializing is recorded before universe_selection; outcome resolution is
+#    NOT run inline from Daily Picks generation (Product Integrity #002K —
+#    decoupled from the critical path; owned exclusively by the periodic
+#    _outcome_resolver_loop in api/main.py).
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_initializing_written_before_outcome_resolution():
-    """_try_job_progress('initializing') is called before resolve_pending_outcomes."""
+def test_initializing_written_before_universe_selection():
+    """_try_job_progress('initializing') is called before 'universe_selection'."""
     import services.daily_picks as dp
 
     call_order = []
@@ -59,21 +62,7 @@ def test_initializing_written_before_outcome_resolution():
     def fake_progress(job_id, phase, processed, total, **kw):
         call_order.append(("progress", phase))
 
-    def fake_resolve():
-        call_order.append(("resolve",))
-
-    patches = _inner_patches()
-    patches.append(patch("services.daily_picks._try_job_progress", side_effect=fake_progress))
-    patches.append(patch(
-        "services.alpha_engine.outcome_logger.resolve_pending_outcomes",
-        side_effect=fake_resolve,
-    ))
-
-    # Remove the generic resolve patch added by _inner_patches (index 4)
-    # and use our side_effect version instead — apply by entering all patches manually
     with patch("services.daily_picks._try_job_progress", side_effect=fake_progress), \
-         patch("services.alpha_engine.outcome_logger.resolve_pending_outcomes",
-               side_effect=fake_resolve), \
          patch("services.daily_picks._bulk_screen",
                return_value=(["AAPL"], 5, "screener", False, 10)), \
          patch("services.daily_picks._write_score_snapshots"), \
@@ -95,14 +84,46 @@ def test_initializing_written_before_outcome_resolution():
     initializing_pos = next(
         (i for i, e in enumerate(call_order) if e == ("progress", "initializing")), None
     )
-    resolve_pos = next(
-        (i for i, e in enumerate(call_order) if e == ("resolve",)), None
+    universe_pos = next(
+        (i for i, e in enumerate(call_order) if e == ("progress", "universe_selection")), None
     )
     assert initializing_pos is not None, "initializing progress write was never called"
-    assert resolve_pos is not None, "resolve_pending_outcomes was never called"
-    assert initializing_pos < resolve_pos, (
-        f"initializing (pos {initializing_pos}) must precede resolve (pos {resolve_pos})"
+    assert universe_pos is not None, "universe_selection progress write was never called"
+    assert initializing_pos < universe_pos, (
+        f"initializing (pos {initializing_pos}) must precede universe_selection (pos {universe_pos})"
     )
+
+
+def test_generate_picks_inner_does_not_call_resolve_pending_outcomes():
+    """Daily Picks generation must NOT call resolve_pending_outcomes inline.
+
+    Product Integrity #002J found this call unbounded (no row cap, no
+    provider-call cap, no elapsed-time cap) and redundant with the dedicated
+    periodic _outcome_resolver_loop. #002K removes it from the critical path.
+    """
+    import services.daily_picks as dp
+
+    with patch("services.alpha_engine.outcome_logger.resolve_pending_outcomes") as mock_resolve, \
+         patch("services.daily_picks._try_job_progress"), \
+         patch("services.daily_picks._bulk_screen",
+               return_value=(["AAPL"], 5, "screener", False, 10)), \
+         patch("services.daily_picks._write_score_snapshots"), \
+         patch("services.daily_picks._zscore_and_rank", return_value=[]), \
+         patch("services.daily_picks._predict_stock", return_value=None), \
+         patch("services.alpha_engine.regime_cluster.detect_regime",
+               return_value=_FAKE_REGIME), \
+         patch("services.alpha_engine.ic_engine.get_ic_weights", return_value={}), \
+         patch("services.alpha_engine.store.log_prediction"), \
+         patch("services.global_context.get_global_context", return_value={}), \
+         patch("os.getenv", return_value=None), \
+         patch("builtins.open", MagicMock()), \
+         patch("json.dump"):
+        try:
+            dp._generate_picks_inner("US", job_id="job-1")
+        except Exception:
+            pass
+
+    mock_resolve.assert_not_called()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -914,7 +914,6 @@ def _generate_picks_inner(
     and Telegram are intentionally NOT run here — they run in generate_picks()
     after the job is marked terminal so they cannot overwrite the job status.
     """
-    from services.alpha_engine.outcome_logger import resolve_pending_outcomes
     from services.alpha_engine.ic_engine import get_ic_weights
     from services.alpha_engine.regime_cluster import detect_regime
     from services.alpha_engine.optimizer import optimize
@@ -925,10 +924,12 @@ def _generate_picks_inner(
     currency = _CURRENCY.get(market, "₹")
 
     # State: job is now executing — no work counts to report yet.
+    # Outcome resolution for past predictions is NOT run here — it is owned
+    # exclusively by the dedicated periodic _outcome_resolver_loop (api/main.py),
+    # which already covers both markets on its own 6-hour schedule. Running it
+    # inline here was a redundant, unbounded blocking call with no cap on
+    # backlog size, provider calls, or elapsed time (Product Integrity #002J/#002K).
     _try_job_progress(job_id, "initializing", None, None)
-
-    # ── Phase 0: Resolve outcomes from previous prediction runs ──────────────
-    resolve_pending_outcomes()
 
     # ── Global crumb refresh — do this ONCE before bulk fetching ─────────────
     try:

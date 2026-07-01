@@ -16,9 +16,13 @@ fine. The IC engine and meta-model were effectively IN-only despite ranking
 both markets' Daily Picks with the same learned weights.
 """
 
+import logging
+import time
 from datetime import datetime, timezone
 
 import yfinance as yf
+
+log = logging.getLogger(__name__)
 
 _TICKER_SUFFIX = {"IN": ".NS", "US": ""}
 
@@ -60,6 +64,10 @@ def resolve_pending_outcomes():
     forward return window has elapsed, fetches actual returns, and logs them.
     Never logs partial returns — a None from _fetch_return means "not ready yet".
     """
+    sweep_start = time.time()
+    total_examined = 0
+    total_resolved = 0
+    total_skipped = 0
     try:
         from services.alpha_engine.store import get_unresolved_predictions, log_outcome
 
@@ -72,13 +80,17 @@ def resolve_pending_outcomes():
             ("long",   90,  False, False, False, True),   # 60D only; wait 90 cal days
         ]
 
-        total_resolved = 0
         for market in ("IN", "US"):
             for horizon, min_days, d1, d5, d20, d60 in horizon_config:
                 pending = get_unresolved_predictions(horizon, min_days_old=min_days, market=market)
+                log.info(
+                    f"[outcome_logger] [{market}/{horizon}] {len(pending)} unresolved "
+                    f"prediction(s) found"
+                )
                 for row in pending:
                     symbol    = row["symbol"]
                     pred_date = row["pred_date"]
+                    total_examined += 1
 
                     r1  = _fetch_return(symbol, pred_date, 1,  market) if d1  else None
                     r5  = _fetch_return(symbol, pred_date, 5,  market) if d5  else None
@@ -89,9 +101,18 @@ def resolve_pending_outcomes():
                         log_outcome(symbol, horizon, pred_date, r1, r5, r20,
                                     return_60d=r60, market=market)
                         total_resolved += 1
+                    else:
+                        total_skipped += 1
 
-        if total_resolved:
-            print(f"[outcome_logger] Resolved {total_resolved} pending predictions")
+        elapsed = round(time.time() - sweep_start, 1)
+        log.info(
+            f"[outcome_logger] sweep complete: examined={total_examined} "
+            f"resolved={total_resolved} skipped={total_skipped} elapsed={elapsed}s"
+        )
 
     except Exception as e:
-        print(f"[outcome_logger] Error: {e}")
+        elapsed = round(time.time() - sweep_start, 1)
+        log.warning(
+            f"[outcome_logger] sweep error after {elapsed}s "
+            f"(examined={total_examined} resolved={total_resolved}): {e}"
+        )
