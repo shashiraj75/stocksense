@@ -12,6 +12,8 @@ deliberately implemented as latest-snapshot checks instead, and labelled as
 such in the reason text — they are NOT claiming a trend we can't see.
 """
 
+from decimal import Decimal
+
 from services.thresholds import DEBT_TO_EQUITY, PROFITABILITY, GROWTH, VALUATION, GOVERNANCE, CASH_FLOW, BUSINESS_QUALITY
 
 
@@ -19,20 +21,39 @@ def _check(label: str, passed: bool) -> dict:
     return {"label": label, "passed": passed}
 
 
+def _num(value) -> float | None:
+    """
+    Type-safety boundary for scorecard inputs read from stock_fundamentals_cache.
+
+    Postgres NUMERIC columns come back from psycopg as decimal.Decimal, not
+    float — arithmetic between Decimal and float (e.g. `roe_avg * 0.8`) raises
+    TypeError, while comparisons (`>`, `<`) between them do not, which is why
+    this surfaced only on the multiplication/division checks in practice.
+    Converts any Decimal/int/float to a plain float for use in this module's
+    arithmetic and comparisons; leaves None as None (never coerced to 0.0 —
+    missing data must stay missing, not become a passing/failing zero).
+    """
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return float(value)
+    return value
+
+
 def compute_scorecard(stock: dict, market: str = "IN") -> dict:
-    roe = stock.get("roe_pct")
-    roe_avg = stock.get("roe_5y_pct")  # 5Y avg for IN, 4Y avg for US
-    roce = stock.get("roce_pct")
-    sales_3y = stock.get("sales_growth_3y_pct")
-    sales_5y = stock.get("sales_growth_5y_pct")  # always None for US — see below
-    profit_3y = stock.get("profit_growth_3y_pct")
-    profit_5y = stock.get("profit_growth_5y_pct")  # always None for US — see below
-    de = stock.get("debt_to_equity_pct")
-    icr = stock.get("interest_coverage_ratio")
-    ocf = stock.get("operating_cf_latest_cr")
-    pe = stock.get("pe_ratio")
-    ev_ebitda = stock.get("ev_ebitda")
-    pledge = stock.get("promoter_pledge_pct")
+    roe = _num(stock.get("roe_pct"))
+    roe_avg = _num(stock.get("roe_5y_pct"))  # 5Y avg for IN, 4Y avg for US
+    roce = _num(stock.get("roce_pct"))
+    sales_3y = _num(stock.get("sales_growth_3y_pct"))
+    sales_5y = _num(stock.get("sales_growth_5y_pct"))  # always None for US — see below
+    profit_3y = _num(stock.get("profit_growth_3y_pct"))
+    profit_5y = _num(stock.get("profit_growth_5y_pct"))  # always None for US — see below
+    de = _num(stock.get("debt_to_equity_pct"))
+    icr = _num(stock.get("interest_coverage_ratio"))
+    ocf = _num(stock.get("operating_cf_latest_cr"))
+    pe = _num(stock.get("pe_ratio"))
+    ev_ebitda = _num(stock.get("ev_ebitda"))
+    pledge = _num(stock.get("promoter_pledge_pct"))
     roe_avg_label = "4Y avg" if market == "US" else "5Y avg"
 
     checks = [
@@ -86,7 +107,7 @@ def compute_scorecard(stock: dict, market: str = "IN") -> dict:
     # Beneish M-Score, no computed Altman Z-Score anywhere in this file).
     # Always None for IN today (see fundamentals_refresh.py for why) —
     # this check is a no-op for every IN stock, by design, not an oversight.
-    bq_score = stock.get("business_quality_score")
+    bq_score = _num(stock.get("business_quality_score"))
     bq_grade = stock.get("business_quality_grade")
     bq_style = stock.get("business_quality_style")
     if bq_grade == "rejected":

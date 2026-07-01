@@ -346,7 +346,10 @@ export interface MultibaggerStock {
 }
 
 export const fetchMultibaggerScreen = (screen: MultibaggerScreen, market: "IN" | "US" = "IN") =>
-  api.get<{ screen: string; market: string; count: number; results: MultibaggerStock[]; last_refreshed: string | null; error?: string }>(
+  api.get<{
+    screen: string; market: string; status?: "ok" | "unavailable"; count: number;
+    results: MultibaggerStock[]; last_refreshed: string | null; error?: string;
+  }>(
     "/api/multibagger/screen", { params: { screen, market } }
   ).then((r) => r.data);
 

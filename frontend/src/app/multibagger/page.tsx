@@ -71,7 +71,7 @@ export default function MultibaggerPage() {
   const active = SCREENS.find(s => s.key === screen)!;
   const METRICS = METRICS_BY_MARKET[market];
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isFetching } = useQuery({
     queryKey: ["multibagger-screen", screen, market],
     queryFn: () => fetchMultibaggerScreen(screen, market),
     staleTime: 60 * 60_000,
@@ -79,6 +79,8 @@ export default function MultibaggerPage() {
     // Keep the previous market/screen's results on screen while the new
     // ones load, instead of briefly going undefined — same header-jump
     // fix applied to Daily Picks for the identical IN/US toggle pattern.
+    // isFetching (below) is used to flag this as a stale-previous-result
+    // state rather than silently presenting old data as current.
     placeholderData: keepPreviousData,
   });
 
@@ -90,15 +92,49 @@ export default function MultibaggerPage() {
     placeholderData: keepPreviousData,
   });
 
-  // Product Integrity Workstream #001: `last_refreshed` is a server-side
-  // operational timestamp (when the nightly fundamentals-refresh job ran),
-  // not a client fetch time — explicitly converted to IST (rather than
-  // left to silently default to the browser's local zone while looking
-  // like IST via the "en-IN" locale) so it can never quietly disagree with
-  // other explicitly-IST-labeled timestamps elsewhere on the page.
-  const lastRefreshed = data?.last_refreshed
-    ? new Date(data.last_refreshed).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: true })
+  // Product Integrity #002-series — platform-wide User Local Time standard
+  // (Documentation/MASTER-ROADMAP.md §12): display in the viewer's own
+  // timezone, not a single market's timezone hardcoded for every user.
+  // Uses the browser/device timezone with a safe UTC fallback; no saved
+  // per-account preference system exists yet, so this is step 2 of the
+  // documented preference sequence (step 1 — saved preference — is future
+  // work; step 3 — UTC fallback — is applied here when detection fails).
+  const userTimeZone = (() => {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    } catch {
+      return "UTC";
+    }
+  })();
+
+  // `last_refreshed` is a server-side operational timestamp (when the
+  // nightly fundamentals-refresh job ran) transported as a UTC/ISO instant
+  // — converted for display only, in the viewer's own local timezone.
+  const lastRefreshedDate = data?.last_refreshed ? new Date(data.last_refreshed) : null;
+  const lastRefreshed = lastRefreshedDate
+    ? new Intl.DateTimeFormat(undefined, {
+        timeZone: userTimeZone, day: "2-digit", month: "short", year: "numeric",
+        hour: "2-digit", minute: "2-digit", hour12: true, timeZoneName: "short",
+      }).format(lastRefreshedDate)
     : null;
+  const lastRefreshedAgeHours = lastRefreshedDate
+    ? Math.floor((Date.now() - lastRefreshedDate.getTime()) / 3_600_000)
+    : null;
+
+  // The scheduled refresh time remains a market-reference concept — shown
+  // only as secondary context, never as the primary freshness indicator,
+  // and never converted into the viewer's timezone. Preserved verbatim from
+  // the prior copy (unchanged wording/values — only its priority in the UI
+  // changes here, from primary to secondary): this audit found no source
+  // evidence of what timezone basis the actual GitHub Actions cron uses, so
+  // the existing "IST" label for both markets is kept as-is rather than
+  // guessed at.
+  const normalScheduleMarketTime = market === "IN" ? "10:30 PM IST" : "7:30 AM IST";
+
+  // isFetching without isLoading means placeholderData is showing a prior
+  // market/screen's already-successful result while a new one loads —
+  // a genuine "stale previous result" state, distinct from first-load.
+  const showingStalePreviousResult = isFetching && !isLoading && !!data;
 
   return (
     <div className="space-y-6">
@@ -110,8 +146,10 @@ export default function MultibaggerPage() {
             <h1 className="text-2xl font-bold">Multibagger Screen</h1>
             <p className="text-sm text-gray-400 mt-1">
               Three hard-filter screens — never merge them, that's how you get zero results
-              {" · refreshed nightly at " + (market === "IN" ? "10:30 PM IST" : "7:30 AM IST")}
               {status?.last_summary?.total ? ` · screened from ${status.last_summary.total.toLocaleString()} ${market === "IN" ? "NSE" : "US"} stocks` : ""}
+            </p>
+            <p className="text-xs text-gray-600 mt-0.5">
+              Normal schedule: {normalScheduleMarketTime} market reference
             </p>
           </div>
         </div>
@@ -131,7 +169,9 @@ export default function MultibaggerPage() {
             </span>
           ) : lastRefreshed && (
             <span className="flex items-center gap-1.5 text-xs text-gray-500 bg-dark-card border border-dark-border rounded-lg px-3 py-1.5">
-              <Clock size={12} /> Refreshed {lastRefreshed} IST
+              <Clock size={12} />
+              Last refreshed: {lastRefreshed}
+              {lastRefreshedAgeHours != null ? ` · ${lastRefreshedAgeHours}h ago` : ""}
             </span>
           )}
         </div>
@@ -158,7 +198,7 @@ export default function MultibaggerPage() {
       <div className="bg-dark-card border border-dark-border rounded-2xl overflow-hidden">
         <div className="px-4 py-3 border-b border-dark-border flex items-center justify-between flex-wrap gap-2">
           <h2 className="font-semibold text-sm text-gray-300">{active.label}</h2>
-          {data && data.count > 0 && (
+          {data && data.status === "ok" && data.count > 0 && (
             <span className="text-xs text-gray-500">
               {data.count} match{data.count !== 1 ? "es" : ""} ·{" "}
               <span className="text-brand-400">{data.results.filter(r => r.shortlisted).length} shortlisted</span> (top ~20%)
@@ -172,16 +212,25 @@ export default function MultibaggerPage() {
           a high overall score alone doesn't guarantee it if just one of those four specifically falls short.
         </p>
 
+        {showingStalePreviousResult && (
+          <p className="px-4 pt-2 text-[11px] text-gray-500">
+            Showing last successful screen refresh
+            {lastRefreshed ? ` — ${lastRefreshed}` : ""}.
+          </p>
+        )}
+
         {isLoading ? (
-          <div className="p-8 text-center text-sm text-gray-500">Loading…</div>
-        ) : data?.error ? (
+          <div className="p-8 text-center text-sm text-gray-500">Refreshing screen data…</div>
+        ) : data?.status === "unavailable" || (data?.error && data.status !== "ok") ? (
           <div className="p-8 text-center text-sm text-gray-500">
-            Screen data not available yet.
-            <p className="text-xs text-gray-600 mt-1">{data.error}</p>
+            Screen data is temporarily unavailable.
           </div>
         ) : !data || data.count === 0 ? (
           <div className="p-8 text-center text-sm text-gray-500">
-            No stocks currently pass this screen — try another, or check back after the next nightly refresh.
+            No qualifying stocks today.
+            <p className="text-xs text-gray-600 mt-1">
+              Strict criteria were evaluated successfully — none of today's cached stocks currently qualify for this screen.
+            </p>
           </div>
         ) : (
           <div className="overflow-x-auto">

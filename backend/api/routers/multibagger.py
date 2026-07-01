@@ -1,8 +1,15 @@
+import logging
 import os
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query
 from typing import Literal
 
+log = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/multibagger", tags=["multibagger"])
+
+# User-safe message for any screen-computation failure — the real exception
+# is logged server-side only (log.exception below), never sent to the client.
+_SCREEN_UNAVAILABLE_MESSAGE = "Screen data is temporarily unavailable."
 
 # Reuses the same secret as Daily Picks generation — both are GitHub
 # Actions-triggered background jobs protected the same way.
@@ -30,15 +37,31 @@ def get_screen(
     try:
         cache.ensure_table()
         rows = annotate_and_rank(cache.query_screen(screen, market), market)
+        # status="ok" here covers BOTH a non-empty result AND a genuine,
+        # successfully-evaluated zero-result outcome (count=0, no exception) —
+        # the frontend must be able to tell that apart from a computation
+        # failure below, which also sets count=0 but status="unavailable".
         return {
             "screen": screen,
             "market": market,
+            "status": "ok",
             "count": len(rows),
             "results": rows,
             "last_refreshed": cache.last_refreshed(market),
         }
     except Exception as e:
-        return {"screen": screen, "market": market, "count": 0, "results": [], "last_refreshed": None, "error": str(e)}
+        # Full exception detail stays server-side only — never expose raw
+        # Python/library error text (e.g. Decimal/float TypeErrors) to the UI.
+        log.exception(f"[multibagger] screen computation failed ({market}/{screen})")
+        return {
+            "screen": screen,
+            "market": market,
+            "status": "unavailable",
+            "count": 0,
+            "results": [],
+            "last_refreshed": None,
+            "error": _SCREEN_UNAVAILABLE_MESSAGE,
+        }
 
 
 @router.get("/status")
