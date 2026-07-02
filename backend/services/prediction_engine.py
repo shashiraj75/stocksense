@@ -768,7 +768,7 @@ class PredictionEngine:
             loop.run_in_executor(None, _get_valuation_intelligence),
         )
 
-        sentiment_score = self._aggregate_sentiment(news_data["articles"])
+        sentiment_score = self._aggregate_sentiment(news_data["articles"], horizon=horizon)
 
         # Blend deep fundamentals for medium/long
         if deep_score_raw is not None:
@@ -1948,13 +1948,42 @@ class PredictionEngine:
             pass
         return {"score": max(0, min(100, score)), "reasons": reasons}
 
-    def _aggregate_sentiment(self, articles: list) -> dict:
+    def _aggregate_sentiment(self, articles: list, horizon: str | None = None,
+                             now=None) -> dict:
+        """
+        Aggregate CURRENT sentiment from age-eligible articles only
+        (Wave 0C). Stale/undated articles were previously counted at full
+        weight — a months-old bullish set scored 100 and flowed into the
+        composite, confidence, Daily Picks ranking, badges, and reasoning.
+        They are now split out and contribute zero decision weight; absence
+        of fresh news is unavailable evidence (data_available=False, which
+        the existing no-news weight-redistribution and confidence-exclusion
+        paths already handle), never bullish, bearish, or fake-neutral.
+        """
+        from services.news_sentiment import split_articles_by_freshness
+
+        base = {"score": 50, "label": "NEUTRAL", "bullish": 0, "bearish": 0,
+                "total_article_count": len(articles or [])}
         if not articles:
-            # No news fetched — return neutral but flag as data-unavailable so UI
-            # can display "No news data" rather than "Neutral sentiment"
-            return {"score": 50, "label": "NEUTRAL", "bullish": 0, "bearish": 0, "data_available": False}
-        bullish = sum(1 for a in articles if a.get("sentiment", {}).get("label") == "BULLISH")
-        bearish = sum(1 for a in articles if a.get("sentiment", {}).get("label") == "BEARISH")
+            # No news fetched at all — unavailable, not neutral evidence.
+            return {**base, "data_available": False,
+                    "eligible_article_count": 0, "historical_article_count": 0,
+                    "freshness_status": "no_articles",
+                    "reason_unavailable": "No news articles were returned."}
+
+        eligible, historical = split_articles_by_freshness(articles, horizon, now)
+        base["eligible_article_count"] = len(eligible)
+        base["historical_article_count"] = len(historical)
+
+        if not eligible:
+            # Only stale/undated articles exist — insufficient fresh evidence.
+            return {**base, "data_available": False,
+                    "freshness_status": "no_fresh_news",
+                    "reason_unavailable": "Insufficient fresh news evidence — "
+                                          "only historical articles are available."}
+
+        bullish = sum(1 for a in eligible if a.get("sentiment", {}).get("label") == "BULLISH")
+        bearish = sum(1 for a in eligible if a.get("sentiment", {}).get("label") == "BEARISH")
         labeled = bullish + bearish
         # Use only labeled articles in the denominator — neutral articles should not
         # dilute bullish signal (5 bullish + 5 neutral ≠ 5 bullish + 5 bearish)
@@ -1963,7 +1992,8 @@ class PredictionEngine:
         else:
             score = 50  # all neutral — genuine neutral signal
         label = "BULLISH" if score > 60 else "BEARISH" if score < 40 else "NEUTRAL"
-        return {"score": score, "label": label, "bullish": bullish, "bearish": bearish, "data_available": True}
+        return {**base, "score": score, "label": label, "bullish": bullish, "bearish": bearish,
+                "data_available": True, "freshness_status": "fresh", "reason_unavailable": None}
 
     def _quality_gate(self, info: dict, df: pd.DataFrame, horizon: str = "medium") -> tuple[bool, list[str]]:
         """
@@ -2208,12 +2238,14 @@ class PredictionEngine:
             for r in quality.get("reasons", [])[:6]:
                 reasoning.append(r)
 
-        # News sentiment
-        if sentiment["label"] != "NEUTRAL":
+        # News sentiment — emitted only from age-verified eligible articles
+        # (Wave 0C): data_available is False when only stale/undated articles
+        # exist, so no "recent news" claim can be built from historical items.
+        if sentiment.get("data_available", True) and sentiment["label"] != "NEUTRAL":
             reasoning.append({
                 "indicator": "Sentiment",
                 "signal": sentiment["label"],
-                "reason": f"{sentiment['bullish']} bullish vs {sentiment['bearish']} bearish in recent news"
+                "reason": f"{sentiment['bullish']} bullish vs {sentiment['bearish']} bearish in eligible recent news"
             })
 
         # ── Log prediction for track record / IC engine ──────────────────────

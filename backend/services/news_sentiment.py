@@ -3,6 +3,8 @@ import logging
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 
 import feedparser
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
@@ -10,6 +12,84 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 log = logging.getLogger(__name__)
 
 _vader = SentimentIntensityAnalyzer()
+
+# ── Freshness policy (UI/UX Truthfulness Correction Program, Wave 0C) ────────
+# Current sentiment must be computed only from age-verified, eligible news.
+# One central policy — do not scatter cutoffs across files. Values are
+# initial conservative defaults, deliberately easy to recalibrate here.
+#
+# Keyed by prediction horizon; "general" covers stock-detail sentiment when
+# no horizon applies. Note "long" is Daily Picks' strategic ~3-6 month
+# horizon, not multi-year investing.
+SENTIMENT_MAX_AGE_DAYS: dict[str, int] = {
+    "short":   3,
+    "medium":  14,
+    "long":    30,
+    "general": 14,
+}
+
+# Articles time-stamped slightly in the future (feed clock skew) are
+# tolerated up to this bound; beyond it the date is treated as unparseable
+# noise and the article is ineligible for current sentiment.
+FUTURE_TOLERANCE = timedelta(hours=24)
+
+
+def parse_published_at(raw: str | None) -> datetime | None:
+    """
+    Parse an RSS publication date into a UTC-aware datetime, or None.
+
+    Handles the two formats real feeds emit: RFC-2822 ("Wed, 02 Jul 2026
+    07:15:00 GMT" — Yahoo/Google News/ET/Moneycontrol) and ISO-8601.
+    A naive result is assumed UTC. Never raises; never invents a date —
+    missing/malformed input returns None, which downstream treats as
+    ineligible for current sentiment (not as fresh, not as negative).
+    """
+    if not raw or not isinstance(raw, str):
+        return None
+    for parser in (parsedate_to_datetime, datetime.fromisoformat):
+        try:
+            dt = parser(raw.strip())
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def is_article_eligible(published_at_raw: str | None, horizon: str | None = None,
+                        now: datetime | None = None) -> bool:
+    """
+    Whether one article is fresh enough to count as CURRENT sentiment
+    evidence for the given horizon. Undated, unparseable, too-old, or
+    (beyond tolerance) future-dated articles are ineligible — they may still
+    be displayed as context, but must contribute zero decision weight.
+    """
+    published = parse_published_at(published_at_raw)
+    if published is None:
+        return False
+    now = now or datetime.now(timezone.utc)
+    if published > now + FUTURE_TOLERANCE:
+        return False
+    max_days = SENTIMENT_MAX_AGE_DAYS.get(horizon or "general", SENTIMENT_MAX_AGE_DAYS["general"])
+    return (now - published) <= timedelta(days=max_days)
+
+
+def split_articles_by_freshness(
+    articles: list, horizon: str | None = None, now: datetime | None = None,
+) -> tuple[list, list]:
+    """
+    Split a fetched article list into (eligible, historical) for the given
+    horizon. Identical rule for every market — freshness is a property of
+    the article's timestamp only. One malformed article never rejects the
+    batch; it simply lands in the historical bucket.
+    """
+    now = now or datetime.now(timezone.utc)
+    eligible: list = []
+    historical: list = []
+    for a in articles:
+        (eligible if is_article_eligible(a.get("published_at"), horizon, now) else historical).append(a)
+    return eligible, historical
 
 # Financial domain lexicon — terms VADER misses or scores wrong.
 # Compound override: if any phrase is found in text, it anchors the score.
