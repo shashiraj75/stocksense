@@ -23,7 +23,9 @@ try {
     `npx tsc src/utils/newsDisplay.ts --outDir ${JSON.stringify(outDir)} --module es2020 --target es2020 --strict --skipLibCheck`,
     { stdio: "inherit" },
   );
-  const { formatCompanyNewsBasis, groupArticlesByEligibility, groupArticlesByRelevance, parseArticleDate } =
+  const { capContextAndHistorical, formatCompanyNewsBasis, groupArticlesByEligibility,
+          groupArticlesByRelevance, parseArticleDate,
+          RECENT_CONTEXT_DISPLAY_LIMIT, HISTORICAL_DISPLAY_LIMIT } =
     await import(pathToFileURL(join(outDir, "newsDisplay.js")).href);
 
   let n = 0;
@@ -170,6 +172,94 @@ try {
       formatCompanyNewsBasis(0, 2),
       "Based on 2 recent company-specific articles.",
     );
+  });
+
+  // ── Release 11A: basis line must match visible current-company cards ──
+  const co = (t) => ({ title: t, sentiment_eligible: true, company_sentiment_eligible: true });
+  const ctxA = (t) => ({ title: t, sentiment_eligible: true, company_sentiment_eligible: false });
+  const hist = (t) => ({ title: t, sentiment_eligible: false, company_sentiment_eligible: false });
+
+  // 15. TSM-style interleaved feed: 6 company-specific articles, only 3 of
+  //     them inside the old first-8 cutoff. Full-payload grouping must keep
+  //     all 6 in companyCurrent and the basis count must be 6.
+  test("interleaved feed keeps all company-specific cards visible", () => {
+    const feed = [
+      co("co1"), ctxA("x1"), co("co2"), hist("h1"), ctxA("x2"), co("co3"),
+      hist("h2"), ctxA("x3"),                       // old cutoff was here (8)
+      co("co4"), hist("h3"), co("co5"), ctxA("x4"), co("co6"), hist("h4"),
+    ];
+    const rel = capContextAndHistorical(groupArticlesByRelevance(feed));
+    assert.deepEqual(rel.companyCurrent.map(a => a.title),
+      ["co1", "co2", "co3", "co4", "co5", "co6"]);  // all six, feed order
+    assert.equal(
+      formatCompanyNewsBasis(6, rel.companyCurrent.length),
+      "Based on 6 recent company-specific articles.",
+    );
+    // Contextual/historical never leak into the company count.
+    assert.ok(rel.companyCurrent.every(a => a.company_sentiment_eligible === true));
+  });
+
+  // 16. Duplicate-event wording over the same displayed population.
+  test("duplicate coverage wording: 4 events across 6 displayed articles", () => {
+    const rel = groupArticlesByRelevance([co("a"), co("b"), co("c"), co("d"), co("e"), co("f")]);
+    assert.equal(
+      formatCompanyNewsBasis(4, rel.companyCurrent.length),
+      "Based on 4 recent company-news events across 6 articles.",
+    );
+    assert.equal(
+      formatCompanyNewsBasis(1, 2),
+      "Based on 1 recent company-news event across 2 articles.",
+    );
+  });
+
+  // 17. Legacy/invalid event metadata: displayed-count concise wording, no
+  //     duplicate-event claim, no malformed sentence.
+  test("invalid event metadata never produces event wording", () => {
+    for (const bad of [undefined, null, 0, NaN, Infinity]) {
+      assert.equal(
+        formatCompanyNewsBasis(bad, 6),
+        "Based on 6 recent company-specific articles.",
+        `eventCount=${bad}`,
+      );
+    }
+    // Inconsistent metadata (events > displayed articles) must not claim
+    // duplicates either — concise displayed-count wording wins.
+    assert.equal(formatCompanyNewsBasis(6, 3), "Based on 3 recent company-specific articles.");
+  });
+
+  // 18. Context/historical caps are per-group, after grouping, and can never
+  //     reduce the current-company group.
+  test("context and historical caps never affect companyCurrent", () => {
+    const feed = [
+      ...Array.from({ length: 6 }, (_, i) => co(`co${i}`)),
+      ...Array.from({ length: 9 }, (_, i) => ctxA(`x${i}`)),
+      ...Array.from({ length: 9 }, (_, i) => hist(`h${i}`)),
+    ];
+    const rel = capContextAndHistorical(groupArticlesByRelevance(feed));
+    assert.equal(rel.companyCurrent.length, 6);      // uncapped
+    assert.equal(rel.recentContext.length, RECENT_CONTEXT_DISPLAY_LIMIT);
+    assert.equal(rel.historical.length, HISTORICAL_DISPLAY_LIMIT);
+    assert.equal(rel.hasRelevanceData, true);
+  });
+
+  // 19. Empty / insufficient-evidence states unchanged: no fresh
+  //     company-specific article → empty companyCurrent (drives the
+  //     "Insufficient fresh company-specific news evidence" state), and the
+  //     capped context groups still render.
+  test("insufficient-evidence and legacy states remain unchanged", () => {
+    const rel = capContextAndHistorical(groupArticlesByRelevance([ctxA("x"), hist("h")]));
+    assert.equal(rel.companyCurrent.length, 0);
+    assert.equal(rel.recentContext.length, 1);
+    assert.equal(rel.historical.length, 1);
+    const legacyRel = capContextAndHistorical(
+      groupArticlesByRelevance([{ title: "old" }]));
+    assert.equal(legacyRel.hasRelevanceData, false);  // ungrouped fallback intact
+  });
+
+  // 20. Market parity: no display helper takes a market parameter.
+  test("release-11A helpers are market-agnostic", () => {
+    assert.equal(capContextAndHistorical.length, 1);
+    assert.equal(formatCompanyNewsBasis.length, 2);
   });
 
   console.log(`\nnews-display regression: ${n} tests passed`);

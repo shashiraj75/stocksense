@@ -7,7 +7,7 @@ import { TradingViewWidget } from "@/components/TradingViewWidget";
 import { SignalBadge } from "@/components/SignalBadge";
 import { ConfidenceMeter } from "@/components/ConfidenceMeter";
 import { NewsCard } from "@/components/NewsCard";
-import { formatCompanyNewsBasis, groupArticlesByEligibility, groupArticlesByRelevance } from "@/utils/newsDisplay";
+import { capContextAndHistorical, formatCompanyNewsBasis, groupArticlesByEligibility, groupArticlesByRelevance, HISTORICAL_DISPLAY_LIMIT } from "@/utils/newsDisplay";
 import { FactorAttributionWaterfall } from "@/components/FactorAttributionWaterfall";
 import { ConfidenceBreakdown } from "@/components/ConfidenceBreakdown";
 import { BullBearCase } from "@/components/BullBearCase";
@@ -1129,7 +1129,10 @@ export default function StockPage() {
               if (!news) {
                 return <p className="text-gray-500 text-sm animate-pulse">Fetching latest news…</p>;
               }
-              const shown = news.articles.slice(0, 8);
+              // Release 11A: group the FULL payload first — a page-level
+              // total cap must never hide fresh company-specific cards or
+              // desynchronize the basis line from the visible card grid.
+              const shown = news.articles;
               if (!shown.length) {
                 return (
                   <div className="text-sm text-gray-500">
@@ -1144,11 +1147,16 @@ export default function StockPage() {
                 // render ungrouped and make no inclusion claims.
                 return (
                   <div className="grid md:grid-cols-2 gap-3">
-                    {shown.map((a, i) => <NewsCard key={i} article={a} />)}
+                    {/* No grouping claims here, so a plain length cap is safe. */}
+                    {shown.slice(0, 8).map((a, i) => <NewsCard key={i} article={a} />)}
                   </div>
                 );
               }
-              const rel = groupArticlesByRelevance(shown);
+              // Full-payload grouping, then cap ONLY the two context groups
+              // (page length). companyCurrent is never capped — every fresh
+              // company-specific article renders, and the basis line below
+              // counts exactly this displayed group.
+              const rel = capContextAndHistorical(groupArticlesByRelevance(shown));
               if (!rel.hasRelevanceData) {
                 // Release-8-era cached payload (freshness only, no relevance
                 // fields) — keep the exact Release 8 two-group rendering; no
@@ -1180,7 +1188,7 @@ export default function StockPage() {
                           Historical context — not used in current decisions
                         </p>
                         <div className="grid md:grid-cols-2 gap-3 mt-3">
-                          {legacy.historical.map((a, i) => <NewsCard key={`h-${i}`} article={a} />)}
+                          {legacy.historical.slice(0, HISTORICAL_DISPLAY_LIMIT).map((a, i) => <NewsCard key={`h-${i}`} article={a} />)}
                         </div>
                       </div>
                     )}
@@ -1199,7 +1207,7 @@ export default function StockPage() {
                       <p className="text-xs text-gray-500 mt-1">
                         {formatCompanyNewsBasis(
                           news.current_company_news_event_count,
-                          news.company_specific_article_count ?? rel.companyCurrent.length,
+                          rel.companyCurrent.length,
                         )}
                         {(rel.recentContext.length > 0 || rel.historical.length > 0)
                           ? " Contextual and historical articles below are not used in the current company sentiment."

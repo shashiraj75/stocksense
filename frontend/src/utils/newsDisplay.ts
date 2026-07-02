@@ -77,17 +77,43 @@ export function groupArticlesByEligibility<T extends FreshnessGroupable>(
 }
 
 /**
- * Truthful basis line for the current-company-news group (Wave 0D3).
- * When the backend reports fewer unique events than articles (duplicate
- * coverage), say so; when they match — or when event metadata is absent
- * (legacy payload) — keep the concise article wording and make no
- * duplicate-story claim.
+ * Release 11A: per-group display caps for the two context groups ONLY.
+ * The old page-level total cap (first 8 fetched articles) could hide fresh
+ * company-specific cards that arrived later in feed order while the basis
+ * line quoted full-payload counts. Grouping now happens on the FULL payload
+ * and every current-company article always renders; only contextual and
+ * historical cards are capped, purely to keep the page a reasonable length.
+ * These caps can never affect current-company visibility, counts, wording,
+ * or any decision evidence.
+ */
+export const RECENT_CONTEXT_DISPLAY_LIMIT = 4;
+export const HISTORICAL_DISPLAY_LIMIT = 4;
+
+export function capContextAndHistorical<T extends FreshnessGroupable>(
+  groups: RelevanceGroupedArticles<T>,
+): RelevanceGroupedArticles<T> {
+  return {
+    ...groups,
+    recentContext: groups.recentContext.slice(0, RECENT_CONTEXT_DISPLAY_LIMIT),
+    historical: groups.historical.slice(0, HISTORICAL_DISPLAY_LIMIT),
+  };
+}
+
+/**
+ * Truthful basis line for the current-company-news group (Wave 0D3,
+ * population-aligned in Release 11A). `articleCount` MUST be the number of
+ * current-company cards actually displayed. Event wording appears only when
+ * the backend reports strictly fewer unique events than displayed articles
+ * (duplicate coverage); when counts match — or event metadata is absent,
+ * zero, or inconsistent (legacy/stale payload) — keep the concise article
+ * wording and make no duplicate-story claim.
  */
 export function formatCompanyNewsBasis(
   eventCount: number | undefined,
   articleCount: number,
 ): string {
-  if (typeof eventCount === "number" && eventCount > 0 && eventCount !== articleCount) {
+  if (typeof eventCount === "number" && Number.isFinite(eventCount)
+      && eventCount > 0 && eventCount < articleCount) {
     return `Based on ${eventCount} recent company-news event${eventCount !== 1 ? "s" : ""} across ${articleCount} articles.`;
   }
   return `Based on ${articleCount} recent company-specific article${articleCount !== 1 ? "s" : ""}.`;
