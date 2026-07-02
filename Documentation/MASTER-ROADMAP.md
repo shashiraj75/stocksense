@@ -673,3 +673,51 @@ None of these are guaranteed outcomes, personalised financial advice, or automat
 **Validation required before any long-term claim.** No claim of long-term investment reliability may be made without robust, rolling, out-of-sample validation. Planned validation should consider: 3-, 5-, and (where data permits) 7-year periods; bull, sideways, correction, and bear-market regimes; sector cycles; survivorship-bias controls where feasible; delisted or materially impaired companies where data permits; India and US market differences; valuation starting-point effects; concentration and diversification outcomes; and realistic delay, data-availability, and transaction-cost assumptions. The goal is not to promise multibaggers or guaranteed returns — the goal is to help investors assess durable businesses, valuation discipline, portfolio fit, and thesis deterioration more responsibly.
 
 **Roadmap position.** This planned initiative depends materially on: Epic 001 — Business Quality Intelligence; Epic 002 — Financial Strength Intelligence; Epic 003 — Growth Intelligence; Epic 004 — Valuation Intelligence; Epic 007 — Portfolio Intelligence; and later work on cross-market data quality, governance evidence, portfolio fit, and validation infrastructure. It should be sequenced after the current Daily Picks reliability/truthfulness programme and in coordination with Portfolio Intelligence, not treated as a simple extension of daily signals.
+
+---
+
+### Planned Cross-Cutting Initiative — Horizon-Aware Capital Protection, Trailing Risk Controls & Thesis Monitoring
+
+**Status: Planned / Not Started.**
+
+**Core principle.** A single generic stop-loss rule must not be applied equally to short-term trades, medium-term positions, strategic 3–6 month holdings, and genuine multi-year investments. Protection logic must adapt to: intended holding horizon; market volatility; market regime; entry conditions; business quality; investment thesis; portfolio concentration; and user-defined risk tolerance where supported in the future. This is planned decision-support and monitoring functionality only. It must never be described as guaranteed protection, guaranteed loss prevention, automatic real trade execution, personalised financial advice, or a substitute for investor judgment.
+
+#### Horizon Framework (planned)
+
+**1. Short-Term Horizon — approximately 1–5 days.** Planned purpose: protect capital quickly; define an initial invalidation level before entry; preserve gains when price moves favourably. Planned mechanisms: initial fixed risk level/stop-loss reference; optional trailing protection after a clearly defined favourable move; volatility-aware trailing method where validated; entry-zone invalidation; market-regime-aware tightening during elevated risk; clear trigger reason and timestamp. Any future trailing mechanism must be explainable, including: original risk level; activation condition; high-water mark or equivalent reference; revised protection level; trigger reason; and whether the indication is intraday, end-of-day, or end-of-week based.
+
+**2. Medium-Term Horizon — approximately 2–4 weeks.** Planned purpose: protect against a material trend reversal while allowing normal volatility. Planned mechanisms: initial downside-risk level; volatility-aware trailing protection; higher-timeframe trend confirmation; stricter risk controls during Cautious, Risk-Off, or Severe Risk-Off regimes; end-of-day or end-of-week review logic where appropriate; a clear distinction between a warning, a review signal, and an invalidation condition. Medium-term protection should not be so tight that normal market noise repeatedly forces exits.
+
+**3. Current Daily Picks "Long Term" Horizon — approximately 3–6 months.** The existing Daily Picks "Long Term" horizon is a strategic approximately 3–6 month horizon. It is not the same as a 3–5+ year investment horizon. Planned protection approach: a Capital Protection Level rather than a simplistic daily trailing stop; the protection level may rise after sustained favourable movement; broader volatility allowance than short- or medium-term positions; market-regime and sector-risk consideration; the default trigger should normally prompt a structured review, not automatically imply an immediate exit; use higher-timeframe confirmation where appropriate; distinguish price deterioration from fundamental thesis deterioration. Intended future user-facing concept:
+
+```
+Initial Risk Level
+Capital Protection Level
+Protection Status
+Reason for Latest Adjustment
+Review Trigger
+```
+
+**4. Genuine Long-Term Investment Horizon — approximately 3–5+ years.** Genuine long-term investing requires Investment Thesis Monitoring first, with price-based protection as a secondary optional alert. The core question must be: has the business or investment thesis deteriorated materially? Planned thesis-monitoring inputs may include: sales, earnings, and cash-flow deterioration; margin durability; debt and liquidity stress; interest coverage; capital allocation; dilution; governance or ownership warning signs; valuation excess; competitive-position deterioration where evidence is available; sector and macro changes where materially relevant; portfolio concentration and exposure risk. Planned user-facing research states may include: Thesis Intact; Review Required; Reduce Exposure Consideration; Thesis Under Review; Thesis Invalidated; Avoid — Fundamental Risk. **A price decline alone must not automatically close a genuine long-term investment position.** A price-based protection alert may prompt review, but an exit conclusion must consider business quality, financial strength, valuation, market conditions, and the documented investment thesis.
+
+#### User Controls and Transparency (planned)
+
+Future user controls: whether a protection alert is enabled; conservative/balanced/wider risk tolerance selection only after validated design; pause, resume, adjust, or cancel Paper Trade protection rules; no real broker execution; no automatic real sell order; all changes logged and auditable.
+
+For every future protection adjustment or trigger, record: original entry/reference price; original risk level; current protection level; high-water mark or relevant reference; adjustment timestamp; price and market context; market-regime state; reason code; whether triggered by price, volatility, technical trend, or thesis event; resulting suggested action; and user response, where relevant.
+
+#### Paper Trade Boundary (required)
+
+Automated monitoring and simulated execution may be considered only within Paper Trade. All Paper Trade actions remain simulated — no brokerage integration or real order execution. User notifications must remain opt-in. Duplicate-trigger protection, durable audit history, pause/resume/cancel capability, and notification controls are required before any automated Paper Trade protection workflow is considered complete.
+
+#### Bear-Market Integration (dependency)
+
+This initiative depends on Bear-Market Resilience & Market Regime Intelligence (above). During Cautious, Risk-Off, or Severe Risk-Off regimes, the future system may: tighten protection requirements; reduce new-position eligibility; lower confidence or allocation guidance; require higher quality and relative strength; issue review prompts; avoid new BUY calls entirely. **Market regime must not silently override a protection recommendation. Any market-regime effect must be shown to the user with an explanation.**
+
+#### Validation Required Before Any Product Claim
+
+StockSense360 must not claim trailing-stop effectiveness, capital protection, downside protection, or improved risk-adjusted outcomes without robust out-of-sample validation. Future validation must cover both India and US markets, including: bull markets; sideways markets; corrections; bear markets; volatility spikes; sector sell-offs; gap-down scenarios; recovery phases; different liquidity conditions. Required measurements: maximum drawdown; avoided-loss rate; premature-exit rate; missed-upside rate; stop/alert trigger frequency; false trigger rate; outcome after trigger; comparison against fixed-stop and no-protection baselines; realistic delay, slippage, gap, and transaction-cost assumptions; stability by market, horizon, sector, and regime. The goal is disciplined risk management and explainable decision support, not perfect exits or guaranteed returns.
+
+#### Dependencies and Sequencing
+
+This initiative depends on: current Daily Picks production reliability and truthfulness work; the shared safe-error and user-local timestamp work; Bear-Market Resilience & Market Regime Intelligence; Long-Term Investment Intelligence; Epic 007 — Portfolio Intelligence; the Paper Trade foundation and later Paper Trade workflow capabilities (Section 11); and reliable historical price, volatility, market-regime, and outcome-validation data. It must be designed and validated before it is presented as an investor-protection feature.
