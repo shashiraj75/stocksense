@@ -24,7 +24,7 @@ try {
     `npx tsc src/utils/priceBasis.ts --outDir ${JSON.stringify(outDir)} --module es2020 --target es2020 --strict --skipLibCheck`,
     { stdio: "inherit" },
   );
-  const { isValidPrice, selectPriceBasis, computeEstimatedUpsidePct } =
+  const { isValidPrice, selectPriceBasis, computeEstimatedUpsidePct, hasValidGenerationBasis } =
     await import(pathToFileURL(join(outDir, "priceBasis.js")).href);
 
   let n = 0;
@@ -103,6 +103,31 @@ try {
     assert.equal(isValidPrice(1e9), true);
     for (const bad of [0, -0.01, NaN, Infinity, -Infinity, null, undefined]) {
       assert.equal(isValidPrice(bad), false, `value=${bad}`);
+    }
+  });
+
+  // 9. Generated-summary gate: eligible to render (with its generation-time
+  //    label) ONLY when both the generation price and target are valid —
+  //    the backend fabricates "Target ₹0.00 implies 0% upside" into the
+  //    frozen sentence when either was missing at generation.
+  test("generated summary eligible only with valid generation price AND target", () => {
+    assert.equal(hasValidGenerationBasis(1026.90, 1076.30), true);
+    assert.equal(hasValidGenerationBasis(105.63, 107.63), true); // US-scale, identical rule
+  });
+
+  // 10. Invalid generation price → summary narrative suppressed (fallback).
+  test("invalid generation price suppresses the generated target/upside narrative", () => {
+    for (const bad of [null, undefined, 0, -5, NaN, Infinity, -Infinity]) {
+      assert.equal(hasValidGenerationBasis(bad, 1076.30), false, `generationPrice=${bad}`);
+    }
+  });
+
+  // 11. Invalid target → summary narrative suppressed (fallback). This is
+  //     the exact input state under which the backend template would have
+  //     embedded a fabricated "0% upside" — it must never be shown.
+  test("invalid target suppresses the generated target/upside narrative", () => {
+    for (const bad of [null, undefined, 0, -50, NaN, Infinity, -Infinity]) {
+      assert.equal(hasValidGenerationBasis(1026.90, bad), false, `target=${bad}`);
     }
   });
 

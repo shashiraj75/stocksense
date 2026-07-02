@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { api, fetchQuote } from "@/utils/api";
-import { computeEstimatedUpsidePct, isValidPrice, selectPriceBasis } from "@/utils/priceBasis";
+import { computeEstimatedUpsidePct, hasValidGenerationBasis, isValidPrice, selectPriceBasis } from "@/utils/priceBasis";
 import {
   TrendingUp, Clock, AlertCircle, ChevronDown, ChevronUp,
   Loader2, Target, ShieldAlert, Zap, CheckCircle, BarChart2, Activity, FlaskConical,
@@ -510,10 +510,26 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
 
         <TopReasons reasoning={pick.reasoning ?? []} />
 
+        {/* Backend-generated narrative, frozen into the payload at generation
+            time — its "Target ₹X implies Y% upside" figures use the generation
+            price, NOT the (possibly live-refreshed) price shown in the header.
+            Always label it as such so it can't read as a second, competing
+            "current" upside; and when the generation price/target were invalid
+            the backend fabricates "₹0.00 / 0% upside" into the sentence, so
+            suppress the raw text entirely rather than show a fabricated claim. */}
         {pick.summary && (
-          <div className="bg-dark-border/30 rounded-lg p-3 border border-dark-border">
-            <p className="text-xs text-gray-400 leading-relaxed">{pick.summary}</p>
-          </div>
+          hasValidGenerationBasis(pick.price, pick.target) ? (
+            <div className="bg-dark-border/30 rounded-lg p-3 border border-dark-border">
+              <p className="text-[10px] text-gray-500 mb-1.5">
+                Generated pick summary — target and upside figures below are based on the price at generation, not the current displayed price.
+              </p>
+              <p className="text-xs text-gray-400 leading-relaxed">{pick.summary}</p>
+            </div>
+          ) : (
+            <div className="bg-dark-border/30 rounded-lg p-3 border border-dark-border">
+              <p className="text-xs text-gray-500">Generated target/upside context unavailable.</p>
+            </div>
+          )
         )}
       </div>
 

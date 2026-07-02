@@ -59,3 +59,20 @@ export function computeEstimatedUpsidePct(
   const pct = ((target - basisPrice) / basisPrice) * 100;
   return Number.isFinite(pct) ? pct : null;
 }
+
+/**
+ * Whether the backend-generated pick summary's target/upside narrative is
+ * trustworthy enough to display. The generation pipeline composes its
+ * summary sentence ("Target ₹X implies Y% upside within …") unconditionally,
+ * substituting 0 when the generation-time price or target was missing — so
+ * a payload with an invalid generation price or target carries a fabricated
+ * "Target ₹0.00 implies 0% upside" sentence frozen inside it. The frontend
+ * receives the same two underlying values (pick.price, pick.target) and must
+ * suppress that narrative rather than show a fabricated figure.
+ */
+export function hasValidGenerationBasis(
+  generationPrice: number | null | undefined,
+  target: number | null | undefined,
+): boolean {
+  return isValidPrice(generationPrice) && isValidPrice(target);
+}
