@@ -187,6 +187,22 @@ def get_nifty100_quotes() -> list[dict]:
 _quote_cache: dict[str, tuple[float, dict]] = {}
 _QUOTE_TTL = 60  # 1 min
 
+# NSE quote-equity metadata.lastUpdateTime format: "02-Jul-2026 15:59:59" (IST)
+_IST = __import__("datetime").timezone(__import__("datetime").timedelta(hours=5, minutes=30))
+
+
+def _parse_nse_update_time(raw) -> Optional[str]:
+    """Release 12A: parse NSE's own lastUpdateTime into an ISO-8601 IST
+    timestamp, or None. Never invents a time — a missing/unparseable value
+    stays None so downstream treats quote age as unknown."""
+    if not raw or not isinstance(raw, str):
+        return None
+    import datetime as _dt
+    try:
+        return _dt.datetime.strptime(raw.strip(), "%d-%b-%Y %H:%M:%S").replace(tzinfo=_IST).isoformat()
+    except ValueError:
+        return None
+
 
 def get_quote(symbol: str) -> Optional[dict]:
     """
@@ -235,6 +251,12 @@ def get_quote(symbol: str) -> Optional[dict]:
                                            .get("tradeInfo", {}).get("totalTradedVolume")
                                        or 0
                                    ),
+            # Release 12A quote provenance (additive): exchange-supplied
+            # timestamp only — None when NSE omits it.
+            "quote_source":      "nse_official",
+            "quote_price_basis": "last_traded_unadjusted",
+            "quote_timestamp":   _parse_nse_update_time(
+                                     (data.get("metadata") or {}).get("lastUpdateTime")),
         }
         _quote_cache[sym] = (time.time(), result)
         return result

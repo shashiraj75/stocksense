@@ -40,6 +40,10 @@ export interface StockQuote {
   high?: number;
   low?: number;
   company_name?: string;
+  // Release 12A quote provenance (additive; absent on older cached payloads)
+  quote_source?: string | null;
+  quote_price_basis?: string | null;
+  quote_timestamp?: string | null;
 }
 
 export interface OHLCVBar {

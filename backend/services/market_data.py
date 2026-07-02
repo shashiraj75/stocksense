@@ -157,6 +157,12 @@ class MarketDataService:
                         "market_cap": fi_data["market_cap"],
                         "fifty_two_week_high": fi_data["year_high"],
                         "fifty_two_week_low":  fi_data["year_low"],
+                        # Release 12A quote provenance (additive): fast_info
+                        # supplies no quote time — honestly None, never the
+                        # request time.
+                        "quote_source":      "yahoo_fast_info",
+                        "quote_price_basis": "last_traded_unadjusted",
+                        "quote_timestamp":   None,
                     }
             except Exception as e:
                 log.warning("get_quote yfinance fallback failed %s/%s: %s", symbol, market, e)

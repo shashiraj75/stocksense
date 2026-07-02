@@ -6,6 +6,7 @@ import os
 import time
 import logging
 import requests
+from datetime import datetime, timezone
 from typing import Optional
 
 log = logging.getLogger(__name__)
@@ -62,6 +63,15 @@ def get_quote(symbol: str, market: str) -> Optional[dict]:
             "high": data.get("h"),
             "low": data.get("l"),
             "open": data.get("o"),
+            # Release 12A quote provenance (additive): Finnhub's own quote
+            # unix timestamp ("t") only — None when absent/zero, never
+            # invented from request time.
+            "quote_source": "finnhub",
+            "quote_price_basis": "last_traded_unadjusted",
+            "quote_timestamp": (
+                datetime.fromtimestamp(data["t"], tz=timezone.utc).isoformat()
+                if isinstance(data.get("t"), (int, float)) and data.get("t") else None
+            ),
         }
         _cache[cache_key] = (time.time(), result)
         return result

@@ -542,6 +542,16 @@ class PredictionEngine:
                 "horizon": horizon,
                 "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
                 "data_timestamp": df.index[-1].isoformat() if hasattr(df.index[-1], "isoformat") else str(df.index[-1]),
+            # Release 12A: provenance of the price every trade level was
+            # computed from — Yahoo daily-history close (auto-adjusted basis),
+            # as of the last bar's date, NOT a live quote. Additive only; the
+            # price itself and all formulas are unchanged.
+            "price_reference": {
+                "price": round(current_price, 2),
+                "source": "yahoo_daily_history",
+                "price_basis": "adjusted_close",
+                "as_of": df.index[-1].isoformat() if hasattr(df.index[-1], "isoformat") else str(df.index[-1]),
+            },
                 "signal": signal,
                 "confidence": confidence,
                 "score_band": None,
@@ -832,6 +842,16 @@ class PredictionEngine:
             "horizon": horizon,
             "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
             "data_timestamp": df.index[-1].isoformat() if hasattr(df.index[-1], "isoformat") else str(df.index[-1]),
+            # Release 12A: provenance of the price every trade level was
+            # computed from — Yahoo daily-history close (auto-adjusted basis),
+            # as of the last bar's date, NOT a live quote. Additive only; the
+            # price itself and all formulas are unchanged.
+            "price_reference": {
+                "price": round(current_price, 2),
+                "source": "yahoo_daily_history",
+                "price_basis": "adjusted_close",
+                "as_of": df.index[-1].isoformat() if hasattr(df.index[-1], "isoformat") else str(df.index[-1]),
+            },
             "signal": signal,
             "confidence": confidence,
             "score_band": score_band,

@@ -4,6 +4,8 @@ import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { api, fetchQuote } from "@/utils/api";
 import { computeEstimatedUpsidePct, hasValidGenerationBasis, isValidPrice, selectPriceBasis } from "@/utils/priceBasis";
+import { evaluateEntryZoneActionability, isQuoteVerifiedComparable, isVerifiedOutsideEntryZone } from "@/utils/actionability";
+import { getMarketStatus } from "@/utils/marketHours";
 import {
   TrendingUp, Clock, AlertCircle, ChevronDown, ChevronUp,
   Loader2, Target, ShieldAlert, Zap, CheckCircle, BarChart2, Activity, FlaskConical,
@@ -25,6 +27,12 @@ type Pick = {
   summary?: string; quality_factors?: QualityFactors; factor_zscores?: FactorZScores;
   combined_alpha?: number; portfolio_weight?: number; regime_label?: string;
   score_band?: string; horizon: string;
+  // Release 12A generation-reference provenance (absent on legacy picks)
+  generated_at?: string | null;
+  generation_reference_price?: number | null;
+  generation_reference_source?: string | null;
+  generation_reference_price_basis?: string | null;
+  generation_reference_as_of?: string | null;
 };
 
 type AlphaEngineMeta = { ic_weights?: Record<string, number>; regime?: string; n_scored?: number; n_buy?: number; meta_model?: boolean };
@@ -377,12 +385,39 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
   // generation-time pick.price — a live-updating number beside a frozen
   // percentage that silently contradicted it.
   const { basis: priceBasis, price: displayPrice } = selectPriceBasis(livePrice, pick.price);
-  const upsidePct = computeEstimatedUpsidePct(pick.target, displayPrice);
   const showGenerationPriceLine =
     priceBasis === "current" && isValidPrice(pick.price) && Math.abs(displayPrice! - pick.price) > 0.01;
-  const entryZonePassed =
-    livePrice != null && pick.entry_low != null && pick.entry_high != null &&
-    (livePrice < pick.entry_low || livePrice > pick.entry_high);
+
+  // Release 12A: an entry-zone "moved since generation" claim requires PROOF —
+  // a provider-timestamped quote newer than the pick, on a compatible price
+  // basis, in a known session. Everything else gets a conservative state.
+  const actionability = evaluateEntryZoneActionability({
+    generationBasis: pick.generation_reference_price_basis,
+    generatedAt: pick.generated_at,
+    entryLow: pick.entry_low,
+    entryHigh: pick.entry_high,
+    quotePrice: livePrice,
+    quoteBasis: liveQuote?.quote_price_basis,
+    quoteTimestamp: liveQuote?.quote_timestamp,
+    marketOpen: getMarketStatus(market).isOpen,
+  });
+  const verifiedOutside = isVerifiedOutsideEntryZone(actionability);
+  const quoteComparable = isQuoteVerifiedComparable(actionability);
+  // A quote exists and visibly differs from the generation reference, but its
+  // comparability is unproven — say so neutrally, never claim movement.
+  const unverifiedQuoteDiffers =
+    !quoteComparable && livePrice != null && isValidPrice(pick.price) &&
+    Math.abs(livePrice - pick.price) > 0.01 &&
+    pick.entry_low != null && pick.entry_high != null;
+
+  // Upside basis: "from current price" only when the quote is proven
+  // comparable; otherwise fall back to the frozen generation reference, or
+  // suppress when no valid basis exists at all.
+  const upsideFromCurrent = quoteComparable && priceBasis === "current";
+  const upsideBasisPrice = upsideFromCurrent
+    ? displayPrice
+    : (isValidPrice(pick.price) ? pick.price : (priceBasis === "current" ? null : displayPrice));
+  const upsidePct = computeEstimatedUpsidePct(pick.target, upsideBasisPrice);
   const sector = pick.quality_factors?.sector;
   const piotroski = pick.quality_factors?.piotroski;
   const grouped: Record<string, ReasonItem[]> = {};
@@ -429,9 +464,9 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
             {upsidePct != null ? (
               <div className={clsx("text-xs font-medium", upsidePct >= 0 ? "text-green-400" : "text-yellow-400")}>
                 {upsidePct >= 0 ? "+" : ""}{upsidePct.toFixed(1)}% est. upside
-                {showGenerationPriceLine
+                {upsideFromCurrent
                   ? " (from current price)"
-                  : priceBasis === "generation" ? " (from generation price)" : ""}
+                  : showGenerationPriceLine || priceBasis === "generation" ? " (from generation price)" : ""}
               </div>
             ) : (
               <div className="text-[10px] text-gray-500">Estimated upside unavailable</div>
@@ -439,10 +474,20 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
           </div>
         </div>
 
-        {entryZonePassed && (
+        {verifiedOutside && (
           <div className="mb-3 flex items-center gap-1.5 text-[11px] text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 rounded-lg px-2.5 py-1.5">
             <AlertCircle size={11} className="shrink-0" />
-            Price has moved {livePrice! > pick.entry_high! ? "above" : "below"} the entry zone since this was generated — may no longer be actionable as shown.
+            {actionability === "verified_above_entry_zone"
+              ? "Current verified quote is above the entry zone — the original entry may no longer be actionable."
+              : "Current verified quote is below the entry zone — reassess before acting."}
+          </div>
+        )}
+        {!verifiedOutside && unverifiedQuoteDiffers && (
+          <div className="mb-3 flex items-center gap-1.5 text-[11px] text-gray-400 bg-dark-border/40 rounded-lg px-2.5 py-1.5">
+            <AlertCircle size={11} className="shrink-0" />
+            {actionability === "market_closed_unverified"
+              ? "Market closed — entry-zone status will refresh when a newer comparable market quote is available."
+              : "Latest quote differs from the generation reference. Entry-zone status cannot be verified until a comparable, timestamped market quote is available."}
           </div>
         )}
 
@@ -457,9 +502,9 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
         </div>
 
         <div className="grid grid-cols-3 gap-2 mb-3">
-          <div className={clsx("rounded-lg p-2 text-center", entryZonePassed ? "bg-yellow-500/10 border border-yellow-500/30" : "bg-dark-border/40")}>
-            <p className="text-[10px] text-gray-500 mb-0.5">Entry Zone{entryZonePassed && " (passed)"}</p>
-            <p className={clsx("text-xs font-mono", entryZonePassed ? "text-yellow-400 line-through" : "text-white")}>
+          <div className={clsx("rounded-lg p-2 text-center", verifiedOutside ? "bg-yellow-500/10 border border-yellow-500/30" : "bg-dark-border/40")}>
+            <p className="text-[10px] text-gray-500 mb-0.5">Entry Zone{verifiedOutside && " (passed)"}</p>
+            <p className={clsx("text-xs font-mono", verifiedOutside ? "text-yellow-400 line-through" : "text-white")}>
               {pick.entry_low && pick.entry_high
                 ? `${currency}${pick.entry_low.toLocaleString(locale)}–${pick.entry_high.toLocaleString(locale)}`
                 : `${currency}${pick.price?.toLocaleString(locale)}`}

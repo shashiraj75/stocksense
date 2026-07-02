@@ -544,6 +544,15 @@ def _predict_stock(symbol: str, horizon: str, market: str = "IN") -> dict | None
             "stop_loss":   trade.get("stop_loss"),
             "entry_low":   trade.get("entry_low"),
             "entry_high":  trade.get("entry_high"),
+            # Release 12A: generation-reference provenance (additive; legacy
+            # picks simply lack these keys). Lets the UI prove — instead of
+            # assume — that a later quote is comparable before claiming the
+            # price "moved" out of the entry zone.
+            "generated_at": result.get("generated_at"),
+            "generation_reference_price": (result.get("price_reference") or {}).get("price"),
+            "generation_reference_source": (result.get("price_reference") or {}).get("source"),
+            "generation_reference_price_basis": (result.get("price_reference") or {}).get("price_basis"),
+            "generation_reference_as_of": (result.get("price_reference") or {}).get("as_of"),
             "risk_reward": trade.get("risk_reward_ratio"),
             "confidence":  result.get("confidence"),
             # Raw factor scores — kept for cross-sectional z-scoring
