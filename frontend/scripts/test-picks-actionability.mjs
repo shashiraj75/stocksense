@@ -30,8 +30,11 @@ try {
   const test = (name, fn) => { fn(); n += 1; console.log(`  ok - ${name}`); };
 
   const NOW = new Date("2026-07-02T10:05:00Z");
+  // Release 12A1: verification requires an IDENTICAL known price basis, so
+  // the canonical verifiable fixture is same-basis on both sides.
   const base = {
-    generationBasis: "adjusted_close",
+    generationBasis: "last_traded_unadjusted",
+    generationPrice: 3097,
     generatedAt: "2026-07-01T20:36:00Z",
     entryLow: 3090, entryHigh: 3105,
     quotePrice: 3175.4,
@@ -56,11 +59,15 @@ try {
     }
   });
 
-  // 3. Market closed with unverifiable comparability → closed state, no warning.
-  test("market closed without proof yields market_closed_unverified", () => {
-    const s = evaluateEntryZoneActionability({ ...base, quoteTimestamp: null, marketOpen: false });
-    assert.equal(s, "market_closed_unverified");
-    assert.equal(isVerifiedOutsideEntryZone(s), false);
+  // 3. Market closed → neutral closed state, no warning — even when the
+  //    quote is newer, same-basis, and differs (Rule 3: verification
+  //    requires an open session).
+  test("market closed is always neutral, never verified", () => {
+    for (const quoteTimestamp of [null, "2026-07-02T10:00:00Z"]) {
+      const s = evaluateEntryZoneActionability({ ...base, quoteTimestamp, marketOpen: false });
+      assert.equal(s, "market_closed_unverified", `ts=${quoteTimestamp}`);
+      assert.equal(isVerifiedOutsideEntryZone(s), false);
+    }
   });
 
   // 4. Incompatible or unknown price basis → incomparable, no warning.
@@ -69,8 +76,46 @@ try {
       const s = evaluateEntryZoneActionability({ ...base, quoteBasis });
       assert.equal(s, "quote_incomparable", `basis=${quoteBasis}`);
     }
-    const s = evaluateEntryZoneActionability({ ...base, generationBasis: "raw_close" });
-    assert.equal(s, "quote_incomparable");
+    const s = evaluateEntryZoneActionability({ ...base, generationBasis: "raw_close", quoteBasis: "raw_close" });
+    assert.equal(s, "quote_incomparable"); // same but UNKNOWN basis is still unproven
+  });
+
+  // 4b. THE Release 12A1 critical case: adjusted generation reference vs
+  //     unadjusted exchange quote — newer timestamp, open market, fresh,
+  //     outside the zone — must be incomparable in BOTH directions. A
+  //     corporate action between generation and viewing makes these
+  //     economically different numbers; no verified warning, no strike-
+  //     through, no "from current price" label may appear.
+  test("adjusted vs unadjusted cross-basis pair is never verified", () => {
+    const crossA = evaluateEntryZoneActionability({
+      ...base, generationBasis: "adjusted_close", quoteBasis: "last_traded_unadjusted",
+    });
+    const crossB = evaluateEntryZoneActionability({
+      ...base, generationBasis: "last_traded_unadjusted", quoteBasis: "adjusted_close",
+    });
+    for (const s of [crossA, crossB]) {
+      assert.equal(s, "quote_incomparable");
+      assert.equal(isVerifiedOutsideEntryZone(s), false);
+      assert.equal(isQuoteVerifiedComparable(s), false);
+    }
+  });
+
+  // 4c. Same-basis material-divergence guard: a split-style gap (>20% from
+  //     the generation reference) is never presented as verified, even with
+  //     every other condition passing — e.g. a 1:2 split halves the quote.
+  test("material divergence beyond guard is never verified", () => {
+    const split = evaluateEntryZoneActionability({ ...base, quotePrice: 1548.5 }); // ~-50%
+    assert.equal(split, "quote_incomparable");
+    assert.equal(isQuoteVerifiedComparable(split), false);
+    const spike = evaluateEntryZoneActionability({ ...base, quotePrice: 3097 * 1.25 }); // +25%
+    assert.equal(spike, "quote_incomparable");
+  });
+
+  // 4d. Divergence just inside the guard verifies normally when everything
+  //     else passes (guard absorbs corporate actions, not genuine breaches).
+  test("divergence just under the guard still verifies", () => {
+    const s = evaluateEntryZoneActionability({ ...base, quotePrice: 3097 * 1.19 }); // +19%
+    assert.equal(s, "verified_above_entry_zone");
   });
 
   // 5. Fully verified quote above the zone → verified above state.
@@ -96,12 +141,17 @@ try {
   });
 
   // 8. Unknown/legacy metadata renders safely: no basis, no generated_at,
-  //    malformed generated_at, or missing entry zone.
+  //    malformed generated_at, missing entry zone, or missing/invalid
+  //    generation reference price.
   test("legacy or unknown metadata is always the legacy state", () => {
     assert.equal(evaluateEntryZoneActionability({ ...base, generationBasis: null }), "legacy_reference_unknown");
     assert.equal(evaluateEntryZoneActionability({ ...base, generatedAt: null }), "legacy_reference_unknown");
     assert.equal(evaluateEntryZoneActionability({ ...base, generatedAt: "not-a-date" }), "legacy_reference_unknown");
     assert.equal(evaluateEntryZoneActionability({ ...base, entryLow: null }), "legacy_reference_unknown");
+    for (const generationPrice of [null, undefined, 0, -1, NaN]) {
+      assert.equal(evaluateEntryZoneActionability({ ...base, generationPrice }),
+        "legacy_reference_unknown", `refPrice=${generationPrice}`);
+    }
   });
 
   // 9. Legacy picks (no provenance) can never show a movement claim even

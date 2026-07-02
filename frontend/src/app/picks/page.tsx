@@ -393,6 +393,7 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
   // basis, in a known session. Everything else gets a conservative state.
   const actionability = evaluateEntryZoneActionability({
     generationBasis: pick.generation_reference_price_basis,
+    generationPrice: pick.generation_reference_price,
     generatedAt: pick.generated_at,
     entryLow: pick.entry_low,
     entryHigh: pick.entry_high,

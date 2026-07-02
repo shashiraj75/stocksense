@@ -29,6 +29,7 @@ export type ActionabilityState =
 export interface ActionabilityInput {
   /** Persisted generation reference (Release 12A provenance fields). */
   generationBasis: string | null | undefined;   // e.g. "adjusted_close"
+  generationPrice: number | null | undefined;   // reference price the zone was built from
   generatedAt: string | null | undefined;       // ISO timestamp of the pick
   entryLow: number | null | undefined;
   entryHigh: number | null | undefined;
@@ -46,16 +47,27 @@ export interface ActionabilityInput {
 export const QUOTE_MAX_AGE_MS = 15 * 60_000;
 
 /**
- * Price-basis compatibility. The generation reference's most recent daily
- * bar close equals the raw close at generation time, so an adjusted-close
- * reference is comparable with a last-traded unadjusted quote; anything
- * unknown or mismatched is not provably comparable.
+ * Release 12A1: a "verified comparable" claim may only ever cross-check a
+ * quote against a reference on the SAME known price basis. An adjusted
+ * daily close and an unadjusted last-traded price are NOT inherently
+ * comparable — a split, bonus issue, special dividend, or vendor/bar-date
+ * divergence between generation and viewing makes them economically
+ * different numbers even when the quote is newer, fresh, and the market is
+ * open. No corporate-action detection exists here, so the cross-basis pair
+ * is conservatively incomparable until a provably corporate-action-safe
+ * method exists.
  */
-const COMPATIBLE_BASES = new Set([
-  "adjusted_close|last_traded_unadjusted",
-  "adjusted_close|adjusted_close",
-  "last_traded_unadjusted|last_traded_unadjusted",
-]);
+const KNOWN_BASES = new Set(["adjusted_close", "last_traded_unadjusted"]);
+
+/**
+ * Same-basis material-divergence truthfulness guard. NOT a trading
+ * threshold and NOT a market-circuit claim: a quote differing from the
+ * generation reference by more than this is not automatically wrong, but it
+ * is consistent with a corporate action, a stale/mismatched bar date, or a
+ * gross vendor fault — so it is not safe enough to present as a VERIFIED
+ * comparable quote. Deterministic and currency-agnostic (relative ratio).
+ */
+export const MAX_VERIFIED_REFERENCE_DIVERGENCE_PCT = 20;
 
 function parseIso(raw: string | null | undefined): Date | null {
   if (!raw) return null;
@@ -71,13 +83,21 @@ export function evaluateEntryZoneActionability(input: ActionabilityInput): Actio
 
   // Legacy picks lack the Release 12A provenance fields — never claim
   // movement for them.
-  if (!input.generationBasis || !input.generatedAt) return "legacy_reference_unknown";
+  if (!input.generationBasis || !input.generatedAt ||
+      input.generationPrice == null || !Number.isFinite(input.generationPrice) ||
+      input.generationPrice <= 0) {
+    return "legacy_reference_unknown";
+  }
 
   const generated = parseIso(input.generatedAt);
   if (!generated) return "legacy_reference_unknown";
 
+  // Rule 1 (Release 12A1): only an IDENTICAL known price basis is
+  // comparable. Cross-basis pairs (adjusted vs unadjusted, either
+  // direction) and unknown bases are conservatively incomparable.
   if (!input.quoteBasis ||
-      !COMPATIBLE_BASES.has(`${input.generationBasis}|${input.quoteBasis}`)) {
+      input.quoteBasis !== input.generationBasis ||
+      !KNOWN_BASES.has(input.quoteBasis)) {
     return "quote_incomparable";
   }
 
@@ -92,12 +112,20 @@ export function evaluateEntryZoneActionability(input: ActionabilityInput): Actio
     return input.marketOpen === false ? "market_closed_unverified" : "quote_timestamp_unknown";
   }
 
-  // Session must be known; while open, the quote must also be fresh.
+  // Rule 3: verification requires a known, OPEN session; while open, the
+  // quote must also be fresh.
   if (input.marketOpen === null) return "quote_timestamp_unknown";
-  if (input.marketOpen === true) {
-    const now = input.now ?? new Date();
-    if (now.getTime() - quoteTime.getTime() > QUOTE_MAX_AGE_MS) return "quote_timestamp_unknown";
-  }
+  if (input.marketOpen === false) return "market_closed_unverified";
+  const now = input.now ?? new Date();
+  if (now.getTime() - quoteTime.getTime() > QUOTE_MAX_AGE_MS) return "quote_timestamp_unknown";
+
+  // Rule 2: same-basis material-divergence guard — a gap this large is
+  // consistent with a corporate action or vendor/bar-date fault, so it is
+  // never presented as a verified comparison. Truthfulness-only: it changes
+  // no model output.
+  const divergencePct =
+    Math.abs(quotePrice - input.generationPrice) / input.generationPrice * 100;
+  if (divergencePct > MAX_VERIFIED_REFERENCE_DIVERGENCE_PCT) return "quote_incomparable";
 
   if (quotePrice > entryHigh) return "verified_above_entry_zone";
   if (quotePrice < entryLow) return "verified_below_entry_zone";
