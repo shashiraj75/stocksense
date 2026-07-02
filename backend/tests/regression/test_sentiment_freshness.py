@@ -259,3 +259,183 @@ def test_reasoning_no_longer_claims_unverified_recent_news():
 
 def test_policy_constants_are_centralized():
     assert SENTIMENT_MAX_AGE_DAYS == {"short": 3, "medium": 14, "long": 30, "general": 14}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Release 7 follow-up — unavailable sentiment is MISSING ranking evidence
+# (None → z = 0.0), never an active numeric 50 in the Daily Picks cross-section.
+# ═════════════════════════════════════════════════════════════════════════════
+
+from unittest.mock import patch
+
+_IC_EQ = {"tech": 0.25, "fund": 0.25, "sentiment": 0.25, "quality": 0.25}
+_REGIME = {"label": "BULL_CALM"}
+
+
+def _rank_row(symbol: str, sentiment_score, tech=50.0, fund=50.0, quality=50.0) -> dict:
+    return {"symbol": symbol, "horizon": "medium", "tech_score": tech,
+            "fund_score": fund, "quality_score": quality,
+            "sentiment_score": sentiment_score}
+
+
+def _rank(items):
+    import services.daily_picks as dp
+    with patch("services.alpha_engine.meta_model.predict", return_value=None):
+        return dp._zscore_and_rank([dict(r) for r in items], _IC_EQ, _REGIME, 0, market="IN")
+
+
+def _fixture_prediction(sent: dict) -> dict:
+    return {
+        "company_name": "TEST", "signal": "BUY", "current_price": 100.0,
+        "target_price": 110.0, "confidence": 70, "trade_levels": {},
+        "technical": {"score": 60}, "fundamental_score": {"score": 55},
+        "sentiment_score": sent, "quality_factors": {"score": 58},
+        "reasoning": [], "score_band": None, "global_context": {},
+        "market_regime": {}, "composite_score": 62.0, "confidence_score": 70,
+    }
+
+
+def _run_predict_stock(sent: dict) -> dict:
+    """Drive the real _predict_stock with a mocked engine and no sleeping."""
+    import services.daily_picks as dp
+
+    class _FakeEngine:
+        async def predict(self, symbol, market, horizon):
+            return _fixture_prediction(sent)
+
+    with patch("services.daily_picks.PredictionEngine", return_value=_FakeEngine()), \
+         patch("services.daily_picks.time.sleep"):
+        row = dp._predict_stock("TEST", "medium", "IN")
+    assert row is not None
+    return row
+
+
+# Test 1 — unavailable sentiment becomes None before ranking
+def test_unavailable_sentiment_becomes_none_in_ranking_row():
+    row = _run_predict_stock({"score": 50, "label": "NEUTRAL", "bullish": 0,
+                              "bearish": 0, "data_available": False})
+    assert row["sentiment_score"] is None      # NOT 50
+    assert row["sentiment"] == "NEUTRAL"       # badge label preserved (no badge)
+
+    fresh = _run_predict_stock({"score": 75, "label": "BULLISH", "bullish": 3,
+                                "bearish": 1, "data_available": True})
+    assert fresh["sentiment_score"] == 75.0    # fresh stays numeric
+
+
+def test_non_finite_sentiment_scores_also_become_none():
+    # Realistic malformed numerics: NaN/±Infinity. (None or non-numeric types
+    # are unreachable from the sentiment service — it always emits a numeric
+    # score — and would trip a pre-existing comparison in _build_summary
+    # before reaching ranking; deliberately not exercised to keep this
+    # release's scope narrow. The extraction guard covers them regardless.)
+    for bad in [float("nan"), float("inf"), float("-inf")]:
+        row = _run_predict_stock({"score": bad, "label": "NEUTRAL", "data_available": True})
+        assert row["sentiment_score"] is None, f"score={bad!r}"
+
+
+# Test 2 — unavailable sentiment z-score is exactly 0.0
+def test_unavailable_sentiment_z_is_zero_and_contributes_nothing():
+    rows = _rank([
+        _rank_row("FRESH_HI", 80.0),
+        _rank_row("FRESH_LO", 40.0),
+        _rank_row("STALE", None),
+    ])
+    stale = next(r for r in rows if r["symbol"] == "STALE")
+    assert stale["factor_zscores"]["sentiment"] == 0.0
+    # All other factors identical (all 50) → its alpha must be exactly the
+    # non-sentiment part, i.e. sentiment contributed 0.25 * 0.0 = 0.0.
+    hi = next(r for r in rows if r["symbol"] == "FRESH_HI")
+    sent_part_hi = 0.25 * hi["factor_zscores"]["sentiment"]
+    assert abs((hi["combined_alpha"] - sent_part_hi) - stale["combined_alpha"]) < 1e-6
+
+
+# Test 3 — unavailable row does not distort fresh rows' statistics
+def test_unavailable_row_excluded_from_sentiment_statistics():
+    with_stale = _rank([
+        _rank_row("A", 80.0), _rank_row("B", 40.0), _rank_row("C", None),
+    ])
+    without_stale = _rank([
+        _rank_row("A", 80.0), _rank_row("B", 40.0),
+    ])
+    for sym in ("A", "B"):
+        z_with = next(r for r in with_stale if r["symbol"] == sym)["factor_zscores"]["sentiment"]
+        z_without = next(r for r in without_stale if r["symbol"] == sym)["factor_zscores"]["sentiment"]
+        assert z_with == z_without, f"{sym}: {z_with} vs {z_without} — stale row distorted the cross-section"
+    # mean=60, std=20 → A: +1.0, B: -1.0 (locks the formula itself)
+    assert next(r for r in with_stale if r["symbol"] == "A")["factor_zscores"]["sentiment"] == 1.0
+    assert next(r for r in with_stale if r["symbol"] == "B")["factor_zscores"]["sentiment"] == -1.0
+
+
+# Test 4 — legacy compatibility score cannot affect rank
+def test_legacy_fallback_scores_produce_identical_zero_contribution():
+    row_50 = _run_predict_stock({"score": 50, "label": "NEUTRAL", "data_available": False})
+    row_95 = _run_predict_stock({"score": 95, "label": "NEUTRAL", "data_available": False})
+    assert row_50["sentiment_score"] is None and row_95["sentiment_score"] is None
+
+    ranked = _rank([
+        {**_rank_row("X50", None)},
+        {**_rank_row("X95", None)},
+        _rank_row("FRESH", 70.0),
+    ])
+    z50 = next(r for r in ranked if r["symbol"] == "X50")
+    z95 = next(r for r in ranked if r["symbol"] == "X95")
+    assert z50["factor_zscores"]["sentiment"] == 0.0
+    assert z95["factor_zscores"]["sentiment"] == 0.0
+    assert z50["combined_alpha"] == z95["combined_alpha"]
+
+
+# Test 5 — fresh eligible sentiment remains fully active
+def test_fresh_sentiment_remains_active_ranking_evidence():
+    rows = _rank([
+        _rank_row("HI", 80.0), _rank_row("LO", 40.0),
+    ])
+    hi = next(r for r in rows if r["symbol"] == "HI")
+    lo = next(r for r in rows if r["symbol"] == "LO")
+    assert hi["factor_zscores"]["sentiment"] == 1.0    # (80-60)/20 — existing formula
+    assert lo["factor_zscores"]["sentiment"] == -1.0
+    assert hi["combined_alpha"] > lo["combined_alpha"]  # sentiment still differentiates rank
+
+
+# Test 6 — all sentiment unavailable is safe
+def test_all_unavailable_sentiment_population_is_safe():
+    import math
+    rows = _rank([
+        _rank_row("A", None), _rank_row("B", None), _rank_row("C", None),
+    ])
+    for r in rows:
+        z = r["factor_zscores"]["sentiment"]
+        assert z == 0.0
+        assert math.isfinite(r["combined_alpha"])
+    alphas = {r["combined_alpha"] for r in rows}
+    assert len(alphas) == 1  # sentiment creates no ranking differentiation
+
+
+# Test 7 — India and US parity
+def test_unavailable_sentiment_treatment_is_market_agnostic():
+    import services.daily_picks as dp
+    items = [_rank_row("A", 80.0), _rank_row("B", None)]
+    with patch("services.alpha_engine.meta_model.predict", return_value=None):
+        rows_in = dp._zscore_and_rank([dict(r) for r in items], _IC_EQ, _REGIME, 0, market="IN")
+        rows_us = dp._zscore_and_rank([dict(r) for r in items], _IC_EQ, _REGIME, 0, market="US")
+    for sym in ("A", "B"):
+        z_in = next(r for r in rows_in if r["symbol"] == sym)["factor_zscores"]["sentiment"]
+        z_us = next(r for r in rows_us if r["symbol"] == sym)["factor_zscores"]["sentiment"]
+        assert z_in == z_us
+
+
+# Test 8 — Wave 0C protections regression (badge/summary path re-locked with
+# the ranking-row conversion now in place)
+def test_wave0c_badge_and_summary_protections_still_hold():
+    stale_sent = ENGINE._aggregate_sentiment(
+        [_article(timedelta(days=335), "BULLISH")], horizon="long", now=NOW)
+    assert stale_sent["data_available"] is False
+    row = _run_predict_stock(stale_sent)
+    assert row["sentiment"] == "NEUTRAL"          # no 📰 Bullish News badge
+    assert row["sentiment_score"] is None         # no ranking evidence
+    assert "News sentiment is bullish" not in row["summary"]
+
+    fresh_sent = ENGINE._aggregate_sentiment(
+        [_article(timedelta(days=1), "BULLISH")], horizon="long", now=NOW)
+    fresh_row = _run_predict_stock(fresh_sent)
+    assert fresh_row["sentiment"] == "BULLISH"    # fresh news still behaves normally
+    assert fresh_row["sentiment_score"] == 100.0

@@ -501,7 +501,7 @@ def _predict_stock(symbol: str, horizon: str, market: str = "IN") -> dict | None
     caller can z-score cross-sectionally across the full universe.
     """
     try:
-        import asyncio, random
+        import asyncio, math, random
         # Small jitter between requests to avoid Yahoo Finance rate-limit bursts
         time.sleep(random.uniform(0.3, 0.8))
         engine = PredictionEngine()
@@ -519,6 +519,22 @@ def _predict_stock(symbol: str, horizon: str, market: str = "IN") -> dict | None
         trade = result.get("trade_levels", {})
         qf = result.get("quality_factors") or {}
 
+        # Wave 0C follow-up (Release Review 7): unavailable news sentiment must
+        # be MISSING ranking evidence, not a numeric 50. When data_available is
+        # False (stale-only/undated/no articles) — or the compatibility score is
+        # non-numeric/non-finite — store None so _zscore_and_rank excludes it
+        # from the sentiment cross-section and assigns z = 0.0 (zero rank
+        # influence). The service's compatibility score stays in the source
+        # response for non-ranking consumers; it never becomes rank evidence.
+        _sent = result.get("sentiment_score") or {}
+        _sent_raw = _sent.get("score")
+        _sent_available = (
+            _sent.get("data_available", True)
+            and isinstance(_sent_raw, (int, float))
+            and not isinstance(_sent_raw, bool)
+            and math.isfinite(_sent_raw)
+        )
+
         return {
             "symbol":      symbol,
             "name":        result.get("company_name", symbol),
@@ -533,9 +549,9 @@ def _predict_stock(symbol: str, horizon: str, market: str = "IN") -> dict | None
             # Raw factor scores — kept for cross-sectional z-scoring
             "tech_score":     result.get("technical", {}).get("score", 50),
             "fund_score":     result.get("fundamental_score", {}).get("score", 50),
-            "sentiment_score": result.get("sentiment_score", {}).get("score", 50),
+            "sentiment_score": float(_sent_raw) if _sent_available else None,
             "quality_score":  qf.get("score") or 50,
-            "sentiment":      result.get("sentiment_score", {}).get("label", "NEUTRAL"),
+            "sentiment":      _sent.get("label", "NEUTRAL"),
             "reasoning":      reasoning,
             "summary":        _build_summary(result, horizon, _CURRENCY.get(market, "₹")),
             "score_band":     result.get("score_band"),
@@ -646,7 +662,18 @@ def _zscore_and_rank(
         zscores: dict[str, float] = {}
         combined_alpha = 0.0
         for factor, key in _FACTOR_KEYS.items():
-            raw = float(row.get(key) or 50)
+            raw_val = row.get(key)
+            if raw_val is None:
+                # Missing evidence (today only sentiment can be None — set by
+                # _predict_stock when news data_available is False). z = 0.0 is
+                # "exactly average relative evidence": contributes nothing to
+                # combined_alpha and cannot move this stock's rank up or down.
+                # The stats pool above already excluded None rows, so it also
+                # cannot distort any other stock's z-score. Never coerce back
+                # to a numeric 50 — that placeholder is not evidence.
+                zscores[factor] = 0.0
+                continue
+            raw = float(raw_val or 50)
             mu, sigma = stats[factor]
             z = (raw - mu) / sigma
             zscores[factor] = round(z, 3)
