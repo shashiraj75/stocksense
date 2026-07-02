@@ -14,6 +14,42 @@
 
 export interface FreshnessGroupable {
   sentiment_eligible?: boolean;
+  company_sentiment_eligible?: boolean;
+}
+
+export interface RelevanceGroupedArticles<T extends FreshnessGroupable> {
+  /** Fresh AND company-specific — the only articles current company
+   *  sentiment may use. */
+  companyCurrent: T[];
+  /** Fresh but not company-specific (peer/sector/macro/unknown) — recent
+   *  context with zero company-sentiment weight. */
+  recentContext: T[];
+  /** Not freshness-eligible — historical context. */
+  historical: T[];
+  /** False when no article carries the Wave 0D1 relevance annotation (a
+   *  cached pre-0D1 payload) — the UI must then fall back to the Release 8
+   *  freshness-only grouping and make no company-inclusion claims. */
+  hasRelevanceData: boolean;
+}
+
+/**
+ * Wave 0D1 three-way grouping. Grouping keys ONLY on the backend's
+ * annotations — no relevance or freshness policy exists in the frontend.
+ */
+export function groupArticlesByRelevance<T extends FreshnessGroupable>(
+  articles: T[],
+): RelevanceGroupedArticles<T> {
+  const hasRelevanceData = articles.some(a => a.company_sentiment_eligible !== undefined);
+  if (!hasRelevanceData) {
+    return { companyCurrent: [], recentContext: [], historical: [], hasRelevanceData: false };
+  }
+  return {
+    companyCurrent: articles.filter(a => a.company_sentiment_eligible === true),
+    recentContext: articles.filter(
+      a => a.company_sentiment_eligible !== true && a.sentiment_eligible === true),
+    historical: articles.filter(a => a.sentiment_eligible !== true),
+    hasRelevanceData: true,
+  };
 }
 
 export interface GroupedArticles<T extends FreshnessGroupable> {

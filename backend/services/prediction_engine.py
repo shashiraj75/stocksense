@@ -768,7 +768,8 @@ class PredictionEngine:
             loop.run_in_executor(None, _get_valuation_intelligence),
         )
 
-        sentiment_score = self._aggregate_sentiment(news_data["articles"], horizon=horizon)
+        sentiment_score = self._aggregate_sentiment(
+            news_data["articles"], horizon=horizon, symbol=symbol, market=market)
 
         # Blend deep fundamentals for medium/long
         if deep_score_raw is not None:
@@ -1949,7 +1950,8 @@ class PredictionEngine:
         return {"score": max(0, min(100, score)), "reasons": reasons}
 
     def _aggregate_sentiment(self, articles: list, horizon: str | None = None,
-                             now=None) -> dict:
+                             now=None, symbol: str | None = None,
+                             market: str | None = None) -> dict:
         """
         Aggregate CURRENT sentiment from age-eligible articles only
         (Wave 0C). Stale/undated articles were previously counted at full
@@ -1959,8 +1961,18 @@ class PredictionEngine:
         of fresh news is unavailable evidence (data_available=False, which
         the existing no-news weight-redistribution and confidence-exclusion
         paths already handle), never bullish, bearish, or fake-neutral.
+
+        Wave 0D1: when `symbol` is provided, fresh articles are additionally
+        qualified by the deterministic company-relevance classifier — only
+        fresh company_specific articles count. Fresh peer/sector/macro/
+        unknown articles are context with zero decision weight; a fresh set
+        with no company-specific article is unavailable evidence (never a
+        bullish boost, never a bearish penalty, never fake-neutral).
+        Freshness thresholds themselves are unchanged.
         """
-        from services.news_sentiment import split_articles_by_freshness
+        from services.news_sentiment import (
+            classify_article_relevance, split_articles_by_freshness,
+        )
 
         base = {"score": 50, "label": "NEUTRAL", "bullish": 0, "bearish": 0,
                 "total_article_count": len(articles or [])}
@@ -1968,6 +1980,7 @@ class PredictionEngine:
             # No news fetched at all — unavailable, not neutral evidence.
             return {**base, "data_available": False,
                     "eligible_article_count": 0, "historical_article_count": 0,
+                    "company_specific_article_count": 0,
                     "freshness_status": "no_articles",
                     "reason_unavailable": "No news articles were returned."}
 
@@ -1978,12 +1991,33 @@ class PredictionEngine:
         if not eligible:
             # Only stale/undated articles exist — insufficient fresh evidence.
             return {**base, "data_available": False,
+                    "company_specific_article_count": 0,
                     "freshness_status": "no_fresh_news",
                     "reason_unavailable": "Insufficient fresh news evidence — "
                                           "only historical articles are available."}
 
-        bullish = sum(1 for a in eligible if a.get("sentiment", {}).get("label") == "BULLISH")
-        bearish = sum(1 for a in eligible if a.get("sentiment", {}).get("label") == "BEARISH")
+        if symbol:
+            relevant = [
+                a for a in eligible
+                if classify_article_relevance(a.get("title", ""), a.get("description", ""),
+                                              symbol, market or "US")[0] == "company_specific"
+            ]
+        else:
+            # Backward-compatible path (no target identity supplied):
+            # freshness-only qualification, exactly as Wave 0C shipped.
+            relevant = eligible
+        base["company_specific_article_count"] = len(relevant)
+
+        if not relevant:
+            # Fresh articles exist but none is company-specific — contextual
+            # coverage only. Unavailable evidence, not a signal.
+            return {**base, "data_available": False,
+                    "freshness_status": "no_company_specific_news",
+                    "reason_unavailable": "Insufficient fresh company-specific news "
+                                          "evidence — recent articles are contextual only."}
+
+        bullish = sum(1 for a in relevant if a.get("sentiment", {}).get("label") == "BULLISH")
+        bearish = sum(1 for a in relevant if a.get("sentiment", {}).get("label") == "BEARISH")
         labeled = bullish + bearish
         # Use only labeled articles in the denominator — neutral articles should not
         # dilute bullish signal (5 bullish + 5 neutral ≠ 5 bullish + 5 bearish)

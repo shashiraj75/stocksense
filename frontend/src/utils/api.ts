@@ -127,6 +127,11 @@ export interface NewsArticle {
   // Optional: absent on payloads cached before the annotation shipped.
   sentiment_eligible?: boolean;
   eligibility_reason?: "fresh" | "stale" | "invalid_date" | "future_date";
+  // Backend-computed company-relevance verdict (Wave 0D1) — fresh AND
+  // primarily about this company. Optional: absent on older cached payloads.
+  company_sentiment_eligible?: boolean;
+  relevance_class?: string;
+  relevance_reason?: string;
 }
 
 // ─── API calls ────────────────────────────────────────────────
@@ -207,6 +212,8 @@ export const fetchNews = (symbol: string, market: Market) =>
       total_article_count?: number;
       eligible_article_count?: number;
       historical_article_count?: number;
+      company_specific_article_count?: number;
+      contextual_article_count?: number;
     }>(`/api/news/${symbol}`, { params: { market } })
     .then((r) => r.data);
 

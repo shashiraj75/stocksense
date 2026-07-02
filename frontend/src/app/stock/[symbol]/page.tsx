@@ -7,7 +7,7 @@ import { TradingViewWidget } from "@/components/TradingViewWidget";
 import { SignalBadge } from "@/components/SignalBadge";
 import { ConfidenceMeter } from "@/components/ConfidenceMeter";
 import { NewsCard } from "@/components/NewsCard";
-import { groupArticlesByEligibility } from "@/utils/newsDisplay";
+import { groupArticlesByEligibility, groupArticlesByRelevance } from "@/utils/newsDisplay";
 import { FactorAttributionWaterfall } from "@/components/FactorAttributionWaterfall";
 import { ConfidenceBreakdown } from "@/components/ConfidenceBreakdown";
 import { BullBearCase } from "@/components/BullBearCase";
@@ -1119,10 +1119,12 @@ export default function StockPage() {
 
           <section>
             <h2 className="text-lg font-semibold mb-3">News & Sentiment</h2>
-            {/* Wave 0C display truthfulness: separate articles the backend
-                marked eligible for current sentiment from historical context.
-                Grouping comes ONLY from the backend's sentiment_eligible
-                verdict — no duplicate age policy exists in the frontend. */}
+            {/* Wave 0C + 0D1 display truthfulness: separate fresh
+                company-specific articles (used in current company sentiment)
+                from recent contextual articles and historical context.
+                Grouping comes ONLY from the backend's sentiment_eligible /
+                company_sentiment_eligible verdicts — no duplicate freshness
+                or relevance policy exists in the frontend. */}
             {(() => {
               if (!news) {
                 return <p className="text-gray-500 text-sm animate-pulse">Fetching latest news…</p>;
@@ -1132,48 +1134,99 @@ export default function StockPage() {
                 return (
                   <div className="text-sm text-gray-500">
                     <p className="font-medium text-gray-400">News data unavailable</p>
-                    <p className="text-xs mt-1">No current or historical articles were returned for this stock.</p>
+                    <p className="text-xs mt-1">No current, contextual, or historical articles were returned for this stock.</p>
                   </div>
                 );
               }
-              const { current, historical, hasEligibilityData } = groupArticlesByEligibility(shown);
-              if (!hasEligibilityData) {
-                // Payload predates the eligibility annotation (older cached
-                // response) — render ungrouped and make no inclusion claims.
+              const legacy = groupArticlesByEligibility(shown);
+              if (!legacy.hasEligibilityData) {
+                // Payload predates all annotations (older cached response) —
+                // render ungrouped and make no inclusion claims.
                 return (
                   <div className="grid md:grid-cols-2 gap-3">
                     {shown.map((a, i) => <NewsCard key={i} article={a} />)}
                   </div>
                 );
               }
+              const rel = groupArticlesByRelevance(shown);
+              if (!rel.hasRelevanceData) {
+                // Release-8-era cached payload (freshness only, no relevance
+                // fields) — keep the exact Release 8 two-group rendering; no
+                // company-inclusion claims are possible or made.
+                return (
+                  <div className="space-y-4">
+                    {legacy.current.length > 0 ? (
+                      <div>
+                        <p className="text-sm font-medium text-gray-300">Current news sentiment</p>
+                        <p className="text-xs text-gray-500 mb-2">
+                          Based on {legacy.current.length} recent eligible article{legacy.current.length !== 1 ? "s" : ""}.
+                          {legacy.historical.length > 0 ? " Historical articles below are context only." : ""}
+                        </p>
+                        <div className="grid md:grid-cols-2 gap-3">
+                          {legacy.current.map((a, i) => <NewsCard key={`c-${i}`} article={a} />)}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-sm">
+                        <p className="font-medium text-gray-400">Insufficient fresh news evidence</p>
+                        <p className="text-xs text-gray-500">
+                          Historical articles are shown below for context only and are not used in the current signal.
+                        </p>
+                      </div>
+                    )}
+                    {legacy.historical.length > 0 && (
+                      <div>
+                        <p className="text-sm font-medium text-gray-400">
+                          Historical context — not used in current decisions
+                        </p>
+                        <div className="grid md:grid-cols-2 gap-3 mt-2">
+                          {legacy.historical.map((a, i) => <NewsCard key={`h-${i}`} article={a} />)}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              }
               return (
                 <div className="space-y-4">
-                  {current.length > 0 ? (
+                  {rel.companyCurrent.length > 0 ? (
                     <div>
-                      <p className="text-sm font-medium text-gray-300">Current news sentiment</p>
+                      <p className="text-sm font-medium text-gray-300">Current company news sentiment</p>
                       <p className="text-xs text-gray-500 mb-2">
-                        Based on {current.length} recent eligible article{current.length !== 1 ? "s" : ""}.
-                        {historical.length > 0 ? " Historical articles below are context only." : ""}
+                        Based on {rel.companyCurrent.length} recent company-specific article{rel.companyCurrent.length !== 1 ? "s" : ""}.
+                        {(rel.recentContext.length > 0 || rel.historical.length > 0)
+                          ? " Contextual and historical articles below are not used in the current company sentiment."
+                          : ""}
                       </p>
                       <div className="grid md:grid-cols-2 gap-3">
-                        {current.map((a, i) => <NewsCard key={`c-${i}`} article={a} />)}
+                        {rel.companyCurrent.map((a, i) => <NewsCard key={`cc-${i}`} article={a} />)}
                       </div>
                     </div>
                   ) : (
                     <div className="text-sm">
-                      <p className="font-medium text-gray-400">Insufficient fresh news evidence</p>
+                      <p className="font-medium text-gray-400">Insufficient fresh company-specific news evidence</p>
                       <p className="text-xs text-gray-500">
-                        Historical articles are shown below for context only and are not used in the current signal.
+                        Recent contextual and historical articles are shown below for reference only and are not used in the current company signal.
                       </p>
                     </div>
                   )}
-                  {historical.length > 0 && (
+                  {rel.recentContext.length > 0 && (
+                    <div>
+                      <p className="text-sm font-medium text-gray-400">
+                        Recent contextual news — not used in current company sentiment
+                      </p>
+                      <div className="grid md:grid-cols-2 gap-3 mt-2">
+                        {rel.recentContext.map((a, i) => <NewsCard key={`rc-${i}`} article={a} />)}
+                      </div>
+                    </div>
+                  )}
+                  {rel.historical.length > 0 && (
                     <div>
                       <p className="text-sm font-medium text-gray-400">
                         Historical context — not used in current decisions
                       </p>
                       <div className="grid md:grid-cols-2 gap-3 mt-2">
-                        {historical.map((a, i) => <NewsCard key={`h-${i}`} article={a} />)}
+                        {rel.historical.map((a, i) => <NewsCard key={`h-${i}`} article={a} />)}
                       </div>
                     </div>
                   )}

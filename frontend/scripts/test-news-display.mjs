@@ -23,7 +23,7 @@ try {
     `npx tsc src/utils/newsDisplay.ts --outDir ${JSON.stringify(outDir)} --module es2020 --target es2020 --strict --skipLibCheck`,
     { stdio: "inherit" },
   );
-  const { groupArticlesByEligibility, parseArticleDate } =
+  const { groupArticlesByEligibility, groupArticlesByRelevance, parseArticleDate } =
     await import(pathToFileURL(join(outDir, "newsDisplay.js")).href);
 
   let n = 0;
@@ -85,6 +85,52 @@ try {
   test("helpers are market-agnostic (no market parameter exists)", () => {
     assert.equal(groupArticlesByEligibility.length, 1);
     assert.equal(parseArticleDate.length, 1);
+  });
+
+  // ── Wave 0D1 three-way relevance grouping ──────────────────────────────
+  const companyFresh = { title: "cf", sentiment_eligible: true, company_sentiment_eligible: true };
+  const contextFresh = { title: "ctx", sentiment_eligible: true, company_sentiment_eligible: false };
+  const historicalArt = { title: "h", sentiment_eligible: false, company_sentiment_eligible: false };
+  const release8Only = { title: "r8", sentiment_eligible: true }; // pre-0D1 cached payload
+
+  // 7. Fresh company-specific → company-current group only.
+  test("company-specific fresh articles group under companyCurrent only", () => {
+    const g = groupArticlesByRelevance([companyFresh, contextFresh, historicalArt]);
+    assert.equal(g.hasRelevanceData, true);
+    assert.deepEqual(g.companyCurrent.map(a => a.title), ["cf"]);
+    assert.deepEqual(g.recentContext.map(a => a.title), ["ctx"]);
+    assert.deepEqual(g.historical.map(a => a.title), ["h"]);
+  });
+
+  // 8. Contextual-only fresh set → empty companyCurrent (drives the
+  //    "Insufficient fresh company-specific news evidence" section state).
+  test("contextual-only set yields empty companyCurrent group", () => {
+    const g = groupArticlesByRelevance([contextFresh, historicalArt]);
+    assert.equal(g.companyCurrent.length, 0);
+    assert.equal(g.recentContext.length, 1);
+    assert.equal(g.historical.length, 1);
+  });
+
+  // 9. Release-8-era payloads (freshness fields only, no relevance fields)
+  //    → hasRelevanceData=false, page falls back to the two-group Release 8
+  //    rendering; no company-inclusion claim is possible.
+  test("release-8 payloads without relevance fields make no company claims", () => {
+    const g = groupArticlesByRelevance([release8Only, { title: "r8b", sentiment_eligible: false }]);
+    assert.equal(g.hasRelevanceData, false);
+    assert.equal(g.companyCurrent.length, 0);
+  });
+
+  // 10. Fully-legacy payloads still short-circuit at the eligibility layer.
+  test("fully-legacy payloads remain ungrouped and claim-free", () => {
+    const e = groupArticlesByEligibility([{ title: "old1" }, { title: "old2" }]);
+    assert.equal(e.hasEligibilityData, false);
+    const g = groupArticlesByRelevance([{ title: "old1" }, { title: "old2" }]);
+    assert.equal(g.hasRelevanceData, false);
+  });
+
+  // 11. Relevance grouping is market-agnostic (no market parameter exists).
+  test("relevance grouping is market-agnostic", () => {
+    assert.equal(groupArticlesByRelevance.length, 1);
   });
 
   console.log(`\nnews-display regression: ${n} tests passed`);

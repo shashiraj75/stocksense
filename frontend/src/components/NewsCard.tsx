@@ -11,11 +11,14 @@ const SENTIMENT_STYLE: Record<string, string> = {
 
 export function NewsCard({ article }: { article: NewsArticle }) {
   const label = article.sentiment?.label ?? "NEUTRAL";
-  // Backend is the single source of truth for eligibility — never re-derive
-  // it from ages here. undefined = payload predates the annotation (e.g. a
-  // cached older response); make no inclusion/exclusion claim in that case.
+  // Backend is the single source of truth for eligibility AND relevance —
+  // never re-derive either here. undefined fields = payload predates the
+  // annotation (cached older response); make no inclusion/exclusion claim.
   const eligible = article.sentiment_eligible;
+  const companyEligible = article.company_sentiment_eligible;
   const isHistorical = eligible === false;
+  // Chip is secondary whenever the article is not company-sentiment eligible.
+  const chipSecondary = isHistorical || companyEligible === false;
 
   // Crash-safe date rendering: date-fns throws RangeError on invalid dates,
   // and "Invalid Date" text must never reach the user.
@@ -30,8 +33,16 @@ export function NewsCard({ article }: { article: NewsArticle }) {
       className="block p-4 rounded-xl bg-dark-card border border-dark-border hover:border-brand-500/50 transition-colors"
     >
       {/* Eligibility label first — visible text, not color alone, carries
-          the current-vs-historical meaning (accessibility requirement). */}
-      {eligible === true && (
+          the current-vs-context-vs-historical meaning (accessibility). */}
+      {companyEligible === true && (
+        <p className="text-[10px] text-gray-500 mb-1">Included in current company sentiment</p>
+      )}
+      {companyEligible === false && eligible === true && (
+        <p className="text-[10px] text-gray-500 mb-1">
+          Recent context — not used in current company sentiment
+        </p>
+      )}
+      {companyEligible === undefined && eligible === true && (
         <p className="text-[10px] text-gray-500 mb-1">Included in current sentiment</p>
       )}
       {isHistorical && (
@@ -45,9 +56,10 @@ export function NewsCard({ article }: { article: NewsArticle }) {
           className={clsx(
             "text-xs font-bold shrink-0",
             SENTIMENT_STYLE[label],
-            // On historical articles the chip is a historical classification,
-            // visually secondary to the context label above it.
-            isHistorical && "opacity-60",
+            // The chip is an article-level classification, visually
+            // secondary to the context label whenever the article is not
+            // company-sentiment eligible (historical or contextual).
+            chipSecondary && "opacity-60",
           )}
         >
           {label}
