@@ -18,6 +18,7 @@ Walk-forward guarantee: at each date t, only data available before t is used.
 No look-ahead bias — forward return is measured at t + horizon_days.
 """
 
+import logging
 import os
 import json
 import sqlite3
@@ -29,7 +30,10 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+from services.safe_errors import safe_error_message
 from services.technical_indicators import compute_indicators
+
+log = logging.getLogger(__name__)
 
 # ── Storage — Postgres (production) or SQLite (local dev) ────────────────────
 _USE_POSTGRES = bool(os.getenv("DATABASE_URL") and os.getenv("USE_POSTGRES", "0") == "1")
@@ -906,8 +910,8 @@ def get_latest_results(horizon: str | None = None, universe: str = "nifty100") -
         data = summary if isinstance(summary, dict) else json.loads(summary)
         return {"available": True, **data}
     except Exception as e:
-        import traceback
-        return {"available": False, "error": str(e), "trace": traceback.format_exc()}
+        return {"available": False, "error": safe_error_message(
+            log, "validation_engine.get_latest_results", e, "Validation data is temporarily unavailable.")}
 
 
 def get_per_stock_results(run_id: int | None = None, horizon: str = "medium", universe: str = "nifty100") -> list[dict]:

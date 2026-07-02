@@ -1,11 +1,15 @@
+import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import APIRouter, Query
 from services.screener_service import ScreenerService
 from services.heatmap_service import get_heatmap
+from services.safe_errors import safe_error_message
 from typing import Literal, Optional
 import yfinance as yf
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 svc = ScreenerService()
@@ -56,14 +60,14 @@ async def top_movers(market: Literal["US", "IN"] = Query("US")):
 
 @router.get("/heatmap")
 async def heatmap(market: Literal["US", "IN"] = Query("IN")):
-    import asyncio, traceback
+    import asyncio
     try:
         loop = asyncio.get_running_loop()
         sectors = await loop.run_in_executor(None, get_heatmap, market)
         return {"sectors": sectors}
     except Exception as e:
-        traceback.print_exc()
-        return {"sectors": [], "error": str(e)}
+        return {"sectors": [], "error": safe_error_message(
+            log, "screener.heatmap", e, "Heatmap data is temporarily unavailable.")}
 
 
 @router.get("/filter")

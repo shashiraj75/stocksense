@@ -156,7 +156,7 @@ export default function ValidationPage() {
     staleTime: 60_000,
   });
 
-  const { data: stockData } = useQuery<{ stocks: StockResult[] }>({
+  const { data: stockData } = useQuery<{ available?: boolean; stocks: StockResult[] }>({
     queryKey: ["validation-stocks", horizon, universe],
     queryFn: () => api.get(`/api/validation/results/stocks?horizon=${horizon}&universe=${universe}`).then(r => r.data),
     enabled: results?.available === true,
@@ -526,7 +526,12 @@ export default function ValidationPage() {
           )}
 
           {/* Per-stock table */}
-          {stockData?.stocks && stockData.stocks.length > 0 && (
+          {stockData?.available === false && (
+            <div className="bg-dark-card border border-dark-border rounded-xl p-5 text-xs text-gray-500">
+              Per-stock validation data is temporarily unavailable — this is not the same as zero BUY signals.
+            </div>
+          )}
+          {stockData?.stocks && stockData.available !== false && stockData.stocks.length > 0 && (
             <div className="bg-dark-card border border-dark-border rounded-xl p-5">
               <p className="text-sm font-semibold text-white mb-4">
                 Per-Stock Results ({stockData.stocks.filter(s => s.buy_signal_count > 0).length} stocks with BUY signals, sorted by BUY return)

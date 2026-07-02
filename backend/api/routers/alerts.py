@@ -2,6 +2,7 @@
 Price alerts — persisted in Postgres.
 Uses same "default" user_id pattern as watchlist and paper trading.
 """
+import logging
 import os
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -10,6 +11,9 @@ from typing import Literal
 
 from services.auth import require_owner
 from services.rate_limit import USER_DATA_RATE_LIMIT, limiter
+from services.safe_errors import safe_error_message
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/alerts", tags=["alerts"])
 
@@ -86,7 +90,8 @@ def get_alerts(request: Request, user_id: str, _owner: str = Depends(require_own
             for r in rows
         ]}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=safe_error_message(
+            log, "alerts.get_alerts", e, "Unable to load alerts right now. Please try again."))
 
 
 @router.post("/{user_id}")
@@ -104,7 +109,8 @@ def create_alert(request: Request, user_id: str, body: AlertCreate, _owner: str 
                 "targetPrice": body.target_price, "direction": body.direction,
                 "triggered": False, "createdAt": ""}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=safe_error_message(
+            log, "alerts.create_alert", e, "Unable to create the alert right now. Please try again."))
 
 
 @router.patch("/{user_id}/{alert_id}")
@@ -124,7 +130,8 @@ def update_alert(request: Request, user_id: str, alert_id: str, body: AlertTrigg
                 )
         return {"ok": True}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=safe_error_message(
+            log, "alerts.update_alert", e, "Unable to update the alert right now. Please try again."))
 
 
 @router.delete("/{user_id}/{alert_id}")
@@ -135,4 +142,5 @@ def delete_alert(request: Request, user_id: str, alert_id: str, _owner: str = De
             conn.execute("DELETE FROM price_alerts WHERE id = %s AND user_id = %s", (alert_id, user_id))
         return {"ok": True}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=safe_error_message(
+            log, "alerts.delete_alert", e, "Unable to delete the alert right now. Please try again."))

@@ -41,8 +41,10 @@ function SetPasswordForm() {
       const { error } = await supabase.auth.updateUser({ password });
       if (error) throw error;
       router.push(next);
-    } catch (err: any) {
-      setMessage({ type: "error", text: err.message });
+    } catch {
+      // Never surface the raw Supabase message — may include session/token
+      // internals the user can't act on and that don't belong in the UI.
+      setMessage({ type: "error", text: "Unable to update the password. Please request a new reset link and try again." });
     } finally {
       setLoading(false);
     }

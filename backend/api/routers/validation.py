@@ -1,10 +1,15 @@
 """
 Validation API — exposes walk-forward backtest results to the frontend.
 """
+import logging
 import numpy as np
 from fastapi import APIRouter, Query, BackgroundTasks
 from fastapi.responses import JSONResponse
 from typing import Literal
+
+from services.safe_errors import safe_error_message
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -73,8 +78,8 @@ def get_results(
     try:
         return _json_response(get_latest_results(horizon=horizon, universe=universe))
     except Exception as e:
-        import traceback
-        return _json_response({"available": False, "error": str(e), "trace": traceback.format_exc()})
+        return _json_response({"available": False, "error": safe_error_message(
+            log, "validation.get_results", e, "Validation data is temporarily unavailable.")})
 
 
 @router.get("/results/stocks")
@@ -85,9 +90,13 @@ def get_stock_results(
     """Per-stock hit rate and average return breakdown for the latest run."""
     from services.validation_engine import get_per_stock_results
     try:
-        return _json_response({"horizon": horizon, "stocks": get_per_stock_results(horizon=horizon, universe=universe)})
+        return _json_response({
+            "available": True, "horizon": horizon,
+            "stocks": get_per_stock_results(horizon=horizon, universe=universe),
+        })
     except Exception as e:
-        return _json_response({"horizon": horizon, "stocks": [], "error": str(e)})
+        return _json_response({"available": False, "horizon": horizon, "stocks": [], "error": safe_error_message(
+            log, "validation.get_stock_results", e, "Validation data is temporarily unavailable.")})
 
 
 @router.get("/results/stock/{symbol}")
@@ -105,9 +114,10 @@ def get_single_stock_accuracy(
             match = next((r for r in rows if r.get("symbol", "").upper() == symbol.upper()), None)
             if match:
                 all_results[h] = match
-        return _json_response({"symbol": symbol, "accuracy": all_results})
+        return _json_response({"available": True, "symbol": symbol, "accuracy": all_results})
     except Exception as e:
-        return _json_response({"symbol": symbol, "accuracy": {}, "error": str(e)})
+        return _json_response({"available": False, "symbol": symbol, "accuracy": {}, "error": safe_error_message(
+            log, "validation.get_single_stock_accuracy", e, "Validation data is temporarily unavailable.")})
 
 
 @router.get("/results/history")
@@ -115,6 +125,7 @@ def get_history():
     """List of all past validation runs with key summary metrics."""
     from services.validation_engine import get_all_run_summaries
     try:
-        return _json_response({"runs": get_all_run_summaries()})
+        return _json_response({"available": True, "runs": get_all_run_summaries()})
     except Exception as e:
-        return _json_response({"runs": [], "error": str(e)})
+        return _json_response({"available": False, "runs": [], "error": safe_error_message(
+            log, "validation.get_history", e, "Validation data is temporarily unavailable.")})

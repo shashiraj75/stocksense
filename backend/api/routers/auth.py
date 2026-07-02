@@ -1,9 +1,13 @@
+import logging
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from typing import Optional
 
 from services.auth import get_current_user_id, require_matching_body_user, require_owner
 from services.rate_limit import USER_DATA_RATE_LIMIT, limiter
+from services.safe_errors import safe_error_message
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -50,7 +54,8 @@ async def accept_terms(body: TermsAcceptance, request: Request, current_user_id:
                 )
             return {"status": "accepted", "terms_version": body.terms_version}
         except Exception as e:
-            return {"status": "error", "detail": str(e)}
+            return {"status": "error", "detail": safe_error_message(
+                log, "auth.accept_terms", e, "Unable to record acceptance right now. Please try again.")}
 
     return {"status": "accepted", "terms_version": body.terms_version}
 

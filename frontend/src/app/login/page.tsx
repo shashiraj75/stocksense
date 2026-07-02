@@ -33,8 +33,11 @@ function LoginForm() {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
       router.push("/accept-terms");
-    } catch (err: any) {
-      setMessage({ type: "error", text: err.message });
+    } catch {
+      // Never surface the raw Supabase message here — it can distinguish
+      // "wrong password" from "no account with this email," which lets an
+      // attacker enumerate registered emails. Same neutral wording for both.
+      setMessage({ type: "error", text: "Unable to sign in with those details. Please try again." });
     } finally {
       setLoading(false);
     }
@@ -44,15 +47,19 @@ function LoginForm() {
     e.preventDefault();
     setLoading(true);
     setMessage(null);
+    // Same neutral message on success and failure — Supabase's own
+    // resetPasswordForEmail already avoids confirming whether the address
+    // is registered, but any error path here (rate limit, provider hiccup,
+    // etc.) must not deviate from that or it would leak the same signal
+    // through a different door.
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      await supabase.auth.resetPasswordForEmail(email, {
         redirectTo: `${window.location.origin}/auth/callback`,
       });
-      if (error) throw error;
-      setMessage({ type: "success", text: "Password reset link sent — check your inbox." });
-    } catch (err: any) {
-      setMessage({ type: "error", text: err.message });
+    } catch {
+      // Swallow — see comment above: the outcome message must not change.
     } finally {
+      setMessage({ type: "success", text: "If an account matches that email address, password-reset instructions will be sent." });
       setLoading(false);
     }
   };

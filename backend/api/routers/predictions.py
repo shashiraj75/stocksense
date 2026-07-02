@@ -75,7 +75,8 @@ def _bg_thread(sym: str, market: str, horizon: str, key: str) -> None:
     except Exception as e:
         import traceback
         _bglog(f"[bg_thread] EXCEPTION {key}: {type(e).__name__}: {e}\n{traceback.format_exc()[-500:]}")
-        err = {"error": f"Prediction failed: {type(e).__name__}. Please retry."}
+        log.exception(f"[predictions.bg_thread] prediction failed for {key}")
+        err = {"error": "Prediction data is temporarily unavailable. Please try again."}
         _short_ts = time.time() - (_PRED_TTL - 120)
         from services.prediction_engine import _cache_set
         _cache_set(_pred_cache, key, (_short_ts, err))

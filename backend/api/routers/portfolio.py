@@ -4,6 +4,7 @@ the same logged-in user. Previously stored entirely in the browser's
 localStorage, which meant a holding added on one device was invisible on any
 other device or browser for that same account.
 """
+import logging
 import os
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -12,6 +13,9 @@ from typing import Literal
 
 from services.auth import require_owner
 from services.rate_limit import USER_DATA_RATE_LIMIT, limiter
+from services.safe_errors import safe_error_message
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 
@@ -93,7 +97,8 @@ def get_holdings(request: Request, user_id: str, _owner: str = Depends(require_o
             for r in rows
         ]}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=safe_error_message(
+            log, "portfolio.get_holdings", e, "Unable to load your portfolio right now. Please try again."))
 
 
 @router.post("/{user_id}")
@@ -110,7 +115,8 @@ def add_holding(request: Request, user_id: str, body: HoldingCreate, _owner: str
         return {"id": holding_id, "symbol": body.symbol.upper(), "market": body.market,
                 "qty": body.qty, "avgPrice": body.avg_price}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=safe_error_message(
+            log, "portfolio.add_holding", e, "Unable to add the holding right now. Please try again."))
 
 
 @router.post("/{user_id}/import")
@@ -170,7 +176,8 @@ def import_holdings(request: Request, user_id: str, body: ImportRequest, _owner:
                     added += 1
         return {"added": added, "updated": updated, "cleaned_up": cleaned_up, "total": len(body.holdings)}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=safe_error_message(
+            log, "portfolio.import_holdings", e, "Unable to import your holdings right now. Please try again."))
 
 
 @router.patch("/{user_id}/{holding_id}")
@@ -184,7 +191,8 @@ def update_holding(request: Request, user_id: str, holding_id: str, body: Holdin
             )
         return {"ok": True}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=safe_error_message(
+            log, "portfolio.update_holding", e, "Unable to update your portfolio right now. Please try again."))
 
 
 @router.delete("/{user_id}/{holding_id}")
@@ -198,4 +206,5 @@ def delete_holding(request: Request, user_id: str, holding_id: str, _owner: str 
             )
         return {"ok": True}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=safe_error_message(
+            log, "portfolio.delete_holding", e, "Unable to remove the holding right now. Please try again."))
