@@ -23,7 +23,8 @@ try {
     `npx tsc src/utils/actionability.ts --outDir ${JSON.stringify(outDir)} --module es2020 --target es2020 --strict --skipLibCheck`,
     { stdio: "inherit" },
   );
-  const { evaluateEntryZoneActionability, isQuoteVerifiedComparable, isVerifiedOutsideEntryZone } =
+  const { evaluateEntryZoneActionability, isQuoteVerifiedComparable, isVerifiedOutsideEntryZone,
+          selectUnverifiedEntryZoneNote, MARKET_CLOSED_NOTE, QUOTE_UNVERIFIED_NOTE } =
     await import(pathToFileURL(join(outDir, "actionability.js")).href);
 
   let n = 0;
@@ -205,6 +206,62 @@ try {
     for (const quotePrice of [null, undefined, NaN]) {
       assert.equal(evaluateEntryZoneActionability({ ...base, quotePrice }), "quote_unavailable");
     }
+  });
+
+  // ── Release 12A2: closed-market display priority (presentation only) ──
+
+  // 14. Market closed + cross-basis quote: internal state stays
+  //     quote_incomparable, but the DISPLAYED note is the closed-market
+  //     guidance — and no verified affordance can appear.
+  test("closed market + cross-basis shows closed-market note", () => {
+    const s = evaluateEntryZoneActionability({
+      ...base, generationBasis: "adjusted_close", quoteBasis: "last_traded_unadjusted",
+      marketOpen: false,
+    });
+    assert.equal(s, "quote_incomparable");             // state machine unchanged
+    assert.equal(selectUnverifiedEntryZoneNote(s, false), MARKET_CLOSED_NOTE);
+    assert.equal(isVerifiedOutsideEntryZone(s), false); // no warning/strike/(passed)
+    assert.equal(isQuoteVerifiedComparable(s), false);  // no "from current price"
+  });
+
+  // 15. Market closed + same-basis quote without timestamp: closed note.
+  test("closed market + timestampless same-basis quote shows closed note", () => {
+    const s = evaluateEntryZoneActionability({ ...base, quoteTimestamp: null, marketOpen: false });
+    assert.equal(s, "market_closed_unverified");
+    assert.equal(selectUnverifiedEntryZoneNote(s, false), MARKET_CLOSED_NOTE);
+  });
+
+  // 16. Market closed + legacy pick: closed note, no verified behavior.
+  test("closed market + legacy pick shows closed note", () => {
+    const s = evaluateEntryZoneActionability({
+      ...base, generationBasis: undefined, generatedAt: undefined, marketOpen: false,
+    });
+    assert.equal(s, "legacy_reference_unknown");
+    assert.equal(selectUnverifiedEntryZoneNote(s, false), MARKET_CLOSED_NOTE);
+    assert.equal(isQuoteVerifiedComparable(s), false);
+  });
+
+  // 17. Market open + cross-basis quote: the technical incomparable wording
+  //     stays (it is the operative fact while trading is live).
+  test("open market + cross-basis keeps technical wording", () => {
+    const s = evaluateEntryZoneActionability({
+      ...base, generationBasis: "adjusted_close", quoteBasis: "last_traded_unadjusted",
+    });
+    assert.equal(s, "quote_incomparable");
+    assert.equal(selectUnverifiedEntryZoneNote(s, true), QUOTE_UNVERIFIED_NOTE);
+    // Unknown market state also keeps the technical wording, never the
+    // closed-market claim.
+    assert.equal(selectUnverifiedEntryZoneNote(s, null), QUOTE_UNVERIFIED_NOTE);
+  });
+
+  // 18. Verified states are untouched: the note helper returns null so the
+  //     existing verified warning path renders instead.
+  test("verified states bypass the neutral-note helper", () => {
+    const above = evaluateEntryZoneActionability(base);
+    assert.equal(above, "verified_above_entry_zone");
+    assert.equal(selectUnverifiedEntryZoneNote(above, true), null);
+    const within = evaluateEntryZoneActionability({ ...base, quotePrice: 3100 });
+    assert.equal(selectUnverifiedEntryZoneNote(within, true), null);
   });
 
   console.log(`\npicks-actionability regression: ${n} tests passed`);

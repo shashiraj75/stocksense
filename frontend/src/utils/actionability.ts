@@ -145,3 +145,31 @@ export function isVerifiedOutsideEntryZone(state: ActionabilityState): boolean {
 export function isQuoteVerifiedComparable(state: ActionabilityState): boolean {
   return state === "verified_within_entry_zone" || isVerifiedOutsideEntryZone(state);
 }
+
+/** Release 12A2 user-facing notes for non-verified states. */
+export const MARKET_CLOSED_NOTE =
+  "Market closed — entry-zone status will refresh when a newer comparable market quote is available.";
+export const QUOTE_UNVERIFIED_NOTE =
+  "Latest quote differs from the generation reference. Entry-zone status cannot be verified until a comparable, timestamped market quote is available.";
+
+/**
+ * Release 12A2: display-priority selection for the neutral entry-zone note.
+ * Presentation only — the diagnostic state machine above is unchanged.
+ *
+ * While the market is CLOSED, every non-verified state (incomparable,
+ * timestamp-unknown, legacy, …) shows the closed-market guidance: it matches
+ * the page header, explains when the status can change, and spares users
+ * quote-comparability internals they cannot act on while nothing trades.
+ * While the market is open (or its state is unknown), the more technical
+ * wording stays, because "cannot be verified" is then the operative fact.
+ * Verified states return null — their existing warning behavior is
+ * untouched.
+ */
+export function selectUnverifiedEntryZoneNote(
+  state: ActionabilityState,
+  marketOpen: boolean | null,
+): string | null {
+  if (isQuoteVerifiedComparable(state)) return null;
+  if (marketOpen === false) return MARKET_CLOSED_NOTE;
+  return QUOTE_UNVERIFIED_NOTE;
+}

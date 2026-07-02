@@ -4,7 +4,7 @@ import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { api, fetchQuote } from "@/utils/api";
 import { computeEstimatedUpsidePct, hasValidGenerationBasis, isValidPrice, selectPriceBasis } from "@/utils/priceBasis";
-import { evaluateEntryZoneActionability, isQuoteVerifiedComparable, isVerifiedOutsideEntryZone } from "@/utils/actionability";
+import { evaluateEntryZoneActionability, isQuoteVerifiedComparable, isVerifiedOutsideEntryZone, selectUnverifiedEntryZoneNote } from "@/utils/actionability";
 import { getMarketStatus } from "@/utils/marketHours";
 import {
   TrendingUp, Clock, AlertCircle, ChevronDown, ChevronUp,
@@ -391,6 +391,7 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
   // Release 12A: an entry-zone "moved since generation" claim requires PROOF —
   // a provider-timestamped quote newer than the pick, on a compatible price
   // basis, in a known session. Everything else gets a conservative state.
+  const marketOpen = getMarketStatus(market).isOpen;
   const actionability = evaluateEntryZoneActionability({
     generationBasis: pick.generation_reference_price_basis,
     generationPrice: pick.generation_reference_price,
@@ -400,7 +401,7 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
     quotePrice: livePrice,
     quoteBasis: liveQuote?.quote_price_basis,
     quoteTimestamp: liveQuote?.quote_timestamp,
-    marketOpen: getMarketStatus(market).isOpen,
+    marketOpen,
   });
   const verifiedOutside = isVerifiedOutsideEntryZone(actionability);
   const quoteComparable = isQuoteVerifiedComparable(actionability);
@@ -486,9 +487,10 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
         {!verifiedOutside && unverifiedQuoteDiffers && (
           <div className="mb-3 flex items-center gap-1.5 text-[11px] text-gray-400 bg-dark-border/40 rounded-lg px-2.5 py-1.5">
             <AlertCircle size={11} className="shrink-0" />
-            {actionability === "market_closed_unverified"
-              ? "Market closed — entry-zone status will refresh when a newer comparable market quote is available."
-              : "Latest quote differs from the generation reference. Entry-zone status cannot be verified until a comparable, timestamped market quote is available."}
+            {/* Release 12A2: closed-market guidance takes display priority
+                over the technical incomparable wording for every
+                non-verified state — the internal state is unchanged. */}
+            {selectUnverifiedEntryZoneNote(actionability, marketOpen)}
           </div>
         )}
 
