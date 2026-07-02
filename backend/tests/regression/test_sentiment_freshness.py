@@ -423,6 +423,61 @@ def test_unavailable_sentiment_treatment_is_market_agnostic():
         assert z_in == z_us
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# Wave 0C display truthfulness — presentation-only freshness annotation
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_classify_article_freshness_reasons():
+    from services.news_sentiment import classify_article_freshness
+    assert classify_article_freshness(_rfc2822(NOW - timedelta(hours=2)), "general", NOW) == (True, "fresh")
+    assert classify_article_freshness(_rfc2822(NOW - timedelta(days=335)), "general", NOW) == (False, "stale")
+    assert classify_article_freshness("", "general", NOW) == (False, "invalid_date")
+    assert classify_article_freshness("garbage", "general", NOW) == (False, "invalid_date")
+    assert classify_article_freshness(_rfc2822(NOW + timedelta(days=3)), "general", NOW) == (False, "future_date")
+    # Consistency: the boolean must match is_article_eligible exactly.
+    for raw in [_rfc2822(NOW - timedelta(days=1)), _rfc2822(NOW - timedelta(days=400)), "", None]:
+        assert classify_article_freshness(raw, "medium", NOW)[0] == is_article_eligible(raw, "medium", NOW)
+
+
+def test_news_response_carries_presentation_eligibility_metadata():
+    import asyncio
+    from services.news_sentiment import NewsSentimentService
+
+    fixture = [
+        {"title": "fresh", "source": "t", "url": "u1",
+         "published_at": _rfc2822(datetime.now(timezone.utc) - timedelta(hours=1)), "description": ""},
+        {"title": "old", "source": "t", "url": "u2",
+         "published_at": _rfc2822(datetime.now(timezone.utc) - timedelta(days=300)), "description": ""},
+        {"title": "undated", "source": "t", "url": "u3", "published_at": "", "description": ""},
+    ]
+    svc = NewsSentimentService()
+    with patch.object(NewsSentimentService, "_fetch_rss", return_value=[dict(a) for a in fixture]):
+        # Unique symbol so the module-level 10-minute cache cannot interfere.
+        result = asyncio.run(svc.get_news_with_sentiment("W0CTEST", "IN", 10))
+
+    arts = {a["title"]: a for a in result["articles"]}
+    assert arts["fresh"]["sentiment_eligible"] is True
+    assert arts["fresh"]["eligibility_reason"] == "fresh"
+    assert arts["old"]["sentiment_eligible"] is False
+    assert arts["old"]["eligibility_reason"] == "stale"
+    assert arts["undated"]["sentiment_eligible"] is False
+    assert arts["undated"]["eligibility_reason"] == "invalid_date"
+    assert result["total_article_count"] == 3
+    assert result["eligible_article_count"] == 1
+    assert result["historical_article_count"] == 2
+
+
+def test_presentation_metadata_does_not_change_decision_outputs():
+    """The annotation is display-only: _aggregate_sentiment must return the
+    exact same decision output whether or not articles carry the new fields."""
+    plain = [_article(timedelta(hours=1), "BULLISH"), _article(timedelta(days=300), "BULLISH")]
+    annotated = [dict(a, sentiment_eligible=True, eligibility_reason="fresh") for a in plain]
+    r_plain = ENGINE._aggregate_sentiment(plain, horizon="medium", now=NOW)
+    r_annot = ENGINE._aggregate_sentiment(annotated, horizon="medium", now=NOW)
+    for key in ("score", "label", "bullish", "bearish", "data_available", "freshness_status"):
+        assert r_plain[key] == r_annot[key], key
+
+
 # Test 8 — Wave 0C protections regression (badge/summary path re-locked with
 # the ranking-row conversion now in place)
 def test_wave0c_badge_and_summary_protections_still_hold():

@@ -57,6 +57,32 @@ def parse_published_at(raw: str | None) -> datetime | None:
     return None
 
 
+def classify_article_freshness(published_at_raw: str | None, horizon: str | None = None,
+                               now: datetime | None = None) -> tuple[bool, str]:
+    """
+    Classify one article against the central freshness policy.
+
+    Returns ``(eligible, reason)`` where reason is one of:
+      "fresh"        — usable as current sentiment evidence for this horizon
+      "stale"        — real date, but older than the horizon's cutoff
+      "invalid_date" — missing/unparseable publication date
+      "future_date"  — dated beyond the clock-skew tolerance
+
+    The reason exists for presentation metadata only — decision paths key
+    exclusively on the boolean, exactly as before.
+    """
+    published = parse_published_at(published_at_raw)
+    if published is None:
+        return False, "invalid_date"
+    now = now or datetime.now(timezone.utc)
+    if published > now + FUTURE_TOLERANCE:
+        return False, "future_date"
+    max_days = SENTIMENT_MAX_AGE_DAYS.get(horizon or "general", SENTIMENT_MAX_AGE_DAYS["general"])
+    if (now - published) <= timedelta(days=max_days):
+        return True, "fresh"
+    return False, "stale"
+
+
 def is_article_eligible(published_at_raw: str | None, horizon: str | None = None,
                         now: datetime | None = None) -> bool:
     """
@@ -65,14 +91,7 @@ def is_article_eligible(published_at_raw: str | None, horizon: str | None = None
     (beyond tolerance) future-dated articles are ineligible — they may still
     be displayed as context, but must contribute zero decision weight.
     """
-    published = parse_published_at(published_at_raw)
-    if published is None:
-        return False
-    now = now or datetime.now(timezone.utc)
-    if published > now + FUTURE_TOLERANCE:
-        return False
-    max_days = SENTIMENT_MAX_AGE_DAYS.get(horizon or "general", SENTIMENT_MAX_AGE_DAYS["general"])
-    return (now - published) <= timedelta(days=max_days)
+    return classify_article_freshness(published_at_raw, horizon, now)[0]
 
 
 def split_articles_by_freshness(
@@ -222,9 +241,26 @@ class NewsSentimentService:
 
         loop = asyncio.get_running_loop()
         articles = await loop.run_in_executor(None, self._fetch_rss, symbol, market, limit)
+        # Presentation-only freshness annotation (Wave 0C display truthfulness):
+        # per-article eligibility against the "general" stock-detail policy, so
+        # the frontend can truthfully separate "current news used in sentiment"
+        # from "historical context" WITHOUT duplicating the age policy in
+        # TypeScript. Decision paths ignore these fields entirely —
+        # _aggregate_sentiment performs its own horizon-specific split.
+        now = datetime.now(timezone.utc)
+        eligible_count = 0
         for a in articles:
             a["sentiment"] = score_sentiment(a["title"], a.get("description", ""))
-        result = {"symbol": symbol, "market": market, "articles": articles}
+            eligible, reason = classify_article_freshness(a.get("published_at"), "general", now)
+            a["sentiment_eligible"] = eligible
+            a["eligibility_reason"] = reason
+            eligible_count += 1 if eligible else 0
+        result = {
+            "symbol": symbol, "market": market, "articles": articles,
+            "total_article_count": len(articles),
+            "eligible_article_count": eligible_count,
+            "historical_article_count": len(articles) - eligible_count,
+        }
 
         with _news_lock:
             _news_cache[cache_key] = (time.time(), result)

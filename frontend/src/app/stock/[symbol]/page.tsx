@@ -7,6 +7,7 @@ import { TradingViewWidget } from "@/components/TradingViewWidget";
 import { SignalBadge } from "@/components/SignalBadge";
 import { ConfidenceMeter } from "@/components/ConfidenceMeter";
 import { NewsCard } from "@/components/NewsCard";
+import { groupArticlesByEligibility } from "@/utils/newsDisplay";
 import { FactorAttributionWaterfall } from "@/components/FactorAttributionWaterfall";
 import { ConfidenceBreakdown } from "@/components/ConfidenceBreakdown";
 import { BullBearCase } from "@/components/BullBearCase";
@@ -1118,17 +1119,67 @@ export default function StockPage() {
 
           <section>
             <h2 className="text-lg font-semibold mb-3">News & Sentiment</h2>
-            <div className="grid md:grid-cols-2 gap-3">
-              {news?.articles.slice(0, 8).map((a: any, i: number) => (
-                <NewsCard key={i} article={a} />
-              ))}
-              {news && !news.articles.length && (
-                <p className="text-gray-500 text-sm col-span-2">No recent news found.</p>
-              )}
-              {!news && (
-                <p className="text-gray-500 text-sm col-span-2 animate-pulse">Fetching latest news…</p>
-              )}
-            </div>
+            {/* Wave 0C display truthfulness: separate articles the backend
+                marked eligible for current sentiment from historical context.
+                Grouping comes ONLY from the backend's sentiment_eligible
+                verdict — no duplicate age policy exists in the frontend. */}
+            {(() => {
+              if (!news) {
+                return <p className="text-gray-500 text-sm animate-pulse">Fetching latest news…</p>;
+              }
+              const shown = news.articles.slice(0, 8);
+              if (!shown.length) {
+                return (
+                  <div className="text-sm text-gray-500">
+                    <p className="font-medium text-gray-400">News data unavailable</p>
+                    <p className="text-xs mt-1">No current or historical articles were returned for this stock.</p>
+                  </div>
+                );
+              }
+              const { current, historical, hasEligibilityData } = groupArticlesByEligibility(shown);
+              if (!hasEligibilityData) {
+                // Payload predates the eligibility annotation (older cached
+                // response) — render ungrouped and make no inclusion claims.
+                return (
+                  <div className="grid md:grid-cols-2 gap-3">
+                    {shown.map((a, i) => <NewsCard key={i} article={a} />)}
+                  </div>
+                );
+              }
+              return (
+                <div className="space-y-4">
+                  {current.length > 0 ? (
+                    <div>
+                      <p className="text-sm font-medium text-gray-300">Current news sentiment</p>
+                      <p className="text-xs text-gray-500 mb-2">
+                        Based on {current.length} recent eligible article{current.length !== 1 ? "s" : ""}.
+                        {historical.length > 0 ? " Historical articles below are context only." : ""}
+                      </p>
+                      <div className="grid md:grid-cols-2 gap-3">
+                        {current.map((a, i) => <NewsCard key={`c-${i}`} article={a} />)}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-sm">
+                      <p className="font-medium text-gray-400">Insufficient fresh news evidence</p>
+                      <p className="text-xs text-gray-500">
+                        Historical articles are shown below for context only and are not used in the current signal.
+                      </p>
+                    </div>
+                  )}
+                  {historical.length > 0 && (
+                    <div>
+                      <p className="text-sm font-medium text-gray-400">
+                        Historical context — not used in current decisions
+                      </p>
+                      <div className="grid md:grid-cols-2 gap-3 mt-2">
+                        {historical.map((a, i) => <NewsCard key={`h-${i}`} article={a} />)}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </section>
 
           {/* TradingView Chart — reference tool, at the bottom */}

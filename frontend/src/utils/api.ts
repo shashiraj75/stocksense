@@ -122,6 +122,11 @@ export interface NewsArticle {
   published_at: string;
   description: string;
   sentiment?: { label: string; score: number };
+  // Backend-computed freshness verdict (Wave 0C) — the single source of
+  // truth for whether this article counts toward current sentiment.
+  // Optional: absent on payloads cached before the annotation shipped.
+  sentiment_eligible?: boolean;
+  eligibility_reason?: "fresh" | "stale" | "invalid_date" | "future_date";
 }
 
 // ─── API calls ────────────────────────────────────────────────
@@ -197,7 +202,12 @@ export const fetchPrediction = async (
 
 export const fetchNews = (symbol: string, market: Market) =>
   api
-    .get<{ articles: NewsArticle[] }>(`/api/news/${symbol}`, { params: { market } })
+    .get<{
+      articles: NewsArticle[];
+      total_article_count?: number;
+      eligible_article_count?: number;
+      historical_article_count?: number;
+    }>(`/api/news/${symbol}`, { params: { market } })
     .then((r) => r.data);
 
 type Mover = { symbol: string; price: number; change_pct: number; name?: string };
