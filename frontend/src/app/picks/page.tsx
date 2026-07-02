@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { api, fetchQuote } from "@/utils/api";
+import { computeEstimatedUpsidePct, isValidPrice, selectPriceBasis } from "@/utils/priceBasis";
 import {
   TrendingUp, Clock, AlertCircle, ChevronDown, ChevronUp,
   Loader2, Target, ShieldAlert, Zap, CheckCircle, BarChart2, Activity, FlaskConical,
@@ -355,8 +356,6 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
   const router = useRouter();
   const [expanded, setExpanded] = useState(false);
   const [showPaperTrade, setShowPaperTrade] = useState(false);
-  const upside = pick.price && pick.target
-    ? (((pick.target - pick.price) / pick.price) * 100).toFixed(1) : null;
 
   // Daily Picks are a frozen snapshot from generation time (once or twice
   // daily) — entry zone/target/stop are all computed against pick.price as
@@ -371,6 +370,16 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
     staleTime: 5 * 60_000,
   });
   const livePrice = liveQuote?.price ?? null;
+
+  // Wave 0B truthfulness rule: the price the card displays and the upside %
+  // next to it must share one basis. Previously the price showed
+  // (livePrice ?? pick.price) while upside was always computed from the
+  // generation-time pick.price — a live-updating number beside a frozen
+  // percentage that silently contradicted it.
+  const { basis: priceBasis, price: displayPrice } = selectPriceBasis(livePrice, pick.price);
+  const upsidePct = computeEstimatedUpsidePct(pick.target, displayPrice);
+  const showGenerationPriceLine =
+    priceBasis === "current" && isValidPrice(pick.price) && Math.abs(displayPrice! - pick.price) > 0.01;
   const entryZonePassed =
     livePrice != null && pick.entry_low != null && pick.entry_high != null &&
     (livePrice < pick.entry_low || livePrice > pick.entry_high);
@@ -412,12 +421,21 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
           </div>
           <div className="text-right">
             <div className="text-sm font-semibold text-white">
-              {currency}{(livePrice ?? pick.price)?.toLocaleString(locale)}
+              {displayPrice != null ? `${currency}${displayPrice.toLocaleString(locale)}` : "—"}
             </div>
-            {livePrice != null && pick.price != null && Math.abs(livePrice - pick.price) > 0.01 && (
-              <div className="text-[10px] text-gray-500">was {currency}{pick.price.toLocaleString(locale)} at generation</div>
+            {showGenerationPriceLine && (
+              <div className="text-[10px] text-gray-500">was {currency}{pick.price!.toLocaleString(locale)} at generation</div>
             )}
-            {upside && <div className="text-xs text-green-400 font-medium">+{upside}% upside</div>}
+            {upsidePct != null ? (
+              <div className={clsx("text-xs font-medium", upsidePct >= 0 ? "text-green-400" : "text-yellow-400")}>
+                {upsidePct >= 0 ? "+" : ""}{upsidePct.toFixed(1)}% est. upside
+                {showGenerationPriceLine
+                  ? " (from current price)"
+                  : priceBasis === "generation" ? " (from generation price)" : ""}
+              </div>
+            ) : (
+              <div className="text-[10px] text-gray-500">Estimated upside unavailable</div>
+            )}
           </div>
         </div>
 
