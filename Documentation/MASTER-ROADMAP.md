@@ -591,3 +591,85 @@ Implementation must include deterministic coverage for: California user timezone
 ### Scope Boundary
 
 This standard governs timestamp storage, conversion, display, settings preference, auditability, and test coverage. It does not by itself introduce: geolocation tracking; real-time location monitoring; broker integrations; trading automation; changes to Daily Picks scoring; changes to market-data providers; changes to Prediction Engine logic; changes to RCI; changes to Paper Trade trigger rules; changes to portfolio calculations; changes to market-calendar logic.
+
+---
+
+## Section 13 — Planned Cross-Cutting Strategic Initiatives
+
+**Status: Planned / Not Started for both initiatives below.** These are cross-cutting strategic directions, not numbered Epics — they do not fit inside a single existing Epic's scope and are intentionally recorded here rather than assigned a new Epic number. Nothing in this section describes current, live, partially implemented, or validated behavior. Both initiatives depend materially on the existing Epic-numbered engines and on the current Daily Picks reliability/truthfulness work already underway; neither should be read as scheduled or committed to a timeline.
+
+### Initiative A — Bear-Market Resilience & Market Regime Intelligence
+
+**Status: Planned / Not Started.**
+
+StockSense360 must not assume that it should produce fresh BUY calls every day. In weak, volatile, risk-off, or severe bear-market conditions, the system must be capable of becoming more selective, reducing exposure guidance, tightening eligibility criteria, or deliberately producing no new BUY calls.
+
+**Purpose.** This initiative is intended to improve capital preservation, investor trust, market-context awareness, and explainability across: short-term Daily Picks; medium-term Daily Picks; the current strategic 3–6 month Daily Picks horizon; future true long-term investment intelligence (Initiative B, below); portfolio risk awareness; and Paper Trade decision support, without real execution.
+
+**Market Posture Framework (planned states).**
+
+- Risk-On
+- Neutral
+- Cautious
+- Risk-Off
+- Severe Risk-Off
+
+These are market-environment classifications, not promises of future returns.
+
+**Decision Rules (planned).** A severe market-risk condition must be able to override an otherwise attractive individual-stock opportunity — a strong individual stock score must not automatically override severe market-risk conditions. Valid outcomes may include: normal opportunity search; fewer and more selective candidates; higher minimum quality and relative-strength requirements; lower confidence and more conservative allocation guidance; defensive watchlist/research candidates only; no fresh BUY calls today; existing-position risk review prompts. **"No new BUY calls" is a deliberate risk-control outcome, not a data failure.**
+
+**Inputs to evaluate (planned, not all confirmed to exist or be reliable today).** The future implementation must evaluate and validate relevant independent inputs, including: broad-index trend versus medium- and long-term moving averages; drawdown from recent highs; market breadth and participation; volatility level and volatility trend; sector leadership and defensive rotation; relative strength of quality stocks; global risk conditions relevant to India and the US; rates, currency, crude oil, and macro stress where materially relevant; market-specific data availability and limitations. No claim is made that every input already exists or is reliable today — that is precisely what the planned validation (below) must establish.
+
+**Explainability (planned user-facing output concept).**
+
+```
+Market Risk Gate: CAUTIOUS
+Why: market trend, breadth, volatility, sector leadership, and relevant macro conditions.
+Daily Picks behaviour: stricter eligibility and entry requirements.
+```
+
+And, for a severe-risk state:
+
+```
+No fresh BUY calls today.
+This is a deliberate capital-preservation outcome, not a data or system failure.
+```
+
+**Validation required before any marketing claim.** StockSense360 must not claim bear-market reliability, downside protection, or defensive outperformance without regime-based, out-of-sample validation. Planned validation must cover both India and US markets, including: bear markets; major corrections; volatility spikes; rate/inflation shocks; sector-led sell-offs; recovery phases; and different market regimes generally. Required metrics include: BUY-signal frequency by regime; abstention/no-new-buy frequency; hit rate and average return by regime; maximum drawdown versus relevant benchmark; false-positive BUY rate; entry-zone and stop-loss behaviour; relative strength versus market; the effect of realistic delay, slippage, gaps, and transaction costs; and stability across India and US. The goal is not to predict every market move or promise accuracy — the goal is to become more defensive as market risk rises and to avoid low-quality entries.
+
+**Roadmap position.** This initiative is dependent on: current Daily Picks production reliability work; Daily Picks truthfulness corrections (the shared error-safety and user-local-time correction work already scoped in this session's audits); the existing quality, financial-strength, growth, valuation, and recommendation layers (Epics 001–006); and future Portfolio Intelligence (Epic 007) where portfolio-aware risk guidance is involved. It should be designed before any claim is made that Daily Picks is reliable in bearish markets.
+
+---
+
+### Initiative B — Long-Term Investment Intelligence
+
+**Status: Planned / Not Started.**
+
+A future capability for genuine long-term investing research and portfolio-aware decision support over approximately 3–5+ years. This is separate from the current Daily Picks "Long Term" horizon: **current Daily Picks "Long Term" refers to a strategic approximately 3–6 month horizon. It must not be represented as a 3–5+ year investment recommendation engine.**
+
+**Core principle.** A true long-term system must answer two separate questions: (1) is this business worth owning over several years? (2) is this the right valuation, timing, and portfolio context to begin or add to a position? These two questions must not be collapsed into one generic BUY/HOLD/SELL label.
+
+**Decision framework (planned, two layers).**
+
+*Investment Merit:* business quality; financial strength; cash-flow durability; long-term growth durability; competitive position where evidence is available; governance and capital allocation; valuation and margin of safety.
+
+*Entry Approach:* current valuation opportunity; broad market regime; sector conditions; entry-risk assessment; staged accumulation logic; portfolio concentration and diversification context.
+
+A company can have strong long-term investment merit while its immediate entry approach is "wait," "watch," or "accumulate gradually."
+
+**Future user-facing states (planned research states, not current live signals).**
+
+- High-Quality Investment Candidate
+- Accumulate Gradually
+- Watch — Valuation Too High
+- Wait for Better Entry Conditions
+- Thesis Under Review
+- Avoid — Fundamental Risk
+
+None of these are guaranteed outcomes, personalised financial advice, or automated execution instructions.
+
+**Capability scope (future work areas).** Multi-year business-quality assessment; ROCE/ROE consistency; margin durability; free-cash-flow quality; debt, liquidity, and interest-coverage resilience; sales, earnings, and cash-flow growth quality; cyclicality and responsible reinvestment; valuation using more than PE alone; sector-aware valuation context; governance and ownership checks where data is sufficiently reliable; dilution, pledge, capital-allocation, and related-risk monitoring where available; thesis-monitoring alerts for earnings, debt, margins, governance, and competitive deterioration; portfolio fit, sector concentration, existing-holding overlap, country/currency exposure, and diversification context; staged-entry and staged-addition guidance; and a clear separation between research support, simulated Paper Trade, and real broker execution. **StockSense360 must not place real trades, connect to brokers for execution, or present long-term research states as guaranteed investment outcomes.**
+
+**Validation required before any long-term claim.** No claim of long-term investment reliability may be made without robust, rolling, out-of-sample validation. Planned validation should consider: 3-, 5-, and (where data permits) 7-year periods; bull, sideways, correction, and bear-market regimes; sector cycles; survivorship-bias controls where feasible; delisted or materially impaired companies where data permits; India and US market differences; valuation starting-point effects; concentration and diversification outcomes; and realistic delay, data-availability, and transaction-cost assumptions. The goal is not to promise multibaggers or guaranteed returns — the goal is to help investors assess durable businesses, valuation discipline, portfolio fit, and thesis deterioration more responsibly.
+
+**Roadmap position.** This planned initiative depends materially on: Epic 001 — Business Quality Intelligence; Epic 002 — Financial Strength Intelligence; Epic 003 — Growth Intelligence; Epic 004 — Valuation Intelligence; Epic 007 — Portfolio Intelligence; and later work on cross-market data quality, governance evidence, portfolio fit, and validation infrastructure. It should be sequenced after the current Daily Picks reliability/truthfulness programme and in coordination with Portfolio Intelligence, not treated as a simple extension of daily signals.
