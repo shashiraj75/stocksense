@@ -59,6 +59,155 @@ def parse_published_at(raw: str | None) -> datetime | None:
     return None
 
 
+# ── Duplicate-story clustering (Wave 0D3) ────────────────────────────────────
+# The same real-world event routinely arrives through Yahoo AND Google News,
+# through several publishers, or as syndicated reposts with different URLs —
+# URL-only dedup (in _fetch_rss) cannot catch those, so one bullish event
+# could become three bullish votes. This deterministic, standard-library-only
+# clusterer groups qualified current company-news articles into unique events
+# so each event contributes AT MOST one directional sentiment vote. High
+# precision over aggressive merging: uncertain pairs are never clustered.
+# No LLM, no embeddings, no fuzzy-matching packages, no external calls.
+
+# Two articles may be considered the same event only within this window.
+# This is purely a duplicate-clustering boundary — freshness thresholds
+# (SENTIMENT_MAX_AGE_DAYS above) are completely unchanged.
+CLUSTER_TIME_WINDOW = timedelta(hours=48)
+_CLUSTER_MIN_TOKENS = 3     # each title needs >= 3 meaningful tokens
+_CLUSTER_MIN_SHARED = 4     # >= 4 shared meaningful tokens
+_CLUSTER_MIN_JACCARD = 0.70
+
+# Small, documented stopword set for clustering similarity ONLY: ordinary
+# function words plus generic finance words that must never drive a
+# duplicate match on their own (per the wave brief: market, stock, shares,
+# buy, sell, rally, rise, fall, earnings and their close forms). This list
+# affects duplicate detection only — never sentiment scoring or relevance.
+_TITLE_CLUSTER_STOPWORDS = {
+    "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "as", "at",
+    "by", "with", "from", "its", "is", "are", "was", "were", "be", "has",
+    "have", "had", "will", "after", "amid", "over", "under", "up", "down",
+    "says", "say", "report", "reports", "news", "update", "today",
+    "stock", "stocks", "share", "shares", "market", "markets",
+    "buy", "sell", "rally", "rallies", "rise", "rises", "fall", "falls",
+    "gain", "gains", "surge", "surges", "earnings",
+}
+
+_OUTLET_SUFFIX_SPLIT_RE = re.compile(r"\s+[-–—|]\s+")
+
+
+def _strip_outlet_suffix(title: str) -> str:
+    """Drop a clearly-separated trailing outlet suffix (" - Reuters",
+    " | Bloomberg") — only when the final segment is short (<= 3 words), so
+    meaningful text after a dash is never removed. Never mutates the
+    original displayed title (pure function on a copy)."""
+    parts = _OUTLET_SUFFIX_SPLIT_RE.split(title or "")
+    if len(parts) > 1 and len(parts[-1].split()) <= 3:
+        return " ".join(parts[:-1])
+    return title or ""
+
+
+def title_cluster_tokens(title: str) -> frozenset:
+    """Deterministic meaningful-token set of a title for duplicate detection.
+    Lowercase → punctuation/whitespace normalized (existing _normalize_text)
+    → outlet suffix stripped → stopwords removed. Identical input always
+    yields identical output; the displayed title is never modified."""
+    norm = _normalize_text(_strip_outlet_suffix(title))
+    return frozenset(t for t in norm.split() if t not in _TITLE_CLUSTER_STOPWORDS and len(t) > 1)
+
+
+def _same_event(tokens_a: frozenset, dt_a, tokens_b: frozenset, dt_b) -> bool:
+    """High-precision same-event test. All conditions must hold; an
+    uncertain pair is never clustered."""
+    if dt_a is None or dt_b is None:
+        return False  # no valid publication time → never cluster
+    if abs((dt_a - dt_b).total_seconds()) > CLUSTER_TIME_WINDOW.total_seconds():
+        return False
+    if len(tokens_a) < _CLUSTER_MIN_TOKENS or len(tokens_b) < _CLUSTER_MIN_TOKENS:
+        return False
+    shared = tokens_a & tokens_b
+    if len(shared) < _CLUSTER_MIN_SHARED:
+        return False
+    return len(shared) / len(tokens_a | tokens_b) >= _CLUSTER_MIN_JACCARD
+
+
+def cluster_company_news_articles(articles: list) -> dict:
+    """
+    Cluster already-qualified current company-news articles (the caller must
+    pass only freshness-eligible, company_specific articles) into unique
+    events, and derive one directional vote per event.
+
+    Determinism and over-clustering safeguards:
+      - candidates are stable-sorted by (publication time, normalized title,
+        URL) before clustering, so input order never changes the result;
+      - each article is compared against each existing cluster's SEED (its
+        first member in stable order) only — A~B and B~C never merges A and
+        C unless C also directly matches the seed (no transitive merging).
+
+    Cluster sentiment outcome:
+      - all-directional-agree (± neutrals) → one vote in that direction;
+      - bullish AND bearish members → "conflicted": NO directional vote —
+        never resolved by the representative's label, never fake-neutral;
+      - neutral-only → no directional vote (existing neutral behaviour).
+
+    Representative (until source tiers exist): highest article sentiment
+    confidence, then most recent valid publication time, then normalized
+    title, then URL. Nothing here is persisted; display articles are never
+    removed or reordered.
+    """
+    _dt_max = datetime.max.replace(tzinfo=timezone.utc)
+    _dt_min = datetime.min.replace(tzinfo=timezone.utc)
+    prepared = []
+    for a in articles or []:
+        tokens = title_cluster_tokens(a.get("title", ""))
+        published = parse_published_at(a.get("published_at"))
+        prepared.append((published, " ".join(sorted(tokens)), a.get("url", ""), tokens, a))
+    prepared.sort(key=lambda p: (p[0] or _dt_max, p[1], p[2]))
+
+    clusters: list[dict] = []
+    for published, _norm, _url, tokens, article in prepared:
+        placed = False
+        for c in clusters:
+            if _same_event(tokens, published, c["seed_tokens"], c["seed_dt"]):
+                c["members"].append(article)
+                placed = True
+                break
+        if not placed:
+            clusters.append({"seed_tokens": tokens, "seed_dt": published, "members": [article]})
+
+    bullish_votes = bearish_votes = conflicted = 0
+    out_clusters = []
+    for c in clusters:
+        labels = {m.get("sentiment", {}).get("label") for m in c["members"]}
+        if "BULLISH" in labels and "BEARISH" in labels:
+            outcome = "conflicted"
+            conflicted += 1
+        elif "BULLISH" in labels:
+            outcome = "BULLISH"
+            bullish_votes += 1
+        elif "BEARISH" in labels:
+            outcome = "BEARISH"
+            bearish_votes += 1
+        else:
+            outcome = "NEUTRAL"
+        representative = max(c["members"], key=lambda m: (
+            m.get("sentiment", {}).get("score") or 0.0,
+            parse_published_at(m.get("published_at")) or _dt_min,
+            _normalize_text(m.get("title", "")),
+            m.get("url", ""),
+        ))
+        out_clusters.append({"members": c["members"], "representative": representative,
+                             "outcome": outcome})
+
+    return {
+        "clusters": out_clusters,
+        "unique_story_count": len(out_clusters),
+        "duplicate_article_count": len(prepared) - len(out_clusters),
+        "bullish_votes": bullish_votes,
+        "bearish_votes": bearish_votes,
+        "conflicted_cluster_count": conflicted,
+    }
+
+
 # ── Company-relevance qualification (Wave 0D1) ───────────────────────────────
 # A fresh article is NOT automatically a company-specific article. Articles
 # returned by ticker-based search feeds routinely cover peers, sectors, or
@@ -485,14 +634,20 @@ class NewsSentimentService:
         # (sentiment_eligible) is unchanged; company_sentiment_eligible is the
         # stricter fresh-AND-company_specific flag the UI groups by.
         classify_articles_relevance(articles, symbol, market)
-        company_specific_count = sum(1 for a in articles if a.get("company_sentiment_eligible"))
+        company_specific = [a for a in articles if a.get("company_sentiment_eligible")]
+        # Wave 0D3: presentation-only event metadata. All article cards stay
+        # visible individually — duplicates are never hidden or removed; the
+        # counts only let the UI say "X events across Y articles" truthfully.
+        event_info = cluster_company_news_articles(company_specific)
         result = {
             "symbol": symbol, "market": market, "articles": articles,
             "total_article_count": len(articles),
             "eligible_article_count": eligible_count,
             "historical_article_count": len(articles) - eligible_count,
-            "company_specific_article_count": company_specific_count,
-            "contextual_article_count": eligible_count - company_specific_count,
+            "company_specific_article_count": len(company_specific),
+            "contextual_article_count": eligible_count - len(company_specific),
+            "current_company_news_event_count": event_info["unique_story_count"],
+            "duplicate_company_news_article_count": event_info["duplicate_article_count"],
         }
 
         with _news_lock:

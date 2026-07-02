@@ -23,7 +23,7 @@ try {
     `npx tsc src/utils/newsDisplay.ts --outDir ${JSON.stringify(outDir)} --module es2020 --target es2020 --strict --skipLibCheck`,
     { stdio: "inherit" },
   );
-  const { groupArticlesByEligibility, groupArticlesByRelevance, parseArticleDate } =
+  const { formatCompanyNewsBasis, groupArticlesByEligibility, groupArticlesByRelevance, parseArticleDate } =
     await import(pathToFileURL(join(outDir, "newsDisplay.js")).href);
 
   let n = 0;
@@ -131,6 +131,45 @@ try {
   // 11. Relevance grouping is market-agnostic (no market parameter exists).
   test("relevance grouping is market-agnostic", () => {
     assert.equal(groupArticlesByRelevance.length, 1);
+  });
+
+  // ── Wave 0D3 duplicate-event basis wording ─────────────────────────────
+  // 12. Event count equals article count → concise article wording, no
+  //     duplicate-story claim.
+  test("matching event and article counts keep concise wording", () => {
+    assert.equal(
+      formatCompanyNewsBasis(3, 3),
+      "Based on 3 recent company-specific articles.",
+    );
+    assert.equal(
+      formatCompanyNewsBasis(1, 1),
+      "Based on 1 recent company-specific article.",
+    );
+  });
+
+  // 13. Fewer events than articles → truthful "events across articles" line.
+  test("duplicate coverage reports events across articles", () => {
+    assert.equal(
+      formatCompanyNewsBasis(1, 3),
+      "Based on 1 recent company-news event across 3 articles.",
+    );
+    assert.equal(
+      formatCompanyNewsBasis(2, 5),
+      "Based on 2 recent company-news events across 5 articles.",
+    );
+  });
+
+  // 14. Legacy payload without event metadata → concise wording, never a
+  //     duplicate claim the backend didn't make.
+  test("missing event metadata falls back to article wording", () => {
+    assert.equal(
+      formatCompanyNewsBasis(undefined, 4),
+      "Based on 4 recent company-specific articles.",
+    );
+    assert.equal(
+      formatCompanyNewsBasis(0, 2),
+      "Based on 2 recent company-specific articles.",
+    );
   });
 
   console.log(`\nnews-display regression: ${n} tests passed`);

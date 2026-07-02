@@ -7,7 +7,7 @@ import { TradingViewWidget } from "@/components/TradingViewWidget";
 import { SignalBadge } from "@/components/SignalBadge";
 import { ConfidenceMeter } from "@/components/ConfidenceMeter";
 import { NewsCard } from "@/components/NewsCard";
-import { groupArticlesByEligibility, groupArticlesByRelevance } from "@/utils/newsDisplay";
+import { formatCompanyNewsBasis, groupArticlesByEligibility, groupArticlesByRelevance } from "@/utils/newsDisplay";
 import { FactorAttributionWaterfall } from "@/components/FactorAttributionWaterfall";
 import { ConfidenceBreakdown } from "@/components/ConfidenceBreakdown";
 import { BullBearCase } from "@/components/BullBearCase";
@@ -1197,7 +1197,10 @@ export default function StockPage() {
                     <div>
                       <p className="text-sm font-medium text-gray-300">Current company news sentiment</p>
                       <p className="text-xs text-gray-500 mt-1">
-                        Based on {rel.companyCurrent.length} recent company-specific article{rel.companyCurrent.length !== 1 ? "s" : ""}.
+                        {formatCompanyNewsBasis(
+                          news.current_company_news_event_count,
+                          news.company_specific_article_count ?? rel.companyCurrent.length,
+                        )}
                         {(rel.recentContext.length > 0 || rel.historical.length > 0)
                           ? " Contextual and historical articles below are not used in the current company sentiment."
                           : ""}

@@ -2016,11 +2016,40 @@ class PredictionEngine:
                     "reason_unavailable": "Insufficient fresh company-specific news "
                                           "evidence — recent articles are contextual only."}
 
-        bullish = sum(1 for a in relevant if a.get("sentiment", {}).get("label") == "BULLISH")
-        bearish = sum(1 for a in relevant if a.get("sentiment", {}).get("label") == "BEARISH")
+        if symbol:
+            # Wave 0D3: one underlying company-news event = at most one
+            # directional vote. Qualified articles are clustered into unique
+            # events; bullish/bearish counts are cluster VOTES, not raw
+            # article counts, so a syndicated story covered by three outlets
+            # can no longer triple its evidence. A cluster with conflicting
+            # bullish AND bearish coverage contributes no directional vote.
+            from services.news_sentiment import cluster_company_news_articles
+            cluster_info = cluster_company_news_articles(relevant)
+            bullish = cluster_info["bullish_votes"]
+            bearish = cluster_info["bearish_votes"]
+            base["company_news_event_count"] = cluster_info["unique_story_count"]
+            base["duplicate_company_news_article_count"] = cluster_info["duplicate_article_count"]
+            base["conflicted_company_news_event_count"] = cluster_info["conflicted_cluster_count"]
+            if bullish + bearish == 0 and cluster_info["conflicted_cluster_count"] > 0:
+                # Every potential direction is locked inside conflicting
+                # duplicate coverage — no reliable directional evidence.
+                # Unavailable, not fake-neutral: the existing redistribution,
+                # confidence-exclusion, and Daily Picks None→z=0 protections
+                # all key off data_available exactly as before.
+                return {**base, "data_available": False,
+                        "freshness_status": "no_directional_company_news",
+                        "reason_unavailable": "Recent company-specific coverage is "
+                                              "conflicting across duplicate reports — "
+                                              "no reliable directional news evidence."}
+        else:
+            # Backward-compatible path: raw per-article counts (Wave 0C).
+            bullish = sum(1 for a in relevant if a.get("sentiment", {}).get("label") == "BULLISH")
+            bearish = sum(1 for a in relevant if a.get("sentiment", {}).get("label") == "BEARISH")
         labeled = bullish + bearish
-        # Use only labeled articles in the denominator — neutral articles should not
-        # dilute bullish signal (5 bullish + 5 neutral ≠ 5 bullish + 5 bearish)
+        # Use only labeled votes in the denominator — neutral events should not
+        # dilute bullish signal (5 bullish + 5 neutral ≠ 5 bullish + 5 bearish).
+        # The score formula itself is unchanged; only the vote source moved
+        # from raw articles to unique events.
         if labeled > 0:
             score = int(50 + (bullish - bearish) / labeled * 50)
         else:

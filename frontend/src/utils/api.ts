@@ -214,6 +214,8 @@ export const fetchNews = (symbol: string, market: Market) =>
       historical_article_count?: number;
       company_specific_article_count?: number;
       contextual_article_count?: number;
+      current_company_news_event_count?: number;
+      duplicate_company_news_article_count?: number;
     }>(`/api/news/${symbol}`, { params: { market } })
     .then((r) => r.data);
 

@@ -77,6 +77,23 @@ export function groupArticlesByEligibility<T extends FreshnessGroupable>(
 }
 
 /**
+ * Truthful basis line for the current-company-news group (Wave 0D3).
+ * When the backend reports fewer unique events than articles (duplicate
+ * coverage), say so; when they match — or when event metadata is absent
+ * (legacy payload) — keep the concise article wording and make no
+ * duplicate-story claim.
+ */
+export function formatCompanyNewsBasis(
+  eventCount: number | undefined,
+  articleCount: number,
+): string {
+  if (typeof eventCount === "number" && eventCount > 0 && eventCount !== articleCount) {
+    return `Based on ${eventCount} recent company-news event${eventCount !== 1 ? "s" : ""} across ${articleCount} articles.`;
+  }
+  return `Based on ${articleCount} recent company-specific article${articleCount !== 1 ? "s" : ""}.`;
+}
+
+/**
  * Parse an article's publication date for display. Returns null for
  * missing/malformed values instead of an Invalid Date object — so the UI
  * can show "publication date unavailable" and date-fns is never handed an
