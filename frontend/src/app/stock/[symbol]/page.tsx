@@ -1154,22 +1154,22 @@ export default function StockPage() {
                 // fields) — keep the exact Release 8 two-group rendering; no
                 // company-inclusion claims are possible or made.
                 return (
-                  <div className="space-y-4">
+                  <div className="space-y-6">
                     {legacy.current.length > 0 ? (
                       <div>
                         <p className="text-sm font-medium text-gray-300">Current news sentiment</p>
-                        <p className="text-xs text-gray-500 mb-2">
+                        <p className="text-xs text-gray-500 mt-1">
                           Based on {legacy.current.length} recent eligible article{legacy.current.length !== 1 ? "s" : ""}.
                           {legacy.historical.length > 0 ? " Historical articles below are context only." : ""}
                         </p>
-                        <div className="grid md:grid-cols-2 gap-3">
+                        <div className="grid md:grid-cols-2 gap-3 mt-3">
                           {legacy.current.map((a, i) => <NewsCard key={`c-${i}`} article={a} />)}
                         </div>
                       </div>
                     ) : (
                       <div className="text-sm">
                         <p className="font-medium text-gray-400">Insufficient fresh news evidence</p>
-                        <p className="text-xs text-gray-500">
+                        <p className="text-xs text-gray-500 mt-1">
                           Historical articles are shown below for context only and are not used in the current signal.
                         </p>
                       </div>
@@ -1179,7 +1179,7 @@ export default function StockPage() {
                         <p className="text-sm font-medium text-gray-400">
                           Historical context — not used in current decisions
                         </p>
-                        <div className="grid md:grid-cols-2 gap-3 mt-2">
+                        <div className="grid md:grid-cols-2 gap-3 mt-3">
                           {legacy.historical.map((a, i) => <NewsCard key={`h-${i}`} article={a} />)}
                         </div>
                       </div>
@@ -1187,25 +1187,29 @@ export default function StockPage() {
                   </div>
                 );
               }
+              // One spacing rhythm for the whole section: group heading →
+              // mt-1 explanation → mt-3 card grid, with a deliberate
+              // space-y-6 separator between major groups. Layout only —
+              // grouping, ordering, and eligibility are untouched.
               return (
-                <div className="space-y-4">
+                <div className="space-y-6">
                   {rel.companyCurrent.length > 0 ? (
                     <div>
                       <p className="text-sm font-medium text-gray-300">Current company news sentiment</p>
-                      <p className="text-xs text-gray-500 mb-2">
+                      <p className="text-xs text-gray-500 mt-1">
                         Based on {rel.companyCurrent.length} recent company-specific article{rel.companyCurrent.length !== 1 ? "s" : ""}.
                         {(rel.recentContext.length > 0 || rel.historical.length > 0)
                           ? " Contextual and historical articles below are not used in the current company sentiment."
                           : ""}
                       </p>
-                      <div className="grid md:grid-cols-2 gap-3">
+                      <div className="grid md:grid-cols-2 gap-3 mt-3">
                         {rel.companyCurrent.map((a, i) => <NewsCard key={`cc-${i}`} article={a} />)}
                       </div>
                     </div>
                   ) : (
                     <div className="text-sm">
                       <p className="font-medium text-gray-400">Insufficient fresh company-specific news evidence</p>
-                      <p className="text-xs text-gray-500">
+                      <p className="text-xs text-gray-500 mt-1">
                         Recent contextual and historical articles are shown below for reference only and are not used in the current company signal.
                       </p>
                     </div>
@@ -1215,7 +1219,7 @@ export default function StockPage() {
                       <p className="text-sm font-medium text-gray-400">
                         Recent contextual news — not used in current company sentiment
                       </p>
-                      <div className="grid md:grid-cols-2 gap-3 mt-2">
+                      <div className="grid md:grid-cols-2 gap-3 mt-3">
                         {rel.recentContext.map((a, i) => <NewsCard key={`rc-${i}`} article={a} />)}
                       </div>
                     </div>
@@ -1225,7 +1229,7 @@ export default function StockPage() {
                       <p className="text-sm font-medium text-gray-400">
                         Historical context — not used in current decisions
                       </p>
-                      <div className="grid md:grid-cols-2 gap-3 mt-2">
+                      <div className="grid md:grid-cols-2 gap-3 mt-3">
                         {rel.historical.map((a, i) => <NewsCard key={`h-${i}`} article={a} />)}
                       </div>
                     </div>
