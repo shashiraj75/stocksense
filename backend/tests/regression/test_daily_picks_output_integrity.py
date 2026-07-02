@@ -212,13 +212,15 @@ def test_final_candidate_count_not_from_buy_signals():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_anchor_mode_screener_raw_count_is_null():
-    """IN full-universe fallback must also produce screener_raw_count=None."""
+    """IN static fallback (Release 12B) must also produce
+    screener_raw_count=None — never fabricated when the screener failed."""
     with patch("services.daily_picks.yf.EquityQuery"), \
          patch("services.daily_picks.yf.screen", side_effect=Exception("fail")):
         symbols, used, degraded, raw_count = dp._get_universe_by_mcap("IN")
 
     assert raw_count is None
-    assert used == "full_universe"
+    assert used == "static_fallback"
+    assert degraded is True
 
 
 def test_us_screener_empty_intersection_produces_null_raw_count():

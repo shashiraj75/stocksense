@@ -271,28 +271,28 @@ def test_universe_used_and_universe_degraded_are_present_in_payload():
 
 # ── 10. India universe fallback behavior is unchanged ───────────────────────
 
-def test_india_universe_fallback_behavior_is_unchanged():
+def test_india_universe_fallback_is_bounded_and_truthful():
     """
-    The IN screener-failure path must still return the full NSE universe
-    (not the anchor) — India behavior must be entirely unaffected by the
-    US universe guard changes.
+    Release 12B: the IN screener-failure path must NOT return the US anchor,
+    and must fall back to the bounded curated NIFTY-100 static list —
+    truthfully labelled `static_fallback` and flagged degraded. The old
+    unbounded full-NSE (~2.4k symbols) fallback is retired.
     """
-    from services.daily_picks import _UNIVERSE
+    from services.daily_picks import _NIFTY_100, _US_MEGACAP_100
 
     with patch("services.daily_picks.yf.screen", side_effect=Exception("screener down")):
         syms, universe_used, universe_degraded, _ = _get_universe_by_mcap("IN")
 
-    # Should return the full IN static universe
-    assert syms is _UNIVERSE["IN"], (
-        "IN screener failure must return the full static NSE universe unchanged"
+    assert syms == list(_NIFTY_100), (
+        "IN screener failure must return the curated NIFTY-100 static fallback"
     )
-    assert universe_used == "full_universe"
-    assert universe_degraded is False
-    assert len(syms) == len(IN_STOCKS), (
-        f"IN fallback must have {len(IN_STOCKS)} symbols, got {len(syms)}"
-    )
+    assert syms != list(_US_MEGACAP_100)  # never the US anchor
+    assert universe_used == "static_fallback"
+    assert universe_degraded is True
+    # Bounded: never silently process the thousands-strong full NSE list.
+    assert len(syms) < 300
     # Must not contain any US '$' preferred-share symbols
-    assert all("$" not in s for s in syms[:100]), (
+    assert all("$" not in s for s in syms), (
         "IN fallback universe must not contain '$'-format preferred shares"
     )
 

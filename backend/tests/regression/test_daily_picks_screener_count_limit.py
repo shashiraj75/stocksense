@@ -24,26 +24,31 @@ from unittest.mock import MagicMock, patch
 from services.daily_picks import _get_universe_by_mcap, _US_DAILY_PICKS_HEURISTIC_FILTERED_SET
 
 
-def test_screen_is_called_with_yahoo_accepted_count():
-    """yf.screen() must be called with count <= 250 for IN (#002A regression)."""
+def test_screen_is_called_with_yahoo_accepted_page_size():
+    """Release 12B: IN pages the screener with size <= 250 (Yahoo's max for
+    custom queries; `count` only applies to predefined queries and produced
+    the 25-row truncation). #002A's "never exceed 250 per request" rule holds."""
     fake_result = {"quotes": [{"symbol": "RELIANCE.NS"}, {"symbol": "TCS.NS"}]}
     with patch("services.daily_picks.yf.screen", return_value=fake_result) as mock_screen:
         syms, universe_used, universe_degraded, _ = _get_universe_by_mcap("IN")
-    assert mock_screen.call_args.kwargs["count"] <= 250
-    assert syms == ["RELIANCE", "TCS"]
-    assert universe_used == "screener"
-    assert universe_degraded is False
+    for call in mock_screen.call_args_list:
+        assert call.kwargs["size"] <= 250
+        assert "count" not in call.kwargs or call.kwargs["count"] is None
+    # 2 symbols < healthy minimum → truthful degraded static fallback.
+    assert universe_used == "static_fallback"
+    assert universe_degraded is True
 
 
-def test_screen_count_value_error_falls_back_to_full_universe():
-    """IN screener failure must return the full NSE universe, not crash (#002A regression)."""
+def test_screen_count_value_error_falls_back_to_static_fallback():
+    """Release 12B: IN screener failure must not crash and must fall back to
+    the bounded curated static list, truthfully flagged as degraded (the
+    unbounded full-NSE fallback is retired)."""
     with patch("services.daily_picks.yf.screen", side_effect=ValueError("Yahoo limits query count to 250, reduce count")):
         syms, universe_used, universe_degraded, _ = _get_universe_by_mcap("IN")
-    # Falls back to full NSE universe — must not crash and must return non-empty list
     assert isinstance(syms, list)
     assert len(syms) > 0
-    assert universe_used == "full_universe"
-    assert universe_degraded is False   # IN full-universe fallback is not a degraded state
+    assert universe_used == "static_fallback"
+    assert universe_degraded is True
 
 
 def test_us_screen_also_uses_yahoo_accepted_count():

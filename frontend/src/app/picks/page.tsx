@@ -784,7 +784,14 @@ export default function DailyPicksPage() {
       </div>
       <p className="text-sm text-gray-400">
         Top 6 AI-selected BUY calls per horizon · generated daily at {marketCfg.genTime}
-        {data?.screened_from ? ` · screened from ${data.screened_from.toLocaleString()} ${market === "IN" ? "NSE" : "US"} stocks` : ""}
+        {/* Release 12B coverage truthfulness: real returned count only, never
+            a hardcoded number, and never a full-exchange claim. */}
+        {data?.screened_from
+          ? ` · screened from ${data.screened_from.toLocaleString()} eligible ${market === "IN" ? "NSE" : "US"} stocks in the current quality-filtered universe`
+          : ""}
+      </p>
+      <p className="text-[11px] text-gray-500">
+        Coverage is a screened liquid-quality universe, not all {market === "IN" ? "NSE" : "US"}-listed stocks.
       </p>
       </div>
 

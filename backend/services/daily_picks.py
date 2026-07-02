@@ -304,6 +304,62 @@ _SCREEN_CONFIG = {
     "US": {"exchanges": ["NMS", "NYQ", "NGM", "ASE", "PCX"], "suffix": ""},
 }
 
+# ── Release 12B: India screener universe expansion ───────────────────────────
+# Root cause of the 25-stock truncation: yfinance's screen() routes CUSTOM
+# EquityQuery page sizing through the `size` parameter (default 100, Yahoo max
+# 250); `count` only applies to predefined queries (default 25). The old call
+# passed count=250 with a custom query, so Yahoo served its 25-row default —
+# and, sorted by market cap descending, the universe silently became the 25
+# largest NSE companies. IN collection now pages deterministically with
+# size/offset until the target is reached.
+_IN_TARGET_UNIVERSE = 250        # intended eligible IN screener universe
+_IN_MIN_HEALTHY_UNIVERSE = 100   # below this the screener result is NOT a
+                                 # healthy broad universe (e.g. one 25-row page)
+_SCREEN_PAGE_SIZE = 250          # Yahoo max rows per custom-query request
+_SCREEN_MAX_PAGES = 4            # hard bound — never loop past target*4 rows
+
+
+def _collect_in_screener_symbols(query, suffix: str) -> tuple[list[str], int]:
+    """
+    Deterministically page the yfinance screener for IN symbols in
+    market-cap-descending order until _IN_TARGET_UNIVERSE valid unique
+    symbols are collected, the provider stops returning new rows, a page
+    repeats, or the _SCREEN_MAX_PAGES bound is hit.
+
+    Returns ``(symbols, raw_row_count)`` where ``raw_row_count`` is the total
+    provider rows seen before normalization/dedup. Malformed entries are
+    skipped; symbols are suffix-stripped and deduplicated preserving order.
+    """
+    symbols: list[str] = []
+    seen: set[str] = set()
+    raw_count = 0
+    prev_page: list | None = None
+    offset = 0
+    for _ in range(_SCREEN_MAX_PAGES):
+        result = yf.screen(
+            query, offset=offset, size=_SCREEN_PAGE_SIZE,
+            sortField="intradaymarketcap", sortAsc=False,
+        )
+        quotes = (result or {}).get("quotes", []) or []
+        page = [q.get("symbol") for q in quotes if isinstance(q, dict)]
+        if not page or page == prev_page:
+            break  # no more rows, or provider is repeating itself
+        prev_page = page
+        raw_count += len(page)
+        for raw in page:
+            if not raw or not isinstance(raw, str):
+                continue
+            sym = raw.replace(suffix, "") if suffix else raw
+            if sym and sym not in seen:
+                seen.add(sym)
+                symbols.append(sym)
+        if len(symbols) >= _IN_TARGET_UNIVERSE:
+            break
+        if len(page) < _SCREEN_PAGE_SIZE:
+            break  # short page — provider has no further rows
+        offset += len(page)
+    return (symbols[:_IN_TARGET_UNIVERSE], raw_count)
+
 
 def _get_universe_by_mcap(market: str) -> tuple[list[str], str, bool, int | None]:
     """
@@ -325,11 +381,15 @@ def _get_universe_by_mcap(market: str) -> tuple[list[str], str, bool, int | None
       (``universe_used="anchor"``, ``universe_degraded=True``).  The raw 12k
       universe is NEVER returned for US after this change.
 
-    For IN — behavior is unchanged: screener success → screener symbols;
-      screener failure → full NSE static universe.  ``universe_degraded`` is
-      always False for IN (the NSE full list is the intended fallback).
+    For IN — Release 12B: symbols are collected via deterministic size/offset
+      pagination (_collect_in_screener_symbols) toward _IN_TARGET_UNIVERSE.
+      A result below _IN_MIN_HEALTHY_UNIVERSE (e.g. a single 25-row provider
+      page) is NOT a healthy broad universe: it falls back to the bounded
+      curated NIFTY-100 static list, labelled truthfully as
+      ``universe_used="static_fallback"`` with ``universe_degraded=True``.
+      The unbounded full-NSE (~2.4k symbols) path is no longer used.
 
-    #002A note: Yahoo's screen() now hard-rejects count > 250 — fixed to 250.
+    #002A note: Yahoo's screen() hard-rejects count/size > 250 — page size 250.
     """
     cfg = _SCREEN_CONFIG[market]
     if market == "IN":
@@ -340,6 +400,7 @@ def _get_universe_by_mcap(market: str) -> tuple[list[str], str, bool, int | None
         label = f"≥${_MIN_MCAP_USD_M}M"
 
     screener_syms: list[str] = []
+    screener_raw_count: int | None = None
     screener_error: str | None = None
     try:
         exch_query = yf.EquityQuery("or", [
@@ -349,15 +410,22 @@ def _get_universe_by_mcap(market: str) -> tuple[list[str], str, bool, int | None
             exch_query,
             yf.EquityQuery("gt", ["intradaymarketcap", min_mcap]),
         ])
-        result = yf.screen(
-            query, sortField="intradaymarketcap", sortAsc=False, count=250
-        )
-        quotes = result.get("quotes", [])
-        suffix = cfg["suffix"]
-        screener_syms = [
-            q["symbol"].replace(suffix, "") if suffix else q["symbol"]
-            for q in quotes if q.get("symbol")
-        ]
+        if market == "IN":
+            # Release 12B: paged collection toward the intended 250-symbol
+            # universe (count=250 was silently ignored for custom queries).
+            screener_syms, screener_raw_count = _collect_in_screener_symbols(
+                query, cfg["suffix"])
+        else:
+            # US path unchanged.
+            result = yf.screen(
+                query, sortField="intradaymarketcap", sortAsc=False, count=250
+            )
+            quotes = result.get("quotes", [])
+            suffix = cfg["suffix"]
+            screener_syms = [
+                q["symbol"].replace(suffix, "") if suffix else q["symbol"]
+                for q in quotes if q.get("symbol")
+            ]
     except Exception as e:
         screener_error = str(e)
         log.warning(f"[picks] [{market}] mcap screener failed ({e})")
@@ -389,12 +457,23 @@ def _get_universe_by_mcap(market: str) -> tuple[list[str], str, bool, int | None
         )
         return (anchor, "anchor", True, None)  # screener_raw_count=None: screener not used
 
-    # IN: existing behavior — screener symbols or full NSE universe
-    if screener_syms:
-        log.info(f"[picks] [IN] mcap filter {label}: {len(screener_syms)} stocks qualify")
-        return (screener_syms, "screener", False, len(screener_syms))
-    log.warning(f"[picks] [IN] mcap screener failed, using full NSE universe")
-    return (_UNIVERSE["IN"], "full_universe", False, None)  # screener_raw_count=None: screener not used
+    # IN — Release 12B healthy-universe guard: a tiny provider result (e.g.
+    # one 25-row page) must never masquerade as the intended broad screener
+    # universe. Below the healthy minimum, fall back to the bounded curated
+    # NIFTY-100 static list, truthfully labelled and flagged degraded.
+    if len(screener_syms) >= _IN_MIN_HEALTHY_UNIVERSE:
+        log.info(f"[picks] [IN] mcap filter {label}: {len(screener_syms)} stocks qualify "
+                 f"(target {_IN_TARGET_UNIVERSE}, raw rows {screener_raw_count})")
+        return (screener_syms, "screener", False, screener_raw_count)
+    reason = screener_error or (
+        f"screener returned only {len(screener_syms)} symbols "
+        f"(< healthy minimum {_IN_MIN_HEALTHY_UNIVERSE})")
+    fallback = list(_NIFTY_100)
+    log.warning(
+        f"[picks] [IN] DEGRADED UNIVERSE — static fallback ({len(fallback)} curated "
+        f"NIFTY-100 symbols). Reason: {reason}"
+    )
+    return (fallback, "static_fallback", True, screener_raw_count)
 
 
 def _bulk_screen(
@@ -1213,6 +1292,11 @@ def _generate_picks_inner(
         #   eligibility filter (or raw screener count for IN); these are the
         #   symbols that entered Phase-0 bulk momentum scoring.
         "universe_eligible_size":     _phase0_universe_size,
+        # universe_target_count: the INTENDED eligible-universe size for this
+        #   market (Release 12B) — lets the UI distinguish "we aimed for 250
+        #   and got 250" from a degraded/truncated run. None for US, whose
+        #   selection is unchanged this release.
+        "universe_target_count":      _IN_TARGET_UNIVERSE if market == "IN" else None,
         # deep_prediction_candidates: symbols actually sent to full PredictionEngine.
         #   Equals min(universe_eligible_size, PICKS_CANDIDATES env-var cap).
         "deep_prediction_candidates": len(candidates),
