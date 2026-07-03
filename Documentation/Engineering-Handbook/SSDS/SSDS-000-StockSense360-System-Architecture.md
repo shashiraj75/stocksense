@@ -3,8 +3,10 @@
 **Status:** Active — governing. This is the highest-level System Design Specification in the StockSense360 System Design Specifications (SSDS) family.
 **Purpose:** The single source of truth for how every component of StockSense360 fits together.
 **Governed by:** SES-001 through SES-005, the StockSense360 Product Glossary.
-**Inputs used:** the Engineering Handbook, SES-001–005, SSDS-001/002, the Product Glossary, ROADMAP.md, SEAR-001, the Sprint #002 report, and direct inspection of the current codebase (backend services/routers, frontend pages, Postgres schema). Every component named below was verified against actual code before being documented — nothing in this document is aspirational unless explicitly marked **Planned** or **Future**.
+**Inputs used:** the Engineering Handbook, SES-001–005, SSDS-001/002, the Product Glossary, `Documentation/MASTER-ROADMAP.md` (the current executive roadmap) and `Engineering-Handbook/ROADMAP.md` (a historical planning artifact, not current planning guidance), SEAR-001, the Sprint #002 report, and direct inspection of the current codebase (backend services/routers, frontend pages, Postgres schema). Every component named below was verified against actual code before being documented — nothing in this document is aspirational unless explicitly marked **Planned** or **Future**.
 **Scope discipline:** this is a documentation exercise only. No code was written, modified, or redesigned in producing this document.
+
+**Current-state note (2026-07-03):** This governing architecture document preserves durable boundaries and design principles. Some component descriptions are historical snapshots. For live release state, validation gates, scheduler state, and feature-flag state, use [`Operations/Current-Release-Status.md`](../Operations/Current-Release-Status.md); for platform roadmap status, use [`MASTER-ROADMAP.md`](../../MASTER-ROADMAP.md).
 
 ---
 
@@ -75,13 +77,13 @@ All names below follow the StockSense360 Product Glossary exactly. Where the bri
 - **Current Status:** Established — `backend/services/prediction_engine.py`'s `PredictionEngine` class. 1,886+ lines, 26 methods (SEAR-001).
 - **Future Expansion:** ROADMAP item 1.8 schedules decomposing this into smaller modules; ROADMAP item 5.2 names a longer-term multi-agent split as a Future direction, gated on 1.8 first.
 
-### Business Quality Engine — Established (as a behavior; not a literal module)
+### Business Quality Engine — Established
 - **Purpose:** Evaluates business durability, capital allocation, management quality, and competitive advantage.
 - **Inputs:** yfinance financials, screener.in fundamentals, sector/peer comparison data.
 - **Outputs:** Quality Score and its sub-factor breakdown (Buffett/Munger score, Altman Z-Score, Sloan accruals, institutional flow proxy, etc.).
 - **Dependencies:** none upstream; feeds into the Prediction Engine's fundamental scoring and the Multibagger Screen.
-- **Current Status:** Established as a behavior, distributed across `backend/services/quality_factors.py` (`compute_all_quality_factors`, `buffett_munger_score`, `altman_zscore_signal`, `sloan_accruals_signal`, `quality_metrics_score`) and `backend/services/multibagger_scorecard.py`. No single class or file is literally named "Business Quality Engine" — see the Glossary entry for this naming decision.
-- **Future Expansion:** ROADMAP item 2.3 (wire Altman Z-Score into a reject signal), 2.4 (forensic/fraud-risk heuristic).
+- **Current Status:** Established — `backend/services/business_quality_engine.py` is the dedicated Business Quality Engine, implemented for India and US. Earlier `quality_factors.py` and `multibagger_scorecard.py` references remain legacy consumers or supporting logic; they do not mean that Business Quality exists only as scattered behavior.
+- **Future Expansion:** Only named technical-debt items remain. Use the Master Roadmap and the Epic 001 closure for current prioritization; do not use the legacy `Engineering-Handbook/ROADMAP.md` as current planning guidance.
 
 ### Ranking & Filtering — Established (as a behavior; name newly assigned by the Glossary)
 - **Purpose:** Z-score-normalizes candidates, ranks them, and applies the shortlist/eligibility cutoff.

@@ -1,9 +1,11 @@
-# Master Implementation Roadmap — Selection Engine
+# Legacy Master Implementation Roadmap — Selection Engine
 
-**Status:** Planning artifact only. No code has been modified, refactored, or optimized in producing this document.
+**Status:** Historical planning artifact — not the current roadmap. It records recommendations and assumptions at the time it was written; it does not describe current architecture, implementation status, current operational state, or next approved work.
 **Derived from:** SEAR-001 (`Architecture/Sprint-001-Selection-Engine-Audit.md`) and the current Engineering Handbook skeleton.
 
-**Inputs note, stated plainly:** this roadmap was also asked to review "SES Standards" and "SSDS Specifications." Both were searched for directly across the repository (`Documentation/`, root `README.md`, `CLAUDE.md`) — neither exists anywhere; the only hits were substring false positives inside unrelated words (e.g. "u**SES**," "pha**SES**"). This roadmap is therefore built entirely from SEAR-001's verified findings and the (currently empty-skeleton) Engineering Handbook. If SES/SSDS are real standards intended to govern this work, they need to be authored or supplied before Sprint 002 begins — proceeding without them risks the roadmap optimizing against assumptions instead of an actual house standard.
+**Current references:** Use [`Documentation/MASTER-ROADMAP.md`](../MASTER-ROADMAP.md) for platform direction and roadmap status, and [`Operations/Current-Release-Status.md`](Operations/Current-Release-Status.md) for deployed-release state, validation gates, feature flags, scheduler state, and operational blockers.
+
+**Historical context:** At the time this planning artifact was written, the repository did not yet contain the governing SES and SSDS documentation now maintained in the Engineering Handbook. That statement is historical only and must not be read as current. Current implementation work is governed by `CLAUDE.md`, the Engineering Handbook INDEX, SES standards, SSDS specifications, the Product Glossary, the Master Roadmap, and the Current Release Status register.
 
 ---
 

@@ -1,7 +1,15 @@
 # SSDS-009 — StockSense360 Recommendation Consolidation Intelligence
 
-**Status:** Design Study only. No production code modified — per this sprint's explicit "do not implement, do not modify the Prediction Engine, confidence, signals, Daily Picks, Portfolio, Watchlists, alerts, or UI" rule, this document and its companion Research Report are the entirety of this sprint's output.
+**Status:** Active governing contract — originally authored as a design study. No production code was modified in the originating design-study sprint; later implementation, observability, and activation-readiness updates are recorded below.
 **Governed by:** SES-001 through SES-005, mirroring SSDS-008's own structure (the most recently proven template).
+
+## Current Implementation Update — 2026-07-03
+
+Recommendation Consolidation Intelligence is the active governing contract for an additive, explainability-focused consolidation layer. Implementation work through Sprint #012 is complete; Release 13C deployed process-local composition-success and fail-open observability, and Release 13D documented controlled activation readiness.
+
+RCI remains disabled through `RCI_LIVE_STOCK_ANALYSIS_ENABLED`. Documentation, observability, or frontend readiness does not authorize activation. The existing Evidence Summary frontend component is already deployed and becomes user-visible when valid RCI output is present; this is not a backend-only dark launch.
+
+RCI remains read-only with respect to Prediction Engine scoring, BUY/HOLD/SELL signals, confidence, cache persistence, and Daily Picks logic. For live operating state, validation gates, and feature-flag status, use [`Operations/Current-Release-Status.md`](../Operations/Current-Release-Status.md).
 
 > **Update (Epic 005, Sprint #002 — Contract Design & Traceability Specification):** Sprint #002's own code-level Evidence Checkpoint (going beyond this document's own review) found two real discrepancies between this document's §5.B Engine-Output Contract assumptions and actual current code, both disclosed openly in the [Evidence Contract](../Architecture/Recommendation-Consolidation-Evidence-Contract.md): (1) Business Quality is missing `engine_version`/`market` fields the other three engines already have; (2) **more materially**, `daily_picks.py` does not currently carry any of the four engines' structured outputs forward into a Daily Pick's row or snapshot at all — only the already-blended `confidence` number and free-text `reasoning`. Neither discrepancy invalidates this document's Hybrid-model architecture or its V1 scope — both are named, scoped prerequisites for a *future* implementation/integration sprint, not contradictions requiring a paused design. The finalized Engine-Output Contract field shapes, status taxonomy, and conflict-pattern identifiers are now specified in the [Evidence Contract](../Architecture/Recommendation-Consolidation-Evidence-Contract.md) and [Traceability and Versioning](../Architecture/Recommendation-Consolidation-Traceability-and-Versioning.md) documents — §5.B and §7 below remain as this document's own original conceptual proposal, correct in spirit, now superseded in *detail* by those two documents.
 
