@@ -5,12 +5,14 @@
 
 **Live:** Railway (backend) · Vercel (frontend) · [stocksense360.com](https://stocksense360.com)
 
+> **Live operational status:** For release status, validation gates, feature flags, scheduler state, and operational blockers, see [`Documentation/Engineering-Handbook/Operations/Current-Release-Status.md`](Documentation/Engineering-Handbook/Operations/Current-Release-Status.md).
+
 ---
 
 ## What StockSense360 Does
 
 - **BUY / HOLD / SELL signals** with confidence score, target price, and stop-loss for every stock
-- **Daily Picks** — top 6 BUY ideas per horizon (short / medium / long), screened from the full NSE/US universe; IN generates at 2 AM IST, US at 6 PM IST
+- **Daily Picks:** Up to 6 BUY ideas per horizon (short / medium / long), screened from the NSE and US universes. Designed schedule: India at 2 AM IST and US at 6 PM IST (approximately 8:30 AM ET pre-market). Automated triggering is currently disabled pending Release 12B controlled validation; see the Current Release Status register for live operational state.
 - **Full explainability** — factor breakdown, bull/bear thesis, and reasoning bullets for every call
 - **Learning engine** — tracks prediction outcomes, retrains factor weights weekly via IC (Information Coefficient)
 - **Paper Trading** — test signals with virtual money, track P&L, set stop-losses and targets
@@ -62,7 +64,7 @@ Go to http://localhost:3000
 
 ---
 
-## Production Environment Variables (Render)
+## Production Environment Variables (Railway)
 
 | Variable | Purpose |
 |----------|---------|
@@ -107,7 +109,7 @@ Weights are dynamically modulated by volatility and market regime (BULL / BEAR /
 
 ## Data Persistence
 
-All user data lives in Postgres and survives Render restarts:
+All user data lives in Postgres and survives Railway restarts:
 
 | Data | Postgres Table |
 |------|---------------|
@@ -137,4 +139,4 @@ All user data lives in Postgres and survives Render restarts:
 
 ---
 
-For full technical documentation see [STOCKSENSE_DOCUMENTATION.md](./STOCKSENSE_DOCUMENTATION.md).
+For full technical documentation see [STOCKSENSE_DOCUMENTATION.md](Documentation/STOCKSENSE_DOCUMENTATION.md).

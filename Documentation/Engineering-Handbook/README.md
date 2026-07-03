@@ -14,7 +14,7 @@ These two folders are not optional reading — they are the standard every audit
 ## What else lives here
 
 - **`Architecture/`** — system-level design and engineering audits, starting with SEAR-001 (the Selection Engine audit that the current Roadmap and most of the SES standards are derived from).
-- **`ROADMAP.md`** — the phased, sprint-by-sprint master implementation plan.
+- `ROADMAP.md` — a historical planning artifact, superseded by [`../MASTER-ROADMAP.md`](../MASTER-ROADMAP.md). For current release state, validation gates, feature flags, and scheduler status, use [`Operations/Current-Release-Status.md`](Operations/Current-Release-Status.md).
 - **`Releases/`** — one report per completed sprint.
 - **`Domains/`, `Services/`, `AI/`, `Quantitative-Models/`** — per-area deep dives, populated incrementally.
 - **`Testing/`, `Operations/`** — process documentation.

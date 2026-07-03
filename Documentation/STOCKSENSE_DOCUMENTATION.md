@@ -39,12 +39,14 @@
 
 ## 1. Product Overview
 
+> **Operational-status authority:** This document is a product and technical reference. For live release state, validation gates, feature flags, scheduler state, and operational blockers, see [`Engineering-Handbook/Operations/Current-Release-Status.md`](Engineering-Handbook/Operations/Current-Release-Status.md).
+
 **StockSense360** is an AI-powered stock prediction and portfolio intelligence platform built for Indian and US equity markets. It combines institutional-grade quantitative signals with a consumer-friendly interface to deliver actionable BUY / HOLD / SELL signals with full explainability.
 
 ### What StockSense360 Does
 
 - Generates **BUY / HOLD / SELL signals** for Nifty 100, US large-cap, and top cryptocurrencies
-- Delivers **Daily Picks** every morning at 9 AM IST — top 5 BUY ideas per horizon (short / medium / long)
+- Delivers Daily Picks — up to 6 BUY ideas per horizon (short / medium / long), screened from the NSE and US universes. Designed schedule: India at 2 AM IST and US at 6 PM IST (approximately 8:30 AM ET pre-market). Automated triggering is currently disabled pending Release 12B controlled validation; see the Current Release Status register for live operational state.
 - Shows **why** every signal was generated — factor breakdown, confidence scores, reasoning bullets
 - Provides **trade levels** — entry zone, stop-loss, and target price with R:R ratio
 - Runs a **learning engine** — tracks prediction outcomes and retrains factor weights weekly
@@ -102,7 +104,7 @@
 | Auth | Supabase (JWT) |
 | Database | PostgreSQL (production), SQLite (local) |
 | Cache | In-memory (TTL-based), disk (picks_cache.json) |
-| Hosting | Render.com (backend), Vercel (frontend) |
+| Hosting | Railway (backend), Vercel (frontend) |
 | Automation | GitHub Actions (cron jobs) |
 
 ---
@@ -183,7 +185,7 @@ All component scores are on a **0–100 scale** (50 = neutral). The composite is
 ### Prediction Caching
 
 - **TTL:** 15 minutes per `(symbol:market:horizon)` key
-- **Max size:** 300 entries (Render 512 MB free-tier limit)
+- **Max size:** 300 entries (memory-safety cap)
 - **Eviction:** LRU — oldest entry dropped when full
 - **Async pattern:** First request returns HTTP 202 (computing); client polls every 5s; result cached on completion
 
@@ -755,7 +757,7 @@ For each business day `t` in Nifty 100 history:
 3. Measure actual forward return at `t + h` (h = 7 / 63 / 252 days)
 4. Compare predicted signal vs actual direction
 
-> **Known limitation (next session):** Technical indicators (EMA, MACD, OBV) are currently computed on the full historical DataFrame before slicing per date — a form of look-ahead bias in the backtester. This inflates reported validation hit rates. A full fix (recompute indicators per window) is planned for Session 5.
+> Backtest indicators are recomputed on a rolling historical window (`df.iloc[:i+1]`) at each signal date, preventing future price or volume data from leaking into indicator calculations at time *t*.
 
 ### Metrics Computed
 
@@ -1017,7 +1019,7 @@ price_alerts (id TEXT PK, user_id TEXT, symbol TEXT, market TEXT, email TEXT,
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/predictions/{symbol}` | GET | Get prediction (async, 202 while computing) |
-| `/api/predictions/debug/state` | GET | Internal cache/thread state (debug only) |
+| `/api/predictions/debug/state` | GET | Protected diagnostic endpoint — requires a matching `X-Secret` header for the configured non-empty `PICKS_SECRET`; returns aggregate operational counts only, with no raw cache or in-flight identifiers. See the Current Release Status register for rollout state. |
 
 **Query params:** `market` (US/IN/CRYPTO), `horizon` (short/medium/long)
 
@@ -1187,39 +1189,21 @@ The Picks page has a collapsible **"Show Real Accuracy"** panel with three layer
 
 ### daily_picks.yml — Daily Picks Generation
 
-```
-Schedule: 0 3 * * 1-5  (3:00 AM UTC = 8:30 AM IST, Mon–Fri)
-Step 1:   Poll /health up to 10× (30s gap) until Render responds 200
-          — prevents silent failure when server is cold-starting
-Step 2:   POST /api/picks/generate with x-secret header
-Purpose:  Ensures picks are generated even after overnight sleep
-Result:   Picks ready by 9:00–9:10 AM IST
-```
+`daily_picks.yml` is a repository workflow configured with two scheduled triggers: 20:30 UTC (2:00 AM IST) for India and 12:30 UTC (approximately 8:30 AM ET pre-market) for the US. Each trigger calls the Railway Daily Picks generation endpoint using an `X-Secret` header. The workflow configuration exists in the repository; live automated triggering remains disabled pending Release 12B controlled validation. See the Current Release Status register for live operational state.
 
-### weekly_validation.yml — Model Accuracy Validation
+### Model Validation Scheduling
 
-```
-Schedule: 0 2 * * 0  (2:00 AM UTC = 7:30 AM IST, Sunday)
-Steps:    1. Ping /health to wake Render
-          2. POST /api/validation/run?horizon=medium → wait 15 min
-          3. POST /api/validation/run?horizon=long   → wait 25 min
-          4. GET /api/validation/results → print summary
-Output:   BUY hit rate %, alpha %, Sharpe per horizon
-```
+Model validation runs through an in-process Railway scheduler (`_validation_schedule_loop`) that cycles the Nifty 100, Midcap, and US universes. The former GitHub Actions validation workflow has been retired.
 
-### keep_alive.yml — Render Free Tier Keep-Alive
+### keep_alive.yml — Health Monitoring
 
-```
-Schedule: */10 * * * *  (every 10 minutes, 24/7)
-Action:   GET /health
-Purpose:  Prevent Render free tier from spinning down
-```
+`keep_alive.yml` pings the Railway backend's `/health` endpoint every 10 minutes as a health monitor. Railway does not require anti-sleep pinging; this workflow is documented as monitoring rather than cold-start prevention.
 
 ---
 
 ## 24. Persistence & Data Durability
 
-Render's free tier uses ephemeral disk — files written locally are wiped on every restart/redeploy. All user-facing and learning data is stored in PostgreSQL to survive this.
+The hosting platform's ephemeral disk means files written locally are wiped on every restart/redeploy. All user-facing and learning data is stored in PostgreSQL to survive this.
 
 ### What Lives in Postgres
 
@@ -1245,10 +1229,10 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 
 ### screener.in Session
 
-- Login fires at Render boot (not lazily on first request)
+- Login fires at Railway boot (not lazily on first request)
 - Session refreshed every 6 hours
-- `SCREENER_EMAIL` + `SCREENER_PASSWORD` must be set as Render environment variables
-- Login logs: `[startup] screener.in login succeeded/failed` — check Render logs after deploy
+- `SCREENER_EMAIL` + `SCREENER_PASSWORD` must be set as Railway environment variables
+- Login logs: `[startup] screener.in login succeeded/failed` — check Railway logs after deploy
 
 ---
 
@@ -1297,7 +1281,7 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 
 6. **Data Resilience** — Three-layer fallback chain: yfinance → screener.in → BSE API. If news is unavailable, weights redistribute gracefully.
 
-7. **Memory-Efficient** — Designed for Render's 512 MB free tier. Cache capped at 300 entries with LRU eviction. Concurrent predictions use daemon threads, not asyncio tasks.
+7. **Memory-Efficient** — Cache capped at 300 entries with LRU eviction (memory-safety cap). Concurrent predictions use daemon threads, not asyncio tasks.
 
 8. **Self-Improving** — Outcome logger tracks every prediction. IC engine retrains weekly. Factor weights evolve as the model sees more real-world outcomes.
 
@@ -1305,7 +1289,7 @@ Render's free tier uses ephemeral disk — files written locally are wiped on ev
 
 10. **Investor Transparency** — Every number in the UI is traceable to a specific calculation in the codebase. This document is kept current with every code change.
 
-11. **Postgres-First Persistence** — All user data (watchlist, alerts, paper trades, picks, validation, alpha engine) is stored in PostgreSQL. Render's ephemeral disk is never trusted for user-facing state.
+11. **Postgres-First Persistence** — All user data (watchlist, alerts, paper trades, picks, validation, alpha engine) is stored in PostgreSQL. The hosting platform's ephemeral disk is never trusted for user-facing state.
 
 ---
 
