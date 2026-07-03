@@ -36,12 +36,13 @@
 
 ## Release 14B — Debug Endpoint Security Hardening
 
-**Status:** Deployed — deployment status checks passed; protected-endpoint runtime verification remains pending.
+**Status:** Deployed — protected-endpoint runtime verification passed.
 
-- `/api/predictions/debug/state` now requires a configured non-empty `PICKS_SECRET` and a matching non-empty `X-Secret` header.
-- Missing, blank, whitespace-only, or incorrect secret values fail closed with a generic `401`.
-- The endpoint now returns aggregate operational counts only; raw cache identifiers, in-flight identifiers, and raw background-log content are no longer returned.
-- The change is isolated from Release 12B validation, RCI activation, and scheduler enablement.
+- `/api/predictions/debug/state` requires a configured non-empty `PICKS_SECRET` and a matching non-empty `X-Secret` header.
+- Read-only negative-path verification confirmed that missing, blank, and deliberately incorrect secret values fail closed with the generic `401` response `{"detail":"Invalid secret"}`.
+- Read-only authenticated verification confirmed HTTP `200` and the approved aggregate-only response shape: operational counts, cache-age summary, thread count, and RCI observability counters only.
+- Verification confirmed no raw cache identifiers, in-flight identifiers, symbol/market/horizon identifiers, background-log content, or exception text are exposed.
+- Verification did not change Release 12B validation, RCI activation, Daily Picks scheduler state, configuration, or deployment state.
 
 ## Operational Safety Rules
 
