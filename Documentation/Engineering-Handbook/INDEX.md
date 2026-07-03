@@ -4,6 +4,8 @@ This is the entry point for the StockSense360 Engineering Handbook. `CLAUDE.md` 
 
 **For a high-level, platform-wide view before diving into the handbook, start at [`Documentation/MASTER-ROADMAP.md`](../MASTER-ROADMAP.md)** — the executive entry point covering platform vision, the full Epic Roadmap (status, dependencies, next milestones), engineering principles, and this documentation map's purpose. This INDEX remains the detailed, handbook-internal index.
 
+**For live release state, feature-flag state, validation gates, and operational blockers, read [`Operations/Current-Release-Status.md`](Operations/Current-Release-Status.md) after the Master Roadmap.**
+
 ## Governing Standards (read first, every time)
 
 These are binding on all future implementation work, not reference material to consult only when convenient.

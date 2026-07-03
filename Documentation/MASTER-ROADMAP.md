@@ -2,6 +2,8 @@
 
 **Purpose of this document:** the single executive entry point for the entire platform. A new engineer, or a future AI session with no prior context, should be able to read this document alone and understand what StockSense360 is, what exists today, what is being built next, and where to find the detailed record of everything that came before.
 
+**Current operational state:** This roadmap describes product direction, architecture, dependencies, and completed work. For deployed-release status, validation gates, scheduler state, and feature-flag state, see [`Engineering-Handbook/Operations/Current-Release-Status.md`](Engineering-Handbook/Operations/Current-Release-Status.md).
+
 **Status legend used throughout:** **Completed** · **In Progress** · **Specification** · **Planned** · **Future** — applied strictly; nothing below is marked Completed unless it is live in production code today, evidenced by an actual file, test suite, or closure document.
 
 ---
