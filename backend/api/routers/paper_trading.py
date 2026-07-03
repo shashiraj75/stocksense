@@ -1,8 +1,9 @@
 import os
 import logging
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Literal
+from services.auth import get_current_user_id
 from services.market_hours import is_market_open as _is_market_open
 
 log = logging.getLogger(__name__)
@@ -53,7 +54,6 @@ def _ensure_portfolio(user_id: str, email: str | None = None) -> dict:
 # ── Models ────────────────────────────────────────────────────────────────────
 
 class BuyRequest(BaseModel):
-    user_id: str
     symbol: str
     market: Literal["IN", "US"]
     quantity: int
@@ -62,15 +62,12 @@ class BuyRequest(BaseModel):
     horizon: str = "medium"
     stop_loss: float | None = None
     target_price: float | None = None
-    email: str | None = None
 
 
 class SellRequest(BaseModel):
-    user_id: str
     price: float
 
 class EditRequest(BaseModel):
-    user_id: str
     stop_loss: float | None = None
     target_price: float | None = None
     entry_price: float | None = None
@@ -79,8 +76,8 @@ class EditRequest(BaseModel):
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/portfolio")
-def get_portfolio(user_id: str = Query(...), email: str | None = Query(None)):
-    portfolio = _ensure_portfolio(user_id, email)
+def get_portfolio(user_id: str = Depends(get_current_user_id)):
+    portfolio = _ensure_portfolio(user_id)
     with _conn() as conn:
         trades = conn.execute(
             """SELECT id, symbol, market, quantity, entry_price, exit_price,
@@ -137,7 +134,7 @@ def get_portfolio(user_id: str = Query(...), email: str | None = Query(None)):
 
 
 @router.post("/buy")
-def paper_buy(req: BuyRequest):
+def paper_buy(req: BuyRequest, user_id: str = Depends(get_current_user_id)):
     if req.quantity <= 0:
         raise HTTPException(status_code=400, detail="Quantity must be > 0")
     if req.price <= 0:
@@ -148,7 +145,7 @@ def paper_buy(req: BuyRequest):
     cash_col = _CASH_COL[req.market]
     sym = _SYMBOL[req.market]
     cost = req.price * req.quantity
-    _ensure_portfolio(req.user_id, req.email)  # make sure the row exists before the conditional debit below
+    _ensure_portfolio(user_id)  # make sure the row exists before the conditional debit below
 
     with _conn() as conn:
         # Atomic check-and-debit: the WHERE clause re-checks the balance at
@@ -158,12 +155,12 @@ def paper_buy(req: BuyRequest):
         debited = conn.execute(
             f"UPDATE paper_portfolio SET {cash_col} = {cash_col} - %s, updated_at = now() "
             f"WHERE user_id = %s AND {cash_col} >= %s RETURNING {cash_col}",
-            (cost, req.user_id, cost)
+            (cost, user_id, cost)
         ).fetchone()
 
         if debited is None:
             current = conn.execute(
-                f"SELECT {cash_col} FROM paper_portfolio WHERE user_id = %s", (req.user_id,)
+                f"SELECT {cash_col} FROM paper_portfolio WHERE user_id = %s", (user_id,)
             ).fetchone()
             available = current[0] if current else 0.0
             raise HTTPException(
@@ -175,7 +172,7 @@ def paper_buy(req: BuyRequest):
             """INSERT INTO paper_trades
                (session_id, user_id, symbol, market, quantity, entry_price, signal, horizon, stop_loss, target_price)
                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-            (req.user_id, req.user_id, req.symbol.upper(), req.market, req.quantity,
+            (user_id, user_id, req.symbol.upper(), req.market, req.quantity,
              req.price, req.signal, req.horizon, req.stop_loss, req.target_price)
         ).fetchone()
         remaining_cash = debited[0]  # already post-debit — RETURNING reflects the new balance
@@ -193,7 +190,7 @@ def paper_buy(req: BuyRequest):
 
 
 @router.post("/sell/{trade_id}")
-def paper_sell(trade_id: int, req: SellRequest):
+def paper_sell(trade_id: int, req: SellRequest, user_id: str = Depends(get_current_user_id)):
     if req.price <= 0:
         raise HTTPException(status_code=400, detail="Price must be > 0")
 
@@ -207,7 +204,7 @@ def paper_sell(trade_id: int, req: SellRequest):
             raise HTTPException(status_code=404, detail="Trade not found")
 
         owner, sym, qty, ep, status, trade_market = trade
-        if owner != req.user_id:
+        if owner != user_id:
             raise HTTPException(status_code=403, detail="Not your trade")
         if status != "OPEN":
             raise HTTPException(status_code=400, detail="Trade already closed")
@@ -224,7 +221,7 @@ def paper_sell(trade_id: int, req: SellRequest):
         )
         conn.execute(
             f"UPDATE paper_portfolio SET {cash_col} = {cash_col} + %s, updated_at = now() WHERE user_id = %s",
-            (proceeds, req.user_id)
+            (proceeds, user_id)
         )
 
     return {
@@ -242,7 +239,7 @@ def paper_sell(trade_id: int, req: SellRequest):
 
 
 @router.patch("/trade/{trade_id}")
-def edit_trade(trade_id: int, req: EditRequest):
+def edit_trade(trade_id: int, req: EditRequest, user_id: str = Depends(get_current_user_id)):
     with _conn() as conn:
         trade = conn.execute(
             "SELECT user_id, status, entry_price, quantity, market FROM paper_trades WHERE id = %s",
@@ -250,7 +247,7 @@ def edit_trade(trade_id: int, req: EditRequest):
         ).fetchone()
         if trade is None:
             raise HTTPException(status_code=404, detail="Trade not found")
-        if trade[0] != req.user_id:
+        if trade[0] != user_id:
             raise HTTPException(status_code=403, detail="Not your trade")
         if trade[1] != "OPEN":
             raise HTTPException(status_code=400, detail="Cannot edit a closed trade")
@@ -273,14 +270,14 @@ def edit_trade(trade_id: int, req: EditRequest):
             )
             conn.execute(
                 f"UPDATE paper_portfolio SET {cash_col} = {cash_col} + %s, updated_at = now() WHERE user_id = %s",
-                (cash_delta, req.user_id)
+                (cash_delta, user_id)
             )
 
     return {"message": "Trade updated", "trade_id": trade_id}
 
 
 @router.post("/reset")
-def reset_portfolio(user_id: str = Query(...), market: Literal["IN", "US", "ALL"] = Query("ALL")):
+def reset_portfolio(user_id: str = Depends(get_current_user_id), market: Literal["IN", "US", "ALL"] = "ALL"):
     """Reset paper trading. Defaults to wiping both ledgers; pass market=IN or
     market=US to reset just one side and leave the other market's trades/cash intact."""
     with _conn() as conn:

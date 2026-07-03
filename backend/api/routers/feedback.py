@@ -9,8 +9,10 @@ All data is user-scoped via Supabase user_id.
 """
 
 from datetime import datetime, timezone, timedelta
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+
+from services.auth import get_current_user_id
 
 router = APIRouter(prefix="/api/feedback", tags=["Feedback"])
 
@@ -23,7 +25,6 @@ def _conn():
 # ── Signal feedback ───────────────────────────────────────────────────────────
 
 class SignalFeedbackIn(BaseModel):
-    user_id: str
     symbol:  str
     market:  str
     horizon: str
@@ -32,7 +33,7 @@ class SignalFeedbackIn(BaseModel):
 
 
 @router.post("/signal")
-def submit_signal_feedback(body: SignalFeedbackIn):
+def submit_signal_feedback(body: SignalFeedbackIn, user_id: str = Depends(get_current_user_id)):
     if body.vote not in (1, -1):
         raise HTTPException(status_code=400, detail="vote must be 1 or -1")
     with _conn() as conn:
@@ -42,14 +43,14 @@ def submit_signal_feedback(body: SignalFeedbackIn):
                VALUES (%s, %s, %s, %s, %s, %s)
                ON CONFLICT (user_id, symbol, market, horizon)
                DO UPDATE SET vote = EXCLUDED.vote, submitted_at = now()""",
-            (body.user_id, body.symbol.upper(), body.market,
+            (user_id, body.symbol.upper(), body.market,
              body.horizon, body.signal, body.vote)
         )
     return {"status": "ok"}
 
 
 @router.get("/signal/{symbol}")
-def get_signal_feedback(symbol: str, user_id: str, market: str = "IN", horizon: str = "medium"):
+def get_signal_feedback(symbol: str, user_id: str = Depends(get_current_user_id), market: str = "IN", horizon: str = "medium"):
     """Return this user's existing vote for a symbol/horizon (if any)."""
     with _conn() as conn:
         row = conn.execute(
@@ -90,23 +91,22 @@ def get_signal_summary(symbol: str, market: str = "IN", horizon: str = "medium")
 # ── NPS survey ────────────────────────────────────────────────────────────────
 
 class NpsIn(BaseModel):
-    user_id: str
     score:   int = Field(..., ge=0, le=10)
     comment: str | None = None
 
 
 @router.post("/nps")
-def submit_nps(body: NpsIn):
+def submit_nps(body: NpsIn, user_id: str = Depends(get_current_user_id)):
     with _conn() as conn:
         conn.execute(
             "INSERT INTO nps_responses (user_id, score, comment) VALUES (%s, %s, %s)",
-            (body.user_id, body.score, body.comment)
+            (user_id, body.score, body.comment)
         )
     return {"status": "ok"}
 
 
 @router.get("/nps/due")
-def nps_due(user_id: str):
+def nps_due(user_id: str = Depends(get_current_user_id)):
     """
     Returns whether the NPS survey should be shown to this user.
     Rules:
