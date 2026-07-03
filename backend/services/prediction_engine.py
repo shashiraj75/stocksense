@@ -584,7 +584,7 @@ class PredictionEngine:
             _cache_set(_pred_cache, cache_key, (time.time(), result))
             return result
 
-        ratio_score = self._fundamental_score(info, horizon, market)
+        ratio_score = self._fundamental_score(info, horizon, market, symbol=symbol)
 
         # ── Hard quality gate — reject fundamentally broken stocks ──────────────
         gate_passed, gate_reasons = self._quality_gate(info, df, horizon)
@@ -663,7 +663,7 @@ class PredictionEngine:
             if horizon not in ("medium", "long"):
                 return None
             try:
-                return self._deep_fundamental_score(shared_statement_ticker, horizon)
+                return self._deep_fundamental_score(shared_statement_ticker, horizon, info)
             except BaseException as e:
                 print(f"[deep_fund] failed for {symbol}: {e}")
                 return None
@@ -1399,7 +1399,7 @@ class PredictionEngine:
 
         return new_confidence
 
-    def _deep_fundamental_score(self, ticker, horizon: str) -> dict:
+    def _deep_fundamental_score(self, ticker, horizon: str, info: dict) -> dict:
         """
         Analyses actual financial statements — Income Statement, Balance Sheet, Cash Flow.
         Only called for medium and long term (skipped for short term to keep latency low).
@@ -1568,7 +1568,14 @@ class PredictionEngine:
 
         return {"score": max(0, min(100, score)), "reasons": reasons, "available": True}
 
-    def _fundamental_score(self, info: dict, horizon: str, market: str = "US") -> dict:
+    def _fundamental_score(
+        self,
+        info: dict,
+        horizon: str,
+        market: str = "US",
+        *,
+        symbol: str,
+    ) -> dict:
         # Per-category buckets prevent any single dimension from dominating.
         # Each bucket has its own ±cap; the total score is assembled at the end.
         # Base = 50; each bucket contributes [-cap, +cap] around zero.
