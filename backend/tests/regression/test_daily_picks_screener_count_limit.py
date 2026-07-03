@@ -30,7 +30,7 @@ def test_screen_is_called_with_yahoo_accepted_page_size():
     the 25-row truncation). #002A's "never exceed 250 per request" rule holds."""
     fake_result = {"quotes": [{"symbol": "RELIANCE.NS"}, {"symbol": "TCS.NS"}]}
     with patch("services.daily_picks.yf.screen", return_value=fake_result) as mock_screen:
-        syms, universe_used, universe_degraded, _ = _get_universe_by_mcap("IN")
+        syms, universe_used, universe_degraded, _, _meta = _get_universe_by_mcap("IN")
     for call in mock_screen.call_args_list:
         assert call.kwargs["size"] <= 250
         assert "count" not in call.kwargs or call.kwargs["count"] is None
@@ -44,7 +44,7 @@ def test_screen_count_value_error_falls_back_to_static_fallback():
     the bounded curated static list, truthfully flagged as degraded (the
     unbounded full-NSE fallback is retired)."""
     with patch("services.daily_picks.yf.screen", side_effect=ValueError("Yahoo limits query count to 250, reduce count")):
-        syms, universe_used, universe_degraded, _ = _get_universe_by_mcap("IN")
+        syms, universe_used, universe_degraded, _, _meta = _get_universe_by_mcap("IN")
     assert isinstance(syms, list)
     assert len(syms) > 0
     assert universe_used == "static_fallback"
@@ -59,7 +59,7 @@ def test_us_screen_also_uses_yahoo_accepted_count():
     """
     fake_result = {"quotes": [{"symbol": "AAPL"}, {"symbol": "MSFT"}]}
     with patch("services.daily_picks.yf.screen", return_value=fake_result) as mock_screen:
-        syms, universe_used, universe_degraded, _ = _get_universe_by_mcap("US")
+        syms, universe_used, universe_degraded, _, _meta = _get_universe_by_mcap("US")
     assert mock_screen.call_args.kwargs["count"] <= 250
     # Both AAPL and MSFT are in _US_DAILY_PICKS_HEURISTIC_FILTERED and must be present
     assert "AAPL" in syms

@@ -47,16 +47,18 @@ def _get_in_universe(pages):
 def test_single_25_row_page_is_not_a_healthy_screener_universe():
     # The exact production failure: ask for 250, provider serves one 25-row
     # page. Must NOT be labelled a healthy broad screener universe.
-    (symbols, used, degraded, raw), _ = _get_in_universe([_page(_syms("BIG", 25))])
+    (symbols, used, degraded, raw, meta), _ = _get_in_universe([_page(_syms("BIG", 25))])
     assert used == "static_fallback"
     assert degraded is True
     assert raw == 25  # truthful telemetry: what the provider actually served
     assert symbols == list(dp._NIFTY_100)  # bounded curated fallback
+    assert meta["reason"] == "screener_insufficient_symbols"
+    assert meta["error_category"] == "insufficient_symbols"
 
 
 def test_repeated_provider_pages_do_not_loop_forever():
     same = _page(_syms("REP", 250))
-    (symbols, used, degraded, raw), n_calls = _get_in_universe([same] * 50)
+    (symbols, used, degraded, raw, meta), n_calls = _get_in_universe([same] * 50)
     # Identical page repeats → loop stops immediately after detecting it,
     # never exceeding the hard page bound.
     assert n_calls <= dp._SCREEN_MAX_PAGES
@@ -66,7 +68,7 @@ def test_repeated_provider_pages_do_not_loop_forever():
 
 def test_multiple_pages_build_a_broad_universe():
     pages = [_page(_syms("NSE", 250, 0)), _page(_syms("NSE", 250, 250))]
-    (symbols, used, degraded, raw), _ = _get_in_universe(pages)
+    (symbols, used, degraded, raw, meta), _ = _get_in_universe(pages)
     assert used == "screener"
     assert degraded is False
     assert len(symbols) == dp._IN_TARGET_UNIVERSE == 250
@@ -83,7 +85,7 @@ def test_symbols_are_normalized_deduplicated_and_deterministic():
         ] + [{"symbol": f"MID{i:04d}.NS"} for i in range(120)]
          + [{"symbol": "TCS.NS"}]},              # duplicate again
     ]
-    (a, used, degraded, raw), _ = _get_in_universe(pages)
+    (a, used, degraded, raw, meta), _ = _get_in_universe(pages)
     (b, *_), _ = _get_in_universe(pages)
     assert a == b                                # deterministic
     assert a[0] == "RELIANCE" and a[1] == "TCS"  # suffix stripped, order kept
@@ -94,7 +96,7 @@ def test_symbols_are_normalized_deduplicated_and_deterministic():
 
 def test_healthy_result_reports_actual_counts():
     pages = [_page(_syms("OK", 180))]
-    (symbols, used, degraded, raw), _ = _get_in_universe(pages)
+    (symbols, used, degraded, raw, meta), _ = _get_in_universe(pages)
     assert used == "screener"
     assert degraded is False
     assert len(symbols) == 180  # actual, not the 250 target
@@ -103,16 +105,21 @@ def test_healthy_result_reports_actual_counts():
 
 def test_screener_exception_uses_truthful_static_fallback():
     with patch.object(dp.yf, "screen", side_effect=RuntimeError("boom")):
-        symbols, used, degraded, raw = dp._get_universe_by_mcap("IN")
+        symbols, used, degraded, raw, meta = dp._get_universe_by_mcap("IN")
     assert used == "static_fallback"
     assert degraded is True
     assert symbols == list(dp._NIFTY_100)
     # The bounded curated fallback never silently processes thousands.
     assert len(symbols) < 200
+    # A plain RuntimeError("boom") is not rate-limit/timeout language — Release
+    # 12C classifies it as non-transient, so no retry occurs (1 attempt).
+    assert meta["error_category"] == "non_transient_error"
+    assert meta["reason"] == "screener_non_transient_error"
+    assert meta["attempts"] == 1
 
 
 def test_fallback_never_claims_screener_coverage():
-    (symbols, used, degraded, raw), _ = _get_in_universe([_page(_syms("TINY", 10))])
+    (symbols, used, degraded, raw, meta), _ = _get_in_universe([_page(_syms("TINY", 10))])
     assert used != "screener"
     assert used != "full_universe"
     assert degraded is True
@@ -143,7 +150,7 @@ def test_us_universe_selection_unchanged():
         return {"quotes": [{"symbol": s} for s in eligible]}
 
     with patch.object(dp.yf, "screen", side_effect=fake_screen) as mock:
-        symbols, used, degraded, raw = dp._get_universe_by_mcap("US")
+        symbols, used, degraded, raw, meta = dp._get_universe_by_mcap("US")
 
     assert mock.call_count == 1                 # US: single call, no paging
     assert captured["count"] == 250             # original US request preserved

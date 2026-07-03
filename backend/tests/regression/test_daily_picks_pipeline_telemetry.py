@@ -30,7 +30,7 @@ def _inner_patches(*, use_postgres=False, predict_return=None):
     getenv_val = "1" if use_postgres else None
     return [
         patch("services.daily_picks._bulk_screen",
-              return_value=(["AAPL"], 5, "screener", False, 10)),
+              return_value=(["AAPL"], 5, "screener", False, 10, {"universe_candidate_count": 1, "attempts": 1, "reason": "healthy_screener_universe", "error_category": "none"})),
         patch("services.daily_picks._write_score_snapshots"),
         patch("services.daily_picks._zscore_and_rank", return_value=[]),
         patch("services.daily_picks._predict_stock", return_value=predict_return),
@@ -64,7 +64,7 @@ def test_initializing_written_before_universe_selection():
 
     with patch("services.daily_picks._try_job_progress", side_effect=fake_progress), \
          patch("services.daily_picks._bulk_screen",
-               return_value=(["AAPL"], 5, "screener", False, 10)), \
+               return_value=(["AAPL"], 5, "screener", False, 10, {"universe_candidate_count": 1, "attempts": 1, "reason": "healthy_screener_universe", "error_category": "none"})), \
          patch("services.daily_picks._write_score_snapshots"), \
          patch("services.daily_picks._zscore_and_rank", return_value=[]), \
          patch("services.daily_picks._predict_stock", return_value=None), \
@@ -106,7 +106,7 @@ def test_generate_picks_inner_does_not_call_resolve_pending_outcomes():
     with patch("services.alpha_engine.outcome_logger.resolve_pending_outcomes") as mock_resolve, \
          patch("services.daily_picks._try_job_progress"), \
          patch("services.daily_picks._bulk_screen",
-               return_value=(["AAPL"], 5, "screener", False, 10)), \
+               return_value=(["AAPL"], 5, "screener", False, 10, {"universe_candidate_count": 1, "attempts": 1, "reason": "healthy_screener_universe", "error_category": "none"})), \
          patch("services.daily_picks._write_score_snapshots"), \
          patch("services.daily_picks._zscore_and_rank", return_value=[]), \
          patch("services.daily_picks._predict_stock", return_value=None), \
@@ -197,7 +197,10 @@ def test_phase_0b_progress_fires_per_batch():
     with patch("services.daily_picks._get_universe_by_mcap") as mock_u, \
          patch("services.daily_picks._try_job_progress", side_effect=fake_progress), \
          patch("yfinance.download", side_effect=Exception("network error")):
-        mock_u.return_value = (["AAPL", "MSFT"], "screener", False, 5)
+        mock_u.return_value = (["AAPL", "MSFT"], "screener", False, 5, {
+            "universe_candidate_count": 2, "attempts": 1,
+            "reason": "healthy_screener_universe", "error_category": "none",
+        })
 
         dp._bulk_screen("US", n_candidates=50, job_id="job-1")
 
@@ -225,7 +228,7 @@ def test_shortlist_ready_written_after_bulk_screen_before_phase1():
 
     with patch("services.daily_picks._try_job_progress", side_effect=fake_progress), \
          patch("services.daily_picks._bulk_screen",
-               return_value=(["AAPL"], 5, "screener", False, 10)), \
+               return_value=(["AAPL"], 5, "screener", False, 10, {"universe_candidate_count": 1, "attempts": 1, "reason": "healthy_screener_universe", "error_category": "none"})), \
          patch("services.daily_picks._write_score_snapshots"), \
          patch("services.daily_picks._zscore_and_rank", return_value=[]), \
          patch("services.daily_picks._predict_stock", return_value=None), \
@@ -273,7 +276,7 @@ def test_phase_1_progress_uses_real_task_counts():
 
     with patch("services.daily_picks._try_job_progress", side_effect=fake_progress), \
          patch("services.daily_picks._bulk_screen",
-               return_value=(["AAPL", "MSFT"], 2, "screener", False, 5)), \
+               return_value=(["AAPL", "MSFT"], 2, "screener", False, 5, {"universe_candidate_count": 1, "attempts": 1, "reason": "healthy_screener_universe", "error_category": "none"})), \
          patch("services.daily_picks._write_score_snapshots"), \
          patch("services.daily_picks._zscore_and_rank", return_value=[]), \
          patch("services.daily_picks._predict_stock", return_value=None), \
@@ -322,7 +325,7 @@ def test_ranking_written_before_score_snapshots_and_before_persisting():
 
     with patch("services.daily_picks._try_job_progress", side_effect=fake_progress), \
          patch("services.daily_picks._bulk_screen",
-               return_value=(["AAPL"], 5, "screener", False, 10)), \
+               return_value=(["AAPL"], 5, "screener", False, 10, {"universe_candidate_count": 1, "attempts": 1, "reason": "healthy_screener_universe", "error_category": "none"})), \
          patch("services.daily_picks._write_score_snapshots",
                side_effect=fake_score_snapshots), \
          patch("services.daily_picks._zscore_and_rank", return_value=[]), \
@@ -388,7 +391,7 @@ def test_persisting_written_before_save_picks_to_db():
 
     with patch("services.daily_picks._try_job_progress", side_effect=fake_progress), \
          patch("services.daily_picks._bulk_screen",
-               return_value=(["AAPL"], 5, "screener", False, 10)), \
+               return_value=(["AAPL"], 5, "screener", False, 10, {"universe_candidate_count": 1, "attempts": 1, "reason": "healthy_screener_universe", "error_category": "none"})), \
          patch("services.daily_picks._write_score_snapshots"), \
          patch("services.daily_picks._zscore_and_rank", return_value=[]), \
          patch("services.daily_picks._predict_stock", return_value=None), \
@@ -441,7 +444,7 @@ def test_state_only_phases_do_not_fabricate_numeric_workload():
 
     with patch("services.daily_picks._try_job_progress", side_effect=fake_progress), \
          patch("services.daily_picks._bulk_screen",
-               return_value=(["AAPL"], 5, "screener", False, 10)), \
+               return_value=(["AAPL"], 5, "screener", False, 10, {"universe_candidate_count": 1, "attempts": 1, "reason": "healthy_screener_universe", "error_category": "none"})), \
          patch("services.daily_picks._write_score_snapshots"), \
          patch("services.daily_picks._zscore_and_rank", return_value=[]), \
          patch("services.daily_picks._predict_stock", return_value=None), \
@@ -486,8 +489,11 @@ def test_last_progress_at_updated_per_state_transition():
     sql    = execute_args[0]
     params = execute_args[1]
     assert "last_progress_at" in sql
-    # params for state-only: (phase, processed, total, last_progress_at, job_id)
-    last_progress_at_value = params[3]
+    # Release 12C: params for state-only now also carry phase_task_processed/
+    # phase_task_total (explicit aliases of processed/total) before
+    # last_progress_at: (phase, processed, total, phase_task_processed,
+    # phase_task_total, last_progress_at, job_id).
+    last_progress_at_value = params[5]
     assert last_progress_at_value is not None
     assert isinstance(last_progress_at_value, datetime)
 
@@ -564,7 +570,7 @@ def test_telemetry_does_not_alter_output_payload_fields():
 
     with patch("services.daily_picks._try_job_progress"), \
          patch("services.daily_picks._bulk_screen",
-               return_value=(["AAPL"], 5, "screener", False, 10)), \
+               return_value=(["AAPL"], 5, "screener", False, 10, {"universe_candidate_count": 1, "attempts": 1, "reason": "healthy_screener_universe", "error_category": "none"})), \
          patch("services.daily_picks._write_score_snapshots"), \
          patch("services.daily_picks._zscore_and_rank", return_value=[]), \
          patch("services.daily_picks._predict_stock", return_value=None), \
@@ -598,7 +604,7 @@ def test_full_lifecycle_phase_order():
 
     with patch("services.daily_picks._try_job_progress", side_effect=fake_progress), \
          patch("services.daily_picks._bulk_screen",
-               return_value=(["AAPL"], 5, "screener", False, 10)), \
+               return_value=(["AAPL"], 5, "screener", False, 10, {"universe_candidate_count": 1, "attempts": 1, "reason": "healthy_screener_universe", "error_category": "none"})), \
          patch("services.daily_picks._write_score_snapshots"), \
          patch("services.daily_picks._zscore_and_rank", return_value=[]), \
          patch("services.daily_picks._predict_stock", return_value=None), \

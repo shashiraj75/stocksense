@@ -16,6 +16,7 @@ Learning Alpha Engine integration:
 import json
 import logging
 import os
+import random
 import re
 import time
 import uuid as _uuid
@@ -318,6 +319,113 @@ _IN_MIN_HEALTHY_UNIVERSE = 100   # below this the screener result is NOT a
 _SCREEN_PAGE_SIZE = 250          # Yahoo max rows per custom-query request
 _SCREEN_MAX_PAGES = 4            # hard bound — never loop past target*4 rows
 
+# ── Release 12C: India screener rate-limit recovery & observability ─────────
+# Root cause of the 2026-07-04 IN degraded run: a transient upstream
+# "Too Many Requests" rate-limit on the FIRST screener attempt fell straight
+# through to the static fallback with no retry — a genuinely transient
+# failure was treated the same as a permanent one. Bounded retry (only for
+# transient/rate-limited errors — never for a definite/non-transient error,
+# which would just delay the safe fallback with no chance of success) plus
+# explicit, truthful selection-reason/error-category metadata closes that gap.
+_IN_SCREENER_MAX_ATTEMPTS = int(os.getenv("IN_SCREENER_MAX_ATTEMPTS", 3))
+_IN_SCREENER_RETRY_BACKOFF_SECONDS = float(os.getenv("IN_SCREENER_RETRY_BACKOFF_SECONDS", 2))
+# Named finite ceiling — no computed delay (base × 2^n, plus jitter) may ever
+# exceed this, however large max attempts or the base delay are configured.
+_IN_SCREENER_RETRY_MAX_DELAY_SECONDS = float(os.getenv("IN_SCREENER_RETRY_MAX_DELAY_SECONDS", 30))
+# Small bounded jitter added on top of the exponential delay — spreads out
+# concurrent retries (e.g. a redeploy racing a cron trigger) without meaningfully
+# changing the backoff shape. Always >= 0, added then re-clamped to the cap.
+_IN_SCREENER_RETRY_JITTER_SECONDS = float(os.getenv("IN_SCREENER_RETRY_JITTER_SECONDS", 0.5))
+_IN_SCREENER_RETRYABLE_CATEGORIES = {"rate_limited", "transient_upstream_error"}
+
+
+def _classify_screener_error(exc: Exception) -> str:
+    """
+    Stable, non-secret error category derived from an exception's message.
+    Never returns or embeds the raw exception text — callers log that
+    separately; only this category is ever persisted to the durable job
+    record or exposed via the API, per Release 12C's "no raw upstream
+    payloads/stack traces in the API contract" requirement.
+    """
+    msg = str(exc).lower()
+    if "rate limit" in msg or "too many requests" in msg or "429" in msg:
+        return "rate_limited"
+    if any(k in msg for k in (
+        "timeout", "timed out", "connection", "temporarily unavailable",
+        "502", "503", "504",
+    )):
+        return "transient_upstream_error"
+    return "non_transient_error"
+
+
+def _in_screener_backoff_delay(failed_attempt: int) -> float:
+    """
+    Bounded exponential backoff with small jitter for IN screener retries.
+
+    ``failed_attempt`` is the 1-indexed attempt number that just failed (1 for
+    the first failure, 2 for the second, ...). Intended shape:
+      - after failed attempt 1: base × 2^0 = base × 1
+      - after failed attempt 2: base × 2^1 = base × 2
+      - after failed attempt N: base × 2^(N-1)
+    then jitter in [0, _IN_SCREENER_RETRY_JITTER_SECONDS) is added, and the
+    total is clamped to _IN_SCREENER_RETRY_MAX_DELAY_SECONDS — the named
+    finite ceiling no delay may ever exceed regardless of configured base
+    delay, jitter, or attempt count.
+
+    A standalone, directly testable function precisely so tests can assert
+    the exponential shape and the cap without needing to drive a full retry
+    loop, and so the jitter source (``random.uniform``) can be patched for
+    deterministic assertions.
+    """
+    exponential = _IN_SCREENER_RETRY_BACKOFF_SECONDS * (2 ** (failed_attempt - 1))
+    jitter = random.uniform(0, _IN_SCREENER_RETRY_JITTER_SECONDS)
+    return min(exponential + jitter, _IN_SCREENER_RETRY_MAX_DELAY_SECONDS)
+
+
+def _select_in_universe_with_retry(query, suffix: str) -> tuple[list[str], int, int, str, str]:
+    """
+    Bounded-retry wrapper around ``_collect_in_screener_symbols`` for IN only.
+    Retries only on transient/rate-limited errors, up to
+    ``_IN_SCREENER_MAX_ATTEMPTS`` attempts total, with bounded exponential
+    backoff (see ``_in_screener_backoff_delay``) between attempts. A
+    non-transient error stops immediately — retrying a definite failure only
+    delays the safe static fallback with no chance of success, and risks a
+    retry storm against an upstream that has already said no.
+
+    Returns ``(symbols, raw_count, attempts_made, screener_call_outcome,
+    error_category)``. ``screener_call_outcome`` is either
+    ``"screener_call_succeeded"`` (no exception — caller still applies the
+    healthy-universe threshold on top of this) or one of the exhausted-retry
+    reasons below. Does not raise — a failure after all attempts returns an
+    empty list, never propagates the underlying exception.
+    """
+    attempts_made = 0
+    last_category = "none"
+    for attempt in range(1, _IN_SCREENER_MAX_ATTEMPTS + 1):
+        attempts_made = attempt
+        try:
+            symbols, raw_count = _collect_in_screener_symbols(query, suffix)
+            return symbols, raw_count, attempts_made, "screener_call_succeeded", "none"
+        except Exception as e:
+            last_category = _classify_screener_error(e)
+            # Structured, non-secret fields only — never the raw exception
+            # text, a stack trace, or provider response content.
+            log.warning(
+                "[picks] [IN] screener attempt %d/%d failed category=%s",
+                attempt, _IN_SCREENER_MAX_ATTEMPTS, last_category,
+            )
+            if last_category not in _IN_SCREENER_RETRYABLE_CATEGORIES:
+                break  # non-transient — do not retry
+            if attempt < _IN_SCREENER_MAX_ATTEMPTS:
+                time.sleep(_in_screener_backoff_delay(attempt))
+
+    reason = (
+        "screener_rate_limit_exhausted" if last_category == "rate_limited" else
+        "screener_transient_failure_exhausted" if last_category == "transient_upstream_error" else
+        "screener_non_transient_error"
+    )
+    return [], 0, attempts_made, reason, last_category
+
 
 def _collect_in_screener_symbols(query, suffix: str) -> tuple[list[str], int]:
     """
@@ -361,16 +469,22 @@ def _collect_in_screener_symbols(query, suffix: str) -> tuple[list[str], int]:
     return (symbols[:_IN_TARGET_UNIVERSE], raw_count)
 
 
-def _get_universe_by_mcap(market: str) -> tuple[list[str], str, bool, int | None]:
+def _get_universe_by_mcap(
+    market: str,
+) -> tuple[list[str], str, bool, int | None, dict]:
     """
     Use yfinance equity screener to get stocks above a market-cap floor.
-    Returns ``(symbols, universe_used, universe_degraded, screener_raw_count)``.
+    Returns ``(symbols, universe_used, universe_degraded, screener_raw_count,
+    selection_meta)``.
 
     ``screener_raw_count`` is the number of symbols returned by Yahoo screener
     *before* local eligibility filtering.  None when screener was not used
-    (anchor fallback or full-NSE fallback).
+    (anchor fallback for US).  ``selection_meta`` is a Release 12C addition —
+    a dict with keys ``universe_candidate_count``, ``attempts``, ``reason``,
+    ``error_category`` — additive observability, never used to change
+    selection behavior.
 
-    For US  — Product Integrity Workstream #002D-B/C2:
+    For US  — Product Integrity Workstream #002D-B/C2 (unchanged by Release 12C):
       On screener success: intersects result with _US_DAILY_PICKS_HEURISTIC_FILTERED
       to strip preferred shares, ETFs, SPACs, and other non-common-equity
       instruments that Yahoo may return.  If the intersection is empty (screener
@@ -379,15 +493,18 @@ def _get_universe_by_mcap(market: str) -> tuple[list[str], str, bool, int | None
       On any screener exception OR zero eligible symbols after intersection:
       returns the curated _US_MEGACAP_100 anchor directly (all 100 symbols)
       (``universe_used="anchor"``, ``universe_degraded=True``).  The raw 12k
-      universe is NEVER returned for US after this change.
+      universe is NEVER returned for US after this change.  US has no retry —
+      out of scope for Release 12C, which addresses IN only.
 
-    For IN — Release 12B: symbols are collected via deterministic size/offset
-      pagination (_collect_in_screener_symbols) toward _IN_TARGET_UNIVERSE.
-      A result below _IN_MIN_HEALTHY_UNIVERSE (e.g. a single 25-row provider
-      page) is NOT a healthy broad universe: it falls back to the bounded
-      curated NIFTY-100 static list, labelled truthfully as
-      ``universe_used="static_fallback"`` with ``universe_degraded=True``.
-      The unbounded full-NSE (~2.4k symbols) path is no longer used.
+    For IN — Release 12B/12C: symbols are collected via deterministic
+      size/offset pagination (_collect_in_screener_symbols), now wrapped in
+      _select_in_universe_with_retry for bounded retry on transient/rate-limit
+      errors (Release 12C). A result below _IN_MIN_HEALTHY_UNIVERSE (e.g. a
+      single 25-row provider page, or every attempt exhausted) is NOT a
+      healthy broad universe: it falls back to the bounded curated NIFTY-100
+      static list, labelled truthfully as ``universe_used="static_fallback"``
+      with ``universe_degraded=True``. The unbounded full-NSE (~2.4k symbols)
+      path is no longer used.
 
     #002A note: Yahoo's screen() hard-rejects count/size > 250 — page size 250.
     """
@@ -399,97 +516,176 @@ def _get_universe_by_mcap(market: str) -> tuple[list[str], str, bool, int | None
         min_mcap = _MIN_MCAP_USD_M * 1_000_000
         label = f"≥${_MIN_MCAP_USD_M}M"
 
-    screener_syms: list[str] = []
-    screener_raw_count: int | None = None
-    screener_error: str | None = None
-    try:
+    def _build_query():
         exch_query = yf.EquityQuery("or", [
             yf.EquityQuery("eq", ["exchange", ex]) for ex in cfg["exchanges"]
         ]) if len(cfg["exchanges"]) > 1 else yf.EquityQuery("eq", ["exchange", cfg["exchanges"][0]])
-        query = yf.EquityQuery("and", [
+        return yf.EquityQuery("and", [
             exch_query,
             yf.EquityQuery("gt", ["intradaymarketcap", min_mcap]),
         ])
-        if market == "IN":
-            # Release 12B: paged collection toward the intended 250-symbol
-            # universe (count=250 was silently ignored for custom queries).
-            screener_syms, screener_raw_count = _collect_in_screener_symbols(
-                query, cfg["suffix"])
-        else:
-            # US path unchanged.
-            result = yf.screen(
-                query, sortField="intradaymarketcap", sortAsc=False, count=250
-            )
-            quotes = result.get("quotes", [])
-            suffix = cfg["suffix"]
-            screener_syms = [
-                q["symbol"].replace(suffix, "") if suffix else q["symbol"]
-                for q in quotes if q.get("symbol")
-            ]
-    except Exception as e:
-        screener_error = str(e)
-        log.warning(f"[picks] [{market}] mcap screener failed ({e})")
 
-    if market == "US":
-        # Intersect live screener result with Daily-Picks eligible common-equity
-        # universe regardless of whether the screener succeeded — preferred
-        # shares, ETFs, SPACs etc. can appear in Yahoo screener output.
-        if screener_syms:
-            eligible_from_screener = [s for s in screener_syms if s in _US_DAILY_PICKS_HEURISTIC_FILTERED_SET]
-            if eligible_from_screener:
-                log.info(
-                    f"[picks] [US] mcap filter {label}: {len(eligible_from_screener)} eligible "
-                    f"of {len(screener_syms)} screener symbols"
-                )
-                return (eligible_from_screener, "screener", False, len(screener_syms))
+    if market == "IN":
+        # Query construction itself (not a screener request) failing is a
+        # local/config problem, never a network/rate-limit condition — it
+        # must never escape this function, must not retry (no screener
+        # request was ever attempted, so there is nothing transient to
+        # retry), and must land on the same safe static fallback as any
+        # other non-transient screener failure.
+        try:
+            query = _build_query()
+        except Exception:
             log.warning(
-                f"[picks] [US] screener returned {len(screener_syms)} symbols but "
-                f"0 after eligible-universe intersection — using anchor fallback"
+                "[picks] [IN] query construction failed attempts=0 "
+                "category=non_transient_error"
             )
-        # Anchor fallback: complete curated 100-symbol list, independent of the
-        # heuristic-filtered set. All _US_MEGACAP_100 symbols are known common
-        # equities and verified by the test suite to pass the exclusion rules.
-        anchor = list(_US_MEGACAP_100)
-        reason = screener_error or "0 eligible symbols from screener"
-        log.warning(
-            f"[picks] [US] DEGRADED UNIVERSE — anchor fallback ({len(anchor)} symbols). "
-            f"Reason: {reason}"
-        )
-        return (anchor, "anchor", True, None)  # screener_raw_count=None: screener not used
+            fallback = list(_NIFTY_100)
+            log.warning(
+                "[picks] [IN] DEGRADED UNIVERSE — static fallback (%d curated "
+                "NIFTY-100 symbols) reason=screener_non_transient_error "
+                "category=non_transient_error attempts=0",
+                len(fallback),
+            )
+            meta = {
+                "universe_candidate_count": len(fallback),
+                "attempts": 0,
+                "reason": "screener_non_transient_error",
+                "error_category": "non_transient_error",
+            }
+            return (fallback, "static_fallback", True, 0, meta)
 
-    # IN — Release 12B healthy-universe guard: a tiny provider result (e.g.
-    # one 25-row page) must never masquerade as the intended broad screener
-    # universe. Below the healthy minimum, fall back to the bounded curated
-    # NIFTY-100 static list, truthfully labelled and flagged degraded.
-    if len(screener_syms) >= _IN_MIN_HEALTHY_UNIVERSE:
-        log.info(f"[picks] [IN] mcap filter {label}: {len(screener_syms)} stocks qualify "
-                 f"(target {_IN_TARGET_UNIVERSE}, raw rows {screener_raw_count})")
-        return (screener_syms, "screener", False, screener_raw_count)
-    reason = screener_error or (
-        f"screener returned only {len(screener_syms)} symbols "
-        f"(< healthy minimum {_IN_MIN_HEALTHY_UNIVERSE})")
-    fallback = list(_NIFTY_100)
+        # Release 12C: bounded retry on transient/rate-limited errors only.
+        screener_syms, screener_raw_count, attempts, screener_call_reason, error_category = (
+            _select_in_universe_with_retry(query, cfg["suffix"])
+        )
+
+        if len(screener_syms) >= _IN_MIN_HEALTHY_UNIVERSE:
+            log.info(
+                "[picks] [IN] mcap filter %s: %d stocks qualify "
+                "(target %d, raw rows %s, attempts %d)",
+                label, len(screener_syms), _IN_TARGET_UNIVERSE, screener_raw_count, attempts,
+            )
+            meta = {
+                "universe_candidate_count": len(screener_syms),
+                "attempts": attempts,
+                "reason": "healthy_screener_universe",
+                "error_category": "none",
+            }
+            return (screener_syms, "screener", False, screener_raw_count, meta)
+
+        # Below healthy minimum — either the screener call itself failed after
+        # exhausting retries (screener_call_reason already names that), or it
+        # succeeded but simply returned too few symbols (no exception, no
+        # retry — a legitimately small result is not something a retry can fix).
+        if screener_call_reason == "screener_call_succeeded":
+            reason = "screener_insufficient_symbols"
+            error_category = "insufficient_symbols"
+        else:
+            reason = screener_call_reason
+
+        fallback = list(_NIFTY_100)
+        log.warning(
+            "[picks] [IN] DEGRADED UNIVERSE — static fallback (%d curated "
+            "NIFTY-100 symbols) reason=%s category=%s attempts=%d raw_count=%s",
+            len(fallback), reason, error_category, attempts, screener_raw_count,
+        )
+        meta = {
+            "universe_candidate_count": len(fallback),
+            "attempts": attempts,
+            "reason": reason,
+            "error_category": error_category,
+        }
+        return (fallback, "static_fallback", True, screener_raw_count, meta)
+
+    # US — unchanged selection logic; only the additive `meta` return is new.
+    # Query-construction failure is folded into the same try/except as the
+    # screener call itself (US has no retry either way), so it safely lands
+    # on the existing anchor fallback rather than escaping the function.
+    screener_syms: list[str] = []
+    screener_raw_count: int | None = None
+    screener_error_category: str | None = None
+    try:
+        query = _build_query()
+        result = yf.screen(
+            query, sortField="intradaymarketcap", sortAsc=False, count=250
+        )
+        quotes = result.get("quotes", [])
+        suffix = cfg["suffix"]
+        screener_syms = [
+            q["symbol"].replace(suffix, "") if suffix else q["symbol"]
+            for q in quotes if q.get("symbol")
+        ]
+    except Exception as e:
+        screener_error_category = _classify_screener_error(e)
+        log.warning(
+            "[picks] [US] mcap screener failed category=%s", screener_error_category,
+        )
+
+    # Intersect live screener result with Daily-Picks eligible common-equity
+    # universe regardless of whether the screener succeeded — preferred
+    # shares, ETFs, SPACs etc. can appear in Yahoo screener output.
+    if screener_syms:
+        eligible_from_screener = [s for s in screener_syms if s in _US_DAILY_PICKS_HEURISTIC_FILTERED_SET]
+        if eligible_from_screener:
+            log.info(
+                "[picks] [US] mcap filter %s: %d eligible of %d screener symbols",
+                label, len(eligible_from_screener), len(screener_syms),
+            )
+            meta = {
+                "universe_candidate_count": len(eligible_from_screener),
+                "attempts": 1,
+                "reason": "healthy_screener_universe",
+                "error_category": "none",
+            }
+            return (eligible_from_screener, "screener", False, len(screener_syms), meta)
+        log.warning(
+            "[picks] [US] screener returned %d symbols but 0 after "
+            "eligible-universe intersection — using anchor fallback",
+            len(screener_syms),
+        )
+    # Anchor fallback: complete curated 100-symbol list, independent of the
+    # heuristic-filtered set. All _US_MEGACAP_100 symbols are known common
+    # equities and verified by the test suite to pass the exclusion rules.
+    anchor = list(_US_MEGACAP_100)
+    if screener_error_category:
+        error_category = screener_error_category
+        reason = (
+            "screener_rate_limit_exhausted" if error_category == "rate_limited" else
+            "screener_transient_failure_exhausted" if error_category == "transient_upstream_error" else
+            "screener_non_transient_error"
+        )
+    else:
+        error_category = "insufficient_symbols"
+        reason = "screener_insufficient_symbols"
     log.warning(
-        f"[picks] [IN] DEGRADED UNIVERSE — static fallback ({len(fallback)} curated "
-        f"NIFTY-100 symbols). Reason: {reason}"
+        "[picks] [US] DEGRADED UNIVERSE — anchor fallback (%d symbols) reason=%s category=%s",
+        len(anchor), reason, error_category,
     )
-    return (fallback, "static_fallback", True, screener_raw_count)
+    meta = {
+        "universe_candidate_count": len(anchor),
+        "attempts": 1,
+        "reason": reason,
+        "error_category": error_category,
+    }
+    return (anchor, "anchor", True, None, meta)  # screener_raw_count=None: screener not used
 
 
 def _bulk_screen(
     market: str, n_candidates: int = 50, job_id: str | None = None
-) -> tuple[list[str], int, str, bool, int | None]:
+) -> tuple[list[str], int, str, bool, int | None, dict]:
     """
     Phase-0 screener: batched yf.download() → momentum rank.
 
     Returns ``(candidates, phase0_universe_size, universe_used, universe_degraded,
-    screener_raw_count)``.
+    screener_raw_count, selection_meta)``.
     ``phase0_universe_size`` is the ACTUAL count of tickers passed to yf.download
     (post-eligibility-filter, post-screener-intersection for US) and is the
     value that should appear in ``screened_from`` / ``universe_eligible_size``
     in the final payload.  ``screener_raw_count`` is the raw Yahoo screener
     result count before local eligibility filtering, or None when the screener
-    was not used (anchor / full-NSE fallback).
+    was not used (anchor / full-NSE fallback).  ``selection_meta`` (Release 12C)
+    carries ``universe_candidate_count``/``attempts``/``reason``/``error_category``
+    straight through from ``_get_universe_by_mcap`` — purely additive observability.
 
     1. Filter to stocks with market cap above a floor (per-market threshold)
        using yfinance equity screener — removes illiquid micro-caps.
@@ -505,7 +701,7 @@ def _bulk_screen(
     suffix = _SCREEN_CONFIG[market]["suffix"]
     fallback = _NIFTY_100 if market == "IN" else _US_MEGACAP_100
 
-    universe, universe_used, universe_degraded, _screener_raw_count = _get_universe_by_mcap(market)
+    universe, universe_used, universe_degraded, _screener_raw_count, _selection_meta = _get_universe_by_mcap(market)
     all_tickers = [s + suffix for s in universe]
     phase0_universe_size = len(all_tickers)
     batches = [all_tickers[i:i + _SCREEN_BATCH_SIZE]
@@ -564,13 +760,13 @@ def _bulk_screen(
     elapsed = round(time.time() - t0, 1)
     if not scores:
         log.info(f"[picks] [{market}] Phase-0: no stocks scored — falling back to anchor list")
-        return (list(fallback[:n_candidates]), phase0_universe_size, universe_used, universe_degraded, _screener_raw_count)
+        return (list(fallback[:n_candidates]), phase0_universe_size, universe_used, universe_degraded, _screener_raw_count, _selection_meta)
 
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     top_syms = [sym for sym, _ in ranked[:n_candidates]]
     log.info(f"[picks] [{market}] Phase-0 complete in {elapsed}s: {len(scores)} scored, "
           f"top candidates: {top_syms[:10]} …")
-    return (top_syms, phase0_universe_size, universe_used, universe_degraded, _screener_raw_count)
+    return (top_syms, phase0_universe_size, universe_used, universe_degraded, _screener_raw_count, _selection_meta)
 
 
 def _predict_stock(symbol: str, horizon: str, market: str = "IN") -> dict | None:
@@ -1065,14 +1261,23 @@ def _generate_picks_inner(
     # momentum score. For US: uses _US_DAILY_PICKS_HEURISTIC_FILTERED intersection;
     # never falls back to the raw 12k universe. Falls back to anchor megacap
     # list (US) / Nifty 100 (IN) if all scoring fails.
-    candidates, _phase0_universe_size, _universe_used, _universe_degraded, _screener_raw_count = _bulk_screen(
+    candidates, _phase0_universe_size, _universe_used, _universe_degraded, _screener_raw_count, _selection_meta = _bulk_screen(
         market, _N_CANDIDATES, job_id=job_id
     )
     log.info(f"[picks] [{market}] Starting deep prediction for {len(candidates)} candidates × 3 horizons …")
-    # Phase 0b complete: record universe metadata and candidate count
+    # Phase 0b complete: record universe metadata and candidate count.
+    # Release 12C: also persist the additive selection-observability fields —
+    # written only here (Phase 0b), same as universe_used/universe_degraded,
+    # so they reflect the actual universe decision, never a later phase's
+    # unrelated task counts.
     _try_job_progress(
         job_id, "phase_0b_done", len(candidates), len(candidates),
         universe_used=_universe_used, universe_degraded=_universe_degraded,
+        screener_raw_count=_screener_raw_count,
+        universe_candidate_count=_selection_meta.get("universe_candidate_count"),
+        universe_selection_attempts=_selection_meta.get("attempts"),
+        universe_selection_reason=_selection_meta.get("reason"),
+        universe_selection_error_category=_selection_meta.get("error_category"),
     )
 
     # ── Phase 2: Detect market regime (done once, shared across all stocks) ──
@@ -1312,6 +1517,32 @@ def _generate_picks_inner(
         "universe_used":     _universe_used,   # "screener" | "anchor" | "full_universe"
         "universe_degraded": _universe_degraded,  # True when live screener not used (US)
         "candidates":        len(candidates),  # legacy alias for deep_prediction_candidates
+        # ── Release 12C: explicit universe-selection observability ────────────
+        # universe_candidate_count: size of the SELECTED source universe
+        #   (screener result or fallback list) before Phase-0 momentum
+        #   scoring truncates it to n_candidates. Equal to universe_eligible_size
+        #   above — kept as its own explicitly-named field per Release 12C's
+        #   contract so a task-count field (phase_task_total, below) can never
+        #   be mistaken for universe breadth.
+        "universe_candidate_count":         _selection_meta.get("universe_candidate_count"),
+        # universe_selection_attempts: number of screener attempts actually made
+        #   (IN only retries; always 1 for US today).
+        "universe_selection_attempts":      _selection_meta.get("attempts"),
+        # universe_selection_reason: stable, human-readable machine-safe reason
+        #   — e.g. "healthy_screener_universe", "screener_rate_limit_exhausted",
+        #   "screener_transient_failure_exhausted", "screener_insufficient_symbols",
+        #   "screener_non_transient_error".
+        "universe_selection_reason":        _selection_meta.get("reason"),
+        # universe_selection_error_category: stable category, never a raw
+        #   exception/stack trace — one of "rate_limited", "transient_upstream_error",
+        #   "insufficient_symbols", "non_transient_error", "none".
+        "universe_selection_error_category": _selection_meta.get("error_category"),
+        # phase_task_processed / phase_task_total: explicitly the CURRENT
+        #   phase's work-unit counts (deep_prediction_candidates × horizons at
+        #   persist time, since Phase-1 is the last countable phase). Never
+        #   the universe size — see universe_candidate_count above for that.
+        "phase_task_processed":              _phase1_task_total,
+        "phase_task_total":                  _phase1_task_total,
         # ── Issuer deduplication metadata ─────────────────────────────────────
         "issuer_dedup_applied":          True,
         # issuer_duplicates_suppressed: total display entries removed across all

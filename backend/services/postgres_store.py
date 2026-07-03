@@ -312,6 +312,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_picks_jobs_one_active_per_market
 CREATE INDEX IF NOT EXISTS idx_daily_picks_jobs_market_status
     ON daily_picks_jobs (market, status, started_at DESC);
 
+-- Release 12C: additive universe-selection observability columns. Written
+-- only at Phase-0b (same as universe_used/universe_degraded above) — never
+-- overwritten by later phases, unlike processed/total which are genuinely
+-- phase-local and reused across every phase transition.
+ALTER TABLE daily_picks_jobs ADD COLUMN IF NOT EXISTS screener_raw_count INTEGER;
+ALTER TABLE daily_picks_jobs ADD COLUMN IF NOT EXISTS universe_candidate_count INTEGER;
+ALTER TABLE daily_picks_jobs ADD COLUMN IF NOT EXISTS universe_selection_attempts INTEGER;
+ALTER TABLE daily_picks_jobs ADD COLUMN IF NOT EXISTS universe_selection_reason TEXT;
+ALTER TABLE daily_picks_jobs ADD COLUMN IF NOT EXISTS universe_selection_error_category TEXT;
+-- Explicit, unambiguous aliases of processed/total for the CURRENT phase's
+-- work units — written on every progress update, same values as
+-- processed/total. processed/total are kept unchanged for compatibility;
+-- these new columns exist so a consumer never has to guess whether a given
+-- "total" describes universe breadth or a phase task count.
+ALTER TABLE daily_picks_jobs ADD COLUMN IF NOT EXISTS phase_task_processed INTEGER;
+ALTER TABLE daily_picks_jobs ADD COLUMN IF NOT EXISTS phase_task_total INTEGER;
+
 -- Every table above had Row-Level Security disabled, meaning anyone with
 -- this project's URL + anon key (normally embedded in frontend JS by
 -- design, for Supabase Auth) could read/write/delete all of them directly
@@ -733,11 +750,26 @@ def record_daily_picks_job_progress(
     universe_used: str | None = None,
     universe_degraded: bool | None = None,
     last_progress_at=None,
+    screener_raw_count: int | None = None,
+    universe_candidate_count: int | None = None,
+    universe_selection_attempts: int | None = None,
+    universe_selection_reason: str | None = None,
+    universe_selection_error_category: str | None = None,
 ) -> None:
     """
     Record genuine forward progress: a batch or candidate completed.
     last_progress_at defaults to now() if not supplied.
-    universe_used / universe_degraded are written only when provided (Phase 0b only).
+    universe_used / universe_degraded — and, as of Release 12C, the
+    universe-selection observability fields (screener_raw_count,
+    universe_candidate_count, universe_selection_attempts,
+    universe_selection_reason, universe_selection_error_category) — are
+    written only when provided (Phase 0b only), same gating as before.
+
+    phase_task_processed / phase_task_total (Release 12C) are always written
+    as explicit aliases of processed/total for the CURRENT call's phase —
+    processed/total themselves are left untouched for backward compatibility,
+    but a consumer that wants an unambiguous "this phase's work units, never
+    universe size" value can read the new columns instead.
     """
     if last_progress_at is None:
         last_progress_at = datetime.now(timezone.utc)
@@ -746,19 +778,29 @@ def record_daily_picks_job_progress(
             conn.execute(
                 """UPDATE daily_picks_jobs
                    SET phase = %s, processed = %s, total = %s,
+                       phase_task_processed = %s, phase_task_total = %s,
                        universe_used = %s, universe_degraded = %s,
+                       screener_raw_count = %s, universe_candidate_count = %s,
+                       universe_selection_attempts = %s,
+                       universe_selection_reason = %s,
+                       universe_selection_error_category = %s,
                        last_progress_at = %s
                    WHERE job_id = %s""",
-                (phase, processed, total,
-                 universe_used, universe_degraded, last_progress_at, job_id),
+                (phase, processed, total, processed, total,
+                 universe_used, universe_degraded,
+                 screener_raw_count, universe_candidate_count,
+                 universe_selection_attempts, universe_selection_reason,
+                 universe_selection_error_category,
+                 last_progress_at, job_id),
             )
         else:
             conn.execute(
                 """UPDATE daily_picks_jobs
                    SET phase = %s, processed = %s, total = %s,
+                       phase_task_processed = %s, phase_task_total = %s,
                        last_progress_at = %s
                    WHERE job_id = %s""",
-                (phase, processed, total, last_progress_at, job_id),
+                (phase, processed, total, processed, total, last_progress_at, job_id),
             )
 
 
@@ -824,7 +866,11 @@ def get_active_daily_picks_job(market: str) -> dict | None:
                 """SELECT job_id, status, phase, processed, total,
                           last_runner_heartbeat_at, last_progress_at,
                           started_at, runner_instance_id,
-                          universe_used, universe_degraded
+                          universe_used, universe_degraded,
+                          screener_raw_count, universe_candidate_count,
+                          universe_selection_attempts, universe_selection_reason,
+                          universe_selection_error_category,
+                          phase_task_processed, phase_task_total
                    FROM daily_picks_jobs
                    WHERE market = %s AND status IN ('queued', 'running')
                    ORDER BY started_at DESC LIMIT 1""",
@@ -835,7 +881,11 @@ def get_active_daily_picks_job(market: str) -> dict | None:
         cols = ["job_id", "status", "phase", "processed", "total",
                 "last_runner_heartbeat_at", "last_progress_at",
                 "started_at", "runner_instance_id",
-                "universe_used", "universe_degraded"]
+                "universe_used", "universe_degraded",
+                "screener_raw_count", "universe_candidate_count",
+                "universe_selection_attempts", "universe_selection_reason",
+                "universe_selection_error_category",
+                "phase_task_processed", "phase_task_total"]
         return dict(zip(cols, row))
     except Exception:
         return None
@@ -854,7 +904,11 @@ def get_latest_daily_picks_job(market: str) -> dict | None:
                           last_runner_heartbeat_at, last_progress_at,
                           started_at, completed_at, persisted_picks_timestamp,
                           runner_instance_id, universe_used, universe_degraded,
-                          last_error
+                          last_error,
+                          screener_raw_count, universe_candidate_count,
+                          universe_selection_attempts, universe_selection_reason,
+                          universe_selection_error_category,
+                          phase_task_processed, phase_task_total
                    FROM daily_picks_jobs
                    WHERE market = %s
                    ORDER BY started_at DESC LIMIT 1""",
@@ -866,7 +920,11 @@ def get_latest_daily_picks_job(market: str) -> dict | None:
                 "last_runner_heartbeat_at", "last_progress_at",
                 "started_at", "completed_at", "persisted_picks_timestamp",
                 "runner_instance_id", "universe_used", "universe_degraded",
-                "last_error"]
+                "last_error",
+                "screener_raw_count", "universe_candidate_count",
+                "universe_selection_attempts", "universe_selection_reason",
+                "universe_selection_error_category",
+                "phase_task_processed", "phase_task_total"]
         return dict(zip(cols, row))
     except Exception:
         return None

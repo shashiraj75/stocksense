@@ -109,6 +109,19 @@ def picks_status(market: str = "IN"):
             "universe_used": job.get("universe_used"),
             "universe_degraded": job.get("universe_degraded"),
             "derived_job_health": _derive_job_health(job),
+            # ── Release 12C: additive universe-selection observability ──────
+            # Absent/null for historical rows recorded before this release —
+            # never fabricated, never inferred from processed/total.
+            "screener_raw_count": job.get("screener_raw_count"),
+            "universe_candidate_count": job.get("universe_candidate_count"),
+            "universe_selection_attempts": job.get("universe_selection_attempts"),
+            "universe_selection_reason": job.get("universe_selection_reason"),
+            "universe_selection_error_category": job.get("universe_selection_error_category"),
+            # phase_task_processed/phase_task_total: explicit, unambiguous
+            # aliases of processed/total for THIS phase's work units — never
+            # universe size. processed/total above are kept for compatibility.
+            "phase_task_processed": job.get("phase_task_processed"),
+            "phase_task_total": job.get("phase_task_total"),
         })
     return resp
 

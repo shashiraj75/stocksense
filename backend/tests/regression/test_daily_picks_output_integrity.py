@@ -46,13 +46,16 @@ def test_screened_from_remains_present_in_payload():
     # _get_universe_by_mcap now returns a 4-tuple — verify screened_from == phase0_universe_size
     with patch("services.daily_picks._get_universe_by_mcap") as mock_universe, \
          patch("yfinance.download") as mock_dl:
-        mock_universe.return_value = (["AAPL", "MSFT", "GOOGL"], "screener", False, 10)
+        mock_universe.return_value = (["AAPL", "MSFT", "GOOGL"], "screener", False, 10, {
+            "universe_candidate_count": 3, "attempts": 1,
+            "reason": "healthy_screener_universe", "error_category": "none",
+        })
         # Make yf.download return an empty DataFrame (Phase-0 scores nothing → fallback)
         import pandas as pd
         mock_dl.return_value = pd.DataFrame()
 
-        # _bulk_screen returns 5-tuple — check phase0_universe_size == 3 (len of universe)
-        candidates, phase0_size, used, degraded, raw_count = dp._bulk_screen("US", n_candidates=50)
+        # _bulk_screen returns 6-tuple — check phase0_universe_size == 3 (len of universe)
+        candidates, phase0_size, used, degraded, raw_count, _meta = dp._bulk_screen("US", n_candidates=50)
         assert phase0_size == 3        # len(["AAPL","MSFT","GOOGL"])
         assert raw_count == 10         # passed through from _get_universe_by_mcap
 
@@ -70,7 +73,7 @@ def test_screener_raw_count_from_get_universe_by_mcap_us_success():
 
     with patch("services.daily_picks.yf.EquityQuery"), \
          patch("services.daily_picks.yf.screen", return_value=fake_result):
-        symbols, used, degraded, raw_count = dp._get_universe_by_mcap("US")
+        symbols, used, degraded, raw_count, meta = dp._get_universe_by_mcap("US")
 
     # raw_count must equal the raw screener count (5), not the post-filter count
     assert raw_count == 5
@@ -82,7 +85,7 @@ def test_screener_raw_count_is_none_in_anchor_mode():
     """When US screener fails, screener_raw_count must be None (not fabricated)."""
     with patch("services.daily_picks.yf.EquityQuery"), \
          patch("services.daily_picks.yf.screen", side_effect=Exception("timeout")):
-        symbols, used, degraded, raw_count = dp._get_universe_by_mcap("US")
+        symbols, used, degraded, raw_count, meta = dp._get_universe_by_mcap("US")
 
     assert raw_count is None
     assert used == "anchor"
@@ -102,7 +105,7 @@ def test_universe_eligible_size_equals_intersection():
 
     with patch("services.daily_picks.yf.EquityQuery"), \
          patch("services.daily_picks.yf.screen", return_value=fake_result):
-        symbols, used, degraded, raw_count = dp._get_universe_by_mcap("US")
+        symbols, used, degraded, raw_count, meta = dp._get_universe_by_mcap("US")
 
     # symbols is the post-filter eligible list
     assert len(symbols) <= len(raw_symbols)
@@ -121,10 +124,13 @@ def test_deep_prediction_candidates_propagated_from_bulk_screen():
     with patch("services.daily_picks._get_universe_by_mcap") as mock_universe, \
          patch("yfinance.download") as mock_dl:
         import pandas as pd
-        mock_universe.return_value = (["AAPL", "MSFT", "NVDA", "TSLA", "META"], "screener", False, 20)
+        mock_universe.return_value = (["AAPL", "MSFT", "NVDA", "TSLA", "META"], "screener", False, 20, {
+            "universe_candidate_count": 5, "attempts": 1,
+            "reason": "healthy_screener_universe", "error_category": "none",
+        })
         mock_dl.return_value = pd.DataFrame()  # no scores → fallback
 
-        candidates, _, _, _, _ = dp._bulk_screen("US", n_candidates=3)
+        candidates, _, _, _, _, _meta = dp._bulk_screen("US", n_candidates=3)
         # fallback returns min(3, len(fallback)) symbols
         assert len(candidates) == 3
 
@@ -216,9 +222,11 @@ def test_anchor_mode_screener_raw_count_is_null():
     screener_raw_count=None — never fabricated when the screener failed."""
     with patch("services.daily_picks.yf.EquityQuery"), \
          patch("services.daily_picks.yf.screen", side_effect=Exception("fail")):
-        symbols, used, degraded, raw_count = dp._get_universe_by_mcap("IN")
+        symbols, used, degraded, raw_count, meta = dp._get_universe_by_mcap("IN")
 
-    assert raw_count is None
+    # Release 12C: IN failure path returns 0 (never fabricated/None) for
+    # screener_raw_count — "0 rows obtained" is itself meaningful telemetry.
+    assert raw_count == 0
     assert used == "static_fallback"
     assert degraded is True
 
@@ -235,7 +243,7 @@ def test_us_screener_empty_intersection_produces_null_raw_count():
 
     with patch("services.daily_picks.yf.EquityQuery"), \
          patch("services.daily_picks.yf.screen", return_value=fake_result):
-        symbols, used, degraded, raw_count = dp._get_universe_by_mcap("US")
+        symbols, used, degraded, raw_count, meta = dp._get_universe_by_mcap("US")
 
     # Intersection is empty → anchor fallback → screener_raw_count=None
     assert raw_count is None
@@ -440,24 +448,28 @@ def test_issuer_group_map_covers_required_pairs():
     assert g["BRK-A"] != g["FOX"]
 
 
-def test_bulk_screen_returns_five_tuple():
-    """_bulk_screen must return a 5-tuple so existing unpacking in
-    _generate_picks_inner works correctly after this change."""
+def test_bulk_screen_returns_six_tuple():
+    """_bulk_screen must return a 6-tuple (Release 12C adds selection_meta) so
+    existing unpacking in _generate_picks_inner works correctly after this change."""
     with patch("services.daily_picks._get_universe_by_mcap") as mock_u, \
          patch("yfinance.download") as mock_dl:
         import pandas as pd
-        mock_u.return_value = (["AAPL"], "screener", False, 5)
+        mock_u.return_value = (["AAPL"], "screener", False, 5, {
+            "universe_candidate_count": 1, "attempts": 1,
+            "reason": "healthy_screener_universe", "error_category": "none",
+        })
         mock_dl.return_value = pd.DataFrame()
 
         result = dp._bulk_screen("US", n_candidates=50)
-        assert len(result) == 5
-        candidates, phase0_size, used, degraded, raw_count = result
+        assert len(result) == 6
+        candidates, phase0_size, used, degraded, raw_count, meta = result
         assert isinstance(candidates, list)
         assert isinstance(phase0_size, int)
         assert isinstance(used, str)
         assert isinstance(degraded, bool)
         # raw_count is int or None
         assert raw_count is None or isinstance(raw_count, int)
+        assert isinstance(meta, dict)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
