@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useRef, useCallback } from "react";
-import { TrendingUp, BookmarkPlus, Check } from "lucide-react";
+import { TrendingUp, BookmarkPlus, Check, LogIn } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { api } from "@/utils/api";
 import { useAuth } from "@/lib/AuthContext";
@@ -68,6 +68,14 @@ export function StockContextMenu({ symbol, market, children, className }: Contex
     }
   };
 
+  // Logged-out visitors must never invoke the watchlist mutation — the
+  // backend already requires a verified JWT (Depends(require_owner)), so
+  // this is a UX clarification, not the actual security boundary.
+  const goToSignIn = () => {
+    router.push("/login");
+    close();
+  };
+
   return (
     <>
       {/* Wrapper — passes right-click down, keeps long-press friendly */}
@@ -97,23 +105,33 @@ export function StockContextMenu({ symbol, market, children, className }: Contex
             View Analysis
           </button>
 
-          <button
-            onClick={addToWatchlist}
-            disabled={adding}
-            className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm hover:bg-dark-border transition-colors disabled:opacity-60"
-          >
-            {added ? (
-              <>
-                <Check size={14} className="text-green-400 shrink-0" />
-                <span className="text-green-400">Added to Watchlist</span>
-              </>
-            ) : (
-              <>
-                <BookmarkPlus size={14} className="text-brand-400 shrink-0" />
-                <span className="text-white">{adding ? "Adding…" : "Add to Watchlist"}</span>
-              </>
-            )}
-          </button>
+          {user ? (
+            <button
+              onClick={addToWatchlist}
+              disabled={adding}
+              className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm hover:bg-dark-border transition-colors disabled:opacity-60"
+            >
+              {added ? (
+                <>
+                  <Check size={14} className="text-green-400 shrink-0" />
+                  <span className="text-green-400">Added to Watchlist</span>
+                </>
+              ) : (
+                <>
+                  <BookmarkPlus size={14} className="text-brand-400 shrink-0" />
+                  <span className="text-white">{adding ? "Adding…" : "Add to Watchlist"}</span>
+                </>
+              )}
+            </button>
+          ) : (
+            <button
+              onClick={goToSignIn}
+              className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm hover:bg-dark-border transition-colors"
+            >
+              <LogIn size={14} className="text-brand-400 shrink-0" />
+              <span className="text-white">Sign in to save stocks</span>
+            </button>
+          )}
         </div>
       )}
     </>

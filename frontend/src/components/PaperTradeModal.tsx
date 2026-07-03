@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { X, TrendingUp, TrendingDown, Minus, AlertCircle, Loader2, ShieldAlert, Target, Clock } from "lucide-react";
 import clsx from "clsx";
+import Link from "next/link";
 import { placePaperBuy, closePaperTrade, fetchPrediction, type Market, type Horizon } from "@/utils/api";
 import { useAuth } from "@/lib/AuthContext";
 import { getMarketStatus } from "@/utils/marketHours";
@@ -131,6 +132,41 @@ export function PaperTradeModal({
   });
 
   const SignalIcon = activeSignal === "BUY" ? TrendingUp : activeSignal === "SELL" ? TrendingDown : Minus;
+
+  // Defense in depth: every entry point that renders this modal (stock-detail
+  // page, Daily Picks page) is expected to already gate opening it on `user`,
+  // but a logged-out visitor must never see a usable Buy/Sell form even if
+  // reached some other way — the backend requires a verified JWT for every
+  // Paper Trading mutation regardless, so this is a UX clarification only,
+  // not a replacement for that server-side check.
+  if (!user) {
+    return (
+      <div className="fixed inset-0 z-[60] w-screen h-screen overflow-hidden flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">
+        <div className="bg-dark-card border border-dark-border rounded-2xl w-full max-w-sm shadow-2xl flex flex-col">
+          <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-dark-border shrink-0">
+            <div>
+              <h2 className="text-base font-bold">Sign In Required</h2>
+              <p className="text-xs text-gray-400 mt-0.5">{symbol} · {market}</p>
+            </div>
+            <button onClick={onClose} className="text-gray-500 hover:text-white transition-colors">
+              <X size={18} />
+            </button>
+          </div>
+          <div className="px-5 py-6 space-y-4 text-center">
+            <p className="text-sm text-gray-300">
+              Paper trading practices with virtual money, but still requires a free account to track your positions.
+            </p>
+            <Link
+              href="/login"
+              className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-brand-500 hover:bg-brand-600 text-white text-sm font-semibold transition-colors"
+            >
+              Sign in to paper trade
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-[60] w-screen h-screen overflow-hidden flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">

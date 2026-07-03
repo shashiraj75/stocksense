@@ -2,6 +2,7 @@
 import { useState, useEffect } from "react";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { useParams, useSearchParams } from "next/navigation";
+import Link from "next/link";
 import { api, fetchQuote, fetchPrediction, fetchNews, fetchFactorAttribution, fetchScoreHistory, Market, Horizon } from "@/utils/api";
 import { TradingViewWidget } from "@/components/TradingViewWidget";
 import { SignalBadge } from "@/components/SignalBadge";
@@ -13,7 +14,7 @@ import { ConfidenceBreakdown } from "@/components/ConfidenceBreakdown";
 import { BullBearCase } from "@/components/BullBearCase";
 import { ScoreHistoryChart } from "@/components/ScoreHistoryChart";
 import clsx from "clsx";
-import { ArrowUpRight, ArrowDownRight, FlaskConical, CheckCircle, XCircle, Loader2, Beaker, BarChart2, TrendingUp, TrendingDown } from "lucide-react";
+import { ArrowUpRight, ArrowDownRight, FlaskConical, CheckCircle, XCircle, Loader2, Beaker, BarChart2, TrendingUp, TrendingDown, LogIn } from "lucide-react";
 import { PaperTradeModal } from "@/components/PaperTradeModal";
 import { useAuth } from "@/lib/AuthContext";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
@@ -547,8 +548,25 @@ export default function StockPage() {
                           })()}
                         </div>
 
-                        {/* Paper Trade button */}
-                        {!isCrypto && (() => {
+                        {/* Paper Trade button — logged-out visitors get a sign-in
+                            action instead of a form that would only fail at
+                            submission (the backend already requires a verified
+                            JWT for every Paper Trading mutation). */}
+                        {!isCrypto && !user && (
+                          <div className="w-full flex flex-col gap-1">
+                            <Link
+                              href="/login"
+                              className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border transition-all bg-white/5 border-white/10 text-gray-300 hover:text-white hover:border-white/20"
+                            >
+                              <LogIn size={12} />
+                              Sign in to paper trade
+                            </Link>
+                            <p className="text-[11px] text-center leading-tight text-gray-500">
+                              Practice trades with virtual money — free account required
+                            </p>
+                          </div>
+                        )}
+                        {!isCrypto && user && (() => {
                           const isBuy  = prediction.signal === "BUY";
                           const isSell = prediction.signal === "SELL";
                           return (
