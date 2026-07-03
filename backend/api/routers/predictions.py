@@ -1,10 +1,11 @@
 import asyncio
 import logging
 import math
+import os
 import threading
 import time
 import numpy as np
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 from services.prediction_engine import PredictionEngine, _pred_cache, _PRED_TTL
 from services.crypto_engine import predict_crypto
@@ -15,6 +16,15 @@ from services.recommendation_consolidation_contract import is_valid_rci_response
 from typing import Literal
 
 log = logging.getLogger(__name__)
+
+# Release 14B: reuses the exact same internal secret-management model as
+# /api/picks/generate's proven X-Secret pattern (api/routers/picks.py) — same
+# env var, same header name, same comparison, same 401-with-no-body-detail
+# shape. No new secret is introduced; PICKS_SECRET is read independently
+# here (not imported from picks.py) to keep this a single-file, isolated
+# change with zero coupling to — and zero risk of altering — the existing
+# Daily Picks trigger route's own protection.
+_DEBUG_SECRET = os.getenv("PICKS_SECRET", "")
 
 router = APIRouter()
 engine = PredictionEngine()
@@ -109,15 +119,36 @@ def _bg_thread(sym: str, market: str, horizon: str, key: str) -> None:
 
 
 @router.get("/debug/state")
-async def debug_state():
-    """Debug: show current cache keys, computing set, and background thread log."""
+async def debug_state(x_secret: str = Header(None)):
+    """
+    Aggregate-only operational snapshot. Release 14B: authenticated (same
+    X-Secret model as /api/picks/generate) and permanently narrowed — no
+    raw cache keys, no per-symbol/market/horizon identifiers, no background
+    log lines (which previously leaked full internal prediction-result
+    schema), no error/exception text. Only counts and summary statistics
+    that are safe to view without revealing traffic patterns or internals.
+
+    Fails CLOSED (401) rather than /api/picks/generate's plain `!=`
+    comparison: an unconfigured or blank _DEBUG_SECRET must never let a
+    blank/absent header "match" it. Both sides are required to be a real,
+    non-empty, non-whitespace value before any comparison is attempted.
+    """
+    configured = (_DEBUG_SECRET or "").strip()
+    provided = (x_secret or "").strip()
+    if not configured or not provided or provided != configured:
+        raise HTTPException(status_code=401, detail="Invalid secret")
+
     import time as t
+    ages = [t.time() - v[0] for v in _pred_cache.values()]
     return {
-        "computing": list(_computing),
-        "cache_keys": list(_pred_cache.keys()),
-        "cache_ages_s": {k: round(t.time() - v[0]) for k, v in _pred_cache.items()},
+        "computing_count": len(_computing),
+        "cache_entry_count": len(_pred_cache),
+        "cache_age_summary_s": {
+            "min": round(min(ages)) if ages else None,
+            "max": round(max(ages)) if ages else None,
+            "avg": round(sum(ages) / len(ages)) if ages else None,
+        },
         "thread_count": threading.active_count(),
-        "log": list(_bg_log),
         "rci_observability": {
             "composition_success_count": _rci_composition_success_count,
             "fail_open_count": _rci_fail_open_count,

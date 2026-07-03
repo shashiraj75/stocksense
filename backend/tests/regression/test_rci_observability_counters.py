@@ -303,18 +303,25 @@ class TestCacheSafetyWithObservability:
 
 @pytest.mark.regression
 class TestDebugStateShapeIsAdditive:
-    def test_debug_state_exposes_only_two_aggregate_integers(self):
+    """Release 14B narrowed and authenticated /debug/state — rci_observability
+    remains available to an authenticated caller, unchanged in shape."""
+
+    def test_debug_state_exposes_only_two_aggregate_integers(self, monkeypatch):
+        monkeypatch.setattr(predictions_router, "_DEBUG_SECRET", "test-debug-secret")
         predictions_router._rci_composition_success_count = 3
         predictions_router._rci_fail_open_count = 1
         import asyncio
-        state = asyncio.run(predictions_router.debug_state())
+        state = asyncio.run(predictions_router.debug_state(x_secret="test-debug-secret"))
         assert state["rci_observability"] == {
             "composition_success_count": 3,
             "fail_open_count": 1,
         }
-        # Pre-existing fields still present and unchanged in shape.
-        for field in ("computing", "cache_keys", "cache_ages_s", "thread_count", "log"):
+        # Release 14B narrowed fields present; raw cache_keys/log never returned.
+        for field in ("computing_count", "cache_entry_count", "cache_age_summary_s", "thread_count"):
             assert field in state
+        assert "cache_keys" not in state
+        assert "log" not in state
+        assert "computing" not in state  # replaced by computing_count
 
 
 @pytest.mark.regression
