@@ -13,6 +13,7 @@ confidence value.
 """
 
 from dataclasses import dataclass, field
+from dataclasses import fields as dataclass_fields
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
@@ -189,3 +190,35 @@ class RecommendationConsolidationResponse:
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# Release 13C (Epic 006) — the set of keys a genuine, complete
+# `RecommendationConsolidationResponse` payload must carry after
+# `dataclasses.asdict()` serialization. Derived from the dataclass's own
+# field list (not hand-duplicated) so it can never drift out of sync with
+# the contract above.
+_RESPONSE_REQUIRED_KEYS = frozenset(
+    f.name for f in dataclass_fields(RecommendationConsolidationResponse)
+)
+
+
+def is_valid_rci_response_payload(payload: Any) -> bool:
+    """
+    Minimum backend-safe validity check for a serialized RCI response.
+
+    Returns True only when `payload` is a mapping that carries every field
+    of `RecommendationConsolidationResponse` AND declares the canonical
+    `CONTRACT_VERSION` this backend actually supports today. Returns False
+    — never raises — for None, a non-mapping value, a mapping missing
+    required fields, or a mapping with any other contract version
+    (including a newer one this backend build does not yet know how to
+    interpret).
+
+    Deliberately narrow: this is a structural/version gate, not a
+    reimplementation of frontend rendering or business-rule validation.
+    """
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("contract_version") != CONTRACT_VERSION:
+        return False
+    return _RESPONSE_REQUIRED_KEYS.issubset(payload.keys())

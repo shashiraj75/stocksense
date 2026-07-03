@@ -11,6 +11,7 @@ from services.crypto_engine import predict_crypto
 from services.recommendation_consolidation_api_composer import (
     compose_prediction_response_with_rci, rci_live_stock_analysis_enabled,
 )
+from services.recommendation_consolidation_contract import is_valid_rci_response_payload
 from typing import Literal
 
 log = logging.getLogger(__name__)
@@ -28,6 +29,28 @@ def _bglog(msg: str) -> None:
     if len(_bg_log) > 30:
         _bg_log.pop(0)
     print(msg, flush=True)
+
+
+# RCI observability (Epic 006, Release 13C) — process-local aggregate counters
+# only, visible via /debug/state, same tier as _bg_log above. No persistence,
+# no external network calls; resets on process restart. Guarded by a lock
+# since this router serves concurrent requests and _bg_thread runs on real
+# OS threads (not just asyncio tasks), so a bare `+= 1` isn't guaranteed atomic.
+_rci_composition_success_count = 0
+_rci_fail_open_count = 0
+_rci_counter_lock = threading.Lock()
+
+
+def _record_rci_outcome(success: bool) -> None:
+    """Increment the appropriate RCI counter. Callers must wrap this in their
+    own try/except — this function intentionally does not swallow errors
+    itself, so a broken counter can never silently mask a real bug here."""
+    global _rci_composition_success_count, _rci_fail_open_count
+    with _rci_counter_lock:
+        if success:
+            _rci_composition_success_count += 1
+        else:
+            _rci_fail_open_count += 1
 
 
 def _to_python(obj):
@@ -95,6 +118,10 @@ async def debug_state():
         "cache_ages_s": {k: round(t.time() - v[0]) for k, v in _pred_cache.items()},
         "thread_count": threading.active_count(),
         "log": list(_bg_log),
+        "rci_observability": {
+            "composition_success_count": _rci_composition_success_count,
+            "fail_open_count": _rci_fail_open_count,
+        },
     }
 
 
@@ -131,6 +158,21 @@ async def get_prediction(
         # itself, and therefore the cache entry, is never written to below.
         if rci_live_stock_analysis_enabled():
             result = compose_prediction_response_with_rci(result, symbol=sym, market=market)
+            # Observability only — best-effort, must never affect the response below.
+            # Release 13C fix: presence of the key alone is not success — a
+            # None value, a non-dict value, a malformed dict, or an
+            # unsupported contract_version must all count as fail-open, not
+            # success. is_valid_rci_response_payload is the single
+            # canonical-version-aware validity check (backend-local, no
+            # frontend import).
+            try:
+                _record_rci_outcome(
+                    success=is_valid_rci_response_payload(
+                        result.get("recommendation_consolidation")
+                    )
+                )
+            except Exception:
+                pass
         return JSONResponse(content=_to_python(result))
 
     # ── 2. Already computing — tell client to poll back in 5 s ──────────────
