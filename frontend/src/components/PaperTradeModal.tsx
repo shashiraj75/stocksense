@@ -176,7 +176,20 @@ export function PaperTradeModal({
         <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-dark-border shrink-0">
           <div>
             <h2 className="text-base font-bold">{isSell ? "Close Position" : "Paper Trade"}</h2>
-            <p className="text-xs text-gray-400 mt-0.5">{symbol} · {market}</p>
+            <p className="text-xs text-gray-400 mt-0.5 flex items-center gap-1.5 flex-wrap">
+              <span>{symbol} · {market}</span>
+              {/* Explicit Open/Closed status, not just a warning when closed —
+                  reuses the same getMarketStatus label already computed above
+                  for the closed-market banner, no new status source. */}
+              <span className={clsx(
+                "text-[10px] font-semibold px-1.5 py-0.5 rounded-full border",
+                marketStatus.isOpen
+                  ? "bg-bull/10 border-bull/30 text-bull"
+                  : "bg-yellow-500/10 border-yellow-500/30 text-yellow-300"
+              )}>
+                {marketStatus.label}
+              </span>
+            </p>
           </div>
           <button onClick={onClose} className="text-gray-500 hover:text-white transition-colors">
             <X size={18} />
