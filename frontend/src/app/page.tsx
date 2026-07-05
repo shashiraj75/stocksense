@@ -51,9 +51,9 @@ function SnapshotCard({
   const picks = (data?.movers ?? []).filter(isDisplayableMover).slice(0, 2);
 
   return (
-    <div className="rounded-2xl bg-dark-card border border-dark-border p-4 min-w-[220px] flex-1 max-w-xs">
-      <div className="flex items-center justify-between mb-3">
-        <span className="text-xs font-semibold text-gray-400">{label}</span>
+    <div className="rounded-xl bg-dark-card border border-dark-border p-2 min-w-[220px] flex-1 max-w-xs shadow-sm shadow-black/20 transition-all duration-150 hover:border-brand-500/25 hover:-translate-y-0.5 hover:shadow-md hover:shadow-black/30">
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">{label}</span>
         <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full border ${
           marketStatus.isOpen ? "bg-bull/10 border-bull/30 text-bull" : "bg-white/5 border-dark-border text-gray-400"
         }`}>
@@ -62,19 +62,19 @@ function SnapshotCard({
       </div>
 
       {isLoading ? (
-        <div className="space-y-2">
-          <div className="h-10 rounded-lg bg-white/[0.04] animate-pulse" />
-          <div className="h-10 rounded-lg bg-white/[0.04] animate-pulse" />
+        <div className="space-y-1">
+          <div className="h-6 rounded-lg bg-white/[0.04] animate-pulse" />
+          <div className="h-6 rounded-lg bg-white/[0.04] animate-pulse" />
         </div>
       ) : isError || picks.length === 0 ? (
-        <p className="text-xs text-gray-500 py-4 text-center">Market data temporarily unavailable</p>
+        <p className="text-xs text-gray-500 py-2 text-center">Market data temporarily unavailable</p>
       ) : (
-        <div className="space-y-2">
+        <div className="space-y-1">
           {picks.map((m) => (
-            <div key={m.symbol} className="flex items-center justify-between gap-2 rounded-lg bg-white/[0.03] px-3 py-2">
+            <div key={m.symbol} className="flex items-center justify-between gap-2 rounded-lg bg-white/[0.03] px-2.5 py-1">
               <span className="font-mono font-bold text-white text-sm">{m.symbol}</span>
               <div className="text-right">
-                <p className="font-mono text-sm text-white">{fmtPrice(m.price, currency, locale)}</p>
+                <p className="font-mono text-sm text-white tabular-nums">{fmtPrice(m.price, currency, locale)}</p>
                 <p className={`text-[11px] font-medium flex items-center justify-end gap-0.5 ${
                   m.change_pct >= 0 ? "text-bull" : "text-bear"
                 }`}>
@@ -87,7 +87,7 @@ function SnapshotCard({
         </div>
       )}
 
-      <p className="text-[10px] text-gray-600 mt-2.5 text-center">
+      <p className="text-[10px] text-gray-600 mt-1 text-center">
         {marketStatus.isOpen ? "Updating periodically" : "As of last market close"}
       </p>
     </div>
@@ -100,13 +100,13 @@ function MoverRow({
   if (!mover) return null; // hide rather than show misleading/fabricated data
   const positive = mover.change_pct >= 0;
   return (
-    <div className="flex items-center justify-between gap-3 rounded-xl bg-dark-card border border-dark-border px-4 py-3">
+    <div className="flex items-center justify-between gap-2 rounded-lg bg-dark-card border border-dark-border px-3 py-3.5 shadow-sm shadow-black/20 transition-all duration-150 hover:border-brand-500/25 hover:-translate-y-0.5 hover:shadow-md hover:shadow-black/30">
       <div>
         <p className="text-[10px] text-gray-500 uppercase tracking-wide">{title}</p>
         <p className="font-mono font-bold text-white text-sm">{mover.symbol} <span className="text-[10px] text-gray-500 font-normal">{marketLabel}</span></p>
       </div>
       <div className="text-right">
-        <p className="font-mono text-sm text-white">{fmtPrice(mover.price, currency, locale)}</p>
+        <p className="font-mono text-sm text-white tabular-nums">{fmtPrice(mover.price, currency, locale)}</p>
         <p className={`text-[11px] font-semibold flex items-center justify-end gap-0.5 ${positive ? "text-bull" : "text-bear"}`}>
           {positive ? <ArrowUpRight size={11} /> : <ArrowDownRight size={11} />}
           {positive ? "+" : ""}{mover.change_pct.toFixed(2)}%
@@ -129,14 +129,14 @@ function MarketMovers() {
   if (rows.length === 0) return null;
 
   return (
-    <section className="px-4 py-12 border-t border-dark-border">
+    <section className="px-4 py-6 border-t border-dark-border">
       <div className="max-w-4xl mx-auto">
-        <div className="text-center mb-6">
+        <div className="text-center mb-3">
           <h2 className="text-xl font-bold text-white">Market Movers</h2>
           <p className="text-gray-500 text-xs mt-1">Top movers in the StockSense360 covered liquid universe</p>
-          <p className="text-gray-600 text-[11px] mt-1">Price movement only — not an AI recommendation or signal</p>
+          <p className="text-gray-600 text-[11px] mt-0.5">Price movement only — not an AI recommendation or signal</p>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           {rows.map(r => <MoverRow key={r.title} {...r} />)}
         </div>
       </div>
@@ -243,48 +243,48 @@ export default function LandingPage() {
     <div className="-mx-3 sm:-mx-4 -my-4 sm:-my-6">
 
       {/* ── Hero ── */}
-      <section className="relative overflow-hidden px-4 pt-16 pb-20 text-center">
+      <section className="relative overflow-hidden px-4 pt-10 pb-12 text-center">
         {/* Background glow */}
         <div className="pointer-events-none absolute inset-0 flex items-start justify-center">
           <div className="h-72 w-72 rounded-full bg-brand-500/10 blur-3xl mt-8" />
         </div>
 
-        <div className="relative max-w-3xl mx-auto space-y-6">
-          <div className="inline-flex items-center gap-2 rounded-full border border-brand-500/30 bg-brand-500/10 px-4 py-1.5 text-xs font-medium text-brand-400">
-            <Lock size={12} /> Invite-only access · Beta
+        <div className="relative max-w-3xl mx-auto space-y-3">
+          <div className="inline-flex items-center gap-2 rounded-full border border-brand-500/30 bg-brand-500/10 px-4 py-1 text-xs font-medium text-brand-400">
+            <Lock size={12} /> Institutional-grade AI · Invite-only beta
           </div>
 
-          <h1 className="text-4xl sm:text-5xl font-bold text-white leading-tight">
+          <h1 className="text-4xl sm:text-5xl font-bold text-white leading-[1.1] tracking-tight">
             AI Stock Intelligence<br />
             <span className="text-brand-500">for Indian & US Markets</span>
           </h1>
 
-          <p className="text-lg text-gray-400 max-w-xl mx-auto">
-            Institutional-grade AI signals, daily picks, self-learning factor weights, and full explainability — completely free.
+          <p className="text-lg text-gray-400 max-w-xl mx-auto leading-relaxed">
+            Data-driven BUY / HOLD / SELL signals, daily picks, and full explainability — built on a self-learning model, completely free.
           </p>
 
           {/* Featured Market Snapshot — dynamic, cached, not a recommendation */}
-          <div className="pt-2">
-            <div className="flex flex-wrap justify-center gap-3">
+          <div className="pt-1">
+            <div className="flex flex-wrap justify-center gap-2">
               {SNAPSHOT_MARKETS.map(({ key, label, currency, locale }) => (
                 <SnapshotCard key={key} market={key} label={label} currency={currency} locale={locale} />
               ))}
             </div>
-            <p className="text-[11px] text-gray-600 mt-2">
+            <p className="text-[11px] text-gray-600 mt-1.5">
               Sample of covered stocks — not investment recommendations
             </p>
           </div>
 
-          <div className="flex flex-col sm:flex-row gap-3 justify-center pt-2">
+          <div className="flex flex-col sm:flex-row gap-3 justify-center pt-1">
             <Link
               href={isLoggedIn ? "/dashboard" : "/login"}
-              className="inline-flex items-center justify-center gap-2 rounded-xl bg-brand-500 hover:bg-brand-600 px-6 py-3 text-sm font-semibold text-white transition-colors"
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-brand-500 hover:bg-brand-600 px-6 py-2.5 text-sm font-semibold text-white shadow-sm shadow-brand-500/20 transition-all duration-150 hover:-translate-y-0.5 hover:shadow-md hover:shadow-brand-500/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400 focus-visible:ring-offset-2 focus-visible:ring-offset-dark-bg"
             >
               {isLoggedIn ? <><LayoutDashboard size={16} /> Go to Dashboard</> : <>Sign In <ArrowRight size={16} /></>}
             </Link>
             <a
               href="#features"
-              className="inline-flex items-center justify-center gap-2 rounded-xl border border-dark-border bg-dark-card hover:border-brand-500/40 px-6 py-3 text-sm font-semibold text-gray-300 transition-colors"
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-dark-border bg-dark-card hover:border-brand-500/40 hover:bg-white/[0.04] px-6 py-2.5 text-sm font-semibold text-gray-300 transition-all duration-150 hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400 focus-visible:ring-offset-2 focus-visible:ring-offset-dark-bg"
             >
               See Features
             </a>
@@ -303,7 +303,7 @@ export default function LandingPage() {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {HOW_IT_WORKS.map(({ step, title, desc }) => (
-              <div key={step} className="relative bg-dark-card border border-dark-border rounded-2xl p-6 space-y-3">
+              <div key={step} className="relative bg-dark-card border border-dark-border rounded-2xl p-6 space-y-3 shadow-sm shadow-black/20 transition-all duration-150 hover:border-brand-500/25 hover:-translate-y-0.5 hover:shadow-md hover:shadow-black/30">
                 <span className="text-4xl font-black text-dark-border select-none">{step}</span>
                 <h3 className="text-base font-semibold text-white">{title}</h3>
                 <p className="text-sm text-gray-400 leading-relaxed">{desc}</p>
@@ -319,7 +319,7 @@ export default function LandingPage() {
           <p className="text-center text-xs text-gray-500 uppercase tracking-widest mb-6">Three prediction horizons</p>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             {HORIZONS.map(({ label, period, desc, color, border }) => (
-              <div key={label} className={`bg-dark-card border ${border} rounded-xl p-5 space-y-2`}>
+              <div key={label} className={`bg-dark-card border ${border} rounded-xl p-5 space-y-2 shadow-sm shadow-black/20 transition-all duration-150 hover:-translate-y-0.5 hover:shadow-md hover:shadow-black/30`}>
                 <div className="flex items-baseline gap-2">
                   <p className={`text-sm font-bold ${color}`}>{label}</p>
                   <p className="text-xs text-gray-500">{period}</p>
@@ -340,7 +340,7 @@ export default function LandingPage() {
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {FEATURES.map(({ icon: Icon, title, desc, color, bg, border }) => (
-              <div key={title} className={`bg-dark-card border ${border} rounded-2xl p-5 space-y-3 hover:border-opacity-50 transition-colors`}>
+              <div key={title} className={`bg-dark-card border ${border} rounded-2xl p-5 space-y-3 shadow-sm shadow-black/20 transition-all duration-150 hover:border-opacity-50 hover:-translate-y-0.5 hover:shadow-md hover:shadow-black/30`}>
                 <div className={`w-9 h-9 rounded-xl ${bg} flex items-center justify-center`}>
                   <Icon size={18} className={color} />
                 </div>
@@ -375,7 +375,7 @@ export default function LandingPage() {
           <p className="text-xs text-gray-500 leading-relaxed">
             <strong className="text-gray-400">Important disclaimer:</strong> StockSense360 is an AI research tool for informational purposes only. It is not a SEBI-registered investment adviser and does not provide financial advice. All signals and picks are generated by machine learning models and may be inaccurate. Investing involves risk of loss. Always conduct your own research and consult a qualified financial adviser before making investment decisions.
           </p>
-          <Link href="/accept-terms" className="text-xs text-brand-500 hover:underline">
+          <Link href="/accept-terms" className="text-xs text-brand-500 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400 rounded">
             Read full Terms of Use & Legal Disclaimer →
           </Link>
         </div>
@@ -394,12 +394,12 @@ export default function LandingPage() {
           </p>
           <Link
             href={isLoggedIn ? "/dashboard" : "/login"}
-            className="inline-flex items-center justify-center gap-2 rounded-xl bg-brand-500 hover:bg-brand-600 px-8 py-3 text-sm font-semibold text-white transition-colors"
+            className="inline-flex items-center justify-center gap-2 rounded-xl bg-brand-500 hover:bg-brand-600 px-8 py-3 text-sm font-semibold text-white shadow-sm shadow-brand-500/20 transition-all duration-150 hover:-translate-y-0.5 hover:shadow-md hover:shadow-brand-500/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400 focus-visible:ring-offset-2 focus-visible:ring-offset-dark-bg"
           >
             {isLoggedIn ? <><LayoutDashboard size={16} /> Go to Dashboard</> : <>Sign In <ArrowRight size={16} /></>}
           </Link>
           <p className="text-xs text-gray-600 pt-2">
-            © {new Date().getFullYear()} StockSense360 · <Link href="/accept-terms" className="hover:text-gray-400">Terms & Disclaimer</Link>
+            © {new Date().getFullYear()} StockSense360 · <Link href="/accept-terms" className="hover:text-gray-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400 rounded">Terms & Disclaimer</Link>
           </p>
         </div>
       </section>
