@@ -1,11 +1,148 @@
 "use client";
 import Link from "next/link";
+import { useQuery } from "@tanstack/react-query";
 import {
   TrendingUp, TrendingDown, BarChart2, Bell, ShieldCheck,
   Brain, LineChart, Zap, Star, ArrowRight, Lock, Globe,
-  BookOpen, RefreshCw, Target, LayoutDashboard,
+  BookOpen, RefreshCw, Target, LayoutDashboard, ArrowUpRight, ArrowDownRight,
 } from "lucide-react";
 import { useAuth } from "@/lib/AuthContext";
+import { fetchTopMovers, type Market } from "@/utils/api";
+import { getMarketStatus } from "@/utils/marketHours";
+
+const SNAPSHOT_MARKETS: { key: Market; label: string; currency: string; locale: string }[] = [
+  { key: "IN", label: "NSE India",       currency: "₹", locale: "en-IN" },
+  { key: "US", label: "NYSE / NASDAQ",   currency: "$", locale: "en-US" },
+];
+
+function fmtPrice(price: number, currency: string, locale: string): string {
+  return `${currency}${price.toLocaleString(locale, { maximumFractionDigits: 2 })}`;
+}
+
+// A non-positive last price (e.g. a halted/delisted symbol reporting $0) is
+// not meaningful data — showing "$0" alongside a computed "+100%" would be
+// exactly the misleading state this release is meant to avoid, so these
+// entries are hidden rather than displayed.
+function isDisplayableMover(m: { price: number } | null | undefined): m is { symbol: string; price: number; change_pct: number; name?: string } {
+  return !!m && Number.isFinite(m.price) && m.price > 0;
+}
+
+// One request per market (not per card) — reuses the same server-cached
+// /api/screener/top-movers endpoint the Screener page already relies on,
+// so the landing page never triggers its own scrape or per-symbol quotes.
+function useMarketSnapshot(market: Market) {
+  return useQuery({
+    queryKey: ["landing-market-snapshot", market],
+    queryFn: () => fetchTopMovers(market),
+    staleTime: 60_000,
+    refetchInterval: 300_000, // 5 min — calm, backend's own cache absorbs the real refresh cost
+    retry: 1,
+  });
+}
+
+function SnapshotCard({
+  market, label, currency, locale,
+}: { market: Market; label: string; currency: string; locale: string }) {
+  const { data, isLoading, isError } = useMarketSnapshot(market);
+  const marketStatus = getMarketStatus(market);
+  // Two distinct symbols from the covered-liquid-universe movers feed —
+  // not necessarily gainers/losers, just the first two available so the
+  // Market Movers section below isn't a duplicate of these cards.
+  const picks = (data?.movers ?? []).filter(isDisplayableMover).slice(0, 2);
+
+  return (
+    <div className="rounded-2xl bg-dark-card border border-dark-border p-4 min-w-[220px] flex-1 max-w-xs">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-xs font-semibold text-gray-400">{label}</span>
+        <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full border ${
+          marketStatus.isOpen ? "bg-bull/10 border-bull/30 text-bull" : "bg-white/5 border-dark-border text-gray-400"
+        }`}>
+          {marketStatus.isOpen ? "Live price" : "Last close"}
+        </span>
+      </div>
+
+      {isLoading ? (
+        <div className="space-y-2">
+          <div className="h-10 rounded-lg bg-white/[0.04] animate-pulse" />
+          <div className="h-10 rounded-lg bg-white/[0.04] animate-pulse" />
+        </div>
+      ) : isError || picks.length === 0 ? (
+        <p className="text-xs text-gray-500 py-4 text-center">Market data temporarily unavailable</p>
+      ) : (
+        <div className="space-y-2">
+          {picks.map((m) => (
+            <div key={m.symbol} className="flex items-center justify-between gap-2 rounded-lg bg-white/[0.03] px-3 py-2">
+              <span className="font-mono font-bold text-white text-sm">{m.symbol}</span>
+              <div className="text-right">
+                <p className="font-mono text-sm text-white">{fmtPrice(m.price, currency, locale)}</p>
+                <p className={`text-[11px] font-medium flex items-center justify-end gap-0.5 ${
+                  m.change_pct >= 0 ? "text-bull" : "text-bear"
+                }`}>
+                  {m.change_pct >= 0 ? <ArrowUpRight size={11} /> : <ArrowDownRight size={11} />}
+                  {m.change_pct >= 0 ? "+" : ""}{m.change_pct.toFixed(2)}%
+                </p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <p className="text-[10px] text-gray-600 mt-2.5 text-center">
+        {marketStatus.isOpen ? "Updating periodically" : "As of last market close"}
+      </p>
+    </div>
+  );
+}
+
+function MoverRow({
+  title, mover, currency, locale, marketLabel,
+}: { title: string; mover: { symbol: string; price: number; change_pct: number } | undefined; currency: string; locale: string; marketLabel: string }) {
+  if (!mover) return null; // hide rather than show misleading/fabricated data
+  const positive = mover.change_pct >= 0;
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-xl bg-dark-card border border-dark-border px-4 py-3">
+      <div>
+        <p className="text-[10px] text-gray-500 uppercase tracking-wide">{title}</p>
+        <p className="font-mono font-bold text-white text-sm">{mover.symbol} <span className="text-[10px] text-gray-500 font-normal">{marketLabel}</span></p>
+      </div>
+      <div className="text-right">
+        <p className="font-mono text-sm text-white">{fmtPrice(mover.price, currency, locale)}</p>
+        <p className={`text-[11px] font-semibold flex items-center justify-end gap-0.5 ${positive ? "text-bull" : "text-bear"}`}>
+          {positive ? <ArrowUpRight size={11} /> : <ArrowDownRight size={11} />}
+          {positive ? "+" : ""}{mover.change_pct.toFixed(2)}%
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function MarketMovers() {
+  const inSnap = useMarketSnapshot("IN");
+  const usSnap = useMarketSnapshot("US");
+  const rows = [
+    { title: "India Top Gainer", mover: inSnap.data?.gainers?.filter(isDisplayableMover)[0], currency: "₹", locale: "en-IN", marketLabel: "NSE" },
+    { title: "India Top Loser",  mover: inSnap.data?.losers?.filter(isDisplayableMover)[0],  currency: "₹", locale: "en-IN", marketLabel: "NSE" },
+    { title: "US Top Gainer",    mover: usSnap.data?.gainers?.filter(isDisplayableMover)[0], currency: "$", locale: "en-US", marketLabel: "NYSE/NASDAQ" },
+    { title: "US Top Loser",     mover: usSnap.data?.losers?.filter(isDisplayableMover)[0],  currency: "$", locale: "en-US", marketLabel: "NYSE/NASDAQ" },
+  ].filter(r => r.mover);
+
+  if (rows.length === 0) return null;
+
+  return (
+    <section className="px-4 py-12 border-t border-dark-border">
+      <div className="max-w-4xl mx-auto">
+        <div className="text-center mb-6">
+          <h2 className="text-xl font-bold text-white">Market Movers</h2>
+          <p className="text-gray-500 text-xs mt-1">Top movers in the StockSense360 covered liquid universe</p>
+          <p className="text-gray-600 text-[11px] mt-1">Price movement only — not an AI recommendation or signal</p>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {rows.map(r => <MoverRow key={r.title} {...r} />)}
+        </div>
+      </div>
+    </section>
+  );
+}
 
 const FEATURES = [
   {
@@ -126,22 +263,16 @@ export default function LandingPage() {
             Institutional-grade AI signals, daily picks, self-learning factor weights, and full explainability — completely free.
           </p>
 
-          {/* Live signal demo */}
-          <div className="flex flex-wrap justify-center gap-3 pt-2">
-            {[
-              { symbol: "RELIANCE", signal: "BUY",  score: 72, change: "+1.8%" },
-              { symbol: "TCS",      signal: "BUY",  score: 68, change: "+0.9%" },
-              { symbol: "HDFC",     signal: "HOLD", score: 55, change: "-0.3%" },
-            ].map(({ symbol, signal, score, change }) => (
-              <div key={symbol} className="flex items-center gap-3 rounded-xl bg-dark-card border border-dark-border px-4 py-2.5">
-                <span className="font-mono font-bold text-white text-sm">{symbol}</span>
-                <span className={`text-xs font-bold px-2 py-0.5 rounded-lg ${signal === "BUY" ? "bg-green-500/20 text-green-400" : "bg-yellow-500/20 text-yellow-400"}`}>
-                  {signal}
-                </span>
-                <span className="text-xs text-gray-400">Score {score}</span>
-                <span className={`text-xs font-medium ${change.startsWith("+") ? "text-green-400" : "text-red-400"}`}>{change}</span>
-              </div>
-            ))}
+          {/* Featured Market Snapshot — dynamic, cached, not a recommendation */}
+          <div className="pt-2">
+            <div className="flex flex-wrap justify-center gap-3">
+              {SNAPSHOT_MARKETS.map(({ key, label, currency, locale }) => (
+                <SnapshotCard key={key} market={key} label={label} currency={currency} locale={locale} />
+              ))}
+            </div>
+            <p className="text-[11px] text-gray-600 mt-2">
+              Sample of covered stocks — not investment recommendations
+            </p>
           </div>
 
           <div className="flex flex-col sm:flex-row gap-3 justify-center pt-2">
@@ -160,6 +291,8 @@ export default function LandingPage() {
           </div>
         </div>
       </section>
+
+      <MarketMovers />
 
       {/* ── How it works ── */}
       <section className="px-4 py-16 border-t border-dark-border">
