@@ -13,20 +13,22 @@ calls. It:
   4. Persists aggregate telemetry only (counts, small samples) — never a
      per-symbol pass/fail list, keeping the table small.
 
-Phase 3B data-availability note (read before assuming these gates are
-"live"): Tradability/Liquidity/Confidence need real quote/volume/
-fundamentals data, which the raw static universe (symbol, name tuples)
-does not carry. The real Daily Picks pipeline's Phase-0 bulk screen
-(_bulk_screen in daily_picks.py) does fetch price data for its candidate
-pool, but does not currently return it in a form this module can reuse,
-and Phase 3B's brief explicitly forbids changing production Daily Picks —
-so extending _bulk_screen's return signature to expose that data was
-judged out of scope for this pass rather than done as an incidental side
-change. Until a future, explicitly-reviewed change wires real per-symbol
-market data through (via the optional `candidate_market_data` parameter
-below), these three gates report `"available": False` in telemetry rather
-than fabricating results — the gates themselves are fully implemented and
-unit-tested, ready to receive real data the moment that wiring exists.
+Phase 3B-B data-availability note (read before assuming these gates see
+the full candidate pool): daily_picks.py's shadow-run call site now passes
+a real `candidate_market_data` map, built by
+intelligence_engine.candidate_data.build_candidate_market_data_from_payload
+from the already-computed Daily Picks `payload` (no new fetch, no
+production function's return contract changed — see that module's own
+docstring for the exact fields and their honesty notes). This covers only
+the symbols that made it into payload["picks"] — the ~18 selected picks
+across 3 horizons, not the full Phase-0/Phase-1 candidate pool the real
+pipeline scans before narrowing down to those picks (that broader pool's
+data lives inside _bulk_screen/_predict_stock and isn't retained anywhere
+by the time generate_picks() returns; exposing it would require changing
+those functions' return contracts, deliberately avoided this pass). When
+`candidate_market_data` is empty or not supplied — e.g. a completely
+failed generation, or a future/alternate caller — these three gates
+report `"available": False` in telemetry rather than fabricating results.
 
 This function must never raise in a way that could affect the caller's
 own control flow in an unexpected way; daily_picks.py additionally wraps

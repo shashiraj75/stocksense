@@ -1206,8 +1206,19 @@ def generate_picks(market: str = "IN", job_id: str | None = None) -> dict:
             if os.getenv("INTELLIGENCE_ENGINE_SHADOW_ENABLED") == "1":
                 try:
                     from services.intelligence_engine.shadow_run import run_shadow_slice
+                    # Epic 007 Phase 3B-B: derives real (if narrower-than-full-
+                    # candidate-pool) market data for the Tradability/Liquidity/
+                    # Confidence gates from `payload` — the exact dict this
+                    # function already returns and persisted above. No new
+                    # fetch, no production function's return contract changed;
+                    # see candidate_data.py's own docstring for the full
+                    # field-by-field honesty note and known coverage limit.
+                    from services.intelligence_engine.candidate_data import build_candidate_market_data_from_payload
+                    candidate_market_data = build_candidate_market_data_from_payload(payload)
                     _threading.Thread(
-                        target=run_shadow_slice, args=(_post_success_market,), kwargs={"job_id": job_id}, daemon=True
+                        target=run_shadow_slice, args=(_post_success_market,),
+                        kwargs={"job_id": job_id, "candidate_market_data": candidate_market_data},
+                        daemon=True,
                     ).start()
                 except Exception as exc:
                     log.warning(f"[intelligence_engine] Could not start shadow slice: {exc}")
