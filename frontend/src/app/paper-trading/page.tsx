@@ -403,10 +403,19 @@ function OpenTradeRow({
         <button
           type="button"
           onClick={() => setModePickerOpen(o => !o)}
-          className="block text-[10px] text-gray-500 hover:text-white underline decoration-dotted underline-offset-2 mt-1 transition-colors"
           title="Change trade management mode"
+          className={clsx(
+            "mt-1 inline-flex items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-[10px] font-medium cursor-pointer transition-colors",
+            "focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400 focus-visible:ring-offset-1 focus-visible:ring-offset-dark-card",
+            trade.trade_management_mode === "auto"
+              ? "bg-bull/10 border-bull/30 text-bull hover:bg-bull/20"
+              : trade.trade_management_mode === "ai_assisted"
+                ? "bg-white/5 border-dark-border text-gray-500 hover:bg-white/10"
+                : "bg-brand-500/10 border-brand-500/30 text-brand-400 hover:bg-brand-500/20"
+          )}
         >
           {MANAGEMENT_MODE_LABEL[trade.trade_management_mode] ?? "Manual"}
+          <ChevronDown size={10} className="opacity-70" />
         </button>
 
         {modePickerOpen && (
