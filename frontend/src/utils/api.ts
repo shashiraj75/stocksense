@@ -327,6 +327,11 @@ export const resetPaperPortfolio = (userId: string, market: Market | "ALL" = "AL
 export const editPaperTrade = (tradeId: number, userId: string, stopLoss: number | null, targetPrice: number | null, entryPrice?: number | null) =>
   api.patch(`/api/paper-trading/trade/${tradeId}`, { user_id: userId, stop_loss: stopLoss, target_price: targetPrice, entry_price: entryPrice ?? null }).then((r) => r.data);
 
+// Only "manual"/"auto" are acceptable here — "ai_assisted" has no backend
+// behavior yet and this endpoint rejects it outright (see ManagementModeRequest).
+export const updatePaperTradeManagementMode = (tradeId: number, userId: string, mode: Exclude<TradeManagementMode, "ai_assisted">) =>
+  api.patch(`/api/paper-trading/trades/${tradeId}/management-mode`, { user_id: userId, trade_management_mode: mode }).then((r) => r.data);
+
 export const acceptTerms = (
   userId: string, email: string,
   profile: { first_name: string; last_name: string; mobile: string; country: string }

@@ -81,6 +81,13 @@ class EditRequest(BaseModel):
     entry_price: float | None = None
 
 
+class ManagementModeRequest(BaseModel):
+    # "ai_assisted" is intentionally excluded from this Literal — it isn't a
+    # rejected-at-runtime value like BuyRequest's, it simply isn't an option
+    # this endpoint accepts at all yet, since it has no functional behavior.
+    trade_management_mode: Literal["manual", "auto"]
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/portfolio")
@@ -292,6 +299,55 @@ def edit_trade(trade_id: int, req: EditRequest, user_id: str = Depends(get_curre
             )
 
     return {"message": "Trade updated", "trade_id": trade_id}
+
+
+@router.patch("/trades/{trade_id}/management-mode")
+def update_management_mode(trade_id: int, req: ManagementModeRequest, user_id: str = Depends(get_current_user_id)):
+    with _conn() as conn:
+        trade = conn.execute(
+            """SELECT user_id, symbol, market, quantity, entry_price, exit_price, status, signal,
+                      horizon, opened_at, closed_at, stop_loss, target_price, exit_reason
+               FROM paper_trades WHERE id = %s""",
+            (trade_id,)
+        ).fetchone()
+        if trade is None:
+            raise HTTPException(status_code=404, detail="Trade not found")
+        if trade[0] != user_id:
+            raise HTTPException(status_code=403, detail="Not your trade")
+        if trade[6] != "OPEN":
+            raise HTTPException(status_code=400, detail="Cannot change trade management mode on a closed trade")
+
+        updated = conn.execute(
+            "UPDATE paper_trades SET trade_management_mode = %s WHERE id = %s AND status = 'OPEN' RETURNING id",
+            (req.trade_management_mode, trade_id)
+        ).fetchone()
+        if updated is None:
+            # Lost a race with a close that happened between the SELECT above
+            # and this UPDATE — same "closed trade" rule, just caught atomically.
+            raise HTTPException(status_code=400, detail="Cannot change trade management mode on a closed trade")
+
+    (_owner, sym, mkt, qty, ep, xp, status, sig, hor, opened, closed, sl, tp, exit_reason) = trade
+    return {
+        "message": "Trade management mode updated",
+        "trade": {
+            "id": trade_id,
+            "symbol": sym,
+            "market": mkt,
+            "quantity": qty,
+            "entry_price": ep,
+            "exit_price": xp,
+            "stop_loss": sl,
+            "target_price": tp,
+            "status": status,
+            "signal": sig,
+            "horizon": hor,
+            "opened_at": opened.isoformat() if opened else None,
+            "closed_at": closed.isoformat() if closed else None,
+            "invested": round(ep * qty, 2),
+            "trade_management_mode": req.trade_management_mode,
+            "exit_reason": exit_reason,
+        },
+    }
 
 
 @router.post("/reset")

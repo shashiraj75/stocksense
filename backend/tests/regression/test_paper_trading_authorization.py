@@ -83,6 +83,7 @@ PAPER_TRADING_ROUTES = [
     ("post", "/api/paper-trading/buy", {"symbol": "AAPL", "market": "US", "quantity": 1, "price": 100.0}),
     ("post", "/api/paper-trading/sell/1", {"price": 100.0}),
     ("patch", "/api/paper-trading/trade/1", {"stop_loss": 90.0}),
+    ("patch", "/api/paper-trading/trades/1/management-mode", {"trade_management_mode": "auto"}),
     ("post", "/api/paper-trading/reset", None),
 ]
 

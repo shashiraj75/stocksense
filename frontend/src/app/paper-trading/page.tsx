@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import {
   fetchPaperPortfolio, closePaperTrade, resetPaperPortfolio, editPaperTrade,
-  fetchQuote, type PaperTrade,
+  updatePaperTradeManagementMode, fetchQuote, type PaperTrade, type TradeManagementMode,
 } from "@/utils/api";
 import { useAuth } from "@/lib/AuthContext";
 import { PaperTradeModal } from "@/components/PaperTradeModal";
@@ -75,6 +75,17 @@ const MANAGEMENT_MODE_LABEL: Record<string, string> = {
   manual: "Manual",
   auto: "Auto",
   ai_assisted: "AI (Coming Soon)",
+};
+
+const MANAGEMENT_MODE_PICKER_OPTIONS: { key: "manual" | "auto" | "ai_assisted"; label: string; desc: string; disabled?: boolean }[] = [
+  { key: "manual", label: "Manual", desc: "Alerts only" },
+  { key: "auto",   label: "Auto",   desc: "Automatically closes trade" },
+  { key: "ai_assisted", label: "AI", desc: "Coming Soon", disabled: true },
+];
+
+const MANAGEMENT_MODE_CONFIRM_COPY: Record<"manual" | "auto", string> = {
+  auto: "Switch to Auto Close? Future stop-loss or target hits will close this paper trade automatically.",
+  manual: "Switch to Manual Close? Future stop-loss or target hits will require your confirmation.",
 };
 
 // Trying this out — easy to remove (just delete this function + its one
@@ -231,6 +242,37 @@ function OpenTradeRow({
     },
   });
 
+  // Trade Management mode editing — a small popover on the badge, with a
+  // confirmation step before the switch is actually saved (per spec: this
+  // is a real behavior change for a live position, not a cosmetic setting).
+  const [modePickerOpen, setModePickerOpen] = useState(false);
+  const [pendingMode, setPendingMode] = useState<"manual" | "auto" | null>(null);
+  const modePickerRef = useRef<HTMLTableCellElement>(null);
+  useEffect(() => {
+    if (!modePickerOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (modePickerRef.current && !modePickerRef.current.contains(e.target as Node)) {
+        setModePickerOpen(false);
+        setPendingMode(null);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [modePickerOpen]);
+  const modeMutation = useMutation({
+    mutationFn: (mode: "manual" | "auto") => updatePaperTradeManagementMode(trade.id, userId, mode),
+    onSuccess: (_data, mode) => {
+      queryClient.invalidateQueries({ queryKey: ["paper-portfolio"] });
+      setPendingMode(null);
+      setModePickerOpen(false);
+      onNotify(`Trade management set to ${mode === "auto" ? "Auto" : "Manual"}.`, "success");
+    },
+    onError: (e: any) => {
+      onNotify(e.response?.data?.detail ?? "Failed to update trade management mode.", "warning");
+      setPendingMode(null);
+    },
+  });
+
   // Exact stop-loss/target hit (not the 2%-proximity nearStopLoss/nearTarget
   // warning above) — this is what actually drives Manual/Auto Close
   // behavior. `false` here is the position-direction flag from
@@ -356,11 +398,67 @@ function OpenTradeRow({
           <span className="text-xs text-gray-600">—</span>
         )}
       </td>
-      <td className="px-4 py-3">
+      <td className="px-4 py-3 relative" ref={modePickerRef}>
         <SignalBadge signal={trade.signal as any} size="sm" />
-        <p className="text-[10px] text-gray-500 mt-1">
+        <button
+          type="button"
+          onClick={() => setModePickerOpen(o => !o)}
+          className="block text-[10px] text-gray-500 hover:text-white underline decoration-dotted underline-offset-2 mt-1 transition-colors"
+          title="Change trade management mode"
+        >
           {MANAGEMENT_MODE_LABEL[trade.trade_management_mode] ?? "Manual"}
-        </p>
+        </button>
+
+        {modePickerOpen && (
+          <div className="absolute z-20 top-full left-0 mt-1 w-44 bg-dark-card border border-dark-border rounded-lg shadow-xl p-1.5">
+            {pendingMode ? (
+              <div className="p-1.5">
+                <p className="text-[11px] text-gray-300 leading-snug">
+                  {MANAGEMENT_MODE_CONFIRM_COPY[pendingMode]}
+                </p>
+                <div className="flex gap-1.5 mt-2">
+                  <button
+                    onClick={() => setPendingMode(null)}
+                    className="flex-1 px-2 py-1 rounded-md text-[11px] border border-dark-border text-gray-400 hover:text-white transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => modeMutation.mutate(pendingMode)}
+                    disabled={modeMutation.isPending}
+                    className="flex-1 px-2 py-1 rounded-md text-[11px] font-semibold bg-brand-500 hover:bg-brand-600 text-white transition-colors disabled:opacity-50"
+                  >
+                    {modeMutation.isPending ? "Saving…" : "Confirm"}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              MANAGEMENT_MODE_PICKER_OPTIONS.map(({ key, label, desc, disabled }) => (
+                <button
+                  key={key}
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => {
+                    if (disabled) return;
+                    if (key === trade.trade_management_mode) { setModePickerOpen(false); return; }
+                    setPendingMode(key as "manual" | "auto");
+                  }}
+                  className={clsx(
+                    "w-full text-left px-2 py-1.5 rounded-md text-xs transition-colors",
+                    disabled
+                      ? "text-gray-600 cursor-not-allowed opacity-60"
+                      : key === trade.trade_management_mode
+                        ? "bg-brand-500/20 text-white"
+                        : "text-gray-300 hover:bg-white/5"
+                  )}
+                >
+                  <span className="font-semibold">{label}</span>
+                  <span className="block text-[10px] opacity-60">{desc}</span>
+                </button>
+              ))
+            )}
+          </div>
+        )}
       </td>
       <td className="px-4 py-3">
         {editing ? (
