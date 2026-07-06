@@ -12,7 +12,10 @@ independent things happen per cycle:
    deliberately excluded from this scan: a user who chose Auto Close asked
    the system to just close the position at the trigger, not to be emailed
    about it approaching — the only email an Auto Close trade should ever
-   generate is the one below, confirming what already happened.
+   generate is the one below, confirming what already happened. This scan
+   also respects each user's paper_portfolio.email_notifications_enabled
+   preference — these are routine "you might want to look at this" alerts,
+   which the Notifications toggle is meant to govern.
 2. Auto Close trigger-confirmation emails — for every *closed* trade with
    trade_management_mode == 'auto' and an exit_reason of STOP_LOSS or
    TARGET_HIT, emails the owner once that the position was closed
@@ -22,7 +25,9 @@ independent things happen per cycle:
    closed_at means "not yet notified about this particular close", so it
    still works correctly even for a trade that received a proximity email
    while still open (e.g. before being switched from Manual to Auto) and
-   later closed.
+   later closed. UNLIKE (1), this ignores email_notifications_enabled —
+   it's a trade-event confirmation (something already happened), not a
+   routine alert, so the Notifications toggle does not suppress it.
 
 Each trigger is deduped via a *_notified_at timestamp (+ a cooldown for the
 proximity path) so a price hovering near the line doesn't spam the same
@@ -200,7 +205,13 @@ def _trigger_email_html(
 def _notify_auto_close_triggers() -> None:
     """Email owners of Auto Close trades that have just closed on a genuine
     stop-loss/target trigger (not a manual close) — the only notification an
-    Auto Close trade should ever generate, per the module docstring."""
+    Auto Close trade should ever generate, per the module docstring.
+
+    Deliberately NOT filtered by email_notifications_enabled: this is a
+    trade-event confirmation (something already happened to the user's
+    money, even if only virtual), not a routine "you might want to look at
+    this" alert — the Notifications toggle governs the latter category
+    only (see _notify_near_price above), never this one."""
     with _conn() as conn:
         rows = conn.execute(
             """SELECT t.id, t.symbol, t.market, t.entry_price, t.exit_price, t.quantity,
@@ -211,8 +222,7 @@ def _notify_auto_close_triggers() -> None:
                  AND t.trade_management_mode = 'auto'
                  AND t.exit_reason IN ('STOP_LOSS', 'TARGET_HIT')
                  AND t.exit_price IS NOT NULL
-                 AND p.email IS NOT NULL
-                 AND p.email_notifications_enabled = true"""
+                 AND p.email IS NOT NULL"""
         ).fetchall()
 
     for (tid, symbol, market, entry_price, exit_price, qty, exit_reason, closed_at, t_notif, s_notif, email) in rows:

@@ -946,8 +946,8 @@ export default function PaperTradingPage() {
                   blocked
                     ? "Notifications blocked — enable them in your browser's site settings"
                     : on
-                      ? "Controls paper-trading alerts and auto-close notifications. Click to turn off."
-                      : "Controls paper-trading alerts and auto-close notifications. Click to turn on."
+                      ? "Controls routine paper-trading alerts. Auto-close execution confirmations are always sent. Click to turn off."
+                      : "Controls routine paper-trading alerts. Auto-close execution confirmations are always sent. Click to turn on."
                 }
                 className={clsx(
                   "flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border transition-colors disabled:opacity-60",
