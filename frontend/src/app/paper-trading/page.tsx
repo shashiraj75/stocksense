@@ -17,6 +17,7 @@ import { useAuth } from "@/lib/AuthContext";
 import { PaperTradeModal } from "@/components/PaperTradeModal";
 import { SignalBadge } from "@/components/SignalBadge";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
+import { useMarketOpen } from "@/hooks/useMarketOpen";
 
 const MARKETS = [
   { key: "IN" as const, label: "🇮🇳 IN", currency: "₹", locale: "en-IN" },
@@ -79,6 +80,21 @@ function StatCard({
   );
 }
 
+// Scoped to this page only — no other Paper Trading animation currently
+// depends on motion preference, so this isn't promoted to a shared hook.
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    setReduced(mq.matches);
+    const handler = (e: MediaQueryListEvent) => setReduced(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+  return reduced;
+}
+
 // Tracks which (tradeId, kind) pairs already triggered a browser
 // notification this session, so a price hovering near the line doesn't
 // re-fire on every 30s poll. Resets on page reload — that's fine, the
@@ -104,11 +120,24 @@ function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t
   const nearStopLoss = livePrice != null && trade.stop_loss != null && livePrice <= trade.stop_loss * 1.02;
   const nearTarget   = livePrice != null && trade.target_price != null && livePrice >= trade.target_price * 0.98;
 
+  // Paper Trading only supports IN/US today — getMarketStatus/useMarketOpen
+  // also accepts "CRYPTO" (always open) so this stays correct unchanged if a
+  // crypto asset class is ever added here.
+  const marketOpen = useMarketOpen(trade.market as "IN" | "US");
+  const prefersReducedMotion = usePrefersReducedMotion();
+  // Never animate on an unresolved/unknown status, and never override a
+  // user's reduced-motion preference — the static label below still
+  // conveys the same information either way.
+  const shouldAnimate = marketOpen === true && !prefersReducedMotion;
+
   // Browser popup notification — fires once per (trade, kind) per session,
-  // only while this tab is open and permission has been granted.
+  // only while this tab is open, permission has been granted, and the
+  // trade's own market is open (a closed-market position shouldn't imply
+  // the same "act now" urgency as a live one).
   useEffect(() => {
     if (typeof window === "undefined" || !("Notification" in window)) return;
     if (Notification.permission !== "granted") return;
+    if (marketOpen !== true) return;
 
     if (nearTarget) {
       const key = `${trade.id}-target`;
@@ -130,7 +159,7 @@ function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t
         });
       }
     }
-  }, [nearTarget, nearStopLoss, trade.id, trade.symbol, livePrice, currency, trade.target_price, trade.stop_loss]);
+  }, [nearTarget, nearStopLoss, trade.id, trade.symbol, livePrice, currency, trade.target_price, trade.stop_loss, marketOpen]);
 
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
@@ -179,8 +208,8 @@ function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t
           <div>
             <span className={clsx(
               "text-sm font-mono font-bold",
-              nearStopLoss ? "text-red-400 animate-pulse" :
-              nearTarget   ? "text-bull animate-pulse" : "text-white"
+              nearStopLoss ? clsx("text-red-400", shouldAnimate && "animate-pulse") :
+              nearTarget   ? clsx("text-bull", shouldAnimate && "animate-pulse") : "text-white"
             )}>
               {currency}{fmt(livePrice)}
             </span>
@@ -190,8 +219,16 @@ function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t
                 {quote.change_pct >= 0 ? "▲" : "▼"} {Math.abs(quote.change_pct).toFixed(2)}% today
               </p>
             )}
-            {nearStopLoss && <p className="text-[10px] text-red-400">⚠ Near stop loss</p>}
-            {nearTarget   && <p className="text-[10px] text-bull">🎯 Near target</p>}
+            {nearStopLoss && (
+              <p className="text-[10px] text-red-400">
+                ⚠ Near stop loss{marketOpen === false ? " (as of last close)" : marketOpen === null ? " (status unavailable)" : ""}
+              </p>
+            )}
+            {nearTarget && (
+              <p className="text-[10px] text-bull">
+                🎯 Near target{marketOpen === false ? " (as of last close)" : marketOpen === null ? " (status unavailable)" : ""}
+              </p>
+            )}
           </div>
         ) : (
           <span className="text-xs text-gray-600">Loading…</span>
@@ -315,13 +352,15 @@ function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t
     {/* Inline reminder row — always shown so all positions look consistent */}
     <tr className="border-b border-dark-border bg-dark-bg/40">
       <td colSpan={12} className="px-4 py-2">
-        <div className="flex flex-wrap gap-3">
+        <div className="flex flex-wrap gap-5">
           {trade.stop_loss && trade.stop_loss > 0 ? (
-            <span className="flex items-center gap-1.5 text-[11px] text-yellow-300/80">
-              <ShieldAlert size={11} className="shrink-0" />
-              Stop Loss: <strong>{currency}{fmt(trade.stop_loss)}</strong>
-              <span className="text-yellow-300/50">
-                (−{((trade.entry_price - trade.stop_loss) / trade.entry_price * 100).toFixed(1)}% from entry) · Close manually if price drops here
+            <span className="flex items-start gap-1.5 text-[11px] text-yellow-300/80">
+              <ShieldAlert size={11} className="shrink-0 mt-0.5" />
+              <span className="flex flex-col leading-tight">
+                <span>Stop Loss: <strong>{currency}{fmt(trade.stop_loss)}</strong></span>
+                <span className="text-yellow-300/50">
+                  −{((trade.entry_price - trade.stop_loss) / trade.entry_price * 100).toFixed(1)}% from entry
+                </span>
               </span>
             </span>
           ) : (
@@ -330,13 +369,14 @@ function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t
               Stop Loss: <span className="italic">not set — click ✎ to add one</span>
             </span>
           )}
-          <span className="text-gray-700 text-[11px]">·</span>
           {trade.target_price && trade.target_price > 0 ? (
-            <span className="flex items-center gap-1.5 text-[11px] text-green-300/80">
-              <Target size={11} className="shrink-0" />
-              Target: <strong>{currency}{fmt(trade.target_price)}</strong>
-              <span className="text-green-300/50">
-                (+{((trade.target_price - trade.entry_price) / trade.entry_price * 100).toFixed(1)}% from entry) · Consider closing when price reaches here
+            <span className="flex items-start gap-1.5 text-[11px] text-green-300/80">
+              <Target size={11} className="shrink-0 mt-0.5" />
+              <span className="flex flex-col leading-tight">
+                <span>Target: <strong>{currency}{fmt(trade.target_price)}</strong></span>
+                <span className="text-green-300/50">
+                  +{((trade.target_price - trade.entry_price) / trade.entry_price * 100).toFixed(1)}% from entry
+                </span>
               </span>
             </span>
           ) : (
