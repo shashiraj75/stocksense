@@ -213,6 +213,10 @@ ALTER TABLE paper_portfolio ADD COLUMN IF NOT EXISTS cash_usd DOUBLE PRECISION N
 -- One-time backfill: bump untouched $10,000 balances (the brief initial default)
 -- up to $100,000. Only touches rows that never bought/sold a US paper trade yet.
 UPDATE paper_portfolio SET cash_usd = 100000.0 WHERE cash_usd = 10000.0;
+-- Manual vs Auto Close trade management (AI Assisted is UI-only "coming soon"
+-- for now — the column accepts the value but no backend logic acts on it yet).
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS trade_management_mode TEXT NOT NULL DEFAULT 'manual';
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS exit_reason TEXT;
 CREATE TABLE IF NOT EXISTS watchlist (
     id         BIGSERIAL PRIMARY KEY,
     user_id    TEXT NOT NULL,

@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { X, TrendingUp, TrendingDown, Minus, AlertCircle, Loader2, ShieldAlert, Target, Clock } from "lucide-react";
 import clsx from "clsx";
 import Link from "next/link";
-import { placePaperBuy, closePaperTrade, fetchPrediction, type Market, type Horizon } from "@/utils/api";
+import { placePaperBuy, closePaperTrade, fetchPrediction, type Market, type Horizon, type TradeManagementMode } from "@/utils/api";
 import { useAuth } from "@/lib/AuthContext";
 import { getMarketStatus } from "@/utils/marketHours";
 
@@ -36,6 +36,12 @@ const HORIZONS: { key: Horizon; label: string; desc: string }[] = [
   { key: "long",   label: "Long",   desc: "2–3 months" },
 ];
 
+const TRADE_MANAGEMENT_OPTIONS: { key: TradeManagementMode; label: string; desc: string; disabled?: boolean }[] = [
+  { key: "manual", label: "Manual Close", desc: "Alert me when stop loss or target is reached." },
+  { key: "auto",   label: "Auto Close",   desc: "Automatically close this paper trade when stop loss or target is reached." },
+  { key: "ai_assisted", label: "AI Assisted", desc: "Coming soon.", disabled: true },
+];
+
 export function PaperTradeModal({
   symbol, market, currentPrice, signal: initialSignal, horizon: initialHorizon, currency,
   suggestedStopLoss, suggestedTargetPrice, onClose, existingTradeId, existingQuantity, existingEntryPrice,
@@ -47,6 +53,7 @@ export function PaperTradeModal({
   const isSell = existingTradeId != null;
 
   const [selectedHorizon, setSelectedHorizon] = useState<Horizon>(initialHorizon as Horizon);
+  const [tradeManagementMode, setTradeManagementMode] = useState<TradeManagementMode>("manual");
   const [quantity, setQuantity] = useState(existingQuantity ?? 1);
   // Always pre-fill with AI suggestions — visible and editable regardless of signal
   const [stopLoss, setStopLoss] = useState<string>(
@@ -128,6 +135,7 @@ export function PaperTradeModal({
         stop_loss: stopLossValue && stopLossValue > 0 ? stopLossValue : null,
         target_price: targetPriceValue && targetPriceValue > 0 ? targetPriceValue : null,
         email: user?.email,
+        trade_management_mode: tradeManagementMode,
       }),
     onSuccess: () => {
       setSuccess(`Bought ${quantity} × ${symbol} @ ${currency}${currentPrice.toLocaleString()}`);
@@ -349,6 +357,33 @@ export function PaperTradeModal({
                   </p>
                 )}
               </div>
+            </div>
+          )}
+
+          {/* Trade Management — how a stop-loss/target hit is handled */}
+          {!isSell && (
+            <div>
+              <label className="text-xs text-gray-400 mb-1 block">Trade Management</label>
+              <div className="grid grid-cols-3 gap-1.5">
+                {TRADE_MANAGEMENT_OPTIONS.map(({ key, label, disabled }) => (
+                  <button key={key} type="button"
+                    disabled={disabled}
+                    title={disabled ? "Coming soon" : undefined}
+                    onClick={() => !disabled && setTradeManagementMode(key)}
+                    className={clsx("rounded-lg px-2 py-2 text-center border transition-colors",
+                      disabled
+                        ? "bg-dark-bg border-dark-border text-gray-600 cursor-not-allowed opacity-60"
+                        : tradeManagementMode === key
+                          ? "bg-brand-500/20 border-brand-500 text-white"
+                          : "bg-dark-bg border-dark-border text-gray-400 hover:border-white/30 hover:text-white")}>
+                    <p className="text-xs font-semibold">{label}</p>
+                    {disabled && <p className="text-[10px] opacity-70 mt-0.5">Coming soon</p>}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] text-gray-500 mt-1">
+                {TRADE_MANAGEMENT_OPTIONS.find(o => o.key === tradeManagementMode)?.desc}
+              </p>
             </div>
           )}
 

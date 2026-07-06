@@ -62,10 +62,18 @@ class BuyRequest(BaseModel):
     horizon: str = "medium"
     stop_loss: float | None = None
     target_price: float | None = None
+    # "ai_assisted" is accepted (not rejected) so a trade opened while that
+    # option is visible-but-disabled in the UI can't ever reach the backend
+    # today — validated here anyway since no client currently sends it.
+    trade_management_mode: Literal["manual", "auto", "ai_assisted"] = "manual"
 
 
 class SellRequest(BaseModel):
     price: float
+    # Set by the client when a close was triggered by an auto-close rule
+    # (stop-loss/target hit) rather than a manual "Close" click — omitted
+    # (None) for an ordinary manual close.
+    exit_reason: Literal["STOP_LOSS", "TARGET_HIT", "MANUAL"] | None = None
 
 class EditRequest(BaseModel):
     stop_loss: float | None = None
@@ -81,7 +89,8 @@ def get_portfolio(user_id: str = Depends(get_current_user_id)):
     with _conn() as conn:
         trades = conn.execute(
             """SELECT id, symbol, market, quantity, entry_price, exit_price,
-                      status, signal, horizon, opened_at, closed_at, stop_loss, target_price
+                      status, signal, horizon, opened_at, closed_at, stop_loss, target_price,
+                      trade_management_mode, exit_reason
                FROM paper_trades WHERE user_id = %s ORDER BY opened_at DESC""",
             (user_id,)
         ).fetchall()
@@ -92,7 +101,7 @@ def get_portfolio(user_id: str = Depends(get_current_user_id)):
     total_realized_us = 0.0
 
     for t in trades:
-        tid, sym, mkt, qty, ep, xp, status, sig, hor, opened, closed, sl, tp = t
+        tid, sym, mkt, qty, ep, xp, status, sig, hor, opened, closed, sl, tp, mgmt_mode, exit_reason = t
         trade = {
             "id": tid,
             "symbol": sym,
@@ -108,6 +117,8 @@ def get_portfolio(user_id: str = Depends(get_current_user_id)):
             "opened_at": opened.isoformat() if opened else None,
             "closed_at": closed.isoformat() if closed else None,
             "invested": round(ep * qty, 2),
+            "trade_management_mode": mgmt_mode,
+            "exit_reason": exit_reason,
         }
         if status == "OPEN":
             open_trades.append(trade)
@@ -170,10 +181,10 @@ def paper_buy(req: BuyRequest, user_id: str = Depends(get_current_user_id)):
 
         row = conn.execute(
             """INSERT INTO paper_trades
-               (session_id, user_id, symbol, market, quantity, entry_price, signal, horizon, stop_loss, target_price)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+               (session_id, user_id, symbol, market, quantity, entry_price, signal, horizon, stop_loss, target_price, trade_management_mode)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
             (user_id, user_id, req.symbol.upper(), req.market, req.quantity,
-             req.price, req.signal, req.horizon, req.stop_loss, req.target_price)
+             req.price, req.signal, req.horizon, req.stop_loss, req.target_price, req.trade_management_mode)
         ).fetchone()
         remaining_cash = debited[0]  # already post-debit — RETURNING reflects the new balance
 
@@ -215,10 +226,17 @@ def paper_sell(trade_id: int, req: SellRequest, user_id: str = Depends(get_curre
         proceeds = req.price * qty
         pnl = (req.price - ep) * qty
 
-        conn.execute(
-            "UPDATE paper_trades SET exit_price = %s, status = 'CLOSED', closed_at = now() WHERE id = %s",
-            (req.price, trade_id)
-        )
+        # WHERE ... AND status = 'OPEN' makes this close idempotent at the
+        # database level: a duplicate/racing close request (e.g. an auto-close
+        # firing twice from two browser tabs) updates zero rows the second
+        # time instead of double-crediting cash or overwriting the exit price.
+        closed = conn.execute(
+            "UPDATE paper_trades SET exit_price = %s, status = 'CLOSED', closed_at = now(), exit_reason = %s "
+            "WHERE id = %s AND status = 'OPEN' RETURNING id",
+            (req.price, req.exit_reason, trade_id)
+        ).fetchone()
+        if closed is None:
+            raise HTTPException(status_code=400, detail="Trade already closed")
         conn.execute(
             f"UPDATE paper_portfolio SET {cash_col} = {cash_col} + %s, updated_at = now() WHERE user_id = %s",
             (proceeds, user_id)

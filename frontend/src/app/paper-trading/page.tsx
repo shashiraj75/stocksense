@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useStaggeredQueries } from "@/hooks/useStaggeredQueries";
 import Link from "next/link";
@@ -42,6 +42,40 @@ function urgencyScore(trade: PaperTrade, livePrice: number | null | undefined): 
   if (trade.stop_loss)    distances.push(Math.abs(livePrice - trade.stop_loss) / livePrice);
   return distances.length ? Math.min(...distances) : Infinity;
 }
+
+// Exact stop-loss / target trigger check — distinct from the existing 2%
+// "near" proximity warning above. Every StockSense360 paper trade today is a
+// long (BUY) position — `trade.signal` is only the AI recommendation shown
+// at the time the position was opened (a user can open a BUY position even
+// against a SELL/HOLD signal), never the position's own direction, so it
+// must not be used to infer long/short here. The `isSellPosition` parameter
+// exists purely so this function computes the correct answer the day a real
+// short-position type is added (per the spec's "future-proof if SELL
+// exists" requirement) — today every caller passes `false`.
+function checkExitTrigger(
+  trade: PaperTrade,
+  livePrice: number | null | undefined,
+  isSellPosition: boolean = false,
+): "STOP_LOSS" | "TARGET_HIT" | null {
+  if (livePrice == null || !Number.isFinite(livePrice) || livePrice <= 0) return null;
+  const sl = trade.stop_loss;
+  const tp = trade.target_price;
+  if (sl != null && sl > 0) {
+    const slHit = isSellPosition ? livePrice >= sl : livePrice <= sl;
+    if (slHit) return "STOP_LOSS";
+  }
+  if (tp != null && tp > 0) {
+    const tpHit = isSellPosition ? livePrice <= tp : livePrice >= tp;
+    if (tpHit) return "TARGET_HIT";
+  }
+  return null;
+}
+
+const MANAGEMENT_MODE_LABEL: Record<string, string> = {
+  manual: "Manual",
+  auto: "Auto",
+  ai_assisted: "AI Assisted (Coming Soon)",
+};
 
 // Trying this out — easy to remove (just delete this function + its one
 // call site below) if it doesn't end up being useful in practice.
@@ -102,7 +136,24 @@ function usePrefersReducedMotion(): boolean {
 // "even if you closed the tab" case.
 const _notifiedThisSession = new Set<string>();
 
-function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t: PaperTrade) => void; userId: string }) {
+// Guards Auto Close against firing twice for the same trade — e.g. two
+// quote refetches landing close together while the close mutation is still
+// in flight, before `paper-portfolio` has been invalidated and this row has
+// unmounted. Once a trade id is added here it is never removed; a trade can
+// only be auto-closed once in its lifetime, and once closed it disappears
+// from open_trades permanently (the backend's own `WHERE status = 'OPEN'`
+// guard on the sell endpoint is the authoritative, race-proof backstop —
+// this is just to avoid firing a redundant request in the common case).
+const _autoCloseAttempted = new Set<number>();
+
+function OpenTradeRow({
+  trade, onSell, userId, onNotify,
+}: {
+  trade: PaperTrade;
+  onSell: (t: PaperTrade) => void;
+  userId: string;
+  onNotify: (message: string, tone: "success" | "warning") => void;
+}) {
   const currency = trade.market === "IN" ? "₹" : "$";
   const locale = trade.market === "IN" ? "en-IN" : "en-US";
   const fmt = (n: number, dec = 2) => n.toLocaleString(locale, { minimumFractionDigits: dec, maximumFractionDigits: dec });
@@ -180,6 +231,58 @@ function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t
     },
   });
 
+  // Exact stop-loss/target hit (not the 2%-proximity nearStopLoss/nearTarget
+  // warning above) — this is what actually drives Manual/Auto Close
+  // behavior. `false` here is the position-direction flag from
+  // checkExitTrigger's signature — always long/BUY today, see its own
+  // comment for why.
+  const exitTrigger = checkExitTrigger(trade, livePrice, false);
+
+  // Manual mode: the alert banner below reappears every time a new trigger
+  // fires, but "Keep Open" should silence *that specific* trigger until the
+  // price genuinely moves away and back — not forever, and not for a
+  // different trigger (e.g. dismissing a stop-loss alert must not also
+  // silence a later target alert).
+  const [dismissedTrigger, setDismissedTrigger] = useState<string | null>(null);
+  useEffect(() => {
+    if (exitTrigger == null) setDismissedTrigger(null);
+  }, [exitTrigger]);
+  const showManualBanner =
+    trade.trade_management_mode !== "auto" &&
+    exitTrigger != null &&
+    dismissedTrigger !== exitTrigger;
+
+  const closeMutation = useMutation({
+    mutationFn: (exitReason: "STOP_LOSS" | "TARGET_HIT" | "MANUAL") =>
+      closePaperTrade(trade.id, userId, livePrice!, exitReason),
+    onSuccess: (_data, exitReason) => {
+      queryClient.invalidateQueries({ queryKey: ["paper-portfolio"] });
+      const isAuto = trade.trade_management_mode === "auto";
+      const label = exitReason === "STOP_LOSS" ? "Stop loss" : "Target";
+      onNotify(
+        isAuto
+          ? `${label === "Target" ? "Target achieved" : "Stop loss hit"}. Position closed automatically.`
+          : `${label} reached. Position closed.`,
+        exitReason === "STOP_LOSS" ? "warning" : "success",
+      );
+    },
+  });
+
+  // Auto Close: fires the actual close exactly once per trade — guarded by
+  // the module-level Set (survives re-renders/refetches within this row's
+  // lifetime) and requires a valid live quote (never closes on a missing or
+  // stale/zero price) and a non-null trigger (never closes when stop
+  // loss/target aren't set — checkExitTrigger already returns null then).
+  useEffect(() => {
+    if (trade.trade_management_mode !== "auto") return;
+    if (exitTrigger == null) return;
+    if (livePrice == null || !Number.isFinite(livePrice) || livePrice <= 0) return;
+    if (_autoCloseAttempted.has(trade.id)) return;
+    _autoCloseAttempted.add(trade.id);
+    closeMutation.mutate(exitTrigger);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trade.trade_management_mode, exitTrigger, livePrice, trade.id]);
+
   return (
     <>
     <tr className="border-b border-dark-border hover:bg-white/[0.02] transition-colors">
@@ -189,6 +292,9 @@ function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t
           {trade.symbol} <ExternalLink size={11} className="opacity-50" />
         </Link>
         <p className="text-xs text-gray-500">{trade.market} · {trade.horizon}</p>
+        <p className="text-[10px] text-gray-600 mt-0.5">
+          {MANAGEMENT_MODE_LABEL[trade.trade_management_mode] ?? "Manual"}
+        </p>
       </td>
       <td className="px-4 py-3 text-sm font-mono">{trade.quantity}</td>
       <td className="px-4 py-3 text-sm font-mono">
@@ -363,6 +469,40 @@ function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t
         </button>
       </td>
     </tr>
+    {/* Manual Close alert — only when this trade's own mode is manual (or
+        the not-yet-functional ai_assisted, which falls back to alerting
+        rather than doing nothing) and a trigger hasn't already been
+        dismissed for this specific hit. */}
+    {showManualBanner && exitTrigger && (
+      <tr className="border-b border-dark-border bg-dark-bg/40">
+        <td colSpan={11} className="px-4 py-2">
+          <div className={clsx(
+            "flex items-center justify-between gap-3 rounded-lg px-3 py-2 text-xs border flex-wrap",
+            exitTrigger === "STOP_LOSS" ? "bg-bear/10 border-bear/30 text-red-300" : "bg-bull/10 border-bull/30 text-bull"
+          )}>
+            <span className="flex items-center gap-1.5">
+              <AlertTriangle size={13} className="shrink-0" />
+              {exitTrigger === "STOP_LOSS" ? "Stop loss reached." : "Target reached."} Close position?
+            </span>
+            <div className="flex gap-2">
+              <button
+                onClick={() => closeMutation.mutate(exitTrigger)}
+                disabled={closeMutation.isPending}
+                className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-white/10 hover:bg-white/20 text-white transition-colors disabled:opacity-50"
+              >
+                Close Position
+              </button>
+              <button
+                onClick={() => setDismissedTrigger(exitTrigger)}
+                className="px-2.5 py-1 rounded-lg text-[11px] font-medium border border-current/30 hover:bg-white/5 transition-colors"
+              >
+                Keep Open
+              </button>
+            </div>
+          </div>
+        </td>
+      </tr>
+    )}
     </>
   );
 }
@@ -427,6 +567,18 @@ export default function PaperTradingPage() {
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [historyExpanded, setHistoryExpanded] = useState(true);
   const [notifPermission, setNotifPermission] = useState<NotificationPermission | "unsupported">("default");
+
+  // Close-position outcome banners (Manual Close confirmations and Auto
+  // Close notifications) — kept at page level, not inside OpenTradeRow,
+  // because the row that triggered the message unmounts the moment the
+  // trade moves from open_trades to closed_trades.
+  const [notifications, setNotifications] = useState<{ id: number; message: string; tone: "success" | "warning" }[]>([]);
+  const notifyIdRef = useRef(0);
+  const pushNotification = (message: string, tone: "success" | "warning") => {
+    const id = ++notifyIdRef.current;
+    setNotifications(prev => [...prev, { id, message, tone }]);
+  };
+  const dismissNotification = (id: number) => setNotifications(prev => prev.filter(n => n.id !== id));
 
   useEffect(() => {
     if (typeof window !== "undefined" && "Notification" in window) {
@@ -533,6 +685,24 @@ export default function PaperTradingPage() {
 
   return (
     <div className="space-y-6">
+      {/* Trade Management outcome banners — Manual Close confirmations and
+          Auto Close notifications, dismissible, stacked newest-last. */}
+      {notifications.length > 0 && (
+        <div className="space-y-2">
+          {notifications.map(n => (
+            <div key={n.id} className={clsx(
+              "flex items-center justify-between gap-3 rounded-lg px-4 py-2.5 text-sm border",
+              n.tone === "warning" ? "bg-bear/10 border-bear/30 text-red-300" : "bg-bull/10 border-bull/30 text-bull"
+            )}>
+              <span>{n.message}</span>
+              <button onClick={() => dismissNotification(n.id)} className="text-current opacity-60 hover:opacity-100 transition-opacity">
+                <X size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -712,7 +882,7 @@ export default function PaperTradingPage() {
                     </thead>
                     <tbody>
                       {trades.map(t => (
-                        <OpenTradeRow key={t.id} trade={t} onSell={setSellTarget} userId={userId} />
+                        <OpenTradeRow key={t.id} trade={t} onSell={setSellTarget} userId={userId} onNotify={pushNotification} />
                       ))}
                     </tbody>
                   </table>

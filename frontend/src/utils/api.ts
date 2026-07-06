@@ -273,6 +273,9 @@ export const fetchScoreHistory = (symbol: string, horizon: Horizon, days = 90) =
 
 // ─── Paper Trading ────────────────────────────────────────────────────────────
 
+export type TradeManagementMode = "manual" | "auto" | "ai_assisted";
+export type ExitReason = "STOP_LOSS" | "TARGET_HIT" | "MANUAL" | null;
+
 export interface PaperTrade {
   id: number;
   symbol: string;
@@ -289,6 +292,8 @@ export interface PaperTrade {
   closed_at: string | null;
   invested: number;
   realized_pnl?: number;
+  trade_management_mode: TradeManagementMode;
+  exit_reason: ExitReason;
 }
 
 export interface PaperPortfolio {
@@ -310,10 +315,11 @@ export const placePaperBuy = (data: {
   user_id: string; symbol: string; market: Market;
   quantity: number; price: number; signal?: string; horizon?: string;
   stop_loss?: number | null; target_price?: number | null; email?: string | null;
+  trade_management_mode?: TradeManagementMode;
 }) => api.post("/api/paper-trading/buy", data).then((r) => r.data);
 
-export const closePaperTrade = (tradeId: number, userId: string, price: number) =>
-  api.post(`/api/paper-trading/sell/${tradeId}`, { user_id: userId, price }).then((r) => r.data);
+export const closePaperTrade = (tradeId: number, userId: string, price: number, exitReason?: Exclude<ExitReason, null>) =>
+  api.post(`/api/paper-trading/sell/${tradeId}`, { user_id: userId, price, exit_reason: exitReason ?? null }).then((r) => r.data);
 
 export const resetPaperPortfolio = (userId: string, market: Market | "ALL" = "ALL") =>
   api.post("/api/paper-trading/reset", null, { params: { user_id: userId, market } }).then((r) => r.data);
