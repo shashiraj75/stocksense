@@ -1195,6 +1195,23 @@ def generate_picks(market: str = "IN", job_id: str | None = None) -> dict:
                 except Exception as exc:
                     log.warning(f"[telegram] Error: {exc}")
 
+            # Epic 007 Phase 3A — Intelligence Engine V1 shadow slice.
+            # Off by default (INTELLIGENCE_ENGINE_SHADOW_ENABLED unset/"0"):
+            # this block does not even import the module, so production
+            # behavior is byte-for-byte unchanged. Runs only after the real
+            # Daily Picks generation already succeeded and persisted above;
+            # never affects published picks, the cache file, or job status —
+            # any failure here is caught and logged, same isolation pattern
+            # as the weight_adapter/telegram calls immediately above.
+            if os.getenv("INTELLIGENCE_ENGINE_SHADOW_ENABLED") == "1":
+                try:
+                    from services.intelligence_engine.shadow_run import run_shadow_slice
+                    _threading.Thread(
+                        target=run_shadow_slice, args=(_post_success_market,), kwargs={"job_id": job_id}, daemon=True
+                    ).start()
+                except Exception as exc:
+                    log.warning(f"[intelligence_engine] Could not start shadow slice: {exc}")
+
 
 # Module-level last error per market (exposed via /api/picks/status)
 _last_error: dict[str, str | None] = {"IN": None, "US": None}

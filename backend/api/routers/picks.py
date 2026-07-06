@@ -137,6 +137,25 @@ def picks_performance(horizon: str = "medium", window_days: int = 90):
         return {"horizon": horizon, "window_days": window_days, "picks": [], "error": str(e)}
 
 
+@router.get("/intelligence-shadow")
+def intelligence_shadow(market: str = "IN"):
+    """Epic 007 Phase 3A — read-only inspection of the Intelligence Engine
+    V1 shadow slice's most recent run for a market. Returns {"available":
+    False} (not an error) when no shadow run has ever completed — e.g. the
+    INTELLIGENCE_ENGINE_SHADOW_ENABLED flag has never been turned on, or
+    Postgres isn't configured. This endpoint never triggers a run itself
+    and never mutates anything — read-only only, per Epic 007 Phase 3A scope."""
+    market = _norm_market(market)
+    try:
+        from services.intelligence_engine.telemetry import get_latest_shadow_run
+        result = get_latest_shadow_run(market)
+        if result is None:
+            return {"available": False, "market": market}
+        return {"available": True, **result}
+    except Exception as e:
+        return {"available": False, "market": market, "error": str(e)}
+
+
 @router.post("/generate")
 def trigger_generation(background_tasks: BackgroundTasks, market: str = "IN", x_secret: str = Header(None)):
     """

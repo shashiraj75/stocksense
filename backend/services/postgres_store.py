@@ -222,6 +222,28 @@ ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS exit_reason TEXT;
 -- Notifications toggle asks for browser permission. Paper Trading only;
 -- unrelated to Daily Picks alerts, which have their own separate mechanism.
 ALTER TABLE paper_portfolio ADD COLUMN IF NOT EXISTS email_notifications_enabled BOOLEAN NOT NULL DEFAULT true;
+-- Epic 007 Phase 3A — Intelligence Engine V1 shadow-run telemetry only.
+-- Additive, standalone table: nothing else reads from or writes to this
+-- table, and it is never joined against paper_trades/daily-picks tables.
+-- Populated only when INTELLIGENCE_ENGINE_SHADOW_ENABLED=1 (default off);
+-- has zero rows and zero effect on production until explicitly enabled.
+CREATE TABLE IF NOT EXISTS intelligence_engine_shadow_runs (
+    id                          BIGSERIAL PRIMARY KEY,
+    market                      TEXT NOT NULL,
+    run_at                      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    universe_version            TEXT NOT NULL,
+    raw_count                   INTEGER NOT NULL,
+    evaluated_count             INTEGER NOT NULL,
+    passed_count                INTEGER NOT NULL,
+    excluded_count              INTEGER NOT NULL,
+    excluded_counts_by_reason   JSONB,
+    instrument_type_counts      JSONB,
+    sample_exclusions           JSONB,
+    source_commit               TEXT,
+    generation_job_id           TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_intelligence_engine_shadow_runs_market_time
+    ON intelligence_engine_shadow_runs(market, run_at DESC);
 CREATE TABLE IF NOT EXISTS watchlist (
     id         BIGSERIAL PRIMARY KEY,
     user_id    TEXT NOT NULL,
