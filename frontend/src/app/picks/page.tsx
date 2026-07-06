@@ -600,7 +600,14 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
         <PaperTradeModal
           symbol={pick.symbol}
           market={market}
-          currentPrice={pick.price}
+          // Prefer the live/refreshed quote (displayPrice already resolves to
+          // livePrice when valid, falling back to pick.price otherwise — the
+          // same selectPriceBasis rule the card itself uses above) so a BUY
+          // paper trade executes at the current market price, not the frozen
+          // generation-time price. referencePrice lets the modal show that
+          // distinction to the user when the two genuinely differ.
+          currentPrice={displayPrice ?? pick.price}
+          referencePrice={pick.price}
           signal="BUY"
           horizon={pick.horizon}
           currency={currency}

@@ -21,6 +21,13 @@ interface Props {
   existingTradeId?: number;
   existingQuantity?: number;
   existingEntryPrice?: number;
+  // The recommendation's generation/reference price, when it differs from
+  // currentPrice — the caller is expected to have already resolved
+  // currentPrice to the latest live quote (falling back to this same value
+  // only when no live quote exists), so this prop is purely informational:
+  // it lets the modal tell the user their execution price is not the price
+  // the recommendation was generated against, without recomputing anything.
+  referencePrice?: number | null;
 }
 
 const HORIZONS: { key: Horizon; label: string; desc: string }[] = [
@@ -32,6 +39,7 @@ const HORIZONS: { key: Horizon; label: string; desc: string }[] = [
 export function PaperTradeModal({
   symbol, market, currentPrice, signal: initialSignal, horizon: initialHorizon, currency,
   suggestedStopLoss, suggestedTargetPrice, onClose, existingTradeId, existingQuantity, existingEntryPrice,
+  referencePrice,
 }: Props) {
   const { user } = useAuth();
   const userId = user?.id ?? "";
@@ -89,6 +97,14 @@ export function PaperTradeModal({
 
   const activeSignal = prediction?.signal ?? initialSignal;
   const cost = currentPrice * quantity;
+
+  // Only show the distinction when the reference price is a real, different
+  // number — not for the (already-correct) case where no live quote existed
+  // and currentPrice already equals the reference price.
+  const usingLivePriceOverReference =
+    !isSell &&
+    referencePrice != null && Number.isFinite(referencePrice) && referencePrice > 0 &&
+    Math.abs(currentPrice - referencePrice) > 0.01;
 
   const pnl = isSell && existingEntryPrice
     ? (currentPrice - existingEntryPrice) * (existingQuantity ?? quantity)
@@ -249,9 +265,22 @@ export function PaperTradeModal({
                 {prediction?.confidence && !predLoading && <span className="opacity-60 ml-auto">{prediction.confidence}%</span>}
               </div>
               <div className="bg-dark-bg rounded-lg px-3 py-1.5 flex items-center gap-2 flex-1">
-                <span className="text-xs text-gray-400">Price</span>
+                <span className="text-xs text-gray-400">{usingLivePriceOverReference ? "Execution Price" : "Price"}</span>
                 <span className="font-mono font-bold text-white text-sm ml-auto">{currency}{currentPrice.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
               </div>
+            </div>
+          )}
+
+          {/* Execution vs. recommendation-generation price — calm, factual,
+              never phrased as urgency; only appears when the two genuinely
+              differ, so it can't read as noise on the common case. */}
+          {usingLivePriceOverReference && (
+            <div className="flex items-start gap-2 rounded-lg px-3 py-2 text-xs border bg-white/5 border-dark-border text-gray-400">
+              <AlertCircle size={13} className="shrink-0 mt-0.5 opacity-70" />
+              <span>
+                Using latest market price for paper trade execution. Recommendation was generated at{" "}
+                {currency}{referencePrice!.toLocaleString(undefined, { maximumFractionDigits: 2 })}.
+              </span>
             </div>
           )}
 

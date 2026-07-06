@@ -1975,6 +1975,7 @@ export default function StockPage() {
           symbol={symbol}
           market={market as "IN" | "US"}
           currentPrice={quote?.price ?? prediction.current_price ?? 0}
+          referencePrice={prediction.current_price}
           signal={prediction.signal}
           horizon={horizon}
           currency={market === "IN" ? "₹" : "$"}
