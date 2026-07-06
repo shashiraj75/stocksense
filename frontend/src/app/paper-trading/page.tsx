@@ -72,6 +72,66 @@ function checkExitTrigger(
   return null;
 }
 
+// Same 2%-proximity definition OpenTradeRow already used inline for its own
+// "Near stop loss"/"Near target" labels — pulled up to module scope so the
+// Action Queue sort (computed once per open trade at the parent level) and
+// the row's own display stay in agreement about what "near" means.
+function isNearStopLoss(trade: PaperTrade, livePrice: number | null | undefined): boolean {
+  return livePrice != null && trade.stop_loss != null && trade.stop_loss > 0 && livePrice <= trade.stop_loss * 1.02;
+}
+function isNearTarget(trade: PaperTrade, livePrice: number | null | undefined): boolean {
+  return livePrice != null && trade.target_price != null && trade.target_price > 0 && livePrice >= trade.target_price * 0.98;
+}
+
+function unrealizedPct(trade: PaperTrade, livePrice: number | null | undefined): number | null {
+  if (livePrice == null || !Number.isFinite(livePrice) || trade.entry_price <= 0) return null;
+  const pct = (livePrice - trade.entry_price) / trade.entry_price * 100;
+  return Number.isFinite(pct) ? pct : null;
+}
+
+// Action Queue priority (lower tier number = more urgent, sorts first):
+//   1. Manual trade with target/stop-loss reached, awaiting the user's own
+//      Close Position / Keep Open decision — the single most actionable state.
+//   2. Auto trade at or nearing its stop loss (will self-close imminently —
+//      surfaced so the user can watch/intervene before it does).
+//   3. Auto trade at or nearing its target (same reasoning, positive case).
+//   4. Any other trade near its stop loss.
+//   5. Any other trade near its target.
+//   6. Biggest unrealized loss %.
+//   7. Biggest unrealized gain %.
+//   8. Newest trade (no live price yet, or nothing else applies).
+function actionQueueTier(trade: PaperTrade, livePrice: number | null | undefined): number {
+  const isAuto = trade.trade_management_mode === "auto";
+  const trigger = checkExitTrigger(trade, livePrice);
+  const nearSL = isNearStopLoss(trade, livePrice);
+  const nearTgt = isNearTarget(trade, livePrice);
+
+  if (!isAuto && trigger != null) return 1;
+  if (isAuto && (trigger === "STOP_LOSS" || nearSL)) return 2;
+  if (isAuto && (trigger === "TARGET_HIT" || nearTgt)) return 3;
+  if (nearSL) return 4;
+  if (nearTgt) return 5;
+  const pct = unrealizedPct(trade, livePrice);
+  if (pct != null && pct < 0) return 6;
+  if (pct != null && pct > 0) return 7;
+  return 8;
+}
+
+// Secondary key within a tier — smaller sorts first. Tiers 6/7 rank by move
+// magnitude (biggest loss/gain first, per the spec); tier 8 ranks newest
+// first; tiers 1-5 fall back to the existing proximity-to-trigger distance
+// so multiple simultaneously-urgent trades still order sensibly.
+function actionQueueSecondary(trade: PaperTrade, livePrice: number | null | undefined, tier: number): number {
+  if (tier === 6 || tier === 7) {
+    const pct = unrealizedPct(trade, livePrice) ?? 0;
+    return -Math.abs(pct);
+  }
+  if (tier === 8) {
+    return -new Date(trade.opened_at).getTime();
+  }
+  return urgencyScore(trade, livePrice);
+}
+
 // Builds the " at ₹524.78 (+3.4%)" fragment shared by every notification
 // that reports a stop-loss/target trigger. % is always computed against
 // entry price with the same formula for both target and stop loss — the
@@ -107,6 +167,62 @@ const MANAGEMENT_MODE_CONFIRM_COPY: Record<"manual" | "auto", string> = {
   auto: "Switch to Auto Close? Future stop-loss or target hits will close this paper trade automatically.",
   manual: "Switch to Manual Close? Future stop-loss or target hits will require your confirmation.",
 };
+
+type HistorySortMode =
+  | "recent" | "biggest_winner" | "biggest_loser" | "highest_pct" | "lowest_pct"
+  | "target_hit" | "stop_loss" | "manual_close" | "auto_close";
+
+const HISTORY_SORT_OPTIONS: { key: HistorySortMode; label: string }[] = [
+  { key: "recent",         label: "Recent" },
+  { key: "biggest_winner", label: "Biggest Winner" },
+  { key: "biggest_loser",  label: "Biggest Loser" },
+  { key: "highest_pct",    label: "Highest %" },
+  { key: "lowest_pct",     label: "Lowest %" },
+  { key: "target_hit",     label: "Target Hit" },
+  { key: "stop_loss",      label: "Stop Loss" },
+  { key: "manual_close",   label: "Manual Close" },
+  { key: "auto_close",     label: "Auto Close" },
+];
+
+function closedTradePnlPct(trade: PaperTrade): number {
+  if (!trade.entry_price || trade.entry_price <= 0 || trade.exit_price == null) return 0;
+  return (trade.exit_price - trade.entry_price) / trade.entry_price * 100;
+}
+
+// Same definition trade_notifier.py's backend query uses for "did this
+// trade genuinely auto-close on a trigger" — trade_management_mode==='auto'
+// AND a real STOP_LOSS/TARGET_HIT exit_reason, not just "was ever in Auto
+// mode" (an Auto-mode trade closed manually via the Close button before any
+// trigger fired is a manual close, not an Auto Close execution).
+function isAutoCloseExecution(trade: PaperTrade): boolean {
+  return trade.trade_management_mode === "auto" && (trade.exit_reason === "STOP_LOSS" || trade.exit_reason === "TARGET_HIT");
+}
+
+function sortClosedTrades(trades: PaperTrade[], mode: HistorySortMode): PaperTrade[] {
+  const byRecent = (a: PaperTrade, b: PaperTrade) =>
+    new Date(b.closed_at ?? 0).getTime() - new Date(a.closed_at ?? 0).getTime();
+  // "Target Hit"/"Stop Loss"/"Manual Close"/"Auto Close" bring matching
+  // trades to the top (stable, recency-ordered within each group) rather
+  // than hiding non-matching trades — every trade stays visible, just
+  // reordered, consistent with this being a sort control, not a filter.
+  const matchFirst = (isMatch: (t: PaperTrade) => boolean) => (a: PaperTrade, b: PaperTrade) => {
+    const aMatch = isMatch(a) ? 0 : 1;
+    const bMatch = isMatch(b) ? 0 : 1;
+    return aMatch !== bMatch ? aMatch - bMatch : byRecent(a, b);
+  };
+  switch (mode) {
+    case "biggest_winner": return [...trades].sort((a, b) => (b.realized_pnl ?? 0) - (a.realized_pnl ?? 0));
+    case "biggest_loser":  return [...trades].sort((a, b) => (a.realized_pnl ?? 0) - (b.realized_pnl ?? 0));
+    case "highest_pct":    return [...trades].sort((a, b) => closedTradePnlPct(b) - closedTradePnlPct(a));
+    case "lowest_pct":     return [...trades].sort((a, b) => closedTradePnlPct(a) - closedTradePnlPct(b));
+    case "target_hit":     return [...trades].sort(matchFirst(t => t.exit_reason === "TARGET_HIT"));
+    case "stop_loss":      return [...trades].sort(matchFirst(t => t.exit_reason === "STOP_LOSS"));
+    case "manual_close":   return [...trades].sort(matchFirst(t => !isAutoCloseExecution(t)));
+    case "auto_close":     return [...trades].sort(matchFirst(isAutoCloseExecution));
+    case "recent":
+    default:               return [...trades].sort(byRecent);
+  }
+}
 
 // Trying this out — easy to remove (just delete this function + its one
 // call site below) if it doesn't end up being useful in practice.
@@ -200,8 +316,8 @@ function OpenTradeRow({
   const livePrice = quote?.price ?? null;
   const unrealizedPnl = livePrice != null ? (livePrice - trade.entry_price) * trade.quantity : null;
   const unrealizedPct = livePrice != null && trade.entry_price > 0 ? ((livePrice - trade.entry_price) / trade.entry_price * 100) : null;
-  const nearStopLoss = livePrice != null && trade.stop_loss != null && livePrice <= trade.stop_loss * 1.02;
-  const nearTarget   = livePrice != null && trade.target_price != null && livePrice >= trade.target_price * 0.98;
+  const nearStopLoss = isNearStopLoss(trade, livePrice);
+  const nearTarget   = isNearTarget(trade, livePrice);
 
   // Paper Trading only supports IN/US today — getMarketStatus/useMarketOpen
   // also accepts "CRYPTO" (always open) so this stays correct unchanged if a
@@ -723,6 +839,7 @@ export default function PaperTradingPage() {
   const [sellTarget, setSellTarget] = useState<PaperTrade | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [historyExpanded, setHistoryExpanded] = useState(true);
+  const [historySortMode, setHistorySortMode] = useState<HistorySortMode>("recent");
   const [notifPermission, setNotifPermission] = useState<NotificationPermission | "unsupported">("default");
 
   // Close-position outcome banners (Manual Close confirmations and Auto
@@ -855,18 +972,26 @@ export default function PaperTradingPage() {
   // separate ledgers and must never be summed together.
   const openTrades = portfolio.open_trades.filter(t => t.market === market);
   const closedTrades = portfolio.closed_trades.filter(t => t.market === market);
+  const sortedClosedTrades = sortClosedTrades(closedTrades, historySortMode);
   const cash = market === "IN" ? portfolio.cash : portfolio.cash_usd;
   const startingCash = market === "IN" ? portfolio.starting_cash : portfolio.starting_cash_usd;
   const totalRealized = market === "IN" ? portfolio.total_realized_pnl : portfolio.total_realized_pnl_usd;
 
-  // Group open positions into Short/Medium/Long blocks, each sorted so the
-  // trade whose live price is nearest its target or stop loss is on top.
+  // Group open positions into Short/Medium/Long blocks, each sorted by
+  // Action Queue priority — how urgently the trade needs the user's
+  // attention, not just raw distance to its trigger. See actionQueueTier's
+  // own comment for the exact 8-tier ordering.
   const groupedOpenTrades = HORIZON_BLOCKS.map(block => ({
     ...block,
     trades: openTrades
       .map(trade => ({ trade, livePrice: priceByTradeId.get(trade.id) ?? null }))
       .filter(({ trade }) => trade.horizon === block.key)
-      .sort((a, b) => urgencyScore(a.trade, a.livePrice) - urgencyScore(b.trade, b.livePrice))
+      .sort((a, b) => {
+        const tierA = actionQueueTier(a.trade, a.livePrice);
+        const tierB = actionQueueTier(b.trade, b.livePrice);
+        if (tierA !== tierB) return tierA - tierB;
+        return actionQueueSecondary(a.trade, a.livePrice, tierA) - actionQueueSecondary(b.trade, b.livePrice, tierB);
+      })
       .map(({ trade }) => trade),
   }));
 
@@ -1066,7 +1191,7 @@ export default function PaperTradingPage() {
                   <span className="bg-white/10 text-gray-300 text-[11px] px-1.5 py-0.5 rounded-full font-medium ml-1">
                     {trades.length}
                   </span>
-                  <span className="text-[11px] text-gray-400 ml-auto">Sorted by proximity to target / stop loss</span>
+                  <span className="text-[11px] text-gray-400 ml-auto">Sorted by action priority</span>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
@@ -1106,18 +1231,32 @@ export default function PaperTradingPage() {
       {/* Trade History */}
       {closedTrades.length > 0 && (
         <div>
-          <button
-            onClick={() => setHistoryExpanded(v => !v)}
-            className="font-bold text-base mb-3 flex items-center gap-2 hover:text-gray-300 transition-colors"
-          >
-            <BarChart2 size={16} className="text-gray-400" />
-            Trade History
-            <span className="text-xs text-gray-500 font-normal">({closedTrades.length})</span>
-            <span className={clsx("text-sm font-mono font-bold", totalRealized > 0 ? "text-bull" : totalRealized < 0 ? "text-bear" : "text-gray-400")}>
-              {totalRealized >= 0 ? "+" : ""}{marketCfg.currency}{fmt(Math.abs(totalRealized), 0, marketCfg.locale)}
-            </span>
-            {historyExpanded ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
-          </button>
+          <div className="flex items-center gap-2 flex-wrap mb-3">
+            <button
+              onClick={() => setHistoryExpanded(v => !v)}
+              className="font-bold text-base flex items-center gap-2 hover:text-gray-300 transition-colors"
+            >
+              <BarChart2 size={16} className="text-gray-400" />
+              Trade History
+              <span className="text-xs text-gray-500 font-normal">({closedTrades.length})</span>
+              <span className={clsx("text-sm font-mono font-bold", totalRealized > 0 ? "text-bull" : totalRealized < 0 ? "text-bear" : "text-gray-400")}>
+                {totalRealized >= 0 ? "+" : ""}{marketCfg.currency}{fmt(Math.abs(totalRealized), 0, marketCfg.locale)}
+              </span>
+              {historyExpanded ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
+            </button>
+            {historyExpanded && (
+              <select
+                value={historySortMode}
+                onChange={e => setHistorySortMode(e.target.value as HistorySortMode)}
+                className="ml-auto bg-dark-bg border border-dark-border rounded-lg px-2 py-1 text-xs text-gray-300 focus:outline-none focus:border-brand-500"
+                title="Sort trade history"
+              >
+                {HISTORY_SORT_OPTIONS.map(({ key, label }) => (
+                  <option key={key} value={key}>{label}</option>
+                ))}
+              </select>
+            )}
+          </div>
           {historyExpanded && (
             <div className="bg-dark-card border border-dark-border rounded-xl overflow-hidden">
               <div className="overflow-x-auto">
@@ -1134,7 +1273,7 @@ export default function PaperTradingPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {closedTrades.map(t => (
+                    {sortedClosedTrades.map(t => (
                       <ClosedTradeRow key={t.id} trade={t} />
                     ))}
                   </tbody>
