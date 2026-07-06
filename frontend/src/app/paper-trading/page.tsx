@@ -708,7 +708,7 @@ export default function PaperTradingPage() {
     setNotifPermission(result);
   };
 
-  const { data: portfolio, isLoading } = useQuery({
+  const { data: portfolio, isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ["paper-portfolio", userId],
     queryFn: () => fetchPaperPortfolio(userId, user?.email),
     enabled: !!userId,
@@ -743,6 +743,39 @@ export default function PaperTradingPage() {
     })),
     8
   );
+
+  // Checked before the loading branch below — once a query settles to an
+  // error (after React Query's own retry budget is exhausted), isLoading is
+  // already false but `portfolio` stays undefined. Without this check that
+  // combination fell through to the generic "Loading…" state forever, with
+  // no indication anything had failed and no way to recover short of a full
+  // page reload.
+  if (isError && !portfolio) {
+    return (
+      <div className="flex items-center justify-center min-h-[40vh] text-gray-400">
+        <div className="text-center max-w-sm px-4">
+          <AlertTriangle size={32} className="mx-auto mb-3 text-bear opacity-70" />
+          <p className="text-white font-medium">Unable to load paper portfolio.</p>
+          <p className="text-sm text-gray-500 mt-1">
+            Please retry. If the server is waking up, this may take a few seconds.
+          </p>
+          {error && (
+            <p className="text-xs text-gray-600 mt-2 font-mono break-words">
+              {(error as any)?.response?.data?.detail ?? (error as any)?.message ?? "Unknown error"}
+            </p>
+          )}
+          <button
+            onClick={() => refetch()}
+            disabled={isFetching}
+            className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-brand-500 hover:bg-brand-600 text-white text-sm font-semibold transition-colors disabled:opacity-50"
+          >
+            <RotateCcw size={13} className={isFetching ? "animate-spin" : undefined} />
+            {isFetching ? "Retrying…" : "Retry"}
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (isLoading || !portfolio) {
     return (
