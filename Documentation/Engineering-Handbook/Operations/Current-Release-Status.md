@@ -4,9 +4,23 @@
 
 **Use this document for current state.** Historical sprint reports, Epic closures, SSDS documents, and audit reports remain authoritative evidence for their own completed scope, but they do not automatically describe the current production operating state.
 
-**As of:** 2026-07-03 — maintained as a live operational register
+**As of:** 2026-07-07 — maintained as a live operational register
 
 ---
+
+## Intelligence Engine V1 — Universe Builder (Instrument Type / Tradability / Liquidity / Data Confidence Gates)
+
+**Naming note (read first):** this work was referred to informally as "Epic 007" throughout its own task history — that number is **already allocated** in `MASTER-ROADMAP.md` Section 11 to *Portfolio and Watchlist Intelligence* (a separate, unrelated, still-"Planned / Not Started" initiative). This entry does not claim the Epic 007 number; it is recorded here under its own name to avoid the collision. Whoever formally assigns this work an Epic number later should reconcile the two.
+
+**Status:** Deployed to production — shadow-only, zero effect on published Daily Picks, Heatmap, or Portfolio. Runtime validation partially complete; **not closed**.
+
+- **Architecture**: `backend/services/intelligence_engine/` — a standalone package (Instrument Type Gate, Tradability Gate, Liquidity Gate, Data Confidence scoring, shadow-run orchestration, telemetry persistence). Universe Builder is one component inside this engine, not the whole system. Gated end-to-end by `INTELLIGENCE_ENGINE_SHADOW_ENABLED` (default off); with the flag off, `daily_picks.py` never even imports the package — confirmed directly via `sys.modules` inspection, not just by code review.
+- **Phase 3A (Instrument Type Gate)**: implemented and **production runtime-validated**. First real India shadow telemetry captured 2026-07-06: `raw_count: 2402`, `passed_count: 2400` (plain equities), `excluded_count: 2` (`GOLDBEES`, `SILVERBEES` — correctly classified as ETFs).
+- **Phase 3B-A (Liquidity / Tradability / Data Confidence gate framework)**: implemented and deployed. All three gates are pure, unit-tested functions with configurable (env-driven, not hardcoded) thresholds.
+- **Phase 3B-B (selected-pick market data wiring)**: implemented and deployed (commit `bb5d3cf8247ce829ca9d0e06d4048fc7aa7b740e`). Derives real price/freshness/completeness data for the gates from the Daily Picks payload already returned by `generate_picks()` — no new provider/API calls, no production function's return contract changed. Coverage is currently limited to the symbols selected into `payload["picks"]` (~18 per run), not the full Phase-0/Phase-1 candidate pool scanned before narrowing to those picks — a disclosed limitation, not an oversight.
+- **Runtime validation pending**: a fresh India generation after commit `bb5d3cf` has not yet been observed with `source_commit = bb5d3cf` in its shadow telemetry, and no US shadow run has been observed with the Phase 3B-B wiring at all. **Do not describe Epic 007/Intelligence Engine V1 as validated or closed until both of the following hold:**
+  - IN **and** US shadow telemetry (`GET /api/picks/intelligence-shadow?market=IN|US`) both show `source_commit = bb5d3cf8247ce829ca9d0e06d4048fc7aa7b740e` (or a later commit, once one exists).
+  - Both show `tradability.available = true`, `liquidity.available = true`, and `data_confidence.available = true` (not just the Phase 3A `available = true` on the top-level response — the three Phase 3B sub-objects specifically).
 
 ## Release 12B — Daily Picks Universe and Reliability Validation
 
@@ -50,3 +64,4 @@
 - No RCI feature-flag change without explicit approval.
 - No production-status documentation may claim a validation passed without recorded evidence.
 - Historical test totals remain historical snapshots. Current test status must be taken from the latest validated release or CI evidence.
+- Intelligence Engine V1 is not considered closed until IN and US shadow telemetry both show `source_commit = bb5d3cf8247ce829ca9d0e06d4048fc7aa7b740e` (or later) and `tradability`/`liquidity`/`data_confidence` all report `available = true`.
