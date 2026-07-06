@@ -306,6 +306,7 @@ export interface PaperPortfolio {
   closed_trades: PaperTrade[];
   total_realized_pnl: number;
   total_realized_pnl_usd: number;
+  email_notifications_enabled: boolean;
 }
 
 export const fetchPaperPortfolio = (userId: string, email?: string | null) =>
@@ -331,6 +332,9 @@ export const editPaperTrade = (tradeId: number, userId: string, stopLoss: number
 // behavior yet and this endpoint rejects it outright (see ManagementModeRequest).
 export const updatePaperTradeManagementMode = (tradeId: number, userId: string, mode: Exclude<TradeManagementMode, "ai_assisted">) =>
   api.patch(`/api/paper-trading/trades/${tradeId}/management-mode`, { user_id: userId, trade_management_mode: mode }).then((r) => r.data);
+
+export const updatePaperTradeNotificationPreference = (userId: string, enabled: boolean) =>
+  api.patch("/api/paper-trading/notifications", { user_id: userId, email_notifications_enabled: enabled }).then((r) => r.data);
 
 export const acceptTerms = (
   userId: string, email: string,

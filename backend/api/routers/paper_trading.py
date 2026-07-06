@@ -25,7 +25,7 @@ def _conn():
 def _ensure_portfolio(user_id: str, email: str | None = None) -> dict:
     with _conn() as conn:
         row = conn.execute(
-            "SELECT cash, cash_usd FROM paper_portfolio WHERE user_id = %s",
+            "SELECT cash, cash_usd, email_notifications_enabled FROM paper_portfolio WHERE user_id = %s",
             (user_id,)
         ).fetchone()
         if row is None:
@@ -39,7 +39,7 @@ def _ensure_portfolio(user_id: str, email: str | None = None) -> dict:
                 (user_id, user_id, STARTING_CASH_IN, STARTING_CASH_US, email)
             )
             row = conn.execute(
-                "SELECT cash, cash_usd FROM paper_portfolio WHERE user_id = %s",
+                "SELECT cash, cash_usd, email_notifications_enabled FROM paper_portfolio WHERE user_id = %s",
                 (user_id,)
             ).fetchone()
         if email:
@@ -48,7 +48,7 @@ def _ensure_portfolio(user_id: str, email: str | None = None) -> dict:
                 "UPDATE paper_portfolio SET email = %s WHERE user_id = %s AND (email IS DISTINCT FROM %s)",
                 (email, user_id, email)
             )
-        return {"cash": row[0], "cash_usd": row[1]}
+        return {"cash": row[0], "cash_usd": row[1], "email_notifications_enabled": row[2]}
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
@@ -86,6 +86,10 @@ class ManagementModeRequest(BaseModel):
     # rejected-at-runtime value like BuyRequest's, it simply isn't an option
     # this endpoint accepts at all yet, since it has no functional behavior.
     trade_management_mode: Literal["manual", "auto"]
+
+
+class NotificationPreferenceRequest(BaseModel):
+    email_notifications_enabled: bool
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -148,6 +152,7 @@ def get_portfolio(user_id: str = Depends(get_current_user_id)):
         "closed_trades": closed_trades,
         "total_realized_pnl": round(total_realized_in, 2),
         "total_realized_pnl_usd": round(total_realized_us, 2),
+        "email_notifications_enabled": portfolio["email_notifications_enabled"],
     }
 
 
@@ -348,6 +353,22 @@ def update_management_mode(trade_id: int, req: ManagementModeRequest, user_id: s
             "exit_reason": exit_reason,
         },
     }
+
+
+@router.patch("/notifications")
+def update_notification_preference(req: NotificationPreferenceRequest, user_id: str = Depends(get_current_user_id)):
+    """Toggles the single Paper Trading notification preference — gates both
+    the trade notifier's proximity/auto-close emails (checked directly
+    against this column) and, client-side, whether the Notifications button
+    asks for browser permission. Scoped to Paper Trading only; does not
+    touch Daily Picks alerts, which have their own separate mechanism."""
+    _ensure_portfolio(user_id)  # make sure the row exists before updating it
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE paper_portfolio SET email_notifications_enabled = %s, updated_at = now() WHERE user_id = %s",
+            (req.email_notifications_enabled, user_id)
+        )
+    return {"message": "Notification preference updated", "email_notifications_enabled": req.email_notifications_enabled}
 
 
 @router.post("/reset")

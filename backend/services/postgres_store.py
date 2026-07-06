@@ -217,6 +217,11 @@ UPDATE paper_portfolio SET cash_usd = 100000.0 WHERE cash_usd = 10000.0;
 -- for now — the column accepts the value but no backend logic acts on it yet).
 ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS trade_management_mode TEXT NOT NULL DEFAULT 'manual';
 ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS exit_reason TEXT;
+-- Per-user Paper Trading notification preference — gates both the trade
+-- notifier's proximity/auto-close emails and (client-side) whether the
+-- Notifications toggle asks for browser permission. Paper Trading only;
+-- unrelated to Daily Picks alerts, which have their own separate mechanism.
+ALTER TABLE paper_portfolio ADD COLUMN IF NOT EXISTS email_notifications_enabled BOOLEAN NOT NULL DEFAULT true;
 CREATE TABLE IF NOT EXISTS watchlist (
     id         BIGSERIAL PRIMARY KEY,
     user_id    TEXT NOT NULL,

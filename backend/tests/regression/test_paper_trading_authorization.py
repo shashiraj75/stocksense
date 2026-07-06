@@ -84,6 +84,7 @@ PAPER_TRADING_ROUTES = [
     ("post", "/api/paper-trading/sell/1", {"price": 100.0}),
     ("patch", "/api/paper-trading/trade/1", {"stop_loss": 90.0}),
     ("patch", "/api/paper-trading/trades/1/management-mode", {"trade_management_mode": "auto"}),
+    ("patch", "/api/paper-trading/notifications", {"email_notifications_enabled": False}),
     ("post", "/api/paper-trading/reset", None),
 ]
 
@@ -127,7 +128,7 @@ class TestPaperTradingAuth:
         # fetchone, then insert-trade fetchone).
         made_conns = []
         pending = [
-            _RecordingConn(fetchone_results=[(1000000.0, 100000.0)]),
+            _RecordingConn(fetchone_results=[(1000000.0, 100000.0, True)]),
             _RecordingConn(fetchone_results=[(999900.0,), (1,)]),
         ]
 
@@ -198,7 +199,7 @@ class TestPaperTradingAuth:
         with patch.object(
             __import__("api.routers.paper_trading", fromlist=["_conn"]),
             "_conn",
-            lambda: _fake_conn(fetchone_results=[(1000000.0, 100000.0)], fetchall_results=[[]]),
+            lambda: _fake_conn(fetchone_results=[(1000000.0, 100000.0, True)], fetchall_results=[[]]),
         ):
             resp = client.get("/api/paper-trading/portfolio", headers=_auth("user-aaa"))
         assert resp.status_code == 200
@@ -208,7 +209,7 @@ class TestPaperTradingAuth:
         made_conns = []
 
         def _conn_factory():
-            conn = _RecordingConn(fetchone_results=[(1000000.0, 100000.0)], fetchall_results=[[]])
+            conn = _RecordingConn(fetchone_results=[(1000000.0, 100000.0, True)], fetchall_results=[[]])
             made_conns.append(conn)
             return conn
 

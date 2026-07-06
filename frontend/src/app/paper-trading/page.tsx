@@ -11,7 +11,8 @@ import {
 } from "lucide-react";
 import {
   fetchPaperPortfolio, closePaperTrade, resetPaperPortfolio, editPaperTrade,
-  updatePaperTradeManagementMode, fetchQuote, type PaperTrade, type TradeManagementMode,
+  updatePaperTradeManagementMode, updatePaperTradeNotificationPreference,
+  fetchQuote, type PaperTrade, type TradeManagementMode,
 } from "@/utils/api";
 import { useAuth } from "@/lib/AuthContext";
 import { PaperTradeModal } from "@/components/PaperTradeModal";
@@ -177,12 +178,13 @@ const _notifiedThisSession = new Set<string>();
 const _autoCloseAttempted = new Set<number>();
 
 function OpenTradeRow({
-  trade, onSell, userId, onNotify,
+  trade, onSell, userId, onNotify, notificationsEnabled,
 }: {
   trade: PaperTrade;
   onSell: (t: PaperTrade) => void;
   userId: string;
   onNotify: (message: string, tone: "success" | "warning") => void;
+  notificationsEnabled: boolean;
 }) {
   const currency = trade.market === "IN" ? "₹" : "$";
   const locale = trade.market === "IN" ? "en-IN" : "en-US";
@@ -218,6 +220,7 @@ function OpenTradeRow({
   useEffect(() => {
     if (typeof window === "undefined" || !("Notification" in window)) return;
     if (Notification.permission !== "granted") return;
+    if (!notificationsEnabled) return;
     if (marketOpen !== true) return;
 
     if (nearTarget) {
@@ -240,7 +243,7 @@ function OpenTradeRow({
         });
       }
     }
-  }, [nearTarget, nearStopLoss, trade.id, trade.symbol, livePrice, currency, trade.target_price, trade.stop_loss, marketOpen]);
+  }, [nearTarget, nearStopLoss, trade.id, trade.symbol, livePrice, currency, trade.target_price, trade.stop_loss, marketOpen, notificationsEnabled]);
 
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
@@ -742,11 +745,26 @@ export default function PaperTradingPage() {
     }
   }, []);
 
+  // Persisted (backend) preference — the single source of truth for whether
+  // Paper Trading emails go out at all. Browser Notification.permission is a
+  // separate, device-local concern layered on top of it (see the toggle
+  // button below): turning this off suppresses both backend emails and this
+  // tab's own popups even if browser permission remains granted, since we
+  // simply stop calling new Notification() when it's false.
+  const notifPrefMutation = useMutation({
+    mutationFn: (enabled: boolean) => updatePaperTradeNotificationPreference(userId, enabled),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["paper-portfolio"] }),
+  });
+
   const requestNotifications = async () => {
-    if (typeof window === "undefined" || !("Notification" in window)) return;
-    const result = await Notification.requestPermission();
-    setNotifPermission(result);
+    if (typeof window !== "undefined" && "Notification" in window) {
+      const result = await Notification.requestPermission();
+      setNotifPermission(result);
+    }
+    notifPrefMutation.mutate(true);
   };
+
+  const disableNotifications = () => notifPrefMutation.mutate(false);
 
   const { data: portfolio, isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ["paper-portfolio", userId],
@@ -912,34 +930,39 @@ export default function PaperTradingPage() {
               </button>
             ))}
           </div>
-          {notifPermission !== "unsupported" && (
-            <button
-              onClick={notifPermission === "granted" ? undefined : requestNotifications}
-              disabled={notifPermission === "granted"}
-              title={
-                notifPermission === "granted"
-                  ? "Browser notifications are on — you'll also get an email if you close this tab"
-                  : notifPermission === "denied"
+          {notifPermission !== "unsupported" && (() => {
+            // The persisted backend preference is the single source of
+            // truth for "on" — browser permission is layered on top only to
+            // distinguish "on, and this tab can also show popups" from "on,
+            // but this browser has blocked/not-yet-granted popups".
+            const emailEnabled = portfolio.email_notifications_enabled;
+            const blocked = notifPermission === "denied";
+            const on = emailEnabled && !blocked;
+            return (
+              <button
+                onClick={blocked ? undefined : (on ? disableNotifications : requestNotifications)}
+                disabled={blocked || notifPrefMutation.isPending}
+                title={
+                  blocked
                     ? "Notifications blocked — enable them in your browser's site settings"
-                    : "Get a popup when a position nears its target or stop loss"
-              }
-              className={clsx(
-                "flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border transition-colors",
-                notifPermission === "granted"
-                  ? "border-bull/30 text-bull bg-bull/10 cursor-default"
-                  : notifPermission === "denied"
-                    ? "border-dark-border text-gray-600 cursor-not-allowed"
-                    : "border-dark-border text-gray-400 hover:text-white hover:border-white/30"
-              )}
-            >
-              {notifPermission === "granted" ? <Bell size={13} /> : <BellOff size={13} />}
-              {notifPermission === "granted"
-                ? "Notifications On"
-                : notifPermission === "denied"
-                  ? "Notifications Blocked"
-                  : "Enable Notifications"}
-            </button>
-          )}
+                    : on
+                      ? "Controls paper-trading alerts and auto-close notifications. Click to turn off."
+                      : "Controls paper-trading alerts and auto-close notifications. Click to turn on."
+                }
+                className={clsx(
+                  "flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border transition-colors disabled:opacity-60",
+                  on
+                    ? "border-bull/30 text-bull bg-bull/10 hover:bg-bull/20"
+                    : blocked
+                      ? "border-dark-border text-gray-600 cursor-not-allowed"
+                      : "border-dark-border text-gray-400 hover:text-white hover:border-white/30"
+                )}
+              >
+                {on ? <Bell size={13} /> : <BellOff size={13} />}
+                {blocked ? "Notifications Blocked" : on ? "Notifications On" : "Notifications Off"}
+              </button>
+            );
+          })()}
           <button
             onClick={() => setShowResetConfirm(true)}
             className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border border-dark-border text-gray-400 hover:text-white hover:border-white/30 transition-colors"
@@ -1069,7 +1092,7 @@ export default function PaperTradingPage() {
                     </thead>
                     <tbody>
                       {trades.map(t => (
-                        <OpenTradeRow key={t.id} trade={t} onSell={setSellTarget} userId={userId} onNotify={pushNotification} />
+                        <OpenTradeRow key={t.id} trade={t} onSell={setSellTarget} userId={userId} onNotify={pushNotification} notificationsEnabled={portfolio.email_notifications_enabled} />
                       ))}
                     </tbody>
                   </table>
