@@ -6,7 +6,7 @@ import Link from "next/link";
 import clsx from "clsx";
 import {
   TrendingUp, TrendingDown, RotateCcw, ExternalLink, Beaker,
-  BarChart2, AlertTriangle, CheckCircle2, ShieldAlert, Pencil, Check, X, Target,
+  BarChart2, AlertTriangle, CheckCircle2, Pencil, Check, X,
   Bell, BellOff, ChevronDown, ChevronUp,
 } from "lucide-react";
 import {
@@ -288,21 +288,28 @@ function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t
             </button>
           </div>
         ) : (
-          <div className="flex items-center gap-1.5 group">
-            {trade.stop_loss ? (
-              <span className="font-mono text-xs text-yellow-400">
-                {currency}{fmt(trade.stop_loss)}
+          <div className="flex flex-col gap-0.5">
+            <div className="flex items-center gap-1.5 group">
+              {trade.stop_loss ? (
+                <span className="font-mono text-xs text-yellow-400">
+                  {currency}{fmt(trade.stop_loss)}
+                </span>
+              ) : (
+                <span className="text-xs text-gray-600">—</span>
+              )}
+              <button
+                onClick={() => setEditing(true)}
+                className="p-0.5 rounded text-gray-500 hover:text-white transition-colors"
+                title="Edit stop loss"
+              >
+                <Pencil size={11} />
+              </button>
+            </div>
+            {trade.stop_loss && trade.stop_loss > 0 && (
+              <span className="text-[11px] text-yellow-300/50">
+                −{((trade.entry_price - trade.stop_loss) / trade.entry_price * 100).toFixed(1)}% from entry
               </span>
-            ) : (
-              <span className="text-xs text-gray-600">—</span>
             )}
-            <button
-              onClick={() => setEditing(true)}
-              className="p-0.5 rounded text-gray-500 hover:text-white transition-colors"
-              title="Edit stop loss"
-            >
-              <Pencil size={11} />
-            </button>
           </div>
         )}
       </td>
@@ -318,21 +325,28 @@ function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t
             className="w-24 bg-dark-bg border border-green-500/50 rounded-lg px-2 py-1 text-xs font-mono text-white focus:outline-none"
           />
         ) : (
-          <div className="flex items-center gap-1.5 group">
-            {trade.target_price ? (
-              <span className="font-mono text-xs text-green-400">
-                {currency}{fmt(trade.target_price)}
+          <div className="flex flex-col gap-0.5">
+            <div className="flex items-center gap-1.5 group">
+              {trade.target_price ? (
+                <span className="font-mono text-xs text-green-400">
+                  {currency}{fmt(trade.target_price)}
+                </span>
+              ) : (
+                <span className="text-xs text-gray-600">—</span>
+              )}
+              <button
+                onClick={() => setEditing(true)}
+                className="p-0.5 rounded text-gray-500 hover:text-white transition-colors"
+                title="Edit target"
+              >
+                <Pencil size={11} />
+              </button>
+            </div>
+            {trade.target_price && trade.target_price > 0 && (
+              <span className="text-[11px] text-green-300/50">
+                +{((trade.target_price - trade.entry_price) / trade.entry_price * 100).toFixed(1)}% from entry
               </span>
-            ) : (
-              <span className="text-xs text-gray-600">—</span>
             )}
-            <button
-              onClick={() => setEditing(true)}
-              className="p-0.5 rounded text-gray-500 hover:text-white transition-colors"
-              title="Edit target"
-            >
-              <Pencil size={11} />
-            </button>
           </div>
         )}
       </td>
@@ -347,45 +361,6 @@ function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t
         >
           Close
         </button>
-      </td>
-    </tr>
-    {/* Inline reminder row — always shown so all positions look consistent */}
-    <tr className="border-b border-dark-border bg-dark-bg/40">
-      <td colSpan={12} className="px-4 py-2">
-        <div className="flex flex-wrap gap-5">
-          {trade.stop_loss && trade.stop_loss > 0 ? (
-            <span className="flex items-start gap-1.5 text-[11px] text-yellow-300/80">
-              <ShieldAlert size={11} className="shrink-0 mt-0.5" />
-              <span className="flex flex-col leading-tight">
-                <span>Stop Loss: <strong>{currency}{fmt(trade.stop_loss)}</strong></span>
-                <span className="text-yellow-300/50">
-                  −{((trade.entry_price - trade.stop_loss) / trade.entry_price * 100).toFixed(1)}% from entry
-                </span>
-              </span>
-            </span>
-          ) : (
-            <span className="flex items-center gap-1.5 text-[11px] text-gray-400">
-              <ShieldAlert size={11} className="shrink-0" />
-              Stop Loss: <span className="italic">not set — click ✎ to add one</span>
-            </span>
-          )}
-          {trade.target_price && trade.target_price > 0 ? (
-            <span className="flex items-start gap-1.5 text-[11px] text-green-300/80">
-              <Target size={11} className="shrink-0 mt-0.5" />
-              <span className="flex flex-col leading-tight">
-                <span>Target: <strong>{currency}{fmt(trade.target_price)}</strong></span>
-                <span className="text-green-300/50">
-                  +{((trade.target_price - trade.entry_price) / trade.entry_price * 100).toFixed(1)}% from entry
-                </span>
-              </span>
-            </span>
-          ) : (
-            <span className="flex items-center gap-1.5 text-[11px] text-gray-400">
-              <Target size={11} className="shrink-0" />
-              Target: <span className="italic">not set — click ✎ to add one</span>
-            </span>
-          )}
-        </div>
       </td>
     </tr>
     </>
