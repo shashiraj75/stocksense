@@ -71,6 +71,25 @@ function checkExitTrigger(
   return null;
 }
 
+// Builds the " at ₹524.78 (+3.4%)" fragment shared by every notification
+// that reports a stop-loss/target trigger. % is always computed against
+// entry price with the same formula for both target and stop loss — the
+// sign (positive for target, negative for stop loss) falls out of the math
+// naturally, it is never special-cased. Returns "" (not a partial fragment)
+// when the trigger price itself is unavailable, so callers can just append
+// this and fall back to their symbol-only message automatically.
+function formatTriggerFragment(currency: string, triggerPrice: number | null | undefined, entryPrice: number): string {
+  if (triggerPrice == null || !Number.isFinite(triggerPrice) || triggerPrice <= 0) return "";
+  const priceStr = `${currency}${triggerPrice.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+  if (!Number.isFinite(entryPrice) || entryPrice <= 0) return ` at ${priceStr}`;
+  const pct = (triggerPrice - entryPrice) / entryPrice * 100;
+  if (!Number.isFinite(pct)) return ` at ${priceStr}`;
+  // "−" (U+2212), not the ASCII hyphen toFixed() would give a negative
+  // number — matches this file's existing "−X.X% from entry" convention.
+  const pctStr = pct >= 0 ? `+${pct.toFixed(1)}` : `−${Math.abs(pct).toFixed(1)}`;
+  return ` at ${priceStr} (${pctStr}%)`;
+}
+
 const MANAGEMENT_MODE_LABEL: Record<string, string> = {
   manual: "Manual",
   auto: "Auto",
@@ -265,7 +284,12 @@ function OpenTradeRow({
       queryClient.invalidateQueries({ queryKey: ["paper-portfolio"] });
       setPendingMode(null);
       setModePickerOpen(false);
-      onNotify(`Trade management set to ${mode === "auto" ? "Auto" : "Manual"}.`, "success");
+      onNotify(
+        trade.symbol
+          ? `${trade.symbol} trade management set to ${mode === "auto" ? "Auto" : "Manual"}.`
+          : `Trade management set to ${mode === "auto" ? "Auto" : "Manual"}.`,
+        "success",
+      );
     },
     onError: (e: any) => {
       onNotify(e.response?.data?.detail ?? "Failed to update trade management mode.", "warning");
@@ -300,11 +324,19 @@ function OpenTradeRow({
     onSuccess: (_data, exitReason) => {
       queryClient.invalidateQueries({ queryKey: ["paper-portfolio"] });
       const isAuto = trade.trade_management_mode === "auto";
-      const label = exitReason === "STOP_LOSS" ? "Stop loss" : "Target";
+      const isTarget = exitReason === "TARGET_HIT";
+      // Falls back to a symbol-only message automatically when livePrice is
+      // unavailable (formatTriggerFragment returns "" in that case), and to
+      // the fully generic wording below when trade.symbol itself is falsy.
+      const symbolPrefix = trade.symbol ? `${trade.symbol} ` : "";
+      const triggerFragment = formatTriggerFragment(currency, livePrice, trade.entry_price);
+      const actionPhrase = isAuto
+        ? `${isTarget ? "target achieved" : "stop loss hit"}${triggerFragment}. Position closed automatically.`
+        : `${isTarget ? "target" : "stop loss"} reached${triggerFragment}. Position closed.`;
       onNotify(
-        isAuto
-          ? `${label === "Target" ? "Target achieved" : "Stop loss hit"}. Position closed automatically.`
-          : `${label} reached. Position closed.`,
+        symbolPrefix
+          ? `${symbolPrefix}${actionPhrase}`
+          : `${actionPhrase.charAt(0).toUpperCase()}${actionPhrase.slice(1)}`,
         exitReason === "STOP_LOSS" ? "warning" : "success",
       );
     },
@@ -589,7 +621,15 @@ function OpenTradeRow({
           )}>
             <span className="flex items-center gap-1.5">
               <AlertTriangle size={13} className="shrink-0" />
-              {exitTrigger === "STOP_LOSS" ? "Stop loss reached." : "Target reached."} Close position?
+              {(() => {
+                const isTarget = exitTrigger === "TARGET_HIT";
+                const symbolPrefix = trade.symbol ? `${trade.symbol} ` : "";
+                const triggerFragment = formatTriggerFragment(currency, livePrice, trade.entry_price);
+                const actionPhrase = `${isTarget ? "target" : "stop loss"} reached${triggerFragment}.`;
+                return symbolPrefix
+                  ? `${symbolPrefix}${actionPhrase}`
+                  : `${actionPhrase.charAt(0).toUpperCase()}${actionPhrase.slice(1)}`;
+              })()} Close position?
             </span>
             <div className="flex gap-2">
               <button
