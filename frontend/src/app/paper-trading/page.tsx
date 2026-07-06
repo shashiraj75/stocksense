@@ -74,7 +74,7 @@ function checkExitTrigger(
 const MANAGEMENT_MODE_LABEL: Record<string, string> = {
   manual: "Manual",
   auto: "Auto",
-  ai_assisted: "AI Assisted (Coming Soon)",
+  ai_assisted: "AI (Coming Soon)",
 };
 
 // Trying this out — easy to remove (just delete this function + its one
@@ -292,9 +292,6 @@ function OpenTradeRow({
           {trade.symbol} <ExternalLink size={11} className="opacity-50" />
         </Link>
         <p className="text-xs text-gray-500">{trade.market} · {trade.horizon}</p>
-        <p className="text-[10px] text-gray-600 mt-0.5">
-          {MANAGEMENT_MODE_LABEL[trade.trade_management_mode] ?? "Manual"}
-        </p>
       </td>
       <td className="px-4 py-3 text-sm font-mono">{trade.quantity}</td>
       <td className="px-4 py-3 text-sm font-mono">
@@ -361,6 +358,9 @@ function OpenTradeRow({
       </td>
       <td className="px-4 py-3">
         <SignalBadge signal={trade.signal as any} size="sm" />
+        <p className="text-[10px] text-gray-500 mt-1">
+          {MANAGEMENT_MODE_LABEL[trade.trade_management_mode] ?? "Manual"}
+        </p>
       </td>
       <td className="px-4 py-3">
         {editing ? (
@@ -548,6 +548,13 @@ function ClosedTradeRow({ trade }: { trade: PaperTrade }) {
           )
         ) : (
           <span className="text-xs text-gray-600">—</span>
+        )}
+        {trade.exit_reason && (
+          <p className="text-[10px] text-gray-600 mt-0.5">
+            {trade.exit_reason === "STOP_LOSS" ? "Stop loss"
+              : trade.exit_reason === "TARGET_HIT" ? "Target"
+              : "Manual"}
+          </p>
         )}
       </td>
       <td className="px-4 py-3 text-xs text-gray-500">

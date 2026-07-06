@@ -37,9 +37,9 @@ const HORIZONS: { key: Horizon; label: string; desc: string }[] = [
 ];
 
 const TRADE_MANAGEMENT_OPTIONS: { key: TradeManagementMode; label: string; desc: string; disabled?: boolean }[] = [
-  { key: "manual", label: "Manual Close", desc: "Alert me when stop loss or target is reached." },
-  { key: "auto",   label: "Auto Close",   desc: "Automatically close this paper trade when stop loss or target is reached." },
-  { key: "ai_assisted", label: "AI Assisted", desc: "Coming soon.", disabled: true },
+  { key: "manual", label: "Manual", desc: "Alerts only" },
+  { key: "auto",   label: "Auto",   desc: "Automatically closes trade" },
+  { key: "ai_assisted", label: "AI", desc: "Coming Soon", disabled: true },
 ];
 
 export function PaperTradeModal({
@@ -194,10 +194,10 @@ export function PaperTradeModal({
 
   return (
     <div className="fixed inset-0 z-[60] w-screen h-screen overflow-hidden flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">
-      <div className="bg-dark-card border border-dark-border rounded-2xl w-full max-w-sm shadow-2xl flex flex-col max-h-[92dvh]">
+      <div className="bg-dark-card border border-dark-border rounded-2xl w-full max-w-sm shadow-2xl flex flex-col max-h-[94dvh] sm:max-h-[92dvh]">
 
         {/* Header — fixed, never scrolls */}
-        <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-dark-border shrink-0">
+        <div className="flex items-center justify-between px-4 sm:px-5 pt-4 sm:pt-5 pb-2.5 sm:pb-3 border-b border-dark-border shrink-0">
           <div>
             <h2 className="text-base font-bold">{isSell ? "Close Position" : "Paper Trade"}</h2>
             <p className="text-xs text-gray-400 mt-0.5 flex items-center gap-1.5 flex-wrap">
@@ -221,7 +221,7 @@ export function PaperTradeModal({
         </div>
 
         {/* Scrollable body */}
-        <div className="overflow-y-auto flex-1 px-5 py-3 space-y-2.5">
+        <div className="overflow-y-auto overscroll-contain flex-1 px-4 sm:px-5 py-2.5 sm:py-3 space-y-2 sm:space-y-2.5">
 
           {/* Market closed — block order placement */}
           {marketClosed && (
@@ -237,12 +237,12 @@ export function PaperTradeModal({
           {/* Horizon selector */}
           {!isSell && (
             <div>
-              <p className="text-xs text-gray-400 mb-1.5">Horizon</p>
+              <p className="text-xs text-gray-400 mb-1 sm:mb-1.5">Horizon</p>
               <div className="grid grid-cols-3 gap-1.5">
                 {HORIZONS.map(({ key, label, desc }) => (
                   <button key={key}
                     onClick={() => { setSelectedHorizon(key); setError(null); stopLossEdited.current = false; targetPriceEdited.current = false; }}
-                    className={clsx("rounded-lg px-2 py-2 text-center border transition-colors",
+                    className={clsx("rounded-lg px-2 py-1.5 sm:py-2 text-center border transition-colors",
                       selectedHorizon === key ? "bg-brand-500/20 border-brand-500 text-white" : "bg-dark-bg border-dark-border text-gray-400 hover:border-white/30 hover:text-white")}>
                     <p className="text-xs font-semibold">{label}</p>
                     <p className="text-[10px] opacity-60">{desc}</p>
@@ -360,30 +360,29 @@ export function PaperTradeModal({
             </div>
           )}
 
-          {/* Trade Management — how a stop-loss/target hit is handled */}
+          {/* Trade Management — how a stop-loss/target hit is handled.
+              Compact 3-up grid: short one-word labels keep each card small
+              enough that it doesn't need to stack on a ~375px screen. */}
           {!isSell && (
             <div>
               <label className="text-xs text-gray-400 mb-1 block">Trade Management</label>
-              <div className="grid grid-cols-3 gap-1.5">
-                {TRADE_MANAGEMENT_OPTIONS.map(({ key, label, disabled }) => (
+              <div className="grid grid-cols-3 gap-1">
+                {TRADE_MANAGEMENT_OPTIONS.map(({ key, label, desc, disabled }) => (
                   <button key={key} type="button"
                     disabled={disabled}
-                    title={disabled ? "Coming soon" : undefined}
+                    title={disabled ? desc : undefined}
                     onClick={() => !disabled && setTradeManagementMode(key)}
-                    className={clsx("rounded-lg px-2 py-2 text-center border transition-colors",
+                    className={clsx("rounded-lg px-1.5 py-1.5 text-center border transition-colors",
                       disabled
                         ? "bg-dark-bg border-dark-border text-gray-600 cursor-not-allowed opacity-60"
                         : tradeManagementMode === key
                           ? "bg-brand-500/20 border-brand-500 text-white"
                           : "bg-dark-bg border-dark-border text-gray-400 hover:border-white/30 hover:text-white")}>
                     <p className="text-xs font-semibold">{label}</p>
-                    {disabled && <p className="text-[10px] opacity-70 mt-0.5">Coming soon</p>}
+                    <p className="text-[9px] opacity-70 mt-0.5 leading-tight">{desc}</p>
                   </button>
                 ))}
               </div>
-              <p className="text-[10px] text-gray-500 mt-1">
-                {TRADE_MANAGEMENT_OPTIONS.find(o => o.key === tradeManagementMode)?.desc}
-              </p>
             </div>
           )}
 
@@ -408,7 +407,7 @@ export function PaperTradeModal({
         </div>{/* end scrollable body */}
 
         {/* Sticky footer */}
-        <div className="px-5 py-3 border-t border-dark-border shrink-0 space-y-2">
+        <div className="px-4 sm:px-5 py-2.5 sm:py-3 border-t border-dark-border shrink-0 space-y-1.5 sm:space-y-2">
           <p className="text-[10px] text-gray-600 text-center">AI pre-filled · editable · Virtual money only</p>
           <div className="flex gap-2">
             <button onClick={onClose}
