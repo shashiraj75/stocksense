@@ -244,6 +244,17 @@ CREATE TABLE IF NOT EXISTS intelligence_engine_shadow_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_intelligence_engine_shadow_runs_market_time
     ON intelligence_engine_shadow_runs(market, run_at DESC);
+-- Epic 007 Phase 3B — Tradability/Liquidity/Confidence telemetry. Purely
+-- additive to the Phase 3A table; all nullable, so historical Phase 3A
+-- rows (which predate these gates) simply read back as NULL/"not
+-- evaluated" rather than needing any backfill.
+ALTER TABLE intelligence_engine_shadow_runs ADD COLUMN IF NOT EXISTS tradability_passed INTEGER;
+ALTER TABLE intelligence_engine_shadow_runs ADD COLUMN IF NOT EXISTS tradability_failed INTEGER;
+ALTER TABLE intelligence_engine_shadow_runs ADD COLUMN IF NOT EXISTS liquidity_passed INTEGER;
+ALTER TABLE intelligence_engine_shadow_runs ADD COLUMN IF NOT EXISTS liquidity_failed INTEGER;
+ALTER TABLE intelligence_engine_shadow_runs ADD COLUMN IF NOT EXISTS data_confidence_average DOUBLE PRECISION;
+ALTER TABLE intelligence_engine_shadow_runs ADD COLUMN IF NOT EXISTS top_failure_reasons JSONB;
+ALTER TABLE intelligence_engine_shadow_runs ADD COLUMN IF NOT EXISTS sample_liquidity_rejections JSONB;
 CREATE TABLE IF NOT EXISTS watchlist (
     id         BIGSERIAL PRIMARY KEY,
     user_id    TEXT NOT NULL,

@@ -139,12 +139,17 @@ def picks_performance(horizon: str = "medium", window_days: int = 90):
 
 @router.get("/intelligence-shadow")
 def intelligence_shadow(market: str = "IN"):
-    """Epic 007 Phase 3A — read-only inspection of the Intelligence Engine
-    V1 shadow slice's most recent run for a market. Returns {"available":
-    False} (not an error) when no shadow run has ever completed — e.g. the
-    INTELLIGENCE_ENGINE_SHADOW_ENABLED flag has never been turned on, or
-    Postgres isn't configured. This endpoint never triggers a run itself
-    and never mutates anything — read-only only, per Epic 007 Phase 3A scope."""
+    """Epic 007 Phase 3A/3B — read-only inspection of the Intelligence
+    Engine V1 shadow slice's most recent run for a market. Returns
+    {"available": False} (not an error) when no shadow run has ever
+    completed — e.g. the INTELLIGENCE_ENGINE_SHADOW_ENABLED flag has never
+    been turned on, or Postgres isn't configured. Response includes the
+    Phase 3A instrument-type fields plus Phase 3B's tradability/liquidity/
+    data_confidence/top_failure_reasons summaries (each with its own
+    "available" flag — see telemetry.get_latest_shadow_run and
+    shadow_run.py's module docstring for why those three may legitimately
+    report unavailable even on a completed run). This endpoint never
+    triggers a run itself and never mutates anything — read-only only."""
     market = _norm_market(market)
     try:
         from services.intelligence_engine.telemetry import get_latest_shadow_run
