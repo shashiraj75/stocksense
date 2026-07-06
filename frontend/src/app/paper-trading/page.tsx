@@ -307,7 +307,7 @@ function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t
             </div>
             {trade.stop_loss && trade.stop_loss > 0 && (
               <span className="text-[11px] text-yellow-300/50">
-                −{((trade.entry_price - trade.stop_loss) / trade.entry_price * 100).toFixed(1)}% from entry
+                −{((trade.entry_price - trade.stop_loss) / trade.entry_price * 100).toFixed(1)}%
               </span>
             )}
           </div>
@@ -344,7 +344,7 @@ function OpenTradeRow({ trade, onSell, userId }: { trade: PaperTrade; onSell: (t
             </div>
             {trade.target_price && trade.target_price > 0 && (
               <span className="text-[11px] text-green-300/50">
-                +{((trade.target_price - trade.entry_price) / trade.entry_price * 100).toFixed(1)}% from entry
+                +{((trade.target_price - trade.entry_price) / trade.entry_price * 100).toFixed(1)}%
               </span>
             )}
           </div>
