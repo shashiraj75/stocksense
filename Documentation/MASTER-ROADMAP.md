@@ -723,3 +723,62 @@ StockSense360 must not claim trailing-stop effectiveness, capital protection, do
 #### Dependencies and Sequencing
 
 This initiative depends on: current Daily Picks production reliability and truthfulness work; the shared safe-error and user-local timestamp work; Bear-Market Resilience & Market Regime Intelligence; Long-Term Investment Intelligence; Epic 007 — Portfolio Intelligence; the Paper Trade foundation and later Paper Trade workflow capabilities (Section 11); and reliable historical price, volatility, market-regime, and outcome-validation data. It must be designed and validated before it is presented as an investor-protection feature.
+
+---
+
+### Planned Cross-Cutting Initiative — Stock Movement Explanation Engine
+
+**Status: Planned / Not Started. Roadmap/documentation only — no implementation, scoring, or UI has been built.**
+
+**Objective.** When a user opens a stock detail page, explain in plain language why the stock's price moved up or down today — a feature the platform does not have today (the stock detail page shows price, change %, and AI signals, but no per-day movement explanation).
+
+**Core principle.** The explanation must clearly separate three tiers of certainty rather than presenting a single confident-sounding narrative: **confirmed facts** (the day's actual price/volume/index data, and any headline that genuinely exists for that stock today); **likely explanations** (a plausible link between a confirmed fact and the price move, stated as a hypothesis, not a certainty); and **unknowns** (an explicit "no news found" / "driver unclear" state when the data doesn't support a confident story). It must never manufacture a plausible-sounding cause for a move that has no supporting evidence — the same discipline already enforced elsewhere in this codebase for the `TRACKING_ONLY_SYMBOLS` early-return (see `STOCKSENSE_DOCUMENTATION.md`'s "Caught live" entry on ETF fabricated-analysis) must apply here from day one, not be retrofitted after a similar incident.
+
+**Three distinct reasoning modes (planned).** The explanation shown must differ by outcome, not be one generic template with the sign flipped:
+- **Price up today** — drivers framed as: what likely helped (news, sector strength, technical breakout, broad-market tailwind).
+- **Price down today** — drivers framed as: what likely hurt (adverse news, sector weakness, technical breakdown, broad-market headwind) — must not be phrased as investment advice to sell.
+- **Flat / no major move** — an explicit low-movement state (e.g. "no major catalyst identified today, price within normal range") rather than forcing a manufactured explanation onto an ordinary, uneventful trading day.
+
+**Planned inputs to evaluate.** Price action (today's open/high/low/close vs. prior close); intraday and daily % change; volume versus the stock's own recent average volume (a volume spike alongside a price move is a materially different signal than the same price move on average volume); sector performance (reusing the existing Heatmap sector-grouping infrastructure rather than inventing a second sector taxonomy); broad market index movement (Nifty 50/Sensex for India, S&P 500/NASDAQ for US — reusing the existing `MarketStatusBar`/index-bar data already on every page); recent news (headline-level, with a real publish timestamp — no news existing for the day must produce the "unknown" state, not a fabricated one); earnings/corporate updates (results, guidance, corporate actions) where a reliable, attributable data source exists; technical levels (proximity to support/resistance, moving averages, or the stock's own 52-week range — reusing existing technical-indicator computation rather than a new one); sentiment (reusing the existing VADER-based sentiment pipeline already used elsewhere in this codebase, not a new sentiment source); and macro factors only where genuinely relevant to that specific stock (e.g. USD/INR for an IT/pharma exporter, crude oil for an energy company) — reusing the existing `global_context` block (`dxy`, `vix`, `usdinr`, `india_vix`, etc.) already computed for Daily Picks rather than adding a new macro-data dependency.
+
+**Confidence level (required).** Every explanation must carry an explicit confidence level (not a bare narrative) — reflecting how much of the move a combination of confirmed facts and likely explanations can actually account for, distinct from (not a restatement of) the AI signal's own existing confidence score.
+
+**Planned user-facing output concept** (stock detail page, a new section titled "Why did this stock move today?"):
+
+```
+Today's Price Move
+  +2.4% (₹1,245.60 → ₹1,275.50) on 1.8x average volume
+
+Main Drivers
+  1. [confirmed] Sector (IT) up 1.9% today across the board
+  2. [likely]    Weak rupee (₹95.2/USD) — tailwind for IT exporters
+  3. [unknown]   No company-specific news found for today
+
+Technical Explanation
+  Price broke above its 50-day moving average on above-average volume.
+
+News/Sentiment Explanation
+  No dated news found for this stock today — sentiment score unchanged from yesterday.
+
+Sector/Market Context
+  IT sector +1.9% · Nifty 50 +0.6% — stock outperformed both.
+
+Conclusion
+  The move appears to be primarily sector- and macro-driven rather than
+  company-specific; no confirmed company-specific catalyst was found.
+
+Confidence Level: Medium
+  (sector/index/technical data confirmed; no company-specific news to
+  corroborate — see "unknowns" above)
+
+Disclaimer: This explanation is analytical and educational only — it is
+not investment advice, and does not predict future price movement.
+```
+
+**What this must not do.** Must not claim a specific news item caused a move without a real, dated, attributable source. Must not present "likely explanations" with the same visual/textual confidence as "confirmed facts" — the three-tier distinction above must be visible in the UI, not just internal to the reasoning logic. Must not imply investment advice ("this means you should buy/sell") — the existing disclaimer conventions used elsewhere in this codebase (Daily Picks' own disclaimer strip, the Paper Trading simulation notices) should be reused rather than a new disclaimer style invented.
+
+**Validation required before any accuracy claim.** No claim that this feature's explanations are "accurate" or "reliable" may be made without a human-reviewed sample of explanations checked against known, independently-verifiable causes for real historical price moves, across both India and US markets, across up/down/flat cases, and across cases where a genuine news catalyst existed versus cases where none did (the "unknown" state must be validated as correctly triggered, not just the "confirmed"/"likely" states).
+
+**Roadmap position and dependencies.** This depends on: the existing Heatmap sector-performance infrastructure (`backend/services/heatmap_service.py`); the existing market-index/status data already shown on every page (`MarketStatusBar`, `IndexBar`); the existing sentiment pipeline (VADER-based, already used by the Prediction Engine); the existing `global_context` macro block already computed for Daily Picks; and a reliable, attributable news source with real per-article timestamps (not yet confirmed to exist for both India and US at the depth this feature needs — a feasibility question for a future Design Study, per this roadmap's own established practice of a feasibility study before full-scope coding, e.g. Epic 003's Growth Intelligence India Feasibility Study). Not sequenced ahead of, or in place of, any currently in-progress Epic.
+
+**Architectural placement — not a standalone widget.** This must eventually become a capability of the **Intelligence Engine** (`backend/services/intelligence_engine/`) and/or the roadmap's own future **Epic 008 — AI Research Analyst** layer (see Section on Epic table, "AI Research Analyst — Future"), not a bolted-on, independently-hardcoded stock-detail-page widget. Concretely: the "confirmed / likely / unknown" reasoning discipline this feature requires is the same tiered-evidence discipline already established by the Intelligence Engine's gates (Instrument Type, Tradability, Liquidity, Data Confidence — see `Engineering-Handbook/Operations/Current-Release-Status.md`), and the eventual "explain in plain language" surface is exactly what Epic 008 is scoped to be. Building this as an isolated feature ahead of either would duplicate reasoning/evidence infrastructure that this codebase is already deliberately consolidating elsewhere. Any future implementation plan for this feature should first re-evaluate whether it should be built as a new consumer of the Intelligence Engine's data-confidence/evidence primitives, or deferred until Epic 008 exists, rather than assumed to be its own standalone service.
