@@ -728,7 +728,7 @@ This initiative depends on: current Daily Picks production reliability and truth
 
 ### Planned Cross-Cutting Initiative — Stock Movement Explanation Engine
 
-**Status: Planned / Not Started. Roadmap/documentation only — no implementation, scoring, or UI has been built.**
+**Status: Planned / Not Started. Roadmap/documentation only — no implementation, scoring, or UI has been built.** A full functional specification now exists: [Research Analyst — Stock Movement Explanation Engine: Functional Specification](Engineering-Handbook/Architecture/Research-Analyst-Stock-Movement-Explanation-Spec.md) (vision, user journeys, functional/non-functional requirements, data sources, explanation pipeline, AI reasoning methodology, evidence ranking, confidence scoring, API contract, UI/UX, edge cases, performance targets, Intelligence Engine/Daily Picks/Portfolio Copilot/Paper Trading integration, technical architecture, and a phased roadmap). This section remains the roadmap-level summary; the linked spec is the authoritative detailed reference.
 
 **Objective.** When a user opens a stock detail page, explain in plain language why the stock's price moved up or down today — a feature the platform does not have today (the stock detail page shows price, change %, and AI signals, but no per-day movement explanation).
 
