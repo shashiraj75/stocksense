@@ -835,7 +835,7 @@ export default function PaperTradingPage() {
   const { user } = useAuth();
   const userId = user?.id ?? "";
   const queryClient = useQueryClient();
-  const [market, setMarket] = useMarketPreference(["IN", "US"] as const, "IN");
+  const [market] = useMarketPreference(["IN", "US"] as const, "IN");
   const marketCfg = MARKETS.find(m => m.key === market)!;
   const [sellTarget, setSellTarget] = useState<PaperTrade | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
@@ -1047,16 +1047,13 @@ export default function PaperTradingPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {/* Market toggle — IN and US are separate cash ledgers */}
-          <div className="flex items-center gap-0.5 overflow-x-auto scrollbar-hide max-w-full bg-dark-card border border-dark-border rounded-lg p-0.5">
-            {MARKETS.map(m => (
-              <button key={m.key} onClick={() => setMarket(m.key)}
-                className={clsx("shrink-0 whitespace-nowrap text-xs px-3 py-1.5 rounded-md font-medium transition-colors",
-                  market === m.key ? "bg-brand-500 text-white" : "text-gray-400 hover:text-white")}>
-                {m.label}
-              </button>
-            ))}
-          </div>
+          {/* IN and US are separate cash ledgers. Market is now chosen once,
+              globally, via the header's GlobalMarketDropdown — this
+              read-only label just shows which ledger is currently in view
+              rather than offering a second, page-level way to change it. */}
+          <span className="shrink-0 whitespace-nowrap text-xs px-3 py-1.5 rounded-lg bg-dark-card border border-dark-border text-gray-400">
+            Market: {marketCfg.label}
+          </span>
           {notifPermission !== "unsupported" && (() => {
             // The persisted backend preference is the single source of
             // truth for "on" — browser permission is layered on top only to

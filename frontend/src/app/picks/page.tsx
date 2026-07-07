@@ -713,7 +713,7 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 export default function DailyPicksPage() {
-  const [market, setMarket] = useMarketPreference(["IN", "US"] as const, "IN");
+  const [market] = useMarketPreference(["IN", "US"] as const, "IN");
   const [horizon, setHorizon] = useState<"short" | "medium" | "long">("short");
   const [showTruth, setShowTruth] = useState(false);
 
@@ -762,16 +762,13 @@ export default function DailyPicksPage() {
           </span>
         </div>
         <div className="flex items-center gap-2 shrink-0 ml-auto flex-wrap justify-end">
-          {/* Market toggle */}
-          <div className="flex items-center gap-0.5 overflow-x-auto scrollbar-hide max-w-full bg-dark-card border border-dark-border rounded-lg p-0.5">
-            {MARKETS.map(m => (
-              <button key={m.key} onClick={() => setMarket(m.key)}
-                className={clsx("shrink-0 whitespace-nowrap text-xs px-3 py-1.5 rounded-md font-medium transition-colors",
-                  market === m.key ? "bg-brand-500 text-white" : "text-gray-400 hover:text-white")}>
-                {m.short}
-              </button>
-            ))}
-          </div>
+          {/* Market is now chosen once, globally, via the header's
+              GlobalMarketDropdown — this read-only label just shows what's
+              currently selected rather than offering a second, page-level
+              way to change it. */}
+          <span className="shrink-0 whitespace-nowrap text-xs px-3 py-1.5 rounded-lg bg-dark-card border border-dark-border text-gray-400">
+            Market: {marketCfg.short}
+          </span>
           {/* Toggle truth panel */}
           <button onClick={() => setShowTruth(v => !v)}
             className={clsx("flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg border transition-colors",

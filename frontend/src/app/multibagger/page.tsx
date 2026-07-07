@@ -67,7 +67,7 @@ const METRICS_BY_MARKET: Record<"IN" | "US", { key: keyof MultibaggerStock; labe
 };
 
 export default function MultibaggerPage() {
-  const [market, setMarket] = useMarketPreference(["IN", "US"] as const, "IN");
+  const [market] = useMarketPreference(["IN", "US"] as const, "IN");
   const [screen, setScreen] = useState<MultibaggerScreen>("quality_compounder");
   const [expanded, setExpanded] = useState<string | null>(null);
   const active = SCREENS.find(s => s.key === screen)!;
@@ -157,15 +157,13 @@ export default function MultibaggerPage() {
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0 flex-wrap">
-          <div className="flex items-center gap-0.5 bg-dark-card border border-dark-border rounded-lg p-0.5">
-            {(["IN", "US"] as const).map(m => (
-              <button key={m} onClick={() => setMarket(m)}
-                className={clsx("px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
-                  market === m ? "bg-brand-500 text-white" : "text-gray-400 hover:text-white")}>
-                {m === "IN" ? "🇮🇳 IN" : "🇺🇸 US"}
-              </button>
-            ))}
-          </div>
+          {/* Market is now chosen once, globally, via the header's
+              GlobalMarketDropdown — this read-only label just shows what's
+              currently selected rather than offering a second, page-level
+              way to change it. */}
+          <span className="text-xs px-3 py-1.5 rounded-lg bg-dark-card border border-dark-border text-gray-400">
+            Market: {market === "IN" ? "🇮🇳 India" : "🇺🇸 US"}
+          </span>
           {status?.running ? (
             <span className="flex items-center gap-1.5 text-xs text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 rounded-lg px-3 py-1.5">
               <Wifi size={12} className="animate-pulse" /> Refreshing fundamentals…
