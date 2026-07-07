@@ -346,6 +346,17 @@ export interface ClosedTradeHistoryByMarket {
 
 export type ClosedHistoryHorizonKey = keyof ClosedTradeHistoryByMarket;
 
+// Compact, backend-computed aggregate for the overall Trade History
+// headline and win-rate stat card — never derived by summing/filtering
+// individual trade rows client-side. See _build_modern_closed_trade_data /
+// _overview_from_closed_trades in paper_trading.py.
+export interface ClosedTradeOverview {
+  closed_trade_count: number;
+  win_trades_count: number;
+  win_rate_pct: number | null;
+  total_invested: number;
+}
+
 export interface PaperPortfolio {
   user_id: string;
   cash: number;
@@ -353,19 +364,29 @@ export interface PaperPortfolio {
   starting_cash: number;
   starting_cash_usd: number;
   open_trades: PaperTrade[];
-  // Retained for backward compatibility only (overall headline count/P&L,
-  // win-rate stat card) — Trade History's per-horizon sections must read
-  // closed_trade_history_by_horizon instead, never group/slice this flat list.
-  closed_trades: PaperTrade[];
+  // Only present when the request explicitly asked for it
+  // (include_full_closed_trades=true) — the modern Paper Trading page
+  // requests include_full_closed_trades=false and must not read this;
+  // it renders the overall headline from closed_trade_overview_by_market
+  // and Trade History's sections from closed_trade_history_by_horizon.
+  closed_trades?: PaperTrade[];
   total_realized_pnl: number;
   total_realized_pnl_usd: number;
   closed_trade_summary: { IN: ClosedTradeSummaryByMarket; US: ClosedTradeSummaryByMarket };
   closed_trade_history_by_horizon: { IN: ClosedTradeHistoryByMarket; US: ClosedTradeHistoryByMarket };
+  closed_trade_overview_by_market: { IN: ClosedTradeOverview; US: ClosedTradeOverview };
   email_notifications_enabled: boolean;
 }
 
+// The modern Paper Trading page always passes include_full_closed_trades:
+// false — the legacy full `closed_trades` array is never fetched or
+// transmitted for its normal render path. Omitting the parameter (or
+// passing true) preserves the original, unbounded-history response shape
+// for any other/legacy consumer.
 export const fetchPaperPortfolio = (userId: string, email?: string | null) =>
-  api.get<PaperPortfolio>("/api/paper-trading/portfolio", { params: { user_id: userId, email: email ?? undefined } }).then((r) => r.data);
+  api.get<PaperPortfolio>("/api/paper-trading/portfolio", {
+    params: { user_id: userId, email: email ?? undefined, include_full_closed_trades: false },
+  }).then((r) => r.data);
 
 export interface OlderClosedTradesCursor {
   before_closed_at: string;

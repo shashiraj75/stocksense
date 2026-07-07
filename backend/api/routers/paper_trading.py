@@ -154,6 +154,174 @@ def _closed_trade_summary_for_market(history_by_horizon: dict) -> dict:
     return {key: bucket["summary"] for key, bucket in history_by_horizon.items()}
 
 
+# ── Modern (include_full_closed_trades=false) path — SQL aggregation ──────────
+#
+# The single source of truth for "which bucket does this horizon value
+# belong to" — reused to build the SQL CASE expression below, so the SQL
+# classification can never drift from _bucket_closed_trades_by_horizon's
+# Python classification (both are derived from _CLOSED_HORIZONS).
+_HORIZON_BUCKET_SQL_CASE = (
+    "CASE WHEN horizon IN (" + ", ".join(f"'{h}'" for h in _CLOSED_HORIZONS) + ") "
+    "THEN horizon ELSE 'unclassified' END"
+)
+
+
+def _fetch_closed_trade_aggregates(conn, user_id: str) -> list[dict]:
+    """One aggregate row per (market, horizon-bucket) that has at least one
+    closed trade — at most 2 markets x 4 buckets = 8 rows, regardless of how
+    many closed trades actually exist. This is the modern path's replacement
+    for materializing every closed trade row just to summarize them: no
+    closed-trade row list is ever fetched or held in memory here."""
+    sql = f"""
+        SELECT market, {_HORIZON_BUCKET_SQL_CASE} AS bucket,
+               COUNT(*) AS closed_trade_count,
+               COUNT(*) FILTER (WHERE exit_reason = 'TARGET_HIT') AS target_hit_count,
+               COUNT(*) FILTER (WHERE exit_reason = 'STOP_LOSS') AS stop_loss_count,
+               COUNT(*) FILTER (WHERE (exit_price - entry_price) * quantity > 0) AS win_trades_count,
+               COALESCE(SUM((exit_price - entry_price) * quantity), 0) AS net_realized_pnl,
+               COALESCE(SUM(entry_price * quantity), 0) AS invested,
+               AVG(CASE WHEN entry_price > 0 AND exit_price IS NOT NULL
+                        THEN (exit_price - entry_price) / entry_price * 100 END) AS avg_realized_return_pct
+        FROM paper_trades
+        WHERE user_id = %s AND status = 'CLOSED'
+        GROUP BY market, bucket
+    """
+    rows = conn.execute(sql, (user_id,)).fetchall()
+    return [
+        {
+            "market": r[0], "bucket": r[1],
+            "closed_trade_count": r[2], "target_hit_count": r[3], "stop_loss_count": r[4],
+            "win_trades_count": r[5],
+            "net_realized_pnl": round(float(r[6]), 2) if r[6] is not None else 0.0,
+            "invested": round(float(r[7]), 2) if r[7] is not None else 0.0,
+            "avg_realized_return_pct": round(float(r[8]), 2) if r[8] is not None else None,
+        }
+        for r in rows
+    ]
+
+
+def _summary_from_aggregate_row(agg: dict) -> dict:
+    """Produces the exact same shape/values _summarize_closed_bucket would
+    for the same underlying rows, but computed from a pre-aggregated SQL
+    result row instead of a materialized trade list."""
+    count = agg["closed_trade_count"]
+    target_hit = agg["target_hit_count"]
+    stop_loss = agg["stop_loss_count"]
+    conclusive = target_hit + stop_loss
+    other = count - conclusive
+    return {
+        "closed_trade_count": count,
+        "target_hit_count": target_hit,
+        "stop_loss_count": stop_loss,
+        "conclusive_count": conclusive,
+        "other_count": other,
+        "target_hit_rate_pct": round(target_hit / conclusive * 100, 1) if conclusive > 0 else None,
+        "net_realized_pnl": agg["net_realized_pnl"],
+        "avg_realized_return_pct": agg["avg_realized_return_pct"],
+    }
+
+
+def _fetch_latest_closed_trades_per_bucket(conn, user_id: str, limit: int = _CLOSED_HISTORY_INITIAL_LIMIT) -> dict:
+    """Latest `limit` closed trades per (market, horizon-bucket), via one
+    windowed query — bounded to at most 8 buckets x limit rows regardless of
+    total closed-trade count, never a full closed-trade row list."""
+    sql = f"""
+        SELECT {_TRADE_ROW_COLUMNS} FROM (
+            SELECT {_TRADE_ROW_COLUMNS},
+                   ROW_NUMBER() OVER (
+                       PARTITION BY market, {_HORIZON_BUCKET_SQL_CASE}
+                       ORDER BY closed_at DESC, id DESC
+                   ) AS rn
+            FROM paper_trades
+            WHERE user_id = %s AND status = 'CLOSED'
+        ) sub
+        WHERE rn <= %s
+        ORDER BY market, closed_at DESC, id DESC
+    """
+    rows = conn.execute(sql, (user_id, limit)).fetchall()
+    result: dict[str, dict[str, list[dict]]] = {
+        m: {h: [] for h in (*_CLOSED_HORIZONS, "unclassified")} for m in ("IN", "US")
+    }
+    for row in rows:
+        trade = _trade_row_to_dict(row)
+        bucket = trade["horizon"] if trade["horizon"] in _CLOSED_HORIZONS else "unclassified"
+        result[trade["market"]][bucket].append(trade)
+    return result
+
+
+def _build_modern_closed_trade_data(conn, user_id: str) -> tuple[dict, dict, dict, dict]:
+    """Returns (closed_trade_history_by_horizon, closed_trade_summary,
+    closed_trade_overview_by_market, total_realized_by_market) for the
+    include_full_closed_trades=false path — built entirely from bounded
+    aggregate/windowed queries (see helpers above), never a materialized
+    list of every closed trade."""
+    aggregates = _fetch_closed_trade_aggregates(conn, user_id)
+    latest_by_market_bucket = _fetch_latest_closed_trades_per_bucket(conn, user_id)
+    agg_lookup = {(a["market"], a["bucket"]): a for a in aggregates}
+
+    history_by_horizon: dict = {"IN": {}, "US": {}}
+    overview_by_market: dict = {}
+    total_realized_by_market = {"IN": 0.0, "US": 0.0}
+
+    for mkt in ("IN", "US"):
+        market_count = 0
+        market_win_trades = 0
+        market_net_pnl = 0.0
+        market_invested = 0.0
+        for bucket_key in (*_CLOSED_HORIZONS, "unclassified"):
+            agg = agg_lookup.get((mkt, bucket_key))
+            latest_trades = latest_by_market_bucket[mkt][bucket_key]
+            if agg is None:
+                bucket_result = {"summary": _summarize_closed_bucket([]), "latest_trades": [], "earlier_trade_count": 0}
+            else:
+                summary = _summary_from_aggregate_row(agg)
+                bucket_result = {
+                    "summary": summary,
+                    "latest_trades": latest_trades,
+                    "earlier_trade_count": max(0, agg["closed_trade_count"] - len(latest_trades)),
+                }
+                market_count += agg["closed_trade_count"]
+                market_win_trades += agg["win_trades_count"]
+                market_net_pnl += agg["net_realized_pnl"]
+                market_invested += agg["invested"]
+            # Official horizons always present (possibly zero-count);
+            # "unclassified" only when at least one such trade actually exists.
+            if bucket_key != "unclassified" or bucket_result["summary"]["closed_trade_count"] > 0:
+                history_by_horizon[mkt][bucket_key] = bucket_result
+
+        total_realized_by_market[mkt] = round(market_net_pnl, 2)
+        overview_by_market[mkt] = {
+            "closed_trade_count": market_count,
+            "win_trades_count": market_win_trades,
+            "win_rate_pct": round(market_win_trades / market_count * 100, 1) if market_count > 0 else None,
+            "total_invested": round(market_invested, 2),
+        }
+
+    closed_trade_summary = {
+        mkt: _closed_trade_summary_for_market(history_by_horizon[mkt]) for mkt in ("IN", "US")
+    }
+    return history_by_horizon, closed_trade_summary, overview_by_market, total_realized_by_market
+
+
+def _overview_from_closed_trades(closed_trades: list[dict]) -> dict:
+    """Same compact overview shape as _build_modern_closed_trade_data's, but
+    derived from an already-materialized closed_trades list (the legacy
+    include_full_closed_trades=true path already has one in memory, so this
+    is a cheap in-memory aggregation, not a second query)."""
+    overview_by_market = {}
+    for mkt in ("IN", "US"):
+        trades = [t for t in closed_trades if t["market"] == mkt]
+        count = len(trades)
+        win_trades = sum(1 for t in trades if (t.get("realized_pnl") or 0) > 0)
+        overview_by_market[mkt] = {
+            "closed_trade_count": count,
+            "win_trades_count": win_trades,
+            "win_rate_pct": round(win_trades / count * 100, 1) if count > 0 else None,
+            "total_invested": round(sum(t["invested"] for t in trades), 2),
+        }
+    return overview_by_market
+
+
 def _conn():
     import psycopg
     return psycopg.connect(os.environ["DATABASE_URL"], autocommit=True, prepare_threshold=None)
@@ -232,8 +400,53 @@ class NotificationPreferenceRequest(BaseModel):
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/portfolio")
-def get_portfolio(user_id: str = Depends(get_current_user_id)):
+def get_portfolio(
+    include_full_closed_trades: bool = True,
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    include_full_closed_trades defaults to True, preserving exact legacy
+    behavior (the full flat `closed_trades` array, plus every field this
+    endpoint has ever returned) for any consumer that omits the parameter.
+
+    The modern Paper Trading frontend passes include_full_closed_trades=false
+    explicitly: `closed_trades` is omitted entirely from the response (never
+    a misleading empty array), and closed_trade_history_by_horizon /
+    closed_trade_summary / closed_trade_overview_by_market are built from
+    bounded SQL aggregation and a windowed "latest N per bucket" query —
+    never from a materialized list of every closed trade.
+    """
     portfolio = _ensure_portfolio(user_id)
+
+    if not include_full_closed_trades:
+        with _conn() as conn:
+            open_rows = conn.execute(
+                f"SELECT {_TRADE_ROW_COLUMNS} FROM paper_trades WHERE user_id = %s AND status = 'OPEN' ORDER BY opened_at DESC",
+                (user_id,)
+            ).fetchall()
+            (closed_trade_history_by_horizon, closed_trade_summary,
+             closed_trade_overview_by_market, total_realized_by_market) = _build_modern_closed_trade_data(conn, user_id)
+
+        return {
+            "user_id": user_id,
+            "cash": round(portfolio["cash"], 2),
+            "cash_usd": round(portfolio["cash_usd"], 2),
+            "starting_cash": STARTING_CASH_IN,
+            "starting_cash_usd": STARTING_CASH_US,
+            "open_trades": [_trade_row_to_dict(r) for r in open_rows],
+            # `closed_trades` intentionally omitted — the modern page must
+            # not receive or depend on the full closed-trade list.
+            "total_realized_pnl": total_realized_by_market["IN"],
+            "total_realized_pnl_usd": total_realized_by_market["US"],
+            "closed_trade_summary": closed_trade_summary,
+            "closed_trade_history_by_horizon": closed_trade_history_by_horizon,
+            "closed_trade_overview_by_market": closed_trade_overview_by_market,
+            "email_notifications_enabled": portfolio["email_notifications_enabled"],
+        }
+
+    # ── Legacy path (default) — byte-for-byte unchanged from before this
+    # hardening pass, plus the new (additive, harmless-to-ignore) overview
+    # field computed cheaply from the already-materialized closed_trades list. ──
     with _conn() as conn:
         trades = conn.execute(
             f"SELECT {_TRADE_ROW_COLUMNS} FROM paper_trades WHERE user_id = %s ORDER BY opened_at DESC",
@@ -284,14 +497,15 @@ def get_portfolio(user_id: str = Depends(get_current_user_id)):
         "starting_cash": STARTING_CASH_IN,
         "starting_cash_usd": STARTING_CASH_US,
         "open_trades": open_trades,
-        # Retained temporarily for backward compatibility — the Paper
-        # Trading frontend no longer reads this for Trade History rendering
-        # (see closed_trade_history_by_horizon below).
+        # Retained for backward compatibility — the modern Paper Trading
+        # frontend requests include_full_closed_trades=false instead and
+        # never reads this field (see closed_trade_history_by_horizon above).
         "closed_trades": closed_trades,
         "total_realized_pnl": round(total_realized_in, 2),
         "total_realized_pnl_usd": round(total_realized_us, 2),
         "closed_trade_summary": closed_trade_summary,
         "closed_trade_history_by_horizon": closed_trade_history_by_horizon,
+        "closed_trade_overview_by_market": _overview_from_closed_trades(closed_trades),
         "email_notifications_enabled": portfolio["email_notifications_enabled"],
     }
 

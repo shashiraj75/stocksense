@@ -1081,14 +1081,15 @@ export default function PaperTradingPage() {
   // Everything below is scoped to the selected market — IN (₹) and US ($) are
   // separate ledgers and must never be summed together.
   const openTrades = portfolio.open_trades.filter(t => t.market === market);
-  // Retained only for the overall headline count/P&L and win-rate stat card
-  // below (both pre-existing, out of this hardening pass's scope) — Trade
-  // History's per-horizon sections read closed_trade_history_by_horizon
-  // instead and never group/slice this flat list themselves.
-  const closedTrades = portfolio.closed_trades.filter(t => t.market === market);
   const cash = market === "IN" ? portfolio.cash : portfolio.cash_usd;
   const startingCash = market === "IN" ? portfolio.starting_cash : portfolio.starting_cash_usd;
   const totalRealized = market === "IN" ? portfolio.total_realized_pnl : portfolio.total_realized_pnl_usd;
+
+  // Overall Trade History headline + win-rate stat card — rendered from
+  // this backend-computed overview only. The page has no normal-render
+  // dependency on portfolio.closed_trades (requested with
+  // include_full_closed_trades=false, so it's typically absent entirely).
+  const closedOverview = portfolio.closed_trade_overview_by_market[market];
 
   // Trade History by horizon — the entire bucket (summary + latest 5 rows +
   // earlier_trade_count) comes verbatim from the backend for the selected
@@ -1123,14 +1124,14 @@ export default function PaperTradingPage() {
 
   const totalInvested = openTrades.reduce((s, t) => s + t.invested, 0);
   const unrealizedPct = totalInvested > 0 ? (totalUnrealizedPnl / totalInvested) * 100 : null;
-  const totalClosedInvested = closedTrades.reduce((s, t) => s + t.invested, 0);
-  const realizedPct = totalClosedInvested > 0 ? (totalRealized / totalClosedInvested) * 100 : null;
+  const realizedPct = closedOverview.total_invested > 0 ? (totalRealized / closedOverview.total_invested) * 100 : null;
   const portfolioValue = cash + totalInvested;
   const totalReturn = portfolioValue - startingCash + totalRealized;
   const totalReturnPct = Math.round((totalReturn / startingCash) * 10000) / 100;
 
-  const winTrades = closedTrades.filter(t => (t.realized_pnl ?? 0) > 0).length;
-  const winRate = closedTrades.length > 0 ? (winTrades / closedTrades.length * 100) : null;
+  const winTrades = closedOverview.win_trades_count;
+  const winRate = closedOverview.win_rate_pct;
+  const closedTradeCount = closedOverview.closed_trade_count;
 
   return (
     <div className="space-y-6">
@@ -1262,13 +1263,13 @@ export default function PaperTradingPage() {
           label="Realized P&L"
           value={`${totalRealized >= 0 ? "+" : ""}${marketCfg.currency}${fmt(Math.abs(totalRealized), 0, marketCfg.locale)}`}
           pct={realizedPct}
-          sub={`from ${closedTrades.length} closed trade${closedTrades.length !== 1 ? "s" : ""}`}
+          sub={`from ${closedTradeCount} closed trade${closedTradeCount !== 1 ? "s" : ""}`}
           positive={totalRealized > 0 ? true : totalRealized < 0 ? false : undefined}
         />
         <StatCard
           label="Win Rate"
           value={winRate !== null ? `${winRate.toFixed(0)}%` : "—"}
-          sub={winRate !== null ? `${winTrades} of ${closedTrades.length} trades` : "No closed trades yet"}
+          sub={winRate !== null ? `${winTrades} of ${closedTradeCount} trades` : "No closed trades yet"}
           positive={winRate !== null ? winRate >= 50 : undefined}
         />
       </div>
@@ -1346,7 +1347,7 @@ export default function PaperTradingPage() {
       </div>
 
       {/* Trade History */}
-      {closedTrades.length > 0 && (
+      {closedTradeCount > 0 && (
         <div>
           <div className="flex items-center gap-2 flex-wrap mb-3">
             <button
@@ -1355,7 +1356,7 @@ export default function PaperTradingPage() {
             >
               <BarChart2 size={16} className="text-gray-400" />
               Trade History
-              <span className="text-xs text-gray-500 font-normal">({closedTrades.length})</span>
+              <span className="text-xs text-gray-500 font-normal">({closedTradeCount})</span>
               <span className={clsx("text-sm font-mono font-bold", totalRealized > 0 ? "text-bull" : totalRealized < 0 ? "text-bear" : "text-gray-400")}>
                 {totalRealized >= 0 ? "+" : ""}{marketCfg.currency}{fmt(Math.abs(totalRealized), 0, marketCfg.locale)}
               </span>
