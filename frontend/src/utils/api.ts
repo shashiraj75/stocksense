@@ -322,6 +322,30 @@ export interface ClosedTradeSummaryByMarket {
   unclassified?: ClosedTradeHorizonSummary;
 }
 
+// The authoritative, backend-assembled Trade History payload for one
+// horizon bucket — `summary` and `latest_trades` are always derived from
+// the exact same server-side list (see _closed_history_bucket in
+// paper_trading.py), so they can never silently disagree. The frontend
+// must render this verbatim; it must not re-derive `summary` from
+// `latest_trades` (which is deliberately truncated to 5) or re-sort/group
+// trades itself.
+export interface ClosedTradeHorizonBucket {
+  summary: ClosedTradeHorizonSummary;
+  latest_trades: PaperTrade[];
+  earlier_trade_count: number;
+}
+
+export interface ClosedTradeHistoryByMarket {
+  short: ClosedTradeHorizonBucket;
+  medium: ClosedTradeHorizonBucket;
+  long: ClosedTradeHorizonBucket;
+  // Present only when at least one closed trade in this market has a
+  // stored horizon outside short/medium/long — absent entirely otherwise.
+  unclassified?: ClosedTradeHorizonBucket;
+}
+
+export type ClosedHistoryHorizonKey = keyof ClosedTradeHistoryByMarket;
+
 export interface PaperPortfolio {
   user_id: string;
   cash: number;
@@ -329,15 +353,49 @@ export interface PaperPortfolio {
   starting_cash: number;
   starting_cash_usd: number;
   open_trades: PaperTrade[];
+  // Retained for backward compatibility only (overall headline count/P&L,
+  // win-rate stat card) — Trade History's per-horizon sections must read
+  // closed_trade_history_by_horizon instead, never group/slice this flat list.
   closed_trades: PaperTrade[];
   total_realized_pnl: number;
   total_realized_pnl_usd: number;
   closed_trade_summary: { IN: ClosedTradeSummaryByMarket; US: ClosedTradeSummaryByMarket };
+  closed_trade_history_by_horizon: { IN: ClosedTradeHistoryByMarket; US: ClosedTradeHistoryByMarket };
   email_notifications_enabled: boolean;
 }
 
 export const fetchPaperPortfolio = (userId: string, email?: string | null) =>
   api.get<PaperPortfolio>("/api/paper-trading/portfolio", { params: { user_id: userId, email: email ?? undefined } }).then((r) => r.data);
+
+export interface OlderClosedTradesCursor {
+  before_closed_at: string;
+  before_id: number;
+}
+
+export interface OlderClosedTradesResponse {
+  market: Market;
+  horizon: string;
+  trades: PaperTrade[];
+  has_more: boolean;
+  next_cursor: OlderClosedTradesCursor | null;
+}
+
+// Lazy, bounded retrieval for a single horizon's "Show N earlier closed
+// trades" control — called only when the user expands it, never prefetched.
+// Pass the previous page's `next_cursor` fields to fetch the next page.
+export const fetchOlderClosedTrades = (
+  market: Market,
+  horizon: ClosedHistoryHorizonKey,
+  cursor?: OlderClosedTradesCursor | null,
+  limit = 10,
+) =>
+  api.get<OlderClosedTradesResponse>("/api/paper-trading/closed-trades/older", {
+    params: {
+      market, horizon, limit,
+      before_closed_at: cursor?.before_closed_at,
+      before_id: cursor?.before_id,
+    },
+  }).then((r) => r.data);
 
 export const placePaperBuy = (data: {
   user_id: string; symbol: string; market: Market;

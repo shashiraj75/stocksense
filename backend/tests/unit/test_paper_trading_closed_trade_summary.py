@@ -1,24 +1,34 @@
 """
-Paper Trading — Trade History by Horizon. Unit tests for the pure
-summary functions backing GET /portfolio's `closed_trade_summary` field
-(api/routers/paper_trading.py). No DB, no HTTP — these test the exact
-same functions the endpoint calls, matching this repo's existing pattern
-of testing pure business-logic functions directly (e.g. the Multibagger
-scorecard, Intelligence Engine gates).
+Paper Trading — Trade History by Horizon (backend-authoritative). Unit
+tests for the pure functions backing GET /portfolio's
+`closed_trade_history_by_horizon` field and the `/closed-trades/older`
+endpoint's row shaping (api/routers/paper_trading.py). No DB, no HTTP —
+these test the exact same functions the endpoints call, matching this
+repo's existing pattern of testing pure business-logic functions directly
+(e.g. the Multibagger scorecard, Intelligence Engine gates).
 """
 import pytest
 
-from api.routers.paper_trading import _summarize_closed_bucket, _closed_trade_summary_for_market
+from api.routers.paper_trading import (
+    _summarize_closed_bucket,
+    _bucket_closed_trades_by_horizon,
+    _closed_history_bucket,
+    _closed_trade_history_by_horizon_for_market,
+    _closed_trade_summary_for_market,
+    _sort_closed_desc,
+)
 
 
-def _trade(entry, exit_, exit_reason=None, market="IN", horizon="short"):
+def _trade(entry, exit_, exit_reason=None, market="IN", horizon="short", id=1, closed_at="2026-01-01T00:00:00+00:00"):
     return {
+        "id": id,
         "market": market,
         "horizon": horizon,
         "entry_price": entry,
         "exit_price": exit_,
         "realized_pnl": round((exit_ - entry), 2) if exit_ is not None else 0.0,
         "exit_reason": exit_reason,
+        "closed_at": closed_at,
     }
 
 
@@ -81,24 +91,97 @@ class TestSummarizeClosedBucket:
 
 
 @pytest.mark.unit
-class TestClosedTradeSummaryForMarket:
+class TestBucketClosedTradesByHorizon:
     def test_groups_by_stored_horizon_only(self):
         trades = [
             _trade(100, 120, "TARGET_HIT", horizon="short"),
             _trade(100, 120, "TARGET_HIT", horizon="medium"),
             _trade(100, 120, "TARGET_HIT", horizon="long"),
         ]
-        summary = _closed_trade_summary_for_market(trades)
-        assert summary["short"]["closed_trade_count"] == 1
-        assert summary["medium"]["closed_trade_count"] == 1
-        assert summary["long"]["closed_trade_count"] == 1
-        assert "unclassified" not in summary
+        buckets = _bucket_closed_trades_by_horizon(trades)
+        assert len(buckets["short"]) == 1
+        assert len(buckets["medium"]) == 1
+        assert len(buckets["long"]) == 1
+        assert buckets["unclassified"] == []
 
+    def test_unrecognized_or_missing_horizon_is_unclassified(self):
+        trades = [
+            _trade(100, 120, "TARGET_HIT", horizon="short"),
+            _trade(100, 90, "STOP_LOSS", horizon="unknown_legacy_value"),
+            _trade(100, 100, None, horizon=None),
+        ]
+        buckets = _bucket_closed_trades_by_horizon(trades)
+        assert len(buckets["short"]) == 1
+        assert len(buckets["unclassified"]) == 2
+        # legacy/unclassified trades must never leak into an official bucket
+        assert buckets["medium"] == []
+        assert buckets["long"] == []
+
+
+@pytest.mark.unit
+class TestSortClosedDesc:
+    def test_newest_first_by_closed_at(self):
+        trades = [
+            _trade(100, 110, id=1, closed_at="2026-01-01T00:00:00+00:00"),
+            _trade(100, 110, id=2, closed_at="2026-01-03T00:00:00+00:00"),
+            _trade(100, 110, id=3, closed_at="2026-01-02T00:00:00+00:00"),
+        ]
+        ordered = _sort_closed_desc(trades)
+        assert [t["id"] for t in ordered] == [2, 3, 1]
+
+    def test_id_tiebreaks_identical_closed_at(self):
+        trades = [
+            _trade(100, 110, id=1, closed_at="2026-01-01T00:00:00+00:00"),
+            _trade(100, 110, id=2, closed_at="2026-01-01T00:00:00+00:00"),
+        ]
+        ordered = _sort_closed_desc(trades)
+        assert [t["id"] for t in ordered] == [2, 1]
+
+
+@pytest.mark.unit
+class TestClosedHistoryBucket:
+    def test_latest_5_and_earlier_count_with_six_trades(self):
+        trades = [
+            _trade(100, 110, "TARGET_HIT", id=i, closed_at=f"2026-01-{i:02d}T00:00:00+00:00")
+            for i in range(1, 7)  # 6 trades, ids/closed_at 1..6, newest = id 6
+        ]
+        bucket = _closed_history_bucket(trades)
+        assert bucket["summary"]["closed_trade_count"] == 6
+        assert len(bucket["latest_trades"]) == 5
+        assert [t["id"] for t in bucket["latest_trades"]] == [6, 5, 4, 3, 2]
+        assert bucket["earlier_trade_count"] == 1
+
+    def test_five_or_fewer_trades_have_zero_earlier_count(self):
+        trades = [
+            _trade(100, 110, "TARGET_HIT", id=i, closed_at=f"2026-01-0{i}T00:00:00+00:00")
+            for i in range(1, 4)
+        ]
+        bucket = _closed_history_bucket(trades)
+        assert len(bucket["latest_trades"]) == 3
+        assert bucket["earlier_trade_count"] == 0
+
+    def test_summary_and_rows_come_from_the_same_source_list(self):
+        # A positive-P&L MANUAL close must show up as a row but never in the
+        # summary's target_hit_count — same list feeds both.
+        trades = [
+            _trade(100, 150, "MANUAL", id=1, closed_at="2026-01-02T00:00:00+00:00"),
+            _trade(100, 120, "TARGET_HIT", id=2, closed_at="2026-01-01T00:00:00+00:00"),
+        ]
+        bucket = _closed_history_bucket(trades)
+        assert bucket["summary"]["target_hit_count"] == 1
+        assert bucket["summary"]["closed_trade_count"] == 2
+        assert len(bucket["latest_trades"]) == 2
+
+
+@pytest.mark.unit
+class TestClosedTradeHistoryByHorizonForMarket:
     def test_empty_horizons_still_present_with_zero_count(self):
         trades = [_trade(100, 120, "TARGET_HIT", horizon="short")]
-        summary = _closed_trade_summary_for_market(trades)
-        assert summary["medium"]["closed_trade_count"] == 0
-        assert summary["long"]["closed_trade_count"] == 0
+        history = _closed_trade_history_by_horizon_for_market(trades)
+        assert history["short"]["summary"]["closed_trade_count"] == 1
+        assert history["medium"]["summary"]["closed_trade_count"] == 0
+        assert history["long"]["summary"]["closed_trade_count"] == 0
+        assert "unclassified" not in history
 
     def test_unclassified_bucket_only_appears_when_present(self):
         trades = [
@@ -106,15 +189,19 @@ class TestClosedTradeSummaryForMarket:
             _trade(100, 90, "STOP_LOSS", horizon="unknown_legacy_value"),
             _trade(100, 100, None, horizon=None),
         ]
-        summary = _closed_trade_summary_for_market(trades)
-        assert summary["short"]["closed_trade_count"] == 1
-        assert "unclassified" in summary
-        assert summary["unclassified"]["closed_trade_count"] == 2
-        # legacy/unclassified trades must never leak into an official bucket
-        assert summary["medium"]["closed_trade_count"] == 0
-        assert summary["long"]["closed_trade_count"] == 0
+        history = _closed_trade_history_by_horizon_for_market(trades)
+        assert "unclassified" in history
+        assert history["unclassified"]["summary"]["closed_trade_count"] == 2
+        assert history["medium"]["summary"]["closed_trade_count"] == 0
+        assert history["long"]["summary"]["closed_trade_count"] == 0
 
-    def test_no_unclassified_key_when_no_such_trades_exist(self):
+
+@pytest.mark.unit
+class TestClosedTradeSummaryForMarketDerivation:
+    def test_derived_summary_matches_history_bucket_summary(self):
         trades = [_trade(100, 120, "TARGET_HIT", horizon="short")]
-        summary = _closed_trade_summary_for_market(trades)
-        assert "unclassified" not in summary
+        history = _closed_trade_history_by_horizon_for_market(trades)
+        summary = _closed_trade_summary_for_market(history)
+        assert summary["short"] == history["short"]["summary"]
+        assert summary["medium"] == history["medium"]["summary"]
+        assert summary["long"] == history["long"]["summary"]

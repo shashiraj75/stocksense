@@ -1,6 +1,6 @@
 import os
 import logging
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from typing import Literal
 from services.auth import get_current_user_id
@@ -24,6 +24,85 @@ _SYMBOL = {"IN": "₹", "US": "$"}
 # legacy row with a NULL or otherwise-shaped value) is reported separately
 # under "unclassified" rather than guessed into one of the three buckets.
 _CLOSED_HORIZONS = ("short", "medium", "long")
+
+
+_CLOSED_HISTORY_INITIAL_LIMIT = 5
+# Bounds for the lazy "older trades" endpoint below — never unbounded.
+_OLDER_HISTORY_DEFAULT_LIMIT = 10
+_OLDER_HISTORY_MAX_LIMIT = 50
+
+_TRADE_ROW_COLUMNS = (
+    "id, symbol, market, quantity, entry_price, exit_price, status, signal, horizon, "
+    "opened_at, closed_at, stop_loss, target_price, trade_management_mode, exit_reason"
+)
+
+
+def _trade_row_to_dict(row: tuple) -> dict:
+    """Shared row->dict mapping for both GET /portfolio and the older-history
+    endpoint, so the two never drift into two slightly different trade shapes.
+    Column order must match _TRADE_ROW_COLUMNS exactly."""
+    (tid, sym, mkt, qty, ep, xp, status, sig, hor, opened, closed, sl, tp, mgmt_mode, exit_reason) = row
+    trade = {
+        "id": tid,
+        "symbol": sym,
+        "market": mkt,
+        "quantity": qty,
+        "entry_price": ep,
+        "exit_price": xp,
+        "stop_loss": sl,
+        "target_price": tp,
+        "status": status,
+        "signal": sig,
+        "horizon": hor,
+        "opened_at": opened.isoformat() if opened else None,
+        "closed_at": closed.isoformat() if closed else None,
+        "invested": round(ep * qty, 2),
+        "trade_management_mode": mgmt_mode,
+        "exit_reason": exit_reason,
+    }
+    if status != "OPEN":
+        trade["realized_pnl"] = round((xp - ep) * qty, 2) if xp else 0.0
+    return trade
+
+
+def _bucket_closed_trades_by_horizon(trades: list[dict]) -> dict[str, list[dict]]:
+    """Groups by the immutable persisted `horizon` field only — never by
+    holding period, exit date, current recommendation, or any live state.
+    Always returns all three official keys (possibly empty) plus
+    "unclassified" (possibly empty) so callers can uniformly check length
+    rather than handling a missing key."""
+    buckets: dict[str, list[dict]] = {h: [] for h in _CLOSED_HORIZONS}
+    buckets["unclassified"] = []
+    for t in trades:
+        key = t["horizon"] if t["horizon"] in _CLOSED_HORIZONS else "unclassified"
+        buckets[key].append(t)
+    return buckets
+
+
+def _sort_closed_desc(trades: list[dict]) -> list[dict]:
+    """Newest-closed-first. `closed_at` is an ISO-8601 string with a
+    consistent offset (from datetime.isoformat() on a TIMESTAMPTZ column),
+    so lexicographic sort is equivalent to chronological sort; `id` is the
+    tiebreaker for same-timestamp rows, matching the keyset-pagination
+    cursor used by the older-history endpoint below."""
+    return sorted(trades, key=lambda t: (t["closed_at"] or "", t["id"]), reverse=True)
+
+
+def _closed_history_bucket(trades: list[dict], limit: int = _CLOSED_HISTORY_INITIAL_LIMIT) -> dict:
+    ordered = _sort_closed_desc(trades)
+    return {
+        "summary": _summarize_closed_bucket(trades),
+        "latest_trades": ordered[:limit],
+        "earlier_trade_count": max(0, len(ordered) - limit),
+    }
+
+
+def _closed_trade_history_by_horizon_for_market(closed_trades_for_market: list[dict]) -> dict:
+    buckets = _bucket_closed_trades_by_horizon(closed_trades_for_market)
+    result = {h: _closed_history_bucket(buckets[h]) for h in _CLOSED_HORIZONS}
+    if buckets["unclassified"]:
+        result["unclassified"] = _closed_history_bucket(buckets["unclassified"])
+    return result
 
 
 def _summarize_closed_bucket(trades: list[dict]) -> dict:
@@ -67,17 +146,12 @@ def _summarize_closed_bucket(trades: list[dict]) -> dict:
     }
 
 
-def _closed_trade_summary_for_market(closed_trades_for_market: list[dict]) -> dict:
-    buckets: dict[str, list[dict]] = {h: [] for h in _CLOSED_HORIZONS}
-    unclassified: list[dict] = []
-    for t in closed_trades_for_market:
-        bucket = buckets.get(t["horizon"])
-        (bucket if bucket is not None else unclassified).append(t)
-
-    summary = {h: _summarize_closed_bucket(buckets[h]) for h in _CLOSED_HORIZONS}
-    if unclassified:
-        summary["unclassified"] = _summarize_closed_bucket(unclassified)
-    return summary
+def _closed_trade_summary_for_market(history_by_horizon: dict) -> dict:
+    """Derives the (still-served, backward-compatible) flat summary shape
+    from the same per-bucket `summary` already computed inside
+    `_closed_trade_history_by_horizon_for_market` — never recomputed
+    independently, so the two response fields can never silently disagree."""
+    return {key: bucket["summary"] for key, bucket in history_by_horizon.items()}
 
 
 def _conn():
@@ -162,10 +236,7 @@ def get_portfolio(user_id: str = Depends(get_current_user_id)):
     portfolio = _ensure_portfolio(user_id)
     with _conn() as conn:
         trades = conn.execute(
-            """SELECT id, symbol, market, quantity, entry_price, exit_price,
-                      status, signal, horizon, opened_at, closed_at, stop_loss, target_price,
-                      trade_management_mode, exit_reason
-               FROM paper_trades WHERE user_id = %s ORDER BY opened_at DESC""",
+            f"SELECT {_TRADE_ROW_COLUMNS} FROM paper_trades WHERE user_id = %s ORDER BY opened_at DESC",
             (user_id,)
         ).fetchall()
 
@@ -174,46 +245,36 @@ def get_portfolio(user_id: str = Depends(get_current_user_id)):
     total_realized_in = 0.0
     total_realized_us = 0.0
 
-    for t in trades:
-        tid, sym, mkt, qty, ep, xp, status, sig, hor, opened, closed, sl, tp, mgmt_mode, exit_reason = t
-        trade = {
-            "id": tid,
-            "symbol": sym,
-            "market": mkt,
-            "quantity": qty,
-            "entry_price": ep,
-            "exit_price": xp,
-            "stop_loss": sl,
-            "target_price": tp,
-            "status": status,
-            "signal": sig,
-            "horizon": hor,
-            "opened_at": opened.isoformat() if opened else None,
-            "closed_at": closed.isoformat() if closed else None,
-            "invested": round(ep * qty, 2),
-            "trade_management_mode": mgmt_mode,
-            "exit_reason": exit_reason,
-        }
-        if status == "OPEN":
+    for row in trades:
+        trade = _trade_row_to_dict(row)
+        if trade["status"] == "OPEN":
             open_trades.append(trade)
         else:
-            realized = round((xp - ep) * qty, 2) if xp else 0.0
-            trade["realized_pnl"] = realized
-            if mkt == "US":
-                total_realized_us += realized
+            if trade["market"] == "US":
+                total_realized_us += trade["realized_pnl"]
             else:
-                total_realized_in += realized
+                total_realized_in += trade["realized_pnl"]
             closed_trades.append(trade)
 
-    # Market-scoped, per-horizon closed-trade summary — computed once here,
-    # server-side, from the same `closed_trades` list already built above
-    # (no second query). IN and US are summarized independently and never
-    # combined, matching every other paper-trading metric's existing
-    # per-ledger scoping (see _CASH_COL/STARTING). The frontend renders this
-    # verbatim; it must not recompute these figures from the trade rows.
+    # Market-scoped, per-horizon closed-trade history — the authoritative
+    # source for Trade History rendering. Computed once here, server-side,
+    # from the same `closed_trades` list already built above (no second
+    # query, no additional provider/DB calls). IN and US are built
+    # independently and never combined, matching every other paper-trading
+    # metric's existing per-ledger scoping (see _CASH_COL/STARTING). The
+    # frontend renders `latest_trades`/`earlier_trade_count`/`summary`
+    # verbatim; it must not group, sort, classify, or slice the flat
+    # `closed_trades` list below to reconstruct this itself.
+    closed_trade_history_by_horizon = {
+        "IN": _closed_trade_history_by_horizon_for_market([t for t in closed_trades if t["market"] == "IN"]),
+        "US": _closed_trade_history_by_horizon_for_market([t for t in closed_trades if t["market"] == "US"]),
+    }
+    # Kept for backward compatibility only — derived from the same bucket
+    # summaries above, never recomputed independently. New code should read
+    # closed_trade_history_by_horizon[market][horizon]["summary"] instead.
     closed_trade_summary = {
-        "IN": _closed_trade_summary_for_market([t for t in closed_trades if t["market"] == "IN"]),
-        "US": _closed_trade_summary_for_market([t for t in closed_trades if t["market"] == "US"]),
+        market: _closed_trade_summary_for_market(closed_trade_history_by_horizon[market])
+        for market in ("IN", "US")
     }
 
     return {
@@ -223,11 +284,86 @@ def get_portfolio(user_id: str = Depends(get_current_user_id)):
         "starting_cash": STARTING_CASH_IN,
         "starting_cash_usd": STARTING_CASH_US,
         "open_trades": open_trades,
+        # Retained temporarily for backward compatibility — the Paper
+        # Trading frontend no longer reads this for Trade History rendering
+        # (see closed_trade_history_by_horizon below).
         "closed_trades": closed_trades,
         "total_realized_pnl": round(total_realized_in, 2),
         "total_realized_pnl_usd": round(total_realized_us, 2),
         "closed_trade_summary": closed_trade_summary,
+        "closed_trade_history_by_horizon": closed_trade_history_by_horizon,
         "email_notifications_enabled": portfolio["email_notifications_enabled"],
+    }
+
+
+@router.get("/closed-trades/older")
+def get_older_closed_trades(
+    market: Literal["IN", "US"],
+    horizon: str,
+    limit: int = Query(_OLDER_HISTORY_DEFAULT_LIMIT, ge=1, le=_OLDER_HISTORY_MAX_LIMIT),
+    before_closed_at: str | None = None,
+    before_id: int | None = None,
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    Lazy, bounded retrieval of closed trades older than the initial 5 shown
+    per horizon in GET /portfolio's closed_trade_history_by_horizon — called
+    only when a user expands a horizon's "Show N earlier closed trades"
+    control, never prefetched. Market- and horizon-scoped (never all
+    horizons, never all markets, never open trades); no provider calls and
+    no interaction with the shared prediction cache.
+
+    Keyset pagination on (closed_at, id) DESC — the same ordering and
+    tiebreaker _sort_closed_desc uses for the initial page — rather than
+    offset-based paging, so a page requested after another trade closes in
+    the meantime cannot skip or duplicate a row relative to what the client
+    has already rendered. Pass back the previous page's last trade's
+    `closed_at`/`id` as `before_closed_at`/`before_id` to fetch the next one;
+    omit both for the very first "older" page (immediately after the initial
+    5 shown by GET /portfolio).
+    """
+    where = ["user_id = %s", "market = %s", "status = 'CLOSED'"]
+    params: list = [user_id, market]
+
+    if horizon in _CLOSED_HORIZONS:
+        where.append("horizon = %s")
+        params.append(horizon)
+    else:
+        # "unclassified" (or any other value) — every closed trade whose
+        # stored horizon isn't one of the three official values, mirroring
+        # _bucket_closed_trades_by_horizon's exact classification rule.
+        where.append("(horizon IS NULL OR horizon NOT IN ('short', 'medium', 'long'))")
+
+    if before_closed_at is not None and before_id is not None:
+        where.append("(closed_at, id) < (%s::timestamptz, %s)")
+        params.append(before_closed_at)
+        params.append(before_id)
+
+    # Fetch one extra row to detect whether more remain, without a second
+    # COUNT query — trimmed back to `limit` before returning.
+    sql = (
+        f"SELECT {_TRADE_ROW_COLUMNS} FROM paper_trades "
+        f"WHERE {' AND '.join(where)} "
+        f"ORDER BY closed_at DESC, id DESC LIMIT %s"
+    )
+    params.append(limit + 1)
+
+    with _conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+
+    has_more = len(rows) > limit
+    page = [_trade_row_to_dict(row) for row in rows[:limit]]
+    next_cursor = (
+        {"before_closed_at": page[-1]["closed_at"], "before_id": page[-1]["id"]}
+        if page and has_more else None
+    )
+
+    return {
+        "market": market,
+        "horizon": horizon,
+        "trades": page,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
     }
 
 

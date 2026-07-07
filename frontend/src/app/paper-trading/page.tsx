@@ -12,7 +12,8 @@ import {
 import {
   fetchPaperPortfolio, closePaperTrade, resetPaperPortfolio, editPaperTrade,
   updatePaperTradeManagementMode, updatePaperTradeNotificationPreference,
-  fetchQuote, type PaperTrade, type TradeManagementMode, type ClosedTradeHorizonSummary,
+  fetchQuote, fetchOlderClosedTrades, type PaperTrade, type TradeManagementMode,
+  type ClosedTradeHorizonBucket, type ClosedHistoryHorizonKey, type OlderClosedTradesCursor,
 } from "@/utils/api";
 import { useAuth } from "@/lib/AuthContext";
 import { PaperTradeModal } from "@/components/PaperTradeModal";
@@ -35,19 +36,18 @@ const HORIZON_BLOCKS = [
   { key: "long",   label: "Long Term",   sub: "3–6 months", accent: "border-l-indigo-500" },
 ] as const;
 
-// Closed-trade history is grouped strictly by this same order plus, only
-// when the backend actually reports one, a trailing "unclassified" bucket
-// for legacy rows whose stored horizon isn't short/medium/long (see
-// _closed_trade_summary_for_market in paper_trading.py — this frontend
-// list must match that classification exactly, since it only decides which
-// visual block a row renders under, never recomputes a metric).
-const CLOSED_HISTORY_BLOCKS = [
-  ...HORIZON_BLOCKS,
+// Trade History display metadata only (label/sub/accent) — the backend
+// (GET /portfolio's closed_trade_history_by_horizon) owns which trades
+// belong in each bucket, their counts, and every metric; this array never
+// groups or classifies a trade, it only maps an already-backend-assigned
+// bucket key to its heading text and accent color, in the fixed
+// Short → Medium → Long → Unclassified display order.
+const CLOSED_HISTORY_BLOCKS: { key: ClosedHistoryHorizonKey; label: string; sub: string; accent: string }[] = [
+  { key: "short",  label: "Short Term",  sub: "1–5 days",   accent: "border-l-blue-500" },
+  { key: "medium", label: "Medium Term", sub: "2–4 weeks",  accent: "border-l-purple-500" },
+  { key: "long",   label: "Long Term",   sub: "3–6 months", accent: "border-l-indigo-500" },
   { key: "unclassified", label: "Unclassified / Legacy", sub: "Missing or unrecognized horizon", accent: "border-l-gray-500" },
-] as const;
-type ClosedHistoryHorizonKey = (typeof CLOSED_HISTORY_BLOCKS)[number]["key"];
-
-const CLOSED_ROWS_INITIAL_VISIBLE = 5;
+];
 
 // How close the live price is to triggering either the stop loss or the
 // target — smallest distance sorts first (most urgent to watch).
@@ -183,61 +183,18 @@ const MANAGEMENT_MODE_CONFIRM_COPY: Record<"manual" | "auto", string> = {
   manual: "Switch to Manual Close? Future stop-loss or target hits will require your confirmation.",
 };
 
-type HistorySortMode =
-  | "recent" | "biggest_winner" | "biggest_loser" | "highest_pct" | "lowest_pct"
-  | "target_hit" | "stop_loss" | "manual_close" | "auto_close";
-
-const HISTORY_SORT_OPTIONS: { key: HistorySortMode; label: string }[] = [
-  { key: "recent",         label: "Recent" },
-  { key: "biggest_winner", label: "Biggest Winner" },
-  { key: "biggest_loser",  label: "Biggest Loser" },
-  { key: "highest_pct",    label: "Highest %" },
-  { key: "lowest_pct",     label: "Lowest %" },
-  { key: "target_hit",     label: "Target Hit" },
-  { key: "stop_loss",      label: "Stop Loss" },
-  { key: "manual_close",   label: "Manual Close" },
-  { key: "auto_close",     label: "Auto Close" },
-];
-
-function closedTradePnlPct(trade: PaperTrade): number {
-  if (!trade.entry_price || trade.entry_price <= 0 || trade.exit_price == null) return 0;
-  return (trade.exit_price - trade.entry_price) / trade.entry_price * 100;
-}
-
-// Same definition trade_notifier.py's backend query uses for "did this
-// trade genuinely auto-close on a trigger" — trade_management_mode==='auto'
-// AND a real STOP_LOSS/TARGET_HIT exit_reason, not just "was ever in Auto
-// mode" (an Auto-mode trade closed manually via the Close button before any
-// trigger fired is a manual close, not an Auto Close execution).
-function isAutoCloseExecution(trade: PaperTrade): boolean {
-  return trade.trade_management_mode === "auto" && (trade.exit_reason === "STOP_LOSS" || trade.exit_reason === "TARGET_HIT");
-}
-
-function sortClosedTrades(trades: PaperTrade[], mode: HistorySortMode): PaperTrade[] {
-  const byRecent = (a: PaperTrade, b: PaperTrade) =>
-    new Date(b.closed_at ?? 0).getTime() - new Date(a.closed_at ?? 0).getTime();
-  // "Target Hit"/"Stop Loss"/"Manual Close"/"Auto Close" bring matching
-  // trades to the top (stable, recency-ordered within each group) rather
-  // than hiding non-matching trades — every trade stays visible, just
-  // reordered, consistent with this being a sort control, not a filter.
-  const matchFirst = (isMatch: (t: PaperTrade) => boolean) => (a: PaperTrade, b: PaperTrade) => {
-    const aMatch = isMatch(a) ? 0 : 1;
-    const bMatch = isMatch(b) ? 0 : 1;
-    return aMatch !== bMatch ? aMatch - bMatch : byRecent(a, b);
-  };
-  switch (mode) {
-    case "biggest_winner": return [...trades].sort((a, b) => (b.realized_pnl ?? 0) - (a.realized_pnl ?? 0));
-    case "biggest_loser":  return [...trades].sort((a, b) => (a.realized_pnl ?? 0) - (b.realized_pnl ?? 0));
-    case "highest_pct":    return [...trades].sort((a, b) => closedTradePnlPct(b) - closedTradePnlPct(a));
-    case "lowest_pct":     return [...trades].sort((a, b) => closedTradePnlPct(a) - closedTradePnlPct(b));
-    case "target_hit":     return [...trades].sort(matchFirst(t => t.exit_reason === "TARGET_HIT"));
-    case "stop_loss":      return [...trades].sort(matchFirst(t => t.exit_reason === "STOP_LOSS"));
-    case "manual_close":   return [...trades].sort(matchFirst(t => !isAutoCloseExecution(t)));
-    case "auto_close":     return [...trades].sort(matchFirst(isAutoCloseExecution));
-    case "recent":
-    default:               return [...trades].sort(byRecent);
-  }
-}
+// Removed the former page-level "Recent / Biggest Winner / Target Hit /
+// Auto Close / ..." Trade History sort control (and its supporting
+// closedTradePnlPct/isAutoCloseExecution/sortClosedTrades helpers). Every
+// backend closed-trade-history bucket (see GET /portfolio's
+// closed_trade_history_by_horizon) is now always newest-first by
+// construction (_sort_closed_desc in paper_trading.py), so "Recent" was
+// already redundant. The other 8 modes required sorting the *entire*
+// mixed closed-trade list in memory — exactly the "recompute from a full
+// mixed list" and "prefetch unbounded history" this hardening pass
+// removes, and isn't reconstructable from a 5-row-plus-lazy-pages bucket
+// without fetching everything up front. Not replaced with a per-bucket
+// equivalent since none of this session's requirements call for one.
 
 // Trying this out — easy to remove (just delete this function + its one
 // call site below) if it doesn't end up being useful in practice.
@@ -845,22 +802,50 @@ function ClosedTradeRow({ trade }: { trade: PaperTrade }) {
   );
 }
 
-// Renders one horizon's closed-trade block: a collapsible header carrying
-// the backend-computed summary line (never recomputed here from `trades`),
-// the latest 5 rows, and a secondary collapsible control for the rest.
-// `trades` must already be pre-sorted (the page applies the existing
-// historySortMode before grouping) and pre-filtered to this exact horizon.
+// One horizon's Trade History block. `bucket` is rendered verbatim from
+// GET /portfolio's closed_trade_history_by_horizon — this component never
+// sorts, groups, classifies, or slices a full closed-trade list; it only
+// (a) shows the backend-computed summary/latest_trades/earlier_trade_count,
+// and (b) lazily fetches additional pages of *that exact horizon's* older
+// trades via fetchOlderClosedTrades only once the user expands the
+// "Show N earlier" control — never prefetched, never re-fetched on a
+// second expand (already-loaded pages stay in local state).
 function ClosedTradeHorizonBlock({
-  label, sub, accent, summary, trades, currency, blockExpanded, onToggleBlock, olderShown, onToggleOlder,
+  market, horizon, label, sub, accent, bucket, currency, blockExpanded, onToggleBlock,
 }: {
+  market: PaperTrade["market"]; horizon: ClosedHistoryHorizonKey;
   label: string; sub: string; accent: string;
-  summary: ClosedTradeHorizonSummary; trades: PaperTrade[]; currency: string;
+  bucket: ClosedTradeHorizonBucket; currency: string;
   blockExpanded: boolean; onToggleBlock: () => void;
-  olderShown: boolean; onToggleOlder: () => void;
 }) {
-  const visible = trades.slice(0, CLOSED_ROWS_INITIAL_VISIBLE);
-  const older = trades.slice(CLOSED_ROWS_INITIAL_VISIBLE);
+  const { summary, latest_trades, earlier_trade_count } = bucket;
   const netPnl = summary.net_realized_pnl;
+
+  const [olderTrades, setOlderTrades] = useState<PaperTrade[]>([]);
+  const [cursor, setCursor] = useState<OlderClosedTradesCursor | null>(null);
+  const [hasMore, setHasMore] = useState(earlier_trade_count > 0);
+  const [olderVisible, setOlderVisible] = useState(false);
+  const [olderLoaded, setOlderLoaded] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+
+  const loadNextPage = async () => {
+    setLoadingOlder(true);
+    try {
+      const res = await fetchOlderClosedTrades(market, horizon, cursor);
+      // Append-only, keyed by id below on render — a duplicate id can only
+      // occur if the same page were fetched twice, which the cursor
+      // (always advanced from the last-seen row) prevents by construction.
+      setOlderTrades(prev => [...prev, ...res.trades]);
+      setCursor(res.next_cursor);
+      setHasMore(res.has_more);
+      setOlderLoaded(true);
+      setOlderVisible(true);
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
+
+  const remainingCount = earlier_trade_count - olderTrades.length;
 
   return (
     <div className={clsx("bg-dark-card border border-dark-border rounded-xl overflow-hidden border-l-4", accent)}>
@@ -916,20 +901,32 @@ function ClosedTradeHorizonBlock({
                 </tr>
               </thead>
               <tbody>
-                {visible.map(t => <ClosedTradeRow key={t.id} trade={t} />)}
-                {olderShown && older.map(t => <ClosedTradeRow key={t.id} trade={t} />)}
+                {latest_trades.map(t => <ClosedTradeRow key={t.id} trade={t} />)}
+                {olderVisible && olderTrades.map(t => <ClosedTradeRow key={t.id} trade={t} />)}
               </tbody>
             </table>
           </div>
-          {older.length > 0 && (
+          {earlier_trade_count > 0 && (
             <button
-              onClick={onToggleOlder}
-              aria-expanded={olderShown}
-              className="w-full flex items-center justify-center gap-1.5 px-4 py-2.5 text-xs text-gray-400 hover:text-white border-t border-dark-border transition-colors"
+              onClick={() => {
+                if (!olderLoaded) { loadNextPage(); return; }       // first expand — fetch page 1
+                if (!olderVisible) { setOlderVisible(true); return; } // re-show already-fetched rows, no re-fetch
+                if (hasMore) { loadNextPage(); return; }              // fetch the next page, append
+                setOlderVisible(false);                               // fully exhausted — collapse
+              }}
+              disabled={loadingOlder}
+              aria-expanded={olderVisible}
+              className="w-full flex items-center justify-center gap-1.5 px-4 py-2.5 text-xs text-gray-400 hover:text-white border-t border-dark-border transition-colors disabled:opacity-50"
             >
-              {olderShown
-                ? <>Hide earlier trades <ChevronUp size={13} /></>
-                : <>Show {older.length} earlier closed trade{older.length === 1 ? "" : "s"} <ChevronDown size={13} /></>}
+              {loadingOlder
+                ? "Loading…"
+                : !olderLoaded
+                  ? <>Show {earlier_trade_count} earlier closed trade{earlier_trade_count === 1 ? "" : "s"} <ChevronDown size={13} /></>
+                  : !olderVisible
+                    ? <>Show {olderTrades.length} earlier closed trade{olderTrades.length === 1 ? "" : "s"} <ChevronDown size={13} /></>
+                    : hasMore
+                      ? <>Show {remainingCount} more earlier closed trade{remainingCount === 1 ? "" : "s"} <ChevronDown size={13} /></>
+                      : <>Hide earlier trades <ChevronUp size={13} /></>}
             </button>
           )}
         </div>
@@ -947,12 +944,12 @@ export default function PaperTradingPage() {
   const [sellTarget, setSellTarget] = useState<PaperTrade | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [historyExpanded, setHistoryExpanded] = useState(true);
-  const [historySortMode, setHistorySortMode] = useState<HistorySortMode>("recent");
   // Per-horizon UI-only visibility state — never used to compute a metric,
-  // only which rows/blocks are currently rendered. Defaults match the spec:
-  // every non-empty horizon block starts expanded, older rows start hidden.
+  // only which block is currently rendered expanded. Every non-empty
+  // horizon block starts expanded by default. Older-rows visibility/paging
+  // state lives inside ClosedTradeHorizonBlock itself (per-horizon, since
+  // it now owns its own lazy fetch of that horizon's older trades).
   const [collapsedHorizonBlocks, setCollapsedHorizonBlocks] = useState<Partial<Record<ClosedHistoryHorizonKey, boolean>>>({});
-  const [olderRowsShown, setOlderRowsShown] = useState<Partial<Record<ClosedHistoryHorizonKey, boolean>>>({});
   const [notifPermission, setNotifPermission] = useState<NotificationPermission | "unsupported">("default");
 
   // Close-position outcome banners (Manual Close confirmations and Auto
@@ -1084,27 +1081,20 @@ export default function PaperTradingPage() {
   // Everything below is scoped to the selected market — IN (₹) and US ($) are
   // separate ledgers and must never be summed together.
   const openTrades = portfolio.open_trades.filter(t => t.market === market);
+  // Retained only for the overall headline count/P&L and win-rate stat card
+  // below (both pre-existing, out of this hardening pass's scope) — Trade
+  // History's per-horizon sections read closed_trade_history_by_horizon
+  // instead and never group/slice this flat list themselves.
   const closedTrades = portfolio.closed_trades.filter(t => t.market === market);
-  const sortedClosedTrades = sortClosedTrades(closedTrades, historySortMode);
   const cash = market === "IN" ? portfolio.cash : portfolio.cash_usd;
   const startingCash = market === "IN" ? portfolio.starting_cash : portfolio.starting_cash_usd;
   const totalRealized = market === "IN" ? portfolio.total_realized_pnl : portfolio.total_realized_pnl_usd;
 
-  // Trade History by horizon — rows are grouped from the already-sorted,
-  // already-market-filtered list above (so each horizon's rows keep the
-  // user's selected sort intent, per-horizon, exactly as before grouping
-  // existed). Only the row's *bucket* is decided here (a display-routing
-  // question); every metric shown in the header (counts, hit rate, P&L,
-  // average return) comes verbatim from the backend's closed_trade_summary
-  // for the selected market — this component never recomputes them.
-  const closedHistoryByHorizon: Partial<Record<ClosedHistoryHorizonKey, PaperTrade[]>> = {};
-  for (const t of sortedClosedTrades) {
-    const key: ClosedHistoryHorizonKey = CLOSED_HISTORY_BLOCKS.some(b => b.key === t.horizon)
-      ? (t.horizon as ClosedHistoryHorizonKey)
-      : "unclassified";
-    (closedHistoryByHorizon[key] ??= []).push(t);
-  }
-  const marketClosedSummary = portfolio.closed_trade_summary[market];
+  // Trade History by horizon — the entire bucket (summary + latest 5 rows +
+  // earlier_trade_count) comes verbatim from the backend for the selected
+  // market. This page performs no grouping, sorting, classification, or
+  // slicing of a mixed closed-trade list to build these sections.
+  const marketClosedHistory = portfolio.closed_trade_history_by_horizon[market];
 
   // Group open positions into Short/Medium/Long blocks, each sorted by
   // Action Queue priority — how urgently the trade needs the user's
@@ -1371,41 +1361,27 @@ export default function PaperTradingPage() {
               </span>
               {historyExpanded ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
             </button>
-            {historyExpanded && (
-              <select
-                value={historySortMode}
-                onChange={e => setHistorySortMode(e.target.value as HistorySortMode)}
-                className="ml-auto bg-dark-bg border border-dark-border rounded-lg px-2 py-1 text-xs text-gray-300 focus:outline-none focus:border-brand-500"
-                title="Sort trade history"
-              >
-                {HISTORY_SORT_OPTIONS.map(({ key, label }) => (
-                  <option key={key} value={key}>{label}</option>
-                ))}
-              </select>
-            )}
           </div>
           {historyExpanded && (
             <div className="space-y-3">
               {CLOSED_HISTORY_BLOCKS.map(({ key, label, sub, accent }) => {
-                const summary = marketClosedSummary[key];
+                const bucket = marketClosedHistory[key];
                 // "Unclassified / Legacy" only renders at all when the
                 // backend actually reports such a trade for this market —
                 // never added as an empty fourth section.
-                if (!summary || summary.closed_trade_count === 0) return null;
-                const trades = closedHistoryByHorizon[key] ?? [];
+                if (!bucket || bucket.summary.closed_trade_count === 0) return null;
                 return (
                   <ClosedTradeHorizonBlock
                     key={key}
+                    market={market}
+                    horizon={key}
                     label={label}
                     sub={sub}
                     accent={accent}
-                    summary={summary}
-                    trades={trades}
+                    bucket={bucket}
                     currency={marketCfg.currency}
                     blockExpanded={collapsedHorizonBlocks[key] !== true}
                     onToggleBlock={() => setCollapsedHorizonBlocks(prev => ({ ...prev, [key]: prev[key] !== true }))}
-                    olderShown={olderRowsShown[key] === true}
-                    onToggleOlder={() => setOlderRowsShown(prev => ({ ...prev, [key]: !prev[key] }))}
                   />
                 );
               })}
