@@ -22,6 +22,7 @@ import { useMarketPreference } from "@/hooks/useMarketPreference";
 import { useMarketOpen } from "@/hooks/useMarketOpen";
 import { UnsupportedMarketNotice } from "@/components/UnsupportedMarketNotice";
 import { seedInitialCursor, dedupeAppend } from "@/utils/closedTradeHistoryPaging";
+import { runIfNotInFlight } from "@/utils/inFlightGuard";
 import { outcomeLabel, shouldShowBreakEven } from "@/utils/paperTradeOutcome";
 
 const MARKETS = [
@@ -845,32 +846,52 @@ function ClosedTradeHorizonBlock({
   // Never symbol/timestamp/price/visible text: two genuinely distinct
   // trades can legitimately share all of those. See dedupeAppend's own
   // unit coverage in frontend/scripts/test-closed-trade-history-paging.mjs.
+  // This is a defense-in-depth safeguard against duplicate *rows* — it
+  // must not be relied on to mask duplicate *requests*; see
+  // olderHistoryRequestInFlightRef below for that.
   const seenTradeIdsRef = useRef<Set<number>>(new Set(latest_trades.map(t => t.id)));
 
+  // Synchronous in-flight lock, separate from `loadingOlder` React state.
+  // `loadingOlder` exists for visible loading feedback/accessibility
+  // (`disabled={loadingOlder}` below) but React state updates are batched,
+  // so a second `loadNextPage()` invocation in the same synchronous tick
+  // (a rapid double-click, or a click racing a keyboard activation) can
+  // still read a stale `loadingOlder === false` from its own closure before
+  // the first call's `setLoadingOlder(true)` has committed. A ref mutation
+  // is immediate and shared across both invocations, so this guard cannot
+  // be bypassed the same way.
+  const olderHistoryRequestInFlightRef = useRef(false);
+
   const loadNextPage = async () => {
-    // Defensive guard against a rapid double-click/repeated interaction
-    // racing past the button's own `disabled={loadingOlder}` — this ref-like
-    // state check is synchronous with the click handler's re-render, so a
-    // second invocation before the first `setLoadingOlder(true)` commits
-    // cannot slip through and issue a second in-flight request for the same page.
-    if (loadingOlder) return;
-    setLoadingOlder(true);
-    try {
-      const res = await fetchOlderClosedTrades(market, horizon, cursor);
-      // Defensive de-duplication: even if the backend response overlapped
-      // with something already rendered, a trade_id already seen anywhere
-      // in this block is dropped before appending — distinct trade_ids
-      // with identical symbol/price/date are never treated as duplicates.
-      const { fresh, nextSeenIds } = dedupeAppend(seenTradeIdsRef.current, res.trades);
-      seenTradeIdsRef.current = nextSeenIds;
-      setOlderTrades(prev => [...prev, ...fresh]);
-      setCursor(res.next_cursor);
-      setHasMore(res.has_more);
-      setOlderLoaded(true);
-      setOlderVisible(true);
-    } finally {
-      setLoadingOlder(false);
-    }
+    // runIfNotInFlight checks-and-sets olderHistoryRequestInFlightRef.current
+    // synchronously, before any await, so a second invocation arriving in
+    // the same tick (a rapid double-click, or a click racing a keyboard
+    // activation) sees the ref already true and is rejected immediately —
+    // it never issues a second network request. The ref is always reset in
+    // a `finally`, including on a thrown/rejected fetch, so a failed
+    // request never permanently locks this horizon's pagination.
+    // `loadingOlder` React state remains the visible loading indicator and
+    // keeps the button's `disabled={loadingOlder}` for accessibility — it
+    // is a secondary, UI-facing signal, not the concurrency guard itself.
+    await runIfNotInFlight(olderHistoryRequestInFlightRef, async () => {
+      setLoadingOlder(true);
+      try {
+        const res = await fetchOlderClosedTrades(market, horizon, cursor);
+        // Defensive de-duplication: even if the backend response overlapped
+        // with something already rendered, a trade_id already seen anywhere
+        // in this block is dropped before appending — distinct trade_ids
+        // with identical symbol/price/date are never treated as duplicates.
+        const { fresh, nextSeenIds } = dedupeAppend(seenTradeIdsRef.current, res.trades);
+        seenTradeIdsRef.current = nextSeenIds;
+        setOlderTrades(prev => [...prev, ...fresh]);
+        setCursor(res.next_cursor);
+        setHasMore(res.has_more);
+        setOlderLoaded(true);
+        setOlderVisible(true);
+      } finally {
+        setLoadingOlder(false);
+      }
+    });
   };
 
   const remainingCount = earlier_trade_count - olderTrades.length;
