@@ -10,6 +10,8 @@
 
 ## Section 1 — Vision
 
+**Mission.** Give every investor institutional-grade, fully explainable investment intelligence — across India and US equities — without ever asking them to trust a number they cannot trace back to a concrete, inspectable reason.
+
 StockSense360 is an **AI-powered investment intelligence platform**, not a traditional stock screener. The distinction is deliberate and structural, not marketing language:
 
 - **Explainable AI.** Every recommendation traces to named, inspectable factors — a score, a category breakdown, a stated reason for any rejection. Per SSDS-000's confirmed architecture, this explainability is rule-based and deterministic today, not LLM-generated; nothing in the platform produces a judgment a user (or engineer) cannot trace back to a concrete metric.
@@ -17,6 +19,12 @@ StockSense360 is an **AI-powered investment intelligence platform**, not a tradi
 - **Cross-market support.** India (NSE) and US markets are first-class, not India-with-a-US-afterthought or vice versa — each with its own data adapter, but sharing every engine's scoring logic unmodified.
 - **Evidence-based recommendations.** Every engineering decision in this platform's recent history — what to build, what to fix, what to defer — has been settled by live data validation, not assumption. This is now a standing engineering discipline (Section 5), not a one-time practice.
 - **Long-term maintainability.** Centralized thresholds, structured logging, a typed engine-response contract, and a four-category test suite exist specifically so future changes are verifiable rather than speculative.
+
+**Platform Pillars.** The nine intelligence domains named in full in Section 2 — Business Quality, Financial Strength, Growth, Valuation, Risk, Recommendation, Portfolio, AI Research Analyst, and Daily Picks Intelligence — are this platform's pillars: each answers one well-defined investment question, is independently validatable, and composes with the others without any pillar needing to know the others exist (the same provider-independent, adapter-boundary design proven across every closed Epic to date).
+
+**Differentiation.** Where most consumer stock-screening products either fully automate a black-box recommendation or leave all analysis to the user, StockSense360's structural bet is the middle path: multi-engine, sector-adapted analysis that never outputs a signal it cannot decompose into named, inspectable evidence — validated, before integration, against live data rather than backtested-in-isolation assumptions (Section 5). This is a process discipline, evidenced by this platform's own Epic-closure history, not a claim asserted without track record.
+
+**Educational Intelligence principle.** Every explanation this platform produces — from a rejection reason to a future AI Research Analyst narrative — must teach the underlying reasoning (what strengthened or weakened a thesis, what a metric means, what would change the conclusion), not merely assert a verdict. This principle already governs the existing rule-based Explainability Layer and is carried forward, unchanged, into every future explainability capability specified elsewhere in this documentation set (the Stock Movement Explanation Engine, EPIC-008's Research Answer Contract, and the AI Equity Research Analyst architecture) — it is stated once here as the platform-level principle those documents each already apply, not a new requirement invented by this section.
 
 ---
 
