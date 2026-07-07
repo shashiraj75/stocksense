@@ -49,7 +49,7 @@ export default function Dashboard() {
   useAuthGuard();
   const { user } = useAuth();
   const userId = user?.id ?? "";
-  const [market, setMarket] = useMarketPreference(["IN", "US", "CRYPTO", "COMMODITY"] as const, "IN");
+  const [market] = useMarketPreference(["IN", "US", "CRYPTO", "COMMODITY"] as const, "IN");
 
   const { data: movers, isLoading: moversLoading, isFetching: moversFetching, dataUpdatedAt: moversUpdatedAt } = useQuery({
     queryKey: ["movers", market],
@@ -135,15 +135,14 @@ export default function Dashboard() {
                   : "Live"
             }
           </div>
-          <div className="flex items-center gap-0.5 overflow-x-auto scrollbar-hide min-w-0 max-w-full bg-dark-card border border-dark-border rounded-lg p-0.5">
-            {MARKET_TABS.map(({ key, label }) => (
-              <button key={key} onClick={() => setMarket(key)}
-                className={clsx("shrink-0 whitespace-nowrap text-xs px-3 py-1.5 rounded-md font-medium transition-colors",
-                  market === key ? "bg-brand-500 text-white" : "text-gray-400 hover:text-white")}>
-                {label}
-              </button>
-            ))}
-          </div>
+          {/* Market is now chosen once, globally, via the header's
+              GlobalMarketDropdown — this read-only label just shows what's
+              currently selected rather than offering a second, page-level
+              way to change it. Dashboard already supports all four global
+              contexts, so no "coming soon" notice is needed here. */}
+          <span className="shrink-0 whitespace-nowrap text-xs px-3 py-1.5 rounded-lg bg-dark-card border border-dark-border text-gray-400">
+            Market: {MARKET_TABS.find(t => t.key === market)?.label}
+          </span>
         </div>
       </div>
 

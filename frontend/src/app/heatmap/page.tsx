@@ -7,6 +7,7 @@ import clsx from "clsx";
 import { RefreshCw, Wifi, Flame } from "lucide-react";
 import { StockContextMenu } from "@/components/StockContextMenu";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
+import { UnsupportedMarketNotice } from "@/components/UnsupportedMarketNotice";
 
 type Stock  = { symbol: string; change_pct: number | null };
 type Sector = { sector: string; avg_change: number | null; stocks: Stock[]; loaded: number; total: number };
@@ -32,7 +33,7 @@ function getSectorColor(pct: number | null): string {
 }
 
 export default function HeatmapPage() {
-  const [market, setMarket] = useMarketPreference(["IN", "US"] as const, "IN");
+  const [market] = useMarketPreference(["IN", "US"] as const, "IN");
   const router = useRouter();
 
   const { data, isLoading, isFetching, isError, dataUpdatedAt } = useQuery({
@@ -57,6 +58,7 @@ export default function HeatmapPage() {
 
   return (
     <div className="space-y-5">
+      <UnsupportedMarketNotice supported={["IN", "US"]} />
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div className="flex items-center gap-3">
@@ -89,16 +91,13 @@ export default function HeatmapPage() {
                   : "Live"
             }
           </div>
-          {/* Market toggle */}
-          <div className="flex items-center gap-0.5 overflow-x-auto scrollbar-hide max-w-full bg-dark-card border border-dark-border rounded-lg p-0.5">
-            {(["IN", "US"] as const).map(m => (
-              <button key={m} onClick={() => setMarket(m)}
-                className={clsx("shrink-0 whitespace-nowrap text-xs px-3 py-1.5 rounded-md font-medium transition-colors",
-                  market === m ? "bg-brand-500 text-white" : "text-gray-400 hover:text-white")}>
-                {m === "IN" ? "🇮🇳 IN" : "🇺🇸 US"}
-              </button>
-            ))}
-          </div>
+          {/* Market is now chosen once, globally, via the header's
+              GlobalMarketDropdown — this read-only label just shows what's
+              currently selected rather than offering a second, page-level
+              way to change it. */}
+          <span className="shrink-0 whitespace-nowrap text-xs px-3 py-1.5 rounded-lg bg-dark-card border border-dark-border text-gray-400">
+            Market: {market === "IN" ? "🇮🇳 IN" : "🇺🇸 US"}
+          </span>
         </div>
       </div>
 

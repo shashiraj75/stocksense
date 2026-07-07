@@ -8,6 +8,7 @@ import { useAuth } from "@/lib/AuthContext";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
 import { StockSymbolField } from "@/components/StockSymbolField";
 import type { StockResult } from "@/hooks/useStockSearch";
+import { UnsupportedMarketNotice } from "@/components/UnsupportedMarketNotice";
 
 interface Alert {
   id: string;
@@ -151,6 +152,7 @@ export default function AlertsPage() {
 
   return (
     <div className="space-y-6">
+      <UnsupportedMarketNotice supported={["IN", "US"]} />
       <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-3 flex items-start gap-2.5 text-xs text-blue-300">
         <Bell size={14} className="shrink-0 mt-0.5" />
         <span>
@@ -200,14 +202,13 @@ export default function AlertsPage() {
           </div>
           <div>
             <label className="text-xs text-gray-400 mb-1 block">Market</label>
-            <div className="flex gap-1">
-              {(["IN", "US"] as Market[]).map(m => (
-                <button key={m} onClick={() => setMarket(m)}
-                  className={clsx("px-3 py-2 rounded-lg text-xs font-medium border transition-colors",
-                    market === m ? "bg-brand-500 text-white border-brand-500" : "bg-dark-bg border-dark-border text-gray-400 hover:text-white")}>
-                  {m === "US" ? "🇺🇸" : "🇮🇳"} {m}
-                </button>
-              ))}
+            {/* Market is now chosen once, globally, via the header's
+                GlobalMarketDropdown, rather than a second click target here.
+                It still determines which market a manually-typed symbol is
+                added under — picking a symbol from search auto-detects its
+                own market instead (see onSelect above), same as before. */}
+            <div className="px-3 py-2 rounded-lg text-xs font-medium border bg-dark-bg border-dark-border text-gray-400">
+              {market === "US" ? "🇺🇸" : "🇮🇳"} {market}
             </div>
           </div>
           <div>

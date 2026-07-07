@@ -1,16 +1,17 @@
 "use client";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { fetchTopMovers, Market } from "@/utils/api";
+import { fetchTopMovers } from "@/utils/api";
 import { TrendingUp, TrendingDown, RefreshCw, Wifi, Filter } from "lucide-react";
 import Link from "next/link";
 import clsx from "clsx";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { StockContextMenu } from "@/components/StockContextMenu";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
+import { UnsupportedMarketNotice } from "@/components/UnsupportedMarketNotice";
 
 export default function ScreenerPage() {
-  const [market, setMarket] = useMarketPreference(["IN", "US"] as const, "IN");
+  const [market] = useMarketPreference(["IN", "US"] as const, "IN");
   const { data, isLoading, isFetching, isError, dataUpdatedAt } = useQuery({
     queryKey: ["movers", market],
     queryFn: () => fetchTopMovers(market),
@@ -28,6 +29,7 @@ export default function ScreenerPage() {
 
   return (
     <div className="space-y-6">
+      <UnsupportedMarketNotice supported={["IN", "US"]} />
       <MarketDisclaimer market={market} />
 
       {/* Header — layout matches Market Heatmap / Market Overview header style */}
@@ -62,16 +64,13 @@ export default function ScreenerPage() {
                   : "Live"
             }
           </div>
-          {/* Market toggle */}
-          <div className="flex gap-2">
-            {(["IN", "US"] as Market[]).map((m) => (
-              <button key={m} onClick={() => setMarket(m)}
-                className={clsx("px-4 py-2 rounded-xl text-sm font-medium transition-colors border",
-                  market === m ? "bg-brand-500 text-white border-brand-500" : "bg-dark-card border-dark-border text-gray-400 hover:text-white")}>
-                {m === "IN" ? "🇮🇳 India" : "🇺🇸 USA"}
-              </button>
-            ))}
-          </div>
+          {/* Market is now chosen once, globally, via the header's
+              GlobalMarketDropdown — this read-only label just shows what's
+              currently selected rather than offering a second, page-level
+              way to change it. */}
+          <span className="px-4 py-2 rounded-xl text-sm font-medium border bg-dark-card border-dark-border text-gray-400">
+            Market: {market === "IN" ? "🇮🇳 India" : "🇺🇸 USA"}
+          </span>
         </div>
       </div>
 
