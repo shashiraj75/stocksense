@@ -181,3 +181,31 @@ class TestOlderClosedTradesPagination:
         assert "(closed_at, id) < (%s::timestamptz, %s)" in sql
         assert "2026-01-05T00:00:00+00:00" in params
         assert 5 in params
+
+    def test_keyset_tie_uses_id_as_tiebreaker_not_timestamp_alone(self, client):
+        # Several trades can share the exact same closed_at (e.g. a batch
+        # auto-close). The cursor is a row-value comparison on
+        # (closed_at, id), not closed_at alone — passing the tied
+        # timestamp plus the last-seen id of that tie must exclude exactly
+        # the rows already shown (id <= before_id at that timestamp) while
+        # still including any other row at that same timestamp with a
+        # lower id, and never re-including the row the cursor came from.
+        conn = _RecordingConn(fetchall_results=[[_row(3)]])
+        with patch("api.routers.paper_trading._conn", side_effect=lambda: conn):
+            resp = client.get(
+                "/api/paper-trading/closed-trades/older",
+                params={
+                    "market": "IN", "horizon": "short",
+                    "before_closed_at": "2026-01-05T00:00:00+00:00",
+                    "before_id": 5,  # ties with id=4 at the same closed_at, already shown
+                },
+                headers=_auth(),
+            )
+        assert resp.status_code == 200
+        sql, params = conn.calls[0]
+        # ORDER BY closed_at DESC, id DESC matches _sort_closed_desc's own
+        # tiebreaker exactly, so the same row-value comparison correctly
+        # orders and excludes ties consistently with how latest_trades and
+        # every other older page were ordered.
+        assert "ORDER BY closed_at DESC, id DESC" in sql
+        assert params == ["user-aaa", "IN", "short", "2026-01-05T00:00:00+00:00", 5, 11]

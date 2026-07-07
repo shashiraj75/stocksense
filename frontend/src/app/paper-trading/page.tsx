@@ -21,6 +21,8 @@ import { SignalBadge } from "@/components/SignalBadge";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
 import { useMarketOpen } from "@/hooks/useMarketOpen";
 import { UnsupportedMarketNotice } from "@/components/UnsupportedMarketNotice";
+import { seedInitialCursor, dedupeAppend } from "@/utils/closedTradeHistoryPaging";
+import { outcomeLabel, shouldShowBreakEven } from "@/utils/paperTradeOutcome";
 
 const MARKETS = [
   { key: "IN" as const, label: "🇮🇳 IN", currency: "₹", locale: "en-IN" },
@@ -782,16 +784,19 @@ function ClosedTradeRow({ trade }: { trade: PaperTrade }) {
             so a price comparison alone can misreport the true outcome. */}
         {trade.exit_reason === "TARGET_HIT" ? (
           <span className="flex items-center gap-1 text-xs text-bull font-medium">
-            <Check size={12} /> Target Hit
+            <Check size={12} /> {outcomeLabel(trade.exit_reason)}
           </span>
         ) : trade.exit_reason === "STOP_LOSS" ? (
           <span className="flex items-center gap-1 text-xs text-bear font-medium">
-            <X size={12} /> Stop Loss
+            <X size={12} /> {outcomeLabel(trade.exit_reason)}
           </span>
         ) : trade.exit_reason === "MANUAL" ? (
-          <span className="text-xs text-gray-500">Manual</span>
+          <span className="text-xs text-gray-500">{outcomeLabel(trade.exit_reason)}</span>
         ) : (
-          <span className="text-xs text-gray-600">—</span>
+          // NULL, legacy, expiry, cancellation, stale, or any other value —
+          // explicitly labelled rather than a bare dash, so it reads as a
+          // deliberate non-conclusive classification, not missing data.
+          <span className="text-xs text-gray-600">{outcomeLabel(trade.exit_reason)}</span>
         )}
       </td>
       <td className="px-4 py-3 text-xs text-gray-500">
@@ -820,21 +825,45 @@ function ClosedTradeHorizonBlock({
   const { summary, latest_trades, earlier_trade_count } = bucket;
   const netPnl = summary.net_realized_pnl;
 
+  // Seed the very first "older" page's cursor from the last (oldest) row
+  // already shown in latest_trades — never start from a null cursor when
+  // initial rows exist, or the older-history endpoint restarts from the top
+  // of the bucket and returns rows already rendered (the confirmed
+  // duplicate-row defect, e.g. the observed duplicated LLY trade). Lazy
+  // useState initializer so this only runs once, from the props this
+  // component mounted with. See seedInitialCursor's own unit coverage in
+  // frontend/scripts/test-closed-trade-history-paging.mjs.
+  const [cursor, setCursor] = useState<OlderClosedTradesCursor | null>(() => seedInitialCursor(latest_trades));
   const [olderTrades, setOlderTrades] = useState<PaperTrade[]>([]);
-  const [cursor, setCursor] = useState<OlderClosedTradesCursor | null>(null);
   const [hasMore, setHasMore] = useState(earlier_trade_count > 0);
   const [olderVisible, setOlderVisible] = useState(false);
   const [olderLoaded, setOlderLoaded] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
 
+  // The sole de-duplication key across every render source in this block
+  // (latest_trades + any already-fetched older pages) — trade_id only.
+  // Never symbol/timestamp/price/visible text: two genuinely distinct
+  // trades can legitimately share all of those. See dedupeAppend's own
+  // unit coverage in frontend/scripts/test-closed-trade-history-paging.mjs.
+  const seenTradeIdsRef = useRef<Set<number>>(new Set(latest_trades.map(t => t.id)));
+
   const loadNextPage = async () => {
+    // Defensive guard against a rapid double-click/repeated interaction
+    // racing past the button's own `disabled={loadingOlder}` — this ref-like
+    // state check is synchronous with the click handler's re-render, so a
+    // second invocation before the first `setLoadingOlder(true)` commits
+    // cannot slip through and issue a second in-flight request for the same page.
+    if (loadingOlder) return;
     setLoadingOlder(true);
     try {
       const res = await fetchOlderClosedTrades(market, horizon, cursor);
-      // Append-only, keyed by id below on render — a duplicate id can only
-      // occur if the same page were fetched twice, which the cursor
-      // (always advanced from the last-seen row) prevents by construction.
-      setOlderTrades(prev => [...prev, ...res.trades]);
+      // Defensive de-duplication: even if the backend response overlapped
+      // with something already rendered, a trade_id already seen anywhere
+      // in this block is dropped before appending — distinct trade_ids
+      // with identical symbol/price/date are never treated as duplicates.
+      const { fresh, nextSeenIds } = dedupeAppend(seenTradeIdsRef.current, res.trades);
+      seenTradeIdsRef.current = nextSeenIds;
+      setOlderTrades(prev => [...prev, ...fresh]);
       setCursor(res.next_cursor);
       setHasMore(res.has_more);
       setOlderLoaded(true);
@@ -894,6 +923,12 @@ function ClosedTradeHorizonBlock({
             </span>
             <span>Stop-loss outcomes: <span className="text-gray-400">{summary.stop_loss_count} / {summary.conclusive_count || 0}</span></span>
             <span>Other / non-conclusive: <span className="text-gray-400">{summary.other_count}</span></span>
+            {/* Shown only when it exists — never a "Break-even: 0" line.
+                Win Rate logic itself is unchanged: break-even trades never
+                count as wins, only appear here as an informational count. */}
+            {shouldShowBreakEven(summary.break_even_count) && (
+              <span>Break-even: <span className="text-gray-400">{summary.break_even_count}</span></span>
+            )}
             <span>
               Avg realized return:{" "}
               <span className="text-gray-400">
