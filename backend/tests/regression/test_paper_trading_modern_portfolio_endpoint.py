@@ -136,7 +136,7 @@ class TestModernPortfolioPath:
         assert "closed_trades" not in body
 
     def test_modern_response_includes_compact_overview_with_correct_counts(self, client):
-        agg_row_short = ("IN", "short", 5, 3, 1, 4, 250.0, 500.0, 8.0)  # market, bucket, count, hit, stop, win, pnl, invested, avg_ret
+        agg_row_short = ("IN", "short", 5, 3, 1, 4, 0, 250.0, 500.0, 8.0)  # market, bucket, count, hit, stop, win, break_even, pnl, invested, avg_ret
         conn = _RecordingConn(
             fetchone_results=[(1_000_000.0, 100_000.0, True)],
             fetchall_results=[
@@ -162,6 +162,8 @@ class TestModernPortfolioPath:
         assert bucket["summary"]["closed_trade_count"] == 5
         assert bucket["summary"]["target_hit_count"] == 3
         assert bucket["summary"]["stop_loss_count"] == 1
+        assert bucket["summary"]["win_trades_count"] == 4
+        assert bucket["summary"]["win_rate_pct"] == 80.0
         assert bucket["earlier_trade_count"] == 4  # 5 total - 1 latest row returned
         assert len(bucket["latest_trades"]) == 1
 

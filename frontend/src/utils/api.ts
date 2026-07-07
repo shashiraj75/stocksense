@@ -303,11 +303,19 @@ export interface PaperTrade {
 // or P&L sign).
 export interface ClosedTradeHorizonSummary {
   closed_trade_count: number;
+  // Win Rate — the same canonical definition as the top-level Win Rate
+  // stat card: realized P&L > 0 is a win, exactly 0 is break-even (never a
+  // win), denominator is every closed trade in this bucket. Independent of
+  // Target Hit Rate below — never merge the two.
+  win_trades_count: number;
+  win_rate_pct: number | null;
+  break_even_count: number;
   target_hit_count: number;
   stop_loss_count: number;
   conclusive_count: number;
   other_count: number;
   target_hit_rate_pct: number | null;
+  conclusive_rate_pct: number | null;
   net_realized_pnl: number;
   avg_realized_return_pct: number | null;
 }

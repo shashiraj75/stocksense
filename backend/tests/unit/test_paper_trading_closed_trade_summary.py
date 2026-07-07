@@ -91,6 +91,70 @@ class TestSummarizeClosedBucket:
 
 
 @pytest.mark.unit
+class TestWinRate:
+    """Win Rate = closed trades with realized P&L > 0 / all closed trades
+    in the bucket — the same canonical definition as the top-level Win Rate
+    stat card, and strictly independent of Target Hit Rate (exit_reason)."""
+
+    def test_profitable_trade_counts_as_a_win(self):
+        trades = [_trade(100, 120, "TARGET_HIT")]  # +20, profitable
+        result = _summarize_closed_bucket(trades)
+        assert result["win_trades_count"] == 1
+        assert result["win_rate_pct"] == 100.0
+
+    def test_losing_trade_does_not_count_as_a_win(self):
+        trades = [_trade(100, 80, "STOP_LOSS")]  # -20, a loss
+        result = _summarize_closed_bucket(trades)
+        assert result["win_trades_count"] == 0
+        assert result["win_rate_pct"] == 0.0
+
+    def test_break_even_trade_is_not_a_win(self):
+        trades = [_trade(100, 100, "MANUAL")]  # exactly 0 P&L
+        result = _summarize_closed_bucket(trades)
+        assert result["win_trades_count"] == 0
+        assert result["break_even_count"] == 1
+        assert result["win_rate_pct"] == 0.0
+
+    def test_manually_closed_profitable_trade_counts_as_a_win(self):
+        # A MANUAL close with positive P&L is a win for Win Rate purposes,
+        # even though it is non-conclusive for Target Hit Rate purposes —
+        # the two metrics must not be merged.
+        trades = [_trade(100, 130, "MANUAL")]  # +30, profitable, non-conclusive
+        result = _summarize_closed_bucket(trades)
+        assert result["win_trades_count"] == 1
+        assert result["win_rate_pct"] == 100.0
+        assert result["conclusive_count"] == 0
+        assert result["target_hit_rate_pct"] is None
+
+    def test_win_rate_and_target_hit_rate_are_computed_independently(self):
+        trades = [
+            _trade(100, 120, "TARGET_HIT"),  # win, target hit
+            _trade(100, 80, "STOP_LOSS"),     # loss, stop loss (conclusive)
+            _trade(100, 110, "MANUAL"),       # win, non-conclusive
+            _trade(100, 90, "MANUAL"),        # loss, non-conclusive
+            _trade(100, 100, None),           # break-even, non-conclusive
+        ]
+        result = _summarize_closed_bucket(trades)
+        assert result["closed_trade_count"] == 5
+        # Win Rate: 2 wins (120, 110) / 5 total = 40%
+        assert result["win_trades_count"] == 2
+        assert result["win_rate_pct"] == 40.0
+        assert result["break_even_count"] == 1
+        # Target Hit Rate: 1 target hit / 2 conclusive (target+stop) = 50%
+        assert result["target_hit_count"] == 1
+        assert result["stop_loss_count"] == 1
+        assert result["conclusive_count"] == 2
+        assert result["target_hit_rate_pct"] == 50.0
+        # Conclusive outcomes as a share of all closed trades: 2/5 = 40%
+        assert result["conclusive_rate_pct"] == 40.0
+
+    def test_empty_bucket_gives_null_win_rate_not_zero(self):
+        result = _summarize_closed_bucket([])
+        assert result["win_trades_count"] == 0
+        assert result["win_rate_pct"] is None
+
+
+@pytest.mark.unit
 class TestBucketClosedTradesByHorizon:
     def test_groups_by_stored_horizon_only(self):
         trades = [

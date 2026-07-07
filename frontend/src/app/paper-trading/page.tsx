@@ -774,25 +774,24 @@ function ClosedTradeRow({ trade }: { trade: PaperTrade }) {
         </span>
       </td>
       <td className="px-4 py-3">
-        {trade.target_price && trade.exit_price ? (
-          trade.exit_price >= trade.target_price ? (
-            <span className="flex items-center gap-1 text-xs text-bull font-medium">
-              <Check size={12} /> Hit
-            </span>
-          ) : (
-            <span className="flex items-center gap-1 text-xs text-gray-500">
-              <X size={12} /> Missed
-            </span>
-          )
+        {/* Outcome label is derived strictly from the authoritative
+            exit_reason field — never from comparing exit_price to
+            target_price. A trade can close above its target via a manual
+            sell (not a genuine target-hit) or close via a stop-loss trigger
+            at a price that happens to be >= target (a stale/edited target),
+            so a price comparison alone can misreport the true outcome. */}
+        {trade.exit_reason === "TARGET_HIT" ? (
+          <span className="flex items-center gap-1 text-xs text-bull font-medium">
+            <Check size={12} /> Target Hit
+          </span>
+        ) : trade.exit_reason === "STOP_LOSS" ? (
+          <span className="flex items-center gap-1 text-xs text-bear font-medium">
+            <X size={12} /> Stop Loss
+          </span>
+        ) : trade.exit_reason === "MANUAL" ? (
+          <span className="text-xs text-gray-500">Manual</span>
         ) : (
           <span className="text-xs text-gray-600">—</span>
-        )}
-        {trade.exit_reason && (
-          <p className="text-[10px] text-gray-600 mt-0.5">
-            {trade.exit_reason === "STOP_LOSS" ? "Stop loss"
-              : trade.exit_reason === "TARGET_HIT" ? "Target"
-              : "Manual"}
-          </p>
         )}
       </td>
       <td className="px-4 py-3 text-xs text-gray-500">
@@ -862,10 +861,10 @@ function ClosedTradeHorizonBlock({
         <div className="flex items-center gap-3 flex-wrap text-xs text-gray-400 justify-end">
           <span>{summary.closed_trade_count} closed</span>
           <span>
-            Target Hit Rate{" "}
-            {summary.target_hit_rate_pct !== null
-              ? <span className="text-gray-300 font-medium">{summary.target_hit_count} / {summary.conclusive_count} · {summary.target_hit_rate_pct.toFixed(1)}%</span>
-              : <span className="text-gray-600">— no conclusive outcomes</span>}
+            Win Rate{" "}
+            {summary.win_rate_pct !== null
+              ? <span className="text-gray-300 font-medium">{summary.win_trades_count} / {summary.closed_trade_count} · {summary.win_rate_pct.toFixed(1)}%</span>
+              : <span className="text-gray-600">—</span>}
           </span>
           <span className={clsx("font-mono font-bold", netPnl > 0 ? "text-bull" : netPnl < 0 ? "text-bear" : "text-gray-400")}>
             Net P&L {netPnl >= 0 ? "+" : ""}{currency}{fmt(Math.abs(netPnl), 0)}
@@ -875,7 +874,24 @@ function ClosedTradeHorizonBlock({
 
       {blockExpanded && (
         <div className="border-t border-dark-border">
+          {/* Target Hit Rate is a separate, secondary metric from Win Rate
+              above — it only ever concerns conclusive (TARGET_HIT/STOP_LOSS)
+              outcomes, never total closed trades or P&L sign. Never merge
+              the two numbers. */}
           <div className="px-4 py-2 flex items-center gap-4 flex-wrap text-[11px] text-gray-500 border-b border-dark-border/60">
+            <span>
+              Target Hit Rate:{" "}
+              {summary.target_hit_rate_pct !== null
+                ? <span className="text-gray-400">{summary.target_hit_count} / {summary.conclusive_count} · {summary.target_hit_rate_pct.toFixed(1)}%</span>
+                : <span className="text-gray-600">no conclusive outcomes</span>}
+            </span>
+            <span>
+              Conclusive outcomes:{" "}
+              <span className="text-gray-400">
+                {summary.conclusive_count} / {summary.closed_trade_count}
+                {summary.conclusive_rate_pct !== null && ` · ${summary.conclusive_rate_pct.toFixed(1)}%`}
+              </span>
+            </span>
             <span>Stop-loss outcomes: <span className="text-gray-400">{summary.stop_loss_count} / {summary.conclusive_count || 0}</span></span>
             <span>Other / non-conclusive: <span className="text-gray-400">{summary.other_count}</span></span>
             <span>
@@ -896,7 +912,7 @@ function ClosedTradeHorizonBlock({
                   <th className="px-4 py-2.5 text-left">Entry</th>
                   <th className="px-4 py-2.5 text-left">Exit</th>
                   <th className="px-4 py-2.5 text-left">P&L</th>
-                  <th className="px-4 py-2.5 text-left">vs Target</th>
+                  <th className="px-4 py-2.5 text-left">Outcome</th>
                   <th className="px-4 py-2.5 text-left">Closed</th>
                 </tr>
               </thead>

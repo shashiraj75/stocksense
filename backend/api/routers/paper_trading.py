@@ -107,19 +107,31 @@ def _closed_trade_history_by_horizon_for_market(closed_trades_for_market: list[d
 
 def _summarize_closed_bucket(trades: list[dict]) -> dict:
     """
-    Target Hit Rate is defined as:
-        trades closed because their defined target was hit
-        / trades with a conclusive target-or-stop-loss outcome
-    — never against total closed trades or P&L sign. `exit_reason` (set only
-    by POST /sell, either explicitly by the client on an auto-close trigger
-    or a manual close) is the sole authoritative outcome field:
-    "TARGET_HIT"/"STOP_LOSS" are conclusive; "MANUAL", None (legacy trades
-    closed before this column existed, or a manual close that recorded no
-    reason), or any other value are non-conclusive and excluded from the
-    hit-rate denominator — but still counted in P&L/average-return below,
-    since those are realized-outcome metrics, not target-accuracy metrics.
+    Two distinct, never-merged outcome metrics:
+
+    Win Rate — the same canonical definition as the top-level Win Rate stat
+    card (see _overview_from_closed_trades / _fetch_closed_trade_aggregates'
+    win_trades_count, which use the identical ">0" predicate against
+    realized P&L): a strictly positive realized_pnl is a win; exactly zero
+    is break-even (never counted as a win); negative is a loss. Denominator
+    is every closed trade in this bucket — never gated by exit_reason.
+
+    Target Hit Rate — trades closed because their defined target was hit /
+    trades with a conclusive target-or-stop-loss outcome — never against
+    total closed trades or P&L sign. `exit_reason` (set only by POST /sell,
+    either explicitly by the client on an auto-close trigger or a manual
+    close) is the sole authoritative outcome field: "TARGET_HIT"/"STOP_LOSS"
+    are conclusive; "MANUAL", None (legacy trades closed before this column
+    existed, or a manual close that recorded no reason), or any other value
+    are non-conclusive and excluded from the hit-rate denominator — but
+    still counted in P&L/average-return/Win-Rate above, since those are
+    realized-outcome metrics, not target-accuracy metrics.
     """
     count = len(trades)
+
+    win_trades = sum(1 for t in trades if t["realized_pnl"] > 0)
+    break_even_trades = sum(1 for t in trades if t["realized_pnl"] == 0)
+
     target_hit = sum(1 for t in trades if t["exit_reason"] == "TARGET_HIT")
     stop_loss = sum(1 for t in trades if t["exit_reason"] == "STOP_LOSS")
     conclusive = target_hit + stop_loss
@@ -136,11 +148,15 @@ def _summarize_closed_bucket(trades: list[dict]) -> dict:
 
     return {
         "closed_trade_count": count,
+        "win_trades_count": win_trades,
+        "win_rate_pct": round(win_trades / count * 100, 1) if count > 0 else None,
+        "break_even_count": break_even_trades,
         "target_hit_count": target_hit,
         "stop_loss_count": stop_loss,
         "conclusive_count": conclusive,
         "other_count": other,
         "target_hit_rate_pct": round(target_hit / conclusive * 100, 1) if conclusive > 0 else None,
+        "conclusive_rate_pct": round(conclusive / count * 100, 1) if count > 0 else None,
         "net_realized_pnl": net_realized_pnl,
         "avg_realized_return_pct": avg_realized_return_pct,
     }
@@ -178,6 +194,7 @@ def _fetch_closed_trade_aggregates(conn, user_id: str) -> list[dict]:
                COUNT(*) FILTER (WHERE exit_reason = 'TARGET_HIT') AS target_hit_count,
                COUNT(*) FILTER (WHERE exit_reason = 'STOP_LOSS') AS stop_loss_count,
                COUNT(*) FILTER (WHERE (exit_price - entry_price) * quantity > 0) AS win_trades_count,
+               COUNT(*) FILTER (WHERE (exit_price - entry_price) * quantity = 0) AS break_even_count,
                COALESCE(SUM((exit_price - entry_price) * quantity), 0) AS net_realized_pnl,
                COALESCE(SUM(entry_price * quantity), 0) AS invested,
                AVG(CASE WHEN entry_price > 0 AND exit_price IS NOT NULL
@@ -191,10 +208,10 @@ def _fetch_closed_trade_aggregates(conn, user_id: str) -> list[dict]:
         {
             "market": r[0], "bucket": r[1],
             "closed_trade_count": r[2], "target_hit_count": r[3], "stop_loss_count": r[4],
-            "win_trades_count": r[5],
-            "net_realized_pnl": round(float(r[6]), 2) if r[6] is not None else 0.0,
-            "invested": round(float(r[7]), 2) if r[7] is not None else 0.0,
-            "avg_realized_return_pct": round(float(r[8]), 2) if r[8] is not None else None,
+            "win_trades_count": r[5], "break_even_count": r[6],
+            "net_realized_pnl": round(float(r[7]), 2) if r[7] is not None else 0.0,
+            "invested": round(float(r[8]), 2) if r[8] is not None else 0.0,
+            "avg_realized_return_pct": round(float(r[9]), 2) if r[9] is not None else None,
         }
         for r in rows
     ]
@@ -203,19 +220,26 @@ def _fetch_closed_trade_aggregates(conn, user_id: str) -> list[dict]:
 def _summary_from_aggregate_row(agg: dict) -> dict:
     """Produces the exact same shape/values _summarize_closed_bucket would
     for the same underlying rows, but computed from a pre-aggregated SQL
-    result row instead of a materialized trade list."""
+    result row instead of a materialized trade list. Win Rate here is the
+    same ">0" predicate the SQL aggregate query already used to compute
+    win_trades_count — never recomputed with a different rule."""
     count = agg["closed_trade_count"]
+    win_trades = agg["win_trades_count"]
     target_hit = agg["target_hit_count"]
     stop_loss = agg["stop_loss_count"]
     conclusive = target_hit + stop_loss
     other = count - conclusive
     return {
         "closed_trade_count": count,
+        "win_trades_count": win_trades,
+        "win_rate_pct": round(win_trades / count * 100, 1) if count > 0 else None,
+        "break_even_count": agg["break_even_count"],
         "target_hit_count": target_hit,
         "stop_loss_count": stop_loss,
         "conclusive_count": conclusive,
         "other_count": other,
         "target_hit_rate_pct": round(target_hit / conclusive * 100, 1) if conclusive > 0 else None,
+        "conclusive_rate_pct": round(conclusive / count * 100, 1) if count > 0 else None,
         "net_realized_pnl": agg["net_realized_pnl"],
         "avg_realized_return_pct": agg["avg_realized_return_pct"],
     }
