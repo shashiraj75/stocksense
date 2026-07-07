@@ -14,6 +14,7 @@ import type { StockResult } from "@/hooks/useStockSearch";
 import { useAuth } from "@/lib/AuthContext";
 import { ImportPortfolioModal } from "@/components/ImportPortfolioModal";
 import { exportPortfolioToExcel } from "@/utils/portfolioExport";
+import { UnsupportedMarketNotice } from "@/components/UnsupportedMarketNotice";
 
 interface Holding {
   id: string;
@@ -387,6 +388,7 @@ export default function PortfolioPage() {
 
   return (
     <div className="space-y-6">
+      <UnsupportedMarketNotice supported={["IN", "US"]} />
       <MarketDisclaimer market={market} />
 
       <div className="flex items-center gap-3">

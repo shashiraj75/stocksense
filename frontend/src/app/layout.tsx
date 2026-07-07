@@ -11,6 +11,7 @@ import { MarketStatusInline, MobileMarketStrip } from "@/components/MarketStatus
 import { LiveClock } from "@/components/LiveClock";
 import { IndexBar } from "@/components/IndexBar";
 import { NavHeightObserver } from "@/components/NavHeightObserver";
+import { GlobalMarketDropdown } from "@/components/GlobalMarketDropdown";
 
 export const metadata: Metadata = {
   title: { default: "StockSense360 — AI Stock Predictor", template: "%s | StockSense360" },
@@ -68,6 +69,17 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 <MarketStatusInline />
               </div>
 
+              {/* Global market context — mobile/tablet only here (below
+                  lg). Row 3 renders the single desktop (lg+) copy, after
+                  the Paper Trade tab — without this `lg:hidden`, both would
+                  render simultaneously on desktop. Both instances share the
+                  same localStorage-backed hook and stay in sync live via a
+                  custom window event, so this is purely a display split,
+                  never two independent selections. */}
+              <div className="lg:hidden shrink-0">
+                <GlobalMarketDropdown />
+              </div>
+
               {/* User menu — always visible */}
               <div className="shrink-0">
                 <UserMenu />
@@ -104,10 +116,16 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </div>
             </div>
 
-            {/* Row 3: Nav links (desktop only) */}
+            {/* Row 3: Nav links (desktop only). Global market dropdown sits
+                after the Paper Trade tab, separated by a vertical divider so
+                it doesn't read as one more nav link. */}
             <div className="hidden lg:block border-t border-dark-border/60">
-              <div className="max-w-7xl mx-auto px-4">
+              <div className="max-w-7xl mx-auto px-4 flex items-center justify-between gap-3">
                 <NavLinks links={NAV_LINKS} />
+                <div className="flex items-center gap-3 shrink-0 py-1">
+                  <span className="text-dark-border text-xs">|</span>
+                  <GlobalMarketDropdown />
+                </div>
               </div>
             </div>
           </nav>

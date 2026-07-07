@@ -5,6 +5,8 @@ import { fetchMultibaggerScreen, fetchMultibaggerStatus, MultibaggerScreen, Mult
 import { Gem, Wifi, Clock, ChevronDown, ChevronUp, Flame, AlertTriangle, Check, X } from "lucide-react";
 import Link from "next/link";
 import clsx from "clsx";
+import { useMarketPreference } from "@/hooks/useMarketPreference";
+import { UnsupportedMarketNotice } from "@/components/UnsupportedMarketNotice";
 
 const VERDICT: Record<string, { label: string; color: string }> = {
   // Stricter than strong_buy — ROCE>15%, D/E<50%, OCF>0, sales growth>10%
@@ -65,7 +67,7 @@ const METRICS_BY_MARKET: Record<"IN" | "US", { key: keyof MultibaggerStock; labe
 };
 
 export default function MultibaggerPage() {
-  const [market, setMarket] = useState<"IN" | "US">("IN");
+  const [market, setMarket] = useMarketPreference(["IN", "US"] as const, "IN");
   const [screen, setScreen] = useState<MultibaggerScreen>("quality_compounder");
   const [expanded, setExpanded] = useState<string | null>(null);
   const active = SCREENS.find(s => s.key === screen)!;
@@ -138,6 +140,7 @@ export default function MultibaggerPage() {
 
   return (
     <div className="space-y-6">
+      <UnsupportedMarketNotice supported={["IN", "US"]} />
       {/* Header — alignment matches Daily Picks / Market Heatmap / Screener style */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-3 min-w-0">

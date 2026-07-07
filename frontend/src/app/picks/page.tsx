@@ -13,6 +13,7 @@ import {
 import clsx from "clsx";
 import { PaperTradeModal } from "@/components/PaperTradeModal";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
+import { UnsupportedMarketNotice } from "@/components/UnsupportedMarketNotice";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type ReasonItem = { indicator: string; signal: string; reason: string };
@@ -748,6 +749,7 @@ export default function DailyPicksPage() {
 
   return (
     <div className="space-y-6">
+      <UnsupportedMarketNotice supported={["IN", "US"]} />
 
       {/* Header — alignment matches Market Heatmap / Market Overview / Screener style */}
       <div className="space-y-1">

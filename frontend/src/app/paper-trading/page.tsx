@@ -19,6 +19,7 @@ import { PaperTradeModal } from "@/components/PaperTradeModal";
 import { SignalBadge } from "@/components/SignalBadge";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
 import { useMarketOpen } from "@/hooks/useMarketOpen";
+import { UnsupportedMarketNotice } from "@/components/UnsupportedMarketNotice";
 
 const MARKETS = [
   { key: "IN" as const, label: "🇮🇳 IN", currency: "₹", locale: "en-IN" },
@@ -1015,6 +1016,7 @@ export default function PaperTradingPage() {
 
   return (
     <div className="space-y-6">
+      <UnsupportedMarketNotice supported={["IN", "US"]} />
       {/* Trade Management outcome banners — Manual Close confirmations and
           Auto Close notifications, dismissible, stacked newest-last. */}
       {notifications.length > 0 && (
