@@ -12,7 +12,7 @@ import {
 import {
   fetchPaperPortfolio, closePaperTrade, resetPaperPortfolio, editPaperTrade,
   updatePaperTradeManagementMode, updatePaperTradeNotificationPreference,
-  fetchQuote, type PaperTrade, type TradeManagementMode,
+  fetchQuote, type PaperTrade, type TradeManagementMode, type ClosedTradeHorizonSummary,
 } from "@/utils/api";
 import { useAuth } from "@/lib/AuthContext";
 import { PaperTradeModal } from "@/components/PaperTradeModal";
@@ -34,6 +34,20 @@ const HORIZON_BLOCKS = [
   { key: "medium", label: "Medium Term", sub: "2–4 weeks",  accent: "border-l-purple-500" },
   { key: "long",   label: "Long Term",   sub: "3–6 months", accent: "border-l-indigo-500" },
 ] as const;
+
+// Closed-trade history is grouped strictly by this same order plus, only
+// when the backend actually reports one, a trailing "unclassified" bucket
+// for legacy rows whose stored horizon isn't short/medium/long (see
+// _closed_trade_summary_for_market in paper_trading.py — this frontend
+// list must match that classification exactly, since it only decides which
+// visual block a row renders under, never recomputes a metric).
+const CLOSED_HISTORY_BLOCKS = [
+  ...HORIZON_BLOCKS,
+  { key: "unclassified", label: "Unclassified / Legacy", sub: "Missing or unrecognized horizon", accent: "border-l-gray-500" },
+] as const;
+type ClosedHistoryHorizonKey = (typeof CLOSED_HISTORY_BLOCKS)[number]["key"];
+
+const CLOSED_ROWS_INITIAL_VISIBLE = 5;
 
 // How close the live price is to triggering either the stop loss or the
 // target — smallest distance sorts first (most urgent to watch).
@@ -831,6 +845,99 @@ function ClosedTradeRow({ trade }: { trade: PaperTrade }) {
   );
 }
 
+// Renders one horizon's closed-trade block: a collapsible header carrying
+// the backend-computed summary line (never recomputed here from `trades`),
+// the latest 5 rows, and a secondary collapsible control for the rest.
+// `trades` must already be pre-sorted (the page applies the existing
+// historySortMode before grouping) and pre-filtered to this exact horizon.
+function ClosedTradeHorizonBlock({
+  label, sub, accent, summary, trades, currency, blockExpanded, onToggleBlock, olderShown, onToggleOlder,
+}: {
+  label: string; sub: string; accent: string;
+  summary: ClosedTradeHorizonSummary; trades: PaperTrade[]; currency: string;
+  blockExpanded: boolean; onToggleBlock: () => void;
+  olderShown: boolean; onToggleOlder: () => void;
+}) {
+  const visible = trades.slice(0, CLOSED_ROWS_INITIAL_VISIBLE);
+  const older = trades.slice(CLOSED_ROWS_INITIAL_VISIBLE);
+  const netPnl = summary.net_realized_pnl;
+
+  return (
+    <div className={clsx("bg-dark-card border border-dark-border rounded-xl overflow-hidden border-l-4", accent)}>
+      <button
+        onClick={onToggleBlock}
+        aria-expanded={blockExpanded}
+        className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-white/[0.02] transition-colors"
+      >
+        <div className="flex items-center gap-2 flex-wrap min-w-0">
+          {blockExpanded ? <ChevronUp size={15} className="text-gray-500 shrink-0" /> : <ChevronDown size={15} className="text-gray-500 shrink-0" />}
+          <span className="font-semibold text-sm text-white">{label}</span>
+          <span className="text-xs text-gray-500">({sub})</span>
+        </div>
+        <div className="flex items-center gap-3 flex-wrap text-xs text-gray-400 justify-end">
+          <span>{summary.closed_trade_count} closed</span>
+          <span>
+            Target Hit Rate{" "}
+            {summary.target_hit_rate_pct !== null
+              ? <span className="text-gray-300 font-medium">{summary.target_hit_count} / {summary.conclusive_count} · {summary.target_hit_rate_pct.toFixed(1)}%</span>
+              : <span className="text-gray-600">— no conclusive outcomes</span>}
+          </span>
+          <span className={clsx("font-mono font-bold", netPnl > 0 ? "text-bull" : netPnl < 0 ? "text-bear" : "text-gray-400")}>
+            Net P&L {netPnl >= 0 ? "+" : ""}{currency}{fmt(Math.abs(netPnl), 0)}
+          </span>
+        </div>
+      </button>
+
+      {blockExpanded && (
+        <div className="border-t border-dark-border">
+          <div className="px-4 py-2 flex items-center gap-4 flex-wrap text-[11px] text-gray-500 border-b border-dark-border/60">
+            <span>Stop-loss outcomes: <span className="text-gray-400">{summary.stop_loss_count} / {summary.conclusive_count || 0}</span></span>
+            <span>Other / non-conclusive: <span className="text-gray-400">{summary.other_count}</span></span>
+            <span>
+              Avg realized return:{" "}
+              <span className="text-gray-400">
+                {summary.avg_realized_return_pct !== null
+                  ? `${summary.avg_realized_return_pct >= 0 ? "+" : ""}${summary.avg_realized_return_pct.toFixed(2)}%`
+                  : "—"}
+              </span>
+            </span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-dark-border text-xs text-gray-500">
+                  <th className="px-4 py-2.5 text-left">Stock</th>
+                  <th className="px-4 py-2.5 text-left">Qty</th>
+                  <th className="px-4 py-2.5 text-left">Entry</th>
+                  <th className="px-4 py-2.5 text-left">Exit</th>
+                  <th className="px-4 py-2.5 text-left">P&L</th>
+                  <th className="px-4 py-2.5 text-left">vs Target</th>
+                  <th className="px-4 py-2.5 text-left">Closed</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map(t => <ClosedTradeRow key={t.id} trade={t} />)}
+                {olderShown && older.map(t => <ClosedTradeRow key={t.id} trade={t} />)}
+              </tbody>
+            </table>
+          </div>
+          {older.length > 0 && (
+            <button
+              onClick={onToggleOlder}
+              aria-expanded={olderShown}
+              className="w-full flex items-center justify-center gap-1.5 px-4 py-2.5 text-xs text-gray-400 hover:text-white border-t border-dark-border transition-colors"
+            >
+              {olderShown
+                ? <>Hide earlier trades <ChevronUp size={13} /></>
+                : <>Show {older.length} earlier closed trade{older.length === 1 ? "" : "s"} <ChevronDown size={13} /></>}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function PaperTradingPage() {
   const { user } = useAuth();
   const userId = user?.id ?? "";
@@ -841,6 +948,11 @@ export default function PaperTradingPage() {
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [historyExpanded, setHistoryExpanded] = useState(true);
   const [historySortMode, setHistorySortMode] = useState<HistorySortMode>("recent");
+  // Per-horizon UI-only visibility state — never used to compute a metric,
+  // only which rows/blocks are currently rendered. Defaults match the spec:
+  // every non-empty horizon block starts expanded, older rows start hidden.
+  const [collapsedHorizonBlocks, setCollapsedHorizonBlocks] = useState<Partial<Record<ClosedHistoryHorizonKey, boolean>>>({});
+  const [olderRowsShown, setOlderRowsShown] = useState<Partial<Record<ClosedHistoryHorizonKey, boolean>>>({});
   const [notifPermission, setNotifPermission] = useState<NotificationPermission | "unsupported">("default");
 
   // Close-position outcome banners (Manual Close confirmations and Auto
@@ -977,6 +1089,22 @@ export default function PaperTradingPage() {
   const cash = market === "IN" ? portfolio.cash : portfolio.cash_usd;
   const startingCash = market === "IN" ? portfolio.starting_cash : portfolio.starting_cash_usd;
   const totalRealized = market === "IN" ? portfolio.total_realized_pnl : portfolio.total_realized_pnl_usd;
+
+  // Trade History by horizon — rows are grouped from the already-sorted,
+  // already-market-filtered list above (so each horizon's rows keep the
+  // user's selected sort intent, per-horizon, exactly as before grouping
+  // existed). Only the row's *bucket* is decided here (a display-routing
+  // question); every metric shown in the header (counts, hit rate, P&L,
+  // average return) comes verbatim from the backend's closed_trade_summary
+  // for the selected market — this component never recomputes them.
+  const closedHistoryByHorizon: Partial<Record<ClosedHistoryHorizonKey, PaperTrade[]>> = {};
+  for (const t of sortedClosedTrades) {
+    const key: ClosedHistoryHorizonKey = CLOSED_HISTORY_BLOCKS.some(b => b.key === t.horizon)
+      ? (t.horizon as ClosedHistoryHorizonKey)
+      : "unclassified";
+    (closedHistoryByHorizon[key] ??= []).push(t);
+  }
+  const marketClosedSummary = portfolio.closed_trade_summary[market];
 
   // Group open positions into Short/Medium/Long blocks, each sorted by
   // Action Queue priority — how urgently the trade needs the user's
@@ -1257,27 +1385,30 @@ export default function PaperTradingPage() {
             )}
           </div>
           {historyExpanded && (
-            <div className="bg-dark-card border border-dark-border rounded-xl overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-dark-border text-xs text-gray-500">
-                      <th className="px-4 py-2.5 text-left">Stock</th>
-                      <th className="px-4 py-2.5 text-left">Qty</th>
-                      <th className="px-4 py-2.5 text-left">Entry</th>
-                      <th className="px-4 py-2.5 text-left">Exit</th>
-                      <th className="px-4 py-2.5 text-left">P&L</th>
-                      <th className="px-4 py-2.5 text-left">vs Target</th>
-                      <th className="px-4 py-2.5 text-left">Closed</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sortedClosedTrades.map(t => (
-                      <ClosedTradeRow key={t.id} trade={t} />
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+            <div className="space-y-3">
+              {CLOSED_HISTORY_BLOCKS.map(({ key, label, sub, accent }) => {
+                const summary = marketClosedSummary[key];
+                // "Unclassified / Legacy" only renders at all when the
+                // backend actually reports such a trade for this market —
+                // never added as an empty fourth section.
+                if (!summary || summary.closed_trade_count === 0) return null;
+                const trades = closedHistoryByHorizon[key] ?? [];
+                return (
+                  <ClosedTradeHorizonBlock
+                    key={key}
+                    label={label}
+                    sub={sub}
+                    accent={accent}
+                    summary={summary}
+                    trades={trades}
+                    currency={marketCfg.currency}
+                    blockExpanded={collapsedHorizonBlocks[key] !== true}
+                    onToggleBlock={() => setCollapsedHorizonBlocks(prev => ({ ...prev, [key]: prev[key] !== true }))}
+                    olderShown={olderRowsShown[key] === true}
+                    onToggleOlder={() => setOlderRowsShown(prev => ({ ...prev, [key]: !prev[key] }))}
+                  />
+                );
+              })}
             </div>
           )}
         </div>

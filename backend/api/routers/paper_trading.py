@@ -16,6 +16,69 @@ _CASH_COL = {"IN": "cash", "US": "cash_usd"}
 _STARTING = {"IN": STARTING_CASH_IN, "US": STARTING_CASH_US}
 _SYMBOL = {"IN": "₹", "US": "$"}
 
+# The three horizons a paper trade can be immutably tagged with at creation
+# (see /buy's INSERT — `horizon` is never UPDATEd anywhere after that single
+# INSERT, so it always reflects the recommendation horizon recorded when the
+# trade was opened, never today's live horizon/signal/price). Any closed
+# trade whose stored horizon isn't one of these three (e.g. a pre-existing
+# legacy row with a NULL or otherwise-shaped value) is reported separately
+# under "unclassified" rather than guessed into one of the three buckets.
+_CLOSED_HORIZONS = ("short", "medium", "long")
+
+
+def _summarize_closed_bucket(trades: list[dict]) -> dict:
+    """
+    Target Hit Rate is defined as:
+        trades closed because their defined target was hit
+        / trades with a conclusive target-or-stop-loss outcome
+    — never against total closed trades or P&L sign. `exit_reason` (set only
+    by POST /sell, either explicitly by the client on an auto-close trigger
+    or a manual close) is the sole authoritative outcome field:
+    "TARGET_HIT"/"STOP_LOSS" are conclusive; "MANUAL", None (legacy trades
+    closed before this column existed, or a manual close that recorded no
+    reason), or any other value are non-conclusive and excluded from the
+    hit-rate denominator — but still counted in P&L/average-return below,
+    since those are realized-outcome metrics, not target-accuracy metrics.
+    """
+    count = len(trades)
+    target_hit = sum(1 for t in trades if t["exit_reason"] == "TARGET_HIT")
+    stop_loss = sum(1 for t in trades if t["exit_reason"] == "STOP_LOSS")
+    conclusive = target_hit + stop_loss
+    other = count - conclusive
+
+    net_realized_pnl = round(sum(t["realized_pnl"] for t in trades), 2)
+
+    returns = [
+        (t["exit_price"] - t["entry_price"]) / t["entry_price"] * 100
+        for t in trades
+        if t["entry_price"] and t["entry_price"] > 0 and t["exit_price"] is not None
+    ]
+    avg_realized_return_pct = round(sum(returns) / len(returns), 2) if returns else None
+
+    return {
+        "closed_trade_count": count,
+        "target_hit_count": target_hit,
+        "stop_loss_count": stop_loss,
+        "conclusive_count": conclusive,
+        "other_count": other,
+        "target_hit_rate_pct": round(target_hit / conclusive * 100, 1) if conclusive > 0 else None,
+        "net_realized_pnl": net_realized_pnl,
+        "avg_realized_return_pct": avg_realized_return_pct,
+    }
+
+
+def _closed_trade_summary_for_market(closed_trades_for_market: list[dict]) -> dict:
+    buckets: dict[str, list[dict]] = {h: [] for h in _CLOSED_HORIZONS}
+    unclassified: list[dict] = []
+    for t in closed_trades_for_market:
+        bucket = buckets.get(t["horizon"])
+        (bucket if bucket is not None else unclassified).append(t)
+
+    summary = {h: _summarize_closed_bucket(buckets[h]) for h in _CLOSED_HORIZONS}
+    if unclassified:
+        summary["unclassified"] = _summarize_closed_bucket(unclassified)
+    return summary
+
 
 def _conn():
     import psycopg
@@ -142,6 +205,17 @@ def get_portfolio(user_id: str = Depends(get_current_user_id)):
                 total_realized_in += realized
             closed_trades.append(trade)
 
+    # Market-scoped, per-horizon closed-trade summary — computed once here,
+    # server-side, from the same `closed_trades` list already built above
+    # (no second query). IN and US are summarized independently and never
+    # combined, matching every other paper-trading metric's existing
+    # per-ledger scoping (see _CASH_COL/STARTING). The frontend renders this
+    # verbatim; it must not recompute these figures from the trade rows.
+    closed_trade_summary = {
+        "IN": _closed_trade_summary_for_market([t for t in closed_trades if t["market"] == "IN"]),
+        "US": _closed_trade_summary_for_market([t for t in closed_trades if t["market"] == "US"]),
+    }
+
     return {
         "user_id": user_id,
         "cash": round(portfolio["cash"], 2),
@@ -152,6 +226,7 @@ def get_portfolio(user_id: str = Depends(get_current_user_id)):
         "closed_trades": closed_trades,
         "total_realized_pnl": round(total_realized_in, 2),
         "total_realized_pnl_usd": round(total_realized_us, 2),
+        "closed_trade_summary": closed_trade_summary,
         "email_notifications_enabled": portfolio["email_notifications_enabled"],
     }
 

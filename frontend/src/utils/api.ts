@@ -296,6 +296,32 @@ export interface PaperTrade {
   exit_reason: ExitReason;
 }
 
+// Server-computed (never recomputed client-side) per-horizon closed-trade
+// metrics — see backend/api/routers/paper_trading.py's
+// _summarize_closed_bucket for the exact Target Hit Rate definition
+// (conclusive TARGET_HIT/STOP_LOSS outcomes only, never total closed trades
+// or P&L sign).
+export interface ClosedTradeHorizonSummary {
+  closed_trade_count: number;
+  target_hit_count: number;
+  stop_loss_count: number;
+  conclusive_count: number;
+  other_count: number;
+  target_hit_rate_pct: number | null;
+  net_realized_pnl: number;
+  avg_realized_return_pct: number | null;
+}
+
+export interface ClosedTradeSummaryByMarket {
+  short: ClosedTradeHorizonSummary;
+  medium: ClosedTradeHorizonSummary;
+  long: ClosedTradeHorizonSummary;
+  // Present only when at least one closed trade in this market has a
+  // stored horizon outside short/medium/long (e.g. a legacy row) — absent
+  // entirely, not a zero-count bucket, when no such trade exists.
+  unclassified?: ClosedTradeHorizonSummary;
+}
+
 export interface PaperPortfolio {
   user_id: string;
   cash: number;
@@ -306,6 +332,7 @@ export interface PaperPortfolio {
   closed_trades: PaperTrade[];
   total_realized_pnl: number;
   total_realized_pnl_usd: number;
+  closed_trade_summary: { IN: ClosedTradeSummaryByMarket; US: ClosedTradeSummaryByMarket };
   email_notifications_enabled: boolean;
 }
 
