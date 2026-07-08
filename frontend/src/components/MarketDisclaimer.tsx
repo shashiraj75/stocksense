@@ -34,18 +34,44 @@ interface Props {
   market: Market;
 }
 
+// Versioned, app-specific acknowledgement keys (stocksense_disclaimer_ack_IN_v1 /
+// stocksense_disclaimer_ack_US_v1). Bump the version to re-show the disclaimer
+// to every user after a material wording change. Acknowledgement is per-market:
+// accepting one market never acknowledges the other.
+const ackKey = (market: Market) => `stocksense_disclaimer_ack_${market}_v1`;
+
+// localStorage can be unavailable or throw (private browsing, storage disabled,
+// quota). Reads fail toward showing the disclaimer — never toward hiding it.
+function hasAcknowledged(market: Market): boolean {
+  try {
+    return typeof window !== "undefined" && window.localStorage.getItem(ackKey(market)) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function storeAcknowledgement(market: Market): void {
+  try {
+    window.localStorage.setItem(ackKey(market), "1");
+  } catch {
+    // Storage unavailable: the user still dismissed this render; the
+    // disclaimer will simply reappear on the next visit.
+  }
+}
+
 export function MarketDisclaimer({ market }: Props) {
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
-    const key = `disclaimer_ack_${market}`;
-    if (!sessionStorage.getItem(key)) {
+    if (!hasAcknowledged(market)) {
       setVisible(true);
+    } else {
+      setVisible(false);
     }
   }, [market]);
 
   const acknowledge = () => {
-    sessionStorage.setItem(`disclaimer_ack_${market}`, "1");
+    storeAcknowledgement(market);
     setVisible(false);
   };
 
