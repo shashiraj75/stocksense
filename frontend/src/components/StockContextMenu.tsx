@@ -1,5 +1,6 @@
 "use client";
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, cloneElement } from "react";
+import { createPortal } from "react-dom";
 import { TrendingUp, BookmarkPlus, Check, LogIn } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { api } from "@/utils/api";
@@ -8,11 +9,15 @@ import { useAuth } from "@/lib/AuthContext";
 interface ContextMenuProps {
   symbol: string;
   market: string;
-  children: React.ReactNode;
-  className?: string;
+  // Exactly one element (card link, heatmap button, or table row). The
+  // right-click handler is attached to it directly via cloneElement — no
+  // wrapper node is rendered around it. The previous wrapper <div> sat
+  // between <tbody> and <tr> on the Screener page, invalid HTML that
+  // React 19 flags as a hydration-error risk.
+  children: React.ReactElement<{ onContextMenu?: React.MouseEventHandler }>;
 }
 
-export function StockContextMenu({ symbol, market, children, className }: ContextMenuProps) {
+export function StockContextMenu({ symbol, market, children }: ContextMenuProps) {
   const { user } = useAuth();
   const userId = user?.id ?? "";
   const [pos, setPos]         = useState<{ x: number; y: number } | null>(null);
@@ -78,13 +83,16 @@ export function StockContextMenu({ symbol, market, children, className }: Contex
 
   return (
     <>
-      {/* Wrapper — passes right-click down, keeps long-press friendly */}
-      <div className={className} onContextMenu={open}>
-        {children}
-      </div>
+      {/* Right-click handler goes straight onto the child element (a <tr>,
+          card link, or heatmap button) — no wrapper node, so table markup
+          stays valid: <tbody> contains only <tr>. */}
+      {cloneElement(children, { onContextMenu: open })}
 
-      {/* Floating context menu — rendered in place (not portal) but fixed-positioned */}
-      {pos && (
+      {/* Floating context menu — portaled to <body> so it never renders
+          inside a <tbody> (or any overflow-clipped ancestor); it only
+          mounts after a user interaction, so document is always available
+          and SSR/hydration never sees it. Same fixed positioning as before. */}
+      {pos && createPortal(
         <div
           ref={menuRef}
           style={{ position: "fixed", top: pos.y, left: pos.x, zIndex: 9999 }}
@@ -132,7 +140,8 @@ export function StockContextMenu({ symbol, market, children, className }: Contex
               <span className="text-white">Sign in to save stocks</span>
             </button>
           )}
-        </div>
+        </div>,
+        document.body
       )}
     </>
   );

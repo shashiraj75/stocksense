@@ -116,7 +116,7 @@ export default function ScreenerPage() {
                   </tr>
                 )
               : data?.movers.map((stock) => (
-                  <StockContextMenu key={stock.symbol} symbol={stock.symbol} market={market} className="contents">
+                  <StockContextMenu key={stock.symbol} symbol={stock.symbol} market={market}>
                     <tr className="border-b border-dark-border hover:bg-dark-border/30 transition-colors">
                       <td className="px-3 sm:px-6 py-3 sm:py-4 font-mono font-bold text-white">{stock.symbol}</td>
                       <td className="px-3 sm:px-6 py-3 sm:py-4 text-right font-mono">
