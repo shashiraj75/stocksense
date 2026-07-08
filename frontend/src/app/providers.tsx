@@ -67,21 +67,49 @@ export function Providers({ children }: { children: React.ReactNode }) {
     },
   }));
 
-  // Ping on load + every 9 min so Render never goes cold (spins down after 15 min idle).
-  // After ping succeeds, silently kick off a prediction for RELIANCE so the backend's
-  // cache is warm and the first real user request gets a fast response.
+  // Sprint 011 Phase 3 — bounded prediction warm-up, visibility-gated.
+  // Keeps the backend's prediction cache warm for the two most common
+  // stocks so the first real request each ~15-min cache window gets a fast
+  // response, via the lightweight /signal route (Sprint 011 Phase 1): it
+  // reads and warms the SAME symbol:market:horizon cache key and compute
+  // path as the full route, but returns five fields instead of the full
+  // multi-engine payload this effect was discarding anyway.
+  //
+  // The old client-side /health keep-alive is gone: its "Render spins down
+  // after 15 min idle" rationale predates the Railway migration (Railway
+  // doesn't sleep), and .github/workflows/keep_alive.yml already pings
+  // /health every 10 minutes as the health monitor.
+  //
+  // Hidden tabs never ping: the interval only runs while the tab is
+  // visible, is torn down when it hides, and a tab becoming visible again
+  // warms once and restarts the interval (the `id` guard prevents interval
+  // pile-up if visibilitychange ever fires visible twice in a row).
   useEffect(() => {
-    const ping = () =>
-      api.get("/health", { timeout: 30_000 })
-        .then(() => {
-          // Fire-and-forget: warm up the most common Indian + US stock
-          api.get("/api/predictions/RELIANCE?market=IN&horizon=medium", { timeout: 5_000 }).catch(() => {});
-          api.get("/api/predictions/AAPL?market=US&horizon=medium",     { timeout: 5_000 }).catch(() => {});
-        })
-        .catch(() => {});
-    ping();
-    const id = setInterval(ping, 9 * 60_000);
-    return () => clearInterval(id);
+    const warm = () => {
+      if (document.visibilityState !== "visible") return;
+      // Fire-and-forget: warm up the most common Indian + US stock
+      api.get("/api/predictions/RELIANCE/signal?market=IN&horizon=medium", { timeout: 5_000 }).catch(() => {});
+      api.get("/api/predictions/AAPL/signal?market=US&horizon=medium",     { timeout: 5_000 }).catch(() => {});
+    };
+    let id: ReturnType<typeof setInterval> | null = null;
+    const start = () => {
+      if (id !== null) return;
+      warm();
+      id = setInterval(warm, 9 * 60_000);
+    };
+    const stop = () => {
+      if (id !== null) { clearInterval(id); id = null; }
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") start();
+      else stop();
+    };
+    onVisibility();  // covers both the visible and hidden initial states
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, []);
 
   return (
