@@ -1188,12 +1188,15 @@ def generate_picks(market: str = "IN", job_id: str | None = None) -> dict:
                 ).start()
             except Exception as exc:
                 log.info(f"[weight_adapter] Could not start: {exc}")
-            if _post_success_market == "IN":
-                try:
-                    from services.telegram_bot import send_picks_to_telegram
-                    send_picks_to_telegram(payload.get("picks", {}))
-                except Exception as exc:
-                    log.warning(f"[telegram] Error: {exc}")
+            # Market-aware since the US-notification fix: both IN and US
+            # successes notify, each formatted for its own market. Still
+            # non-critical — any exception is swallowed here so Telegram can
+            # never affect the already-written job terminal status.
+            try:
+                from services.telegram_bot import send_picks_to_telegram
+                send_picks_to_telegram(payload.get("picks", {}), market=_post_success_market)
+            except Exception as exc:
+                log.warning(f"[telegram] Error: {exc}")
 
             # Epic 007 Phase 3A — Intelligence Engine V1 shadow slice.
             # Off by default (INTELLIGENCE_ENGINE_SHADOW_ENABLED unset/"0"):

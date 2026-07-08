@@ -1,21 +1,40 @@
 """
-Telegram Bot — sends daily stock picks after the IN Daily Picks run (2 AM IST).
-Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID as environment variables on Railway.
+Telegram Bot — sends daily stock picks after each market's Daily Picks run
+(IN and US). Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID as environment
+variables on Railway.
 """
 import os
 import requests
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 
+# Per-market presentation only — wording and disclaimer are identical for
+# both markets; only the flag and currency symbol differ. Never mix: an IN
+# message must never show $ and a US message must never show ₹.
+_MARKET_FORMATS = {
+    "IN": {"flag": "🇮🇳", "currency": "₹"},
+    "US": {"flag": "🇺🇸", "currency": "$"},
+}
 
-def send_picks_to_telegram(picks: dict) -> bool:
+
+def send_picks_to_telegram(picks: dict, market: str = "IN") -> bool:
     token   = os.getenv("TELEGRAM_BOT_TOKEN", "")
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
     if not token or not chat_id:
         print("[telegram] TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set — skipping.")
         return False
 
-    lines = ["🇮🇳 *StockSense360 Daily Picks* — Top BUY Calls\n"]
+    # Normalize to IN/US. An unrecognized market is skipped rather than
+    # guessed: stamping the wrong currency on picks would violate the
+    # market-separation rule, and this notification is non-critical.
+    market_key = (market or "").strip().upper()
+    fmt = _MARKET_FORMATS.get(market_key)
+    if fmt is None:
+        print(f"[telegram] Unknown market {market!r} — skipping.")
+        return False
+    flag, cur = fmt["flag"], fmt["currency"]
+
+    lines = [f"{flag} *StockSense360 Daily Picks* — Top BUY Calls\n"]
 
     labels = {"short": "⚡ Short Term (1–10 days)", "medium": "📈 Medium Term (1–3 months)", "long": "🏦 Long Term (6M–3Y)"}
     for horizon, label in labels.items():
@@ -29,7 +48,7 @@ def send_picks_to_telegram(picks: dict) -> bool:
                 pct = ((s["target"] - s["price"]) / s["price"]) * 100
                 upside = f" ↑{pct:.1f}%"
             lines.append(
-                f"{i}. *{s['symbol']}* — ₹{s.get('price', '?')} → ₹{s.get('target', '?')}{upside} "
+                f"{i}. *{s['symbol']}* — {cur}{s.get('price', '?')} → {cur}{s.get('target', '?')}{upside} "
                 f"({s.get('confidence', '?')}% confidence)"
             )
 
