@@ -1,0 +1,46 @@
+name: Daily Stock Picks — US Pre-Open
+
+on:
+  schedule:
+    # US: 12:30 UTC = 8:30 AM ET during EDT / 7:30 AM ET during EST
+    # Runs before the 9:30 AM ET US market open
+    - cron: "30 12 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  generate-picks-us:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Railway backend is healthy
+        run: |
+          echo "Checking Railway backend at $(date -u) UTC..."
+          HEALTHY=0
+
+          for i in $(seq 1 5); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
+              https://stocksense-production-7e0d.up.railway.app/health)
+            echo "Attempt $i: HTTP $STATUS"
+
+            if [ "$STATUS" = "200" ]; then
+              echo "Server is ready!"
+              HEALTHY=1
+              break
+            fi
+
+            sleep 10
+          done
+
+          if [ "$HEALTHY" != "1" ]; then
+            echo "Railway backend is not healthy after 5 attempts."
+            exit 1
+          fi
+
+      - name: Trigger US pick generation
+        run: |
+          echo "Triggering US daily picks generation at $(date -u) UTC..."
+          curl -sS --fail-with-body --max-time 30 \
+            -X POST \
+            -H "x-secret: ${{ secrets.PICKS_SECRET }}" \
+            "https://stocksense-production-7e0d.up.railway.app/api/picks/generate?market=US"
+          echo ""
+          echo "US generation started or already fresh. Monitor /api/picks/status?market=US for progress."

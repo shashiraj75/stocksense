@@ -1,0 +1,46 @@
+name: Daily Stock Picks — India 2:00 AM IST
+
+on:
+  schedule:
+    # India: 20:30 UTC = 2:00 AM IST next day
+    # Sun–Thu UTC = Mon–Fri IST market days
+    - cron: "30 20 * * 0-4"
+  workflow_dispatch:
+
+jobs:
+  generate-picks-in:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Railway backend is healthy
+        run: |
+          echo "Checking Railway backend at $(date -u) UTC..."
+          HEALTHY=0
+
+          for i in $(seq 1 5); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
+              https://stocksense-production-7e0d.up.railway.app/health)
+            echo "Attempt $i: HTTP $STATUS"
+
+            if [ "$STATUS" = "200" ]; then
+              echo "Server is ready!"
+              HEALTHY=1
+              break
+            fi
+
+            sleep 10
+          done
+
+          if [ "$HEALTHY" != "1" ]; then
+            echo "Railway backend is not healthy after 5 attempts."
+            exit 1
+          fi
+
+      - name: Trigger India pick generation
+        run: |
+          echo "Triggering IN daily picks generation at $(date -u) UTC..."
+          curl -sS --fail-with-body --max-time 30 \
+            -X POST \
+            -H "x-secret: ${{ secrets.PICKS_SECRET }}" \
+            "https://stocksense-production-7e0d.up.railway.app/api/picks/generate?market=IN"
+          echo ""
+          echo "IN generation started or already fresh. Monitor /api/picks/status?market=IN for progress."
