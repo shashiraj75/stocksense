@@ -166,25 +166,28 @@ export default function StockPage() {
 
 
 
-  // Prefetch the other two horizons in parallel as soon as the page loads,
-  // instead of fetching one-at-a-time as the user clicks tabs — each
-  // prediction call takes 5-15s, so sequential per-click fetching made
-  // switching horizons feel stuck/stale (placeholderData kept showing the
-  // previous tab's numbers while the new one was still in flight).
+  // Sprint 011 (spec §23): the other two horizons' full Prediction Engine
+  // outputs used to be prefetched unconditionally on mount — 3x the
+  // multi-engine compute per page visit (each call is 5-15s server-side)
+  // even for a user who never leaves the default horizon; the Stock Detail
+  // audit's single largest inefficiency finding. Prefetch is now gated on
+  // intent instead: hovering or keyboard-focusing a tab starts that
+  // horizon's silent prefetch, so the fetch is already in flight when the
+  // click lands (the click's own query joins it — same queryKey), while a
+  // horizon that's never approached is never computed. Touch devices (no
+  // hover) simply fetch on tap, with the existing visible computing
+  // indicator — the same path a cache-expired horizon switch already takes.
   const queryClient = useQueryClient();
-  useEffect(() => {
-    if (isCrypto) return;
-    const allHorizons: Horizon[] = ["short", "medium", "long"];
-    for (const h of allHorizons) {
-      if (h === horizon) continue;
-      queryClient.prefetchQuery({
-        queryKey: ["prediction", symbol, market, h],
-        queryFn: () => fetchPrediction(symbol, market, h),  // no onComputing — prefetch is silent
-        staleTime: 14 * 60_000,
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol, market, isCrypto]);
+  const prefetchTabPrediction = (key: Tab) => {
+    if (isCrypto || key === "backtest") return;  // crypto was never prefetched; backtest disables the prediction query
+    const h: Horizon = (key === "history" || key === "fundamentals") ? "medium" : (key as Horizon);
+    if (h === horizon) return;  // active horizon is already covered by its own query
+    queryClient.prefetchQuery({
+      queryKey: ["prediction", symbol, market, h],
+      queryFn: () => fetchPrediction(symbol, market, h),  // no onComputing — prefetch is silent
+      staleTime: 14 * 60_000,
+    });
+  };
 
   const { data: news } = useQuery({
     queryKey: ["news", symbol, isCrypto ? "US" : market],
@@ -703,6 +706,8 @@ export default function StockPage() {
               <div className="flex gap-2 flex-wrap mt-4 pt-4 border-t border-white/[0.06]">
                 {HORIZON_TABS.filter(({ key }) => key !== "fundamentals" || !isCrypto).map(({ key, label }) => (
                   <button key={key} onClick={() => setTab(key)}
+                    onMouseEnter={() => prefetchTabPrediction(key)}
+                    onFocus={() => prefetchTabPrediction(key)}
                     className={clsx(
                       "flex items-center gap-1.5 px-3.5 py-1.5 text-xs sm:text-sm rounded-lg font-medium transition-all",
                       tab === key
