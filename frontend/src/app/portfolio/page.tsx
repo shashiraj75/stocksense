@@ -1,6 +1,6 @@
 "use client";
-import { useState, useEffect } from "react";
-import { fetchQuote, fetchPrediction, Market, api } from "@/utils/api";
+import { useState, useEffect, useMemo } from "react";
+import { fetchQuote, fetchSignalSummary, Market, api } from "@/utils/api";
 import { useStaggeredQueries } from "@/hooks/useStaggeredQueries";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { SignalBadge } from "@/components/SignalBadge";
@@ -182,7 +182,9 @@ function HoldingsTable({
     }
   };
 
-  const sortedRows = sortKey ? [...rows].sort((a, b) => {
+  // Sprint 011 (§20.1 memoization): re-sort only when the rows or the sort
+  // state change, not on every parent render (audit finding 3(b)).
+  const sortedRows = useMemo(() => sortKey ? [...rows].sort((a, b) => {
     const av = SORT_ACCESSORS[sortKey](a);
     const bv = SORT_ACCESSORS[sortKey](b);
     // Nulls (still loading / no data) always sink to the bottom regardless
@@ -193,7 +195,7 @@ function HoldingsTable({
     if (bv == null) return -1;
     const cmp = typeof av === "string" ? av.localeCompare(bv as string) : av - (bv as number);
     return sortDir === "asc" ? cmp : -cmp;
-  }) : rows;
+  }) : rows, [rows, sortKey, sortDir]);
 
   return (
     <div className="bg-dark-card border border-dark-border rounded-2xl overflow-hidden">
@@ -295,10 +297,15 @@ export default function PortfolioPage() {
     8
   );
 
+  // Sprint 011 (§20.1): the badge column only needs {signal, confidence},
+  // so fetch the signal-only summary instead of the full multi-engine
+  // prediction payload per holding. Same backend cache, same values, same
+  // 202-then-poll contract — just a few-field response per row instead of
+  // the whole engine dump.
   const signalQueries = useStaggeredQueries(
     holdings.map(h => ({
-      queryKey: ["prediction", h.symbol, h.market, "medium"],
-      queryFn: () => fetchPrediction(h.symbol, h.market, "medium"),
+      queryKey: ["signal", h.symbol, h.market, "medium"],
+      queryFn: () => fetchSignalSummary(h.symbol, h.market, "medium"),
       staleTime: 15 * 60_000,   // predictions cache for 15 min
       retry: 1,
     })),
@@ -352,26 +359,51 @@ export default function PortfolioPage() {
 
   const currency = (m: Market) => m === "US" ? "$" : "₹";
 
-  // Compute totals per currency — never mix ₹ and $ into one number
-  let totalInvestedIN = 0, totalCurrentIN = 0;
-  let totalInvestedUS = 0, totalCurrentUS = 0;
+  // Sprint 011 (§20.1 memoization): the per-row P&L/allocation math used to
+  // re-run on every render — including every keystroke in the Add Holding
+  // form, whose inputs are sibling useState in this same component (audit
+  // finding 3(b)). The query-result arrays get a new identity every render,
+  // so the memo keys on a compact content signature of the data the rows
+  // actually consume instead of on the arrays themselves.
+  const quoteSig = quoteQueries.map(q => `${q.isLoading ? "L" : ""}${q.data?.price ?? ""}`).join("|");
+  const signalSig = signalQueries.map(q => `${q.isLoading ? "L" : ""}${q.data?.signal ?? ""}:${q.data?.confidence ?? ""}`).join("|");
 
-  const rows = holdings.map((h, i) => {
-    const q = quoteQueries[i]?.data;
-    const curPrice = q?.price ?? null;
-    const invested = h.qty * h.avgPrice;
-    const current = curPrice ? h.qty * curPrice : null;
-    const plAmt = current !== null ? current - invested : null;
-    const plPct = plAmt !== null ? (plAmt / invested) * 100 : null;
-    if (current !== null) {
-      if (h.market === "IN") { totalInvestedIN += invested; totalCurrentIN += current; }
-      else { totalInvestedUS += invested; totalCurrentUS += current; }
-    }
-    const sig = signalQueries[i]?.data;
-    const signal = sig?.signal ?? null;
-    const confidence = sig?.confidence ?? undefined;
-    return { ...h, curPrice, invested, current, plAmt, plPct, loading: quoteQueries[i]?.isLoading, signal, confidence, sigLoading: signalQueries[i]?.isLoading };
-  });
+  const { rows, totalInvestedIN, totalCurrentIN, totalInvestedUS, totalCurrentUS } = useMemo(() => {
+    // Compute totals per currency — never mix ₹ and $ into one number
+    let totalInvestedIN = 0, totalCurrentIN = 0;
+    let totalInvestedUS = 0, totalCurrentUS = 0;
+
+    const rows = holdings.map((h, i) => {
+      const q = quoteQueries[i]?.data;
+      const curPrice = q?.price ?? null;
+      const invested = h.qty * h.avgPrice;
+      const current = curPrice ? h.qty * curPrice : null;
+      const plAmt = current !== null ? current - invested : null;
+      const plPct = plAmt !== null ? (plAmt / invested) * 100 : null;
+      if (current !== null) {
+        if (h.market === "IN") { totalInvestedIN += invested; totalCurrentIN += current; }
+        else { totalInvestedUS += invested; totalCurrentUS += current; }
+      }
+      const sig = signalQueries[i]?.data;
+      const signal = sig?.signal ?? null;
+      const confidence = sig?.confidence ?? undefined;
+      return { ...h, curPrice, invested, current, plAmt, plPct, loading: quoteQueries[i]?.isLoading, signal, confidence, sigLoading: signalQueries[i]?.isLoading };
+    });
+    return { rows, totalInvestedIN, totalCurrentIN, totalInvestedUS, totalCurrentUS };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [holdings, quoteSig, signalSig]);
+
+  // Sprint 011 (§20.1 memoization): the per-market row splits and the
+  // allocation-chart slices are derived views of the memoized rows — keep
+  // their identities stable too so they don't churn on unrelated renders.
+  const inRows = useMemo(() => rows.filter(r => r.market === "IN"), [rows]);
+  const usRows = useMemo(() => rows.filter(r => r.market === "US"), [rows]);
+  const chartSlices = useMemo(() =>
+    rows.filter(r => r.market === market).map(r => ({
+      symbol: r.symbol,
+      value: r.current ?? 0,
+      signal: r.signal,
+    })), [rows, market]);
 
   // Gated on the selected market toggle too, not just whether holdings exist —
   // otherwise both currencies' summary cards/tables/chart show simultaneously
@@ -532,13 +564,7 @@ export default function PortfolioPage() {
           chart would make the percentages meaningless (₹ and $ amounts
           aren't comparable without FX conversion). */}
       {holdings.filter(h => h.market === market).length > 1 && (
-        <PortfolioAllocationChart
-          slices={rows.filter(r => r.market === market).map(r => ({
-            symbol: r.symbol,
-            value: r.current ?? 0,
-            signal: r.signal,
-          }))}
-        />
+        <PortfolioAllocationChart slices={chartSlices} />
       )}
 
       {/* Holdings tables — split by market so ₹ and $ rows are never mixed */}
@@ -552,7 +578,7 @@ export default function PortfolioPage() {
             <div>
               <p className="text-xs text-gray-500 mb-2 flex items-center gap-1">🇮🇳 Indian Holdings (₹)</p>
               <HoldingsTable
-                rows={rows.filter(r => r.market === "IN")}
+                rows={inRows}
                 currency="₹"
                 onRemove={remove}
                 onEdit={edit}
@@ -563,7 +589,7 @@ export default function PortfolioPage() {
             <div>
               <p className="text-xs text-gray-500 mb-2 flex items-center gap-1">🇺🇸 US Holdings ($)</p>
               <HoldingsTable
-                rows={rows.filter(r => r.market === "US")}
+                rows={usRows}
                 currency="$"
                 onRemove={remove}
                 onEdit={edit}

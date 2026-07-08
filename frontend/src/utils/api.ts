@@ -176,22 +176,21 @@ export const fetchOHLCV = (symbol: string, market: Market, period = "1y", interv
     .get<{ data: OHLCVBar[] }>(`/api/stocks/ohlcv/${symbol}`, { params: { market, period, interval } })
     .then((r) => r.data);
 
-export const fetchPrediction = async (
-  symbol: string,
-  market: Market,
-  horizon: Horizon,
+// Shared 202-poll loop for the prediction-backed endpoints (/api/predictions/
+// {symbol} and its Sprint 011 signal-only variant) — one polling contract,
+// not two copies that could drift.
+const pollPredictionEndpoint = async <T>(
+  url: string,
+  params: { market: Market; horizon: Horizon },
   onComputing?: () => void,
-): Promise<Prediction> => {
+): Promise<T> => {
   // Poll up to 180 s (36 × 5 s) for background computation to complete
   for (let attempt = 0; attempt < 36; attempt++) {
-    const res = await api.get<Prediction | { status: string; retry_after?: number }>(
-      `/api/predictions/${symbol}`,
-      {
-        params: { market, horizon },
-        validateStatus: (s) => s === 200 || s === 202,
-      },
-    );
-    if (res.status === 200) return res.data as Prediction;
+    const res = await api.get<T | { status: string; retry_after?: number }>(url, {
+      params,
+      validateStatus: (s) => s === 200 || s === 202,
+    });
+    if (res.status === 200) return res.data as T;
     // Check for error field returned in a 202 response body
     if ((res.data as any)?.error) throw new Error((res.data as any).error);
     // 202 = computing in background — notify caller and wait
@@ -208,6 +207,34 @@ export const fetchPrediction = async (
   }
   throw new Error("Prediction timed out after 120 s");
 };
+
+export const fetchPrediction = (
+  symbol: string,
+  market: Market,
+  horizon: Horizon,
+  onComputing?: () => void,
+): Promise<Prediction> =>
+  pollPredictionEndpoint<Prediction>(`/api/predictions/${symbol}`, { market, horizon }, onComputing);
+
+// Sprint 011 (§20.1) — badge-only prediction summary. Served from the same
+// backend prediction cache as fetchPrediction (same signal/confidence values,
+// same 202-then-poll contract), but the payload is just these five fields, so
+// pages that only render a SignalBadge (Portfolio's per-holding column) don't
+// pull the full multi-engine payload per row.
+export interface SignalSummary {
+  symbol: string;
+  market: Market;
+  horizon: Horizon;
+  signal: string | null;
+  confidence: number | null;
+}
+
+export const fetchSignalSummary = (
+  symbol: string,
+  market: Market,
+  horizon: Horizon,
+): Promise<SignalSummary> =>
+  pollPredictionEndpoint<SignalSummary>(`/api/predictions/${symbol}/signal`, { market, horizon });
 
 export const fetchNews = (symbol: string, market: Market) =>
   api

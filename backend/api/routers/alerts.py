@@ -23,7 +23,17 @@ def _conn():
     return psycopg.connect(os.environ["DATABASE_URL"], autocommit=True, prepare_threshold=None)
 
 
+# Sprint 011 — same one-time-per-process DDL guard as portfolio.py (the
+# Portfolio audit's finding 3(e); this router had the identical per-request
+# CREATE TABLE / CREATE INDEX / ALTER TABLE pattern). Left False on failure
+# so the next request retries.
+_schema_ready = False
+
+
 def _ensure_table():
+    global _schema_ready
+    if _schema_ready:
+        return
     with _conn() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS price_alerts (
@@ -49,6 +59,7 @@ def _ensure_table():
         # has BYPASSRLS by default, so this backend's own access is
         # unaffected. Idempotent.
         conn.execute("ALTER TABLE price_alerts ENABLE ROW LEVEL SECURITY")
+    _schema_ready = True
 
 
 class AlertCreate(BaseModel):

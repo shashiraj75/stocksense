@@ -81,6 +81,40 @@ def _to_python(obj):
     return obj
 
 
+def _fresh_cached_prediction(key: str) -> dict | None:
+    """The single cache-freshness check shared by /{symbol} and
+    /{symbol}/signal — both routes must read `_pred_cache` identically so a
+    warm hit can never be fresh on one route and stale on the other."""
+    cached = _pred_cache.get(key)
+    if cached and (time.time() - cached[0]) < _PRED_TTL:
+        return cached[1]
+    return None
+
+
+def _start_background_compute(sym: str, market: str, horizon: str, key: str) -> None:
+    """Register `key` as computing and spawn the daemon-thread compute.
+    Shared by /{symbol} and /{symbol}/signal so there is exactly one way a
+    prediction gets computed, regardless of which route triggered it."""
+    _computing.add(key)
+    t = threading.Thread(target=_bg_thread, args=(sym, market, horizon, key), daemon=True)
+    t.start()
+
+
+def _signal_summary(result: dict, sym: str, market: str, horizon: str) -> dict:
+    """Sprint 011 (§20.1) — minimal payload for consumers that only need the
+    signal badge (Portfolio). Values are read from the SAME cached dict the
+    full route serves, never recomputed, so the two routes cannot disagree.
+    Error-cached entries carry no `signal`/`confidence` keys and surface as
+    nulls — the badge's existing "no signal" state."""
+    return {
+        "symbol": sym,
+        "market": market,
+        "horizon": horizon,
+        "signal": result.get("signal"),
+        "confidence": result.get("confidence"),
+    }
+
+
 def _bg_thread(sym: str, market: str, horizon: str, key: str) -> None:
     """
     Run prediction in a real OS thread with its own event loop.
@@ -156,6 +190,38 @@ async def debug_state(x_secret: str = Header(None)):
     }
 
 
+@router.get("/{symbol}/signal")
+async def get_signal_summary(
+    symbol: str,
+    market: Literal["US", "IN"] = Query("US"),
+    horizon: Literal["short", "medium", "long"] = Query("short"),
+):
+    """
+    Sprint 011 (§20.1) — additive, read-only signal-only endpoint. Returns
+    just {signal, confidence} (plus the identifying key dimensions) sourced
+    from the existing prediction cache, so consumers that only render a
+    signal badge (Portfolio's per-holding column) don't have to pull the
+    full multi-engine /{symbol} payload per holding.
+
+    Contract mirrors /{symbol} exactly: warm cache -> 200 with the same
+    signal/confidence values the full route would return; cold -> 202
+    {status: computing, retry_after} and the same daemon-thread compute is
+    started, writing to the same shared cache. /{symbol}'s own response
+    shape is untouched. CRYPTO is not supported here — it bypasses
+    _pred_cache entirely and has no badge-only consumer.
+    """
+    sym = symbol.upper()
+    key = f"{sym}:{market}:{horizon}"
+
+    result = _fresh_cached_prediction(key)
+    if result is not None:
+        return JSONResponse(content=_to_python(_signal_summary(result, sym, market, horizon)))
+
+    if key not in _computing:
+        _start_background_compute(sym, market, horizon, key)
+    return JSONResponse(status_code=202, content={"status": "computing", "retry_after": 5})
+
+
 @router.get("/{symbol}")
 async def get_prediction(
     symbol: str,
@@ -176,9 +242,8 @@ async def get_prediction(
     key = f"{sym}:{market}:{horizon}"
 
     # ── 1. Cache hit — return instantly, no compute needed ──────────────────
-    cached = _pred_cache.get(key)
-    if cached and (time.time() - cached[0]) < _PRED_TTL:
-        result = cached[1]
+    result = _fresh_cached_prediction(key)
+    if result is not None:
         # Recommendation Consolidation Intelligence (Epic 005, Sprint #008) —
         # the one, approved integration boundary (Sprint #007's decision):
         # an opt-in, read-only, additive composer invoked ONLY here, in the
@@ -214,7 +279,5 @@ async def get_prediction(
     # Using a real OS thread (not asyncio.create_task) because anyio cancels
     # coroutine tasks when the HTTP request scope exits, which would abort the
     # background prediction. A daemon thread lives independently of requests.
-    _computing.add(key)
-    t = threading.Thread(target=_bg_thread, args=(sym, market, horizon, key), daemon=True)
-    t.start()
+    _start_background_compute(sym, market, horizon, key)
     return JSONResponse(status_code=202, content={"status": "computing", "retry_after": 5})

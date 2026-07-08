@@ -25,7 +25,18 @@ def _conn():
     return psycopg.connect(os.environ["DATABASE_URL"], autocommit=True, prepare_threshold=None)
 
 
+# Sprint 011 — once the idempotent DDL below has succeeded once in this
+# process, every later _ensure_table() call is a no-op instead of three
+# DDL round-trips per request (Portfolio audit finding 3(e)). Left False on
+# failure so the next request retries, preserving the lazy-create behavior
+# when the DB only becomes reachable after startup.
+_schema_ready = False
+
+
 def _ensure_table():
+    global _schema_ready
+    if _schema_ready:
+        return
     with _conn() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS portfolio_holdings (
@@ -44,6 +55,7 @@ def _ensure_table():
         # the public REST API. Connects as `postgres`, which has BYPASSRLS
         # by default, so this backend's own access is unaffected. Idempotent.
         conn.execute("ALTER TABLE portfolio_holdings ENABLE ROW LEVEL SECURITY")
+    _schema_ready = True
 
 
 class HoldingCreate(BaseModel):
