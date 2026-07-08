@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
-import { useQueries } from "@tanstack/react-query";
 import { fetchQuote, Market, api } from "@/utils/api";
+import { useStaggeredQueries } from "@/hooks/useStaggeredQueries";
 import { Bell, BellRing, PlusCircle, Trash2, CheckCircle, Wifi } from "lucide-react";
 import clsx from "clsx";
 import { useAuth } from "@/lib/AuthContext";
@@ -46,14 +46,25 @@ export default function AlertsPage() {
       .catch(() => setAlerts(loadLocal()));
   }, [apiBase]);
 
-  const quoteQueries = useQueries({
-    queries: alerts.map(a => ({
+  // Sprint 011 Phase 4: staggered fan-out (same fix Portfolio uses — a
+  // large alert list fired every quote at once into the browser's
+  // per-origin connection cap) and a 30s poll instead of 5s — the backend
+  // quote cache is 60s, so 5s polling returned the identical cached price
+  // ~11 times out of 12. Worst-case on-page trigger detection moves from
+  // ~65s to ~90s after a real move; the backend email notifier
+  // (price_alert_notifier.py) is independent of this poll and unchanged.
+  // The small per-query jitter keeps interval refetches from re-aligning
+  // into one simultaneous burst (same pattern Paper Trading's position
+  // polling already uses).
+  const quoteQueries = useStaggeredQueries(
+    alerts.map((a, i) => ({
       queryKey: ["quote", a.symbol, a.market],
       queryFn: () => fetchQuote(a.symbol, a.market),
-      staleTime: 4_000,
-      refetchInterval: 5_000,
+      staleTime: 25_000,
+      refetchInterval: 30_000 + (i % 8) * 500,
     })),
-  });
+    8
+  );
 
   // Check if any alerts triggered
   const checkAlerts = useCallback(() => {

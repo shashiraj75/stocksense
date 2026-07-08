@@ -1,7 +1,8 @@
 "use client";
 import { useState, useCallback, useRef, useEffect } from "react";
-import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, Market, fetchQuote } from "@/utils/api";
+import { useStaggeredQueries } from "@/hooks/useStaggeredQueries";
 import { Trash2, TrendingUp, TrendingDown, Minus, Search, Star, Wifi } from "lucide-react";
 import Link from "next/link";
 import clsx from "clsx";
@@ -91,14 +92,20 @@ export default function WatchlistPage() {
 
   const items = data?.items ?? [];
 
-  const quoteQueries = useQueries({
-    queries: items.map(item => ({
+  // Sprint 011 Phase 4: staggered fan-out via the same hook Portfolio uses —
+  // a large watchlist previously fired one quote request per item
+  // simultaneously into the browser's per-origin connection cap, leaving
+  // most rows stuck loading. Same keys, fetcher, staleTime, and retry;
+  // only the concurrency (8 at a time) changes.
+  const quoteQueries = useStaggeredQueries(
+    items.map(item => ({
       queryKey: ["quote", item.symbol, item.market],
       queryFn: () => fetchQuote(item.symbol, item.market),
       staleTime: 60_000,      // refresh every 60s during market hours
       retry: 1,
     })),
-  });
+    8
+  );
 
   const add = useMutation({
     mutationFn: (item: WatchlistItem) => api.post(`/api/watchlist/${userId}`, item).then(r => r.data),
