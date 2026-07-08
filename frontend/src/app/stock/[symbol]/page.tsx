@@ -262,7 +262,12 @@ export default function StockPage() {
       });
       return res.data as { vote: number | null };
     },
-    enabled: !!user?.id && !!prediction,
+    // Sprint 011: also gated on SHOW_SIGNAL_FEEDBACK — this query's only
+    // consumer is the feedback UI that flag hides, so while the feature is
+    // off it was a dead request fired for every logged-in user on every
+    // symbol/market/horizon switch. Flipping the flag back on restores the
+    // fetch unchanged.
+    enabled: SHOW_SIGNAL_FEEDBACK && !!user?.id && !!prediction,
   });
 
   const voteMutation = useMutation({
