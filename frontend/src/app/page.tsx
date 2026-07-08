@@ -94,23 +94,31 @@ function SnapshotCard({
   );
 }
 
-function MoverRow({
-  title, mover, currency, locale, marketLabel,
-}: { title: string; mover: { symbol: string; price: number; change_pct: number } | undefined; currency: string; locale: string; marketLabel: string }) {
-  if (!mover) return null; // hide rather than show misleading/fabricated data
-  const positive = mover.change_pct >= 0;
+type Mover = { symbol: string; price: number; change_pct: number };
+
+function MoverList({
+  title, movers, currency, locale,
+}: { title: string; movers: Mover[]; currency: string; locale: string }) {
+  if (movers.length === 0) return null; // hide rather than show an empty/misleading column
   return (
-    <div className="flex items-center justify-between gap-2 rounded-lg bg-dark-card border border-dark-border px-3 py-3.5 shadow-sm shadow-black/20 transition-all duration-150 hover:border-brand-500/25 hover:-translate-y-0.5 hover:shadow-md hover:shadow-black/30">
-      <div>
-        <p className="text-[10px] text-gray-500 uppercase tracking-wide">{title}</p>
-        <p className="font-mono font-bold text-white text-sm">{mover.symbol} <span className="text-[10px] text-gray-500 font-normal">{marketLabel}</span></p>
-      </div>
-      <div className="text-right">
-        <p className="font-mono text-sm text-white tabular-nums">{fmtPrice(mover.price, currency, locale)}</p>
-        <p className={`text-[11px] font-semibold flex items-center justify-end gap-0.5 ${positive ? "text-bull" : "text-bear"}`}>
-          {positive ? <ArrowUpRight size={11} /> : <ArrowDownRight size={11} />}
-          {positive ? "+" : ""}{mover.change_pct.toFixed(2)}%
-        </p>
+    <div className="rounded-lg bg-dark-card border border-dark-border px-3 py-3 shadow-sm shadow-black/20 transition-all duration-150 hover:border-brand-500/25 hover:-translate-y-0.5 hover:shadow-md hover:shadow-black/30">
+      <p className="text-[10px] text-gray-500 uppercase tracking-wide mb-2">{title}</p>
+      <div className="space-y-1.5">
+        {movers.map(m => {
+          const positive = m.change_pct >= 0;
+          return (
+            <div key={m.symbol} className="flex items-center justify-between gap-2">
+              <span className="font-mono font-bold text-white text-sm">{m.symbol}</span>
+              <div className="text-right">
+                <p className="font-mono text-sm text-white tabular-nums">{fmtPrice(m.price, currency, locale)}</p>
+                <p className={`text-[11px] font-semibold flex items-center justify-end gap-0.5 ${positive ? "text-bull" : "text-bear"}`}>
+                  {positive ? <ArrowUpRight size={11} /> : <ArrowDownRight size={11} />}
+                  {positive ? "+" : ""}{m.change_pct.toFixed(2)}%
+                </p>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -119,14 +127,25 @@ function MoverRow({
 function MarketMovers() {
   const inSnap = useMarketSnapshot("IN");
   const usSnap = useMarketSnapshot("US");
-  const rows = [
-    { title: "India Top Gainer", mover: inSnap.data?.gainers?.filter(isDisplayableMover)[0], currency: "₹", locale: "en-IN", marketLabel: "NSE" },
-    { title: "India Top Loser",  mover: inSnap.data?.losers?.filter(isDisplayableMover)[0],  currency: "₹", locale: "en-IN", marketLabel: "NSE" },
-    { title: "US Top Gainer",    mover: usSnap.data?.gainers?.filter(isDisplayableMover)[0], currency: "$", locale: "en-US", marketLabel: "NYSE/NASDAQ" },
-    { title: "US Top Loser",     mover: usSnap.data?.losers?.filter(isDisplayableMover)[0],  currency: "$", locale: "en-US", marketLabel: "NYSE/NASDAQ" },
-  ].filter(r => r.mover);
+  // Up to 3 gainers + 3 losers per market from the SAME two already-fetched
+  // responses the snapshot cards use (shared query key — no extra requests).
+  // Fewer than 3 valid entries degrades to fewer rows; an empty column, an
+  // empty market, or a fully empty feed hides itself rather than fabricating
+  // placeholders. ₹ and $ stay in their own market groups, never mixed.
+  const groups = [
+    {
+      label: "🇮🇳 India · NSE", currency: "₹", locale: "en-IN",
+      gainers: (inSnap.data?.gainers ?? []).filter(isDisplayableMover).slice(0, 3),
+      losers:  (inSnap.data?.losers  ?? []).filter(isDisplayableMover).slice(0, 3),
+    },
+    {
+      label: "🇺🇸 US · NYSE/NASDAQ", currency: "$", locale: "en-US",
+      gainers: (usSnap.data?.gainers ?? []).filter(isDisplayableMover).slice(0, 3),
+      losers:  (usSnap.data?.losers  ?? []).filter(isDisplayableMover).slice(0, 3),
+    },
+  ].filter(g => g.gainers.length > 0 || g.losers.length > 0);
 
-  if (rows.length === 0) return null;
+  if (groups.length === 0) return null;
 
   return (
     <section className="px-4 py-6 border-t border-dark-border">
@@ -136,8 +155,16 @@ function MarketMovers() {
           <p className="text-gray-500 text-xs mt-1">Top movers in the StockSense360 covered liquid universe</p>
           <p className="text-gray-600 text-[11px] mt-0.5">Price movement only — not an AI recommendation or signal</p>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          {rows.map(r => <MoverRow key={r.title} {...r} />)}
+        <div className="space-y-4">
+          {groups.map(g => (
+            <div key={g.label}>
+              <p className="text-xs font-semibold text-gray-400 mb-2">{g.label}</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <MoverList title="Top Gainers" movers={g.gainers} currency={g.currency} locale={g.locale} />
+                <MoverList title="Top Losers"  movers={g.losers}  currency={g.currency} locale={g.locale} />
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     </section>
