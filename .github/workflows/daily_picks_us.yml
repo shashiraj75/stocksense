@@ -2,9 +2,9 @@ name: Daily Stock Picks — US Pre-Open
 
 on:
   schedule:
-    # US: 12:30 UTC = 8:30 AM ET during EDT / 7:30 AM ET during EST
+    # US: 12:17 UTC = 8:17 AM ET during EDT / 7:17 AM ET during EST
     # Runs before the 9:30 AM ET US market open
-    - cron: "30 12 * * 1-5"
+    - cron: "17 12 * * 1-5"
   workflow_dispatch:
 
 jobs:
