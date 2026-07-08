@@ -13,6 +13,9 @@ from services.recommendation_consolidation_api_composer import (
     compose_prediction_response_with_rci, rci_live_stock_analysis_enabled,
 )
 from services.recommendation_consolidation_contract import is_valid_rci_response_payload
+from services.research_analyst.research_composer import (
+    compose_prediction_response_with_research, research_analyst_v2_enabled,
+)
 from typing import Literal
 
 log = logging.getLogger(__name__)
@@ -269,6 +272,16 @@ async def get_prediction(
                 )
             except Exception:
                 pass
+        # AI Research Analyst Phase 2 (Epic 008B) — the one approved call
+        # site, mirroring the RCI composer above exactly: copy-on-read,
+        # additive `research_report` key only, fail-open by returning the
+        # original result reference unchanged on any failure. Runs AFTER the
+        # RCI block and never reads its output as evidence (deferred
+        # explicitly). Flag defaults off and is absent from every committed
+        # configuration.
+        if research_analyst_v2_enabled():
+            result = compose_prediction_response_with_research(
+                result, symbol=sym, market=market, horizon=horizon)
         return JSONResponse(content=_to_python(result))
 
     # ── 2. Already computing — tell client to poll back in 5 s ──────────────

@@ -27,6 +27,16 @@ from services.research_analyst.intelligence_snapshot import (
     compute_snapshot_hash,
     snapshot_to_dict,
 )
+from services.research_analyst.report_assembler import (
+    ReportRejection,
+    ResearchReport,
+    assemble_research_report,
+    report_to_dict,
+)
+from services.research_analyst.research_composer import (
+    compose_prediction_response_with_research,
+    research_analyst_v2_enabled,
+)
 from services.research_analyst.snapshot_builder import (
     ScopeMismatchError,
     UnsupportedScopeError,
@@ -38,6 +48,8 @@ __all__ = [
     "EvidenceState",
     "EvidenceTier",
     "LiveIntelligenceSnapshot",
+    "ReportRejection",
+    "ResearchReport",
     "SnapshotAvailability",
     "SnapshotScope",
     "SnapshotTimestamps",
@@ -45,8 +57,12 @@ __all__ = [
     "UnsupportedScopeError",
     "ValidationResult",
     "Violation",
+    "assemble_research_report",
     "build_live_intelligence_snapshot",
+    "compose_prediction_response_with_research",
     "compute_snapshot_hash",
+    "report_to_dict",
+    "research_analyst_v2_enabled",
     "snapshot_to_dict",
     "validate_snapshot",
 ]

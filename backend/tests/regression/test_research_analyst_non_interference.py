@@ -29,10 +29,16 @@ from tests.fixtures.research_analyst_fixtures import make_predict_result
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 PACKAGE_DIR = BACKEND_ROOT / "services" / "research_analyst"
 
-# The complete import surface Phase 1 permits itself (spec §11 rule 3).
+# The complete import surface the package permits itself (Phase 1 spec §11
+# rule 3; Phase 2 spec §6 rule 4). `os` is allowed ONLY in the composer —
+# the same single feature-flag exception the RCI composer carries — and
+# `logging` only where a bounded fail-open warning is emitted.
 _ALLOWED_MODULES = {
     "__future__", "copy", "dataclasses", "enum", "hashlib", "json",
     "numbers", "re", "types", "typing",
+}
+_PER_FILE_EXTRA_ALLOWED = {
+    "research_composer.py": {"os", "logging"},
 }
 _ALLOWED_PREFIXES = ("services.research_analyst",)
 
@@ -51,13 +57,15 @@ def _imports_of(path: Path) -> set[str]:
 class TestNoProviderOrEngineImports:
     def test_package_imports_are_allowlisted_only(self):
         py_files = sorted(PACKAGE_DIR.glob("*.py"))
-        assert len(py_files) == 4, f"unexpected package contents: {py_files}"
+        assert len(py_files) == 6, f"unexpected package contents: {py_files}"
         for path in py_files:
+            extra = _PER_FILE_EXTRA_ALLOWED.get(path.name, set())
             for module in _imports_of(path):
                 allowed = (module in _ALLOWED_MODULES
+                           or module in extra
                            or module.startswith(_ALLOWED_PREFIXES))
                 assert allowed, (
-                    f"{path.name} imports {module!r}, outside the Phase 1 "
+                    f"{path.name} imports {module!r}, outside the package "
                     f"allowlist — providers/engines/routers/IO are prohibited")
 
     def test_specific_prohibited_imports_absent(self):
@@ -72,19 +80,36 @@ class TestNoProviderOrEngineImports:
             assert not any(m == banned or m.startswith(banned + ".") for m in all_imports), banned
 
 
-class TestNoProductionCallSite:
-    def test_no_production_module_imports_research_analyst(self):
+# Phase 2 (Epic 008B): the single approved production call site. Phase 1
+# proved ZERO production importers; Phase 2 deliberately narrows that
+# contract to EXACTLY this one file — the flag-gated composer call in the
+# live /predict route (Phase 2 spec §3). Adding any entry here is a
+# contract change requiring its own approved spec, never a convenience.
+_APPROVED_IMPORTERS = ("api/routers/predictions.py",)
+
+
+class TestSingleApprovedProductionCallSite:
+    def test_exemption_list_is_exactly_one(self):
+        assert len(_APPROVED_IMPORTERS) == 1
+
+    def test_only_the_approved_module_imports_research_analyst(self):
         scanned = 0
+        importers: list[str] = []
         for root in (BACKEND_ROOT / "services", BACKEND_ROOT / "api"):
             for path in root.rglob("*.py"):
                 if PACKAGE_DIR in path.parents:
                     continue
                 scanned += 1
-                for module in _imports_of(path):
-                    assert "research_analyst" not in module, (
-                        f"{path.relative_to(BACKEND_ROOT)} imports {module!r} — "
-                        f"Phase 1 permits no production call site")
+                rel = path.relative_to(BACKEND_ROOT).as_posix()
+                if any("research_analyst" in module for module in _imports_of(path)):
+                    importers.append(rel)
         assert scanned > 50  # sanity: the walk actually covered the tree
+        unapproved = [p for p in importers if p not in _APPROVED_IMPORTERS]
+        assert not unapproved, (
+            f"unapproved production import(s) of research_analyst: {unapproved} — "
+            f"only {_APPROVED_IMPORTERS} is contract-approved")
+        # The exemption must not rot: the approved file really does import it.
+        assert sorted(importers) == sorted(_APPROVED_IMPORTERS)
 
 
 class TestBuilderNeverComputesOrFetches:
