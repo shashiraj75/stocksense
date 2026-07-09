@@ -100,10 +100,17 @@ function HoldingRow({
       <td className="px-4 py-3 text-right font-mono">
         {r.current !== null ? `${currency}${r.current.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "—"}
       </td>
-      <td className={clsx("px-4 py-3 text-right font-mono font-bold whitespace-nowrap",
+      <td className={clsx("px-4 py-3 text-right font-mono font-bold",
         r.dayChangeAmt === null ? "text-gray-500" : r.dayChangeAmt >= 0 ? "text-bull" : "text-bear")}>
-        {r.dayChangeAmt !== null && r.dayChangePct !== null
-          ? `${r.dayChangeAmt >= 0 ? "+" : ""}${currency}${Math.abs(r.dayChangeAmt).toLocaleString(undefined, { maximumFractionDigits: 0 })} (${r.dayChangePct >= 0 ? "+" : ""}${r.dayChangePct.toFixed(1)}%)`
+        {r.dayChangeAmt !== null ? `${r.dayChangeAmt >= 0 ? "+" : ""}${currency}${Math.abs(r.dayChangeAmt).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "—"}
+      </td>
+      <td className={clsx("px-4 py-3 text-right font-mono font-bold",
+        r.dayChangePct === null ? "text-gray-500" : r.dayChangePct >= 0 ? "text-bull" : "text-bear")}>
+        {r.dayChangePct !== null
+          ? <span className="flex items-center justify-end gap-1">
+              {r.dayChangePct >= 0 ? <TrendingUp size={13} /> : <TrendingDown size={13} />}
+              {r.dayChangePct >= 0 ? "+" : ""}{r.dayChangePct.toFixed(1)}%
+            </span>
           : "—"}
       </td>
       <td className={clsx("px-4 py-3 text-right font-mono font-bold",
@@ -145,7 +152,7 @@ function HoldingRow({
   );
 }
 
-type SortKey = "symbol" | "qty" | "avgPrice" | "curPrice" | "invested" | "current" | "dayChangeAmt" | "plAmt" | "plPct" | "signal";
+type SortKey = "symbol" | "qty" | "avgPrice" | "curPrice" | "invested" | "current" | "dayChangeAmt" | "dayChangePct" | "plAmt" | "plPct" | "signal";
 
 const SORT_ACCESSORS: Record<SortKey, (r: Row) => string | number | null> = {
   symbol: (r) => r.symbol,
@@ -155,6 +162,7 @@ const SORT_ACCESSORS: Record<SortKey, (r: Row) => string | number | null> = {
   invested: (r) => r.invested,
   current: (r) => r.current,
   dayChangeAmt: (r) => r.dayChangeAmt,
+  dayChangePct: (r) => r.dayChangePct,
   plAmt: (r) => r.plAmt,
   plPct: (r) => r.plPct,
   signal: (r) => r.signal,
@@ -224,6 +232,8 @@ function HoldingsTable({
               <SortableHeader label="Invested" sortKey="invested" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               <SortableHeader label="Value" sortKey="current" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               <SortableHeader label="Day's P&L" sortKey="dayChangeAmt" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort}
+                title="How much this position moved today — independent of your overall P&L since purchase." />
+              <SortableHeader label="Day's P&L %" sortKey="dayChangePct" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort}
                 title="How much this position moved today — independent of your overall P&L since purchase." />
               <SortableHeader label="P&L" sortKey="plAmt" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               <SortableHeader label="P&L %" sortKey="plPct" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
