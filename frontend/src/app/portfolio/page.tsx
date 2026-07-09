@@ -223,7 +223,7 @@ function HoldingsTable({
               <SortableHeader label="Current" sortKey="curPrice" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               <SortableHeader label="Invested" sortKey="invested" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               <SortableHeader label="Value" sortKey="current" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
-              <SortableHeader label="Day's Change" sortKey="dayChangeAmt" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort}
+              <SortableHeader label="Day's P&L" sortKey="dayChangeAmt" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort}
                 title="How much this position moved today — independent of your overall P&L since purchase." />
               <SortableHeader label="P&L" sortKey="plAmt" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               <SortableHeader label="P&L %" sortKey="plPct" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
@@ -553,7 +553,7 @@ export default function PortfolioPage() {
                   { label: "Holdings", value: String(holdings.filter(h => h.market === "IN").length), color: "text-white" },
                   { label: "Invested", value: `₹${totalInvestedIN.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`, color: "text-white" },
                   { label: "Current Value", value: `₹${totalCurrentIN.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`, color: "text-white" },
-                  { label: "Day's Change", value: `${totalDayChangeIN >= 0 ? "+" : ""}₹${Math.abs(totalDayChangeIN).toLocaleString("en-IN", { maximumFractionDigits: 0 })} (${totalDayChangePctIN >= 0 ? "+" : ""}${totalDayChangePctIN.toFixed(1)}%)`, color: totalDayChangeIN >= 0 ? "text-bull" : "text-bear" },
+                  { label: "Day's P&L", value: `${totalDayChangeIN >= 0 ? "+" : ""}₹${Math.abs(totalDayChangeIN).toLocaleString("en-IN", { maximumFractionDigits: 0 })} (${totalDayChangePctIN >= 0 ? "+" : ""}${totalDayChangePctIN.toFixed(1)}%)`, color: totalDayChangeIN >= 0 ? "text-bull" : "text-bear" },
                   { label: "P&L", value: `${totalPLIN >= 0 ? "+" : ""}₹${Math.abs(totalPLIN).toLocaleString("en-IN", { maximumFractionDigits: 0 })} (${totalPLPctIN >= 0 ? "+" : ""}${totalPLPctIN.toFixed(1)}%)`, color: totalPLIN >= 0 ? "text-bull" : "text-bear" },
                 ].map(c => (
                   <div key={c.label} className="bg-dark-card border border-dark-border rounded-2xl p-4">
@@ -573,7 +573,7 @@ export default function PortfolioPage() {
                   { label: "Holdings", value: String(holdings.filter(h => h.market === "US").length), color: "text-white" },
                   { label: "Invested", value: `$${totalInvestedUS.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, color: "text-white" },
                   { label: "Current Value", value: `$${totalCurrentUS.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, color: "text-white" },
-                  { label: "Day's Change", value: `${totalDayChangeUS >= 0 ? "+" : ""}$${Math.abs(totalDayChangeUS).toLocaleString(undefined, { maximumFractionDigits: 0 })} (${totalDayChangePctUS >= 0 ? "+" : ""}${totalDayChangePctUS.toFixed(1)}%)`, color: totalDayChangeUS >= 0 ? "text-bull" : "text-bear" },
+                  { label: "Day's P&L", value: `${totalDayChangeUS >= 0 ? "+" : ""}$${Math.abs(totalDayChangeUS).toLocaleString(undefined, { maximumFractionDigits: 0 })} (${totalDayChangePctUS >= 0 ? "+" : ""}${totalDayChangePctUS.toFixed(1)}%)`, color: totalDayChangeUS >= 0 ? "text-bull" : "text-bear" },
                   { label: "P&L", value: `${totalPLUS >= 0 ? "+" : ""}$${Math.abs(totalPLUS).toLocaleString(undefined, { maximumFractionDigits: 0 })} (${totalPLPctUS >= 0 ? "+" : ""}${totalPLPctUS.toFixed(1)}%)`, color: totalPLUS >= 0 ? "text-bull" : "text-bear" },
                 ].map(c => (
                   <div key={c.label} className="bg-dark-card border border-dark-border rounded-2xl p-4">
