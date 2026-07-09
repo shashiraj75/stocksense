@@ -108,13 +108,20 @@ def _signal_summary(result: dict, sym: str, market: str, horizon: str) -> dict:
     signal badge (Portfolio). Values are read from the SAME cached dict the
     full route serves, never recomputed, so the two routes cannot disagree.
     Error-cached entries carry no `signal`/`confidence` keys and surface as
-    nulls — the badge's existing "no signal" state."""
+    nulls — the badge's existing "no signal" state.
+
+    `sector` is additive (Portfolio's sector-wise allocation view): it reads
+    the sector `quality_factors` already computed as part of this same
+    prediction — zero new provider calls, zero new compute. Absent/None
+    when quality_factors itself is unavailable, same null-surfaces-safely
+    pattern as signal/confidence above."""
     return {
         "symbol": sym,
         "market": market,
         "horizon": horizon,
         "signal": result.get("signal"),
         "confidence": result.get("confidence"),
+        "sector": (result.get("quality_factors") or {}).get("sector"),
     }
 
 

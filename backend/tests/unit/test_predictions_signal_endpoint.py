@@ -16,8 +16,10 @@ What must hold, per the sprint's cache-correctness rules:
      parallel calculation path).
   4. Error-cached entries degrade to signal/confidence nulls — the safe
      "no signal" badge state, never a crash or a fabricated signal.
-  5. The payload stays bounded to exactly its five documented fields no
-     matter how large the cached full payload is.
+  5. The payload stays bounded to exactly its six documented fields no
+     matter how large the cached full payload is (`sector` was added
+     deliberately for Portfolio's sector-wise allocation view, reused from
+     this same cached prediction's quality_factors — no new computation).
 """
 import asyncio
 import json
@@ -84,9 +86,20 @@ class TestSignalSummaryHelper:
         assert out["market"] == "US"
         assert out["horizon"] == "medium"
 
-    def test_payload_is_bounded_to_exactly_five_fields(self):
+    def test_payload_is_bounded_to_exactly_six_fields(self):
         out = predictions._signal_summary(_full_payload(), "AAPL", "US", "medium")
-        assert set(out) == {"symbol", "market", "horizon", "signal", "confidence"}
+        assert set(out) == {"symbol", "market", "horizon", "signal", "confidence", "sector"}
+
+    def test_sector_reused_from_quality_factors_not_recomputed(self):
+        out = predictions._signal_summary(
+            _full_payload(quality_factors={"score": 70, "sector": "Technology"}),
+            "AAPL", "US", "medium",
+        )
+        assert out["sector"] == "Technology"
+
+    def test_sector_is_none_when_quality_factors_absent(self):
+        out = predictions._signal_summary(_full_payload(), "AAPL", "US", "medium")
+        assert out["sector"] is None
 
     def test_error_cached_entry_degrades_to_nulls(self):
         out = predictions._signal_summary(
@@ -143,7 +156,7 @@ class TestSignalRoute:
         monkeypatch.setitem(_pred_cache, "AAPL:US:medium", (time.time(), _full_payload()))
         light = asyncio.run(predictions.get_signal_summary("AAPL", market="US", horizon="medium"))
         body = _body(light)
-        assert set(body) == {"symbol", "market", "horizon", "signal", "confidence"}
+        assert set(body) == {"symbol", "market", "horizon", "signal", "confidence", "sector"}
         # None of the heavy engine internals may leak into the summary.
         assert "factor_contributions" not in body
         assert "reasoning" not in body

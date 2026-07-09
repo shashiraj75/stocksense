@@ -1,9 +1,16 @@
 "use client";
+import { useState } from "react";
+import clsx from "clsx";
 
-interface Slice {
+interface StockSlice {
   symbol: string;
   value: number;
   signal: string | null;
+}
+
+interface SectorSlice {
+  sector: string;
+  value: number;
 }
 
 const PALETTE = [
@@ -11,30 +18,75 @@ const PALETTE = [
   "#14b8a6", "#f97316", "#a855f7", "#ef4444", "#84cc16",
 ];
 
-export function PortfolioAllocationChart({ slices }: { slices: Slice[] }) {
-  const withValue = slices.filter(s => s.value > 0);
-  if (withValue.length === 0) return null;
+// Sector is the more useful default view for concentration/diversification
+// risk — "am I overweight one sector" matters more than "which single stock
+// is biggest," and a by-stock bar with 30+ slivers is unreadable anyway.
+// Falls back to by-stock when sector data isn't available yet (still
+// computing) or when there's only one distinct sector (grouping would be a
+// no-op slice covering the whole bar).
+export function PortfolioAllocationChart({
+  stockSlices, sectorSlices,
+}: { stockSlices: StockSlice[]; sectorSlices: SectorSlice[] }) {
+  const withStockValue = stockSlices.filter(s => s.value > 0);
+  const withSectorValue = sectorSlices.filter(s => s.value > 0);
+  const hasMultiSectorData = withSectorValue.length > 1;
 
-  const total = withValue.reduce((s, r) => s + r.value, 0);
+  // null = "follow the data" (defaults to sector once multi-sector data
+  // arrives, which happens asynchronously after mount as signal queries
+  // resolve — a plain useState default would freeze at whatever was true
+  // on the FIRST render, before any sector data existed, and never
+  // reconsider). Only becomes a fixed "sector"/"stock" once the user
+  // explicitly clicks a toggle button, overriding the auto-follow.
+  const [mode, setMode] = useState<"sector" | "stock" | null>(null);
+  const effectiveMode = mode ?? (hasMultiSectorData ? "sector" : "stock");
 
-  const buyCount  = withValue.filter(s => s.signal === "BUY").length;
-  const sellCount = withValue.filter(s => s.signal === "SELL").length;
-  const holdCount = withValue.filter(s => s.signal !== "BUY" && s.signal !== "SELL" && s.signal !== null).length;
+  if (withStockValue.length === 0) return null;
+
+  const activeSlices = (effectiveMode === "sector" && hasMultiSectorData
+    ? withSectorValue.map(s => ({ label: s.sector, value: s.value }))
+    : withStockValue.map(s => ({ label: s.symbol, value: s.value })));
+
+  const total = activeSlices.reduce((s, r) => s + r.value, 0);
+
+  // Signal Distribution always reflects individual holdings, regardless of
+  // which grouping the bar/legend above are showing — a per-sector slice
+  // has no single signal of its own, so this must not vary with `mode`.
+  const buyCount  = withStockValue.filter(s => s.signal === "BUY").length;
+  const sellCount = withStockValue.filter(s => s.signal === "SELL").length;
+  const holdCount = withStockValue.filter(s => s.signal !== "BUY" && s.signal !== "SELL" && s.signal !== null).length;
 
   return (
     <div className="bg-dark-card border border-dark-border rounded-2xl p-5 space-y-4">
-      <h2 className="font-semibold text-sm text-gray-300">Portfolio Allocation</h2>
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h2 className="font-semibold text-sm text-gray-300">Portfolio Allocation</h2>
+        {hasMultiSectorData && (
+          <div className="flex items-center gap-0.5 bg-dark-bg border border-dark-border rounded-lg p-0.5">
+            {(["sector", "stock"] as const).map(m => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className={clsx(
+                  "px-2.5 py-1 text-xs font-medium rounded-md transition-colors",
+                  effectiveMode === m ? "bg-brand-500 text-white" : "text-gray-400 hover:text-white"
+                )}
+              >
+                {m === "sector" ? "By Sector" : "By Stock"}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* Stacked bar */}
       <div className="flex h-6 w-full rounded-full overflow-hidden gap-px">
-        {withValue.map((s, i) => {
+        {activeSlices.map((s, i) => {
           const w = (s.value / total) * 100;
           return (
             <div
-              key={s.symbol}
+              key={s.label}
               className="h-full transition-all duration-300 group relative"
               style={{ width: `${w}%`, backgroundColor: PALETTE[i % PALETTE.length], minWidth: w > 1 ? undefined : 2 }}
-              title={`${s.symbol}: ${w.toFixed(1)}%`}
+              title={`${s.label}: ${w.toFixed(1)}%`}
             />
           );
         })}
@@ -42,13 +94,13 @@ export function PortfolioAllocationChart({ slices }: { slices: Slice[] }) {
 
       {/* Legend */}
       <div className="flex flex-wrap gap-x-4 gap-y-2">
-        {withValue.map((s, i) => {
+        {activeSlices.map((s, i) => {
           const w = (s.value / total) * 100;
           return (
-            <div key={s.symbol} className="flex items-center gap-1.5 text-xs">
+            <div key={s.label} className="flex items-center gap-1.5 text-xs">
               <span className="inline-block w-2.5 h-2.5 rounded-sm flex-shrink-0"
                 style={{ backgroundColor: PALETTE[i % PALETTE.length] }} />
-              <span className="text-gray-300 font-mono font-bold">{s.symbol}</span>
+              <span className={clsx("text-gray-300", effectiveMode === "stock" ? "font-mono font-bold" : "font-semibold")}>{s.label}</span>
               <span className="text-gray-500">{w.toFixed(1)}%</span>
             </div>
           );

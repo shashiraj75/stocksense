@@ -303,6 +303,10 @@ export interface SignalSummary {
   horizon: Horizon;
   signal: string | null;
   confidence: number | null;
+  // Additive (Portfolio's sector-wise allocation view) — reused from the
+  // same prediction's already-computed quality_factors.sector, no new
+  // provider call. Null when unavailable.
+  sector?: string | null;
 }
 
 export const fetchSignalSummary = (

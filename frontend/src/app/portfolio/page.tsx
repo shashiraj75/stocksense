@@ -47,6 +47,10 @@ type Row = Holding & {
   signal: string | null;
   confidence?: number;
   sigLoading: boolean;
+  // Reused from the same signal fetch's already-computed quality_factors —
+  // no new request. Null/undefined until the signal query resolves or when
+  // the owning prediction has no sector data.
+  sector?: string | null;
 };
 
 function HoldingRow({
@@ -430,7 +434,8 @@ export default function PortfolioPage() {
       const sig = signalQueries[i]?.data;
       const signal = sig?.signal ?? null;
       const confidence = sig?.confidence ?? undefined;
-      return { ...h, curPrice, invested, current, plAmt, plPct, dayChangeAmt, dayChangePct, loading: quoteQueries[i]?.isLoading, signal, confidence, sigLoading: signalQueries[i]?.isLoading };
+      const sector = sig?.sector ?? null;
+      return { ...h, curPrice, invested, current, plAmt, plPct, dayChangeAmt, dayChangePct, loading: quoteQueries[i]?.isLoading, signal, confidence, sigLoading: signalQueries[i]?.isLoading, sector };
     });
     return { rows, totalInvestedIN, totalCurrentIN, totalInvestedUS, totalCurrentUS, totalDayChangeIN, totalDayChangeUS };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -447,6 +452,20 @@ export default function PortfolioPage() {
       value: r.current ?? 0,
       signal: r.signal,
     })), [rows, market]);
+
+  // Sector-wise grouping for the allocation chart's default view — sums
+  // current value per sector, bucketing null/not-yet-resolved sectors under
+  // "Other" so the bar always totals the same as the by-stock view rather
+  // than silently omitting value while signals are still loading.
+  const sectorSlices = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const r of rows) {
+      if (r.market !== market || !r.current) continue;
+      const sector = r.sector?.trim() || "Other";
+      totals.set(sector, (totals.get(sector) ?? 0) + r.current);
+    }
+    return Array.from(totals, ([sector, value]) => ({ sector, value }));
+  }, [rows, market]);
 
   // Gated on the selected market toggle too, not just whether holdings exist —
   // otherwise both currencies' summary cards/tables/chart show simultaneously
@@ -617,7 +636,7 @@ export default function PortfolioPage() {
           chart would make the percentages meaningless (₹ and $ amounts
           aren't comparable without FX conversion). */}
       {holdings.filter(h => h.market === market).length > 1 && (
-        <PortfolioAllocationChart slices={chartSlices} />
+        <PortfolioAllocationChart stockSlices={chartSlices} sectorSlices={sectorSlices} />
       )}
 
       {/* Holdings tables — split by market so ₹ and $ rows are never mixed */}
