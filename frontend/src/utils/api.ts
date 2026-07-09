@@ -100,6 +100,56 @@ export interface RecommendationConsolidation {
   engine_versions_used: Record<string, string | null>;
 }
 
+// AI Equity Research Analyst — Phase 2's additive, read-only "Research
+// Report" field (Epic 008B). Defined per the Phase 3 UI/Copy spec: every
+// field below is the exact backend shape from report_assembler.py (no
+// frontend-invented replacement), and the whole object is optional/absent
+// whenever RESEARCH_ANALYST_V2_ENABLED is disabled in Railway (default),
+// the backend's own fail-open composer omits it on any failure, or an
+// older API response predates Phase 2. A section's `entries` and `text`
+// are not mutually exclusive states to branch on with an if/else — render
+// `entries` when present and ALWAYS render `text` too when it is non-null
+// (e.g. `disclaimer` has both); only `entries: []` combined with a
+// non-null `text` is the honest-absence case.
+export const SUPPORTED_RESEARCH_REPORT_CONTRACT_VERSION = "1.0";
+
+export type ResearchReportSectionId =
+  | "executive_snapshot"
+  | "current_signal_context"
+  | "key_evidence"
+  | "risks_and_invalidation"
+  | "data_availability"
+  | "disclaimer";
+
+export interface ResearchReportEntry {
+  label: string;
+  value: unknown;
+  evidence_ids: string[];
+  provenance_ref: string;
+  owner?: string;
+  display_value?: string;
+}
+
+export interface ResearchReportSection {
+  section_id: ResearchReportSectionId;
+  title: string;
+  entries: ResearchReportEntry[];
+  evidence_ids: string[];
+  text: string | null;
+}
+
+export interface ResearchReport {
+  report_contract_version: string;
+  snapshot_id: string;
+  snapshot_hash: string;
+  scope: { symbol: string; market: Market; exchange: string; currency: string; horizon: Horizon };
+  generated_at: string | null;
+  data_as_of: string | null;
+  overall_status: "COMPLETE" | "PARTIAL" | "STALE" | "UNAVAILABLE" | "INVALID";
+  sections: ResearchReportSection[];
+  disclosures: string[];
+}
+
 export interface Prediction {
   symbol: string;
   market: Market;
@@ -117,6 +167,9 @@ export interface Prediction {
   // Optional per Sprint #011 §3A — absent today in every production response
   // since RCI_LIVE_STOCK_ANALYSIS_ENABLED is disabled in Railway.
   recommendation_consolidation?: RecommendationConsolidation;
+  // Optional per Epic 008B Phase 2/3 — absent today in every production
+  // response since RESEARCH_ANALYST_V2_ENABLED is disabled in Railway.
+  research_report?: ResearchReport;
 }
 
 export interface NewsArticle {
@@ -166,6 +219,29 @@ export function getValidRecommendationConsolidation(
     return null;
   }
   return rci;
+}
+
+// Phase 3 UI/Copy spec's single decision point (mirrors
+// getValidRecommendationConsolidation exactly): absent, null, malformed,
+// incomplete, or an unsupported future contract version must all degrade
+// to "do not render" — never an error state. `sections` is the one
+// load-bearing field; a report with a non-array/empty `sections` or the
+// wrong `report_contract_version` is unusable. Callers never need their
+// own absence/validity checks.
+export function getValidResearchReport(
+  prediction: Prediction | null | undefined,
+): ResearchReport | null {
+  const report = prediction?.research_report;
+  if (!report || typeof report !== "object") return null;
+  if (report.report_contract_version !== SUPPORTED_RESEARCH_REPORT_CONTRACT_VERSION) return null;
+  if (!Array.isArray(report.sections) || report.sections.length === 0) return null;
+  const isValidSection = (s: unknown): s is ResearchReportSection =>
+    !!s && typeof s === "object" &&
+    typeof (s as ResearchReportSection).section_id === "string" &&
+    Array.isArray((s as ResearchReportSection).entries) &&
+    Array.isArray((s as ResearchReportSection).evidence_ids);
+  if (!report.sections.every(isValidSection)) return null;
+  return report;
 }
 
 export const fetchQuote = (symbol: string, market: Market) =>

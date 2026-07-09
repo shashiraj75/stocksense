@@ -20,6 +20,7 @@ import { useAuth } from "@/lib/AuthContext";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { TradeLevelVisualizer } from "@/components/TradeLevelVisualizer";
 import { EvidenceSummary } from "@/components/EvidenceSummary";
+import { ResearchSummary } from "@/components/ResearchSummary";
 
 // Kill switch — set back to true to restore the "Was this signal useful?"
 // thumbs up/down prompt. Hidden per user feedback that it looked annoying.
@@ -706,6 +707,12 @@ export default function StockPage() {
                   since the backend then never includes
                   recommendation_consolidation on the prediction object. */}
               {!predLoading && <EvidenceSummary prediction={prediction} />}
+
+              {/* AI Research Summary — Epic 008B Phase 2/3. Renders nothing
+                  while RESEARCH_ANALYST_V2_ENABLED is disabled in Railway
+                  (default), since the backend then never includes
+                  research_report on the prediction object. */}
+              {!predLoading && <ResearchSummary prediction={prediction} />}
 
               {/* Tabs row */}
               <div className="flex gap-2 flex-wrap mt-4 pt-4 border-t border-white/[0.06]">
