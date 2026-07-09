@@ -45,7 +45,7 @@ def _fetch_name_sync(sym_yf: str, sym_fh: str, market: str) -> Optional[str]:
     so it never blocks the async event loop.
     """
     # 1. Finnhub /stock/profile2 — fast, no crumb issues
-    if finnhub_client.FINNHUB_KEY:
+    if finnhub_client.FINNHUB_KEY and finnhub_client.is_enabled_for_market(market):
         try:
             r = finnhub_client._SESSION.get(
                 f"{finnhub_client._BASE}/stock/profile2",
@@ -104,8 +104,14 @@ class MarketDataService:
 
     async def get_quote(self, symbol: str, market: str) -> Optional[dict]:
         key = f"{symbol}:{market}"
+        finnhub_allowed = finnhub_client.is_enabled_for_market(market)
         cached = _quote_cache.get(key)
         if cached and (time.time() - cached[0]) < _QUOTE_TTL:
+            log.info(
+                "quote_provider market=%s symbol=%s provider=%s cache_hit=true "
+                "fallback_used=false fallback_reason=none finnhub_allowed_for_market=%s",
+                market, symbol, cached[1].get("quote_source", "unknown"), finnhub_allowed,
+            )
             return cached[1]
 
         result = None
@@ -127,8 +133,17 @@ class MarketDataService:
                 log.debug("NSE quote failed for %s: %s", symbol, e)
 
         # 2. Try Finnhub (fast, reliable from cloud IPs, works for US + India fallback)
+        # — gated for IN behind ENABLE_FINNHUB_FOR_IN (default off); NSE
+        # (step 1) is IN's primary/only allowed provider unless the flag
+        # opts back in. Unconditional for every other market.
         if not result:
-            result = finnhub_client.get_quote(symbol, market)
+            if finnhub_allowed:
+                result = finnhub_client.get_quote(symbol, market)
+            else:
+                log.info(
+                    "provider=finnhub market=%s symbol=%s skipped reason=disabled_for_IN",
+                    market, symbol,
+                )
 
         # 3. Fallback to yfinance fast_info (one call only)
         # fast_info does a real blocking HTTP call on first attribute access —
@@ -211,7 +226,7 @@ class MarketDataService:
                     sym_fh = self._fh_sym(symbol, market)
                     loop = asyncio.get_running_loop()
                     name: Optional[str] = None
-                    if finnhub_client.FINNHUB_KEY:
+                    if finnhub_client.FINNHUB_KEY and finnhub_allowed:
                         try:
                             def _fh_name():
                                 r = finnhub_client._SESSION.get(
@@ -253,6 +268,15 @@ class MarketDataService:
                             except Exception:
                                 pass
                         asyncio.ensure_future(_bg_yf_name())
+
+        provider_used = result.get("quote_source") if result else "none"
+        fallback_used = market == "IN" and provider_used == "finnhub"
+        log.info(
+            "quote_provider market=%s symbol=%s provider=%s cache_hit=false "
+            "fallback_used=%s fallback_reason=%s finnhub_allowed_for_market=%s",
+            market, symbol, provider_used, fallback_used,
+            "nse_failed" if fallback_used else "none", finnhub_allowed,
+        )
 
         if result:
             _quote_cache[key] = (time.time(), result)

@@ -274,8 +274,13 @@ class ScreenerService:
             except Exception as e:
                 log.warning("NSE movers failed: %s", e)
 
-        # PRIMARY for US / fallback for India: Finnhub
-        if not gainers and not losers and finnhub_client.FINNHUB_KEY:
+        # PRIMARY for US / fallback for India: Finnhub — gated for IN behind
+        # ENABLE_FINNHUB_FOR_IN (default off); falls through to the
+        # yfinance live screen below instead.
+        finnhub_allowed = finnhub_client.is_enabled_for_market(market)
+        if not gainers and not losers and market == "IN" and not finnhub_allowed:
+            log.info("provider=finnhub market=IN symbol=movers skipped reason=disabled_for_IN")
+        elif not gainers and not losers and finnhub_client.FINNHUB_KEY and finnhub_allowed:
             try:
                 symbols = NIFTY50_SYMBOLS if market == "IN" else list({
                     s for stocks in US_SECTORS.values() for s in stocks

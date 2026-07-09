@@ -21,6 +21,21 @@ _cache: dict[str, tuple[float, dict]] = {}
 _QUOTE_TTL = 60  # seconds
 
 
+def is_enabled_for_market(market: str) -> bool:
+    """
+    Finnhub is enabled by default for every market except IN. Production
+    logs showed bursts of NSE:* quote requests (from the price-alert and
+    trade-notifier polling loops, which call MarketDataService.get_quote
+    for every tracked symbol) hitting Finnhub's free-tier 60 req/min limit
+    and getting 429'd — NSE (services/nse_client.py) is IN's primary and
+    normally sufficient provider. Gated behind ENABLE_FINNHUB_FOR_IN so IN
+    can opt back into the Finnhub fallback explicitly. Default is off.
+    """
+    if market == "IN":
+        return os.getenv("ENABLE_FINNHUB_FOR_IN", "false").strip().lower() == "true"
+    return True
+
+
 def _finnhub_symbol(symbol: str, market: str) -> str:
     """Convert internal symbol to Finnhub format: NSE:RELIANCE, NYSE:AAPL etc."""
     symbol = symbol.upper().replace(".NS", "").replace(".BO", "")
