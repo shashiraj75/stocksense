@@ -100,11 +100,11 @@ function HoldingRow({
       <td className="px-4 py-3 text-right font-mono">
         {r.current !== null ? `${currency}${r.current.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "—"}
       </td>
-      <td className={clsx("px-4 py-3 text-right font-mono font-bold",
+      <td className={clsx("px-4 py-3 text-right font-mono font-bold whitespace-nowrap",
         r.dayChangeAmt === null ? "text-gray-500" : r.dayChangeAmt >= 0 ? "text-bull" : "text-bear")}>
         {r.dayChangeAmt !== null ? `${r.dayChangeAmt >= 0 ? "+" : ""}${currency}${Math.abs(r.dayChangeAmt).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "—"}
       </td>
-      <td className={clsx("px-4 py-3 text-right font-mono font-bold",
+      <td className={clsx("px-4 py-3 text-right font-mono font-bold whitespace-nowrap",
         r.dayChangePct === null ? "text-gray-500" : r.dayChangePct >= 0 ? "text-bull" : "text-bear")}>
         {r.dayChangePct !== null
           ? <span className="flex items-center justify-end gap-1">
@@ -113,11 +113,11 @@ function HoldingRow({
             </span>
           : "—"}
       </td>
-      <td className={clsx("px-4 py-3 text-right font-mono font-bold",
+      <td className={clsx("px-4 py-3 text-right font-mono font-bold whitespace-nowrap",
         r.plAmt === null ? "text-gray-500" : r.plAmt >= 0 ? "text-bull" : "text-bear")}>
         {r.plAmt !== null ? `${r.plAmt >= 0 ? "+" : ""}${currency}${Math.abs(r.plAmt).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "—"}
       </td>
-      <td className={clsx("px-4 py-3 text-right font-mono font-bold",
+      <td className={clsx("px-4 py-3 text-right font-mono font-bold whitespace-nowrap",
         r.plPct === null ? "text-gray-500" : r.plPct >= 0 ? "text-bull" : "text-bear")}>
         {r.plPct !== null
           ? <span className="flex items-center justify-end gap-1">
@@ -128,7 +128,13 @@ function HoldingRow({
       </td>
       <td className="px-4 py-3 text-center">
         {r.sigLoading ? (
-          <span className="text-gray-600 text-xs animate-pulse">…</span>
+          <span
+            className="inline-flex items-center gap-1 text-gray-500 text-xs animate-pulse"
+            title="Computing this stock's signal — large portfolios compute a few holdings at a time, so this can take a while to reach every row."
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-gray-500" />
+            computing
+          </span>
         ) : r.signal ? (
           <SignalBadge signal={r.signal as any} confidence={r.confidence} size="sm" />
         ) : (
@@ -173,11 +179,11 @@ function SortableHeader({
 }: { label: string; sortKey: SortKey; align?: "right" | "center"; activeKey: SortKey | null; dir: "asc" | "desc"; onSort: (key: SortKey) => void; title?: string }) {
   const isActive = activeKey === sortKey;
   return (
-    <th title={title} className={clsx("px-4 py-3 font-medium select-none", align === "right" ? "text-right" : align === "center" ? "text-center" : "text-left")}>
+    <th title={title} className={clsx("px-4 py-3 font-medium select-none whitespace-nowrap", align === "right" ? "text-right" : align === "center" ? "text-center" : "text-left")}>
       <button
         onClick={() => onSort(sortKey)}
         className={clsx(
-          "flex items-center gap-1 hover:text-white transition-colors",
+          "flex items-center gap-1 hover:text-white transition-colors whitespace-nowrap",
           align === "right" ? "ml-auto" : align === "center" ? "mx-auto" : "",
           isActive ? "text-white" : "text-gray-400"
         )}
