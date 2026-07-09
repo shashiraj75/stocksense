@@ -36,6 +36,13 @@ type Row = Holding & {
   current: number | null;
   plAmt: number | null;
   plPct: number | null;
+  // Today's move only — independent of P&L (which is since avg buy price).
+  // dayChangeAmt is this position's dollar/rupee move today (qty * the
+  // quote's own per-share `change`); dayChangePct is the stock's own day
+  // % change, reused as-is since %-change of a position's value is
+  // identical to %-change of its price regardless of quantity held.
+  dayChangeAmt: number | null;
+  dayChangePct: number | null;
   loading: boolean;
   signal: string | null;
   confidence?: number;
@@ -93,6 +100,12 @@ function HoldingRow({
       <td className="px-4 py-3 text-right font-mono">
         {r.current !== null ? `${currency}${r.current.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "—"}
       </td>
+      <td className={clsx("px-4 py-3 text-right font-mono font-bold whitespace-nowrap",
+        r.dayChangeAmt === null ? "text-gray-500" : r.dayChangeAmt >= 0 ? "text-bull" : "text-bear")}>
+        {r.dayChangeAmt !== null && r.dayChangePct !== null
+          ? `${r.dayChangeAmt >= 0 ? "+" : ""}${currency}${Math.abs(r.dayChangeAmt).toLocaleString(undefined, { maximumFractionDigits: 0 })} (${r.dayChangePct >= 0 ? "+" : ""}${r.dayChangePct.toFixed(1)}%)`
+          : "—"}
+      </td>
       <td className={clsx("px-4 py-3 text-right font-mono font-bold",
         r.plAmt === null ? "text-gray-500" : r.plAmt >= 0 ? "text-bull" : "text-bear")}>
         {r.plAmt !== null ? `${r.plAmt >= 0 ? "+" : ""}${currency}${Math.abs(r.plAmt).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "—"}
@@ -132,7 +145,7 @@ function HoldingRow({
   );
 }
 
-type SortKey = "symbol" | "qty" | "avgPrice" | "curPrice" | "invested" | "current" | "plAmt" | "plPct" | "signal";
+type SortKey = "symbol" | "qty" | "avgPrice" | "curPrice" | "invested" | "current" | "dayChangeAmt" | "plAmt" | "plPct" | "signal";
 
 const SORT_ACCESSORS: Record<SortKey, (r: Row) => string | number | null> = {
   symbol: (r) => r.symbol,
@@ -141,6 +154,7 @@ const SORT_ACCESSORS: Record<SortKey, (r: Row) => string | number | null> = {
   curPrice: (r) => r.curPrice,
   invested: (r) => r.invested,
   current: (r) => r.current,
+  dayChangeAmt: (r) => r.dayChangeAmt,
   plAmt: (r) => r.plAmt,
   plPct: (r) => r.plPct,
   signal: (r) => r.signal,
@@ -209,6 +223,8 @@ function HoldingsTable({
               <SortableHeader label="Current" sortKey="curPrice" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               <SortableHeader label="Invested" sortKey="invested" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               <SortableHeader label="Value" sortKey="current" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
+              <SortableHeader label="Day's Change" sortKey="dayChangeAmt" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort}
+                title="How much this position moved today — independent of your overall P&L since purchase." />
               <SortableHeader label="P&L" sortKey="plAmt" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               <SortableHeader label="P&L %" sortKey="plPct" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               <SortableHeader label="Signal" sortKey="signal" align="center" activeKey={sortKey} dir={sortDir} onSort={handleSort}
@@ -368,10 +384,11 @@ export default function PortfolioPage() {
   const quoteSig = quoteQueries.map(q => `${q.isLoading ? "L" : ""}${q.data?.price ?? ""}`).join("|");
   const signalSig = signalQueries.map(q => `${q.isLoading ? "L" : ""}${q.data?.signal ?? ""}:${q.data?.confidence ?? ""}`).join("|");
 
-  const { rows, totalInvestedIN, totalCurrentIN, totalInvestedUS, totalCurrentUS } = useMemo(() => {
+  const { rows, totalInvestedIN, totalCurrentIN, totalInvestedUS, totalCurrentUS, totalDayChangeIN, totalDayChangeUS } = useMemo(() => {
     // Compute totals per currency — never mix ₹ and $ into one number
     let totalInvestedIN = 0, totalCurrentIN = 0;
     let totalInvestedUS = 0, totalCurrentUS = 0;
+    let totalDayChangeIN = 0, totalDayChangeUS = 0;
 
     const rows = holdings.map((h, i) => {
       const q = quoteQueries[i]?.data;
@@ -380,16 +397,26 @@ export default function PortfolioPage() {
       const current = curPrice ? h.qty * curPrice : null;
       const plAmt = current !== null ? current - invested : null;
       const plPct = plAmt !== null ? (plAmt / invested) * 100 : null;
+      // Today's move — the quote's own per-share change/change_pct, never
+      // derived from avgPrice (that would conflate "today" with "since
+      // purchase", exactly the confusion the Signal column's own tooltip
+      // already warns against for a different field).
+      const dayChangeAmt = q && q.change != null ? h.qty * q.change : null;
+      const dayChangePct = q?.change_pct ?? null;
       if (current !== null) {
         if (h.market === "IN") { totalInvestedIN += invested; totalCurrentIN += current; }
         else { totalInvestedUS += invested; totalCurrentUS += current; }
       }
+      if (dayChangeAmt !== null) {
+        if (h.market === "IN") totalDayChangeIN += dayChangeAmt;
+        else totalDayChangeUS += dayChangeAmt;
+      }
       const sig = signalQueries[i]?.data;
       const signal = sig?.signal ?? null;
       const confidence = sig?.confidence ?? undefined;
-      return { ...h, curPrice, invested, current, plAmt, plPct, loading: quoteQueries[i]?.isLoading, signal, confidence, sigLoading: signalQueries[i]?.isLoading };
+      return { ...h, curPrice, invested, current, plAmt, plPct, dayChangeAmt, dayChangePct, loading: quoteQueries[i]?.isLoading, signal, confidence, sigLoading: signalQueries[i]?.isLoading };
     });
-    return { rows, totalInvestedIN, totalCurrentIN, totalInvestedUS, totalCurrentUS };
+    return { rows, totalInvestedIN, totalCurrentIN, totalInvestedUS, totalCurrentUS, totalDayChangeIN, totalDayChangeUS };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [holdings, quoteSig, signalSig]);
 
@@ -417,6 +444,14 @@ export default function PortfolioPage() {
   const totalPLUS = totalCurrentUS - totalInvestedUS;
   const totalPLPctIN = totalInvestedIN > 0 ? (totalPLIN / totalInvestedIN) * 100 : 0;
   const totalPLPctUS = totalInvestedUS > 0 ? (totalPLUS / totalInvestedUS) * 100 : 0;
+  // Portfolio-level day % change — weighted by value, not a simple average
+  // of each stock's own %. Yesterday's total value = today's total value
+  // minus today's total move; dividing by that (not by today's value)
+  // gives the correct % change from yesterday's close to today.
+  const prevValueIN = totalCurrentIN - totalDayChangeIN;
+  const prevValueUS = totalCurrentUS - totalDayChangeUS;
+  const totalDayChangePctIN = prevValueIN > 0 ? (totalDayChangeIN / prevValueIN) * 100 : 0;
+  const totalDayChangePctUS = prevValueUS > 0 ? (totalDayChangeUS / prevValueUS) * 100 : 0;
 
   return (
     <div className="space-y-6">
@@ -513,11 +548,12 @@ export default function PortfolioPage() {
           {hasIN && (
             <div>
               <p className="text-xs text-gray-500 mb-2 flex items-center gap-1">🇮🇳 Indian Holdings (₹)</p>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                 {[
                   { label: "Holdings", value: String(holdings.filter(h => h.market === "IN").length), color: "text-white" },
                   { label: "Invested", value: `₹${totalInvestedIN.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`, color: "text-white" },
                   { label: "Current Value", value: `₹${totalCurrentIN.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`, color: "text-white" },
+                  { label: "Day's Change", value: `${totalDayChangeIN >= 0 ? "+" : ""}₹${Math.abs(totalDayChangeIN).toLocaleString("en-IN", { maximumFractionDigits: 0 })} (${totalDayChangePctIN >= 0 ? "+" : ""}${totalDayChangePctIN.toFixed(1)}%)`, color: totalDayChangeIN >= 0 ? "text-bull" : "text-bear" },
                   { label: "P&L", value: `${totalPLIN >= 0 ? "+" : ""}₹${Math.abs(totalPLIN).toLocaleString("en-IN", { maximumFractionDigits: 0 })} (${totalPLPctIN >= 0 ? "+" : ""}${totalPLPctIN.toFixed(1)}%)`, color: totalPLIN >= 0 ? "text-bull" : "text-bear" },
                 ].map(c => (
                   <div key={c.label} className="bg-dark-card border border-dark-border rounded-2xl p-4">
@@ -532,11 +568,12 @@ export default function PortfolioPage() {
           {hasUS && (
             <div>
               <p className="text-xs text-gray-500 mb-2 flex items-center gap-1">🇺🇸 US Holdings ($)</p>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                 {[
                   { label: "Holdings", value: String(holdings.filter(h => h.market === "US").length), color: "text-white" },
                   { label: "Invested", value: `$${totalInvestedUS.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, color: "text-white" },
                   { label: "Current Value", value: `$${totalCurrentUS.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, color: "text-white" },
+                  { label: "Day's Change", value: `${totalDayChangeUS >= 0 ? "+" : ""}$${Math.abs(totalDayChangeUS).toLocaleString(undefined, { maximumFractionDigits: 0 })} (${totalDayChangePctUS >= 0 ? "+" : ""}${totalDayChangePctUS.toFixed(1)}%)`, color: totalDayChangeUS >= 0 ? "text-bull" : "text-bear" },
                   { label: "P&L", value: `${totalPLUS >= 0 ? "+" : ""}$${Math.abs(totalPLUS).toLocaleString(undefined, { maximumFractionDigits: 0 })} (${totalPLPctUS >= 0 ? "+" : ""}${totalPLPctUS.toFixed(1)}%)`, color: totalPLUS >= 0 ? "text-bull" : "text-bear" },
                 ].map(c => (
                   <div key={c.label} className="bg-dark-card border border-dark-border rounded-2xl p-4">
