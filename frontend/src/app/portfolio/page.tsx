@@ -457,7 +457,7 @@ export default function PortfolioPage() {
       symbol: r.symbol,
       value: r.current ?? 0,
       signal: r.signal,
-    })), [rows, market]);
+    })).sort((a, b) => b.value - a.value), [rows, market]);
 
   // Sector-wise grouping for the allocation chart's default view — sums
   // current value per sector, bucketing null/not-yet-resolved sectors under
@@ -470,7 +470,8 @@ export default function PortfolioPage() {
       const sector = r.sector?.trim() || "Other";
       totals.set(sector, (totals.get(sector) ?? 0) + r.current);
     }
-    return Array.from(totals, ([sector, value]) => ({ sector, value }));
+    return Array.from(totals, ([sector, value]) => ({ sector, value }))
+      .sort((a, b) => b.value - a.value);
   }, [rows, market]);
 
   // Gated on the selected market toggle too, not just whether holdings exist —
