@@ -48,6 +48,13 @@ type DailyPicksResponse = {
   screened_from?: number;
   candidates?: number;
   generating?: boolean;
+  // 3-phase US Daily Picks upgrade (premarket finalizer) — absent on any
+  // payload finalized before this feature, or on the IN market (which has
+  // no premarket phase). Rendered only when present; never fabricated.
+  base_generated_at?: string | null;
+  premarket_finalized_at?: string | null;
+  premarket_status?: string | null;
+  premarket_finalizer_version?: string | null;
 };
 
 type ValidationResult = {
@@ -74,8 +81,28 @@ type LivePick = {
 // ── Constants ─────────────────────────────────────────────────────────────────
 const MARKETS = [
   { key: "IN" as const, short: "🇮🇳 IN", label: "🇮🇳 NSE India",  currency: "₹", locale: "en-IN", tz: "Asia/Kolkata",     genTime: "2 AM IST",   tzLabel: "IST" },
-  { key: "US" as const, short: "🇺🇸 US", label: "🇺🇸 NYSE/NASDAQ", currency: "$", locale: "en-US", tz: "America/New_York", genTime: "6:00 PM IST", tzLabel: "ET" },
+  // US base run moved much earlier (04:00 UTC = 8:00 AM Dubai = 9:30 AM IST,
+  // see .github/workflows/daily_picks_us.yml) with a separate lightweight
+  // premarket finalizer running shortly before US market open — replaces
+  // the previous evening-IST claim, which was both stale and described the
+  // wrong timezone reference point for a US market.
+  { key: "US" as const, short: "🇺🇸 US", label: "🇺🇸 NYSE/NASDAQ", currency: "$", locale: "en-US", tz: "America/New_York", genTime: "8:00 AM Dubai / 9:30 AM IST", tzLabel: "ET" },
 ];
+
+const PREMARKET_STATUS_LABEL: Record<string, string> = {
+  pending: "Premarket Pending",
+  completed: "Premarket Confirmed",
+  completed_with_limited_premarket_data: "Premarket Limited Data",
+  skipped: "Premarket Skipped",
+  failed: "Premarket Failed",
+};
+const PREMARKET_STATUS_CLASS: Record<string, string> = {
+  pending: "border-dark-border text-gray-500",
+  completed: "border-green-500/40 text-green-400",
+  completed_with_limited_premarket_data: "border-yellow-500/40 text-yellow-400",
+  skipped: "border-dark-border text-gray-500",
+  failed: "border-red-500/40 text-red-400",
+};
 
 const HORIZONS = [
   { key: "short",  label: "Short Term",  sub: "1–5 days"   },
@@ -786,10 +813,21 @@ export default function DailyPicksPage() {
               </div>
             );
           })()}
+          {/* 3-phase US Daily Picks upgrade: premarket status badge. Only
+              rendered for US when the backend has actually written a
+              premarket_status (absent on IN, and on any US payload no
+              premarket run has touched yet) — never a fabricated default. */}
+          {market === "US" && data?.premarket_status && (
+            <span className={clsx("shrink-0 whitespace-nowrap text-xs bg-dark-card border rounded-lg px-3 py-2",
+              PREMARKET_STATUS_CLASS[data.premarket_status] ?? "border-dark-border text-gray-500")}>
+              {PREMARKET_STATUS_LABEL[data.premarket_status] ?? "Premarket Pending"}
+            </span>
+          )}
         </div>
       </div>
       <p className="text-sm text-gray-400">
         Top 6 AI-selected BUY calls per horizon · generated daily at {marketCfg.genTime}
+        {market === "US" ? " · Premarket refresh runs before US market open" : ""}
         {/* Release 12B coverage truthfulness: real returned count only, never
             a hardcoded number, and never a full-exchange claim. */}
         {data?.screened_from

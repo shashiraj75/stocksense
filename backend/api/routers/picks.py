@@ -123,6 +123,24 @@ def picks_status(market: str = "IN"):
             "phase_task_processed": job.get("phase_task_processed"),
             "phase_task_total": job.get("phase_task_total"),
         })
+
+    # ── 3-phase US Daily Picks upgrade: premarket finalizer status ──────────
+    # US-only — scoped here rather than for both markets so IN's frequent
+    # frontend polling (India has no premarket phase) gets no extra read.
+    # Additive only: sourced straight from the cached payload's own
+    # premarket_* keys (written by services/premarket_finalizer.py), never
+    # fabricated. All None on a payload finalized before this feature
+    # existed, or one no premarket run has touched yet — never an error.
+    if market == "US":
+        cached = _dp.get_cached_picks("US") or {}
+        resp.update({
+            "base_generated_at":          cached.get("base_generated_at") or cached.get("generated_at"),
+            "premarket_finalized_at":     cached.get("premarket_finalized_at"),
+            "premarket_status":           cached.get("premarket_status"),
+            "premarket_finalizer_version": cached.get("premarket_finalizer_version"),
+            "next_base_run_hint":         "04:00 UTC / 8:00 AM Dubai / 9:30 AM IST, Mon-Fri",
+            "next_premarket_run_hint":    "~8:05 AM America/New_York, Mon-Fri (EDT: 12:05 UTC, EST: 13:05 UTC)",
+        })
     return resp
 
 
@@ -273,3 +291,39 @@ def trigger_generation(background_tasks: BackgroundTasks, market: str = "IN", x_
         content={"status": "accepted", "market": market, "job_id": job_id,
                  "message": f"{market} picks will be ready in ~10-20 minutes."},
     )
+
+
+@router.post("/premarket-finalize")
+async def premarket_finalize(market: str = "US", x_secret: str = Header(None)):
+    """
+    Lightweight US premarket finalizer (3-phase US Daily Picks upgrade,
+    Phase 2). Re-checks the already-generated US base Daily Picks with
+    whatever premarket signals this codebase already has a safe provider
+    for — never recomputes the universe, never re-runs PredictionEngine,
+    never mutates scoring/ranking/confidence/target/stop-loss. See
+    services/premarket_finalizer.py's module docstring for full scope and
+    known limitations.
+
+    Protected by the same X-Secret header as /generate. Guards its own
+    execution window (8:00-8:30 AM America/New_York, Mon-Fri, excluding US
+    market holidays) internally and safely no-ops outside it — the calling
+    workflow (daily_picks_us_premarket.yml) fires two fixed-UTC candidate
+    times per day (one for EDT, one for EST) since GitHub Actions cron is
+    UTC-only and does not observe US DST; whichever candidate lands outside
+    the window gets this endpoint's no-op response, never an error.
+
+    Only market=US is supported — India Daily Picks timing/behavior is
+    explicitly out of scope for this feature and untouched.
+
+    HTTP contract:
+      200 — completed, skipped (outside window / unsupported market), or
+            failed (no base picks to finalize) — status is in the body,
+            never inferred from the HTTP code alone, matching how callers
+            already distinguish outcomes for /generate.
+    """
+    if x_secret != PICKS_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid secret")
+
+    from services.premarket_finalizer import finalize_premarket
+    result = await finalize_premarket(market)
+    return JSONResponse(status_code=200, content=result)

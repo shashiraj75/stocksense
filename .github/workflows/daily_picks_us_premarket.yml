@@ -1,0 +1,57 @@
+name: Daily Stock Picks — US Premarket Finalizer
+
+# GitHub Actions cron is UTC-only and does not observe US daylight saving
+# time, so two fixed-UTC schedules are used to approximate the same
+# 8:05 AM New York local time year-round. The backend endpoint itself is
+# the source of truth for whether it is actually inside the allowed
+# premarket window (America/New_York, DST-aware via zoneinfo) — one of
+# these two triggers will always land inside the window and run, the
+# other will always land outside the window and safely no-op.
+on:
+  schedule:
+    # EDT candidate: 12:05 UTC = 8:05 AM New York during EDT (Mar-Nov)
+    - cron: "5 12 * * 1-5"
+    # EST candidate: 13:05 UTC = 8:05 AM New York during EST (Nov-Mar)
+    - cron: "5 13 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  premarket-finalize-us:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Railway backend is healthy
+        run: |
+          echo "Checking Railway backend at $(date -u) UTC..."
+          HEALTHY=0
+
+          for i in $(seq 1 5); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
+              https://stocksense-production-7e0d.up.railway.app/health)
+            echo "Attempt $i: HTTP $STATUS"
+
+            if [ "$STATUS" = "200" ]; then
+              echo "Server is ready!"
+              HEALTHY=1
+              break
+            fi
+
+            sleep 10
+          done
+
+          if [ "$HEALTHY" != "1" ]; then
+            echo "Railway backend is not healthy after 5 attempts."
+            exit 1
+          fi
+
+      - name: Trigger US premarket finalizer
+        run: |
+          echo "Triggering US premarket finalizer at $(date -u) UTC..."
+          RESPONSE=$(curl -sS --fail-with-body --max-time 30 \
+            -X POST \
+            -H "x-secret: ${{ secrets.PICKS_SECRET }}" \
+            "https://stocksense-production-7e0d.up.railway.app/api/picks/premarket-finalize?market=US")
+          echo "$RESPONSE"
+          echo ""
+          echo "Premarket finalizer call complete. The backend guards execution to the"
+          echo "8:00-8:30 AM America/New_York window and safely no-ops outside it (e.g."
+          echo "the EDT/EST candidate that isn't the active DST offset today)."

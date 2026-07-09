@@ -2,9 +2,13 @@ name: Daily Stock Picks — US Pre-Open
 
 on:
   schedule:
-    # US: 12:17 UTC = 8:17 AM ET during EDT / 7:17 AM ET during EST
-    # Runs before the 9:30 AM ET US market open
-    - cron: "17 12 * * 1-5"
+    # US base run: 04:00 UTC = 8:00 AM Dubai = 9:30 AM IST
+    # Runs many hours before the 9:30 AM ET US market open
+    # Mon-Fri UTC = US market days (US run does not cross into the next UTC calendar day)
+    # This is the heavy/full Daily Picks base run — a lightweight premarket
+    # finalizer (daily_picks_us_premarket.yml) runs separately, shortly
+    # before market open, to refresh/review these base picks.
+    - cron: "0 4 * * 1-5"
   workflow_dispatch:
 
 jobs:
