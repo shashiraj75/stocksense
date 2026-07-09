@@ -231,7 +231,13 @@ function HoldingsTable({
 
   return (
     <div className="bg-dark-card border border-dark-border rounded-2xl overflow-hidden">
-      <div className="overflow-x-auto">
+      {/* A wide table (11 columns) needs horizontal scroll on anything
+          narrower than a large desktop. Native scrollbars are invisible
+          until actively scrolling on macOS/trackpad systems, which makes a
+          cut-off table look broken rather than "scroll for more" — force a
+          persistently visible, styled thin scrollbar instead of relying on
+          the OS default. */}
+      <div className="overflow-x-auto [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-dark-border [&::-webkit-scrollbar-thumb]:rounded-full">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-dark-border text-gray-400 text-left">
@@ -493,7 +499,7 @@ export default function PortfolioPage() {
       <UnsupportedMarketNotice supported={["IN", "US"]} />
       <MarketDisclaimer market={market} />
 
-      <div className="flex items-center gap-3">
+      <div className="flex items-center flex-wrap gap-3">
         <Briefcase size={22} className="text-brand-500" />
         <div>
           <h1 className="text-2xl font-bold">Portfolio</h1>
