@@ -29,20 +29,29 @@ export function PortfolioAllocationChart({
 }: { stockSlices: StockSlice[]; sectorSlices: SectorSlice[] }) {
   const withStockValue = stockSlices.filter(s => s.value > 0);
   const withSectorValue = sectorSlices.filter(s => s.value > 0);
-  const hasMultiSectorData = withSectorValue.length > 1;
+  // Any resolved sector value at all — even a single "Other" bucket while
+  // the rest are still loading — is enough to show the sector view and its
+  // toggle. A stricter ">1 distinct sector" threshold made large India
+  // portfolios (many holdings, slow sequential per-symbol sector fetches)
+  // look structurally different from small/fast US ones: everything sat
+  // in "Other" for a while, so the toggle stayed hidden and it silently
+  // fell back to by-stock — the two markets should present the same UI
+  // shape (toggle + sector-first default) regardless of how much sector
+  // data has resolved so far; "Other" simply shrinks as more arrives.
+  const hasSectorData = withSectorValue.length > 0;
 
-  // null = "follow the data" (defaults to sector once multi-sector data
-  // arrives, which happens asynchronously after mount as signal queries
-  // resolve — a plain useState default would freeze at whatever was true
-  // on the FIRST render, before any sector data existed, and never
-  // reconsider). Only becomes a fixed "sector"/"stock" once the user
-  // explicitly clicks a toggle button, overriding the auto-follow.
+  // null = "follow the data" (defaults to sector once sector data arrives,
+  // which happens asynchronously after mount as signal queries resolve —
+  // a plain useState default would freeze at whatever was true on the
+  // FIRST render, before any sector data existed, and never reconsider).
+  // Only becomes a fixed "sector"/"stock" once the user explicitly clicks
+  // a toggle button, overriding the auto-follow.
   const [mode, setMode] = useState<"sector" | "stock" | null>(null);
-  const effectiveMode = mode ?? (hasMultiSectorData ? "sector" : "stock");
+  const effectiveMode = mode ?? (hasSectorData ? "sector" : "stock");
 
   if (withStockValue.length === 0) return null;
 
-  const activeSlices = (effectiveMode === "sector" && hasMultiSectorData
+  const activeSlices = (effectiveMode === "sector" && hasSectorData
     ? withSectorValue.map(s => ({ label: s.sector, value: s.value }))
     : withStockValue.map(s => ({ label: s.symbol, value: s.value })));
 
@@ -59,7 +68,7 @@ export function PortfolioAllocationChart({
     <div className="bg-dark-card border border-dark-border rounded-2xl p-5 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h2 className="font-semibold text-sm text-gray-300">Portfolio Allocation</h2>
-        {hasMultiSectorData && (
+        {hasSectorData && (
           <div className="flex items-center gap-0.5 bg-dark-bg border border-dark-border rounded-lg p-0.5">
             {(["sector", "stock"] as const).map(m => (
               <button
