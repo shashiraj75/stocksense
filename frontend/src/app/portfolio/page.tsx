@@ -548,7 +548,7 @@ export default function PortfolioPage() {
           {hasIN && (
             <div>
               <p className="text-xs text-gray-500 mb-2 flex items-center gap-1">🇮🇳 Indian Holdings (₹)</p>
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              <div className="flex flex-wrap gap-2.5">
                 {[
                   { label: "Holdings", value: String(holdings.filter(h => h.market === "IN").length), color: "text-white" },
                   { label: "Invested", value: `₹${totalInvestedIN.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`, color: "text-white" },
@@ -556,9 +556,9 @@ export default function PortfolioPage() {
                   { label: "Day's P&L", value: `${totalDayChangeIN >= 0 ? "+" : ""}₹${Math.abs(totalDayChangeIN).toLocaleString("en-IN", { maximumFractionDigits: 0 })} (${totalDayChangePctIN >= 0 ? "+" : ""}${totalDayChangePctIN.toFixed(1)}%)`, color: totalDayChangeIN >= 0 ? "text-bull" : "text-bear" },
                   { label: "P&L", value: `${totalPLIN >= 0 ? "+" : ""}₹${Math.abs(totalPLIN).toLocaleString("en-IN", { maximumFractionDigits: 0 })} (${totalPLPctIN >= 0 ? "+" : ""}${totalPLPctIN.toFixed(1)}%)`, color: totalPLIN >= 0 ? "text-bull" : "text-bear" },
                 ].map(c => (
-                  <div key={c.label} className="bg-dark-card border border-dark-border rounded-2xl p-4">
-                    <p className="text-xs text-gray-400 mb-1">{c.label}</p>
-                    <p className={clsx("text-lg font-bold", c.color)}>{c.value}</p>
+                  <div key={c.label} className="bg-dark-card border border-dark-border rounded-2xl px-4 py-2.5 flex-none min-w-[110px]">
+                    <p className="text-xs text-gray-400 mb-0.5 whitespace-nowrap">{c.label}</p>
+                    <p className={clsx("text-lg font-bold whitespace-nowrap", c.color)}>{c.value}</p>
                   </div>
                 ))}
               </div>
@@ -568,7 +568,7 @@ export default function PortfolioPage() {
           {hasUS && (
             <div>
               <p className="text-xs text-gray-500 mb-2 flex items-center gap-1">🇺🇸 US Holdings ($)</p>
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              <div className="flex flex-wrap gap-2.5">
                 {[
                   { label: "Holdings", value: String(holdings.filter(h => h.market === "US").length), color: "text-white" },
                   { label: "Invested", value: `$${totalInvestedUS.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, color: "text-white" },
@@ -576,9 +576,9 @@ export default function PortfolioPage() {
                   { label: "Day's P&L", value: `${totalDayChangeUS >= 0 ? "+" : ""}$${Math.abs(totalDayChangeUS).toLocaleString(undefined, { maximumFractionDigits: 0 })} (${totalDayChangePctUS >= 0 ? "+" : ""}${totalDayChangePctUS.toFixed(1)}%)`, color: totalDayChangeUS >= 0 ? "text-bull" : "text-bear" },
                   { label: "P&L", value: `${totalPLUS >= 0 ? "+" : ""}$${Math.abs(totalPLUS).toLocaleString(undefined, { maximumFractionDigits: 0 })} (${totalPLPctUS >= 0 ? "+" : ""}${totalPLPctUS.toFixed(1)}%)`, color: totalPLUS >= 0 ? "text-bull" : "text-bear" },
                 ].map(c => (
-                  <div key={c.label} className="bg-dark-card border border-dark-border rounded-2xl p-4">
-                    <p className="text-xs text-gray-400 mb-1">{c.label}</p>
-                    <p className={clsx("text-lg font-bold", c.color)}>{c.value}</p>
+                  <div key={c.label} className="bg-dark-card border border-dark-border rounded-2xl px-4 py-2.5 flex-none min-w-[110px]">
+                    <p className="text-xs text-gray-400 mb-0.5 whitespace-nowrap">{c.label}</p>
+                    <p className={clsx("text-lg font-bold whitespace-nowrap", c.color)}>{c.value}</p>
                   </div>
                 ))}
               </div>
