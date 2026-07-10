@@ -280,7 +280,7 @@ const _notifiedThisSession = new Set<string>();
 const _autoCloseAttempted = new Set<number>();
 
 function OpenTradeRow({
-  trade, quote, onSell, userId, onNotify, notificationsEnabled,
+  trade, quote, marketOpen, prefersReducedMotion, onSell, userId, onNotify, notificationsEnabled,
 }: {
   trade: PaperTrade;
   // Fetched once, staggered, at the page level (see quoteResults in
@@ -295,6 +295,20 @@ function OpenTradeRow({
   // stuck/torn to navigate into. Passing the already-staggered value down
   // removes that duplicate entirely instead of just double-fetching slower.
   quote: StockQuote | null | undefined;
+  // Both computed once at the page level and passed down, same reasoning
+  // as `quote` above — every row used to call useMarketOpen/
+  // usePrefersReducedMotion independently, meaning 40+ open positions meant
+  // 40+ redundant setInterval(30s) timers and 40+ redundant matchMedia
+  // listeners all tracking the exact same page-wide value (Paper Trading
+  // only ever shows one market's positions at a time, so marketOpen is
+  // identical for every row already; reduced-motion is a single global OS
+  // setting). Beyond the wasted work while mounted, EVERY one of those
+  // timers/listeners has to be torn down on unmount too — the real cost
+  // behind "leaving Paper Trade for another tab lags": unmounting this
+  // route meant running 80+ cleanup functions synchronously before the
+  // next route's own content (and nav highlight) could commit.
+  marketOpen: boolean | null;
+  prefersReducedMotion: boolean;
   onSell: (t: PaperTrade) => void;
   userId: string;
   onNotify: (message: string, tone: "success" | "warning") => void;
@@ -310,11 +324,6 @@ function OpenTradeRow({
   const nearStopLoss = isNearStopLoss(trade, livePrice);
   const nearTarget   = isNearTarget(trade, livePrice);
 
-  // Paper Trading only supports IN/US today — getMarketStatus/useMarketOpen
-  // also accepts "CRYPTO" (always open) so this stays correct unchanged if a
-  // crypto asset class is ever added here.
-  const marketOpen = useMarketOpen(trade.market as "IN" | "US");
-  const prefersReducedMotion = usePrefersReducedMotion();
   // Never animate on an unresolved/unknown status, and never override a
   // user's reduced-motion preference — the static label below still
   // conveys the same information either way.
@@ -770,6 +779,12 @@ export default function PaperTradingPage() {
   const queryClient = useQueryClient();
   const [market] = useMarketPreference(["IN", "US"] as const, "IN");
   const marketCfg = MARKETS.find(m => m.key === market)!;
+  // Computed once here instead of once per open-trade row — see
+  // OpenTradeRow's own comment on the `marketOpen`/`prefersReducedMotion`
+  // props for why. Paper Trading only ever shows one market's positions at
+  // a time, so every row would have gotten the identical value anyway.
+  const marketOpen = useMarketOpen(market);
+  const prefersReducedMotion = usePrefersReducedMotion();
   const [sellTarget, setSellTarget] = useState<PaperTrade | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [historyExpanded, setHistoryExpanded] = useState(true);
@@ -1172,7 +1187,7 @@ export default function PaperTradingPage() {
                     </thead>
                     <tbody>
                       {trades.map(t => (
-                        <OpenTradeRow key={t.id} trade={t} quote={quoteByTradeId.get(t.id)} onSell={setSellTarget} userId={userId} onNotify={pushNotification} notificationsEnabled={portfolio.email_notifications_enabled} />
+                        <OpenTradeRow key={t.id} trade={t} quote={quoteByTradeId.get(t.id)} marketOpen={marketOpen} prefersReducedMotion={prefersReducedMotion} onSell={setSellTarget} userId={userId} onNotify={pushNotification} notificationsEnabled={portfolio.email_notifications_enabled} />
                       ))}
                     </tbody>
                   </table>
