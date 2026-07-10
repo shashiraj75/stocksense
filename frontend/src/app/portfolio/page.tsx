@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect, useMemo, Fragment } from "react";
-import { fetchQuote, fetchSignalSummary, Market, api } from "@/utils/api";
+import { useQuery } from "@tanstack/react-query";
+import { fetchQuote, fetchSignalSummary, fetchSectorsBatch, Market, api } from "@/utils/api";
 import { useStaggeredQueries } from "@/hooks/useStaggeredQueries";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { SignalBadge } from "@/components/SignalBadge";
@@ -16,7 +17,7 @@ import { ImportPortfolioModal } from "@/components/ImportPortfolioModal";
 import { exportPortfolioToExcel } from "@/utils/portfolioExport";
 import { UnsupportedMarketNotice } from "@/components/UnsupportedMarketNotice";
 
-interface Holding {
+export interface Holding {
   id: string;
   symbol: string;
   market: Market;
@@ -30,7 +31,7 @@ interface Holding {
 // whichever browser they were added from.
 const STORAGE_KEY = "stocksense_portfolio";
 
-type Row = Holding & {
+export type Row = Holding & {
   curPrice: number | null;
   invested: number;
   current: number | null;
@@ -47,10 +48,20 @@ type Row = Holding & {
   signal: string | null;
   confidence?: number;
   sigLoading: boolean;
-  // Reused from the same signal fetch's already-computed quality_factors —
-  // no new request. Null/undefined until the signal query resolves or when
-  // the owning prediction has no sector data.
+  // Sourced from a single lightweight batch lookup against the
+  // nightly-refreshed stock_fundamentals_cache table (fetchSectorsBatch),
+  // one request per market for the whole holdings list — deliberately NOT
+  // the per-holding AI signal/prediction pipeline. Sector allocation used
+  // to be gated on every holding's full signal resolving (staggered, slow
+  // on a cold cache), so the allocation chart could sit on a misleading
+  // "Loading… 100%" bar for as long as that took, even though this data
+  // was sitting in a cache table the whole time. Null/undefined until the
+  // batch resolves or when the cache genuinely has no sector for it.
   sector?: string | null;
+  // True only while THIS holding's market-wide sector batch request is in
+  // flight (one request total per market, not per holding) — distinct from
+  // sigLoading, which still gates the Signal badge only.
+  sectorLoading: boolean;
 };
 
 function HoldingRow({
@@ -199,7 +210,11 @@ function SortableHeader({
   );
 }
 
-function HoldingsTable({
+// Exported purely for direct unit testing of sector grouping (percentage
+// headings, unresolved-vs-Other separation, market scoping) without
+// needing to render the full data-fetching PortfolioPage — no behavior
+// change, this component doesn't fetch anything itself.
+export function HoldingsTable({
   rows, currency, onRemove, onEdit, groupBySector,
 }: {
   rows: Row[];
@@ -243,32 +258,40 @@ function HoldingsTable({
   // ordered by each group's own current value descending — largest sector
   // first, matching how the allocation chart itself orders sectors.
   //
-  // Rows whose signal (and therefore sector) hasn't resolved yet get their
-  // own "Loading…" bucket rather than falling into "Other" — otherwise a
+  // Rows whose sector lookup hasn't resolved yet get their own "Resolving
+  // sector…" bucket rather than falling into "Other" — otherwise a
   // portfolio can look like every holding is unclassified for as long as
-  // the staggered per-holding signal requests take to settle, when really
-  // most of them just haven't answered yet. Always sorted last regardless
-  // of size — it's a transient state, not a real category.
+  // that lookup takes, when really most of them just haven't answered yet.
+  // Always sorted last regardless of size — it's a transient state, not a
+  // real category — and its value is never folded into "Other" or into the
+  // percentage-of-portfolio denominator used for the resolved groups below.
+  const marketTotalValue = useMemo(
+    () => sortedRows.reduce((s, r) => s + (r.current ?? 0), 0),
+    [sortedRows]
+  );
   const sectorGroups = useMemo(() => {
     if (!groupBySector) return null;
     const byName = new Map<string, Row[]>();
-    const loadingRows: Row[] = [];
+    const unresolvedRows: Row[] = [];
     for (const r of sortedRows) {
-      if (r.sigLoading) { loadingRows.push(r); continue; }
+      if (r.sectorLoading) { unresolvedRows.push(r); continue; }
       const name = r.sector?.trim() || "Other";
       if (!byName.has(name)) byName.set(name, []);
       byName.get(name)!.push(r);
     }
-    const groups = Array.from(byName, ([sector, groupRows]) => ({
-      sector,
-      rows: groupRows,
-      totalValue: groupRows.reduce((s, r) => s + (r.current ?? 0), 0),
-    })).sort((a, b) => b.totalValue - a.totalValue);
-    if (loadingRows.length > 0) {
+    const groups: { sector: string; rows: Row[]; totalValue: number; resolved: boolean }[] =
+      Array.from(byName, ([sector, groupRows]) => ({
+        sector,
+        rows: groupRows,
+        totalValue: groupRows.reduce((s, r) => s + (r.current ?? 0), 0),
+        resolved: true,
+      })).sort((a, b) => b.totalValue - a.totalValue);
+    if (unresolvedRows.length > 0) {
       groups.push({
-        sector: "Loading…",
-        rows: loadingRows,
-        totalValue: loadingRows.reduce((s, r) => s + (r.current ?? 0), 0),
+        sector: "Resolving sector…",
+        rows: unresolvedRows,
+        totalValue: unresolvedRows.reduce((s, r) => s + (r.current ?? 0), 0),
+        resolved: false,
       });
     }
     return groups;
@@ -308,21 +331,33 @@ function HoldingsTable({
           </thead>
           <tbody>
             {sectorGroups ? (
-              sectorGroups.map((g) => (
-                <Fragment key={g.sector}>
-                  <tr className="bg-dark-bg/60">
-                    <td colSpan={COLUMN_COUNT} className="px-4 py-2 text-xs font-semibold text-gray-300">
-                      {g.sector}
-                      <span className="ml-2 font-normal text-gray-500">
-                        {g.rows.length} holding{g.rows.length !== 1 ? "s" : ""} · {currency}{g.totalValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                      </span>
-                    </td>
-                  </tr>
-                  {g.rows.map((r) => (
-                    <HoldingRow key={r.id} r={r} currency={currency} onRemove={onRemove} onEdit={onEdit} />
-                  ))}
-                </Fragment>
-              ))
+              sectorGroups.map((g) => {
+                // Percentage of the selected market's total portfolio value
+                // — only meaningful for a resolved sector (the denominator
+                // is the whole market, not just what's resolved so far, so
+                // this also communicates "how much of my portfolio is this,"
+                // not just "how much of what's been classified"). Omitted
+                // for the unresolved bucket — a %-of-portfolio figure next
+                // to "Resolving…" would read as a real allocation number.
+                const pct = g.resolved && marketTotalValue > 0 ? (g.totalValue / marketTotalValue) * 100 : null;
+                return (
+                  <Fragment key={g.sector}>
+                    <tr className={clsx("bg-dark-bg/60", !g.resolved && "opacity-70")}>
+                      <td colSpan={COLUMN_COUNT} className="px-4 py-2 text-xs font-semibold text-gray-300">
+                        {!g.resolved && <span className="inline-block w-1.5 h-1.5 rounded-full bg-gray-500 animate-pulse mr-1.5" />}
+                        {g.sector}
+                        <span className="ml-2 font-normal text-gray-500">
+                          {g.rows.length} holding{g.rows.length !== 1 ? "s" : ""} · {currency}{g.totalValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                          {pct !== null && ` · ${pct.toFixed(1)}%`}
+                        </span>
+                      </td>
+                    </tr>
+                    {g.rows.map((r) => (
+                      <HoldingRow key={r.id} r={r} currency={currency} onRemove={onRemove} onEdit={onEdit} />
+                    ))}
+                  </Fragment>
+                );
+              })
             ) : (
               sortedRows.map((r) => (
                 <HoldingRow key={r.id} r={r} currency={currency} onRemove={onRemove} onEdit={onEdit} />
@@ -464,6 +499,28 @@ export default function PortfolioPage() {
       // large portfolio needs (e.g. 38 holdings: 7 batches -> 5).
   );
 
+  // Sector allocation's data source - deliberately independent of
+  // signalQueries above. One batch request per market for the WHOLE
+  // holdings list (not staggered, not one-per-holding, not gated on any
+  // AI prediction), sourced from the nightly-refreshed
+  // stock_fundamentals_cache table. This is what lets the allocation
+  // chart resolve real sectors immediately instead of waiting on however
+  // long the staggered per-holding signal computation takes.
+  const inSymbols = useMemo(() => holdings.filter(h => h.market === "IN").map(h => h.symbol), [holdings]);
+  const usSymbols = useMemo(() => holdings.filter(h => h.market === "US").map(h => h.symbol), [holdings]);
+  const inSectorsQuery = useQuery({
+    queryKey: ["portfolio-sectors", "IN", inSymbols.join(",")],
+    queryFn: () => fetchSectorsBatch(inSymbols, "IN"),
+    enabled: inSymbols.length > 0,
+    staleTime: 30 * 60_000, // a stock's sector classification doesn't change day to day
+  });
+  const usSectorsQuery = useQuery({
+    queryKey: ["portfolio-sectors", "US", usSymbols.join(",")],
+    queryFn: () => fetchSectorsBatch(usSymbols, "US"),
+    enabled: usSymbols.length > 0,
+    staleTime: 30 * 60_000,
+  });
+
   const add = async () => {
     setError("");
     if (!sym.trim()) return setError("Enter a symbol");
@@ -516,6 +573,7 @@ export default function PortfolioPage() {
   // actually consume instead of on the arrays themselves.
   const quoteSig = quoteQueries.map(q => `${q.isLoading ? "L" : ""}${q.data?.price ?? ""}`).join("|");
   const signalSig = signalQueries.map(q => `${q.isLoading ? "L" : ""}${q.data?.signal ?? ""}:${q.data?.confidence ?? ""}`).join("|");
+  const sectorsSig = `${inSectorsQuery.isLoading ? "L" : ""}${JSON.stringify(inSectorsQuery.data ?? {})}|${usSectorsQuery.isLoading ? "L" : ""}${JSON.stringify(usSectorsQuery.data ?? {})}`;
 
   const { rows, totalInvestedIN, totalCurrentIN, totalInvestedUS, totalCurrentUS, totalDayChangeIN, totalDayChangeUS } = useMemo(() => {
     // Compute totals per currency — never mix ₹ and $ into one number
@@ -547,12 +605,17 @@ export default function PortfolioPage() {
       const sig = signalQueries[i]?.data;
       const signal = sig?.signal ?? null;
       const confidence = sig?.confidence ?? undefined;
-      const sector = sig?.sector ?? null;
-      return { ...h, curPrice, invested, current, plAmt, plPct, dayChangeAmt, dayChangePct, loading: quoteQueries[i]?.isLoading, signal, confidence, sigLoading: signalQueries[i]?.isLoading, sector };
+      // Sourced from the lightweight batch lookup, keyed per-market — never
+      // from the signal query's own quality_factors.sector anymore, so
+      // sector allocation no longer waits on a per-holding AI computation.
+      const sectorsQuery = h.market === "IN" ? inSectorsQuery : usSectorsQuery;
+      const sector = sectorsQuery.data?.[h.symbol.toUpperCase()] ?? null;
+      const sectorLoading = sectorsQuery.isLoading;
+      return { ...h, curPrice, invested, current, plAmt, plPct, dayChangeAmt, dayChangePct, loading: quoteQueries[i]?.isLoading, signal, confidence, sigLoading: signalQueries[i]?.isLoading, sector, sectorLoading };
     });
     return { rows, totalInvestedIN, totalCurrentIN, totalInvestedUS, totalCurrentUS, totalDayChangeIN, totalDayChangeUS };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [holdings, quoteSig, signalSig]);
+  }, [holdings, quoteSig, signalSig, sectorsSig]);
 
   // Sprint 011 (§20.1 memoization): the per-market row splits and the
   // allocation-chart slices are derived views of the memoized rows — keep
@@ -567,33 +630,35 @@ export default function PortfolioPage() {
     })).sort((a, b) => b.value - a.value), [rows, market]);
 
   // Sector-wise grouping for the allocation chart's default view — sums
-  // current value per sector, bucketing null/not-yet-resolved sectors under
-  // "Other" so the bar always totals the same as the by-stock view rather
-  // than silently omitting value while signals are still loading.
-  //
-  // "Still loading" and "genuinely has no sector classification" used to
-  // both collapse into "Other", which meant a portfolio could show 100%
-  // "Other" for as long as it took the staggered per-holding signal
-  // requests to resolve (each holding's sector comes from the same
-  // prediction as its Signal badge — see `sigLoading` above) — looking
-  // exactly like every holding was unclassified when really nothing had
-  // resolved yet. Loading rows get their own bucket instead, so "Other"
-  // only ever means "resolved, and there's really no sector for it."
+  // current value per REAL, resolved sector. Unresolved holdings are
+  // tracked separately (unresolvedSectorValue/Count below), never folded
+  // into this array as a fake "Loading…" sector slice — a slice in here is
+  // always a genuine investment sector (or the resolved-but-unclassified
+  // "Other" bucket), so the chart can never mistake "nothing has resolved
+  // yet" for "the whole portfolio is one real category."
   const sectorSlices = useMemo(() => {
     const totals = new Map<string, number>();
-    let loadingValue = 0;
     for (const r of rows) {
-      if (r.market !== market || !r.current) continue;
-      if (r.sigLoading) { loadingValue += r.current; continue; }
+      if (r.market !== market || !r.current || r.sectorLoading) continue;
       const sector = r.sector?.trim() || "Other";
       totals.set(sector, (totals.get(sector) ?? 0) + r.current);
     }
-    const slices = Array.from(totals, ([sector, value]) => ({ sector, value }))
+    return Array.from(totals, ([sector, value]) => ({ sector, value }))
       .sort((a, b) => b.value - a.value);
-    // Always last — it's a transient placeholder, not a real category, so
-    // it never belongs above genuinely-resolved sectors regardless of size.
-    if (loadingValue > 0) slices.push({ sector: "Loading…", value: loadingValue });
-    return slices;
+  }, [rows, market]);
+
+  // Value/count still resolving sector for the selected market — surfaced
+  // to the allocation chart as a distinct "Resolving sectors…" state, never
+  // merged into sectorSlices above and never counted as "Other" (which must
+  // only ever mean "resolved, and there's genuinely no sector for it").
+  const { unresolvedSectorValue, unresolvedSectorCount } = useMemo(() => {
+    let value = 0, count = 0;
+    for (const r of rows) {
+      if (r.market !== market || !r.current || !r.sectorLoading) continue;
+      value += r.current;
+      count += 1;
+    }
+    return { unresolvedSectorValue: value, unresolvedSectorCount: count };
   }, [rows, market]);
 
   // Single shared toggle for both the allocation chart's grouping and the
@@ -602,9 +667,7 @@ export default function PortfolioPage() {
   // "follow the data" (defaults to sector once sector data arrives, which
   // resolves asynchronously after mount) until the user explicitly clicks.
   const [allocationMode, setAllocationMode] = useState<"sector" | "stock" | null>(null);
-  // Excludes the "Loading…" placeholder — that's not real sector data, so
-  // it must not be enough on its own to switch the default view to Sector.
-  const hasSectorData = sectorSlices.some(s => s.sector !== "Loading…" && s.value > 0);
+  const hasSectorData = sectorSlices.some(s => s.value > 0);
   const effectiveAllocationMode = allocationMode ?? (hasSectorData ? "sector" : "stock");
 
   // Gated on the selected market toggle too, not just whether holdings exist —
@@ -793,6 +856,9 @@ export default function PortfolioPage() {
         <PortfolioAllocationChart
           stockSlices={chartSlices}
           sectorSlices={sectorSlices}
+          unresolvedSectorValue={unresolvedSectorValue}
+          unresolvedSectorCount={unresolvedSectorCount}
+          currency={currency(market)}
           mode={allocationMode}
           onModeChange={setAllocationMode}
         />

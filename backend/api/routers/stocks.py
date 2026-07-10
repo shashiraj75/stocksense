@@ -47,6 +47,35 @@ async def get_ohlcv(
     return await svc.get_ohlcv(symbol.upper(), market, period, interval)
 
 
+@router.get("/sectors")
+async def get_sectors_batch(
+    symbols: str = Query(..., description="Comma-separated symbols, e.g. TCS,INFY,WIPRO"),
+    market: Literal["US", "IN"] = Query("IN"),
+):
+    """
+    Batch sector lookup for a list of symbols, sourced from the nightly-
+    refreshed stock_fundamentals_cache table (screener.in for IN, yfinance-
+    derived for US) — the same cache Multibagger's screens and the
+    Prediction Engine's own sector-strength fallback already read.
+
+    Deliberately NOT the Prediction Engine / signal pipeline: this never
+    computes a prediction, score, or quality factor of any kind, and never
+    triggers the 202-then-poll compute path — it's a single read-only SQL
+    lookup against a table that's already populated, so Portfolio's sector
+    allocation can resolve immediately instead of waiting on a full
+    per-symbol signal computation just to learn which sector a holding is
+    in. Symbols outside the cache (or not yet refreshed) come back as null,
+    same as get_sector()'s existing single-symbol contract.
+    """
+    symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
+    if not symbol_list:
+        return {"sectors": {}}
+    from services.fundamentals_cache import get_sectors_batch as _get_sectors_batch
+    loop = asyncio.get_running_loop()
+    sectors = await loop.run_in_executor(None, _get_sectors_batch, symbol_list, market)
+    return {"sectors": sectors}
+
+
 @router.get("/search")
 async def search_stocks(
     q: str = Query(..., min_length=1),

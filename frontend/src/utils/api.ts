@@ -247,6 +247,24 @@ export function getValidResearchReport(
 export const fetchQuote = (symbol: string, market: Market) =>
   api.get<StockQuote>(`/api/stocks/quote/${symbol}`, { params: { market } }).then((r) => r.data);
 
+// Batch sector lookup for Portfolio's allocation view — sourced from the
+// nightly-refreshed stock_fundamentals_cache table, NOT the per-symbol
+// signal/prediction pipeline (fetchSignalSummary's `sector` field). A
+// portfolio's sector breakdown used to be gated on every holding's full AI
+// signal resolving (staggered, and slow on a cold cache), so the
+// allocation chart could sit on a misleading "Loading… 100%" bar for as
+// long as that took even though this data has been sitting in a cache
+// table the whole time. One call for the whole holdings list, resolves in
+// one page-load's round trip regardless of portfolio size.
+export const fetchSectorsBatch = (symbols: string[], market: Market) =>
+  symbols.length === 0
+    ? Promise.resolve({} as Record<string, string | null>)
+    : api
+        .get<{ sectors: Record<string, string | null> }>("/api/stocks/sectors", {
+          params: { symbols: symbols.join(","), market },
+        })
+        .then((r) => r.data.sectors);
+
 export const fetchOHLCV = (symbol: string, market: Market, period = "1y", interval = "1d") =>
   api
     .get<{ data: OHLCVBar[] }>(`/api/stocks/ohlcv/${symbol}`, { params: { market, period, interval } })

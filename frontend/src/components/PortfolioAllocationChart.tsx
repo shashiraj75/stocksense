@@ -24,10 +24,21 @@ const PALETTE = [
 // computing) or when there's only one distinct sector (grouping would be a
 // no-op slice covering the whole bar).
 export function PortfolioAllocationChart({
-  stockSlices, sectorSlices, mode, onModeChange,
+  stockSlices, sectorSlices, unresolvedSectorValue = 0, unresolvedSectorCount = 0, currency = "", mode, onModeChange,
 }: {
   stockSlices: StockSlice[];
+  // Only ever genuinely-resolved sectors (including the resolved "Other"
+  // bucket) — never a synthetic "still loading" entry. See
+  // unresolvedSectorValue/Count below for that.
   sectorSlices: SectorSlice[];
+  // Value/count of holdings whose sector hasn't resolved yet, tracked
+  // separately from sectorSlices so it can never be rendered as if it were
+  // a real chart segment (a "Loading… 100%" bar that looks like a complete,
+  // real allocation) — surfaced instead as a distinct "Resolving sectors…"
+  // line, visually subordinate to the real slices above it.
+  unresolvedSectorValue?: number;
+  unresolvedSectorCount?: number;
+  currency?: string;
   // Lifted from this component so the same toggle also drives the holdings
   // table's grouping (portfolio/page.tsx owns the state) — null still means
   // "follow the data" until the user explicitly clicks a toggle button.
@@ -37,14 +48,17 @@ export function PortfolioAllocationChart({
   const withStockValue = stockSlices.filter(s => s.value > 0);
   const withSectorValue = sectorSlices.filter(s => s.value > 0);
   // Any resolved sector value at all — even a single "Other" bucket while
-  // the rest are still loading — is enough to show the sector view and its
-  // toggle. A stricter ">1 distinct sector" threshold made large India
-  // portfolios (many holdings, slow sequential per-symbol sector fetches)
-  // look structurally different from small/fast US ones: everything sat
-  // in "Other" for a while, so the toggle stayed hidden and it silently
-  // fell back to by-stock — the two markets should present the same UI
-  // shape (toggle + sector-first default) regardless of how much sector
-  // data has resolved so far; "Other" simply shrinks as more arrives.
+  // the rest are still resolving — is enough to show the sector view and
+  // its toggle. A stricter ">1 distinct sector" threshold made large India
+  // portfolios (many holdings, slower per-symbol resolution) look
+  // structurally different from small/fast US ones: everything sat in
+  // "Other" for a while, so the toggle stayed hidden and it silently fell
+  // back to by-stock — the two markets should present the same UI shape
+  // (toggle + sector-first default) regardless of how much sector data has
+  // resolved so far; "Other" simply shrinks as more arrives. Crucially,
+  // `sectorSlices` itself never contains an unresolved placeholder (see the
+  // prop's own comment), so this can no longer be tricked into thinking
+  // "still loading" is real sector data.
   const hasSectorData = withSectorValue.length > 0;
 
   const effectiveMode = mode ?? (hasSectorData ? "sector" : "stock");
@@ -115,6 +129,23 @@ export function PortfolioAllocationChart({
           );
         })}
       </div>
+
+      {/* Resolving sectors — a distinct, visually muted state, never a
+          chart segment. Only relevant in sector mode: by-stock allocation
+          doesn't depend on sector data at all, so there's nothing to flag
+          there. Shown even when hasSectorData is false (nothing real has
+          resolved yet) — in that case the bar/legend above are already
+          showing By Stock (effectiveMode falls back automatically since
+          hasSectorData is false), so this reads as "still working on
+          sectors, here's your allocation by stock in the meantime" rather
+          than a stalled-looking single "Loading" bar. */}
+      {effectiveMode === "sector" && unresolvedSectorCount > 0 && (
+        <p className="flex items-center gap-1.5 text-xs text-gray-500">
+          <span className="w-1.5 h-1.5 rounded-full bg-gray-500 animate-pulse shrink-0" />
+          Resolving sector{unresolvedSectorCount !== 1 ? "s" : ""}… {unresolvedSectorCount} holding{unresolvedSectorCount !== 1 ? "s" : ""}
+          {unresolvedSectorValue > 0 && ` · ${currency}${unresolvedSectorValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
+        </p>
+      )}
 
       {/* Signal distribution */}
       {(buyCount + sellCount + holdCount) > 0 && (

@@ -232,6 +232,37 @@ def get_sector(symbol: str, market: str = "IN") -> tuple[str | None, str | None]
         return (None, None)
 
 
+def get_sectors_batch(symbols: list[str], market: str = "IN") -> dict[str, str | None]:
+    """
+    Batch counterpart to get_sector() — one query for N symbols instead of N
+    queries, for callers (Portfolio's allocation view) that need sectors for
+    an entire holdings list at once rather than one symbol at a time. Reads
+    only the nightly-refreshed cache table — no live scrape, no prediction
+    computation, no scoring of any kind.
+
+    Returns {symbol: sector_name} for every requested symbol, using the
+    UPPERCASED symbol as the key; symbols not present in the cache (outside
+    the refresh job's universe, or not refreshed yet) map to None rather
+    than being omitted, so callers can always index by their original
+    symbol list without a membership check. Symbols missing from the input
+    contribute no query cost — an empty list returns {} without connecting.
+    """
+    symbols = [s.upper() for s in symbols if s]
+    if not symbols:
+        return {}
+    try:
+        with _conn() as conn:
+            rows = conn.execute(
+                "SELECT symbol, sector_name FROM stock_fundamentals_cache "
+                "WHERE symbol = ANY(%s) AND market = %s",
+                [symbols, market],
+            ).fetchall()
+            found = {row[0]: row[1] for row in rows}
+    except Exception:
+        found = {}
+    return {sym: found.get(sym) for sym in symbols}
+
+
 def last_refreshed(market: str = "IN") -> str | None:
     with _conn() as conn:
         row = conn.execute(
