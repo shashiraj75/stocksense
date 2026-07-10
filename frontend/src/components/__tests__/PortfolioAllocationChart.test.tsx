@@ -1,11 +1,21 @@
+import { useState } from "react";
 import { describe, it, expect } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { PortfolioAllocationChart } from "../PortfolioAllocationChart";
 
+// The chart is a controlled component (mode/onModeChange lifted to the
+// parent page, so the same toggle can also drive the holdings table's
+// grouping) — this wrapper supplies the state the parent would own, so
+// clicking a toggle button in these tests actually changes what renders.
+function ControlledChart(props: Omit<React.ComponentProps<typeof PortfolioAllocationChart>, "mode" | "onModeChange">) {
+  const [mode, setMode] = useState<"sector" | "stock" | null>(null);
+  return <PortfolioAllocationChart {...props} mode={mode} onModeChange={setMode} />;
+}
+
 describe("PortfolioAllocationChart", () => {
   it("renders the By Sector / By Stock toggle once any sector data has resolved", () => {
     render(
-      <PortfolioAllocationChart
+      <ControlledChart
         stockSlices={[{ symbol: "AAPL", value: 100, signal: "BUY" }]}
         sectorSlices={[{ sector: "Technology", value: 100 }]}
       />,
@@ -19,7 +29,7 @@ describe("PortfolioAllocationChart", () => {
     // hid the toggle entirely while a large portfolio's sector data was
     // still loading (everything briefly sitting in one bucket).
     render(
-      <PortfolioAllocationChart
+      <ControlledChart
         stockSlices={[
           { symbol: "AAPL", value: 100, signal: "BUY" },
           { symbol: "MSFT", value: 50, signal: "HOLD" },
@@ -32,7 +42,7 @@ describe("PortfolioAllocationChart", () => {
 
   it("falls back to By Stock (no toggle) when no sector data has resolved yet", () => {
     render(
-      <PortfolioAllocationChart
+      <ControlledChart
         stockSlices={[{ symbol: "AAPL", value: 100, signal: "BUY" }]}
         sectorSlices={[]}
       />,
@@ -49,7 +59,7 @@ describe("PortfolioAllocationChart", () => {
   // "sorted-looking" input in, same order out.
   it("renders stock slices in the order given (descending, as the caller pre-sorts)", () => {
     render(
-      <PortfolioAllocationChart
+      <ControlledChart
         stockSlices={[
           { symbol: "BIG", value: 500, signal: "BUY" },
           { symbol: "MID", value: 100, signal: "HOLD" },
@@ -64,7 +74,7 @@ describe("PortfolioAllocationChart", () => {
 
   it("renders sector slices in the order given (descending, as the caller pre-sorts) when By Sector is active", () => {
     render(
-      <PortfolioAllocationChart
+      <ControlledChart
         stockSlices={[{ symbol: "AAPL", value: 100, signal: "BUY" }]}
         sectorSlices={[
           { sector: "Big Sector", value: 500 },
@@ -83,7 +93,7 @@ describe("PortfolioAllocationChart", () => {
   it("does not crash when sector data is partial/missing sector field", () => {
     expect(() =>
       render(
-        <PortfolioAllocationChart
+        <ControlledChart
           stockSlices={[{ symbol: "AAPL", value: 100, signal: null }]}
           sectorSlices={[]}
         />,
@@ -92,13 +102,13 @@ describe("PortfolioAllocationChart", () => {
   });
 
   it("renders nothing when there is no stock value at all", () => {
-    const { container } = render(<PortfolioAllocationChart stockSlices={[]} sectorSlices={[]} />);
+    const { container } = render(<ControlledChart stockSlices={[]} sectorSlices={[]} />);
     expect(container).toBeEmptyDOMElement();
   });
 
   it("switching to By Stock via the toggle shows stock symbols, not sector names", () => {
     render(
-      <PortfolioAllocationChart
+      <ControlledChart
         stockSlices={[{ symbol: "AAPL", value: 100, signal: "BUY" }]}
         sectorSlices={[{ sector: "Technology", value: 100 }]}
       />,

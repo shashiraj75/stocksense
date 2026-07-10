@@ -6,7 +6,7 @@ import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { SignalBadge } from "@/components/SignalBadge";
 import Link from "next/link";
 import clsx from "clsx";
-import { PlusCircle, Trash2, TrendingUp, TrendingDown, Briefcase, Wifi, Pencil, Check, X, Upload, Download, ArrowUp, ArrowDown, ArrowUpDown, Layers } from "lucide-react";
+import { PlusCircle, Trash2, TrendingUp, TrendingDown, Briefcase, Wifi, Pencil, Check, X, Upload, Download, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
 import { PortfolioAllocationChart } from "@/components/PortfolioAllocationChart";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
 import { StockSymbolField } from "@/components/StockSymbolField";
@@ -200,15 +200,19 @@ function SortableHeader({
 }
 
 function HoldingsTable({
-  rows, currency, onRemove, onEdit,
-}: { rows: Row[]; currency: string; onRemove: (id: string) => void; onEdit: (id: string, updates: { qty: number; avgPrice: number }) => void }) {
+  rows, currency, onRemove, onEdit, groupBySector,
+}: {
+  rows: Row[];
+  currency: string;
+  onRemove: (id: string) => void;
+  onEdit: (id: string, updates: { qty: number; avgPrice: number }) => void;
+  // Driven by the Portfolio Allocation chart's "By Sector/By Stock" toggle
+  // (lifted to the parent page) instead of a separate button on this table —
+  // one control, two views in sync.
+  groupBySector: boolean;
+}) {
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
-  // Independent per table instance (IN table and US table each get their
-  // own toggle) — grouping doesn't replace sorting, it's layered on top:
-  // rows are sorted first, then bucketed by sector, so the active sort
-  // order is preserved within each sector group instead of being lost.
-  const [groupBySector, setGroupBySector] = useState(false);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -258,17 +262,6 @@ function HoldingsTable({
 
   return (
     <div className="bg-dark-card border border-dark-border rounded-2xl overflow-hidden">
-      <div className="flex items-center justify-end px-4 py-2 border-b border-dark-border">
-        <button
-          onClick={() => setGroupBySector(v => !v)}
-          className={clsx(
-            "flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg border transition-colors",
-            groupBySector ? "bg-brand-500/20 border-brand-500/40 text-brand-300" : "border-dark-border text-gray-400 hover:text-white"
-          )}
-        >
-          <Layers size={12} /> {groupBySector ? "Ungroup" : "Group by Sector"}
-        </button>
-      </div>
       {/* A wide table (11 columns) needs horizontal scroll on anything
           narrower than a large desktop. Native scrollbars are invisible
           until actively scrolling on macOS/trackpad systems, which makes a
@@ -571,6 +564,15 @@ export default function PortfolioPage() {
       .sort((a, b) => b.value - a.value);
   }, [rows, market]);
 
+  // Single shared toggle for both the allocation chart's grouping and the
+  // holdings table's grouping — one control, two views in sync, instead of
+  // a separate "Group by Sector" button duplicating the same choice. null =
+  // "follow the data" (defaults to sector once sector data arrives, which
+  // resolves asynchronously after mount) until the user explicitly clicks.
+  const [allocationMode, setAllocationMode] = useState<"sector" | "stock" | null>(null);
+  const hasSectorData = sectorSlices.some(s => s.value > 0);
+  const effectiveAllocationMode = allocationMode ?? (hasSectorData ? "sector" : "stock");
+
   // Gated on the selected market toggle too, not just whether holdings exist —
   // otherwise both currencies' summary cards/tables/chart show simultaneously
   // regardless of which market is selected, unlike every other page's market
@@ -754,7 +756,12 @@ export default function PortfolioPage() {
           chart would make the percentages meaningless (₹ and $ amounts
           aren't comparable without FX conversion). */}
       {holdings.filter(h => h.market === market).length > 1 && (
-        <PortfolioAllocationChart stockSlices={chartSlices} sectorSlices={sectorSlices} />
+        <PortfolioAllocationChart
+          stockSlices={chartSlices}
+          sectorSlices={sectorSlices}
+          mode={allocationMode}
+          onModeChange={setAllocationMode}
+        />
       )}
 
       {/* Holdings tables — split by market so ₹ and $ rows are never mixed */}
@@ -773,6 +780,7 @@ export default function PortfolioPage() {
                 currency="₹"
                 onRemove={remove}
                 onEdit={edit}
+                groupBySector={effectiveAllocationMode === "sector"}
               />
             </div>
           )}
@@ -783,6 +791,7 @@ export default function PortfolioPage() {
                 currency="$"
                 onRemove={remove}
                 onEdit={edit}
+                groupBySector={effectiveAllocationMode === "sector"}
               />
             </div>
           )}

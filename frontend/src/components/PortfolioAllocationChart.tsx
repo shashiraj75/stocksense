@@ -1,5 +1,4 @@
 "use client";
-import { useState } from "react";
 import clsx from "clsx";
 
 interface StockSlice {
@@ -25,8 +24,16 @@ const PALETTE = [
 // computing) or when there's only one distinct sector (grouping would be a
 // no-op slice covering the whole bar).
 export function PortfolioAllocationChart({
-  stockSlices, sectorSlices,
-}: { stockSlices: StockSlice[]; sectorSlices: SectorSlice[] }) {
+  stockSlices, sectorSlices, mode, onModeChange,
+}: {
+  stockSlices: StockSlice[];
+  sectorSlices: SectorSlice[];
+  // Lifted from this component so the same toggle also drives the holdings
+  // table's grouping (portfolio/page.tsx owns the state) — null still means
+  // "follow the data" until the user explicitly clicks a toggle button.
+  mode: "sector" | "stock" | null;
+  onModeChange: (mode: "sector" | "stock") => void;
+}) {
   const withStockValue = stockSlices.filter(s => s.value > 0);
   const withSectorValue = sectorSlices.filter(s => s.value > 0);
   // Any resolved sector value at all — even a single "Other" bucket while
@@ -40,13 +47,6 @@ export function PortfolioAllocationChart({
   // data has resolved so far; "Other" simply shrinks as more arrives.
   const hasSectorData = withSectorValue.length > 0;
 
-  // null = "follow the data" (defaults to sector once sector data arrives,
-  // which happens asynchronously after mount as signal queries resolve —
-  // a plain useState default would freeze at whatever was true on the
-  // FIRST render, before any sector data existed, and never reconsider).
-  // Only becomes a fixed "sector"/"stock" once the user explicitly clicks
-  // a toggle button, overriding the auto-follow.
-  const [mode, setMode] = useState<"sector" | "stock" | null>(null);
   const effectiveMode = mode ?? (hasSectorData ? "sector" : "stock");
 
   if (withStockValue.length === 0) return null;
@@ -73,7 +73,7 @@ export function PortfolioAllocationChart({
             {(["sector", "stock"] as const).map(m => (
               <button
                 key={m}
-                onClick={() => setMode(m)}
+                onClick={() => onModeChange(m)}
                 className={clsx(
                   "px-2.5 py-1 text-xs font-medium rounded-md transition-colors",
                   effectiveMode === m ? "bg-brand-500 text-white" : "text-gray-400 hover:text-white"
