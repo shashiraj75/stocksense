@@ -12,7 +12,7 @@
 ## What StockSense360 Does
 
 - **BUY / HOLD / SELL signals** with confidence score, target price, and stop-loss for every stock
-- **Daily Picks:** Up to 6 BUY ideas per horizon (short / medium / long), screened from the NSE and US universes. Designed schedule: India at 2 AM IST and US at 6 PM IST (approximately 8:30 AM ET pre-market). Automated triggering is currently disabled pending Release 12B controlled validation; see the Current Release Status register for live operational state.
+- **Daily Picks:** Up to 6 BUY ideas per horizon (short / medium / long), screened from the NSE and US universes. Designed schedule: India at 2 AM IST and US at 6 PM IST (approximately 8:30 AM ET pre-market). Automated triggering is currently disabled pending Release 12B controlled validation; see the Current Release Status register for live operational state. A future/planned intraday news validity overlay is documented in [`Intraday-News-Impact-Layer-Daily-Picks-Spec.md`](Documentation/Engineering-Handbook/Architecture/Intraday-News-Impact-Layer-Daily-Picks-Spec.md); it is documentation-only and not live production behavior.
 - **Full explainability** — factor breakdown, bull/bear thesis, and reasoning bullets for every call
 - **Learning engine** — tracks prediction outcomes, retrains factor weights weekly via IC (Information Coefficient)
 - **Paper Trading** — test signals with virtual money, track P&L, set stop-losses and targets
