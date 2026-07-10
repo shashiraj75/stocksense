@@ -18,11 +18,15 @@ function loadUniverse(): Promise<Universe> {
   return _loadPromise;
 }
 
-function searchLocal(universe: Universe, query: string, limit = 8): StockResult[] {
+function searchLocal(universe: Universe, query: string, marketFilter?: string, limit = 8): StockResult[] {
   const q = query.toLowerCase().trim();
   if (!q) return [];
 
-  const all = [...universe.US, ...universe.IN, ...universe.CRYPTO];
+  // marketFilter narrows to one market's list (e.g. Portfolio/Alerts, where
+  // a result from the wrong market can't actually be added under the
+  // currently-selected market toggle). Undefined preserves the original
+  // any-market behavior (global SearchBar, Watchlist).
+  const all = marketFilter ? (universe[marketFilter as keyof Universe] ?? []) : [...universe.US, ...universe.IN, ...universe.CRYPTO];
   const exact: StockResult[] = [], symStart: StockResult[] = [], symContain: StockResult[] = [],
         nameStart: StockResult[] = [], nameContain: StockResult[] = [];
   const seen = new Set<string>();
@@ -46,7 +50,7 @@ function searchLocal(universe: Universe, query: string, limit = 8): StockResult[
   return [...exact, ...symStart, ...symContain, ...nameStart, ...nameContain].slice(0, limit);
 }
 
-export function useStockSearch() {
+export function useStockSearch(marketFilter?: string) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<StockResult[]>([]);
   const [open, setOpen] = useState(false);
@@ -58,10 +62,20 @@ export function useStockSearch() {
   // Re-run search once universe finishes loading, in case the user already typed
   useEffect(() => {
     if (universe && query.length > 0) {
-      setResults(searchLocal(universe, query));
+      setResults(searchLocal(universe, query, marketFilter));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [universe]);
+
+  // Re-run whenever the caller's market toggle changes too — e.g. Portfolio
+  // switching its Market from IN to US should immediately re-filter any
+  // already-open result list, not just the next keystroke.
+  useEffect(() => {
+    if (universe && query.length > 0) {
+      setResults(searchLocal(universe, query, marketFilter));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [marketFilter]);
 
   const handleChange = useCallback((v: string) => {
     setQuery(v);
@@ -69,10 +83,10 @@ export function useStockSearch() {
     if (v.length < 1) { setResults([]); setOpen(false); return; }
     timer.current = setTimeout(() => {
       if (!universe) return;
-      setResults(searchLocal(universe, v));
+      setResults(searchLocal(universe, v, marketFilter));
       setOpen(true);
     }, 100);
-  }, [universe]);
+  }, [universe, marketFilter]);
 
   const reset = useCallback(() => { setQuery(""); setResults([]); setOpen(false); }, []);
 

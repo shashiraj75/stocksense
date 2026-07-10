@@ -549,6 +549,8 @@ export default function PortfolioPage() {
               value={sym}
               onChange={setSym}
               onEnter={add}
+              market={market}
+              placeholder={market === "IN" ? "RELIANCE, TCS…" : "AAPL, MSFT…"}
               onSelect={(stock: StockResult) => {
                 setSym(stock.symbol.replace(/\.(NS|BO)$/, ""));
                 if (stock.market === "IN" || stock.market === "US") setMarket(stock.market);
