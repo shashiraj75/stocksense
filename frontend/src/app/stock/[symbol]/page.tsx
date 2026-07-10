@@ -511,33 +511,43 @@ export default function StockPage() {
                 {/* ── Right column: signal panel ── */}
                 {tab !== "backtest" && (
                   <div className="shrink-0 flex flex-col items-center justify-center gap-3 w-full sm:w-auto sm:min-w-[140px]">
-                    {prediction && !predLoading ? (
+                    {prediction && !predLoading ? (() => {
+                      // Signal (BUY/HOLD/SELL) and `confidence` are two
+                      // independent numbers — confidence for a BUY is how far
+                      // the composite score sits above the 60-point BUY
+                      // threshold (0-40 range remapped to 0-100%), not "how
+                      // likely this call is correct." A score that barely
+                      // clears 60 is a real but marginal BUY and shouldn't
+                      // render with the same visual weight as a strong one.
+                      // Mirrors SignalBadge's own existing muted-BUY tiers
+                      // (>=60 strong, 45-59 moderate, <45 muted) exactly —
+                      // SELL/HOLD are intentionally left unmuted, matching
+                      // that component's own established convention.
+                      const tone = prediction.signal === "BUY"
+                        ? (prediction.confidence >= 60
+                            ? { container: "bg-bull/10 border-bull/30", text: "text-bull", bar: "bg-bull" }
+                            : prediction.confidence >= 45
+                            ? { container: "bg-yellow-500/10 border-yellow-500/30", text: "text-yellow-400", bar: "bg-yellow-500" }
+                            : { container: "bg-white/5 border-white/10", text: "text-gray-400", bar: "bg-gray-500" })
+                        : prediction.signal === "SELL"
+                        ? { container: "bg-bear/10 border-bear/30", text: "text-bear", bar: "bg-bear" }
+                        : { container: "bg-white/5 border-white/10", text: "text-neutral", bar: "bg-neutral" };
+                      return (
                       <>
                         {/* Big signal display */}
-                        <div className={clsx(
-                          "w-full rounded-xl border px-4 py-3 text-center",
-                          prediction.signal === "BUY"  ? "bg-bull/10 border-bull/30"
-                          : prediction.signal === "SELL" ? "bg-bear/10 border-bear/30"
-                          : "bg-white/5 border-white/10"
-                        )}>
+                        <div className={clsx("w-full rounded-xl border px-4 py-3 text-center", tone.container)}>
                           <p className="text-[10px] text-gray-500 uppercase tracking-widest mb-0.5">AI Signal</p>
-                          <p className={clsx("text-2xl font-black tracking-wider",
-                            prediction.signal === "BUY" ? "text-bull" : prediction.signal === "SELL" ? "text-bear" : "text-neutral"
-                          )}>
+                          <p className={clsx("text-2xl font-black tracking-wider", tone.text)}>
                             {prediction.signal === "BUY" ? "▲ BUY" : prediction.signal === "SELL" ? "▼ SELL" : "— HOLD"}
                           </p>
                           <div className="mt-1.5 flex items-center justify-center gap-1.5">
                             <div className="flex-1 h-1 bg-black/30 rounded-full overflow-hidden">
                               <div
-                                className={clsx("h-full rounded-full",
-                                  prediction.signal === "BUY" ? "bg-bull" : prediction.signal === "SELL" ? "bg-bear" : "bg-neutral"
-                                )}
+                                className={clsx("h-full rounded-full", tone.bar)}
                                 style={{ width: `${prediction.confidence}%` }}
                               />
                             </div>
-                            <span className={clsx("text-xs font-bold tabular-nums",
-                              prediction.signal === "BUY" ? "text-bull" : prediction.signal === "SELL" ? "text-bear" : "text-neutral"
-                            )}>{prediction.confidence}%</span>
+                            <span className={clsx("text-xs font-bold tabular-nums", tone.text)}>{prediction.confidence}%</span>
                           </div>
                           <p className="text-[11px] text-gray-400 mt-0.5">confidence</p>
 
@@ -640,7 +650,8 @@ export default function StockPage() {
                           )
                         )}
                       </>
-                    ) : predLoading ? (
+                      );
+                    })() : predLoading ? (
                       <div className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-5 text-center">
                         <Loader2 size={20} className="animate-spin text-brand-500 mx-auto mb-2" />
                         <p className="text-[11px] text-gray-500">Computing…</p>
