@@ -139,6 +139,25 @@ const SCORE_BAND_STYLE: Record<string, string> = {
 };
 
 // ── Small components ──────────────────────────────────────────────────────────
+// Every Daily Pick is already a BUY (this page only ever lists the BUY band),
+// so pick.confidence carries the same meaning as everywhere else it appears
+// (Stock Detail, Portfolio SignalBadge): how far the composite score sits
+// above the 60-point BUY threshold, not "how likely this pick is good."
+// Mirrors SignalBadge's own thresholds (>=60 strong, 45-59 moderate, <45
+// muted) so a marginal pick doesn't visually read as confident as a strong
+// one — color treatment only, no change to the confidence value itself.
+function confidenceTextColor(confidence: number): string {
+  if (confidence >= 60) return "text-green-400";
+  if (confidence >= 45) return "text-yellow-400";
+  return "text-gray-400";
+}
+
+function confidenceGradientClass(confidence: number): string {
+  if (confidence >= 60) return "bg-gradient-to-r from-green-500 to-emerald-400";
+  if (confidence >= 45) return "bg-gradient-to-r from-yellow-500 to-amber-400";
+  return "bg-gradient-to-r from-gray-500 to-gray-400";
+}
+
 function ScoreBar({ label, value, color }: { label: string; value: number; color: string }) {
   return (
     <div>
@@ -525,10 +544,10 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
         <div className="mb-3">
           <div className="flex justify-between text-xs text-gray-500 mb-1">
             <span>AI Confidence</span>
-            <span className="text-white font-medium">{pick.confidence}%</span>
+            <span className={clsx("font-medium", confidenceTextColor(pick.confidence))}>{pick.confidence}%</span>
           </div>
           <div className="h-1.5 bg-dark-border rounded-full overflow-hidden">
-            <div className="h-full bg-gradient-to-r from-green-500 to-emerald-400 rounded-full" style={{ width: `${pick.confidence}%` }} />
+            <div className={clsx("h-full rounded-full", confidenceGradientClass(pick.confidence))} style={{ width: `${pick.confidence}%` }} />
           </div>
         </div>
 
@@ -688,7 +707,7 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
             <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Absolute Signal Scores</p>
             {pick.tech_score != null && <ScoreBar label="Technical" value={pick.tech_score} color="text-blue-400" />}
             {pick.fund_score != null && <ScoreBar label="Fundamental" value={pick.fund_score} color="text-purple-400" />}
-            <ScoreBar label="AI Confidence" value={pick.confidence} color="text-green-400" />
+            <ScoreBar label="AI Confidence" value={pick.confidence} color={confidenceTextColor(pick.confidence)} />
           </div>
 
           {pick.quality_factors?.breakdown && Object.keys(pick.quality_factors.breakdown).length > 0 && (
