@@ -37,7 +37,10 @@ export function MobileNav({ links }: { links: NavLink[] }) {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-52 bg-dark-card border border-dark-border rounded-xl shadow-xl overflow-hidden z-50">
+        // key={pathname} forces a fresh set of links on every route change
+        // instead of React patching classNames onto reused nodes — see
+        // NavLinks.tsx's own comment for the matching desktop fix.
+        <div key={pathname} className="absolute right-0 top-full mt-2 w-52 bg-dark-card border border-dark-border rounded-xl shadow-xl overflow-hidden z-50">
           {links.map(({ href, label, accent, color }) => {
             const active = isActive(href);
             return (
@@ -45,14 +48,20 @@ export function MobileNav({ links }: { links: NavLink[] }) {
                 key={href}
                 href={href}
                 onClick={() => setOpen(false)}
-                className={`block px-4 py-3 text-sm border-b border-dark-border last:border-0 transition-colors hover:bg-dark-border/50 ${
+                // transition-colors only applies within the inactive
+                // (hover-only) branch, never to the active swap itself —
+                // the active <-> inactive change on navigation must snap
+                // instantly, not fade, or a fresh navigation can render
+                // with the previous page's link still visibly (partway)
+                // highlighted.
+                className={`block px-4 py-3 text-sm border-b border-dark-border last:border-0 ${
                   active
                     ? "font-bold text-white border-l-2 border-l-brand-400 bg-white/5 pl-3.5"
                     : color
-                    ? `font-medium ${color}`
+                    ? `font-medium transition-colors hover:bg-dark-border/50 ${color}`
                     : accent
-                    ? "font-medium text-green-400 hover:text-green-300"
-                    : "text-gray-300 hover:text-white"
+                    ? "font-medium transition-colors hover:bg-dark-border/50 text-green-400 hover:text-green-300"
+                    : "text-gray-300 transition-colors hover:bg-dark-border/50 hover:text-white"
                 }`}
               >
                 {label}
