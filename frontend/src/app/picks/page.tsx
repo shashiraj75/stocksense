@@ -835,10 +835,16 @@ export default function DailyPicksPage() {
             const ageHours = data?.generated_at ? Math.floor((Date.now() - new Date(data.generated_at).getTime()) / 3_600_000) : 0;
             const isStale = ageHours >= 4;
             return (
-              <div className={clsx("flex items-center gap-1.5 text-xs bg-dark-card border rounded-lg px-3 py-2 flex-shrink-0",
+              // w-full on mobile (its own row instead of squeezing next to
+              // the other badges and overflowing the viewport — flex-wrap on
+              // the parent only wraps whole items, it doesn't shrink this
+              // one's own content-driven width) + items-start/break-words so
+              // the timestamp text itself wraps onto a second line rather
+              // than forcing horizontal scroll.
+              <div className={clsx("flex items-start gap-1.5 text-xs bg-dark-card border rounded-lg px-3 py-2 w-full sm:w-auto",
                 isStale ? "border-yellow-500/40 text-yellow-400" : "border-dark-border text-gray-500")}>
-                <Clock size={12} />
-                <span>Updated {generatedAt}{isStale ? ` · ${ageHours}h ago` : ""}</span>
+                <Clock size={12} className="shrink-0 mt-0.5" />
+                <span className="break-words">Updated {generatedAt}{isStale ? ` · ${ageHours}h ago` : ""}</span>
               </div>
             );
           })()}
