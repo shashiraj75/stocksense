@@ -29,6 +29,7 @@
 - US validation requires a normal US market session and a separate controlled validation.
 - No Daily Picks scheduler enablement is approved until India and US validations both pass.
 - No validation result may be described as passed until its release-specific evidence record is complete.
+- **Superseded scope note (2026-07-10):** this release's original universe-construction logic (`yf.screen()`-based, market-cap-descending with a hard cutoff) has been replaced entirely — see the Daily Picks Large/Mid/Small-Cap Stratification entry in `STOCKSENSE_DOCUMENTATION.md` §27 Session 10. Any pending or future validation of "Release 12B's universe behavior" must be re-scoped against the new `stock_fundamentals_cache`-sourced, tier-stratified universe, not treated as still covering the old Yahoo-screener logic. Scheduler enablement remains blocked either way — this note does not itself unblock or reblock anything, it only prevents a future validation pass from silently validating logic that no longer exists.
 
 ## Release 13C — Recommendation Consolidation Observability
 

@@ -683,9 +683,9 @@ R:R Ratio    = (target − price) / (price − stop_loss)
 
 ### Execution Schedule
 
-- Triggered: **Every weekday at 9:00 AM IST** (via GitHub Actions → POST `/api/picks/generate`)
-- Generation time: ~10 minutes
-- Results cached to disk: `backend/picks_cache.json`
+- Triggered: India ~3:26 AM IST, US per its own cron (via GitHub Actions → POST `/api/picks/generate`) — a multi-hour runway before market open by design.
+- Generation time: **~60-90 minutes** (Session 10 change, see below — was ~10-20 minutes when the deep-scored pool was 50 stocks; the runway before market open was confirmed to comfortably absorb this).
+- Results cached to disk: `backend/picks_cache.json` (and `_us.json` for US)
 - API response: Instant (reads from cache)
 
 ### 9-Phase Pipeline
@@ -695,9 +695,13 @@ R:R Ratio    = (target − price) / (price − stop_loss)
 - Update outcome logger database with direction hits (correct/incorrect)
 - Feed data into IC engine for retraining
 
-#### Phase 1 — Universe Screening
-- Run full prediction engine on all Nifty 100 stocks
-- Parallelised: 2 workers via `ThreadPoolExecutor`
+#### Phase 1 — Universe Screening (Large/Mid/Small-cap stratified, Session 10)
+- **Universe source**: `stock_fundamentals_cache` — the same nightly-refreshed table (screener.in-sourced for India, yfinance-derived for US) the Multibagger Screen already maintains — not a live Yahoo screener call. Previously used `yf.screen()` sorted by market cap descending with a hard cutoff, which was structurally Large+Mid cap only in both markets (India's old 250-cap matched SEBI's own rank convention for Large+Mid almost exactly; US's old $2,000M floor excluded true small-caps by definition) — real Small Cap stocks never reached the pipeline, regardless of screener health.
+- **Tiering**: India uses SEBI's rank convention (Large = NSE rank 1-100, Mid = 101-250, Small = 251+); US uses the standard value convention (Large > $10B, Mid $2B-$10B, Small < $2B). Both apply a small-cap junk floor (₹100 Cr / $100M) to exclude micro-caps/shells.
+- **Stratified pool of ~400**, split roughly 40/30/30 Large/Mid/Small — replaces the previous 250 (India) / anchor-100 (US degraded case). If a tier has fewer eligible symbols than its quota on a given night (e.g. a thin small-cap data night), the pool is honestly smaller than 400 rather than silently backfilled from another tier.
+- Falls back to the same curated static lists as before (NIFTY-100 for India, a 100-symbol mega-cap anchor for US) if the cache is empty/too thin that night — same safety net, just triggered by a cache-health check instead of a screener exception.
+- Run full prediction engine on the resulting ~400-stock pool (was Nifty 100 / a 50-stock momentum-narrowed shortlist)
+- Sequential (`max_workers=1`, unchanged) to avoid Yahoo Finance rate-limiting on the per-stock OHLCV/news calls this phase still makes — this is the main driver of the longer generation time above
 - Returns raw factor scores for all stocks (enables cross-sectional z-scoring)
 
 #### Phase 2 — Regime Detection
@@ -721,8 +725,10 @@ R:R Ratio    = (target − price) / (price − stop_loss)
 
 #### Phase 5 — Pick Selection
 - Rank by alpha score (meta_alpha if available, else combined_alpha)
-- Select top 5 **BUY** signals per horizon (composite score ≥ 60)
-- Minimum 1 pick per horizon
+- Select top **6** **BUY** signals per horizon (composite score ≥ 60) — the code has always done 6; this doc previously said 5 in error.
+- **Short-term (Session 10 change)**: confidence-priority with fill-down, not tier-aware. Candidates with confidence **> 80%** are selected first (alpha-ordered among themselves); if fewer than 6 clear that bar, the remainder is filled from the next-highest-confidence BUY candidates that still pass the existing quality gate. A genuinely weak-conviction day can show fewer than 6 (even 0) short-term picks — deliberately not padded with lower-confidence noise to hit a count, matching this pipeline's existing "an empty/short picks list is a legitimate outcome" convention.
+- **Medium/Long-term (Session 10 change)**: a Large/Mid/Small tier quota (2/2/2 of the final 6) is enforced so the list can't collapse back to all-large-cap even though large caps often score higher alpha on average — the explicit reason the Phase 1 stratification above exists. If a tier is short on qualifying candidates, the remaining slots are topped up from the next-best alpha across any tier so the list still reaches 6 when the data supports it.
+- Minimum 1 pick per horizon (medium/long only — short-term can legitimately show 0, see above)
 - Empty picks from a prior run (0 BUY signals) are NOT treated as "complete" — startup catch-up will retry on next deploy
 
 #### Phase 6 — Portfolio Optimisation
@@ -1300,7 +1306,15 @@ The hosting platform's ephemeral disk means files written locally are wiped on e
 
 ### Session 10 — 2026-07-10
 
-A shorter, fix-focused session across Portfolio, Stock Detail, Daily Picks, and the Multibagger Screen — no new Epics, mostly closing real bugs a user flagged from live screenshots plus one root-cause data bug found while investigating a "why is this empty" report.
+A shorter, fix-focused session across Portfolio, Stock Detail, Daily Picks, and the Multibagger Screen — no new Epics, mostly closing real bugs a user flagged from live screenshots plus one root-cause data bug found while investigating a "why is this empty" report. Also includes a same-day follow-up: Daily Picks' Large/Mid/Small-cap stratification and short-term confidence priority.
+
+**Daily Picks — Large/Mid/Small-Cap Stratification and Short-Term Confidence Priority:**
+
+- Following the Multibagger pledge-NULL investigation below, a user asked which India market-cap tiers Daily Picks actually covers, suspecting Large-cap-only. Confirmed via direct code reading: `_get_universe_by_mcap` sorted `yf.screen()` results by market cap descending with a hard 250-symbol cutoff — by SEBI's own rank convention (Large = rank 1-100, Mid = 101-250), this was structurally Large+Mid only. US was worse: a hard `$2,000M` floor built into the query itself excluded true US small-caps by definition, not just by rank pressure. Worse still, the real deep-scored pool was smaller yet — `_bulk_screen`'s momentum-narrowing step truncated to `_N_CANDIDATES` (default 50, shared across all 3 horizons) before the actual `PredictionEngine` ever saw a candidate.
+- Fixed by replacing the Yahoo-screener-based universe discovery entirely with `stock_fundamentals_cache` — the same nightly-refreshed table (screener.in for India, yfinance-derived for US) the Multibagger Screen already maintains, previously unused by Daily Picks. New `fundamentals_cache.get_ranked_universe()` returns the full cached universe ordered by market cap; `daily_picks.py`'s new `_assign_cap_tiers()` (rank-based for India per SEBI convention, value-based for US: Large >$10B, Mid $2B-$10B, Small <$2B) and `_stratified_sample()` build a ~400-symbol pool split roughly 40/30/30 across tiers, replacing the old 250/anchor-100 cutoffs. `_N_CANDIDATES` raised from 50 to 400 to match, so the momentum-narrowing step no longer discards the stratification just built.
+- Phase 5 selection now differs explicitly by horizon, per the user's own stated priorities: **short-term** ignores tier entirely and instead prioritizes confidence — candidates with **>80% confidence** are selected first (alpha-ordered within that group), with fill-down to lower-confidence candidates only when fewer than 6 clear the bar (never padded with fabricated picks — a weak-conviction day can legitimately show fewer than 6, even 0). **Medium/long-term** enforces a 2/2/2 Large/Mid/Small tier quota (topped up from leftover alpha-ranked candidates if a tier is short) so the list can't collapse back to all-large-cap even though large caps often score higher alpha on average.
+- Cost stated plainly, not hidden: Phase 1 still runs sequentially (`max_workers=1`, unchanged — that throttle is for yfinance rate-limiting on per-stock calls, unrelated to this change) so 50→400 candidates is roughly an 8x increase in Phase 1's dominant cost, pushing total generation time from ~10-20 minutes to an estimated ~60-90 minutes. Confirmed acceptable: both markets' schedules leave a multi-hour runway before market open.
+- Verified via 21 new/updated backend regression tests (tier-boundary edge cases for both markets' conventions, stratified-sampling honesty when a tier is short, short-term fill-down ordering including a zero-high-confidence day, tier-quota top-up), plus a deliberate-break-then-restore sanity check on the tier-quota re-sort step. Two test files testing the now-removed Yahoo screener retry/pagination mechanism (`test_in_screener_retry_and_observability.py`, `test_daily_picks_screener_count_limit.py`) were deleted rather than left stale. Full backend suite green (1517 tests). Not verified via a live triggered generation run — per standing protocol, the production `/api/picks/generate` endpoint is never called directly; the change rides the next natural scheduled run, to be checked read-only afterward.
 
 **Multibagger — All Three India Screens Were Returning Zero Results:**
 

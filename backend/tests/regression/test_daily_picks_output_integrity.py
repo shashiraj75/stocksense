@@ -65,19 +65,19 @@ def test_screened_from_remains_present_in_payload():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_screener_raw_count_from_get_universe_by_mcap_us_success():
-    """On US screener success, screener_raw_count equals len(screener_syms) before filtering."""
-    raw_symbols = ["AAPL", "MSFT", "GLD", "GOOGL", "GOOG"]  # GLD would be filtered
-    import yfinance as yf
+    """On a healthy US cache result, screener_raw_count equals the cache's raw
+    positive-market-cap row count, before eligibility filtering/stratification."""
+    primary = ("AAPL", "MSFT", "GOOGL")
+    padding_pool = [s for s in dp._US_DAILY_PICKS_HEURISTIC_FILTERED_SET if s not in primary][:150]
+    fake_ranked = [(s, 3_000_000.0) for s in primary] + \
+                  [(s, 50_000.0) for s in padding_pool]
 
-    fake_result = {"quotes": [{"symbol": s} for s in raw_symbols]}
-
-    with patch("services.daily_picks.yf.EquityQuery"), \
-         patch("services.daily_picks.yf.screen", return_value=fake_result):
+    with patch("services.fundamentals_cache.get_ranked_universe", return_value=fake_ranked):
         symbols, used, degraded, raw_count, meta = dp._get_universe_by_mcap("US")
 
-    # raw_count must equal the raw screener count (5), not the post-filter count
-    assert raw_count == 5
-    assert used == "screener"
+    # raw_count must equal the raw cache row count (before stratified sampling)
+    assert raw_count == len(fake_ranked)
+    assert used == "fundamentals_cache"
     assert degraded is False
 
 
@@ -97,21 +97,23 @@ def test_screener_raw_count_is_none_in_anchor_mode():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_universe_eligible_size_equals_intersection():
-    """For US screener success, universe_eligible_size == len(eligible_from_screener)."""
-    # Return 5 raw symbols; only those in _US_DAILY_PICKS_HEURISTIC_FILTERED_SET pass
-    # We'll use known-good tickers that appear in the heuristic-filtered set
-    raw_symbols = ["AAPL", "MSFT", "GOOGL"]  # all should be in heuristic-filtered set
-    fake_result = {"quotes": [{"symbol": s} for s in raw_symbols]}
+    """For a healthy US cache result, the returned universe is <= the raw
+    cache row count, and non-eligible instruments never survive."""
+    primary = ("AAPL", "MSFT", "GOOGL")
+    padding_pool = [s for s in dp._US_DAILY_PICKS_HEURISTIC_FILTERED_SET if s not in primary][:150]
+    fake_ranked = [(s, 3_000_000.0) for s in primary] + \
+                  [(s, 50_000.0) for s in padding_pool] + \
+                  [("SPY", 500_000.0)]  # ETF — must never survive
 
-    with patch("services.daily_picks.yf.EquityQuery"), \
-         patch("services.daily_picks.yf.screen", return_value=fake_result):
+    with patch("services.fundamentals_cache.get_ranked_universe", return_value=fake_ranked):
         symbols, used, degraded, raw_count, meta = dp._get_universe_by_mcap("US")
 
-    # symbols is the post-filter eligible list
-    assert len(symbols) <= len(raw_symbols)
-    assert used == "screener"
-    # raw_count equals the raw list size (before filter)
-    assert raw_count == len(raw_symbols)
+    # symbols is the post-filter, post-stratification eligible list
+    assert len(symbols) <= len(fake_ranked)
+    assert "SPY" not in symbols
+    assert used == "fundamentals_cache"
+    # raw_count equals the raw cache row count (before filter/stratification)
+    assert raw_count == len(fake_ranked)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -218,15 +220,15 @@ def test_final_candidate_count_not_from_buy_signals():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_anchor_mode_screener_raw_count_is_null():
-    """IN static fallback (Release 12B) must also produce
-    screener_raw_count=None — never fabricated when the screener failed."""
-    with patch("services.daily_picks.yf.EquityQuery"), \
-         patch("services.daily_picks.yf.screen", side_effect=Exception("fail")):
+    """IN static fallback must produce screener_raw_count=None when the cache
+    query itself failed — genuinely unknown, distinct from "cache returned 0
+    rows" (which is a real, different, also-non-fabricated value: see
+    test_in_thin_cache_falls_back_to_nifty_100 in test_in_universe_expansion.py,
+    where a real-but-thin result reports its actual row count, not None)."""
+    with patch("services.fundamentals_cache.get_ranked_universe", side_effect=Exception("db down")):
         symbols, used, degraded, raw_count, meta = dp._get_universe_by_mcap("IN")
 
-    # Release 12C: IN failure path returns 0 (never fabricated/None) for
-    # screener_raw_count — "0 rows obtained" is itself meaningful telemetry.
-    assert raw_count == 0
+    assert raw_count is None
     assert used == "static_fallback"
     assert degraded is True
 

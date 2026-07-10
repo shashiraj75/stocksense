@@ -160,25 +160,29 @@ def test_us_empty_eligible_screener_result_uses_anchor_not_raw_universe():
     assert all("$" not in s for s in syms)
 
 
-# ── 7. US screener SUCCESS intersects with eligible ──────────────────────────
+# ── 7. Cache SUCCESS intersects with eligible, and stratifies by cap tier ────
 
-def test_us_screener_success_intersects_with_daily_picks_eligible_universe():
+def test_us_cache_success_intersects_with_daily_picks_eligible_universe():
     """
-    When yf.screen() succeeds and returns a mix of eligible and non-eligible
-    symbols, only the eligible portion must be returned — not the raw screener
-    output and not the anchor.
+    When stock_fundamentals_cache returns a healthy universe (post the
+    large/mid/small-cap stratification replacing yf.screen()), only the
+    heuristic-eligible portion must be returned — not the raw cache output
+    and not the anchor. Uses 150 synthetic large-cap-range entries so the
+    result clears _MIN_HEALTHY_UNIVERSE (100) and isn't itself treated as a
+    degraded/thin cache.
     """
-    fake_result = {"quotes": [
-        {"symbol": "AAPL"},      # eligible — common equity
-        {"symbol": "MSFT"},      # eligible — common equity
-        {"symbol": "ABR$D"},     # NOT eligible — preferred share
-        {"symbol": "SPY"},       # NOT eligible — ETF
-        {"symbol": "AACB"},      # NOT eligible — SPAC
-    ]}
-    with patch("services.daily_picks.yf.screen", return_value=fake_result):
+    padding = [(f"PAD{i}", 50_000.0) for i in range(150)]  # all "large" tier, all eligible
+    fake_ranked = [
+        ("AAPL", 3_000_000.0),   # eligible — common equity
+        ("MSFT", 3_000_000.0),   # eligible — common equity
+        ("ABR$D", 1_000.0),      # NOT eligible — preferred share
+        ("SPY", 500_000.0),      # NOT eligible — ETF
+        ("AACB", 100.0),         # NOT eligible — SPAC
+    ] + padding
+    with patch("services.fundamentals_cache.get_ranked_universe", return_value=fake_ranked):
         syms, universe_used, universe_degraded, _, _meta = _get_universe_by_mcap("US")
 
-    assert universe_used == "screener"
+    assert universe_used == "fundamentals_cache"
     assert universe_degraded is False
     assert "AAPL" in syms
     assert "MSFT" in syms
@@ -196,30 +200,36 @@ def test_screened_from_equals_actual_phase_zero_universe_size():
     passed to yf.download() in Phase 0 — not `len(_UNIVERSE["US"])`.
 
     We verify this by intercepting _bulk_screen at the _get_universe_by_mcap
-    boundary: mock the screener to return exactly 5 known-eligible symbols,
-    then check that phase0_universe_size == 5 (not 12,011 or any other
-    hardcoded constant).
+    boundary: mock the cache to return exactly 5 known-eligible symbols
+    (padded above _MIN_HEALTHY_UNIVERSE so it isn't treated as a thin/
+    degraded cache), then check that phase0_universe_size == 5 + padding's
+    quota-eligible slice (not 12,011 or any other hardcoded constant) — the
+    actual point is that it is NOT the raw static universe count.
     """
     eligible_symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"]
     assert all(s in _US_DAILY_PICKS_HEURISTIC_FILTERED_SET for s in eligible_symbols), (
         "Test symbols must all be in the heuristic-filtered set"
     )
-    fake_result = {"quotes": [{"symbol": s} for s in eligible_symbols]}
+    # Padding must be REAL eligible tickers (not synthetic symbols) — the US
+    # branch intersects with _US_DAILY_PICKS_HEURISTIC_FILTERED_SET before
+    # stratifying, so a fabricated symbol not in that set is correctly
+    # stripped, same as a real-world ETF/preferred/SPAC would be.
+    padding_pool = [s for s in _US_DAILY_PICKS_HEURISTIC_FILTERED_SET if s not in eligible_symbols][:150]
+    padding = [(s, 50_000.0) for s in padding_pool]
+    fake_ranked = [(s, 3_000_000.0) for s in eligible_symbols] + padding
 
-    with patch("services.daily_picks.yf.screen", return_value=fake_result):
+    with patch("services.fundamentals_cache.get_ranked_universe", return_value=fake_ranked):
         with patch("services.daily_picks.yf.download") as mock_dl:
             # Make download return an empty DataFrame so _bulk_screen falls back
             # to anchor — we only care about phase0_universe_size, not candidates
             mock_dl.return_value = MagicMock(empty=True)
             candidates, phase0_size, universe_used, universe_degraded, _, _meta = _bulk_screen("US", 50)
 
-    # The screener returned 5 eligible symbols; that is the phase-0 universe size
-    assert phase0_size == len(eligible_symbols), (
-        f"screened_from should be {len(eligible_symbols)}, got {phase0_size}. "
-        "Was the old `len(_UNIVERSE[market])` constant reintroduced?"
-    )
     assert phase0_size != 12011, (
         "screened_from must not be the raw static universe count (12,011)"
+    )
+    assert phase0_size == len(eligible_symbols) + len(padding), (
+        f"screened_from should reflect the stratified-cache universe size, got {phase0_size}"
     )
 
 
@@ -258,14 +268,15 @@ def test_universe_used_and_universe_degraded_are_present_in_payload():
         "a large value suggests the raw universe was inadvertently used"
     )
 
-    # Also test the screener-success path
-    fake_result = {"quotes": [{"symbol": "AAPL"}, {"symbol": "MSFT"}]}
-    with patch("services.daily_picks.yf.screen", return_value=fake_result):
+    # Also test the healthy-cache path
+    padding = [(f"PAD{i}", 50_000.0) for i in range(150)]
+    fake_ranked = [("AAPL", 3_000_000.0), ("MSFT", 3_000_000.0)] + padding
+    with patch("services.fundamentals_cache.get_ranked_universe", return_value=fake_ranked):
         with patch("services.daily_picks.yf.download") as mock_dl2:
             mock_dl2.return_value = MagicMock(empty=True)
             _, _, universe_used_ok, universe_degraded_ok, _, _meta = _bulk_screen("US", 50)
 
-    assert universe_used_ok == "screener"
+    assert universe_used_ok == "fundamentals_cache"
     assert universe_degraded_ok is False
 
 

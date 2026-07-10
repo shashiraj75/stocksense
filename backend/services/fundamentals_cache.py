@@ -184,6 +184,30 @@ def query_screen(screen: str, market: str = "IN") -> list[dict]:
         return [dict(zip(_SELECT_COLS, row)) for row in rows]
 
 
+def get_ranked_universe(market: str = "IN") -> list[tuple[str, float]]:
+    """
+    (symbol, market_cap) for every cached stock in this market with a known,
+    positive market cap, ordered market-cap descending. This is the ranking
+    surface Daily Picks' universe stratification (large/mid/small cap tiers)
+    is built on top of — sourced from this table's nightly refresh
+    (screener.in for IN via fundamentals_refresh.py, yfinance-derived for US
+    via us_fundamentals_refresh.py), not a live per-symbol call.
+
+    An empty list is an honest "cache unhealthy/empty tonight" signal, not an
+    error — the caller (daily_picks.py) is responsible for falling back to a
+    static universe in that case, same as it always has for a screener
+    failure.
+    """
+    cap_col = "market_cap_cr" if market == "IN" else "market_cap_usd_m"
+    with _conn() as conn:
+        rows = conn.execute(f"""
+            SELECT symbol, {cap_col} FROM stock_fundamentals_cache
+            WHERE market = %s AND {cap_col} IS NOT NULL AND {cap_col} > 0
+            ORDER BY {cap_col} DESC
+        """, [market]).fetchall()
+        return [(row[0], float(row[1])) for row in rows]
+
+
 def get_sector(symbol: str, market: str = "IN") -> tuple[str | None, str | None]:
     """
     (sector_name, industry_name) for one symbol from the nightly-refreshed
