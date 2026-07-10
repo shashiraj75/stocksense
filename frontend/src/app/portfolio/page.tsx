@@ -620,10 +620,12 @@ export default function PortfolioPage() {
       {/* Summary cards */}
       {holdings.length > 0 && (
         <div className="space-y-3">
-          {/* Indian holdings summary */}
+          {/* Indian holdings summary — no market label here: the page only
+              ever shows one market's data at a time (the same global market
+              toggle already visible in the header), so relabeling it again
+              per-section was pure duplication. */}
           {hasIN && (
             <div>
-              <p className="text-xs text-gray-500 mb-2 flex items-center gap-1">🇮🇳 Indian Holdings (₹)</p>
               <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                 {[
                   { label: "Holdings", value: String(holdings.filter(h => h.market === "IN").length), color: "text-white" },
@@ -640,10 +642,9 @@ export default function PortfolioPage() {
               </div>
             </div>
           )}
-          {/* US holdings summary */}
+          {/* US holdings summary — no market label, see note above. */}
           {hasUS && (
             <div>
-              <p className="text-xs text-gray-500 mb-2 flex items-center gap-1">🇺🇸 US Holdings ($)</p>
               <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                 {[
                   { label: "Holdings", value: String(holdings.filter(h => h.market === "US").length), color: "text-white" },
@@ -687,9 +688,10 @@ export default function PortfolioPage() {
         </div>
       ) : (
         <div className="space-y-5">
+          {/* No market label on either table — see the summary cards note
+              above, same reasoning applies here. */}
           {hasINHoldings && (
             <div>
-              <p className="text-xs text-gray-500 mb-2 flex items-center gap-1">🇮🇳 Indian Holdings (₹)</p>
               <HoldingsTable
                 rows={inRows}
                 currency="₹"
@@ -700,7 +702,6 @@ export default function PortfolioPage() {
           )}
           {hasUSHoldings && (
             <div>
-              <p className="text-xs text-gray-500 mb-2 flex items-center gap-1">🇺🇸 US Holdings ($)</p>
               <HoldingsTable
                 rows={usRows}
                 currency="$"
