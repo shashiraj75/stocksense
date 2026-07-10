@@ -288,6 +288,12 @@ export default function PortfolioPage() {
   const [avgPrice, setAvgPrice] = useState("");
   const [error, setError] = useState("");
   const [showImport, setShowImport] = useState(false);
+  // Collapsed by default once holdings already exist — the form doesn't need
+  // to stay permanently visible for a returning user, and its own real
+  // estate was the thing this was collapsed to reduce. Defaults open for a
+  // genuinely empty portfolio so the "add your first stock above" empty
+  // state (below) still points at something visible.
+  const [showAddHolding, setShowAddHolding] = useState(() => holdings.length === 0);
 
   // Load from backend when the user is ready. If the server has nothing yet
   // but this browser's localStorage does, migrate those old local-only
@@ -507,9 +513,20 @@ export default function PortfolioPage() {
           <p className="text-gray-400 text-sm">Track your holdings and live P&L</p>
         </div>
         <button
+          onClick={() => setShowAddHolding(v => !v)}
+          className={clsx(
+            "ml-auto flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border transition-colors",
+            showAddHolding
+              ? "bg-brand-500/10 border-brand-500/40 text-brand-400"
+              : "border-dark-border text-gray-400 hover:text-white hover:border-white/30"
+          )}
+        >
+          <PlusCircle size={13} /> {showAddHolding ? "Close" : "Add Holding"}
+        </button>
+        <button
           onClick={() => setShowImport(true)}
           disabled={!apiBase}
-          className="ml-auto flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border border-dark-border text-gray-400 hover:text-white hover:border-white/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border border-dark-border text-gray-400 hover:text-white hover:border-white/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           <Upload size={13} /> Import Portfolio
         </button>
@@ -520,12 +537,18 @@ export default function PortfolioPage() {
         >
           <Download size={13} /> Export Portfolio
         </button>
-        {holdings.length > 0 && (
-          <span className="flex items-center gap-1.5 text-xs text-gray-500">
-            <Wifi size={12} className="text-green-500" />
-            Tracking {holdings.length} holding{holdings.length !== 1 ? "s" : ""} · live prices
-          </span>
-        )}
+        {holdings.length > 0 && (() => {
+          // Market-aware, matching every other summary on this page (cards,
+          // allocation chart) — this previously showed the combined IN+US
+          // count regardless of which market was selected.
+          const marketHoldingsCount = holdings.filter(h => h.market === market).length;
+          return (
+            <span className="flex items-center gap-1.5 text-xs text-gray-500">
+              <Wifi size={12} className="text-green-500" />
+              Tracking {marketHoldingsCount} holding{marketHoldingsCount !== 1 ? "s" : ""} · live prices
+            </span>
+          );
+        })()}
       </div>
 
       {showImport && apiBase && (
@@ -538,52 +561,57 @@ export default function PortfolioPage() {
         />
       )}
 
-      {/* Add holding form */}
-      <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
-        <h2 className="font-semibold mb-4 text-sm text-gray-300">Add Holding</h2>
-        <div className="flex flex-wrap gap-3 items-end">
-          <div className="flex-1 min-w-32">
-            <label className="text-xs text-gray-400 mb-1 block">Symbol</label>
-            <StockSymbolField
-              className="w-full bg-dark-bg border border-dark-border rounded-xl px-3 py-2 text-white font-mono font-bold text-sm outline-none focus:border-brand-500 uppercase"
-              value={sym}
-              onChange={setSym}
-              onEnter={add}
-              market={market}
-              placeholder={market === "IN" ? "RELIANCE, TCS…" : "AAPL, MSFT…"}
-              onSelect={(stock: StockResult) => {
-                setSym(stock.symbol.replace(/\.(NS|BO)$/, ""));
-                if (stock.market === "IN" || stock.market === "US") setMarket(stock.market);
-              }}
-            />
-          </div>
-          <div>
-            <label className="text-xs text-gray-400 mb-1 block">Market</label>
-            {/* Market is now chosen once, globally, via the header's
-                GlobalMarketDropdown, rather than a second click target here.
-                It still determines which market a manually-typed symbol is
-                added under — picking a symbol from search auto-detects its
-                own market instead (see onSelect above), same as before. */}
-            <div className="px-3 py-2 rounded-lg text-xs font-medium border bg-dark-bg border-dark-border text-gray-400">
-              {market === "US" ? "🇺🇸" : "🇮🇳"} {market}
+      {/* Add holding form — collapsible (Session 10 follow-up): defaults
+          open only for a genuinely empty portfolio, toggled via the "Add
+          Holding" button in the header row above instead of staying
+          permanently visible for a returning user with existing holdings. */}
+      {showAddHolding && (
+        <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
+          <h2 className="font-semibold mb-4 text-sm text-gray-300">Add Holding</h2>
+          <div className="flex flex-wrap gap-3 items-end">
+            <div className="flex-1 min-w-32">
+              <label className="text-xs text-gray-400 mb-1 block">Symbol</label>
+              <StockSymbolField
+                className="w-full bg-dark-bg border border-dark-border rounded-xl px-3 py-2 text-white font-mono font-bold text-sm outline-none focus:border-brand-500 uppercase"
+                value={sym}
+                onChange={setSym}
+                onEnter={add}
+                market={market}
+                placeholder={market === "IN" ? "RELIANCE, TCS…" : "AAPL, MSFT…"}
+                onSelect={(stock: StockResult) => {
+                  setSym(stock.symbol.replace(/\.(NS|BO)$/, ""));
+                  if (stock.market === "IN" || stock.market === "US") setMarket(stock.market);
+                }}
+              />
             </div>
+            <div>
+              <label className="text-xs text-gray-400 mb-1 block">Market</label>
+              {/* Market is now chosen once, globally, via the header's
+                  GlobalMarketDropdown, rather than a second click target here.
+                  It still determines which market a manually-typed symbol is
+                  added under — picking a symbol from search auto-detects its
+                  own market instead (see onSelect above), same as before. */}
+              <div className="px-3 py-2 rounded-lg text-xs font-medium border bg-dark-bg border-dark-border text-gray-400">
+                {market === "US" ? "🇺🇸" : "🇮🇳"} {market}
+              </div>
+            </div>
+            <div className="w-28">
+              <label className="text-xs text-gray-400 mb-1 block">Qty / Shares</label>
+              <input className="w-full bg-dark-bg border border-dark-border rounded-xl px-3 py-2 text-white text-sm outline-none focus:border-brand-500"
+                placeholder="10" type="number" min="0" value={qty} onChange={e => setQty(e.target.value)} />
+            </div>
+            <div className="w-36">
+              <label className="text-xs text-gray-400 mb-1 block">Avg Buy Price</label>
+              <input className="w-full bg-dark-bg border border-dark-border rounded-xl px-3 py-2 text-white font-mono text-sm outline-none focus:border-brand-500"
+                placeholder="150.00" type="number" min="0" step="0.01" value={avgPrice} onChange={e => setAvgPrice(e.target.value)} />
+            </div>
+            <button onClick={add} className="flex items-center gap-2 px-5 py-2 rounded-xl bg-brand-500 text-white text-sm font-medium hover:bg-brand-600 transition-colors">
+              <PlusCircle size={15} /> Add
+            </button>
           </div>
-          <div className="w-28">
-            <label className="text-xs text-gray-400 mb-1 block">Qty / Shares</label>
-            <input className="w-full bg-dark-bg border border-dark-border rounded-xl px-3 py-2 text-white text-sm outline-none focus:border-brand-500"
-              placeholder="10" type="number" min="0" value={qty} onChange={e => setQty(e.target.value)} />
-          </div>
-          <div className="w-36">
-            <label className="text-xs text-gray-400 mb-1 block">Avg Buy Price</label>
-            <input className="w-full bg-dark-bg border border-dark-border rounded-xl px-3 py-2 text-white font-mono text-sm outline-none focus:border-brand-500"
-              placeholder="150.00" type="number" min="0" step="0.01" value={avgPrice} onChange={e => setAvgPrice(e.target.value)} />
-          </div>
-          <button onClick={add} className="flex items-center gap-2 px-5 py-2 rounded-xl bg-brand-500 text-white text-sm font-medium hover:bg-brand-600 transition-colors">
-            <PlusCircle size={15} /> Add
-          </button>
+          {error && <p className="text-bear text-xs mt-2">{error}</p>}
         </div>
-        {error && <p className="text-bear text-xs mt-2">{error}</p>}
-      </div>
+      )}
 
       {/* Summary cards */}
       {holdings.length > 0 && (
