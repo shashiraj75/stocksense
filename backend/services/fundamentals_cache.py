@@ -232,6 +232,17 @@ def last_refreshed(market: str = "IN") -> str | None:
 # with the same numeral as the IN Crore thresholds (e.g. 2000 -> $2000M),
 # a deliberate simple re-scaling for US cap tiers, not a literal currency
 # conversion of the India-calibrated thresholds.
+#
+# COALESCE(promoter_pledge_pct, 0, ...) on every IN pledge check: screener_data.py
+# only sets promoter_pledge_pct when screener.in's shareholding table has a
+# "Pledge" row at all, which screener.in only renders for non-zero pledge —
+# a clean (no-pledge) stock has this column NULL, not 0. Comparing a raw
+# `promoter_pledge_pct < N` against NULL is always false in SQL, so without
+# the COALESCE, every screen with a pledge condition silently excluded almost
+# every clean company (the ones the condition is meant to allow through) and
+# returned zero India results across the board. The scorecard in
+# multibagger_scorecard.py already treats None as clean correctly — this
+# brings the raw screen filters in line with that.
 _SCREENS: dict[str, dict[str, tuple[str, str]]] = {
     "quality_compounder": {
         "IN": (
@@ -240,7 +251,7 @@ _SCREENS: dict[str, dict[str, tuple[str, str]]] = {
             AND roe_5y_pct > 18
             AND roce_pct > 15
             AND debt_to_equity_pct < 50
-            AND promoter_pledge_pct < 1
+            AND COALESCE(promoter_pledge_pct, 0) < 1
             AND promoter_holding_pct > 35
             AND sales_growth_5y_pct > 10
             AND profit_growth_5y_pct > 10
@@ -278,7 +289,7 @@ _SCREENS: dict[str, dict[str, tuple[str, str]]] = {
             AND profit_growth_3y_pct > 15
             AND roce_pct > 12
             AND debt_to_equity_pct < 100
-            AND promoter_pledge_pct < 2
+            AND COALESCE(promoter_pledge_pct, 0) < 2
             AND price_to_sales < 5
             AND pe_ratio < 50
             """,
@@ -307,7 +318,7 @@ _SCREENS: dict[str, dict[str, tuple[str, str]]] = {
             AND roe_pct > 8
             AND debt_to_equity_pct < 100
             AND interest_coverage_ratio > 2
-            AND promoter_pledge_pct < 2
+            AND COALESCE(promoter_pledge_pct, 0) < 2
             AND price_to_sales < 4
             AND pe_ratio < 60
             AND opm_pct > 8
