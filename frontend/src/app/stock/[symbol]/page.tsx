@@ -94,7 +94,14 @@ export default function StockPage() {
   const market: Market = isCrypto ? "US" : (rawMarket === "IN" || rawMarket === "US" ? rawMarket : "US");
   const currency = market === "IN" ? "₹" : "$";
 
-  const [tab, setTab] = useState<Tab>("short");
+  // Daily Picks (and any other future linker) can carry the horizon the
+  // user was already looking at via ?horizon=, so clicking a Medium/Long
+  // Term pick lands on that same tab instead of always resetting to Short
+  // Term. Same defensive pattern as ?market= above — an absent/malformed
+  // value falls back to "short" rather than being cast through unvalidated.
+  const rawHorizon = searchParams?.get("horizon");
+  const initialTab: Tab = rawHorizon === "medium" || rawHorizon === "long" ? rawHorizon : "short";
+  const [tab, setTab] = useState<Tab>(initialTab);
   const [btHorizon, setBtHorizon] = useState<Horizon>("short");
   const [historyHorizon, setHistoryHorizon] = useState<Horizon>("medium");
   const [btRunning, setBtRunning] = useState(false);

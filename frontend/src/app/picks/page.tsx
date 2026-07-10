@@ -497,7 +497,7 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
       </div>
 
       {/* Clickable body */}
-      <div onClick={() => router.push(`/stock/${encodeURIComponent(pick.symbol)}?market=${market}`)} className="p-4 cursor-pointer flex-1">
+      <div onClick={() => router.push(`/stock/${encodeURIComponent(pick.symbol)}?market=${market}&horizon=${pick.horizon}`)} className="p-4 cursor-pointer flex-1">
         <div className="flex items-start justify-between mb-2">
           <div>
             <span className="font-mono font-bold text-white text-lg group-hover:text-green-400 transition-colors">{pick.symbol}</span>
