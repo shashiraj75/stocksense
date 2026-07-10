@@ -13,7 +13,7 @@ import {
 import {
   fetchPaperPortfolio, closePaperTrade, resetPaperPortfolio, editPaperTrade,
   updatePaperTradeManagementMode, updatePaperTradeNotificationPreference,
-  fetchQuote, type PaperTrade, type TradeManagementMode, type ClosedHistoryHorizonKey,
+  fetchQuote, type PaperTrade, type TradeManagementMode, type ClosedHistoryHorizonKey, type StockQuote,
 } from "@/utils/api";
 import { useAuth } from "@/lib/AuthContext";
 import { PaperTradeModal } from "@/components/PaperTradeModal";
@@ -280,9 +280,21 @@ const _notifiedThisSession = new Set<string>();
 const _autoCloseAttempted = new Set<number>();
 
 function OpenTradeRow({
-  trade, onSell, userId, onNotify, notificationsEnabled,
+  trade, quote, onSell, userId, onNotify, notificationsEnabled,
 }: {
   trade: PaperTrade;
+  // Fetched once, staggered, at the page level (see quoteResults in
+  // PaperTradingPage) and passed down here — this row used to run its own
+  // independent, un-staggered useQuery for the exact same endpoint, meaning
+  // every open position fired two separate quote requests on mount instead
+  // of one. With portfolios regularly running 30-40+ open positions, that
+  // un-staggered half was the actual thundering-herd: every row's request
+  // firing simultaneously right as this route mounted, contending with the
+  // route's own (already large) initial render for the main thread and
+  // network — the concrete cause of Paper Trading specifically feeling
+  // stuck/torn to navigate into. Passing the already-staggered value down
+  // removes that duplicate entirely instead of just double-fetching slower.
+  quote: StockQuote | null | undefined;
   onSell: (t: PaperTrade) => void;
   userId: string;
   onNotify: (message: string, tone: "success" | "warning") => void;
@@ -291,13 +303,6 @@ function OpenTradeRow({
   const currency = trade.market === "IN" ? "₹" : "$";
   const locale = trade.market === "IN" ? "en-IN" : "en-US";
   const fmt = (n: number, dec = 2) => n.toLocaleString(locale, { minimumFractionDigits: dec, maximumFractionDigits: dec });
-
-  const { data: quote } = useQuery({
-    queryKey: ["quote", trade.symbol, trade.market],
-    queryFn: () => fetchQuote(trade.symbol, trade.market as any),
-    refetchInterval: 30_000,
-    staleTime: 25_000,
-  });
 
   const livePrice = quote?.price ?? null;
   const unrealizedPnl = livePrice != null ? (livePrice - trade.entry_price) * trade.quantity : null;
@@ -898,9 +903,17 @@ export default function PaperTradingPage() {
   }
 
   // quoteResults indices line up with portfolio.open_trades (unfiltered) —
-  // build a lookup so per-market filtering below doesn't lose the live price.
+  // build lookups so per-market filtering below doesn't lose the live quote.
+  // The full quote (not just price) is kept so OpenTradeRow can render its
+  // day-change line without running its own separate fetch for the same
+  // endpoint — see the `quote` prop's own comment on OpenTradeRow.
   const priceByTradeId = new Map<number, number | null>();
-  portfolio.open_trades.forEach((t, i) => priceByTradeId.set(t.id, quoteResults[i]?.data?.price ?? null));
+  const quoteByTradeId = new Map<number, StockQuote | null>();
+  portfolio.open_trades.forEach((t, i) => {
+    const q = quoteResults[i]?.data ?? null;
+    priceByTradeId.set(t.id, q?.price ?? null);
+    quoteByTradeId.set(t.id, q);
+  });
 
   // Everything below is scoped to the selected market — IN (₹) and US ($) are
   // separate ledgers and must never be summed together.
@@ -1159,7 +1172,7 @@ export default function PaperTradingPage() {
                     </thead>
                     <tbody>
                       {trades.map(t => (
-                        <OpenTradeRow key={t.id} trade={t} onSell={setSellTarget} userId={userId} onNotify={pushNotification} notificationsEnabled={portfolio.email_notifications_enabled} />
+                        <OpenTradeRow key={t.id} trade={t} quote={quoteByTradeId.get(t.id)} onSell={setSellTarget} userId={userId} onNotify={pushNotification} notificationsEnabled={portfolio.email_notifications_enabled} />
                       ))}
                     </tbody>
                   </table>
