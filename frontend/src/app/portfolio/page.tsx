@@ -242,19 +242,36 @@ function HoldingsTable({
   // allocation chart's sectorSlices already uses, so the two views agree),
   // ordered by each group's own current value descending — largest sector
   // first, matching how the allocation chart itself orders sectors.
+  //
+  // Rows whose signal (and therefore sector) hasn't resolved yet get their
+  // own "Loading…" bucket rather than falling into "Other" — otherwise a
+  // portfolio can look like every holding is unclassified for as long as
+  // the staggered per-holding signal requests take to settle, when really
+  // most of them just haven't answered yet. Always sorted last regardless
+  // of size — it's a transient state, not a real category.
   const sectorGroups = useMemo(() => {
     if (!groupBySector) return null;
     const byName = new Map<string, Row[]>();
+    const loadingRows: Row[] = [];
     for (const r of sortedRows) {
+      if (r.sigLoading) { loadingRows.push(r); continue; }
       const name = r.sector?.trim() || "Other";
       if (!byName.has(name)) byName.set(name, []);
       byName.get(name)!.push(r);
     }
-    return Array.from(byName, ([sector, groupRows]) => ({
+    const groups = Array.from(byName, ([sector, groupRows]) => ({
       sector,
       rows: groupRows,
       totalValue: groupRows.reduce((s, r) => s + (r.current ?? 0), 0),
     })).sort((a, b) => b.totalValue - a.totalValue);
+    if (loadingRows.length > 0) {
+      groups.push({
+        sector: "Loading…",
+        rows: loadingRows,
+        totalValue: loadingRows.reduce((s, r) => s + (r.current ?? 0), 0),
+      });
+    }
+    return groups;
   }, [sortedRows, groupBySector]);
 
   // 11 header cells (SortableHeader) + 1 trailing actions <th> = 12 columns.
@@ -553,15 +570,30 @@ export default function PortfolioPage() {
   // current value per sector, bucketing null/not-yet-resolved sectors under
   // "Other" so the bar always totals the same as the by-stock view rather
   // than silently omitting value while signals are still loading.
+  //
+  // "Still loading" and "genuinely has no sector classification" used to
+  // both collapse into "Other", which meant a portfolio could show 100%
+  // "Other" for as long as it took the staggered per-holding signal
+  // requests to resolve (each holding's sector comes from the same
+  // prediction as its Signal badge — see `sigLoading` above) — looking
+  // exactly like every holding was unclassified when really nothing had
+  // resolved yet. Loading rows get their own bucket instead, so "Other"
+  // only ever means "resolved, and there's really no sector for it."
   const sectorSlices = useMemo(() => {
     const totals = new Map<string, number>();
+    let loadingValue = 0;
     for (const r of rows) {
       if (r.market !== market || !r.current) continue;
+      if (r.sigLoading) { loadingValue += r.current; continue; }
       const sector = r.sector?.trim() || "Other";
       totals.set(sector, (totals.get(sector) ?? 0) + r.current);
     }
-    return Array.from(totals, ([sector, value]) => ({ sector, value }))
+    const slices = Array.from(totals, ([sector, value]) => ({ sector, value }))
       .sort((a, b) => b.value - a.value);
+    // Always last — it's a transient placeholder, not a real category, so
+    // it never belongs above genuinely-resolved sectors regardless of size.
+    if (loadingValue > 0) slices.push({ sector: "Loading…", value: loadingValue });
+    return slices;
   }, [rows, market]);
 
   // Single shared toggle for both the allocation chart's grouping and the
@@ -570,7 +602,9 @@ export default function PortfolioPage() {
   // "follow the data" (defaults to sector once sector data arrives, which
   // resolves asynchronously after mount) until the user explicitly clicks.
   const [allocationMode, setAllocationMode] = useState<"sector" | "stock" | null>(null);
-  const hasSectorData = sectorSlices.some(s => s.value > 0);
+  // Excludes the "Loading…" placeholder — that's not real sector data, so
+  // it must not be enough on its own to switch the default view to Sector.
+  const hasSectorData = sectorSlices.some(s => s.sector !== "Loading…" && s.value > 0);
   const effectiveAllocationMode = allocationMode ?? (hasSectorData ? "sector" : "stock");
 
   // Gated on the selected market toggle too, not just whether holdings exist —
