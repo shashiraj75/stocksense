@@ -146,16 +146,26 @@ const SCORE_BAND_STYLE: Record<string, string> = {
 // Mirrors SignalBadge's own thresholds (>=60 strong, 45-59 moderate, <45
 // muted) so a marginal pick doesn't visually read as confident as a strong
 // one — color treatment only, no change to the confidence value itself.
-function confidenceTextColor(confidence: number): string {
+// Exported for direct unit testing — no behavior change.
+export function confidenceTextColor(confidence: number): string {
   if (confidence >= 60) return "text-green-400";
   if (confidence >= 45) return "text-yellow-400";
   return "text-gray-400";
 }
 
-function confidenceGradientClass(confidence: number): string {
+// Exported for direct unit testing — no behavior change.
+export function confidenceGradientClass(confidence: number): string {
   if (confidence >= 60) return "bg-gradient-to-r from-green-500 to-emerald-400";
   if (confidence >= 45) return "bg-gradient-to-r from-yellow-500 to-amber-400";
   return "bg-gradient-to-r from-gray-500 to-gray-400";
+}
+
+// Exported for direct unit testing — no behavior change from the inline
+// template literal this replaces. Carries the horizon the user was already
+// on so Stock Detail's resolveInitialTab (see stock/[symbol]/page.tsx) can
+// land on the same tab instead of always resetting to Short Term.
+export function buildPickStockHref(symbol: string, market: "IN" | "US", horizon: string): string {
+  return `/stock/${encodeURIComponent(symbol)}?market=${market}&horizon=${horizon}`;
 }
 
 function ScoreBar({ label, value, color }: { label: string; value: number; color: string }) {
@@ -497,7 +507,7 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
       </div>
 
       {/* Clickable body */}
-      <div onClick={() => router.push(`/stock/${encodeURIComponent(pick.symbol)}?market=${market}&horizon=${pick.horizon}`)} className="p-4 cursor-pointer flex-1">
+      <div onClick={() => router.push(buildPickStockHref(pick.symbol, market, pick.horizon))} className="p-4 cursor-pointer flex-1">
         <div className="flex items-start justify-between mb-2">
           <div>
             <span className="font-mono font-bold text-white text-lg group-hover:text-green-400 transition-colors">{pick.symbol}</span>

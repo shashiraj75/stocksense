@@ -3,7 +3,7 @@ import { useState, useEffect } from "react";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { api, fetchQuote, fetchPrediction, fetchNews, fetchFactorAttribution, fetchScoreHistory, Market, Horizon } from "@/utils/api";
+import { api, fetchQuote, fetchPrediction, fetchNews, fetchFactorAttribution, fetchScoreHistory, Market, Horizon, Signal } from "@/utils/api";
 import { TradingViewWidget } from "@/components/TradingViewWidget";
 import { SignalBadge } from "@/components/SignalBadge";
 import { ConfidenceMeter } from "@/components/ConfidenceMeter";
@@ -27,6 +27,35 @@ import { ResearchSummary } from "@/components/ResearchSummary";
 const SHOW_SIGNAL_FEEDBACK = false;
 
 type Tab = Horizon | "backtest" | "history" | "fundamentals";
+
+// Extracted as a pure, exported function purely for direct unit testing —
+// no behavior change from the inline version this replaces. Signal
+// (BUY/HOLD/SELL) and confidence are two independent numbers — confidence
+// for a BUY is how far the composite score sits above the 60-point BUY
+// threshold (0-40 range remapped to 0-100%), not "how likely this call is
+// correct." Mirrors SignalBadge's own muted-BUY tiers (>=60 strong, 45-59
+// moderate, <45 muted) exactly — SELL/HOLD are intentionally left unmuted,
+// matching that component's own established convention.
+export function getSignalTone(signal: Signal, confidence: number) {
+  if (signal === "BUY") {
+    if (confidence >= 60) return { container: "bg-bull/10 border-bull/30", text: "text-bull", bar: "bg-bull" };
+    if (confidence >= 45) return { container: "bg-yellow-500/10 border-yellow-500/30", text: "text-yellow-400", bar: "bg-yellow-500" };
+    return { container: "bg-white/5 border-white/10", text: "text-gray-400", bar: "bg-gray-500" };
+  }
+  if (signal === "SELL") return { container: "bg-bear/10 border-bear/30", text: "text-bear", bar: "bg-bear" };
+  return { container: "bg-white/5 border-white/10", text: "text-neutral", bar: "bg-neutral" };
+}
+
+// Extracted as a pure, exported function purely for direct unit testing —
+// no behavior change from the inline version this replaces. Daily Picks
+// (and any other future linker) can carry the horizon the user was already
+// looking at via ?horizon=, so clicking a Medium/Long Term pick lands on
+// that same tab instead of always resetting to Short Term. An absent or
+// malformed value falls back to "short" rather than being cast through
+// unvalidated.
+export function resolveInitialTab(rawHorizon: string | null | undefined): Tab {
+  return rawHorizon === "medium" || rawHorizon === "long" ? rawHorizon : "short";
+}
 
 const HORIZON_TABS: { key: Tab; label: string }[] = [
   { key: "short", label: "Short Term" },
@@ -97,11 +126,8 @@ export default function StockPage() {
   // Daily Picks (and any other future linker) can carry the horizon the
   // user was already looking at via ?horizon=, so clicking a Medium/Long
   // Term pick lands on that same tab instead of always resetting to Short
-  // Term. Same defensive pattern as ?market= above — an absent/malformed
-  // value falls back to "short" rather than being cast through unvalidated.
-  const rawHorizon = searchParams?.get("horizon");
-  const initialTab: Tab = rawHorizon === "medium" || rawHorizon === "long" ? rawHorizon : "short";
-  const [tab, setTab] = useState<Tab>(initialTab);
+  // Term. Same defensive pattern as ?market= above — see resolveInitialTab.
+  const [tab, setTab] = useState<Tab>(resolveInitialTab(searchParams?.get("horizon")));
   const [btHorizon, setBtHorizon] = useState<Horizon>("short");
   const [historyHorizon, setHistoryHorizon] = useState<Horizon>("medium");
   const [btRunning, setBtRunning] = useState(false);
@@ -519,26 +545,8 @@ export default function StockPage() {
                 {tab !== "backtest" && (
                   <div className="shrink-0 flex flex-col items-center justify-center gap-3 w-full sm:w-auto sm:min-w-[140px]">
                     {prediction && !predLoading ? (() => {
-                      // Signal (BUY/HOLD/SELL) and `confidence` are two
-                      // independent numbers — confidence for a BUY is how far
-                      // the composite score sits above the 60-point BUY
-                      // threshold (0-40 range remapped to 0-100%), not "how
-                      // likely this call is correct." A score that barely
-                      // clears 60 is a real but marginal BUY and shouldn't
-                      // render with the same visual weight as a strong one.
-                      // Mirrors SignalBadge's own existing muted-BUY tiers
-                      // (>=60 strong, 45-59 moderate, <45 muted) exactly —
-                      // SELL/HOLD are intentionally left unmuted, matching
-                      // that component's own established convention.
-                      const tone = prediction.signal === "BUY"
-                        ? (prediction.confidence >= 60
-                            ? { container: "bg-bull/10 border-bull/30", text: "text-bull", bar: "bg-bull" }
-                            : prediction.confidence >= 45
-                            ? { container: "bg-yellow-500/10 border-yellow-500/30", text: "text-yellow-400", bar: "bg-yellow-500" }
-                            : { container: "bg-white/5 border-white/10", text: "text-gray-400", bar: "bg-gray-500" })
-                        : prediction.signal === "SELL"
-                        ? { container: "bg-bear/10 border-bear/30", text: "text-bear", bar: "bg-bear" }
-                        : { container: "bg-white/5 border-white/10", text: "text-neutral", bar: "bg-neutral" };
+                      // See getSignalTone's own docstring for the muted-BUY-tier rationale.
+                      const tone = getSignalTone(prediction.signal, prediction.confidence);
                       return (
                       <>
                         {/* Big signal display */}
