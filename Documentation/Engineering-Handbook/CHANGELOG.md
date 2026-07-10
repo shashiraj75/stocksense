@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- **Sprint #013 — Recommendation Consolidation Frontend Test Foundation.** Added a frontend test framework (Vitest + React Testing Library + jsdom), which did not exist at all before this sprint, plus 32 tests covering the RCI/Research-Report contract-validation boundary (`getValidRecommendationConsolidation`/`getValidResearchReport`) and the `DisclosurePanel`/`EvidenceSummary` components. New `frontend_tests.yml` GitHub Actions workflow runs the suite plus `tsc --noEmit` on every `frontend/**` push/PR, mirroring `backend_tests.yml`. Closes the exact gap Sprint #012 disclosed (validated only via manual script execution, no committed suite) and acts on `MASTER-ROADMAP.md`'s own recommendation. No production code, contract, or UI changed; `RCI_LIVE_STOCK_ANALYSIS_ENABLED` remains disabled. See [Sprint #013](Releases/Sprint-013-Recommendation-Consolidation-Frontend-Test-Foundation.md).
+
 ### Fixed
 
 - **Multibagger (all India screens returned zero results):** `promoter_pledge_pct` is `NULL` (not `0`) for any stock screener.in shows no pledge disclosure for, since `screener_data.py` only sets it when a "Pledge" row exists on the page. Every India screen's `promoter_pledge_pct < N` condition failed on that `NULL`, excluding almost every clean company. `backend/services/fundamentals_cache.py`'s `_SCREENS` now use `COALESCE(promoter_pledge_pct, 0) < N`. Verified live: `quality_compounder` 0→52, `multibagger_discovery` 0→167, `tenbagger_early` 0→73.
