@@ -79,7 +79,21 @@ _ALWAYS_MISSING_INPUTS = (
 
 
 def in_premarket_window(now_et: datetime) -> bool:
-    """8:00-8:30 AM America/New_York, Mon-Fri, excluding US market holidays.
+    """7:30-9:00 AM America/New_York, Mon-Fri, excluding US market holidays.
+
+    Widened from the original 8:00-8:30 (30 min) on 2026-07-13 after a real
+    missed run: the triggering GitHub Actions cron (daily_picks_us_premarket.yml)
+    didn't fire at all before the old, narrower window closed — confirmed
+    live (0 recorded workflow runs, premarket_finalized_at still null well
+    past 8:30 AM ET). GitHub Actions scheduled triggers are best-effort and
+    can run late by more than 30 minutes; 90 minutes absorbs that class of
+    delay (this repo has seen a multi-hour delay on a different Daily Picks
+    workflow — see Product-Integrity-001C — which this width still would not
+    cover, a known, accepted residual risk, not a claim of a hard guarantee).
+    9:00 AM ET is chosen as the upper bound specifically to stay genuinely
+    "premarket" — 30 minutes before the 9:30 AM open, not blurring into
+    regular-session data.
+
     Reuses the existing exchange-calendar holiday utility
     (services.market_hours._us_fixed_holidays) rather than a Mon-Fri-only
     guard — see the module docstring's Known Limitation note for its scope."""
@@ -88,8 +102,8 @@ def in_premarket_window(now_et: datetime) -> bool:
         return False
     if now_et.date() in _us_fixed_holidays(now_et.year):
         return False
-    start = now_et.replace(hour=8, minute=0, second=0, microsecond=0)
-    end = now_et.replace(hour=8, minute=30, second=0, microsecond=0)
+    start = now_et.replace(hour=7, minute=30, second=0, microsecond=0)
+    end = now_et.replace(hour=9, minute=0, second=0, microsecond=0)
     return start <= now_et <= end
 
 
@@ -184,6 +198,26 @@ async def finalize_premarket(market: str, now: datetime | None = None) -> dict:
             "reason": "no_base_picks_available",
             "premarket_finalizer_version": PREMARKET_FINALIZER_VERSION,
         }
+
+    # Idempotency guard, added 2026-07-13 alongside widening the window above
+    # from 30 to 90 minutes: the two fixed-UTC cron candidates
+    # (daily_picks_us_premarket.yml) are 1 hour apart, which used to exceed
+    # the old 30-minute window, guaranteeing at most one candidate ever
+    # landed inside it. A 90-minute window is wider than that 1-hour gap, so
+    # BOTH candidates now land inside the window on the same day — without
+    # this guard, finalize_premarket would run twice daily. Same-day check
+    # only (not "ever finalized") so tomorrow's run isn't blocked by today's.
+    prev_finalized_at = payload.get("premarket_finalized_at")
+    if prev_finalized_at:
+        try:
+            prev_et = datetime.fromisoformat(prev_finalized_at).astimezone(_ET)
+            if prev_et.date() == now_et.date():
+                return {
+                    "market": "US", "status": "skipped", "reason": "already_finalized_today",
+                    "premarket_finalized_at": prev_finalized_at,
+                }
+        except (ValueError, TypeError):
+            pass  # malformed timestamp — don't block a real finalize attempt over it
 
     checked_at = datetime.now(timezone.utc).isoformat()
     all_picks = [

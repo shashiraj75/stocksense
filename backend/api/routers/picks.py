@@ -305,12 +305,17 @@ async def premarket_finalize(market: str = "US", x_secret: str = Header(None)):
     known limitations.
 
     Protected by the same X-Secret header as /generate. Guards its own
-    execution window (8:00-8:30 AM America/New_York, Mon-Fri, excluding US
-    market holidays) internally and safely no-ops outside it — the calling
+    execution window (7:30-9:00 AM America/New_York, Mon-Fri, excluding US
+    market holidays — widened from the original 30-minute window on
+    2026-07-13 after a real missed run; see in_premarket_window()'s own
+    docstring) internally and safely no-ops outside it — the calling
     workflow (daily_picks_us_premarket.yml) fires two fixed-UTC candidate
     times per day (one for EDT, one for EST) since GitHub Actions cron is
-    UTC-only and does not observe US DST; whichever candidate lands outside
-    the window gets this endpoint's no-op response, never an error.
+    UTC-only and does not observe US DST. Unlike the original 30-minute
+    window, this wider one is wider than the 1-hour EDT/EST gap between the
+    two candidates, so BOTH now land inside it on the same day — a same-day
+    idempotency guard in finalize_premarket() (not this endpoint) makes the
+    second call a safe no-op rather than a duplicate run.
 
     Only market=US is supported — India Daily Picks timing/behavior is
     explicitly out of scope for this feature and untouched.

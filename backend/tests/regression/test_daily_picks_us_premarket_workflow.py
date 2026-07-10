@@ -54,9 +54,13 @@ class TestUsPremarketFinalizerWorkflowExists:
         assert (_WORKFLOWS / "daily_picks_us_premarket.yml").exists()
 
     def test_has_both_dst_cron_candidates(self):
+        # 2026-07-13: moved 30 min earlier (was "5 12"/"5 13") to build in
+        # buffer against GitHub Actions' own scheduling delay, alongside
+        # widening the backend's acceptance window (see
+        # services/premarket_finalizer.py's in_premarket_window).
         src = (_WORKFLOWS / "daily_picks_us_premarket.yml").read_text()
-        assert 'cron: "5 12 * * 1-5"' in src   # EDT candidate
-        assert 'cron: "5 13 * * 1-5"' in src   # EST candidate
+        assert 'cron: "35 11 * * 1-5"' in src   # EDT candidate
+        assert 'cron: "35 12 * * 1-5"' in src   # EST candidate
 
     def test_workflow_dispatch_present(self):
         src = (_WORKFLOWS / "daily_picks_us_premarket.yml").read_text()

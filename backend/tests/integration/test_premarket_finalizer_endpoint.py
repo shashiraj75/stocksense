@@ -88,9 +88,9 @@ class TestPremarketFinalizeWindowGuard:
 
     @pytest.mark.asyncio
     async def test_edt_cron_candidate_runs_during_edt(self):
-        """12:05 UTC maps to ~8:05 AM New York during EDT (July) — allowed."""
+        """11:35 UTC maps to ~7:35 AM New York during EDT (July) — allowed."""
         from services.premarket_finalizer import finalize_premarket
-        now = datetime(2026, 7, 6, 12, 5, tzinfo=timezone.utc)
+        now = datetime(2026, 7, 6, 11, 35, tzinfo=timezone.utc)
         with patch("services.daily_picks.get_cached_picks", return_value=_base_payload()), \
              patch("services.market_data.MarketDataService.get_quote", new=AsyncMock(return_value=None)), \
              patch("services.global_context.get_global_context", side_effect=Exception("no network in test")):
@@ -99,9 +99,9 @@ class TestPremarketFinalizeWindowGuard:
 
     @pytest.mark.asyncio
     async def test_est_cron_candidate_runs_during_est(self):
-        """13:05 UTC maps to ~8:05 AM New York during EST (January) — allowed."""
+        """12:35 UTC maps to ~7:35 AM New York during EST (January) — allowed."""
         from services.premarket_finalizer import finalize_premarket
-        now = datetime(2026, 1, 6, 13, 5, tzinfo=timezone.utc)
+        now = datetime(2026, 1, 6, 12, 35, tzinfo=timezone.utc)
         with patch("services.daily_picks.get_cached_picks", return_value=_base_payload()), \
              patch("services.market_data.MarketDataService.get_quote", new=AsyncMock(return_value=None)), \
              patch("services.global_context.get_global_context", side_effect=Exception("no network in test")):
@@ -109,19 +109,34 @@ class TestPremarketFinalizeWindowGuard:
         assert result["status"] == "completed_with_limited_premarket_data"
 
     @pytest.mark.asyncio
-    async def test_est_cron_candidate_noops_during_edt(self):
-        """13:05 UTC during EDT (July) is ~9:05 AM ET — the wrong candidate, must skip."""
+    async def test_est_candidate_is_now_also_inside_window_during_edt_but_idempotency_guard_skips_it(self):
+        """
+        12:35 UTC during EDT (July) is ~8:35 AM ET — still inside the new
+        7:30-9:00 window (unlike the old 30-minute window, where this
+        candidate safely fell outside it). This is the expected behavior
+        change from widening the window past the 1-hour EDT/EST cron gap:
+        both candidates now land in-window, so it's the same-day
+        idempotency guard — not the window boundary — that prevents this
+        from being a second, duplicate finalization once the EDT candidate
+        (11:35 UTC) has already run earlier that same morning.
+        """
         from services.premarket_finalizer import finalize_premarket
-        now = datetime(2026, 7, 6, 13, 5, tzinfo=timezone.utc)
-        result = await finalize_premarket("US", now=now)
+        already_finalized_today = datetime(2026, 7, 6, 11, 35, tzinfo=timezone.utc).isoformat()
+        payload = _base_payload()
+        payload["premarket_finalized_at"] = already_finalized_today
+        now = datetime(2026, 7, 6, 12, 35, tzinfo=timezone.utc)
+        with patch("services.daily_picks.get_cached_picks", return_value=payload):
+            result = await finalize_premarket("US", now=now)
         assert result["status"] == "skipped"
-        assert result["reason"] == "outside_premarket_finalizer_window"
+        assert result["reason"] == "already_finalized_today"
 
     @pytest.mark.asyncio
     async def test_edt_cron_candidate_noops_during_est(self):
-        """12:05 UTC during EST (January) is ~7:05 AM ET — the wrong candidate, must skip."""
+        """11:35 UTC during EST (January) is ~6:35 AM ET — still outside the
+        window on this side (EST shifts it earlier, not later), so this one
+        remains a genuine window no-op, not an idempotency-guard skip."""
         from services.premarket_finalizer import finalize_premarket
-        now = datetime(2026, 1, 6, 12, 5, tzinfo=timezone.utc)
+        now = datetime(2026, 1, 6, 11, 35, tzinfo=timezone.utc)
         result = await finalize_premarket("US", now=now)
         assert result["status"] == "skipped"
         assert result["reason"] == "outside_premarket_finalizer_window"

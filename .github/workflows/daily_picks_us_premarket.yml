@@ -2,17 +2,31 @@ name: Daily Stock Picks — US Premarket Finalizer
 
 # GitHub Actions cron is UTC-only and does not observe US daylight saving
 # time, so two fixed-UTC schedules are used to approximate the same
-# 8:05 AM New York local time year-round. The backend endpoint itself is
+# 7:35 AM New York local time year-round. The backend endpoint itself is
 # the source of truth for whether it is actually inside the allowed
 # premarket window (America/New_York, DST-aware via zoneinfo) — one of
 # these two triggers will always land inside the window and run, the
 # other will always land outside the window and safely no-op.
+#
+# 2026-07-13 change: moved 30 minutes earlier (was 8:05 AM ET) and the
+# backend's own acceptance window widened from 30 to 90 minutes (7:30-9:00
+# AM ET — see in_premarket_window() in premarket_finalizer.py), after a real
+# missed run: GitHub Actions' scheduled cron didn't fire this workflow at
+# all before its old 8:00-8:30 AM ET window closed (confirmed live via the
+# Actions UI — 0 runs recorded, and /api/picks/status showing
+# premarket_finalized_at still null past 9:00 AM ET). GH Actions scheduled
+# triggers are best-effort and can run late by more than the old 30-minute
+# window allowed for — this doesn't fully protect against a pathological
+# multi-hour delay (this repo has seen one on a different Daily Picks
+# workflow, see Product-Integrity-001C), but absorbs the ~30-90 minute class
+# of delay that actually recurred here without requiring the trigger to
+# land at the exact right minute.
 on:
   schedule:
-    # EDT candidate: 12:05 UTC = 8:05 AM New York during EDT (Mar-Nov)
-    - cron: "5 12 * * 1-5"
-    # EST candidate: 13:05 UTC = 8:05 AM New York during EST (Nov-Mar)
-    - cron: "5 13 * * 1-5"
+    # EDT candidate: 11:35 UTC = 7:35 AM New York during EDT (Mar-Nov)
+    - cron: "35 11 * * 1-5"
+    # EST candidate: 12:35 UTC = 7:35 AM New York during EST (Nov-Mar)
+    - cron: "35 12 * * 1-5"
   workflow_dispatch:
 
 jobs:
@@ -53,5 +67,5 @@ jobs:
           echo "$RESPONSE"
           echo ""
           echo "Premarket finalizer call complete. The backend guards execution to the"
-          echo "8:00-8:30 AM America/New_York window and safely no-ops outside it (e.g."
+          echo "7:30-9:00 AM America/New_York window and safely no-ops outside it (e.g."
           echo "the EDT/EST candidate that isn't the active DST offset today)."
