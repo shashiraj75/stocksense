@@ -61,14 +61,33 @@ export function ScoreHistoryChart({ points }: { points: ScoreHistoryPoint[] }) {
             <Tooltip
               contentStyle={{ background: "#1a1d29", border: "1px solid #2a2d3a", borderRadius: 8, fontSize: 12 }}
             />
+            {/* isAnimationActive={false} on every Line below: Recharts' default
+                line-draw entrance animation renders the path with
+                stroke-dasharray starting at "0 <full-length>" (fully invisible)
+                and animates toward fully drawn via requestAnimationFrame. If
+                rAF never progresses in a given tab (backgrounded/inactive tab,
+                a remount inside a conditionally-rendered panel like the
+                History tab here, reduced-motion throttling), the line gets
+                stuck at that first, invisible frame — an empty-looking chart
+                with valid data and a correctly-drawn-but-hidden path.
+                Disabling the animation renders the full path immediately, no
+                rAF dependency at all. */}
             {view === "score" ? (
-              <Line type="monotone" dataKey="composite_score" name="Composite" stroke="#6366f1" strokeWidth={2} dot={{ r: 3, fill: "#6366f1", strokeWidth: 0 }}>
+              <Line type="monotone" dataKey="composite_score" name="Composite" stroke="#6366f1" strokeWidth={2}
+                dot={{ r: 3, fill: "#6366f1", strokeWidth: 0 }} isAnimationActive={false}>
                 <LabelList dataKey="composite_score" position="top" fill="#a5b4fc" fontSize={11} offset={8} />
               </Line>
             ) : (
-              <>
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-                {FACTOR_LINES.map((f) => (
+              // An array, not a <>Fragment</> — Recharts scans LineChart's
+              // children by component type (Line/Legend/etc.) to decide what
+              // to draw, and does not traverse into a Fragment the same way
+              // it flattens an array. Wrapping Legend + the mapped Lines in a
+              // Fragment made every one of them invisible to that scan (no
+              // error, no legend, no lines — confirmed by direct SVG
+              // inspection: the layer never appeared in the DOM at all).
+              [
+                <Legend key="legend" wrapperStyle={{ fontSize: 11 }} />,
+                ...FACTOR_LINES.map((f) => (
                   <Line
                     key={f.key as string}
                     type="monotone"
@@ -78,9 +97,10 @@ export function ScoreHistoryChart({ points }: { points: ScoreHistoryPoint[] }) {
                     strokeWidth={1.5}
                     dot={false}
                     connectNulls
+                    isAnimationActive={false}
                   />
-                ))}
-              </>
+                )),
+              ]
             )}
           </LineChart>
         </ResponsiveContainer>
