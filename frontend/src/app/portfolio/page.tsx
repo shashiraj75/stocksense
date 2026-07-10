@@ -293,7 +293,22 @@ export default function PortfolioPage() {
   // estate was the thing this was collapsed to reduce. Defaults open for a
   // genuinely empty portfolio so the "add your first stock above" empty
   // state (below) still points at something visible.
-  const [showAddHolding, setShowAddHolding] = useState(() => holdings.length === 0);
+  //
+  // Starts `false` unconditionally (not `holdings.length === 0`) because
+  // `holdings`'s own initial value comes from localStorage, which doesn't
+  // exist during server-side rendering — deriving this directly from
+  // holdings.length in the initializer made the server and client render
+  // different button text/classes on the very first paint (a real
+  // hydration-mismatch error, confirmed live). Reconciled in the effect
+  // below instead, which only runs client-side after hydration completes.
+  const [showAddHolding, setShowAddHolding] = useState(false);
+  useEffect(() => {
+    if (holdings.length === 0) setShowAddHolding(true);
+    // Intentionally once-on-mount only — this sets the initial open/closed
+    // state from the real (client-only) holdings count; it must not re-open
+    // the form every time the last holding gets deleted later.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Load from backend when the user is ready. If the server has nothing yet
   // but this browser's localStorage does, migrate those old local-only
@@ -583,17 +598,6 @@ export default function PortfolioPage() {
                   if (stock.market === "IN" || stock.market === "US") setMarket(stock.market);
                 }}
               />
-            </div>
-            <div>
-              <label className="text-xs text-gray-400 mb-1 block">Market</label>
-              {/* Market is now chosen once, globally, via the header's
-                  GlobalMarketDropdown, rather than a second click target here.
-                  It still determines which market a manually-typed symbol is
-                  added under — picking a symbol from search auto-detects its
-                  own market instead (see onSelect above), same as before. */}
-              <div className="px-3 py-2 rounded-lg text-xs font-medium border bg-dark-bg border-dark-border text-gray-400">
-                {market === "US" ? "🇺🇸" : "🇮🇳"} {market}
-              </div>
             </div>
             <div className="w-28">
               <label className="text-xs text-gray-400 mb-1 block">Qty / Shares</label>
