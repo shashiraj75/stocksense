@@ -1,7 +1,7 @@
 # StockSense360 — Complete Product & Technical Documentation
 
 > **Live Document** — Updated automatically as the product evolves.  
-> Last updated: 2026-06-24 (Session 9)
+> Last updated: 2026-07-10 (Session 10)
 
 ---
 
@@ -939,6 +939,9 @@ portfolio_holdings (id TEXT PK, user_id TEXT, symbol TEXT, market TEXT CHECK('IN
 - Inline edit (pencil icon) for Qty/Avg Buy, confirmed via checkmark or Enter, cancelled via X or Escape.
 - Delete/edit await the backend response before updating local state — closes the same "resurrection" race class found in Alerts (a failed request used to leave the row alive server-side while the UI showed it changed/gone, with the next page load silently reverting it).
 - Symbol entry uses the shared `StockSymbolField` predictive-search component (Session 8) instead of a bare text input.
+- **Day's P&L** (Session 10): a separate amount + % column alongside the existing overall P&L, reusing the `change`/`change_pct` already returned by each holding's quote fetch — no additional API calls.
+- **Portfolio Allocation chart** (`PortfolioAllocationChart.tsx`, Session 10): a By Sector / By Stock toggle. Sector view sums holdings by `quality_factors.sector` (reused from the same computation `predict()` already does, exposed additively on `/signal`'s summary payload); both views sort slices descending by value. Defaults to sector view once any sector data has resolved for at least one holding — not gated on having more than one distinct sector, since large India portfolios resolve sector data slowly per-symbol and would otherwise show a different UI shape than fast US ones while data is still loading.
+- Holdings table has a persistently-visible thin scrollbar on its horizontal scroll container (fixes a real mobile overflow bug where the table didn't fit the viewport at all).
 
 ---
 
@@ -1294,6 +1297,33 @@ The hosting platform's ephemeral disk means files written locally are wiped on e
 ---
 
 ## 27. Changelog
+
+### Session 10 — 2026-07-10
+
+A shorter, fix-focused session across Portfolio, Stock Detail, Daily Picks, and the Multibagger Screen — no new Epics, mostly closing real bugs a user flagged from live screenshots plus one root-cause data bug found while investigating a "why is this empty" report.
+
+**Multibagger — All Three India Screens Were Returning Zero Results:**
+
+- A user cross-checked a manual screener.in query (11 conditions, market cap/ROE/ROCE/growth/debt/pledge/PE/EV-EBITDA/interest-coverage/current-ratio) that returned 12 real India stocks, against this app's Multibagger tool, which showed nothing at all under any India screen.
+- Root cause, confirmed by directly scraping several known clean-pledge stocks (KPITTECH, KAYNES, SUZLON, RATNAMANI) and inspecting the raw field values: `promoter_pledge_pct` is only set when screener.in's shareholding table has a "Pledge" row at all — and screener.in only renders that row for non-zero pledge. A clean (no-pledge) stock therefore has this column `NULL`, not `0`. Every India screen's `promoter_pledge_pct < N` SQL condition silently failed on that `NULL` (SQL comparisons against `NULL` are always false), excluding almost every clean company — the exact opposite of the condition's intent — and driving `quality_compounder`, `multibagger_discovery`, and `tenbagger_early` to 0 results each, independent of any other threshold.
+- Fixed in `backend/services/fundamentals_cache.py` by wrapping every pledge condition in `COALESCE(promoter_pledge_pct, 0) < N`, matching how `multibagger_scorecard.py`'s own checklist already (correctly) treated a missing pledge value as clean. Verified live post-deploy: `quality_compounder` 52 results, `multibagger_discovery` 167, `tenbagger_early` 73 (all were 0 before).
+
+**Portfolio — Day's P&L, Sector Allocation, and a Real Mobile Overflow Bug:**
+
+- Added a "Day's P&L" column (amount + %) alongside the existing overall P&L, reusing the `change`/`change_pct` already returned by the per-holding quote fetch — no new API calls.
+- Added a "By Sector" / "By Stock" toggle to the Portfolio Allocation chart (`PortfolioAllocationChart.tsx`), grouping/summing holdings by sector (reusing sector data already computed inside `predict()` and now additionally exposed on the lightweight `/signal` endpoint's summary, again no new compute). Both the by-stock and by-sector slices are sorted descending by value.
+- Fixed a real bug where India and US Portfolio views looked structurally different: the sector toggle used a `> 1 distinct sector` threshold to decide whether to show sector view at all, which stayed hidden for large India portfolios where most holdings were still resolving sector data (everything briefly sitting in "Other"). Relaxed to `> 0`, and fixed a related stale-default bug where the toggle's initial `useState` value froze at whatever was true on the very first render, before any sector data existed, and never reconsidered — now re-evaluates every render until the user explicitly picks a toggle.
+- Fixed a genuine mobile bug: the holdings table overflowed the viewport width on narrow screens. Added a persistently-visible thin scrollbar to the table's scroll container and `flex-wrap` to the header row.
+- Fixed the Day's P&L / overall P&L numbers wrapping onto two lines with inconsistent spacing, and an empty Signal column that should have shown a "computing" state instead of looking blank.
+
+**Stock Detail — Confidence-Graded Colors, Wrong-Horizon Navigation, and a Hidden Chart:**
+
+- The AI Signal panel showed a flat green "BUY" regardless of confidence (e.g. a 7% confidence BUY looked identical to a 90% one). Refactored to mirror `SignalBadge`'s existing convention: BUY is confidence-tiered (green ≥60%, yellow 45–59%, gray <45%); HOLD/SELL stay a single fixed shade, since only a weak BUY is the case worth visually flagging.
+- The same flat-green problem existed independently on the Daily Picks card's "AI Confidence" bar and its expanded `ScoreBar` row — fixed with the same confidence-tiered color/gradient helpers.
+- Fixed real broken navigation: opening a stock from a specific Daily Picks horizon tab (e.g. Medium Term) landed on the Stock Detail page's Short Term tab instead of the horizon the user came from. The picks card's `router.push` now passes `?horizon=`, and the Stock Detail page reads it (falling back to Short Term only if absent/invalid), matching the existing `?market=` pattern.
+- The History tab's "Factor Breakdown" chart rendered completely empty (no lines, no legend, no console error) for every stock. Two independent root causes, both fixed in `ScoreHistoryChart.tsx`: (1) the branch wrapped `<Legend/>` and the mapped `<Line>` elements in a React Fragment, which Recharts' internal children-type scan doesn't traverse the way it flattens a plain array — switched to returning an array; (2) Recharts' default line-draw entrance animation can get stuck at its invisible first frame if `requestAnimationFrame` never progresses in a given tab — disabled via `isAnimationActive={false}` on every line in both the Composite Score and Factor Breakdown views, which also removes the animation's dependency on a live rAF loop entirely. Also changed the Composite Score line to always show its values via `LabelList` instead of requiring a hover.
+
+**Documentation note:** this app has never had a dedicated Multibagger section in this document (only glossary mentions in §18a) — flagged here rather than silently left out; a proper §18b Multibagger Screen writeup is still owed as follow-up.
 
 ### Session 9 — 2026-06-24
 
