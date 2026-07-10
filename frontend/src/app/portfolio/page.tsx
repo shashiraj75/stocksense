@@ -1,12 +1,12 @@
 "use client";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, Fragment } from "react";
 import { fetchQuote, fetchSignalSummary, Market, api } from "@/utils/api";
 import { useStaggeredQueries } from "@/hooks/useStaggeredQueries";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { SignalBadge } from "@/components/SignalBadge";
 import Link from "next/link";
 import clsx from "clsx";
-import { PlusCircle, Trash2, TrendingUp, TrendingDown, Briefcase, Wifi, Pencil, Check, X, Upload, Download, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
+import { PlusCircle, Trash2, TrendingUp, TrendingDown, Briefcase, Wifi, Pencil, Check, X, Upload, Download, ArrowUp, ArrowDown, ArrowUpDown, Layers } from "lucide-react";
 import { PortfolioAllocationChart } from "@/components/PortfolioAllocationChart";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
 import { StockSymbolField } from "@/components/StockSymbolField";
@@ -204,6 +204,11 @@ function HoldingsTable({
 }: { rows: Row[]; currency: string; onRemove: (id: string) => void; onEdit: (id: string, updates: { qty: number; avgPrice: number }) => void }) {
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  // Independent per table instance (IN table and US table each get their
+  // own toggle) — grouping doesn't replace sorting, it's layered on top:
+  // rows are sorted first, then bucketed by sector, so the active sort
+  // order is preserved within each sector group instead of being lost.
+  const [groupBySector, setGroupBySector] = useState(false);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -229,8 +234,41 @@ function HoldingsTable({
     return sortDir === "asc" ? cmp : -cmp;
   }) : rows, [rows, sortKey, sortDir]);
 
+  // Buckets the already-sorted rows by sector (same "Other" fallback the
+  // allocation chart's sectorSlices already uses, so the two views agree),
+  // ordered by each group's own current value descending — largest sector
+  // first, matching how the allocation chart itself orders sectors.
+  const sectorGroups = useMemo(() => {
+    if (!groupBySector) return null;
+    const byName = new Map<string, Row[]>();
+    for (const r of sortedRows) {
+      const name = r.sector?.trim() || "Other";
+      if (!byName.has(name)) byName.set(name, []);
+      byName.get(name)!.push(r);
+    }
+    return Array.from(byName, ([sector, groupRows]) => ({
+      sector,
+      rows: groupRows,
+      totalValue: groupRows.reduce((s, r) => s + (r.current ?? 0), 0),
+    })).sort((a, b) => b.totalValue - a.totalValue);
+  }, [sortedRows, groupBySector]);
+
+  // 11 header cells (SortableHeader) + 1 trailing actions <th> = 12 columns.
+  const COLUMN_COUNT = 12;
+
   return (
     <div className="bg-dark-card border border-dark-border rounded-2xl overflow-hidden">
+      <div className="flex items-center justify-end px-4 py-2 border-b border-dark-border">
+        <button
+          onClick={() => setGroupBySector(v => !v)}
+          className={clsx(
+            "flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg border transition-colors",
+            groupBySector ? "bg-brand-500/20 border-brand-500/40 text-brand-300" : "border-dark-border text-gray-400 hover:text-white"
+          )}
+        >
+          <Layers size={12} /> {groupBySector ? "Ungroup" : "Group by Sector"}
+        </button>
+      </div>
       {/* A wide table (11 columns) needs horizontal scroll on anything
           narrower than a large desktop. Native scrollbars are invisible
           until actively scrolling on macOS/trackpad systems, which makes a
@@ -259,9 +297,27 @@ function HoldingsTable({
             </tr>
           </thead>
           <tbody>
-            {sortedRows.map((r) => (
-              <HoldingRow key={r.id} r={r} currency={currency} onRemove={onRemove} onEdit={onEdit} />
-            ))}
+            {sectorGroups ? (
+              sectorGroups.map((g) => (
+                <Fragment key={g.sector}>
+                  <tr className="bg-dark-bg/60">
+                    <td colSpan={COLUMN_COUNT} className="px-4 py-2 text-xs font-semibold text-gray-300">
+                      {g.sector}
+                      <span className="ml-2 font-normal text-gray-500">
+                        {g.rows.length} holding{g.rows.length !== 1 ? "s" : ""} · {currency}{g.totalValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                      </span>
+                    </td>
+                  </tr>
+                  {g.rows.map((r) => (
+                    <HoldingRow key={r.id} r={r} currency={currency} onRemove={onRemove} onEdit={onEdit} />
+                  ))}
+                </Fragment>
+              ))
+            ) : (
+              sortedRows.map((r) => (
+                <HoldingRow key={r.id} r={r} currency={currency} onRemove={onRemove} onEdit={onEdit} />
+              ))
+            )}
           </tbody>
         </table>
       </div>
@@ -281,7 +337,19 @@ export default function PortfolioPage() {
   const userId = user?.id ?? "";
   const apiBase = userId ? `/api/portfolio/${userId}` : null;
 
-  const [holdings, setHoldings] = useState<Holding[]>(() => loadLocal());
+  // Starts `[]` unconditionally — NOT `() => loadLocal()` — because
+  // localStorage doesn't exist during server-side rendering. The old
+  // synchronous-read initializer made `holdings` (and therefore every
+  // render branch that keys off `holdings.length`/`rows.length` — the
+  // empty-state message, the Export button's disabled state, the summary
+  // cards, the whole holdings-table section) disagree between server and
+  // client on the very first paint for any returning user with stored
+  // holdings, each a separate real hydration-mismatch error confirmed live
+  // one at a time. Mirrors the existing, already-correct pattern in
+  // useMarketPreference.ts (empty-safe initializer + client-only effect for
+  // the real value) instead of adding a `mounted`-style guard at every one
+  // of those call sites individually.
+  const [holdings, setHoldings] = useState<Holding[]>([]);
   const [sym, setSym] = useState("");
   const [market, setMarket] = useMarketPreference(["IN", "US"] as const, "IN");
   const [qty, setQty] = useState("");
@@ -293,22 +361,30 @@ export default function PortfolioPage() {
   // estate was the thing this was collapsed to reduce. Defaults open for a
   // genuinely empty portfolio so the "add your first stock above" empty
   // state (below) still points at something visible.
-  //
-  // Starts `false` unconditionally (not `holdings.length === 0`) because
-  // `holdings`'s own initial value comes from localStorage, which doesn't
-  // exist during server-side rendering — deriving this directly from
-  // holdings.length in the initializer made the server and client render
-  // different button text/classes on the very first paint (a real
-  // hydration-mismatch error, confirmed live). Reconciled in the effect
-  // below instead, which only runs client-side after hydration completes.
   const [showAddHolding, setShowAddHolding] = useState(false);
   useEffect(() => {
-    if (holdings.length === 0) setShowAddHolding(true);
-    // Intentionally once-on-mount only — this sets the initial open/closed
-    // state from the real (client-only) holdings count; it must not re-open
-    // the form every time the last holding gets deleted later.
+    const loaded = loadLocal();
+    setHoldings(loaded);
+    if (loaded.length === 0) setShowAddHolding(true);
+    // Intentionally once-on-mount only — loads the real (client-only)
+    // localStorage value and sets the form's initial open/closed state from
+    // it in the same pass, avoiding an effect-ordering dependency between
+    // two separate effects that would otherwise both need to run after this
+    // same client-only read. Must not re-open the form every time the last
+    // holding gets deleted later, hence the empty deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Same hydration-mismatch class as showAddHolding above, found live while
+  // verifying it: useAuth()'s user (and therefore apiBase, derived from it)
+  // resolves asynchronously/client-only, so the Import Portfolio button's
+  // `disabled={!apiBase}` rendered differently on the server (always
+  // disabled — no session context during SSR) vs. the client's first paint
+  // (already-resolved auth state). Gating on `mounted` forces both to agree
+  // on "disabled" until the client-only effect below flips it, exactly
+  // mirroring the showAddHolding fix.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
 
   // Load from backend when the user is ready. If the server has nothing yet
   // but this browser's localStorage does, migrate those old local-only
@@ -540,7 +616,7 @@ export default function PortfolioPage() {
         </button>
         <button
           onClick={() => setShowImport(true)}
-          disabled={!apiBase}
+          disabled={!mounted || !apiBase}
           className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border border-dark-border text-gray-400 hover:text-white hover:border-white/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           <Upload size={13} /> Import Portfolio
