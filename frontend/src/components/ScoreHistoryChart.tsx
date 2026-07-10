@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, LabelList } from "recharts";
 import clsx from "clsx";
 import type { ScoreHistoryPoint } from "@/utils/api";
 
@@ -62,7 +62,9 @@ export function ScoreHistoryChart({ points }: { points: ScoreHistoryPoint[] }) {
               contentStyle={{ background: "#1a1d29", border: "1px solid #2a2d3a", borderRadius: 8, fontSize: 12 }}
             />
             {view === "score" ? (
-              <Line type="monotone" dataKey="composite_score" name="Composite" stroke="#6366f1" strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="composite_score" name="Composite" stroke="#6366f1" strokeWidth={2} dot={{ r: 3, fill: "#6366f1", strokeWidth: 0 }}>
+                <LabelList dataKey="composite_score" position="top" fill="#a5b4fc" fontSize={11} offset={8} />
+              </Line>
             ) : (
               <>
                 <Legend wrapperStyle={{ fontSize: 11 }} />
