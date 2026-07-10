@@ -1,5 +1,6 @@
 import os
 import logging
+import threading
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from typing import Literal
@@ -346,9 +347,34 @@ def _overview_from_closed_trades(closed_trades: list[dict]) -> dict:
     return overview_by_market
 
 
+# Every request handler below used to call psycopg.connect() directly —
+# a fresh TCP+TLS handshake to Postgres per call, and most handlers (e.g.
+# get_portfolio) call it twice (_ensure_portfolio, then the handler body),
+# adding real, measurable latency to every Paper Trading page load. A
+# process-wide pool (psycopg[pool] is already a declared dependency) hands
+# out an already-established connection instead, opening new ones only
+# when every pooled connection is busy.
+_pool = None
+_pool_lock = threading.Lock()
+
+
+def _get_pool():
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:
+                from psycopg_pool import ConnectionPool
+                _pool = ConnectionPool(
+                    os.environ["DATABASE_URL"],
+                    min_size=1,
+                    max_size=10,
+                    kwargs={"autocommit": True, "prepare_threshold": None},
+                )
+    return _pool
+
+
 def _conn():
-    import psycopg
-    return psycopg.connect(os.environ["DATABASE_URL"], autocommit=True, prepare_threshold=None)
+    return _get_pool().connection()
 
 
 def _ensure_portfolio(user_id: str, email: str | None = None) -> dict:
