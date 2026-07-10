@@ -25,6 +25,7 @@
 16. [Screener & Universe Management](#16-screener--universe-management)
 17. [Paper Trading Module](#17-paper-trading-module)
 18a. [Reading the UI — Signal Colors & Common Jargon](#18a-reading-the-ui--signal-colors--common-jargon)
+18b. [Multibagger Screen](#18b-multibagger-screen)
 18. [Alerts System](#18-alerts-system)
 19. [API Reference](#19-api-reference)
 20. [Frontend Pages & Components](#20-frontend-pages--components)
@@ -984,8 +985,52 @@ Color tokens: `bull` = green (`#22c55e`), `bear` = red (`#ef4444`), `neutral` = 
 | **Verdict (Multibagger)** | Multibagger screen | `elite_strong_buy` / `strong_buy` / `watchlist` / `watch` / `avoid` — a checklist-based pass/fail rating distinct from the BUY/HOLD/SELL prediction signal; a stock can be a Multibagger "watchlist" candidate while simultaneously showing a HOLD prediction signal, since they're answering different questions (long-term quality checklist vs. current-horizon timing call). `elite_strong_buy` is a stricter tier requiring ROCE>15%, D/E<50%, OCF>0, and sales growth>10% to all individually pass, not just a high overall score. `watch` means exactly one Anti-Loss red flag was found (two or more forces `avoid` regardless of score). |
 | **Shortlisted (Multibagger)** | Multibagger screen | The top ~20% scorers within a screen, excluding any stock with an `avoid` verdict outright regardless of its raw score — a relative ranking marker, not a guarantee. |
 | **REJECTED reasons** | Multibagger, Predictions | A specific list of which hard-gate checks failed (e.g. promoter pledge too high, negative equity) — click through if a stock you expected to see is missing or rejected. |
-| **History tab** | Stock detail page | A day-by-day chart of this stock's AI score over time — "Composite Score" shows the single overall number trending; "Factor Breakdown" splits it into technical/fundamental/sentiment/quality so you can see which ingredient moved. Has its own Short/Medium/Long selector, separate from the main horizon tabs above it. **Data points only get added on a day this stock happens to be one of the ~50 candidates the nightly Daily Picks job deep-scores for that horizon** — not the full universe, and not every day. A near-empty chart (one dot, or "No history yet") is normal and expected for most stocks, especially soon after this feature launched — it's not broken, it just hasn't accumulated history yet. |
+| **History tab** | Stock detail page | A day-by-day chart of this stock's AI score over time — "Composite Score" shows the single overall number trending; "Factor Breakdown" splits it into technical/fundamental/sentiment/quality so you can see which ingredient moved. Has its own Short/Medium/Long selector, separate from the main horizon tabs above it. **Data points only get added on a day this stock happens to be one of the ~400 candidates the nightly Daily Picks job deep-scores for that horizon** (Session 10: raised from ~50 as part of the Large/Mid/Small-cap stratification fix) — not the full universe, and not every day. A near-empty chart (one dot, or "No history yet") is normal and expected for most stocks, especially soon after this feature launched — it's not broken, it just hasn't accumulated history yet. |
 | **Allocation** | Daily Picks | The suggested portfolio weight if buying *all* of that day's picks together as one basket — a separate mean-variance optimization step (Ledoit-Wolf shrinkage covariance, max 40% per position) that runs after the Top 6 are already selected. It answers "where should the marginal rupee go within this basket," not "how strong is this signal." **0% allocation does not mean the BUY call is weak** — it means this stock's predicted-return-to-risk contribution was crowded out by the other picks in that day's specific list (often the lowest-ranked of the 6, or highly correlated with a stronger pick already at its 40% cap). The Signal/Confidence shown on the same card is computed completely independently and is unaffected by this number. |
+
+---
+
+## 18b. Multibagger Screen
+
+**Files:** `backend/api/routers/multibagger.py`, `backend/services/fundamentals_cache.py`, `backend/services/multibagger_scorecard.py`, `frontend/src/app/multibagger/page.tsx`
+
+**First dedicated section for this feature** — previously only glossary mentions existed in §18a (Verdict, Shortlisted, REJECTED reasons rows), flagged as owed follow-up in Session 10 and written here.
+
+### What it is
+
+Three independent, hard-filter SQL screens run against `stock_fundamentals_cache` — a Postgres table refreshed nightly (screener.in for India via `fundamentals_refresh.py`, yfinance-derived for US via `us_fundamentals_refresh.py`; the same table Daily Picks' universe stratification now also reads from, see §13). Deliberately **not** merged into one screen ("combining loose + strict criteria into one screen produces zero/over-expensive results" — the code's own stated design principle) and **not** the AI's ML-weighted composite score used elsewhere in the app — this is a separate, fully transparent, rule-based checklist.
+
+### The three screens
+
+| Screen | Intent | Key IN thresholds | Key US thresholds |
+|---|---|---|---|
+| **Quality Compounders** | Core portfolio — stable, proven, suitable for 5-10 year holding | Market cap >₹2,000 Cr, avg ROE 5Y >18%, ROCE >15%, D/E <50%, promoter pledge <1% (`COALESCE`d to 0 when unreported — see the Session 10 fix below), promoter holding >35%, sales/profit growth 5Y >10%, P/E <35, EV/EBITDA <20, positive operating cash flow | Same shape, substitutes 3Y growth for 5Y (yfinance's free tier caps annual financials at 4 years, so a true 5Y figure isn't computable for US) |
+| **Multibagger Discovery** | Future compounders pipeline — midcaps and emerging smallcaps with accelerating growth, looser on financial history by design | Market cap ₹300 Cr–₹20,000 Cr, sales/profit growth 3Y >15%, ROCE >12%, D/E <100%, pledge <2%, price-to-sales <5, P/E <50 | Same, using `market_cap_usd_m` |
+| **10-Bagger Early Detection** | Pre-compounder screen — still messy, but improving fast; catches turnarounds and niche manufacturers before they're obvious | Market cap ₹300 Cr–₹15,000 Cr, sales/profit growth 3Y >20%, ROCE >10%, ROE >8%, D/E <100%, interest coverage >2×, pledge <2%, price-to-sales <4, P/E <60, OPM >8% | Same shape, no pledge check (no "promoter" concept in US filings) |
+
+**A stock must pass every condition in a screen to appear at all** — a hard AND-filter, not a scored/ranked cutoff. `GET /api/multibagger/screen?screen=<name>&market=<IN|US>` runs instant SQL against the cache (no live scraping per request); `status="ok"` with `count=0` is a genuine, successfully-evaluated zero-result day, distinct from `status="unavailable"` (a computation failure, detail never exposed to the client).
+
+### The Session 10 pledge-NULL fix, and why it mattered
+
+Screener.in only renders a "Pledged percentage" row when a company actually has non-zero promoter pledge — a genuinely clean (no-pledge) company has this field `NULL` in the cache, not `0`. Every screen's raw `promoter_pledge_pct < N` condition failed on that `NULL` (SQL comparisons against `NULL` are always false), which meant **every India screen was excluding almost every clean company outright** — the opposite of the condition's intent — and all three screens returned zero results regardless of any other threshold. Fixed by wrapping every pledge condition in `COALESCE(promoter_pledge_pct, 0) < N`, so a missing pledge value is now correctly treated as clean. Verified live: `quality_compounder` 0→52, `multibagger_discovery` 0→167, `tenbagger_early` 0→73.
+
+### The Scorecard — a second, independent layer on top of the raw screen
+
+Every row that passes a screen additionally gets a transparent checklist score (`multibagger_scorecard.py`'s `compute_scorecard`) — 10 checks for US, 12 for India (2 extra: growth accelerating 3Y CAGR > 5Y CAGR, no promoter pledge — both need data structurally unavailable for US). Categories: Business Quality, Growth, Financial Safety, Valuation, plus IN-only Growth Trajectory/Governance checks.
+
+- **Anti-Loss red flags** — a hard override, independent of the raw score: ROE well below its 5Y average, negative 3Y profit growth, negative operating cash flow, promoter pledge above the red-flag threshold, or high leverage. **Any one red flag caps the verdict at `watch`; two or more force `avoid`, regardless of how high the checklist score is otherwise.**
+- **Verdict thresholds** scale proportionally to each market's check count (score ≥83% → `strong_buy`, ≥58% → `watchlist`, below → `avoid`) so a 10-check US scorecard and a 12-check IN one apply the same relative bar, not the same absolute one.
+- **`elite_strong_buy`** — a stricter, all-must-pass promotion on top of an already-`strong_buy`/`watchlist` verdict: ROCE >15% AND D/E <50% AND positive operating cash flow AND sales growth >10%, every one individually, not just a high overall percentage. Never overrides `avoid`/`watch` — the Anti-Loss red-flag ceiling is a hard cap by design.
+- **Business Quality Engine confirmation** — a second, independent promotion path: if the separate Business Quality Engine (`backend/services/business_quality_engine.py` — Epic 001, see `Documentation/Engineering-Handbook/EPICS/EPIC-001-Business-Quality-Intelligence-Closure.md`) already grades the stock `Quality Compounder` style at a genuinely strong score, that also promotes to `elite_strong_buy`. Two different pieces of independent positive evidence, either sufficient on its own.
+- **Shortlisted** — the top ~20% of each screen's results by score (ties broken by fewer red flags, so a clean stock never loses a tie to an equally-scored flagged one), **excluding any `avoid`-verdict stock outright regardless of raw score** — prevents the direct self-contradiction of a "Shortlisted" flame icon next to an "Avoid" badge on the same row.
+
+### Frontend behavior
+
+- Screen selector (3 cards) + a results table sorted by the backend's own ranking (`profit_growth_3y_pct DESC` for Discovery/10-Bagger, `roe_5y_pct DESC` for Quality Compounders) with a visual divider between the shortlisted top ~20% and the rest.
+- Click any row to expand the full checklist (✓/✗ per check) and any Anti-Loss red flags inline.
+- Metrics shown differ by market (e.g. Promoter Holding for IN vs. Insider Holding for US) since those concepts aren't equivalent.
+- `IN/US` toggle uses `placeholderData: keepPreviousData` so switching markets doesn't collapse the header mid-fetch (same fix applied to Daily Picks for the identical pattern).
+- "Last refreshed" is shown in the viewer's own local timezone (detected via `Intl.DateTimeFormat`), not a single hardcoded market timezone.
 
 ---
 
@@ -1337,7 +1382,7 @@ A shorter, fix-focused session across Portfolio, Stock Detail, Daily Picks, and 
 - Fixed real broken navigation: opening a stock from a specific Daily Picks horizon tab (e.g. Medium Term) landed on the Stock Detail page's Short Term tab instead of the horizon the user came from. The picks card's `router.push` now passes `?horizon=`, and the Stock Detail page reads it (falling back to Short Term only if absent/invalid), matching the existing `?market=` pattern.
 - The History tab's "Factor Breakdown" chart rendered completely empty (no lines, no legend, no console error) for every stock. Two independent root causes, both fixed in `ScoreHistoryChart.tsx`: (1) the branch wrapped `<Legend/>` and the mapped `<Line>` elements in a React Fragment, which Recharts' internal children-type scan doesn't traverse the way it flattens a plain array — switched to returning an array; (2) Recharts' default line-draw entrance animation can get stuck at its invisible first frame if `requestAnimationFrame` never progresses in a given tab — disabled via `isAnimationActive={false}` on every line in both the Composite Score and Factor Breakdown views, which also removes the animation's dependency on a live rAF loop entirely. Also changed the Composite Score line to always show its values via `LabelList` instead of requiring a hover.
 
-**Documentation note:** this app has never had a dedicated Multibagger section in this document (only glossary mentions in §18a) — flagged here rather than silently left out; a proper §18b Multibagger Screen writeup is still owed as follow-up.
+**Documentation note:** this app had never had a dedicated Multibagger section in this document (only glossary mentions in §18a) — flagged here rather than silently left out. **Resolved same-day**: see §18b Multibagger Screen, written immediately after this fix.
 
 ### Session 9 — 2026-06-24
 
