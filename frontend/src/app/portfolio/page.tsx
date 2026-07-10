@@ -300,6 +300,37 @@ export function HoldingsTable({
   // 11 header cells (SortableHeader) + 1 trailing actions <th> = 12 columns.
   const COLUMN_COUNT = 12;
 
+  // Footer totals for this table's rows only (already market-scoped by the
+  // parent — this component never receives a mix of IN/US rows, so these
+  // totals are automatically single-currency, never combined). Invested
+  // can always be summed (qty/avgPrice are known at add-time, never
+  // depend on a live quote) — Current Value/Day's P&L/P&L each sum only
+  // the rows that have actually resolved, so a holding still waiting on
+  // its first quote is left out of the total rather than silently
+  // contributing 0 and making the total look smaller/complete than it
+  // really is.
+  const totals = useMemo(() => {
+    let invested = 0;
+    let currentValue = 0, currentResolvedCount = 0;
+    let dayPL = 0, dayPLResolvedCount = 0;
+    let pl = 0, plResolvedCount = 0;
+    for (const r of rows) {
+      invested += r.invested;
+      if (r.current !== null) { currentValue += r.current; currentResolvedCount++; }
+      if (r.dayChangeAmt !== null) { dayPL += r.dayChangeAmt; dayPLResolvedCount++; }
+      if (r.plAmt !== null) { pl += r.plAmt; plResolvedCount++; }
+    }
+    return {
+      invested,
+      currentValue, currentResolvedCount,
+      dayPL, dayPLResolvedCount,
+      pl, plResolvedCount,
+      // Any row still missing a resolved value in any of the three
+      // partial totals means the footer as a whole is not yet complete.
+      isPartial: currentResolvedCount < rows.length || dayPLResolvedCount < rows.length || plResolvedCount < rows.length,
+    };
+  }, [rows]);
+
   return (
     <div className="bg-dark-card border border-dark-border rounded-2xl overflow-hidden">
       {/* A wide table (11 columns) needs horizontal scroll on anything
@@ -317,7 +348,7 @@ export function HoldingsTable({
               <SortableHeader label="Avg Buy" sortKey="avgPrice" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               <SortableHeader label="Current" sortKey="curPrice" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               <SortableHeader label="Invested" sortKey="invested" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
-              <SortableHeader label="Value" sortKey="current" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
+              <SortableHeader label="Current Value" sortKey="current" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               <SortableHeader label="Day's P&L" sortKey="dayChangeAmt" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort}
                 title="How much this position moved today — independent of your overall P&L since purchase." />
               <SortableHeader label="Day's P&L %" sortKey="dayChangePct" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort}
@@ -364,6 +395,42 @@ export function HoldingsTable({
               ))
             )}
           </tbody>
+          <tfoot>
+            {/* Grand total footer — always exactly one, at the bottom of
+                the table, in both grouped and ungrouped mode (never one
+                per sector group; sector subtotals are already shown in
+                each group's own heading above). */}
+            <tr className="border-t-2 border-dark-border bg-dark-bg/40 font-bold">
+              <td className="px-4 py-3 text-xs text-gray-400" colSpan={4}>
+                Total
+                {totals.isPartial && (
+                  <span className="ml-2 font-normal text-gray-600">· partial while prices load</span>
+                )}
+              </td>
+              <td className="px-4 py-3 text-right font-mono text-gray-300">
+                {currency}{totals.invested.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+              </td>
+              <td className="px-4 py-3 text-right font-mono text-white">
+                {totals.currentResolvedCount > 0
+                  ? `${currency}${totals.currentValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+                  : "—"}
+              </td>
+              <td className={clsx("px-4 py-3 text-right font-mono whitespace-nowrap",
+                totals.dayPLResolvedCount === 0 ? "text-gray-500" : totals.dayPL >= 0 ? "text-bull" : "text-bear")}>
+                {totals.dayPLResolvedCount > 0
+                  ? `${totals.dayPL >= 0 ? "+" : ""}${currency}${Math.abs(totals.dayPL).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+                  : "—"}
+              </td>
+              <td className="px-4 py-3"></td>
+              <td className={clsx("px-4 py-3 text-right font-mono whitespace-nowrap",
+                totals.plResolvedCount === 0 ? "text-gray-500" : totals.pl >= 0 ? "text-bull" : "text-bear")}>
+                {totals.plResolvedCount > 0
+                  ? `${totals.pl >= 0 ? "+" : ""}${currency}${Math.abs(totals.pl).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+                  : "—"}
+              </td>
+              <td className="px-4 py-3" colSpan={3}></td>
+            </tr>
+          </tfoot>
         </table>
       </div>
     </div>
