@@ -222,4 +222,121 @@ describe("PortfolioAllocationChart", () => {
     );
     expect(screen.queryByText(/Resolving sector/)).not.toBeInTheDocument();
   });
+
+  // ── Signal Distribution moved into the Portfolio Allocation header ────
+  // Previously its own full-width section below the chart/legend, with a
+  // "Signal Distribution" label of its own — now compact chips inline with
+  // the "Portfolio Allocation" title and the By Sector/By Stock toggle, in
+  // one organized header row instead of a separate vertical block.
+
+  it("renders BUY/HOLD/SELL chips in the same header area as the Portfolio Allocation title", () => {
+    render(
+      <ControlledChart
+        stockSlices={[
+          { symbol: "TCS", value: 100, signal: "BUY" },
+          { symbol: "INFY", value: 100, signal: "HOLD" },
+          { symbol: "WIPRO", value: 100, signal: "SELL" },
+        ]}
+        sectorSlices={[]}
+      />,
+    );
+    const title = screen.getByText("Portfolio Allocation");
+    const buyChip = screen.getByText("1 BUY");
+    const holdChip = screen.getByText("1 HOLD");
+    const sellChip = screen.getByText("1 SELL");
+    // All three live in the same header row as the title, not a separate
+    // section further down the card (no longer under its own "Signal
+    // Distribution" label).
+    expect(screen.queryByText("Signal Distribution")).not.toBeInTheDocument();
+    expect(title.closest("div")).toBe(buyChip.closest("div")!.parentElement!.parentElement);
+    expect(holdChip).toBeInTheDocument();
+    expect(sellChip).toBeInTheDocument();
+  });
+
+  it("counts are correct and preserve BUY=green/HOLD=amber/SELL=red color classes", () => {
+    render(
+      <ControlledChart
+        stockSlices={[
+          { symbol: "A", value: 100, signal: "BUY" },
+          { symbol: "B", value: 100, signal: "BUY" },
+          { symbol: "C", value: 100, signal: "HOLD" },
+          { symbol: "D", value: 100, signal: "SELL" },
+        ]}
+        sectorSlices={[]}
+      />,
+    );
+    const buyChip = screen.getByText("2 BUY");
+    const holdChip = screen.getByText("1 HOLD");
+    const sellChip = screen.getByText("1 SELL");
+    expect(buyChip.className).toContain("text-bull");
+    expect(holdChip.className).toContain("text-neutral");
+    expect(sellChip.className).toContain("text-bear");
+  });
+
+  it("does not count holdings with no signal (null) into BUY/HOLD/SELL, and shows an honest coverage note", () => {
+    render(
+      <ControlledChart
+        stockSlices={[
+          { symbol: "A", value: 100, signal: "BUY" },
+          { symbol: "B", value: 100, signal: null },
+          { symbol: "C", value: 100, signal: null },
+        ]}
+        sectorSlices={[]}
+      />,
+    );
+    expect(screen.getByText("1 BUY")).toBeInTheDocument();
+    expect(screen.queryByText(/HOLD/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/SELL/)).not.toBeInTheDocument();
+    // 1 of 3 holdings has a resolved signal — never silently implied as
+    // "0 HOLD" or omitted entirely.
+    expect(screen.getByText("Signals available for 1/3")).toBeInTheDocument();
+  });
+
+  it("shows no coverage note once every holding has a resolved signal", () => {
+    render(
+      <ControlledChart
+        stockSlices={[
+          { symbol: "A", value: 100, signal: "BUY" },
+          { symbol: "B", value: 100, signal: "HOLD" },
+        ]}
+        sectorSlices={[]}
+      />,
+    );
+    expect(screen.queryByText(/Signals available for/)).not.toBeInTheDocument();
+  });
+
+  it("renders nothing signal-related when no holding has a resolved signal, without hiding the chart itself", () => {
+    render(
+      <ControlledChart
+        stockSlices={[{ symbol: "A", value: 100, signal: null }]}
+        sectorSlices={[]}
+      />,
+    );
+    expect(screen.getByText("Portfolio Allocation")).toBeInTheDocument();
+    expect(screen.queryByText(/BUY|HOLD|SELL/)).not.toBeInTheDocument();
+  });
+
+  it("the By Sector/By Stock toggle still renders correctly alongside Signal Distribution chips", () => {
+    render(
+      <ControlledChart
+        stockSlices={[{ symbol: "TCS", value: 100, signal: "BUY" }]}
+        sectorSlices={[{ sector: "IT", value: 100 }]}
+      />,
+    );
+    expect(screen.getByText("1 BUY")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "By Sector" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "By Stock" })).toBeInTheDocument();
+  });
+
+  it("header row uses flex-wrap (mobile-safe), not a fixed desktop-only width", () => {
+    render(
+      <ControlledChart
+        stockSlices={[{ symbol: "TCS", value: 100, signal: "BUY" }]}
+        sectorSlices={[{ sector: "IT", value: 100 }]}
+      />,
+    );
+    const headerRow = screen.getByText("Portfolio Allocation").closest("div")!;
+    expect(headerRow.className).toContain("flex-wrap");
+    expect(headerRow.className).not.toMatch(/\bw-\[\d/); // no fixed pixel width
+  });
 });

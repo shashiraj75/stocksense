@@ -74,16 +74,57 @@ export function PortfolioAllocationChart({
   // Signal Distribution always reflects individual holdings, regardless of
   // which grouping the bar/legend above are showing — a per-sector slice
   // has no single signal of its own, so this must not vary with `mode`.
+  // Holdings with no signal (`null` — sigLoading, or genuinely no cached
+  // signal) are never counted into BUY/HOLD/SELL; they're surfaced
+  // separately below as "N/M signals available" instead.
   const buyCount  = withStockValue.filter(s => s.signal === "BUY").length;
   const sellCount = withStockValue.filter(s => s.signal === "SELL").length;
   const holdCount = withStockValue.filter(s => s.signal !== "BUY" && s.signal !== "SELL" && s.signal !== null).length;
+  const resolvedSignalCount = buyCount + holdCount + sellCount;
+  const totalStockCount = withStockValue.length;
 
   return (
     <div className="bg-dark-card border border-dark-border rounded-2xl p-5 space-y-4">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <h2 className="font-semibold text-sm text-gray-300">Portfolio Allocation</h2>
+      {/* One organized header row: title, Signal Distribution chips, then
+          the By Sector/By Stock toggle — Signal Distribution used to be
+          its own full-width section below the chart, taking a separate
+          vertical block just to show three small counts. flex-wrap lets
+          this collapse to title -> chips -> toggle stacked cleanly on
+          narrow screens instead of overflowing. */}
+      <div className="flex items-center flex-wrap gap-3">
+        <h2 className="font-semibold text-sm text-gray-300 shrink-0">Portfolio Allocation</h2>
+        {resolvedSignalCount > 0 && (
+          <div className="flex items-center gap-2 flex-wrap">
+            {buyCount > 0 && (
+              <div className="flex items-center gap-1 bg-bull/10 border border-bull/30 rounded-lg px-2 py-0.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-bull shrink-0" />
+                <span className="text-[11px] font-bold text-bull whitespace-nowrap">{buyCount} BUY</span>
+              </div>
+            )}
+            {holdCount > 0 && (
+              <div className="flex items-center gap-1 bg-neutral/10 border border-neutral/30 rounded-lg px-2 py-0.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-neutral shrink-0" />
+                <span className="text-[11px] font-bold text-neutral whitespace-nowrap">{holdCount} HOLD</span>
+              </div>
+            )}
+            {sellCount > 0 && (
+              <div className="flex items-center gap-1 bg-bear/10 border border-bear/30 rounded-lg px-2 py-0.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-bear shrink-0" />
+                <span className="text-[11px] font-bold text-bear whitespace-nowrap">{sellCount} SELL</span>
+              </div>
+            )}
+            {/* Honest coverage note — never implied by the counts above
+                alone, since a holding with no cached signal simply isn't
+                in any of the three buckets rather than showing as 0. */}
+            {resolvedSignalCount < totalStockCount && (
+              <span className="text-[11px] text-gray-600 whitespace-nowrap">
+                Signals available for {resolvedSignalCount}/{totalStockCount}
+              </span>
+            )}
+          </div>
+        )}
         {hasSectorData && (
-          <div className="flex items-center gap-0.5 bg-dark-bg border border-dark-border rounded-lg p-0.5">
+          <div className="flex items-center gap-0.5 bg-dark-bg border border-dark-border rounded-lg p-0.5 ml-auto">
             {(["sector", "stock"] as const).map(m => (
               <button
                 key={m}
@@ -147,32 +188,6 @@ export function PortfolioAllocationChart({
         </p>
       )}
 
-      {/* Signal distribution */}
-      {(buyCount + sellCount + holdCount) > 0 && (
-        <div className="border-t border-dark-border pt-3">
-          <p className="text-xs text-gray-500 mb-2">Signal Distribution</p>
-          <div className="flex gap-3">
-            {buyCount > 0 && (
-              <div className="flex items-center gap-1.5 bg-bull/10 border border-bull/30 rounded-lg px-3 py-1.5">
-                <span className="w-2 h-2 rounded-full bg-bull" />
-                <span className="text-xs font-bold text-bull">{buyCount} BUY</span>
-              </div>
-            )}
-            {holdCount > 0 && (
-              <div className="flex items-center gap-1.5 bg-neutral/10 border border-neutral/30 rounded-lg px-3 py-1.5">
-                <span className="w-2 h-2 rounded-full bg-neutral" />
-                <span className="text-xs font-bold text-neutral">{holdCount} HOLD</span>
-              </div>
-            )}
-            {sellCount > 0 && (
-              <div className="flex items-center gap-1.5 bg-bear/10 border border-bear/30 rounded-lg px-3 py-1.5">
-                <span className="w-2 h-2 rounded-full bg-bear" />
-                <span className="text-xs font-bold text-bear">{sellCount} SELL</span>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

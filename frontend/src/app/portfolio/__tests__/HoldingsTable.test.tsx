@@ -405,7 +405,7 @@ describe("HoldingsTable — Signal column is non-blocking", () => {
     expect(screen.queryByText(/computing/i)).not.toBeInTheDocument();
   });
 
-  it("a holding with no cached signal shows a calm 'Not cached' state, not an endless 'computing' spinner", () => {
+  it("a holding with no cached signal shows a compact single-character dash, not a wordy 'Not cached' block or an endless 'computing' spinner", () => {
     const rows = [
       makeRow({ id: "1", symbol: "TCS", signal: null, signalCached: false, sigLoading: false }),
       makeRow({ id: "2", symbol: "INFY", signal: null, signalCached: false, sigLoading: false }),
@@ -413,7 +413,12 @@ describe("HoldingsTable — Signal column is non-blocking", () => {
     ];
     render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={false} />);
     expect(screen.queryByText(/computing/i)).not.toBeInTheDocument();
-    expect(screen.getAllByText("Not cached")).toHaveLength(3);
+    expect(screen.queryByText("Not cached")).not.toBeInTheDocument();
+    // Each row's Signal cell renders the same compact "—" — the "why" lives
+    // in the title tooltip, not as visible wrapped text.
+    const tcsSignalCell = screen.getByText("TCS").closest("tr")!.cells[10];
+    expect(tcsSignalCell.textContent).toBe("—");
+    expect(tcsSignalCell.querySelector("span")?.getAttribute("title")).toMatch(/no cached signal/i);
   });
 
   it("a resolved holding with a real signal still renders its SignalBadge normally", () => {
@@ -423,10 +428,12 @@ describe("HoldingsTable — Signal column is non-blocking", () => {
     expect(screen.queryByText("Not cached")).not.toBeInTheDocument();
   });
 
-  it("a resolved-but-signal-less holding (e.g. an error-cached entry) shows a plain dash, distinct from 'Not cached'", () => {
+  it("a resolved-but-signal-less holding (e.g. an error-cached entry) also shows the same compact dash, with a different tooltip", () => {
     const rows = [makeRow({ id: "1", symbol: "TCS", signal: null, signalCached: true, sigLoading: false })];
     render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={false} />);
     expect(screen.queryByText("Not cached")).not.toBeInTheDocument();
-    expect(screen.getByText("—")).toBeInTheDocument();
+    const tcsSignalCell = screen.getByText("TCS").closest("tr")!.cells[10];
+    expect(tcsSignalCell.textContent).toBe("—");
+    expect(tcsSignalCell.querySelector("span")?.getAttribute("title")).toBe("No signal for this stock");
   });
 });

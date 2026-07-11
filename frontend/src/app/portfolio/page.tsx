@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect, useMemo, Fragment } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { fetchQuote, fetchCachedSignalsBatch, fetchSectorsBatch, Market, api } from "@/utils/api";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { fetchQuote, fetchCachedSignalsBatch, fetchSectorsBatch, fetchSignalSummary, Market, api } from "@/utils/api";
 import { useStaggeredQueries } from "@/hooks/useStaggeredQueries";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { SignalBadge } from "@/components/SignalBadge";
@@ -172,16 +172,20 @@ function HoldingRow({
           <span className="inline-flex items-center gap-1 text-gray-600 text-xs">…</span>
         ) : r.signal ? (
           <SignalBadge signal={r.signal as any} confidence={r.confidence} size="sm" />
-        ) : r.signalCached ? (
-          // Genuinely resolved, no signal (e.g. an error-cached entry) —
-          // distinct from "not cached" below.
-          <span className="text-gray-600 text-xs">—</span>
         ) : (
+          // No signal either way (resolved-but-null, e.g. an error-cached
+          // entry, or genuinely never cached) collapses to the same
+          // compact single-character "—" — a wordy "Not cached" label
+          // wrapped onto two lines in the Signal column's narrow width,
+          // reading as a conspicuous broken-looking block on every such
+          // row instead of the same quiet "no data" mark every other
+          // column already uses. The distinction (why there's no signal)
+          // still exists, just as a tooltip, not as visible text.
           <span
             className="text-gray-600 text-xs"
-            title="Nothing computed yet for this stock — it hasn't come up in Daily Picks or been viewed on its own Stock Detail page recently. Open its Stock Detail page to compute one."
+            title={r.signalCached ? "No signal for this stock" : "No cached signal yet — it hasn't come up in Daily Picks or been viewed on its own Stock Detail page recently"}
           >
-            Not cached
+            —
           </span>
         )}
       </td>
@@ -710,6 +714,26 @@ export default function PortfolioPage() {
     staleTime: 15 * 60_000,
   });
 
+  // Explicit, user-triggered escape hatch for symbols with no cached
+  // signal — never automatic, never on page load. Computes a real
+  // prediction (the same fetchSignalSummary the old per-holding loading
+  // spinner used) only for the currently-uncached symbols in the selected
+  // market, one at a time, so it can't reproduce the original "whole page
+  // feels stuck" problem this whole feature line has been fixing. Once
+  // done, re-fetches the batch signal query so those rows pick up the
+  // freshly-computed cache entries.
+  const queryClient = useQueryClient();
+  const refreshSignalsMutation = useMutation({
+    mutationFn: async (symbols: string[]) => {
+      for (const sym of symbols) {
+        try { await fetchSignalSummary(sym, market, "medium"); } catch { /* best-effort per symbol */ }
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["portfolio-signals", market] });
+    },
+  });
+
   // Sector allocation's data source - deliberately independent of the
   // signal queries above. One batch request per market for the WHOLE
   // holdings list (not staggered, not one-per-holding, not gated on any
@@ -957,6 +981,29 @@ export default function PortfolioPage() {
               <Wifi size={12} className="text-green-500" />
               Tracking {marketHoldingsCount} holding{marketHoldingsCount !== 1 ? "s" : ""} · live prices
             </span>
+          );
+        })()}
+        {/* Explicit, opt-in only — never fires on page load or automatically.
+            Only offered once the batch signal lookup has actually settled
+            (never while it's still loading, which would list every holding
+            as "uncached" for a moment) and only for holdings genuinely
+            missing a cached signal in the selected market. */}
+        {(() => {
+          const signalsSettled = market === "IN" ? !inSignalsQuery.isLoading : !usSignalsQuery.isLoading;
+          if (!signalsSettled) return null;
+          const uncachedSymbols = rows.filter(r => r.market === market && !r.signal && !r.signalCached).map(r => r.symbol);
+          if (uncachedSymbols.length === 0) return null;
+          return (
+            <button
+              onClick={() => refreshSignalsMutation.mutate(uncachedSymbols)}
+              disabled={refreshSignalsMutation.isPending}
+              title="Computes a fresh signal for holdings with no cached signal yet. Runs one at a time — may take a few seconds per stock."
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border border-dark-border text-gray-400 hover:text-white hover:border-white/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {refreshSignalsMutation.isPending
+                ? "Refreshing signals…"
+                : `Refresh missing signals (${uncachedSymbols.length})`}
+            </button>
           );
         })()}
       </div>
