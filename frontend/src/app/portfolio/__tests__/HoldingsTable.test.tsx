@@ -22,6 +22,8 @@ function makeRow(overrides: Partial<Row> & Pick<Row, "id" | "symbol">): Row {
     confidence: undefined,
     sigLoading: false,
     signalCached: false,
+    signalRefreshing: false,
+    signalFailedStatus: null,
     sector: null,
     sectorLoading: false,
     ...overrides,
@@ -30,6 +32,16 @@ function makeRow(overrides: Partial<Row> & Pick<Row, "id" | "symbol">): Row {
 
 const noop = () => {};
 const noopEdit = () => {};
+
+// Sector group headings (e.g. "Other1 holding · ₹500 · 50.0%") and sector
+// subtotal rows (e.g. "Other Total") both start with the same sector name,
+// so a plain exact:false text match now catches both since subtotal rows
+// adopted the "{sector} Total" label — this scopes to the heading only.
+function getSectorHeading(prefix: string) {
+  return screen.getByText((_, el) =>
+    el?.tagName === "TD" && (el?.textContent?.startsWith(prefix) ?? false) && !/ Total\b/.test(el.textContent ?? "")
+  );
+}
 
 describe("HoldingsTable — sector grouping", () => {
   it("sector group headings include holding count, total value, and percentage of portfolio value", () => {
@@ -56,11 +68,11 @@ describe("HoldingsTable — sector grouping", () => {
     ];
     render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={true} />);
 
-    expect(screen.getByText("Other", { exact: false })).toBeInTheDocument();
-    expect(screen.getByText("Resolving sector…", { exact: false })).toBeInTheDocument();
+    expect(getSectorHeading("Other")).toBeInTheDocument();
+    expect(getSectorHeading("Resolving sector…")).toBeInTheDocument();
 
     // The unresolved bucket's value must not have been folded into Other's.
-    const otherHeading = screen.getByText((_, el) => el?.tagName === "TD" && (el?.textContent?.startsWith("Other") ?? false));
+    const otherHeading = getSectorHeading("Other");
     expect(otherHeading.textContent).toContain("₹500");
     expect(otherHeading.textContent).not.toContain("₹2,500");
   });
@@ -72,7 +84,7 @@ describe("HoldingsTable — sector grouping", () => {
     ];
     render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={true} />);
 
-    const resolvingHeading = screen.getByText((_, el) => el?.tagName === "TD" && (el?.textContent?.startsWith("Resolving sector") ?? false));
+    const resolvingHeading = getSectorHeading("Resolving sector");
     expect(resolvingHeading.textContent).not.toMatch(/%/);
   });
 
@@ -95,7 +107,7 @@ describe("HoldingsTable — sector grouping", () => {
     expect(() =>
       render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={true} />)
     ).not.toThrow();
-    expect(screen.getByText("Other", { exact: false })).toBeInTheDocument();
+    expect(getSectorHeading("Other")).toBeInTheDocument();
   });
 
   it("renders ungrouped rows (no sector headings) when groupBySector is false", () => {
@@ -259,7 +271,8 @@ describe("HoldingsTable — sector subtotal rows", () => {
       makeRow({ id: "2", symbol: "ONGC", sector: "Energy" }),
     ];
     render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={true} />);
-    expect(screen.getAllByText("Sector Total")).toHaveLength(2);
+    expect(screen.getByText("IT Total")).toBeInTheDocument();
+    expect(screen.getByText("Energy Total")).toBeInTheDocument();
   });
 
   it("sector subtotal row shows Invested, Current Value, Day's P&L, and P&L totals for that sector only", () => {
@@ -296,7 +309,7 @@ describe("HoldingsTable — sector subtotal rows", () => {
     // Isolate the IT subtotal row itself (there's only one sector here, so
     // its subtotal coincides with the grand total — inspect the row
     // directly rather than asserting on ambiguous page-wide text).
-    const subtotalRow = screen.getByText("Sector Total").closest("tr")!;
+    const subtotalRow = screen.getByText("IT Total").closest("tr")!;
     // Invested includes all three rows (1000+400+500=1900); Current Value/
     // Day's P&L/P&L reflect only the two resolved rows (1100+440=1540,
     // 20+4=+24, 100+40=+140) — never a fabricated 0 for INFY's still-loading
@@ -318,10 +331,9 @@ describe("HoldingsTable — sector subtotal rows", () => {
     render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={true} />);
 
     // Two distinct groups, two distinct subtotal rows.
-    expect(screen.getByText("Other", { exact: false })).toBeInTheDocument();
-    expect(screen.getByText("Resolving sector…", { exact: false })).toBeInTheDocument();
-    const subtotalLabels = screen.getAllByText("Sector Total");
-    expect(subtotalLabels).toHaveLength(2);
+    expect(getSectorHeading("Other")).toBeInTheDocument();
+    expect(getSectorHeading("Resolving sector…")).toBeInTheDocument();
+    const subtotalLabels = [screen.getByText("Other Total"), screen.getByText("Resolving sector… Total")];
 
     // Each subtotal row's own <tr>, inspected directly, so this can't be
     // fooled by an individual holding row happening to show the same value.
@@ -344,17 +356,17 @@ describe("HoldingsTable — sector subtotal rows", () => {
     const allRows = screen.getAllByRole("row").map(r => r.textContent ?? "");
     const tcsIdx = allRows.findIndex(t => t.includes("TCS"));
     const infyIdx = allRows.findIndex(t => t.includes("INFY"));
-    const sectorTotalIdx = allRows.findIndex(t => t.includes("Sector Total"));
+    const sectorTotalIdx = allRows.findIndex(t => t.includes("IT Total"));
     expect(tcsIdx).toBeGreaterThanOrEqual(0);
     expect(infyIdx).toBeGreaterThan(tcsIdx); // stock rows in original order
-    expect(sectorTotalIdx).toBeGreaterThan(infyIdx); // Sector Total comes after both stock rows
+    expect(sectorTotalIdx).toBeGreaterThan(infyIdx); // sector total comes after both stock rows
   });
 
   it("Sector Total row is visually distinct from an ordinary stock row (bold, its own background/border)", () => {
     const rows = [makeRow({ id: "1", symbol: "TCS", sector: "IT" })];
     render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={true} />);
 
-    const sectorTotalRow = screen.getByText("Sector Total").closest("tr")!;
+    const sectorTotalRow = screen.getByText("IT Total").closest("tr")!;
     const stockRow = screen.getByText("TCS").closest("tr")!;
     expect(sectorTotalRow.className).toContain("font-bold");
     expect(sectorTotalRow.className).not.toEqual(stockRow.className);
@@ -371,7 +383,7 @@ describe("HoldingsTable — sector subtotal rows", () => {
 
     expect(screen.getAllByText("Grand Total")).toHaveLength(1);
     const grandTotalRow = screen.getByText("Grand Total").closest("tr")!;
-    const sectorTotalRows = screen.getAllByText("Sector Total").map(el => el.closest("tr")!);
+    const sectorTotalRows = [screen.getByText("IT Total"), screen.getByText("Energy Total")].map(el => el.closest("tr")!);
 
     expect(grandTotalRow.getAttribute("data-variant")).toBe("grand");
     for (const row of sectorTotalRows) {
@@ -438,6 +450,50 @@ describe("HoldingsTable — Signal column is non-blocking", () => {
   });
 });
 
+describe("HoldingsTable — Signal column resolves missing signals instead of staying blank permanently", () => {
+  it("a symbol currently being refreshed shows a compact 'Updating…' state, not a permanent dash", () => {
+    const rows = [
+      makeRow({ id: "1", symbol: "TCS", signal: null, signalCached: false, signalRefreshing: true }),
+    ];
+    render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={false} />);
+    const cell = screen.getByText("TCS").closest("tr")!.cells[10];
+    expect(cell.textContent).toBe("Updating…");
+  });
+
+  it("a symbol whose refresh attempt failed (non-404) shows a compact 'Unavailable' state with a retry-hint tooltip", () => {
+    const rows = [
+      makeRow({ id: "1", symbol: "TCS", signal: null, signalCached: false, signalFailedStatus: "unavailable" }),
+    ];
+    render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={false} />);
+    const cell = screen.getByText("TCS").closest("tr")!.cells[10];
+    expect(cell.textContent).toBe("Unavailable");
+    expect(cell.querySelector("span")?.getAttribute("title")).toMatch(/refresh missing signals/i);
+  });
+
+  it("a symbol the refresh attempt found unsupported (404) shows a compact 'Unsupported' state", () => {
+    const rows = [
+      makeRow({ id: "1", symbol: "OBSCURECO", signal: null, signalCached: false, signalFailedStatus: "unsupported" }),
+    ];
+    render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={false} />);
+    const cell = screen.getByText("OBSCURECO").closest("tr")!.cells[10];
+    expect(cell.textContent).toBe("Unsupported");
+    expect(cell.querySelector("span")?.getAttribute("title")).toMatch(/isn't recognized/i);
+  });
+
+  it("Updating/Unavailable/Unsupported all render as a single-line compact cell (no wrapped multi-line text)", () => {
+    const rows = [
+      makeRow({ id: "1", symbol: "A", signal: null, signalRefreshing: true }),
+      makeRow({ id: "2", symbol: "B", signal: null, signalFailedStatus: "unavailable" }),
+      makeRow({ id: "3", symbol: "C", signal: null, signalFailedStatus: "unsupported" }),
+    ];
+    render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={false} />);
+    for (const sym of ["A", "B", "C"]) {
+      const span = screen.getByText(sym).closest("tr")!.cells[10].querySelector("span")!;
+      expect(span.className).toMatch(/whitespace-nowrap/);
+    }
+  });
+});
+
 describe("HoldingsTable — sector grouping uses the display sector (Session 15)", () => {
   // Normalization itself (normalizeDisplaySector) is unit-tested in
   // sectorDisplay.test.ts — HoldingsTable never runs that logic itself,
@@ -457,11 +513,11 @@ describe("HoldingsTable — sector grouping uses the display sector (Session 15)
     ];
     render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={true} />);
 
-    expect(screen.getByText("Healthcare", { exact: false })).toBeInTheDocument();
-    expect(screen.getByText("Consumer Services", { exact: false })).toBeInTheDocument();
+    expect(getSectorHeading("Healthcare")).toBeInTheDocument();
+    expect(getSectorHeading("Consumer Services")).toBeInTheDocument();
     // JSLL's value (1000) is under Healthcare, not folded into Consumer
     // Services' group alongside PVR.
-    const healthcareHeading = screen.getByText((_, el) => el?.tagName === "TD" && (el?.textContent?.startsWith("Healthcare") ?? false));
+    const healthcareHeading = getSectorHeading("Healthcare");
     expect(healthcareHeading.textContent).toContain("₹1,000");
     expect(healthcareHeading.textContent).not.toContain("₹1,500"); // never combined with PVR's 500
   });
@@ -474,7 +530,7 @@ describe("HoldingsTable — sector grouping uses the display sector (Session 15)
       }),
     ];
     render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={true} />);
-    const heading = screen.getByText("Healthcare", { exact: false }).closest("span[title]");
+    const heading = getSectorHeading("Healthcare").querySelector("span[title]");
     expect(heading?.getAttribute("title")).toBe("Raw: Consumer Services / Wellness");
   });
 
@@ -483,7 +539,7 @@ describe("HoldingsTable — sector grouping uses the display sector (Session 15)
       makeRow({ id: "1", symbol: "PVR", sector: "Consumer Services", rawSector: "Consumer Services", rawIndustry: "Multiplexes", current: 500 }),
     ];
     render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={true} />);
-    expect(screen.getByText("Consumer Services", { exact: false })).toBeInTheDocument();
-    expect(screen.queryByText("Healthcare", { exact: false })).not.toBeInTheDocument();
+    expect(getSectorHeading("Consumer Services")).toBeInTheDocument();
+    expect(screen.queryByText((_, el) => el?.tagName === "TD" && (el?.textContent?.startsWith("Healthcare") ?? false))).not.toBeInTheDocument();
   });
 });

@@ -32,6 +32,41 @@ export interface Holding {
 // whichever browser they were added from.
 const STORAGE_KEY = "stocksense_portfolio";
 
+// Module-level (not component state) so it survives the Portfolio page
+// unmounting/remounting on every navigation away and back — the auto
+// "fill in missing signals" pass must fire once per market per browser
+// session, never re-trigger just because the user clicked back to this
+// tab. Same pattern as paper-trading's own `_notifiedThisSession` Set.
+// Resets only on a full page reload, which is the intended lifetime for
+// "don't hammer this repeatedly."
+const _autoSignalRefreshDone = new Set<Market>();
+
+// Bounds how many fetchSignalSummary calls run concurrently during a
+// refresh (manual or automatic) — see runWithConcurrency below.
+const _REFRESH_CONCURRENCY = 3;
+
+// Small worker-pool runner — bounds how many fetchSignalSummary calls are
+// ever in flight at once during a refresh (manual or automatic), so a
+// portfolio with many missing signals can't fire 20+ concurrent real
+// prediction computations at the backend/provider. `onSettled` fires after
+// EVERY item (success or failure) so the caller can update per-symbol UI
+// state incrementally instead of waiting for the whole batch.
+async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  const queue = [...items];
+  const runners = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+    while (queue.length > 0) {
+      const item = queue.shift();
+      if (item === undefined) return;
+      await worker(item);
+    }
+  });
+  await Promise.all(runners);
+}
+
 export type Row = Holding & {
   curPrice: number | null;
   invested: number;
@@ -60,6 +95,19 @@ export type Row = Holding & {
   // for this, never an indefinite "computing" spinner, since nothing is
   // actually in progress that will resolve on its own.
   signalCached: boolean;
+  // True only while THIS specific symbol is part of an in-flight manual or
+  // automatic signal refresh (see refreshSignalsMutation) — distinct from
+  // sigLoading (the batch cache READ) since this means a real, individual
+  // prediction computation is actively running for this one holding.
+  signalRefreshing: boolean;
+  // Set once a refresh attempt for this symbol has completed without
+  // producing a usable signal — "unsupported" for a hard 404 (the backend
+  // doesn't recognize this symbol/market at all), "unavailable" for
+  // anything else (timeout, a genuine compute error, still null after a
+  // successful compute). Never set until a refresh has actually been
+  // attempted — a holding that simply hasn't been refreshed yet stays
+  // `null` here so it isn't misreported as a definite failure.
+  signalFailedStatus?: "unsupported" | "unavailable" | null;
   // Sourced from a single lightweight batch lookup against the
   // nightly-refreshed stock_fundamentals_cache table (fetchSectorsBatch),
   // one request per market for the whole holdings list — deliberately NOT
@@ -181,20 +229,35 @@ function HoldingRow({
           // triggers a computation, so this resolves in well under a
           // second regardless of portfolio size.
           <span className="inline-flex items-center gap-1 text-gray-600 text-xs">…</span>
+        ) : r.signalRefreshing ? (
+          // A real prediction is actively computing for THIS symbol right
+          // now (auto- or manually-triggered refresh) — distinct from the
+          // brief cache-read "…" above.
+          <span className="text-gray-400 text-[11px] whitespace-nowrap animate-pulse">Updating…</span>
         ) : r.signal ? (
           <SignalBadge signal={r.signal as any} confidence={r.confidence} size="sm" />
+        ) : r.signalFailedStatus === "unsupported" ? (
+          <span
+            className="text-gray-600 text-[11px] whitespace-nowrap"
+            title="This symbol isn't recognized for signal computation."
+          >
+            Unsupported
+          </span>
+        ) : r.signalFailedStatus === "unavailable" ? (
+          <span
+            className="text-gray-600 text-[11px] whitespace-nowrap"
+            title="Signal computation failed or returned no result. Click Refresh missing signals to try again."
+          >
+            Unavailable
+          </span>
         ) : (
-          // No signal either way (resolved-but-null, e.g. an error-cached
-          // entry, or genuinely never cached) collapses to the same
-          // compact single-character "—" — a wordy "Not cached" label
-          // wrapped onto two lines in the Signal column's narrow width,
-          // reading as a conspicuous broken-looking block on every such
-          // row instead of the same quiet "no data" mark every other
-          // column already uses. The distinction (why there's no signal)
-          // still exists, just as a tooltip, not as visible text.
+          // Not yet attempted (auto-refresh hasn't reached it yet, or the
+          // page just loaded) — compact single-character "—", never a
+          // wordy multi-line block. The distinction (why there's no signal
+          // yet) exists only as a tooltip.
           <span
             className="text-gray-600 text-xs"
-            title={r.signalCached ? "No signal for this stock" : "No cached signal yet — it hasn't come up in Daily Picks or been viewed on its own Stock Detail page recently"}
+            title={r.signalCached ? "No signal for this stock" : "No cached signal yet — refreshing automatically"}
           >
             —
           </span>
@@ -556,7 +619,7 @@ export function HoldingsTable({
                     {g.rows.map((r) => (
                       <HoldingRow key={r.id} r={r} currency={currency} onRemove={onRemove} onEdit={onEdit} indent />
                     ))}
-                    <TotalsRow totals={g.totals} currency={currency} label="Sector Total" variant="sector" />
+                    <TotalsRow totals={g.totals} currency={currency} label={`${g.sector} Total`} variant="sector" />
                   </Fragment>
                 );
               })
@@ -735,25 +798,71 @@ export default function PortfolioPage() {
     staleTime: 15 * 60_000,
   });
 
-  // Explicit, user-triggered escape hatch for symbols with no cached
-  // signal — never automatic, never on page load. Computes a real
-  // prediction (the same fetchSignalSummary the old per-holding loading
-  // spinner used) only for the currently-uncached symbols in the selected
-  // market, one at a time, so it can't reproduce the original "whole page
-  // feels stuck" problem this whole feature line has been fixing. Once
-  // done, re-fetches the batch signal query so those rows pick up the
-  // freshly-computed cache entries.
+  // Escape hatch for symbols with no cached signal — triggered either
+  // explicitly (the "Refresh missing signals" button) or once
+  // automatically per market per session (see the effect below). Computes
+  // a real prediction (the same fetchSignalSummary a single Stock Detail
+  // page view would trigger) only for the holdings actually missing one,
+  // never the full universe — and only up to `_REFRESH_CONCURRENCY` at a
+  // time, so a portfolio with many missing signals can't fire a burst of
+  // concurrent prediction computations at the backend/provider. Per-symbol
+  // progress is tracked in `refreshingSymbols`/`failedSymbols` so each
+  // row can show "Updating…" while its own computation is in flight and
+  // "Unavailable"/"Unsupported" if it comes back empty, instead of an
+  // undifferentiated "—" forever.
+  const [refreshingSymbols, setRefreshingSymbols] = useState<Set<string>>(new Set());
+  const [failedSymbols, setFailedSymbols] = useState<Map<string, "unsupported" | "unavailable">>(new Map());
   const queryClient = useQueryClient();
   const refreshSignalsMutation = useMutation({
-    mutationFn: async (symbols: string[]) => {
-      for (const sym of symbols) {
-        try { await fetchSignalSummary(sym, market, "medium"); } catch { /* best-effort per symbol */ }
-      }
+    mutationFn: async ({ symbols, market: refreshMarket }: { symbols: string[]; market: Market }) => {
+      const upperSymbols = symbols.map(s => s.toUpperCase());
+      setRefreshingSymbols(prev => new Set([...prev, ...upperSymbols]));
+      setFailedSymbols(prev => {
+        const next = new Map(prev);
+        upperSymbols.forEach(s => next.delete(s));
+        return next;
+      });
+      await runWithConcurrency(symbols, _REFRESH_CONCURRENCY, async (sym) => {
+        const upperSym = sym.toUpperCase();
+        try {
+          await fetchSignalSummary(sym, refreshMarket, "medium");
+        } catch (err: any) {
+          const status = err?.response?.status;
+          setFailedSymbols(prev => new Map(prev).set(upperSym, status === 404 ? "unsupported" : "unavailable"));
+        } finally {
+          setRefreshingSymbols(prev => {
+            const next = new Set(prev);
+            next.delete(upperSym);
+            return next;
+          });
+        }
+      });
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["portfolio-signals", market] });
+    onSuccess: (_data, { market: refreshMarket }) => {
+      queryClient.invalidateQueries({ queryKey: ["portfolio-signals", refreshMarket] });
     },
   });
+
+  // Auto-refresh, once per market per browser session (see
+  // _autoSignalRefreshDone's own comment) — only after the batch cache
+  // read has actually settled (never fires while inSignalsQuery/
+  // usSignalsQuery are still loading, which would misread "haven't
+  // checked yet" as "confirmed missing"), and only for holdings that have
+  // never been attempted this session (a symbol that already failed is
+  // left for the user's explicit "Refresh missing signals" click, not
+  // silently retried forever).
+  useEffect(() => {
+    const relevantQuery = market === "IN" ? inSignalsQuery : usSignalsQuery;
+    if (relevantQuery.isLoading) return;
+    if (_autoSignalRefreshDone.has(market)) return;
+    const neverAttempted = rows.filter(r =>
+      r.market === market && !r.signal && !r.signalCached && !r.signalFailedStatus
+    ).map(r => r.symbol);
+    if (neverAttempted.length === 0) return;
+    _autoSignalRefreshDone.add(market);
+    refreshSignalsMutation.mutate({ symbols: neverAttempted, market });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [market, inSignalsQuery.isLoading, usSignalsQuery.isLoading]);
 
   // Sector allocation's data source - deliberately independent of the
   // signal queries above. One batch request per market for the WHOLE
@@ -880,15 +989,19 @@ export default function PortfolioPage() {
       const rawIndustry = rawSectorInfo?.industry ?? null;
       const sector = normalizeDisplaySector(rawSector, rawIndustry);
       const sectorLoading = sectorsQuery.isLoading;
+      const upperSymbol = h.symbol.toUpperCase();
+      const signalRefreshing = refreshingSymbols.has(upperSymbol);
+      const signalFailedStatus = failedSymbols.get(upperSymbol) ?? null;
       return {
         ...h, curPrice, invested, current, plAmt, plPct, dayChangeAmt, dayChangePct,
         loading: quoteQueries[i]?.isLoading, signal, confidence, signalCached,
         sigLoading: signalsQuery.isLoading, sector, rawSector, rawIndustry, sectorLoading,
+        signalRefreshing, signalFailedStatus,
       };
     });
     return { rows, totalInvestedIN, totalCurrentIN, totalInvestedUS, totalCurrentUS, totalDayChangeIN, totalDayChangeUS };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [holdings, quoteSig, signalSig, sectorsSig]);
+  }, [holdings, quoteSig, signalSig, sectorsSig, refreshingSymbols, failedSymbols]);
 
   // Sprint 011 (§20.1 memoization): the per-market row splits and the
   // allocation-chart slices are derived views of the memoized rows — keep
@@ -1020,17 +1133,17 @@ export default function PortfolioPage() {
         {(() => {
           const signalsSettled = market === "IN" ? !inSignalsQuery.isLoading : !usSignalsQuery.isLoading;
           if (!signalsSettled) return null;
-          const uncachedSymbols = rows.filter(r => r.market === market && !r.signal && !r.signalCached).map(r => r.symbol);
+          const uncachedSymbols = rows.filter(r => r.market === market && !r.signal && (!r.signalCached || r.signalFailedStatus)).map(r => r.symbol);
           if (uncachedSymbols.length === 0) return null;
           return (
             <button
-              onClick={() => refreshSignalsMutation.mutate(uncachedSymbols)}
+              onClick={() => refreshSignalsMutation.mutate({ symbols: uncachedSymbols, market })}
               disabled={refreshSignalsMutation.isPending}
               title="Computes a fresh signal for holdings with no cached signal yet. Runs one at a time — may take a few seconds per stock."
               className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border border-dark-border text-gray-400 hover:text-white hover:border-white/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               {refreshSignalsMutation.isPending
-                ? "Refreshing signals…"
+                ? (refreshingSymbols.size > 0 ? `Refreshing ${refreshingSymbols.size} remaining…` : "Refreshing signals…")
                 : `Refresh missing signals (${uncachedSymbols.length})`}
             </button>
           );
