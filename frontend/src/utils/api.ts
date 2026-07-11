@@ -247,6 +247,16 @@ export function getValidResearchReport(
 export const fetchQuote = (symbol: string, market: Market) =>
   api.get<StockQuote>(`/api/stocks/quote/${symbol}`, { params: { market } }).then((r) => r.data);
 
+// Raw, unmodified passthrough of screener.in's (IN) / yfinance's (US) own
+// sector/industry classification — see sectorDisplay.ts for why both
+// fields are needed (screener.in's own peer-breadcrumb sometimes files a
+// stock under a broad sector like "Consumer Services" while `industry`
+// says something more specific and useful, e.g. "Wellness").
+export interface RawSectorInfo {
+  sector: string | null;
+  industry: string | null;
+}
+
 // Batch sector lookup for Portfolio's allocation view — sourced from the
 // nightly-refreshed stock_fundamentals_cache table, NOT the per-symbol
 // signal/prediction pipeline (fetchSignalSummary's `sector` field). A
@@ -258,9 +268,9 @@ export const fetchQuote = (symbol: string, market: Market) =>
 // one page-load's round trip regardless of portfolio size.
 export const fetchSectorsBatch = (symbols: string[], market: Market) =>
   symbols.length === 0
-    ? Promise.resolve({} as Record<string, string | null>)
+    ? Promise.resolve({} as Record<string, RawSectorInfo>)
     : api
-        .get<{ sectors: Record<string, string | null> }>("/api/stocks/sectors", {
+        .get<{ sectors: Record<string, RawSectorInfo> }>("/api/stocks/sectors", {
           params: { symbols: symbols.join(","), market },
         })
         .then((r) => r.data.sectors);

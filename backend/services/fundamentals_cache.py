@@ -232,7 +232,7 @@ def get_sector(symbol: str, market: str = "IN") -> tuple[str | None, str | None]
         return (None, None)
 
 
-def get_sectors_batch(symbols: list[str], market: str = "IN") -> dict[str, str | None]:
+def get_sectors_batch(symbols: list[str], market: str = "IN") -> dict[str, dict[str, str | None]]:
     """
     Batch counterpart to get_sector() — one query for N symbols instead of N
     queries, for callers (Portfolio's allocation view) that need sectors for
@@ -240,12 +240,23 @@ def get_sectors_batch(symbols: list[str], market: str = "IN") -> dict[str, str |
     only the nightly-refreshed cache table — no live scrape, no prediction
     computation, no scoring of any kind.
 
-    Returns {symbol: sector_name} for every requested symbol, using the
-    UPPERCASED symbol as the key; symbols not present in the cache (outside
-    the refresh job's universe, or not refreshed yet) map to None rather
-    than being omitted, so callers can always index by their original
-    symbol list without a membership check. Symbols missing from the input
+    Returns {symbol: {"sector": sector_name, "industry": industry_name}} for
+    every requested symbol, using the UPPERCASED symbol as the key; symbols
+    not present in the cache (outside the refresh job's universe, or not
+    refreshed yet) map to {"sector": None, "industry": None} rather than
+    being omitted, so callers can always index by their original symbol
+    list without a membership check. Symbols missing from the input
     contribute no query cost — an empty list returns {} without connecting.
+
+    Both raw fields are returned deliberately unmodified — this is a direct
+    passthrough of screener.in's own peer-breadcrumb classification, never
+    corrected or remapped here. (Session 15: screener.in's own sector
+    breadcrumb for JSLL/Jeena Sikho Lifecare is Consumer Discretionary ->
+    Consumer Services -> Leisure Services -> Wellness — Consumer Services is
+    the raw, accurate `sector_name` for that source; it's the *display*
+    layer's job to notice `industry_name` says "Wellness" and show something
+    more useful, not this cache's job to silently rewrite screener.in's own
+    data. See frontend/src/utils/sectorDisplay.ts for that normalization.)
     """
     symbols = [s.upper() for s in symbols if s]
     if not symbols:
@@ -253,14 +264,14 @@ def get_sectors_batch(symbols: list[str], market: str = "IN") -> dict[str, str |
     try:
         with _conn() as conn:
             rows = conn.execute(
-                "SELECT symbol, sector_name FROM stock_fundamentals_cache "
+                "SELECT symbol, sector_name, industry_name FROM stock_fundamentals_cache "
                 "WHERE symbol = ANY(%s) AND market = %s",
                 [symbols, market],
             ).fetchall()
-            found = {row[0]: row[1] for row in rows}
+            found = {row[0]: {"sector": row[1], "industry": row[2]} for row in rows}
     except Exception:
         found = {}
-    return {sym: found.get(sym) for sym in symbols}
+    return {sym: found.get(sym, {"sector": None, "industry": None}) for sym in symbols}
 
 
 def last_refreshed(market: str = "IN") -> str | None:

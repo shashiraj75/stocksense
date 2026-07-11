@@ -6,6 +6,14 @@ sector lookup (GET /api/stocks/sectors) sourced from the nightly-refreshed
 stock_fundamentals_cache table, and services.fundamentals_cache.get_sectors_batch()
 underneath it.
 
+Session 15: get_sectors_batch now returns both `sector` and `industry`
+(previously `sector` alone) per symbol — needed so Portfolio's display
+layer (frontend/src/utils/sectorDisplay.ts) can notice cases like
+Wellness/Hospitals/Diagnostics that screener.in files under a broad
+"Consumer Services" sector (e.g. JSLL/Jeena Sikho Lifecare) and show a
+more useful "Healthcare" label, without this cache ever rewriting
+screener.in's own raw classification.
+
 These tests are fully mocked at the DB boundary (no real Postgres
 connection) — they verify: batch lookup shape, missing-symbol handling,
 market scoping, and — the constraint this whole hotfix must respect —
@@ -31,29 +39,51 @@ def _mock_conn_returning(rows):
     return ctx
 
 
-def test_get_sectors_batch_returns_sector_per_symbol():
+def test_get_sectors_batch_returns_sector_and_industry_per_symbol():
     from services import fundamentals_cache
 
     with patch.object(fundamentals_cache, "_conn", return_value=_mock_conn_returning(
-        [("TCS", "IT"), ("WIPRO", "IT"), ("ONGC", "Energy")]
+        [("TCS", "IT", "IT Services"), ("WIPRO", "IT", "IT Services"), ("ONGC", "Energy", "Oil & Gas")]
     )):
         result = fundamentals_cache.get_sectors_batch(["TCS", "WIPRO", "ONGC"], market="IN")
 
-    assert result == {"TCS": "IT", "WIPRO": "IT", "ONGC": "Energy"}
+    assert result == {
+        "TCS": {"sector": "IT", "industry": "IT Services"},
+        "WIPRO": {"sector": "IT", "industry": "IT Services"},
+        "ONGC": {"sector": "Energy", "industry": "Oil & Gas"},
+    }
 
 
-def test_get_sectors_batch_missing_symbol_maps_to_none():
+def test_get_sectors_batch_raw_passthrough_for_jsll_like_case():
+    """The exact reported case: screener.in's raw sector for JSLL is
+    "Consumer Services" with industry "Wellness" — this cache must return
+    both fields completely unmodified. Normalizing "Wellness" into
+    "Healthcare" is the frontend display layer's job, not this cache's."""
+    from services import fundamentals_cache
+
+    with patch.object(fundamentals_cache, "_conn", return_value=_mock_conn_returning(
+        [("JSLL", "Consumer Services", "Wellness")]
+    )):
+        result = fundamentals_cache.get_sectors_batch(["JSLL"], market="IN")
+
+    assert result == {"JSLL": {"sector": "Consumer Services", "industry": "Wellness"}}
+
+
+def test_get_sectors_batch_missing_symbol_maps_to_none_none():
     """A symbol outside the cache (or not refreshed yet) must still appear
-    in the result — as None, not omitted — so callers can index by their
+    in the result — as nulls, not omitted — so callers can index by their
     original symbol list without a membership check."""
     from services import fundamentals_cache
 
     with patch.object(fundamentals_cache, "_conn", return_value=_mock_conn_returning(
-        [("TCS", "IT")]
+        [("TCS", "IT", "IT Services")]
     )):
         result = fundamentals_cache.get_sectors_batch(["TCS", "UNKNOWNSTOCK"], market="IN")
 
-    assert result == {"TCS": "IT", "UNKNOWNSTOCK": None}
+    assert result == {
+        "TCS": {"sector": "IT", "industry": "IT Services"},
+        "UNKNOWNSTOCK": {"sector": None, "industry": None},
+    }
 
 
 def test_get_sectors_batch_empty_input_returns_empty_dict_without_querying():
@@ -80,7 +110,7 @@ def test_get_sectors_batch_is_market_scoped():
             captured_params["sql"] = sql
             captured_params["params"] = params
             m = MagicMock()
-            m.fetchall.return_value = [("TATAMOTORS", "Auto")]
+            m.fetchall.return_value = [("TATAMOTORS", "Auto", "Auto Ancillaries")]
             return m
         conn.execute.side_effect = _execute
         ctx = MagicMock()
@@ -104,7 +134,10 @@ def test_get_sectors_batch_swallows_db_errors_returns_none_for_all():
     with patch.object(fundamentals_cache, "_conn", side_effect=RuntimeError("connection refused")):
         result = fundamentals_cache.get_sectors_batch(["TCS", "INFY"], market="IN")
 
-    assert result == {"TCS": None, "INFY": None}
+    assert result == {
+        "TCS": {"sector": None, "industry": None},
+        "INFY": {"sector": None, "industry": None},
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -118,11 +151,17 @@ def client():
 
 
 def test_sectors_endpoint_returns_batch_shape(client):
-    with patch("services.fundamentals_cache.get_sectors_batch", return_value={"TCS": "IT", "WIPRO": "IT"}):
+    with patch("services.fundamentals_cache.get_sectors_batch", return_value={
+        "TCS": {"sector": "IT", "industry": "IT Services"},
+        "WIPRO": {"sector": "IT", "industry": "IT Services"},
+    }):
         resp = client.get("/api/stocks/sectors", params={"symbols": "TCS,WIPRO", "market": "IN"})
     assert resp.status_code == 200
     body = resp.json()
-    assert body == {"sectors": {"TCS": "IT", "WIPRO": "IT"}}
+    assert body == {"sectors": {
+        "TCS": {"sector": "IT", "industry": "IT Services"},
+        "WIPRO": {"sector": "IT", "industry": "IT Services"},
+    }}
 
 
 def test_sectors_endpoint_market_specific_lookup_passes_market_through(client):
@@ -131,7 +170,7 @@ def test_sectors_endpoint_market_specific_lookup_passes_market_through(client):
     def _fake_batch(symbols, market):
         captured["symbols"] = symbols
         captured["market"] = market
-        return {s: None for s in symbols}
+        return {s: {"sector": None, "industry": None} for s in symbols}
 
     with patch("services.fundamentals_cache.get_sectors_batch", side_effect=_fake_batch):
         resp = client.get("/api/stocks/sectors", params={"symbols": "AAPL,MSFT", "market": "US"})
@@ -142,10 +181,10 @@ def test_sectors_endpoint_market_specific_lookup_passes_market_through(client):
 
 
 def test_sectors_endpoint_missing_sectors_return_null_not_error(client):
-    with patch("services.fundamentals_cache.get_sectors_batch", return_value={"OBSCURESTOCK": None}):
+    with patch("services.fundamentals_cache.get_sectors_batch", return_value={"OBSCURESTOCK": {"sector": None, "industry": None}}):
         resp = client.get("/api/stocks/sectors", params={"symbols": "OBSCURESTOCK", "market": "IN"})
     assert resp.status_code == 200
-    assert resp.json() == {"sectors": {"OBSCURESTOCK": None}}
+    assert resp.json() == {"sectors": {"OBSCURESTOCK": {"sector": None, "industry": None}}}
 
 
 def test_sectors_endpoint_empty_symbols_short_circuits(client):
@@ -160,9 +199,9 @@ def test_sectors_endpoint_never_touches_prediction_engine(client):
     """The whole point of this endpoint: sector allocation must resolve
     without running any prediction/scoring. Patch PredictionEngine.predict
     to raise — if the sectors endpoint ever calls it, this test fails."""
-    with patch("services.fundamentals_cache.get_sectors_batch", return_value={"TCS": "IT"}), \
+    with patch("services.fundamentals_cache.get_sectors_batch", return_value={"TCS": {"sector": "IT", "industry": "IT Services"}}), \
          patch("services.prediction_engine.PredictionEngine.predict",
                side_effect=AssertionError("sectors endpoint must never invoke the Prediction Engine")):
         resp = client.get("/api/stocks/sectors", params={"symbols": "TCS", "market": "IN"})
     assert resp.status_code == 200
-    assert resp.json() == {"sectors": {"TCS": "IT"}}
+    assert resp.json() == {"sectors": {"TCS": {"sector": "IT", "industry": "IT Services"}}}

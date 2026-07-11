@@ -437,3 +437,53 @@ describe("HoldingsTable — Signal column is non-blocking", () => {
     expect(tcsSignalCell.querySelector("span")?.getAttribute("title")).toBe("No signal for this stock");
   });
 });
+
+describe("HoldingsTable — sector grouping uses the display sector (Session 15)", () => {
+  // Normalization itself (normalizeDisplaySector) is unit-tested in
+  // sectorDisplay.test.ts — HoldingsTable never runs that logic itself,
+  // it only groups whatever ends up in `sector`. These tests confirm the
+  // JSLL-like post-normalization case (raw "Consumer Services" + industry
+  // "Wellness", already resolved to "Healthcare" by page.tsx before this
+  // component ever sees the row) groups and totals correctly, and that the
+  // raw values survive alongside for a tooltip.
+  it("a holding whose display sector was normalized to Healthcare groups under Healthcare, not its raw Consumer Services sector", () => {
+    const rows = [
+      makeRow({
+        id: "1", symbol: "JSLL", sector: "Healthcare",
+        rawSector: "Consumer Services", rawIndustry: "Wellness",
+        current: 1000, invested: 900, dayChangeAmt: 10, plAmt: 100,
+      }),
+      makeRow({ id: "2", symbol: "PVR", sector: "Consumer Services", current: 500, invested: 450 }),
+    ];
+    render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={true} />);
+
+    expect(screen.getByText("Healthcare", { exact: false })).toBeInTheDocument();
+    expect(screen.getByText("Consumer Services", { exact: false })).toBeInTheDocument();
+    // JSLL's value (1000) is under Healthcare, not folded into Consumer
+    // Services' group alongside PVR.
+    const healthcareHeading = screen.getByText((_, el) => el?.tagName === "TD" && (el?.textContent?.startsWith("Healthcare") ?? false));
+    expect(healthcareHeading.textContent).toContain("₹1,000");
+    expect(healthcareHeading.textContent).not.toContain("₹1,500"); // never combined with PVR's 500
+  });
+
+  it("the sector heading's tooltip shows the raw, unmodified sector/industry even though the displayed label is normalized", () => {
+    const rows = [
+      makeRow({
+        id: "1", symbol: "JSLL", sector: "Healthcare",
+        rawSector: "Consumer Services", rawIndustry: "Wellness",
+      }),
+    ];
+    render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={true} />);
+    const heading = screen.getByText("Healthcare", { exact: false }).closest("span[title]");
+    expect(heading?.getAttribute("title")).toBe("Raw: Consumer Services / Wellness");
+  });
+
+  it("a Consumer Services stock with no healthcare/wellness industry stays grouped as Consumer Services", () => {
+    const rows = [
+      makeRow({ id: "1", symbol: "PVR", sector: "Consumer Services", rawSector: "Consumer Services", rawIndustry: "Multiplexes", current: 500 }),
+    ];
+    render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={true} />);
+    expect(screen.getByText("Consumer Services", { exact: false })).toBeInTheDocument();
+    expect(screen.queryByText("Healthcare", { exact: false })).not.toBeInTheDocument();
+  });
+});

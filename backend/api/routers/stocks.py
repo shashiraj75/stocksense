@@ -66,6 +66,13 @@ async def get_sectors_batch(
     per-symbol signal computation just to learn which sector a holding is
     in. Symbols outside the cache (or not yet refreshed) come back as null,
     same as get_sector()'s existing single-symbol contract.
+
+    Session 15: now returns both `sector` and `industry` (previously
+    `sector` only) — raw, unmodified passthrough of screener.in's own
+    classification either way. Portfolio's display layer uses `industry`
+    to notice cases like Wellness/Hospitals/Diagnostics that screener.in
+    files under a broad "Consumer Services" sector, and show a more useful
+    label without this cache ever rewriting the source data.
     """
     symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
     if not symbol_list:

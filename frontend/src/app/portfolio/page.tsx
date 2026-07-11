@@ -2,6 +2,7 @@
 import { useState, useEffect, useMemo, Fragment } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { fetchQuote, fetchCachedSignalsBatch, fetchSectorsBatch, fetchSignalSummary, Market, api } from "@/utils/api";
+import { normalizeDisplaySector } from "@/utils/sectorDisplay";
 import { useStaggeredQueries } from "@/hooks/useStaggeredQueries";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { SignalBadge } from "@/components/SignalBadge";
@@ -68,7 +69,17 @@ export type Row = Holding & {
   // "Loading… 100%" bar for as long as that took, even though this data
   // was sitting in a cache table the whole time. Null/undefined until the
   // batch resolves or when the cache genuinely has no sector for it.
+  //
+  // `sector` here is the DISPLAY sector (normalizeDisplaySector's output,
+  // e.g. "Healthcare" for a Wellness/Hospitals/Pharma industry that
+  // screener.in itself files under a broad "Consumer Services" sector) —
+  // every existing sector-grouping/allocation call site already reads this
+  // field, so normalization happens once, at construction, rather than at
+  // every consumer. `rawSector`/`rawIndustry` keep screener.in's own,
+  // completely unmodified classification available for a tooltip.
   sector?: string | null;
+  rawSector?: string | null;
+  rawIndustry?: string | null;
   // True only while THIS holding's market-wide sector batch request is in
   // flight (one request total per market, not per holding) — distinct from
   // sigLoading, which still gates the Signal badge only.
@@ -510,7 +521,17 @@ export function HoldingsTable({
                           name itself out of view too, same problem as an
                           un-pinned Symbol column. */}
                       <td colSpan={COLUMN_COUNT} className="px-2 sm:px-4 py-2 text-xs font-semibold text-gray-300">
-                        <span className="sticky left-2 sm:left-4 inline-block">
+                        <span
+                          className="sticky left-2 sm:left-4 inline-block"
+                          // Raw, unmodified screener.in classification for
+                          // this group's holdings — visible on hover so the
+                          // display-sector normalization (e.g. "Healthcare"
+                          // for a raw "Consumer Services" sector whose
+                          // industry says "Wellness") is never a black box.
+                          title={g.resolved && g.rows[0]
+                            ? `Raw: ${g.rows[0].rawSector ?? "—"} / ${g.rows[0].rawIndustry ?? "—"}`
+                            : undefined}
+                        >
                           {!g.resolved && <span className="inline-block w-1.5 h-1.5 rounded-full bg-gray-500 animate-pulse mr-1.5" />}
                           {g.sector}
                           <span className="ml-2 font-normal text-gray-500">
@@ -848,13 +869,21 @@ export default function PortfolioPage() {
       // Sourced from the lightweight batch lookup, keyed per-market — never
       // from the signal query's own quality_factors.sector anymore, so
       // sector allocation no longer waits on a per-holding AI computation.
+      // `sector` stored on the row is the DISPLAY sector (normalized from
+      // the raw sector+industry) — see normalizeDisplaySector's own
+      // docstring for why (e.g. JSLL: raw sector "Consumer Services" +
+      // industry "Wellness" displays as "Healthcare"). Raw values are kept
+      // alongside for a tooltip, never discarded.
       const sectorsQuery = h.market === "IN" ? inSectorsQuery : usSectorsQuery;
-      const sector = sectorsQuery.data?.[h.symbol.toUpperCase()] ?? null;
+      const rawSectorInfo = sectorsQuery.data?.[h.symbol.toUpperCase()];
+      const rawSector = rawSectorInfo?.sector ?? null;
+      const rawIndustry = rawSectorInfo?.industry ?? null;
+      const sector = normalizeDisplaySector(rawSector, rawIndustry);
       const sectorLoading = sectorsQuery.isLoading;
       return {
         ...h, curPrice, invested, current, plAmt, plPct, dayChangeAmt, dayChangePct,
         loading: quoteQueries[i]?.isLoading, signal, confidence, signalCached,
-        sigLoading: signalsQuery.isLoading, sector, sectorLoading,
+        sigLoading: signalsQuery.isLoading, sector, rawSector, rawIndustry, sectorLoading,
       };
     });
     return { rows, totalInvestedIN, totalCurrentIN, totalInvestedUS, totalCurrentUS, totalDayChangeIN, totalDayChangeUS };
