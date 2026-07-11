@@ -149,20 +149,26 @@ export default function Dashboard() {
       {/* Quick Access */}
       {market !== "COMMODITY" && (
       <section>
-        <div className="mb-2 space-y-0.5">
-          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">Quick Access</h2>
-          {isUsingWatchlist
-            ? <span className="text-[10px] text-brand-500 font-medium">From your watchlist</span>
-            : <span className="text-[10px] text-gray-500">Popular · Add to watchlist to personalise</span>
-          }
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {quickSymbols.map((sym) => (
-            <Link key={sym} href={`/stock/${sym}?market=${market}`}
-              className="px-4 py-2 rounded-xl bg-dark-card border border-dark-border hover:border-brand-500/60 text-sm font-mono font-bold text-white transition-colors">
-              {sym}
-            </Link>
-          ))}
+        {/* Heading/subtitle and chips share one flex-wrap row so desktop
+            width is used inline instead of stacking chips on their own
+            line below; narrower viewports still wrap the chips down
+            naturally since everything lives in the same wrap container. */}
+        <div className="flex items-center flex-wrap gap-x-4 gap-y-2">
+          <div className="shrink-0 space-y-0.5">
+            <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">Quick Access</h2>
+            {isUsingWatchlist
+              ? <span className="text-[10px] text-brand-500 font-medium">From your watchlist</span>
+              : <span className="text-[10px] text-gray-500">Popular · Add to watchlist to personalise</span>
+            }
+          </div>
+          <div className="flex flex-wrap gap-2 min-w-0">
+            {quickSymbols.map((sym) => (
+              <Link key={sym} href={`/stock/${sym}?market=${market}`}
+                className="px-4 py-2 rounded-xl bg-dark-card border border-dark-border hover:border-brand-500/60 text-sm font-mono font-bold text-white transition-colors">
+                {sym}
+              </Link>
+            ))}
+          </div>
         </div>
       </section>
       )}
@@ -243,7 +249,7 @@ export default function Dashboard() {
               <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">{label}</h2>
               <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                 {Array.from({ length: 10 }).map((_, i) => (
-                  <div key={i} className="h-24 rounded-xl bg-dark-card animate-pulse" />
+                  <div key={i} className="h-20 rounded-xl bg-dark-card animate-pulse" />
                 ))}
               </div>
             </section>
@@ -269,12 +275,14 @@ export default function Dashboard() {
               {[...(movers?.gainers ?? [])].map((m: any) => (
                 <StockContextMenu key={m.symbol} symbol={m.symbol} market={market}>
                   <Link href={`/stock/${m.symbol}?market=${market}`}
-                    className="block p-4 rounded-xl bg-dark-card border border-bull/20 hover:border-bull/50 transition-colors">
+                    className="block p-3 rounded-xl bg-dark-card border border-bull/20 hover:border-bull/50 transition-colors">
                     <p className="font-mono font-bold text-white text-sm">{m.symbol}</p>
                     {m.name && <p className="text-[11px] text-gray-400 mt-0.5 truncate">{m.name}</p>}
-                    <p className="text-base font-bold mt-1.5">{currency}{m.price?.toLocaleString() ?? "—"}</p>
-                    <div className="flex items-center gap-1 text-sm font-medium mt-1 text-bull">
-                      <TrendingUp size={14} />+{m.change_pct ?? 0}%
+                    <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                      <p className="text-base font-bold">{currency}{m.price?.toLocaleString() ?? "—"}</p>
+                      <div className="flex items-center gap-1 text-sm font-medium text-bull">
+                        <TrendingUp size={14} />+{m.change_pct ?? 0}%
+                      </div>
                     </div>
                   </Link>
                 </StockContextMenu>
@@ -297,12 +305,14 @@ export default function Dashboard() {
               {[...(movers?.losers ?? [])].map((m: any) => (
                 <StockContextMenu key={m.symbol} symbol={m.symbol} market={market}>
                   <Link href={`/stock/${m.symbol}?market=${market}`}
-                    className="block p-4 rounded-xl bg-dark-card border border-bear/20 hover:border-bear/50 transition-colors">
+                    className="block p-3 rounded-xl bg-dark-card border border-bear/20 hover:border-bear/50 transition-colors">
                     <p className="font-mono font-bold text-white text-sm">{m.symbol}</p>
                     {m.name && <p className="text-[11px] text-gray-400 mt-0.5 truncate">{m.name}</p>}
-                    <p className="text-base font-bold mt-1.5">{currency}{m.price?.toLocaleString() ?? "—"}</p>
-                    <div className="flex items-center gap-1 text-sm font-medium mt-1 text-bear">
-                      <TrendingDown size={14} />{m.change_pct ?? 0}%
+                    <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                      <p className="text-base font-bold">{currency}{m.price?.toLocaleString() ?? "—"}</p>
+                      <div className="flex items-center gap-1 text-sm font-medium text-bear">
+                        <TrendingDown size={14} />{m.change_pct ?? 0}%
+                      </div>
                     </div>
                   </Link>
                 </StockContextMenu>
