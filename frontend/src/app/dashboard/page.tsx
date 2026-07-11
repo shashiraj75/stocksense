@@ -106,10 +106,14 @@ export default function Dashboard() {
           (layout.tsx) instead of duplicated here per-page. */}
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div className="flex items-center gap-3">
-          <LayoutDashboard size={22} className="text-brand-500" />
-          <div>
+          <LayoutDashboard size={22} className="text-brand-500 shrink-0" />
+          {/* Title and subtitle share one baseline row on desktop instead of
+              stacking — subtitle wraps below on its own if the viewport is
+              too narrow to fit both (flex-wrap on the shared row, not a
+              fixed line-break). */}
+          <div className="flex items-baseline gap-2 flex-wrap">
             <h1 className="text-2xl font-bold text-white">Market Overview</h1>
-            <p className="text-sm text-gray-400 mt-1">Live indices, top movers &amp; market sentiment</p>
+            <p className="text-sm text-gray-400">· Live indices, top movers &amp; market sentiment</p>
           </div>
         </div>
         <div className="flex items-center gap-3 ml-auto flex-wrap justify-end min-w-0 max-w-full">
@@ -259,7 +263,7 @@ export default function Dashboard() {
         <div className="space-y-6">
           {/* Top Gainers */}
           <section>
-            <div className="flex items-center gap-2 mb-1">
+            <div className="flex items-center flex-wrap gap-2 mb-1">
               <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">
                 Top Gainers · {market === "IN" ? "NSE (Nifty 100)" : "NYSE / NASDAQ (Large Cap)"}
               </h2>
@@ -292,7 +296,7 @@ export default function Dashboard() {
 
           {/* Top Losers */}
           <section>
-            <div className="flex items-center gap-2 mb-3">
+            <div className="flex items-center flex-wrap gap-2 mb-3">
               <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">
                 Top Losers · {market === "IN" ? "NSE (Nifty 100)" : "NYSE / NASDAQ (Large Cap)"}
               </h2>
