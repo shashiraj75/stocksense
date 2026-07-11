@@ -4,7 +4,7 @@
 
 **Use this document for current state.** Historical sprint reports, Epic closures, SSDS documents, and audit reports remain authoritative evidence for their own completed scope, but they do not automatically describe the current production operating state.
 
-**As of:** 2026-07-08 — maintained as a live operational register
+**As of:** 2026-07-12 — maintained as a live operational register
 
 ---
 
@@ -30,6 +30,7 @@
 - No Daily Picks scheduler enablement is approved until India and US validations both pass.
 - No validation result may be described as passed until its release-specific evidence record is complete.
 - **Superseded scope note (2026-07-10):** this release's original universe-construction logic (`yf.screen()`-based, market-cap-descending with a hard cutoff) has been replaced entirely — see the Daily Picks Large/Mid/Small-Cap Stratification entry in `STOCKSENSE_DOCUMENTATION.md` §27 Session 10. Any pending or future validation of "Release 12B's universe behavior" must be re-scoped against the new `stock_fundamentals_cache`-sourced, tier-stratified universe, not treated as still covering the old Yahoo-screener logic. Scheduler enablement remains blocked either way — this note does not itself unblock or reblock anything, it only prevents a future validation pass from silently validating logic that no longer exists.
+- **Hardening preflight recorded (2026-07-12, markets closed):** a planning-only preflight for runtime/provider hardening (timeouts, retry/backoff, per-symbol failure isolation, stale-cache detection, and related areas) was recorded at [Preflight — Daily Picks Runtime/Provider Hardening](../Releases/Preflight-Daily-Picks-Runtime-Provider-Hardening.md). It does not change generation logic, does not enable the scheduler, and does not itself advance or substitute for this release's still-pending India/US validation.
 
 ## Release 13C — Recommendation Consolidation Observability
 

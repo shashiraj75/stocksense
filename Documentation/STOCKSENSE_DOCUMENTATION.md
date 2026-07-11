@@ -1363,6 +1363,33 @@ The hosting platform's ephemeral disk means files written locally are wiped on e
 
 ## 27. Changelog
 
+### Session 12 — 2026-07-11
+
+A same-day follow-on to Session 11's Portfolio work, closing out the Signal column's "permanent blank" problem and simplifying the sector-grouped table's heading/subtotal duplication. **Portfolio UX/runtime hotfixes only** — not the Epic 007 (`MASTER-ROADMAP.md` §11) Portfolio and Watchlist Intelligence initiative, which remains Planned / Not Started; nothing here adds portfolio-aware recommendations, allocation advice, or any new intelligence. No Daily Picks, Prediction Engine scoring, RCI, scheduler, or backend behavior changed.
+
+**Portfolio — quote rows self-heal instead of getting stuck (`8e11877`):**
+
+- Live quote rows that failed to resolve (a transient provider hiccup, a slow cold fetch) previously had no path back to a resolved state short of a full page reload. Added a jittered `refetchInterval` to the quote query so a stuck row retries itself in the background rather than requiring the user to notice and refresh manually.
+
+**Portfolio — Signal column no longer shows a permanent blank (`1e8b2ef`, `9c1c803`, `1e94027`):**
+
+- Root cause (already diagnosed in an earlier session, closed here): `PredictionEngine`'s in-memory `_pred_cache` has only a 15-minute TTL, so a symbol Daily Picks scored overnight showed a real signal for 15 minutes and then reverted to blank for the rest of the day. A `score_snapshots` Postgres fallback (persisted nightly by Daily Picks for every deep-scored candidate) closed most of this gap, but a holding that was never one of Daily Picks' ~400 nightly candidates and has never had its own Stock Detail page viewed genuinely has no signal anywhere in the system — not a caching bug, a coverage gap.
+- Closed the remaining gap with a portfolio-scoped, concurrency-bounded (limit 3) refresh, reusing the existing single-symbol `/signal` endpoint and the existing cache-only `/signals/cached-batch` endpoint — no new backend endpoint, no full-universe computation. Triggered by the existing "Refresh missing signals" button (which now also retries previously-failed symbols and shows live progress) and once automatically per market per browser session (a module-level `Set`, not component state, so it doesn't re-fire on every tab revisit).
+- A holding now always shows one of: a resolved BUY/HOLD/SELL badge, a compact `Updating…` state while its refresh is in flight, `Unavailable` if a refresh attempt failed, or `Unsupported` if the symbol was rejected outright (HTTP 404) — never an undifferentiated "—" forever. The Portfolio Allocation chart's BUY/HOLD/SELL counts already excluded `signal === null` rows before this change, so no chart-level change was needed; these in-flight/failed states still correctly fall outside all three buckets.
+
+**Portfolio — sector display normalization for Wellness/Healthcare-style listings (`38469be`):**
+
+- A holding like JSLL (Jeena Sikho Lifecare) is filed by screener.in under a broad `Consumer Services` sector with `Wellness` as its narrower industry — accurate but not useful for portfolio grouping, since it reads as a generic consumer-services stock rather than the healthcare/wellness business it actually is. Added `normalizeDisplaySector()` (`frontend/src/utils/sectorDisplay.ts`), a pure display-layer function matching industry-name keywords (wellness, hospital, healthcare, medical care, diagnostic, pharma) to a normalized "Healthcare" display sector — generic keyword matching, not a JSLL-specific hardcode, so any similarly-filed stock gets the same treatment. The raw sector/industry values are never modified or discarded; they remain available for a tooltip on the sector's subtotal row.
+
+**Portfolio — merged the sector heading row into its subtotal row (`9492fb8`):**
+
+- Session 11 added a sector heading (`IT · 2 holdings · ₹4,500 · 50.0%`) followed by a separate "Sector Total" subtotal row — functionally duplicating the same holding-count/value/percentage information twice and costing a full extra row per sector group. The heading row is now removed entirely; its holding-count and %-of-portfolio context (never the total value itself, which already lives in the subtotal row's own numeric columns) is folded directly into the subtotal label: `"{sector} Total · {holdingCount} holdings · {percent}%"` (e.g. `"Healthcare Total · 2 holdings · 42.4%"`, `"Resolving sector… Total · 5 holdings"` with no percentage for the still-resolving bucket). Grand Total, totals math, and the "partial while prices load" note are unchanged.
+- **This supersedes Session 11's sector-heading description above** (`IT · 2 holdings · ₹4,500 · 50.0%`) — that heading row no longer exists.
+
+**Verified:** 33 targeted `HoldingsTable` tests + full 126-test frontend suite passing, `tsc --noEmit` clean, `next build` succeeding, plus live visual confirmation by the user in a running dev session (Signal column showing compact `Unavailable` states instead of permanent blanks, no console errors, no layout overflow). The sector-grouped view's live rendering could not be exercised in that same session (no authenticated backend locally to produce sector data) — that specific behavior is covered by the automated tests, not a live screenshot.
+
+**Not touched:** Daily Picks, Daily Picks generation, Prediction Engine scoring, RCI, scheduler, feature flags, broker integrations, Railway/Vercel config, backend code.
+
 ### Session 11 — 2026-07-11
 
 A focused Portfolio + Paper Trading performance/UX session, driven by two live user reports: Paper Trading feeling noticeably laggier to navigate into (and out of) than every other tab, and the Portfolio Allocation chart getting stuck showing a fake "Loading… 100.0%" sector bar. No Daily Picks, Prediction Engine scoring, RCI, or scheduler changes.
