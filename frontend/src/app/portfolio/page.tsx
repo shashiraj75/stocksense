@@ -656,11 +656,27 @@ export default function PortfolioPage() {
   // connection cap once a portfolio has more than a handful of rows,
   // leaving most of them stuck loading even though the backend itself
   // handles the concurrent load fine.
+  //
+  // Root cause (Session 14 — live report: a handful of rows stuck showing
+  // "—" for Current/Current Value/Day's P&L/P&L indefinitely, even though
+  // curling the exact same symbols confirmed the backend quote endpoint
+  // was answering fine): this query previously had no `refetchInterval`
+  // and the global default is `retry: 1` (providers.tsx) — a single
+  // transient failure for one symbol (an NSE rate-limit blip is plausible
+  // with up to 8 concurrent requests firing in one staggered batch) retried
+  // once after 5s, then settled permanently into an error state with
+  // nothing to ever retry it again (no refetchOnWindowFocus/Reconnect
+  // either, per the same global defaults) — stuck until a full page
+  // reload. `refetchInterval` self-heals a stuck row within ~30s instead,
+  // matching the pattern Paper Trading's own quote polling already uses
+  // (jittered per-index so a large portfolio doesn't refire every quote
+  // at the exact same moment).
   const quoteQueries = useStaggeredQueries(
-    holdings.map(h => ({
+    holdings.map((h, i) => ({
       queryKey: ["quote", h.symbol, h.market],
       queryFn: () => fetchQuote(h.symbol, h.market),
       staleTime: 5 * 60_000,
+      refetchInterval: 30_000 + (i % 8) * 500,
     })),
     8
   );
