@@ -1,7 +1,7 @@
 # StockSense360 — Complete Product & Technical Documentation
 
 > **Live Document** — Updated automatically as the product evolves.  
-> Last updated: 2026-07-10 (Session 10)
+> Last updated: 2026-07-11 (Session 11)
 
 ---
 
@@ -916,6 +916,14 @@ Realised P&L = (exit_price − entry_price) × quantity
 | `/api/paper-trading/trade/{trade_id}` | PATCH | Edit stop_loss / target_price (body: `user_id`, …) |
 | `/api/paper-trading/reset` | POST | Reset portfolio to starting cash (query: `user_id`) |
 
+### Performance notes (Session 11)
+
+- **Postgres connection pooling.** `_conn()` previously opened a brand-new `psycopg.connect()` (a full TCP+TLS handshake) on every single call, and most handlers (`get_portfolio` in particular) called it twice per request. Now backed by a process-wide `psycopg_pool.ConnectionPool` — `psycopg[pool]` was already a declared dependency, just unused until this fix.
+- **`OpenTradeRow` no longer fetches its own quote.** The page already fetched a staggered batch of live quotes per open trade for action-queue sorting; each row *also* ran its own independent, un-staggered `useQuery` for the identical endpoint. With 30-40+ open positions common, that meant every position fired two separate requests to the same quote endpoint on mount. The row now receives its quote as a prop from the page's already-staggered fetch instead.
+- **`useMarketOpen`/`usePrefersReducedMotion` lifted to the page.** Both were previously called once *per open trade row* despite returning the identical value for every row (Paper Trading only ever shows one market's positions at a time; reduced-motion is a single OS-level setting) — 40+ redundant `setInterval(30s)` timers and `matchMedia` listeners, each of which also has to be torn down on unmount. Computed once in `PaperTradingPage` and passed down.
+- **Trade History code-split.** `ClosedTradeHorizonBlock`/`ClosedTradeRow` (the below-the-fold closed-trade history section, ~260 of this page's 1483 lines — by far the largest client page in the app) moved to `frontend/src/components/PaperTradeHistoryBlock.tsx`, loaded via `next/dynamic` so it ships as its own chunk instead of bloating the tab's initial JS payload.
+- Net effect: Paper Trading was the one tab that felt noticeably slower to navigate into (and out of) than every other tab — traced to the combination above (duplicate per-row network/render work on the way in, 80+ redundant cleanup functions on the way out) rather than any single cause.
+
 ---
 
 ## 18. Portfolio Tracker
@@ -939,6 +947,7 @@ portfolio_holdings (id TEXT PK, user_id TEXT, symbol TEXT, market TEXT CHECK('IN
 | `/api/portfolio/{user_id}` | POST | Add a holding (body: `symbol`, `market`, `qty`, `avg_price`) |
 | `/api/portfolio/{user_id}/{holding_id}` | PATCH | Edit qty / avg_price |
 | `/api/portfolio/{user_id}/{holding_id}` | DELETE | Remove holding |
+| `/api/stocks/sectors` | GET | Batch sector lookup (query: `symbols` comma-separated, `market`) — see "Sector allocation" below. Lives in the Stocks router, not Portfolio's own, since it's a general-purpose lightweight lookup, not portfolio-specific data. |
 
 ### Frontend Behavior
 
@@ -947,7 +956,12 @@ portfolio_holdings (id TEXT PK, user_id TEXT, symbol TEXT, market TEXT CHECK('IN
 - Delete/edit await the backend response before updating local state — closes the same "resurrection" race class found in Alerts (a failed request used to leave the row alive server-side while the UI showed it changed/gone, with the next page load silently reverting it).
 - Symbol entry uses the shared `StockSymbolField` predictive-search component (Session 8) instead of a bare text input.
 - **Day's P&L** (Session 10): a separate amount + % column alongside the existing overall P&L, reusing the `change`/`change_pct` already returned by each holding's quote fetch — no additional API calls.
-- **Portfolio Allocation chart** (`PortfolioAllocationChart.tsx`, Session 10): a By Sector / By Stock toggle. Sector view sums holdings by `quality_factors.sector` (reused from the same computation `predict()` already does, exposed additively on `/signal`'s summary payload); both views sort slices descending by value. Defaults to sector view once any sector data has resolved for at least one holding — not gated on having more than one distinct sector, since large India portfolios resolve sector data slowly per-symbol and would otherwise show a different UI shape than fast US ones while data is still loading.
+- **Portfolio Allocation chart** (`PortfolioAllocationChart.tsx`): a By Sector / By Stock toggle, lifted into `portfolio/page.tsx` (Session 10) so the same toggle also drives the holdings table's sector grouping instead of a second, separate "Group by Sector" button duplicating the same choice. Both views sort slices descending by value.
+- **Sector allocation data source (Session 11 — reworked)**: sector used to come from `quality_factors.sector` on the per-holding AI signal fetch (`fetchSignalSummary`), meaning sector allocation was gated on the same staggered, potentially slow-on-a-cold-cache prediction computation that drives the Signal badge — a portfolio's allocation chart could sit on a misleadingly complete-looking bar for as long as that took. Sector now comes from `fetchSectorsBatch()` → `GET /api/stocks/sectors`, one lightweight batch request per market for the *entire* holdings list (not staggered, not per-holding), reading only the nightly-refreshed `stock_fundamentals_cache` table — the same cache Multibagger's screens already use. No prediction/scoring is invoked to learn a holding's sector.
+- **Unresolved-vs-"Other" distinction (Session 11)**: a holding whose sector lookup hasn't resolved yet is never folded into "Other" (which now means only "resolved, and genuinely has no sector") nor rendered as a fake chart slice. It shows as a separate, visually muted "Resolving sector…" state — in the allocation chart as a line below the real slices, and in the grouped holdings table as its own bottom-most group heading (no percentage-of-portfolio figure, since that would misread as a real allocation number).
+- **Sector group headings (Session 11)**: each resolved sector group's heading now shows holding count, total value, and % of the selected market's total portfolio value, e.g. `IT · 2 holdings · ₹4,500 · 50.0%`.
+- **Holdings table totals footer (Session 11)**: a bold "Total" row at the bottom of the table (exactly one, in both grouped and ungrouped mode) showing Invested, Current Value, Day's P&L, and P&L for the currently displayed market only. Invested always sums every row (qty/avg price are known at add-time, independent of any live quote); Current Value/Day's P&L/P&L each sum only rows that have actually resolved a live price — a still-loading holding is left out of the sum rather than silently contributing a fabricated `0`, and the footer shows a small "· partial while prices load" note whenever any row hasn't resolved yet.
+- **"Value" column renamed to "Current Value" (Session 11)** for clarity against the new Invested/Current Value/Day's P&L/P&L footer totals.
 - Holdings table has a persistently-visible thin scrollbar on its horizontal scroll container (fixes a real mobile overflow bug where the table didn't fit the viewport at all).
 
 ---
@@ -1348,6 +1362,34 @@ The hosting platform's ephemeral disk means files written locally are wiped on e
 ---
 
 ## 27. Changelog
+
+### Session 11 — 2026-07-11
+
+A focused Portfolio + Paper Trading performance/UX session, driven by two live user reports: Paper Trading feeling noticeably laggier to navigate into (and out of) than every other tab, and the Portfolio Allocation chart getting stuck showing a fake "Loading… 100.0%" sector bar. No Daily Picks, Prediction Engine scoring, RCI, or scheduler changes.
+
+**Paper Trading — root-caused and fixed the tab-transition lag (4 commits: `5cccf97`, `1e80d79`, `7eb7fc0`, `d80aa3d`):**
+
+- Confirmed via direct code reading (not guesswork) that `get_portfolio` opened two brand-new `psycopg.connect()` calls per request (`_ensure_portfolio` plus the handler body) — each a full TCP+TLS handshake to Postgres, with no pooling despite `psycopg[pool]` already being a declared dependency. Replaced `_conn()`'s direct `connect()` with a process-wide `psycopg_pool.ConnectionPool`.
+- Found `OpenTradeRow` ran its own independent, un-staggered `useQuery` for live quotes — duplicating a fetch the page already made (staggered, for action-queue sorting) to the identical endpoint. With 30-40+ open positions common, that was up to 80+ concurrent requests firing on mount instead of 40. Row now receives its quote as a prop.
+- Found `useMarketOpen`/`usePrefersReducedMotion` were each called once *per open-trade row* despite returning the identical value for every row — 40+ redundant `setInterval(30s)` timers and `matchMedia` listeners, each needing its own cleanup on unmount. This is the mechanism behind the *outbound* lag specifically: navigating away had to synchronously run 80+ cleanup functions before the next route (and its nav highlight) could commit. Both hooks lifted to the page, called once.
+- Confirmed via `wc -l` that Paper Trading's page component was by far the largest client page in the app (1483 lines — ~2x Portfolio, ~1.4x Daily Picks). Code-split the below-the-fold Trade History section (`ClosedTradeHorizonBlock`/`ClosedTradeRow`, ~260 lines) into `frontend/src/components/PaperTradeHistoryBlock.tsx`, loaded via `next/dynamic` so it's no longer part of the tab's initial JS payload.
+
+**Navigation — active-tab highlight lagging behind the actual route (`546aa4f`):**
+
+- A live screenshot showed the URL and page content already on `/paper-trading` while the nav bar's highlighted/bordered tab was still "Validation." Root cause: `NavLinks.tsx`/`MobileNav.tsx` applied `transition-colors` (a ~150ms fade) unconditionally to every nav link, including the active↔inactive swap itself — so a navigation could render with the destination page's content already fully loaded while the previous tab's border/background hadn't finished fading out. Fixed by scoping `transition-colors` to only the inactive/hover branch (which tab is current is state, not a hover affordance — it must snap instantly), plus keying each link list on `pathname` as a belt-and-suspenders remount.
+
+**Portfolio — decoupled sector allocation from AI signal loading (`ff4438f`):**
+
+- Root cause of the "Loading… 100.0%" bug: sector came from the per-holding signal fetch's `quality_factors.sector`, gated on the same staggered, potentially slow (cold-cache) AI prediction that drives the Signal badge. A prior same-day hotfix kept unresolved holdings out of "Other" by injecting a synthetic `{sector: "Loading…", ...}` entry directly into the chart's `sectorSlices` array — but `PortfolioAllocationChart` computed its own local "has real sector data" check from that same array without excluding the placeholder, so it counted "Loading…" as real data and rendered it as a single fake 100% bar.
+- Fixed at the source, not just the symptom: new `GET /api/stocks/sectors` batch endpoint + `services.fundamentals_cache.get_sectors_batch()`, reading only the nightly-refreshed `stock_fundamentals_cache` table (read-only, no prediction/scoring, no feature flags). Portfolio now fetches sectors via one batch request per market instead of waiting on the staggered signal queries. `sectorSlices` holds only genuinely-resolved sectors now; unresolved value/count is tracked separately and rendered as a distinct "Resolving sector…" state, never as a chart slice and never folded into "Other."
+- Verified with 10 new backend tests (including one that patches `PredictionEngine.predict` to raise, confirming the sectors endpoint never touches it) and 14 new/updated frontend tests.
+
+**Portfolio — holdings table totals (`ce7352a`):**
+
+- Added a market-specific grand-total footer row (Invested, Current Value, Day's P&L, P&L) to the holdings table, appearing exactly once in both grouped and ungrouped mode. Current Value/Day's P&L/P&L each sum only rows that have actually resolved a live price — a still-loading holding contributes nothing to the sum rather than a fabricated `0`, and the footer shows a "· partial while prices load" note whenever any row hasn't resolved. Renamed the "Value" column header to "Current Value" for clarity.
+- Sector group headings also gained holding count, total value, and % of the selected market's portfolio value (e.g. `IT · 2 holdings · ₹4,500 · 50.0%`).
+
+**Not touched:** Daily Picks, Daily Picks generation, Prediction Engine scoring, RCI, scheduler, feature flags, broker integrations, Railway/Vercel config. INR and USD are never combined — every total/footer/chart is computed from a single market's already-filtered rows.
 
 ### Session 10 — 2026-07-10
 
