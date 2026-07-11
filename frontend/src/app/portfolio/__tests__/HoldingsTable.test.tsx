@@ -250,3 +250,86 @@ describe("HoldingsTable — footer totals", () => {
     expect(screen.getByText("₹3,333")).toBeInTheDocument(); // Current Value grand total: 1111+2222
   });
 });
+
+describe("HoldingsTable — sector subtotal rows", () => {
+  it("sector-grouped mode renders a subtotal row for each sector group", () => {
+    const rows = [
+      makeRow({ id: "1", symbol: "TCS", sector: "IT" }),
+      makeRow({ id: "2", symbol: "ONGC", sector: "Energy" }),
+    ];
+    render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={true} />);
+    expect(screen.getAllByText("Subtotal")).toHaveLength(2);
+  });
+
+  it("sector subtotal row shows Invested, Current Value, Day's P&L, and P&L totals for that sector only", () => {
+    const rows = [
+      makeRow({ id: "1", symbol: "TCS", sector: "IT", invested: 1000, current: 1100, dayChangeAmt: 20, plAmt: 100 }),
+      makeRow({ id: "2", symbol: "INFY", sector: "IT", invested: 500, current: 550, dayChangeAmt: 5, plAmt: 50 }),
+      makeRow({ id: "3", symbol: "ONGC", sector: "Energy", invested: 2000, current: 2222, dayChangeAmt: 40, plAmt: 400 }),
+      makeRow({ id: "4", symbol: "GAIL", sector: "Energy", invested: 300, current: 333, dayChangeAmt: 3, plAmt: 30 }),
+    ];
+    render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={true} />);
+
+    // IT subtotal: Invested 1500, Current Value 1650, Day's P&L +25, P&L +150.
+    expect(screen.getByText("₹1,500")).toBeInTheDocument();
+    expect(screen.getByText("₹1,650")).toBeInTheDocument();
+    expect(screen.getByText("+₹25")).toBeInTheDocument();
+    expect(screen.getByText("+₹150")).toBeInTheDocument();
+    // Energy subtotal: Invested 2300, Current Value 2555, Day's P&L +43, P&L +430
+    // — deliberately distinct from any individual row's own value.
+    expect(screen.getByText("₹2,300")).toBeInTheDocument();
+    expect(screen.getByText("₹2,555")).toBeInTheDocument();
+    expect(screen.getByText("+₹43")).toBeInTheDocument();
+    expect(screen.getByText("+₹430")).toBeInTheDocument();
+  });
+
+  it("sector subtotal does not count an unresolved row's Current Value/Day's P&L/P&L as zero, and flags itself partial", () => {
+    const rows = [
+      makeRow({ id: "1", symbol: "TCS", sector: "IT", invested: 1000, current: 1100, dayChangeAmt: 20, plAmt: 100 }),
+      makeRow({ id: "2", symbol: "WIPRO", sector: "IT", invested: 400, current: 440, dayChangeAmt: 4, plAmt: 40 }),
+      // Still loading — genuinely unknown, not 0, but same sector (IT).
+      makeRow({ id: "3", symbol: "INFY", sector: "IT", invested: 500, current: null, dayChangeAmt: null, plAmt: null, sectorLoading: false, loading: true }),
+    ];
+    render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={true} />);
+
+    // Isolate the IT subtotal row itself (there's only one sector here, so
+    // its subtotal coincides with the grand total — inspect the row
+    // directly rather than asserting on ambiguous page-wide text).
+    const subtotalRow = screen.getByText("Subtotal").closest("tr")!;
+    // Invested includes all three rows (1000+400+500=1900); Current Value/
+    // Day's P&L/P&L reflect only the two resolved rows (1100+440=1540,
+    // 20+4=+24, 100+40=+140) — never a fabricated 0 for INFY's still-loading
+    // contribution.
+    expect(subtotalRow.textContent).toContain("₹1,900");
+    expect(subtotalRow.textContent).toContain("₹1,540");
+    expect(subtotalRow.textContent).toContain("+₹24");
+    expect(subtotalRow.textContent).toContain("+₹140");
+    expect(subtotalRow.textContent).toMatch(/partial while prices load/);
+  });
+
+  it("the 'Resolving sector…' group gets its own subtotal row, separate from 'Other'", () => {
+    const rows = [
+      // Genuinely unclassified (resolved, no sector) — goes to Other.
+      makeRow({ id: "1", symbol: "UNKNOWNCO", sector: null, invested: 300, current: 300, dayChangeAmt: 0, plAmt: 0 }),
+      // Still resolving — separate bucket entirely.
+      makeRow({ id: "2", symbol: "PENDING", sector: null, sectorLoading: true, invested: 700, current: null, dayChangeAmt: null, plAmt: null }),
+    ];
+    render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={true} />);
+
+    // Two distinct groups, two distinct subtotal rows.
+    expect(screen.getByText("Other", { exact: false })).toBeInTheDocument();
+    expect(screen.getByText("Resolving sector…", { exact: false })).toBeInTheDocument();
+    const subtotalLabels = screen.getAllByText("Subtotal");
+    expect(subtotalLabels).toHaveLength(2);
+
+    // Each subtotal row's own <tr>, inspected directly, so this can't be
+    // fooled by an individual holding row happening to show the same value.
+    const subtotalRows = subtotalLabels.map(el => el.closest("tr")!.textContent);
+    // Other's subtotal: Invested 300, Current Value 300 (its one resolved row) —
+    // never inflated by PENDING's unresolved Invested (700).
+    expect(subtotalRows.some(t => t?.includes("₹300") && !t?.includes("₹700"))).toBe(true);
+    // Resolving sector…'s subtotal: Invested 700 (known), Current Value "—"
+    // (never a fabricated ₹0) — never inflated by Other's 300.
+    expect(subtotalRows.some(t => t?.includes("₹700") && !t?.includes("₹300") && t?.includes("—"))).toBe(true);
+  });
+});
