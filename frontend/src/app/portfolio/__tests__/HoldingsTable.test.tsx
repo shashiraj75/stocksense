@@ -358,8 +358,8 @@ describe("HoldingsTable — sector subtotal rows", () => {
     const stockRow = screen.getByText("TCS").closest("tr")!;
     expect(sectorTotalRow.className).toContain("font-bold");
     expect(sectorTotalRow.className).not.toEqual(stockRow.className);
-    // Its own top border/background, not just a plain row.
-    expect(sectorTotalRow.className).toMatch(/border-t/);
+    // Bounded by its own top AND bottom border, not just a plain row.
+    expect(sectorTotalRow.className).toMatch(/border-y/);
   });
 
   it("Grand Total is visually stronger than Sector Total (heavier border/background), and appears once at the bottom", () => {
@@ -378,11 +378,11 @@ describe("HoldingsTable — sector subtotal rows", () => {
       expect(row.getAttribute("data-variant")).toBe("sector");
       expect(row.className).not.toEqual(grandTotalRow.className);
     }
-    // Grand Total's border is the heavier "border-t-2"; Sector Total's is
-    // the lighter plain "border-t" (not "border-t-2").
-    expect(grandTotalRow.className).toMatch(/border-t-2/);
+    // Grand Total's border is the heavier "border-y-2"; Sector Total's is
+    // the lighter plain "border-y" (not "border-y-2").
+    expect(grandTotalRow.className).toMatch(/border-y-2/);
     for (const row of sectorTotalRows) {
-      expect(row.className).not.toMatch(/border-t-2/);
+      expect(row.className).not.toMatch(/border-y-2/);
     }
 
     // Grand Total is the last row in the table.

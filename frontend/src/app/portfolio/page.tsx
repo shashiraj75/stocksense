@@ -104,7 +104,13 @@ function HoldingRow({
 
   return (
     <tr className="border-b border-dark-border hover:bg-dark-border/30 transition-colors">
-      <td className={clsx("px-2 sm:px-4 py-3", indent && "pl-8")}>
+      {/* Sticky Symbol column — this table's own horizontal scroll (11
+          columns, easily 1200px+) used to scroll the Symbol cell out of
+          view along with everything else, so scrolling right to check
+          Day's P&L/P&L lost track of which row you were even looking at.
+          Pinned to the scroll container's left edge with an opaque
+          background so scrolled columns pass underneath it, not through it. */}
+      <td className={clsx("px-2 sm:px-4 py-3 sticky left-0 z-10 bg-dark-card", indent && "pl-8")}>
         <Link href={`/stock/${r.symbol}?market=${r.market}`}
           className="font-mono font-bold text-white hover:text-brand-500 transition-colors">
           {r.symbol}
@@ -213,11 +219,15 @@ const SORT_ACCESSORS: Record<SortKey, (r: Row) => string | number | null> = {
 };
 
 function SortableHeader({
-  label, sortKey, align, activeKey, dir, onSort, title,
-}: { label: string; sortKey: SortKey; align?: "right" | "center"; activeKey: SortKey | null; dir: "asc" | "desc"; onSort: (key: SortKey) => void; title?: string }) {
+  label, sortKey, align, activeKey, dir, onSort, title, sticky,
+}: { label: string; sortKey: SortKey; align?: "right" | "center"; activeKey: SortKey | null; dir: "asc" | "desc"; onSort: (key: SortKey) => void; title?: string; sticky?: boolean }) {
   const isActive = activeKey === sortKey;
   return (
-    <th title={title} className={clsx("px-2 sm:px-4 py-3 font-medium select-none whitespace-nowrap", align === "right" ? "text-right" : align === "center" ? "text-center" : "text-left")}>
+    <th title={title} className={clsx(
+      "px-2 sm:px-4 py-3 font-medium select-none whitespace-nowrap",
+      align === "right" ? "text-right" : align === "center" ? "text-center" : "text-left",
+      sticky && "sticky left-0 z-20 bg-dark-card"
+    )}>
       <button
         onClick={() => onSort(sortKey)}
         className={clsx(
@@ -284,15 +294,24 @@ function TotalsRow({
       data-variant={variant}
       className={clsx(
         isGrand
-          ? "border-t-2 border-brand-500/40 bg-dark-bg/60 font-bold text-sm"
-          : "border-t border-dark-border/70 bg-dark-bg/25 font-bold text-xs"
+          ? "border-y-2 border-brand-500/40 bg-dark-bg/60 font-bold text-sm"
+          // Bounded by a border on both edges — top AND bottom — so a
+          // Sector Total reads as its own clearly-delimited band between
+          // one sector's rows and the next, not just a line hanging off
+          // the bottom of the last stock row.
+          : "border-y border-dark-border/70 bg-dark-bg/25 font-bold text-xs"
       )}
     >
       <td className={clsx("px-2 sm:px-4 text-gray-300", isGrand ? "py-3" : "py-2 pl-8")} colSpan={4}>
-        {label}
-        {totals.isPartial && (
-          <span className="ml-2 font-normal text-gray-600">· partial while prices load</span>
-        )}
+        {/* Sticky label — same reasoning as the sector heading and Symbol
+            column above: stays visible while scrolled right, so you never
+            lose track of which total you're looking at. */}
+        <span className="sticky left-2 sm:left-4 inline-block">
+          {label}
+          {totals.isPartial && (
+            <span className="ml-2 font-normal text-gray-600">· partial while prices load</span>
+          )}
+        </span>
       </td>
       <td className={clsx("px-2 sm:px-4 text-right font-mono text-gray-200", isGrand ? "py-3" : "py-2")}>
         {currency}{totals.invested.toLocaleString(undefined, { maximumFractionDigits: 0 })}
@@ -449,7 +468,7 @@ export function HoldingsTable({
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-dark-border text-gray-400 text-left">
-              <SortableHeader label="Symbol" sortKey="symbol" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
+              <SortableHeader label="Symbol" sortKey="symbol" activeKey={sortKey} dir={sortDir} onSort={handleSort} sticky />
               <SortableHeader label="Qty" sortKey="qty" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               <SortableHeader label="Avg Buy" sortKey="avgPrice" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               <SortableHeader label="Current" sortKey="curPrice" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
@@ -480,12 +499,20 @@ export function HoldingsTable({
                 return (
                   <Fragment key={g.sector}>
                     <tr className={clsx("bg-dark-bg/60", !g.resolved && "opacity-70")}>
+                      {/* The label itself is pinned to the scroll
+                          container's left edge (sticky span inside the
+                          full-width colSpan cell) — otherwise scrolling
+                          right to see Day's P&L/P&L scrolled the sector
+                          name itself out of view too, same problem as an
+                          un-pinned Symbol column. */}
                       <td colSpan={COLUMN_COUNT} className="px-2 sm:px-4 py-2 text-xs font-semibold text-gray-300">
-                        {!g.resolved && <span className="inline-block w-1.5 h-1.5 rounded-full bg-gray-500 animate-pulse mr-1.5" />}
-                        {g.sector}
-                        <span className="ml-2 font-normal text-gray-500">
-                          {g.rows.length} holding{g.rows.length !== 1 ? "s" : ""} · {currency}{g.totalValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                          {pct !== null && ` · ${pct.toFixed(1)}%`}
+                        <span className="sticky left-2 sm:left-4 inline-block">
+                          {!g.resolved && <span className="inline-block w-1.5 h-1.5 rounded-full bg-gray-500 animate-pulse mr-1.5" />}
+                          {g.sector}
+                          <span className="ml-2 font-normal text-gray-500">
+                            {g.rows.length} holding{g.rows.length !== 1 ? "s" : ""} · {currency}{g.totalValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                            {pct !== null && ` · ${pct.toFixed(1)}%`}
+                          </span>
                         </span>
                       </td>
                     </tr>
