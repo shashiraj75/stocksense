@@ -104,10 +104,15 @@ const PREMARKET_STATUS_CLASS: Record<string, string> = {
   failed: "border-red-500/40 text-red-400",
 };
 
+// Canonical horizon wording — see @/utils/horizons's docstring. Kept as a
+// local tuple (rather than importing that module directly) because this
+// tab list also carries a "key" used for routing/query-state that the
+// shared module doesn't need to know about; the `sub` strings themselves
+// must stay byte-identical to HORIZON_INFO's `period` values.
 const HORIZONS = [
-  { key: "short",  label: "Short Term",  sub: "1–5 days"   },
-  { key: "medium", label: "Medium Term", sub: "2–4 weeks"  },
-  { key: "long",   label: "Long Term",   sub: "3–6 months" },
+  { key: "short",  label: "Short Term",  sub: "1–5 trading days" },
+  { key: "medium", label: "Medium Term", sub: "2–4 weeks"        },
+  { key: "long",   label: "Long Term",   sub: "3–6 months"       },
 ] as const;
 
 const SIGNAL_COLOR: Record<string, string> = {

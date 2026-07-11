@@ -1363,6 +1363,32 @@ The hosting platform's ephemeral disk means files written locally are wiped on e
 
 ## 27. Changelog
 
+### Session 13 — 2026-07-12
+
+Frontend copy/UX audit and correction, prompted by inconsistent horizon wording noticed across the app. **Frontend copy/UX only** — no backend, Prediction Engine, Daily Picks generation, RCI, scheduler, or horizon API-contract changes.
+
+**Horizon wording standardized (landing page, Market Overview, Daily Picks, Paper Trading):**
+
+- Audit found three different day/week/month ranges describing the same three horizons across pages: the landing page and Market Overview said "1–10 Days"/"1–3 Months" (Market Overview additionally showed "6M – 3 Years" for Long Term, which doesn't match the 3–6 month horizon actually scored anywhere else); Daily Picks and Paper Trading said "1–5 days" (missing "trading"); only the Stock Detail page's tab labels (text only, no range shown) were already consistent.
+- Added `frontend/src/utils/horizons.ts` as the single source of truth: **Short Term · 1–5 trading days**, **Medium Term · 2–4 weeks**, **Long Term · 3–6 months**. Landing page (`page.tsx`) now imports it directly; Market Overview (`dashboard/page.tsx`), Daily Picks (`picks/page.tsx`), and Paper Trading (`paper-trading/page.tsx`) had their literal range strings corrected to match (each keeps its own local array for page-specific fields like routing keys/accent colors, but the `period`/`sub` text is now byte-identical everywhere).
+- "Core Investment" (6 months–3 years, future/planned only) is deliberately not part of this list — it was never live anywhere in the app (confirmed via a full-codebase search) and this change does not add it as a live horizon tab, Daily Picks tab, or Stock Detail API contract.
+- The Stock Detail page's `HORIZON_LABEL` (7 trading days / 3 months / 12 months, used only as the Backtest tab's "Forward Window" metric) was deliberately left untouched — it reflects an actual backend `forward_window_days` value, not marketing copy, and changing it without backend verification could misrepresent real backtest methodology.
+
+**Market Overview (`dashboard/page.tsx`) top section compacted:**
+
+- The three horizon cards (each a full-height bordered block) were replaced with compact single-line pill chips using the corrected canonical wording, with the fuller description moved to a hover tooltip. Reduces the vertical height of the top section without removing any information.
+- Audited for a "Fear & Greed" huge standalone graphic per a user report — none exists on this page. The only Fear/Greed-labeled element in the app is a compact `ConfidenceMeter` row already titled "Market Sentiment (Fear/Greed)" on the crypto Stock Detail page's Signal Breakdown, not Market Overview — left as-is since it was already compact and already methodology-labeled, not a large graphic.
+
+**Multibagger page repositioned as a research screen, not an investment call (`multibagger/page.tsx`):**
+
+- Title changed "Multibagger Screen" → "Multibagger Research Screens". Added an explicit banner: "These are long-term research screens, not buy/sell calls... Review the Stock Detail signal, risks, valuation and portfolio fit before acting," plus a sentence noting these screens may feed a future Core Investment research step without implying Core Investment itself is live.
+- Verdict labels renamed to avoid reading as a trade call: "Elite Strong Buy" → "Elite Candidate", "Strong Buy" → "Strong Candidate", "Watchlist" → "Research Watchlist", "Watch" → "Watch / Risk Flag", "Avoid" unchanged. Only the display label changed — the underlying backend verdict keys (`elite_strong_buy`/`strong_buy`/`watchlist`/`watch`/`avoid`) are untouched.
+- Quality Compounders' description changed from "suitable for 5-10 year holding" (a specific holding-period claim) to "Potential long-term compounder candidates; requires deeper thesis validation." Scorecard checklist, anti-loss red flags, shortlisted top ~20%, stock links, market selector, and refresh timestamp are all preserved unchanged.
+
+**Verified:** new `horizons.test.ts` (canonical wording, confirms no "6M"/"3 Years" string and no Core Investment horizon) and `multibagger-copy.test.ts` (candidate labels, no "Strong Buy" substring, no "5-10 year holding" substring) — both pass; full 133-test frontend suite passes; `tsc --noEmit` clean; `next build` succeeds. Live-verified in a running dev session: landing page renders the exact canonical horizon text, Multibagger page renders the new title/banner/labels, no console errors, no horizontal overflow at 375px or 1280px width. Market Overview's compacted chips were not re-verified live in that same session (the page requires an authenticated session this local dev environment didn't have) — covered by the shared `horizons.ts` module and its test instead, since Market Overview imports that exact module.
+
+**Not touched:** backend, Prediction Engine, Daily Picks generation, RCI, scheduler, feature flags, horizon API/enum contracts, Railway/Vercel config.
+
 ### Session 12 — 2026-07-11
 
 A same-day follow-on to Session 11's Portfolio work, closing out the Signal column's "permanent blank" problem and simplifying the sector-grouped table's heading/subtotal duplication. **Portfolio UX/runtime hotfixes only** — not the Epic 007 (`MASTER-ROADMAP.md` §11) Portfolio and Watchlist Intelligence initiative, which remains Planned / Not Started; nothing here adds portfolio-aware recommendations, allocation advice, or any new intelligence. No Daily Picks, Prediction Engine scoring, RCI, scheduler, or backend behavior changed.

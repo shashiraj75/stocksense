@@ -45,9 +45,9 @@ const fmt = (n: number, dec = 2, locale = "en-IN") =>
   n.toLocaleString(locale, { minimumFractionDigits: dec, maximumFractionDigits: dec });
 
 const HORIZON_BLOCKS = [
-  { key: "short",  label: "Short Term",  sub: "1–5 days",   accent: "border-l-blue-500" },
-  { key: "medium", label: "Medium Term", sub: "2–4 weeks",  accent: "border-l-purple-500" },
-  { key: "long",   label: "Long Term",   sub: "3–6 months", accent: "border-l-indigo-500" },
+  { key: "short",  label: "Short Term",  sub: "1–5 trading days", accent: "border-l-blue-500" },
+  { key: "medium", label: "Medium Term", sub: "2–4 weeks",        accent: "border-l-purple-500" },
+  { key: "long",   label: "Long Term",   sub: "3–6 months",       accent: "border-l-indigo-500" },
 ] as const;
 
 // Trade History display metadata only (label/sub/accent) — the backend
@@ -57,9 +57,9 @@ const HORIZON_BLOCKS = [
 // bucket key to its heading text and accent color, in the fixed
 // Short → Medium → Long → Unclassified display order.
 const CLOSED_HISTORY_BLOCKS: { key: ClosedHistoryHorizonKey; label: string; sub: string; accent: string }[] = [
-  { key: "short",  label: "Short Term",  sub: "1–5 days",   accent: "border-l-blue-500" },
-  { key: "medium", label: "Medium Term", sub: "2–4 weeks",  accent: "border-l-purple-500" },
-  { key: "long",   label: "Long Term",   sub: "3–6 months", accent: "border-l-indigo-500" },
+  { key: "short",  label: "Short Term",  sub: "1–5 trading days", accent: "border-l-blue-500" },
+  { key: "medium", label: "Medium Term", sub: "2–4 weeks",        accent: "border-l-purple-500" },
+  { key: "long",   label: "Long Term",   sub: "3–6 months",       accent: "border-l-indigo-500" },
   { key: "unclassified", label: "Unclassified / Legacy", sub: "Missing or unrecognized horizon", accent: "border-l-gray-500" },
 ];
 

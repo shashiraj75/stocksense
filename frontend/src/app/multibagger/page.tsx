@@ -8,26 +8,31 @@ import clsx from "clsx";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
 import { UnsupportedMarketNotice } from "@/components/UnsupportedMarketNotice";
 
-const VERDICT: Record<string, { label: string; color: string }> = {
+// Labels only — these are research-screen verdicts (a rule-based
+// checklist result), never a buy/sell call. Renamed from the prior
+// "Strong Buy"/"Elite Strong Buy"/"Watchlist" wording, which read as a
+// trade recommendation; the underlying backend verdict keys
+// (elite_strong_buy/strong_buy/watchlist/watch/avoid) are unchanged.
+export const VERDICT: Record<string, { label: string; color: string }> = {
   // Stricter than strong_buy — ROCE>15%, D/E<50%, OCF>0, sales growth>10%
   // all pass explicitly, not just an overall score percentage. See
   // multibagger_scorecard.py's elite_strong_buy logic.
-  elite_strong_buy: { label: "Elite Strong Buy", color: "text-bull bg-bull/20 border-bull/50" },
-  strong_buy: { label: "Strong Buy", color: "text-bull bg-bull/10 border-bull/30" },
-  watchlist: { label: "Watchlist", color: "text-yellow-400 bg-yellow-500/10 border-yellow-500/30" },
+  elite_strong_buy: { label: "Elite Candidate", color: "text-bull bg-bull/20 border-bull/50" },
+  strong_buy: { label: "Strong Candidate", color: "text-bull bg-bull/10 border-bull/30" },
+  watchlist: { label: "Research Watchlist", color: "text-yellow-400 bg-yellow-500/10 border-yellow-500/30" },
   // One Anti-Loss red flag (not yet the two needed for Avoid) — a real
   // value the backend has always been able to return; was missing here,
   // which crashed this table (v.color on undefined) whenever it occurred.
-  watch: { label: "Watch", color: "text-orange-400 bg-orange-500/10 border-orange-500/30" },
+  watch: { label: "Watch / Risk Flag", color: "text-orange-400 bg-orange-500/10 border-orange-500/30" },
   avoid: { label: "Avoid", color: "text-bear bg-bear/10 border-bear/30" },
 };
 
-const SCREENS: { key: MultibaggerScreen; label: string; color: string; desc: string }[] = [
+export const SCREENS: { key: MultibaggerScreen; label: string; color: string; desc: string }[] = [
   {
     key: "quality_compounder",
     label: "Quality Compounders",
     color: "text-bull border-bull/40 bg-bull/10",
-    desc: "Core portfolio — stable, proven, suitable for 5-10 year holding. Strict on debt, pledge, and profitability.",
+    desc: "Potential long-term compounder candidates; requires deeper thesis validation. Strict on debt, pledge, and profitability.",
   },
   {
     key: "multibagger_discovery",
@@ -146,7 +151,7 @@ export default function MultibaggerPage() {
         <div className="flex items-center gap-3 min-w-0">
           <Gem size={22} className="text-brand-500 shrink-0" />
           <div>
-            <h1 className="text-2xl font-bold">Multibagger Screen</h1>
+            <h1 className="text-2xl font-bold">Multibagger Research Screens</h1>
             <p className="text-sm text-gray-400 mt-1">
               Three hard-filter screens — never merge them, that's how you get zero results
               {status?.last_summary?.total ? ` · screened from ${status.last_summary.total.toLocaleString()} ${market === "IN" ? "NSE" : "US"} stocks` : ""}
@@ -178,6 +183,15 @@ export default function MultibaggerPage() {
         </div>
       </div>
 
+      {/* These are research screens, not buy/sell calls — stated up front,
+          not buried in a footnote, so this page never reads as a final
+          investment verdict. */}
+      <p className="text-xs text-gray-400 bg-dark-card border border-dark-border rounded-xl px-4 py-3 leading-relaxed">
+        These are long-term research screens, not buy/sell calls. A stock appearing here has passed selected quality, growth, valuation or safety filters.
+        Review the Stock Detail signal, risks, valuation and portfolio fit before acting.
+        These screens may feed future Core Investment (6 months–3 years) research — Core Investment itself is future/planned and is not a live signal today.
+      </p>
+
       {/* Screen selector */}
       <div className="grid sm:grid-cols-3 gap-3">
         {SCREENS.map((s) => (
@@ -208,8 +222,8 @@ export default function MultibaggerPage() {
         </div>
         <p className="px-4 pt-3 text-[11px] text-gray-500 leading-relaxed">
           Score is a transparent rule-based checklist ({data?.results[0]?.scorecard.max_score ?? (market === "IN" ? 12 : 10)} fundamentals checks{market === "US" ? " — no promoter pledge or 5Y growth, neither exists for US filings" : ""}) — separate from, and not the same as, the AI signal shown on each stock's own page.
-          Click a row for the full breakdown. Verdict downgrades to Avoid/Watch if any Anti-Loss red flag is present, regardless of score.
-          "Elite Strong Buy" is a separate, stricter check (ROCE&gt;15%, Debt/Equity&lt;50%, positive operating cash flow, sales growth&gt;10% must <em>all individually</em> pass) —
+          Click a row for the full breakdown. Verdict downgrades to Avoid/Watch-Risk-Flag if any Anti-Loss red flag is present, regardless of score.
+          "Elite Candidate" is a separate, stricter check (ROCE&gt;15%, Debt/Equity&lt;50%, positive operating cash flow, sales growth&gt;10% must <em>all individually</em> pass) —
           a high overall score alone doesn't guarantee it if just one of those four specifically falls short.
         </p>
 
@@ -337,8 +351,8 @@ export default function MultibaggerPage() {
       </div>
 
       <p className="text-xs text-gray-600 text-center">
-        Data sourced from {market === "IN" ? "screener.in" : "Yahoo Finance"} · Refreshed nightly · Educational research tool only — not investment advice.
-        Do your own due diligence before acting on any screen result.
+        Data sourced from {market === "IN" ? "screener.in" : "Yahoo Finance"} · Refreshed nightly · Research screens only — not buy/sell calls or investment advice.
+        Do your own due diligence, including the Stock Detail signal, risks, and valuation, before acting on any screen result.
       </p>
     </div>
   );

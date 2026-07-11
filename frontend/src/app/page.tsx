@@ -9,6 +9,7 @@ import {
 import { useAuth } from "@/lib/AuthContext";
 import { fetchTopMovers, type Market } from "@/utils/api";
 import { getMarketStatus } from "@/utils/marketHours";
+import { HORIZON_INFO } from "@/utils/horizons";
 
 const SNAPSHOT_MARKETS: { key: Market; label: string; currency: string; locale: string }[] = [
   { key: "IN", label: "NSE India",       currency: "₹", locale: "en-IN" },
@@ -256,11 +257,11 @@ const HOW_IT_WORKS = [
   },
 ];
 
-const HORIZONS = [
-  { label: "Short Term", period: "1–10 days", desc: "Technicals, momentum, volume, news sentiment", color: "text-green-400", border: "border-green-500/40" },
-  { label: "Medium Term", period: "1–3 months", desc: "Earnings, sector rotation, macro trends", color: "text-yellow-400", border: "border-yellow-500/40" },
-  { label: "Long Term", period: "3–6 months", desc: "Fundamentals, management quality, growth", color: "text-purple-400", border: "border-purple-500/40" },
-];
+// Canonical wording lives in @/utils/horizons — see that module's docstring
+// for why (this page, Market Overview, Daily Picks, and Paper Trading had
+// each drifted to a slightly different day/week/month range for the same
+// three horizons before this).
+const HORIZONS = HORIZON_INFO.map(h => ({ label: h.label, period: h.period, desc: h.desc, color: h.color, border: h.border }));
 
 export default function LandingPage() {
   const { user } = useAuth();
