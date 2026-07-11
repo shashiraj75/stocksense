@@ -203,3 +203,83 @@ class TestSignalRoute:
         body = _body(resp)
         assert body["signal"] is None
         assert body["confidence"] is None
+
+
+@pytest.mark.unit
+class TestCachedSignalsBatchRoute:
+    """GET /api/predictions/signals/cached-batch (Portfolio hotfix, Session
+    12) — the whole point is that this NEVER starts a compute, unlike
+    /{symbol}/signal above. Every test asserts `no_background_compute`
+    stays empty, not just that the response looks right."""
+
+    def test_warm_entries_report_cached_true_with_the_same_values_as_signal_route(self, monkeypatch, no_background_compute):
+        monkeypatch.setitem(_pred_cache, "TCS:IN:medium", (time.time(), _full_payload(signal="BUY", confidence=80.0)))
+        resp = asyncio.run(predictions.get_cached_signals_batch(symbols="TCS", market="IN", horizon="medium"))
+        assert resp == {"signals": {"TCS": {"signal": "BUY", "confidence": 80.0, "cached": True}}}
+        assert no_background_compute == []
+
+    def test_cold_symbol_reports_cached_false_with_null_signal_and_never_starts_a_compute(self, no_background_compute):
+        resp = asyncio.run(predictions.get_cached_signals_batch(symbols="NEVERSEEN", market="IN", horizon="medium"))
+        assert resp == {"signals": {"NEVERSEEN": {"signal": None, "confidence": None, "cached": False}}}
+        assert no_background_compute == []
+
+    def test_batch_of_mixed_warm_and_cold_symbols_in_one_call(self, monkeypatch, no_background_compute):
+        monkeypatch.setitem(_pred_cache, "TCS:IN:medium", (time.time(), _full_payload(signal="BUY", confidence=65.0)))
+        resp = asyncio.run(predictions.get_cached_signals_batch(symbols="TCS,INFY,WIPRO", market="IN", horizon="medium"))
+        signals = resp["signals"]
+        assert signals["TCS"] == {"signal": "BUY", "confidence": 65.0, "cached": True}
+        assert signals["INFY"] == {"signal": None, "confidence": None, "cached": False}
+        assert signals["WIPRO"] == {"signal": None, "confidence": None, "cached": False}
+        assert no_background_compute == []
+
+    def test_stale_entry_reports_cached_false_not_a_stale_hit(self, monkeypatch, no_background_compute):
+        monkeypatch.setitem(_pred_cache, "TCS:IN:medium", (time.time() - _PRED_TTL - 1, _full_payload()))
+        resp = asyncio.run(predictions.get_cached_signals_batch(symbols="TCS", market="IN", horizon="medium"))
+        assert resp["signals"]["TCS"]["cached"] is False
+        assert no_background_compute == []
+
+    def test_market_specific_a_us_entry_never_serves_an_in_request_for_the_same_symbol(self, monkeypatch, no_background_compute):
+        monkeypatch.setitem(_pred_cache, "TCS:US:medium", (time.time(), _full_payload(signal="SELL")))
+        resp = asyncio.run(predictions.get_cached_signals_batch(symbols="TCS", market="IN", horizon="medium"))
+        assert resp["signals"]["TCS"] == {"signal": None, "confidence": None, "cached": False}
+        assert no_background_compute == []
+
+    def test_horizon_specific_a_medium_entry_never_serves_a_short_request(self, monkeypatch, no_background_compute):
+        monkeypatch.setitem(_pred_cache, "TCS:IN:medium", (time.time(), _full_payload()))
+        resp = asyncio.run(predictions.get_cached_signals_batch(symbols="TCS", market="IN", horizon="short"))
+        assert resp["signals"]["TCS"]["cached"] is False
+        assert no_background_compute == []
+
+    def test_symbols_are_uppercased_into_the_cache_key_and_the_response_key(self, monkeypatch, no_background_compute):
+        monkeypatch.setitem(_pred_cache, "INFY:IN:medium", (time.time(), _full_payload(signal="HOLD", confidence=51.0)))
+        resp = asyncio.run(predictions.get_cached_signals_batch(symbols="infy", market="IN", horizon="medium"))
+        assert resp["signals"]["INFY"] == {"signal": "HOLD", "confidence": 51.0, "cached": True}
+
+    def test_empty_symbols_short_circuits_without_touching_the_cache(self, no_background_compute):
+        resp = asyncio.run(predictions.get_cached_signals_batch(symbols="", market="IN", horizon="medium"))
+        assert resp == {"signals": {}}
+        assert no_background_compute == []
+
+    def test_error_cached_entry_reports_cached_true_with_safe_nulls(self, monkeypatch, no_background_compute):
+        """Matches /{symbol}/signal's own contract: an error-cached entry is
+        still a genuine cache hit (no compute needed), just with null
+        signal/confidence — not the same thing as "never resolved"."""
+        monkeypatch.setitem(
+            _pred_cache, "TCS:IN:medium",
+            (time.time(), {"error": "Prediction data is temporarily unavailable."}),
+        )
+        resp = asyncio.run(predictions.get_cached_signals_batch(symbols="TCS", market="IN", horizon="medium"))
+        assert resp["signals"]["TCS"] == {"signal": None, "confidence": None, "cached": True}
+        assert no_background_compute == []
+
+    def test_never_invokes_prediction_engine_predict_even_with_every_symbol_cold(self, monkeypatch):
+        """Direct proof, not just an inference from `_start_background_compute`
+        never firing: patches PredictionEngine.predict to raise, so this
+        test fails loudly if any code path in this route ever reaches it."""
+        from services.prediction_engine import PredictionEngine
+        monkeypatch.setattr(
+            PredictionEngine, "predict",
+            lambda self, *a, **kw: (_ for _ in ()).throw(AssertionError("cached-batch must never call PredictionEngine.predict")),
+        )
+        resp = asyncio.run(predictions.get_cached_signals_batch(symbols="TCS,INFY,WIPRO", market="IN", horizon="medium"))
+        assert all(v["cached"] is False for v in resp["signals"].values())

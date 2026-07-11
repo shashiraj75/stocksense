@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect, useMemo, Fragment } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { fetchQuote, fetchSignalSummary, fetchSectorsBatch, Market, api } from "@/utils/api";
+import { fetchQuote, fetchCachedSignalsBatch, fetchSectorsBatch, Market, api } from "@/utils/api";
 import { useStaggeredQueries } from "@/hooks/useStaggeredQueries";
 import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { SignalBadge } from "@/components/SignalBadge";
@@ -47,7 +47,18 @@ export type Row = Holding & {
   loading: boolean;
   signal: string | null;
   confidence?: number;
+  // True only while the one-per-market signal batch request is in flight
+  // (not per-holding) — brief, since it's a single cache-only read, never
+  // a prediction computation. See `signalCached` for "nothing computed for
+  // this holding yet," a distinct, often-permanent-until-refresh state.
   sigLoading: boolean;
+  // false = the backend has nothing cached for this holding yet (e.g. a
+  // rarely-viewed small-cap never scored by Daily Picks or opened on its
+  // own Stock Detail page). Deliberately NOT treated the same as
+  // "loading" — the Signal column must render a calm "not cached" state
+  // for this, never an indefinite "computing" spinner, since nothing is
+  // actually in progress that will resolve on its own.
+  signalCached: boolean;
   // Sourced from a single lightweight batch lookup against the
   // nightly-refreshed stock_fundamentals_cache table (fetchSectorsBatch),
   // one request per market for the whole holdings list — deliberately NOT
@@ -65,8 +76,14 @@ export type Row = Holding & {
 };
 
 function HoldingRow({
-  r, currency, onRemove, onEdit,
-}: { r: Row; currency: string; onRemove: (id: string) => void; onEdit: (id: string, updates: { qty: number; avgPrice: number }) => void }) {
+  r, currency, onRemove, onEdit, indent,
+}: {
+  r: Row; currency: string; onRemove: (id: string) => void; onEdit: (id: string, updates: { qty: number; avgPrice: number }) => void;
+  // Slight extra indent on the symbol cell in sector-grouped mode, so a
+  // stock row visually reads as nested under its sector heading rather
+  // than sitting flush with it.
+  indent?: boolean;
+}) {
   const [editing, setEditing] = useState(false);
   const [qtyInput, setQtyInput] = useState(String(r.qty));
   const [avgInput, setAvgInput] = useState(String(r.avgPrice));
@@ -87,39 +104,39 @@ function HoldingRow({
 
   return (
     <tr className="border-b border-dark-border hover:bg-dark-border/30 transition-colors">
-      <td className="px-4 py-3">
+      <td className={clsx("px-2 sm:px-4 py-3", indent && "pl-8")}>
         <Link href={`/stock/${r.symbol}?market=${r.market}`}
           className="font-mono font-bold text-white hover:text-brand-500 transition-colors">
           {r.symbol}
         </Link>
       </td>
-      <td className="px-4 py-3 text-right font-mono">
+      <td className="px-2 sm:px-4 py-3 text-right font-mono">
         {editing ? (
           <input type="number" min="0" step="1" value={qtyInput} onChange={e => setQtyInput(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter") confirm(); if (e.key === "Escape") setEditing(false); }}
             className="w-20 bg-dark-bg border border-brand-500/60 rounded-lg px-2 py-1 text-right text-xs font-mono text-white focus:outline-none" />
         ) : r.qty}
       </td>
-      <td className="px-4 py-3 text-right font-mono">
+      <td className="px-2 sm:px-4 py-3 text-right font-mono">
         {editing ? (
           <input type="number" min="0" step="0.01" value={avgInput} onChange={e => setAvgInput(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter") confirm(); if (e.key === "Escape") setEditing(false); }}
             className="w-24 bg-dark-bg border border-brand-500/60 rounded-lg px-2 py-1 text-right text-xs font-mono text-white focus:outline-none" />
         ) : `${currency}${r.avgPrice.toLocaleString()}`}
       </td>
-      <td className="px-4 py-3 text-right font-mono">
+      <td className="px-2 sm:px-4 py-3 text-right font-mono">
         {r.loading ? <span className="animate-pulse text-gray-500">…</span>
           : r.curPrice ? `${currency}${r.curPrice.toLocaleString()}` : "—"}
       </td>
-      <td className="px-4 py-3 text-right font-mono text-gray-300">{currency}{r.invested.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
-      <td className="px-4 py-3 text-right font-mono">
+      <td className="px-2 sm:px-4 py-3 text-right font-mono text-gray-300">{currency}{r.invested.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+      <td className="px-2 sm:px-4 py-3 text-right font-mono">
         {r.current !== null ? `${currency}${r.current.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "—"}
       </td>
-      <td className={clsx("px-4 py-3 text-right font-mono font-bold whitespace-nowrap",
+      <td className={clsx("px-2 sm:px-4 py-3 text-right font-mono font-bold whitespace-nowrap",
         r.dayChangeAmt === null ? "text-gray-500" : r.dayChangeAmt >= 0 ? "text-bull" : "text-bear")}>
         {r.dayChangeAmt !== null ? `${r.dayChangeAmt >= 0 ? "+" : ""}${currency}${Math.abs(r.dayChangeAmt).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "—"}
       </td>
-      <td className={clsx("px-4 py-3 text-right font-mono font-bold whitespace-nowrap",
+      <td className={clsx("px-2 sm:px-4 py-3 text-right font-mono font-bold whitespace-nowrap",
         r.dayChangePct === null ? "text-gray-500" : r.dayChangePct >= 0 ? "text-bull" : "text-bear")}>
         {r.dayChangePct !== null
           ? <span className="flex items-center justify-end gap-1">
@@ -128,11 +145,11 @@ function HoldingRow({
             </span>
           : "—"}
       </td>
-      <td className={clsx("px-4 py-3 text-right font-mono font-bold whitespace-nowrap",
+      <td className={clsx("px-2 sm:px-4 py-3 text-right font-mono font-bold whitespace-nowrap",
         r.plAmt === null ? "text-gray-500" : r.plAmt >= 0 ? "text-bull" : "text-bear")}>
         {r.plAmt !== null ? `${r.plAmt >= 0 ? "+" : ""}${currency}${Math.abs(r.plAmt).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "—"}
       </td>
-      <td className={clsx("px-4 py-3 text-right font-mono font-bold whitespace-nowrap",
+      <td className={clsx("px-2 sm:px-4 py-3 text-right font-mono font-bold whitespace-nowrap",
         r.plPct === null ? "text-gray-500" : r.plPct >= 0 ? "text-bull" : "text-bear")}>
         {r.plPct !== null
           ? <span className="flex items-center justify-end gap-1">
@@ -141,22 +158,28 @@ function HoldingRow({
             </span>
           : "—"}
       </td>
-      <td className="px-4 py-3 text-center">
+      <td className="px-2 sm:px-4 py-3 text-center">
         {r.sigLoading ? (
-          <span
-            className="inline-flex items-center gap-1 text-gray-500 text-xs animate-pulse"
-            title="Computing this stock's signal — large portfolios compute a few holdings at a time, so this can take a while to reach every row."
-          >
-            <span className="w-1.5 h-1.5 rounded-full bg-gray-500" />
-            computing
-          </span>
+          // Brief — one request per market, not per holding, and it never
+          // triggers a computation, so this resolves in well under a
+          // second regardless of portfolio size.
+          <span className="inline-flex items-center gap-1 text-gray-600 text-xs">…</span>
         ) : r.signal ? (
           <SignalBadge signal={r.signal as any} confidence={r.confidence} size="sm" />
-        ) : (
+        ) : r.signalCached ? (
+          // Genuinely resolved, no signal (e.g. an error-cached entry) —
+          // distinct from "not cached" below.
           <span className="text-gray-600 text-xs">—</span>
+        ) : (
+          <span
+            className="text-gray-600 text-xs"
+            title="Nothing computed yet for this stock — it hasn't come up in Daily Picks or been viewed on its own Stock Detail page recently. Open its Stock Detail page to compute one."
+          >
+            Not cached
+          </span>
         )}
       </td>
-      <td className="px-4 py-3 text-right">
+      <td className="px-2 sm:px-4 py-3 text-right">
         {editing ? (
           <div className="flex items-center justify-end gap-1">
             <button onClick={confirm} className="p-1 rounded text-bull hover:bg-bull/10 transition-colors"><Check size={14} /></button>
@@ -194,7 +217,7 @@ function SortableHeader({
 }: { label: string; sortKey: SortKey; align?: "right" | "center"; activeKey: SortKey | null; dir: "asc" | "desc"; onSort: (key: SortKey) => void; title?: string }) {
   const isActive = activeKey === sortKey;
   return (
-    <th title={title} className={clsx("px-4 py-3 font-medium select-none whitespace-nowrap", align === "right" ? "text-right" : align === "center" ? "text-center" : "text-left")}>
+    <th title={title} className={clsx("px-2 sm:px-4 py-3 font-medium select-none whitespace-nowrap", align === "right" ? "text-right" : align === "center" ? "text-center" : "text-left")}>
       <button
         onClick={() => onSort(sortKey)}
         className={clsx(
@@ -238,10 +261,15 @@ function computeTotals(rows: Row[]) {
   };
 }
 
-// A totals row (grand-total footer or a sector subtotal) — shared markup so
-// the two can never visually drift apart. `variant` only changes emphasis
-// (grand total is bolder, with a heavier top border); the column alignment
-// and "never fabricate zero" behavior are identical either way.
+// A totals row (Grand Total footer or a Sector Total) — shared markup so
+// the two can never visually drift apart. `variant` changes emphasis only
+// — Grand Total is the boldest, strongest-bordered row in the table
+// (heavier border, brighter background, larger text); Sector Total is
+// deliberately a level below that: still clearly a totals row (bold
+// numbers, its own top border and background), never mistakable for an
+// individual stock row, but visually subordinate to Grand Total. Column
+// alignment and "never fabricate a resolved value as zero" behavior are
+// identical either way.
 function TotalsRow({
   totals, currency, label, variant,
 }: {
@@ -250,38 +278,44 @@ function TotalsRow({
   label: React.ReactNode;
   variant: "grand" | "sector";
 }) {
+  const isGrand = variant === "grand";
   return (
-    <tr className={clsx(
-      variant === "grand" ? "border-t-2 border-dark-border bg-dark-bg/40 font-bold" : "bg-dark-bg/20 font-semibold text-xs"
-    )}>
-      <td className={clsx("px-4 text-gray-400", variant === "grand" ? "py-3 text-xs" : "py-1.5 pl-8")} colSpan={4}>
+    <tr
+      data-variant={variant}
+      className={clsx(
+        isGrand
+          ? "border-t-2 border-brand-500/40 bg-dark-bg/60 font-bold text-sm"
+          : "border-t border-dark-border/70 bg-dark-bg/25 font-bold text-xs"
+      )}
+    >
+      <td className={clsx("px-2 sm:px-4 text-gray-300", isGrand ? "py-3" : "py-2 pl-8")} colSpan={4}>
         {label}
         {totals.isPartial && (
           <span className="ml-2 font-normal text-gray-600">· partial while prices load</span>
         )}
       </td>
-      <td className={clsx("px-4 text-right font-mono text-gray-300", variant === "grand" ? "py-3" : "py-1.5")}>
+      <td className={clsx("px-2 sm:px-4 text-right font-mono text-gray-200", isGrand ? "py-3" : "py-2")}>
         {currency}{totals.invested.toLocaleString(undefined, { maximumFractionDigits: 0 })}
       </td>
-      <td className={clsx("px-4 text-right font-mono text-white", variant === "grand" ? "py-3" : "py-1.5")}>
+      <td className={clsx("px-2 sm:px-4 text-right font-mono text-white", isGrand ? "py-3" : "py-2")}>
         {totals.currentResolvedCount > 0
           ? `${currency}${totals.currentValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
           : "—"}
       </td>
-      <td className={clsx("px-4 text-right font-mono whitespace-nowrap", variant === "grand" ? "py-3" : "py-1.5",
+      <td className={clsx("px-2 sm:px-4 text-right font-mono whitespace-nowrap", isGrand ? "py-3" : "py-2",
         totals.dayPLResolvedCount === 0 ? "text-gray-500" : totals.dayPL >= 0 ? "text-bull" : "text-bear")}>
         {totals.dayPLResolvedCount > 0
           ? `${totals.dayPL >= 0 ? "+" : ""}${currency}${Math.abs(totals.dayPL).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
           : "—"}
       </td>
-      <td className="px-4 py-1.5"></td>
-      <td className={clsx("px-4 text-right font-mono whitespace-nowrap", variant === "grand" ? "py-3" : "py-1.5",
+      <td className={isGrand ? "px-2 sm:px-4 py-3" : "px-2 sm:px-4 py-2"}></td>
+      <td className={clsx("px-2 sm:px-4 text-right font-mono whitespace-nowrap", isGrand ? "py-3" : "py-2",
         totals.plResolvedCount === 0 ? "text-gray-500" : totals.pl >= 0 ? "text-bull" : "text-bear")}>
         {totals.plResolvedCount > 0
           ? `${totals.pl >= 0 ? "+" : ""}${currency}${Math.abs(totals.pl).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
           : "—"}
       </td>
-      <td className="px-4 py-1.5" colSpan={3}></td>
+      <td className={isGrand ? "px-2 sm:px-4 py-3" : "px-2 sm:px-4 py-2"} colSpan={3}></td>
     </tr>
   );
 }
@@ -391,14 +425,27 @@ export function HoldingsTable({
   const totals = useMemo(() => computeTotals(rows), [rows]);
 
   return (
-    <div className="bg-dark-card border border-dark-border rounded-2xl overflow-hidden">
+    // max-w-full/min-w-0: this card sits directly in a block-level
+    // ancestor chain (never a flex/grid parent today), so it already
+    // shrinks to the viewport correctly — but a flex/grid wrapper added
+    // around it later would otherwise let its child's intrinsic content
+    // width (the table below, easily 1200px+ with 11 columns) push the
+    // whole page wider instead of scrolling internally. Cheap insurance
+    // against exactly the "page overflows horizontally" class of bug.
+    <div className="bg-dark-card border border-dark-border rounded-2xl overflow-hidden max-w-full min-w-0">
       {/* A wide table (11 columns) needs horizontal scroll on anything
           narrower than a large desktop. Native scrollbars are invisible
           until actively scrolling on macOS/trackpad systems, which makes a
           cut-off table look broken rather than "scroll for more" — force a
           persistently visible, styled thin scrollbar instead of relying on
-          the OS default. */}
-      <div className="overflow-x-auto [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-dark-border [&::-webkit-scrollbar-thumb]:rounded-full">
+          the OS default. This scroll container is what may legitimately
+          scroll horizontally — document/body must never be the thing that
+          scrolls sideways; verified via document.documentElement.scrollWidth
+          === window.innerWidth in a live browser check (mobile/tablet/
+          desktop, 20 holdings, 6-figure values) while this container's own
+          scrollWidth was ~1250px, confirming the table scrolls internally,
+          not the page. */}
+      <div className="overflow-x-auto max-w-full [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-dark-border [&::-webkit-scrollbar-thumb]:rounded-full">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-dark-border text-gray-400 text-left">
@@ -416,7 +463,7 @@ export function HoldingsTable({
               <SortableHeader label="P&L %" sortKey="plPct" align="right" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               <SortableHeader label="Signal" sortKey="signal" align="center" activeKey={sortKey} dir={sortDir} onSort={handleSort}
                 title="Today's forward-looking AI call for this stock — independent of your P&L. A BUY here doesn't retroactively justify your original entry price, and a HOLD/SELL doesn't mean you're wrong to be holding; it reflects current conditions, not your specific cost basis." />
-              <th className="px-4 py-3"></th>
+              <th className="px-2 sm:px-4 py-3"></th>
             </tr>
           </thead>
           <tbody>
@@ -433,7 +480,7 @@ export function HoldingsTable({
                 return (
                   <Fragment key={g.sector}>
                     <tr className={clsx("bg-dark-bg/60", !g.resolved && "opacity-70")}>
-                      <td colSpan={COLUMN_COUNT} className="px-4 py-2 text-xs font-semibold text-gray-300">
+                      <td colSpan={COLUMN_COUNT} className="px-2 sm:px-4 py-2 text-xs font-semibold text-gray-300">
                         {!g.resolved && <span className="inline-block w-1.5 h-1.5 rounded-full bg-gray-500 animate-pulse mr-1.5" />}
                         {g.sector}
                         <span className="ml-2 font-normal text-gray-500">
@@ -442,19 +489,22 @@ export function HoldingsTable({
                         </span>
                       </td>
                     </tr>
-                    {/* Sector subtotal — column-aligned with the grand
-                        total footer, so a sector's Invested/Current Value/
-                        Day's P&L/P&L are never left to the heading's single
-                        combined value/percentage alone. Shown for every
+                    {/* Heading (section label) -> individual stock rows,
+                        slightly indented -> Sector Total. The heading
+                        itself is never a data row — it's just a label plus
+                        the same combined value/% it always showed; the
+                        actual Invested/Current Value/Day's P&L/P&L
+                        breakdown lives in the Sector Total row below the
+                        holdings, column-aligned with Grand Total so the
+                        two read as the same kind of thing. Shown for every
                         group with rows, including "Resolving sector…" —
-                        its own totals row is what actually communicates
-                        its Invested (known) vs. Current Value/Day's P&L/P&L
-                        (unresolved, "—") to the same standard as everything
-                        else, rather than leaving it wordless. */}
-                    <TotalsRow totals={g.totals} currency={currency} label="Subtotal" variant="sector" />
+                        its own totals row communicates Invested (known)
+                        vs. Current Value/Day's P&L/P&L (unresolved, "—")
+                        rather than leaving it wordless. */}
                     {g.rows.map((r) => (
-                      <HoldingRow key={r.id} r={r} currency={currency} onRemove={onRemove} onEdit={onEdit} />
+                      <HoldingRow key={r.id} r={r} currency={currency} onRemove={onRemove} onEdit={onEdit} indent />
                     ))}
+                    <TotalsRow totals={g.totals} currency={currency} label="Sector Total" variant="sector" />
                   </Fragment>
                 );
               })
@@ -469,7 +519,7 @@ export function HoldingsTable({
                 the table, in both grouped and ungrouped mode (never one
                 per sector group; sector subtotals are their own row above,
                 inside <tbody>, not duplicated here). */}
-            <TotalsRow totals={totals} currency={currency} label="Total" variant="grand" />
+            <TotalsRow totals={totals} currency={currency} label="Grand Total" variant="grand" />
           </tfoot>
         </table>
       </div>
@@ -588,33 +638,42 @@ export default function PortfolioPage() {
     8
   );
 
-  // Sprint 011 (§20.1): the badge column only needs {signal, confidence},
-  // so fetch the signal-only summary instead of the full multi-engine
-  // prediction payload per holding. Same backend cache, same values, same
-  // 202-then-poll contract — just a few-field response per row instead of
-  // the whole engine dump.
-  const signalQueries = useStaggeredQueries(
-    holdings.map(h => ({
-      queryKey: ["signal", h.symbol, h.market, "medium"],
-      queryFn: () => fetchSignalSummary(h.symbol, h.market, "medium"),
-      staleTime: 15 * 60_000,   // predictions cache for 15 min
-      retry: 1,
-    })),
-    8 // load-tested: 8 concurrent fresh predictions resolve in ~12s with no
-      // degradation vs 5 in ~9s — was 6 mainly out of caution before the
-      // event-loop fixes; raised to cut the number of sequential batches a
-      // large portfolio needs (e.g. 38 holdings: 7 batches -> 5).
-  );
+  const inSymbols = useMemo(() => holdings.filter(h => h.market === "IN").map(h => h.symbol), [holdings]);
+  const usSymbols = useMemo(() => holdings.filter(h => h.market === "US").map(h => h.symbol), [holdings]);
 
-  // Sector allocation's data source - deliberately independent of
-  // signalQueries above. One batch request per market for the WHOLE
+  // Signal column's data source (Session 12 — reworked). Used to be one
+  // staggered fetchSignalSummary() per holding: on a cold cache, EVERY
+  // holding independently started a real PredictionEngine.predict()
+  // background compute and polled for up to 3 minutes each — the Signal
+  // column (and by extension the whole page) felt stuck long after
+  // prices/P&L had already resolved. Now one cache-only batch request per
+  // market for the whole holdings list, via fetchCachedSignalsBatch()
+  // (GET /api/predictions/signals/cached-batch) — it never triggers a
+  // computation; a symbol with nothing cached comes back immediately as
+  // `cached: false` instead of pending, rendered as a calm "not cached"
+  // state rather than an endless spinner. 15 min staleTime means
+  // switching away and back to Portfolio within that window is an
+  // instant cache hit, not a refetch.
+  const inSignalsQuery = useQuery({
+    queryKey: ["portfolio-signals", "IN", inSymbols.join(",")],
+    queryFn: () => fetchCachedSignalsBatch(inSymbols, "IN", "medium"),
+    enabled: inSymbols.length > 0,
+    staleTime: 15 * 60_000,
+  });
+  const usSignalsQuery = useQuery({
+    queryKey: ["portfolio-signals", "US", usSymbols.join(",")],
+    queryFn: () => fetchCachedSignalsBatch(usSymbols, "US", "medium"),
+    enabled: usSymbols.length > 0,
+    staleTime: 15 * 60_000,
+  });
+
+  // Sector allocation's data source - deliberately independent of the
+  // signal queries above. One batch request per market for the WHOLE
   // holdings list (not staggered, not one-per-holding, not gated on any
   // AI prediction), sourced from the nightly-refreshed
   // stock_fundamentals_cache table. This is what lets the allocation
   // chart resolve real sectors immediately instead of waiting on however
-  // long the staggered per-holding signal computation takes.
-  const inSymbols = useMemo(() => holdings.filter(h => h.market === "IN").map(h => h.symbol), [holdings]);
-  const usSymbols = useMemo(() => holdings.filter(h => h.market === "US").map(h => h.symbol), [holdings]);
+  // long a per-holding signal computation would take.
   const inSectorsQuery = useQuery({
     queryKey: ["portfolio-sectors", "IN", inSymbols.join(",")],
     queryFn: () => fetchSectorsBatch(inSymbols, "IN"),
@@ -679,7 +738,7 @@ export default function PortfolioPage() {
   // so the memo keys on a compact content signature of the data the rows
   // actually consume instead of on the arrays themselves.
   const quoteSig = quoteQueries.map(q => `${q.isLoading ? "L" : ""}${q.data?.price ?? ""}`).join("|");
-  const signalSig = signalQueries.map(q => `${q.isLoading ? "L" : ""}${q.data?.signal ?? ""}:${q.data?.confidence ?? ""}`).join("|");
+  const signalSig = `${inSignalsQuery.isLoading ? "L" : ""}${JSON.stringify(inSignalsQuery.data ?? {})}|${usSignalsQuery.isLoading ? "L" : ""}${JSON.stringify(usSignalsQuery.data ?? {})}`;
   const sectorsSig = `${inSectorsQuery.isLoading ? "L" : ""}${JSON.stringify(inSectorsQuery.data ?? {})}|${usSectorsQuery.isLoading ? "L" : ""}${JSON.stringify(usSectorsQuery.data ?? {})}`;
 
   const { rows, totalInvestedIN, totalCurrentIN, totalInvestedUS, totalCurrentUS, totalDayChangeIN, totalDayChangeUS } = useMemo(() => {
@@ -709,16 +768,27 @@ export default function PortfolioPage() {
         if (h.market === "IN") totalDayChangeIN += dayChangeAmt;
         else totalDayChangeUS += dayChangeAmt;
       }
-      const sig = signalQueries[i]?.data;
+      // Sourced from the one-per-market cache-only batch lookup — never
+      // triggers a prediction computation. `cached: false` (nothing
+      // computed for this holding yet) surfaces as signal=null with
+      // signalCached=false, rendered as a calm "not cached" state, not an
+      // endless "computing" spinner.
+      const signalsQuery = h.market === "IN" ? inSignalsQuery : usSignalsQuery;
+      const sig = signalsQuery.data?.[h.symbol.toUpperCase()];
       const signal = sig?.signal ?? null;
       const confidence = sig?.confidence ?? undefined;
+      const signalCached = sig?.cached ?? false;
       // Sourced from the lightweight batch lookup, keyed per-market — never
       // from the signal query's own quality_factors.sector anymore, so
       // sector allocation no longer waits on a per-holding AI computation.
       const sectorsQuery = h.market === "IN" ? inSectorsQuery : usSectorsQuery;
       const sector = sectorsQuery.data?.[h.symbol.toUpperCase()] ?? null;
       const sectorLoading = sectorsQuery.isLoading;
-      return { ...h, curPrice, invested, current, plAmt, plPct, dayChangeAmt, dayChangePct, loading: quoteQueries[i]?.isLoading, signal, confidence, sigLoading: signalQueries[i]?.isLoading, sector, sectorLoading };
+      return {
+        ...h, curPrice, invested, current, plAmt, plPct, dayChangeAmt, dayChangePct,
+        loading: quoteQueries[i]?.isLoading, signal, confidence, signalCached,
+        sigLoading: signalsQuery.isLoading, sector, sectorLoading,
+      };
     });
     return { rows, totalInvestedIN, totalCurrentIN, totalInvestedUS, totalCurrentUS, totalDayChangeIN, totalDayChangeUS };
     // eslint-disable-next-line react-hooks/exhaustive-deps

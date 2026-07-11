@@ -334,6 +334,40 @@ export const fetchSignalSummary = (
 ): Promise<SignalSummary> =>
   pollPredictionEndpoint<SignalSummary>(`/api/predictions/${symbol}/signal`, { market, horizon });
 
+export interface CachedSignal {
+  signal: string | null;
+  confidence: number | null;
+  // false = nothing computed for this symbol/market/horizon yet — a real,
+  // possibly-permanent state for a rarely-viewed holding, not "still
+  // loading." Callers must render this as calm/non-blocking, never as an
+  // endless spinner.
+  cached: boolean;
+}
+
+// Cache-only counterpart to fetchSignalSummary, for Portfolio specifically.
+// fetchSignalSummary's 202-then-poll contract is right for a single stock
+// page (compute it, the user is looking at exactly this one symbol) but
+// wrong for a holdings list: calling it once per holding meant every
+// holding could independently kick off a real prediction computation and
+// poll for up to 3 minutes on a cold cache, long after prices/P&L had
+// already resolved — the whole page felt stuck. This reads the exact same
+// server-side cache and NEVER triggers a computation; a symbol with
+// nothing cached comes back immediately with `cached: false` instead of
+// a 202/pending state. One request for the whole holdings list, not one
+// per holding.
+export const fetchCachedSignalsBatch = (
+  symbols: string[],
+  market: Market,
+  horizon: Horizon,
+): Promise<Record<string, CachedSignal>> =>
+  symbols.length === 0
+    ? Promise.resolve({})
+    : api
+        .get<{ signals: Record<string, CachedSignal> }>("/api/predictions/signals/cached-batch", {
+          params: { symbols: symbols.join(","), market, horizon },
+        })
+        .then((r) => r.data.signals);
+
 export const fetchNews = (symbol: string, market: Market) =>
   api
     .get<{

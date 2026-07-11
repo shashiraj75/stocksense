@@ -200,6 +200,50 @@ async def debug_state(x_secret: str = Header(None)):
     }
 
 
+@router.get("/signals/cached-batch")
+async def get_cached_signals_batch(
+    symbols: str = Query(..., description="Comma-separated symbols, e.g. TCS,INFY,WIPRO"),
+    market: Literal["US", "IN"] = Query("IN"),
+    horizon: Literal["short", "medium", "long"] = Query("medium"),
+):
+    """
+    Portfolio hotfix (Session 12) — cache-only counterpart to /{symbol}/signal.
+
+    /{symbol}/signal's 202-then-poll contract is correct for a single stock
+    page where the user is looking at exactly one symbol and is willing to
+    wait a few seconds for a fresh prediction. It's the wrong contract for
+    Portfolio, which used to call it once per holding: a cold cache meant
+    every holding independently started a real PredictionEngine.predict()
+    background compute and the frontend polled each one for up to 3 minutes
+    — the whole "Signal" column, and by extension the page, felt stuck long
+    after prices/P&L had already resolved.
+
+    This endpoint never starts a compute and never returns 202. For each
+    requested symbol it reads the exact same `_pred_cache` /{symbol}/signal
+    already reads (so a warm entry is byte-identical either way) and reports
+    whether it's fresh — nothing else. A cold/missing entry comes back as
+    `{"cached": false, "signal": null, "confidence": null}`, immediately,
+    for the caller to render as "not computed yet" rather than "loading
+    forever." One request for the whole holdings list, not one per holding.
+    Registered ahead of /{symbol}/signal purely to match this router's
+    existing convention of literal routes before param routes — the two
+    paths can't actually collide (different second path segment).
+    """
+    symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    if not symbol_list:
+        return {"signals": {}}
+    results: dict[str, dict] = {}
+    for sym in symbol_list:
+        key = f"{sym}:{market}:{horizon}"
+        cached = _fresh_cached_prediction(key)
+        if cached is not None:
+            summary = _signal_summary(cached, sym, market, horizon)
+            results[sym] = {"signal": summary["signal"], "confidence": summary["confidence"], "cached": True}
+        else:
+            results[sym] = {"signal": None, "confidence": None, "cached": False}
+    return {"signals": _to_python(results)}
+
+
 @router.get("/{symbol}/signal")
 async def get_signal_summary(
     symbol: str,

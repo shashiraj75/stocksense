@@ -21,6 +21,7 @@ function makeRow(overrides: Partial<Row> & Pick<Row, "id" | "symbol">): Row {
     signal: null,
     confidence: undefined,
     sigLoading: false,
+    signalCached: false,
     sector: null,
     sectorLoading: false,
     ...overrides,
@@ -245,7 +246,7 @@ describe("HoldingsTable — footer totals", () => {
       (el?.textContent?.includes("₹1,111") ?? false)
     )).toBeInTheDocument();
     // ...and exactly one grand-total row appears too, summing across sectors.
-    expect(screen.getAllByText("Total")).toHaveLength(1);
+    expect(screen.getAllByText("Grand Total")).toHaveLength(1);
     expect(screen.getByText("₹3,000")).toBeInTheDocument(); // Invested grand total
     expect(screen.getByText("₹3,333")).toBeInTheDocument(); // Current Value grand total: 1111+2222
   });
@@ -258,7 +259,7 @@ describe("HoldingsTable — sector subtotal rows", () => {
       makeRow({ id: "2", symbol: "ONGC", sector: "Energy" }),
     ];
     render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={true} />);
-    expect(screen.getAllByText("Subtotal")).toHaveLength(2);
+    expect(screen.getAllByText("Sector Total")).toHaveLength(2);
   });
 
   it("sector subtotal row shows Invested, Current Value, Day's P&L, and P&L totals for that sector only", () => {
@@ -295,7 +296,7 @@ describe("HoldingsTable — sector subtotal rows", () => {
     // Isolate the IT subtotal row itself (there's only one sector here, so
     // its subtotal coincides with the grand total — inspect the row
     // directly rather than asserting on ambiguous page-wide text).
-    const subtotalRow = screen.getByText("Subtotal").closest("tr")!;
+    const subtotalRow = screen.getByText("Sector Total").closest("tr")!;
     // Invested includes all three rows (1000+400+500=1900); Current Value/
     // Day's P&L/P&L reflect only the two resolved rows (1100+440=1540,
     // 20+4=+24, 100+40=+140) — never a fabricated 0 for INFY's still-loading
@@ -319,7 +320,7 @@ describe("HoldingsTable — sector subtotal rows", () => {
     // Two distinct groups, two distinct subtotal rows.
     expect(screen.getByText("Other", { exact: false })).toBeInTheDocument();
     expect(screen.getByText("Resolving sector…", { exact: false })).toBeInTheDocument();
-    const subtotalLabels = screen.getAllByText("Subtotal");
+    const subtotalLabels = screen.getAllByText("Sector Total");
     expect(subtotalLabels).toHaveLength(2);
 
     // Each subtotal row's own <tr>, inspected directly, so this can't be
@@ -331,5 +332,101 @@ describe("HoldingsTable — sector subtotal rows", () => {
     // Resolving sector…'s subtotal: Invested 700 (known), Current Value "—"
     // (never a fabricated ₹0) — never inflated by Other's 300.
     expect(subtotalRows.some(t => t?.includes("₹700") && !t?.includes("₹300") && t?.includes("—"))).toBe(true);
+  });
+
+  it("renders Sector Total after the individual stock rows within each sector group", () => {
+    const rows = [
+      makeRow({ id: "1", symbol: "TCS", sector: "IT" }),
+      makeRow({ id: "2", symbol: "INFY", sector: "IT" }),
+    ];
+    render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={true} />);
+
+    const allRows = screen.getAllByRole("row").map(r => r.textContent ?? "");
+    const tcsIdx = allRows.findIndex(t => t.includes("TCS"));
+    const infyIdx = allRows.findIndex(t => t.includes("INFY"));
+    const sectorTotalIdx = allRows.findIndex(t => t.includes("Sector Total"));
+    expect(tcsIdx).toBeGreaterThanOrEqual(0);
+    expect(infyIdx).toBeGreaterThan(tcsIdx); // stock rows in original order
+    expect(sectorTotalIdx).toBeGreaterThan(infyIdx); // Sector Total comes after both stock rows
+  });
+
+  it("Sector Total row is visually distinct from an ordinary stock row (bold, its own background/border)", () => {
+    const rows = [makeRow({ id: "1", symbol: "TCS", sector: "IT" })];
+    render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={true} />);
+
+    const sectorTotalRow = screen.getByText("Sector Total").closest("tr")!;
+    const stockRow = screen.getByText("TCS").closest("tr")!;
+    expect(sectorTotalRow.className).toContain("font-bold");
+    expect(sectorTotalRow.className).not.toEqual(stockRow.className);
+    // Its own top border/background, not just a plain row.
+    expect(sectorTotalRow.className).toMatch(/border-t/);
+  });
+
+  it("Grand Total is visually stronger than Sector Total (heavier border/background), and appears once at the bottom", () => {
+    const rows = [
+      makeRow({ id: "1", symbol: "TCS", sector: "IT" }),
+      makeRow({ id: "2", symbol: "ONGC", sector: "Energy" }),
+    ];
+    render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={true} />);
+
+    expect(screen.getAllByText("Grand Total")).toHaveLength(1);
+    const grandTotalRow = screen.getByText("Grand Total").closest("tr")!;
+    const sectorTotalRows = screen.getAllByText("Sector Total").map(el => el.closest("tr")!);
+
+    expect(grandTotalRow.getAttribute("data-variant")).toBe("grand");
+    for (const row of sectorTotalRows) {
+      expect(row.getAttribute("data-variant")).toBe("sector");
+      expect(row.className).not.toEqual(grandTotalRow.className);
+    }
+    // Grand Total's border is the heavier "border-t-2"; Sector Total's is
+    // the lighter plain "border-t" (not "border-t-2").
+    expect(grandTotalRow.className).toMatch(/border-t-2/);
+    for (const row of sectorTotalRows) {
+      expect(row.className).not.toMatch(/border-t-2/);
+    }
+
+    // Grand Total is the last row in the table.
+    const allRows = screen.getAllByRole("row");
+    expect(allRows[allRows.length - 1]).toBe(grandTotalRow);
+  });
+});
+
+describe("HoldingsTable — Signal column is non-blocking", () => {
+  it("a row still renders its price/Invested/Current Value/P&L while its Signal is loading", () => {
+    const rows = [
+      makeRow({ id: "1", symbol: "TCS", invested: 1234, current: 1345, plAmt: 111, sigLoading: true }),
+    ];
+    render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={false} />);
+    const stockRow = screen.getByText("TCS").closest("tr")!;
+    expect(stockRow.textContent).toContain("₹1,234"); // Invested
+    expect(stockRow.textContent).toContain("₹1,345"); // Current Value
+    // No "computing" text anywhere — a brief, one-per-market batch request
+    // must never read as a per-row blocking spinner.
+    expect(screen.queryByText(/computing/i)).not.toBeInTheDocument();
+  });
+
+  it("a holding with no cached signal shows a calm 'Not cached' state, not an endless 'computing' spinner", () => {
+    const rows = [
+      makeRow({ id: "1", symbol: "TCS", signal: null, signalCached: false, sigLoading: false }),
+      makeRow({ id: "2", symbol: "INFY", signal: null, signalCached: false, sigLoading: false }),
+      makeRow({ id: "3", symbol: "WIPRO", signal: null, signalCached: false, sigLoading: false }),
+    ];
+    render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={false} />);
+    expect(screen.queryByText(/computing/i)).not.toBeInTheDocument();
+    expect(screen.getAllByText("Not cached")).toHaveLength(3);
+  });
+
+  it("a resolved holding with a real signal still renders its SignalBadge normally", () => {
+    const rows = [makeRow({ id: "1", symbol: "TCS", signal: "BUY", confidence: 70, signalCached: true, sigLoading: false })];
+    render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={false} />);
+    expect(screen.getByText("BUY")).toBeInTheDocument();
+    expect(screen.queryByText("Not cached")).not.toBeInTheDocument();
+  });
+
+  it("a resolved-but-signal-less holding (e.g. an error-cached entry) shows a plain dash, distinct from 'Not cached'", () => {
+    const rows = [makeRow({ id: "1", symbol: "TCS", signal: null, signalCached: true, sigLoading: false })];
+    render(<HoldingsTable rows={rows} currency="₹" onRemove={noop} onEdit={noopEdit} groupBySector={false} />);
+    expect(screen.queryByText("Not cached")).not.toBeInTheDocument();
+    expect(screen.getByText("—")).toBeInTheDocument();
   });
 });
