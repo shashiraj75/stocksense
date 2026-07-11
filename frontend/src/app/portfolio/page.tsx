@@ -506,9 +506,6 @@ export function HoldingsTable({
     return groups;
   }, [sortedRows, groupBySector]);
 
-  // 11 header cells (SortableHeader) + 1 trailing actions <th> = 12 columns.
-  const COLUMN_COUNT = 12;
-
   // Grand-total footer for this table's rows only (already market-scoped by
   // the parent — this component never receives a mix of IN/US rows, so
   // these totals are automatically single-currency, never combined). Also
@@ -574,52 +571,34 @@ export function HoldingsTable({
                 // for the unresolved bucket — a %-of-portfolio figure next
                 // to "Resolving…" would read as a real allocation number.
                 const pct = g.resolved && marketTotalValue > 0 ? (g.totalValue / marketTotalValue) * 100 : null;
+                // No separate sector heading row — the count/%-of-portfolio
+                // context that used to live there is folded directly into
+                // the subtotal row's label below, so a sector group is just
+                // its stock rows plus one bold subtotal row, not a heading
+                // AND a subtotal saying overlapping things.
+                const subtotalLabel = (
+                  <span
+                    // Raw, unmodified screener.in classification for this
+                    // group's holdings — visible on hover so the display-
+                    // sector normalization (e.g. "Healthcare" for a raw
+                    // "Consumer Services" sector whose industry says
+                    // "Wellness") is never a black box. Previously lived on
+                    // the now-removed heading row.
+                    title={g.resolved && g.rows[0]
+                      ? `Raw: ${g.rows[0].rawSector ?? "—"} / ${g.rows[0].rawIndustry ?? "—"}`
+                      : undefined}
+                  >
+                    {!g.resolved && <span className="inline-block w-1.5 h-1.5 rounded-full bg-gray-500 animate-pulse mr-1.5" />}
+                    {g.sector} Total · {g.rows.length} holding{g.rows.length !== 1 ? "s" : ""}
+                    {pct !== null && ` · ${pct.toFixed(1)}%`}
+                  </span>
+                );
                 return (
                   <Fragment key={g.sector}>
-                    <tr className={clsx("bg-dark-bg/60", !g.resolved && "opacity-70")}>
-                      {/* The label itself is pinned to the scroll
-                          container's left edge (sticky span inside the
-                          full-width colSpan cell) — otherwise scrolling
-                          right to see Day's P&L/P&L scrolled the sector
-                          name itself out of view too, same problem as an
-                          un-pinned Symbol column. */}
-                      <td colSpan={COLUMN_COUNT} className="px-2 sm:px-4 py-2 text-xs font-semibold text-gray-300">
-                        <span
-                          className="sticky left-2 sm:left-4 inline-block"
-                          // Raw, unmodified screener.in classification for
-                          // this group's holdings — visible on hover so the
-                          // display-sector normalization (e.g. "Healthcare"
-                          // for a raw "Consumer Services" sector whose
-                          // industry says "Wellness") is never a black box.
-                          title={g.resolved && g.rows[0]
-                            ? `Raw: ${g.rows[0].rawSector ?? "—"} / ${g.rows[0].rawIndustry ?? "—"}`
-                            : undefined}
-                        >
-                          {!g.resolved && <span className="inline-block w-1.5 h-1.5 rounded-full bg-gray-500 animate-pulse mr-1.5" />}
-                          {g.sector}
-                          <span className="ml-2 font-normal text-gray-500">
-                            {g.rows.length} holding{g.rows.length !== 1 ? "s" : ""} · {currency}{g.totalValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                            {pct !== null && ` · ${pct.toFixed(1)}%`}
-                          </span>
-                        </span>
-                      </td>
-                    </tr>
-                    {/* Heading (section label) -> individual stock rows,
-                        slightly indented -> Sector Total. The heading
-                        itself is never a data row — it's just a label plus
-                        the same combined value/% it always showed; the
-                        actual Invested/Current Value/Day's P&L/P&L
-                        breakdown lives in the Sector Total row below the
-                        holdings, column-aligned with Grand Total so the
-                        two read as the same kind of thing. Shown for every
-                        group with rows, including "Resolving sector…" —
-                        its own totals row communicates Invested (known)
-                        vs. Current Value/Day's P&L/P&L (unresolved, "—")
-                        rather than leaving it wordless. */}
                     {g.rows.map((r) => (
                       <HoldingRow key={r.id} r={r} currency={currency} onRemove={onRemove} onEdit={onEdit} indent />
                     ))}
-                    <TotalsRow totals={g.totals} currency={currency} label={`${g.sector} Total`} variant="sector" />
+                    <TotalsRow totals={g.totals} currency={currency} label={subtotalLabel} variant="sector" />
                   </Fragment>
                 );
               })
