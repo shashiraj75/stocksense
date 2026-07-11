@@ -207,7 +207,8 @@ async def get_cached_signals_batch(
     horizon: Literal["short", "medium", "long"] = Query("medium"),
 ):
     """
-    Portfolio hotfix (Session 12) — cache-only counterpart to /{symbol}/signal.
+    Portfolio hotfix (Session 12, revised Session 13) — cache-only
+    counterpart to /{symbol}/signal.
 
     /{symbol}/signal's 202-then-poll contract is correct for a single stock
     page where the user is looking at exactly one symbol and is willing to
@@ -216,23 +217,30 @@ async def get_cached_signals_batch(
     every holding independently started a real PredictionEngine.predict()
     background compute and the frontend polled each one for up to 3 minutes
     — the whole "Signal" column, and by extension the page, felt stuck long
-    after prices/P&L had already resolved.
+    after prices/P&L had already resolved. This endpoint never starts a
+    compute and never returns 202, for any symbol, ever.
 
-    This endpoint never starts a compute and never returns 202. For each
-    requested symbol it reads the exact same `_pred_cache` /{symbol}/signal
-    already reads (so a warm entry is byte-identical either way) and reports
-    whether it's fresh — nothing else. A cold/missing entry comes back as
-    `{"cached": false, "signal": null, "confidence": null}`, immediately,
-    for the caller to render as "not computed yet" rather than "loading
-    forever." One request for the whole holdings list, not one per holding.
-    Registered ahead of /{symbol}/signal purely to match this router's
-    existing convention of literal routes before param routes — the two
-    paths can't actually collide (different second path segment).
+    Session 13 root-cause finding: the Session 12 version of this endpoint
+    read ONLY `_pred_cache` — the same in-memory dict /{symbol}/signal
+    reads — which has a 15-MINUTE freshness window
+    (services/prediction_engine.py's _PRED_TTL). Daily Picks deep-scores
+    this exact symbol (if it's in that day's ~400-candidate pool) once a
+    night and writes into that same cache, so a covered holding showed a
+    real signal for 15 minutes after that run and then "Not cached" for
+    the rest of the day regardless of coverage — nearly every holding,
+    nearly all the time, which is exactly what was reported live. Now
+    falls back to `score_snapshots` (Postgres, no expiry — the same
+    persisted record daily_picks.py already writes for every deep-scored
+    candidate, and the History tab chart already reads) when nothing is
+    fresh in `_pred_cache`, so a symbol Daily Picks covered last night
+    still shows its real signal today instead of "Not cached." Still a
+    pure read either way — nothing here computes a prediction.
     """
     symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
     if not symbol_list:
         return {"signals": {}}
     results: dict[str, dict] = {}
+    still_uncached: list[str] = []
     for sym in symbol_list:
         key = f"{sym}:{market}:{horizon}"
         cached = _fresh_cached_prediction(key)
@@ -240,7 +248,26 @@ async def get_cached_signals_batch(
             summary = _signal_summary(cached, sym, market, horizon)
             results[sym] = {"signal": summary["signal"], "confidence": summary["confidence"], "cached": True}
         else:
+            still_uncached.append(sym)
+
+    if still_uncached and os.getenv("USE_POSTGRES") == "1":
+        try:
+            from services.postgres_store import get_latest_signals_batch
+            loop = asyncio.get_running_loop()
+            persisted = await loop.run_in_executor(None, get_latest_signals_batch, still_uncached, horizon)
+        except Exception as e:
+            log.warning(f"[cached-batch] score_snapshots lookup failed: {e}")
+            persisted = {}
+    else:
+        persisted = {}
+
+    for sym in still_uncached:
+        hit = persisted.get(sym)
+        if hit is not None:
+            results[sym] = {"signal": hit["signal"], "confidence": hit["confidence"], "cached": True}
+        else:
             results[sym] = {"signal": None, "confidence": None, "cached": False}
+
     return {"signals": _to_python(results)}
 
 

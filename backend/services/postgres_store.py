@@ -651,6 +651,50 @@ def get_score_history(symbol: str, horizon: str, days: int = 90) -> list[dict]:
     return [dict(zip(cols, r)) for r in rows]
 
 
+def get_latest_signals_batch(symbols: list[str], horizon: str) -> dict[str, dict]:
+    """
+    Portfolio Signal-column hotfix (Session 13) — the root cause of "Not
+    cached" showing for almost every holding: the in-memory `_pred_cache`
+    (services/prediction_engine.py) that /signal and cached-batch both read
+    has only a 15-MINUTE freshness window. Daily Picks deep-scores ~400
+    stocks once a night and writes into that same cache, so a holding it
+    covered showed a real signal for 15 minutes after that run and then
+    "Not cached" for the rest of the day, regardless of coverage — the
+    ephemeral cache was never meant to answer "what's the latest signal we
+    know," only "is it safe to skip recomputing right now."
+
+    `score_snapshots` is the actual persistent record of that same nightly
+    scoring (already written by daily_picks.py's _write_score_snapshots for
+    every deep-scored candidate, no expiry) — this reads the single most
+    recent snapshot per requested symbol for the given horizon, regardless
+    of how long ago it was written. Still a pure read: no prediction is
+    computed here, only the last one Daily Picks already computed and
+    persisted is looked up.
+
+    NOT market-scoped — score_snapshots has no market column today (the
+    same pre-existing limitation get_score_history above already has for
+    the History tab chart); a symbol string colliding across IN and US is
+    structurally possible but hasn't been observed in practice. Returns
+    {symbol: {signal, confidence, snapshot_date}} only for symbols that
+    have at least one snapshot; callers should treat a missing key as "no
+    persisted signal either," not an error.
+    """
+    symbols = [s.upper() for s in symbols if s]
+    if not symbols:
+        return {}
+    with _get_pool().connection() as conn:
+        rows = conn.execute("""
+            SELECT DISTINCT ON (symbol) symbol, signal, confidence_score, snapshot_date
+            FROM score_snapshots
+            WHERE symbol = ANY(%s) AND horizon = %s
+            ORDER BY symbol, snapshot_date DESC
+        """, (symbols, horizon)).fetchall()
+    return {
+        row[0]: {"signal": row[1], "confidence": row[2], "snapshot_date": str(row[3])}
+        for row in rows
+    }
+
+
 # ── New: Factor IC history (section 6) ──────────────────────────────────────
 
 def log_factor_ic(horizon: str, factor: str, window_days: int,

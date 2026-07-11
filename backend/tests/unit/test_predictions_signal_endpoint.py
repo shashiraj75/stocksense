@@ -272,6 +272,14 @@ class TestCachedSignalsBatchRoute:
         assert resp["signals"]["TCS"] == {"signal": None, "confidence": None, "cached": True}
         assert no_background_compute == []
 
+    def test_cold_symbol_with_no_postgres_configured_stays_not_cached(self, monkeypatch, no_background_compute):
+        """USE_POSTGRES unset (or not '1') — the score_snapshots fallback
+        must not even attempt a DB call, same behavior as before Session 13."""
+        monkeypatch.delenv("USE_POSTGRES", raising=False)
+        resp = asyncio.run(predictions.get_cached_signals_batch(symbols="NEVERSEEN", market="IN", horizon="medium"))
+        assert resp["signals"]["NEVERSEEN"] == {"signal": None, "confidence": None, "cached": False}
+        assert no_background_compute == []
+
     def test_never_invokes_prediction_engine_predict_even_with_every_symbol_cold(self, monkeypatch):
         """Direct proof, not just an inference from `_start_background_compute`
         never firing: patches PredictionEngine.predict to raise, so this
@@ -283,3 +291,79 @@ class TestCachedSignalsBatchRoute:
         )
         resp = asyncio.run(predictions.get_cached_signals_batch(symbols="TCS,INFY,WIPRO", market="IN", horizon="medium"))
         assert all(v["cached"] is False for v in resp["signals"].values())
+
+
+@pytest.mark.unit
+class TestCachedSignalsBatchScoreSnapshotsFallback:
+    """Session 13 root-cause fix: _pred_cache's 15-minute TTL meant a
+    symbol Daily Picks deep-scored last night showed "Not cached" again
+    within 15 minutes of that run — for nearly every holding, nearly all
+    day. These tests cover the score_snapshots (Postgres, no expiry)
+    fallback that now runs for whatever's left uncached in _pred_cache."""
+
+    def test_falls_back_to_score_snapshots_when_pred_cache_is_cold(self, monkeypatch, no_background_compute):
+        monkeypatch.setenv("USE_POSTGRES", "1")
+        monkeypatch.setattr(
+            "services.postgres_store.get_latest_signals_batch",
+            lambda symbols, horizon: {"TCS": {"signal": "BUY", "confidence": 72.0, "snapshot_date": "2026-07-10"}},
+        )
+        resp = asyncio.run(predictions.get_cached_signals_batch(symbols="TCS", market="IN", horizon="medium"))
+        assert resp["signals"]["TCS"] == {"signal": "BUY", "confidence": 72.0, "cached": True}
+        assert no_background_compute == []
+
+    def test_pred_cache_hit_takes_priority_over_score_snapshots(self, monkeypatch, no_background_compute):
+        """A fresh live prediction is always at least as current as last
+        night's snapshot — _pred_cache must win, and score_snapshots must
+        not even be consulted for a symbol already resolved from _pred_cache."""
+        monkeypatch.setenv("USE_POSTGRES", "1")
+        monkeypatch.setitem(_pred_cache, "TCS:IN:medium", (time.time(), _full_payload(signal="SELL", confidence=90.0)))
+
+        def _fail_if_called(symbols, horizon):
+            raise AssertionError("score_snapshots must not be queried for an already-fresh symbol")
+        monkeypatch.setattr("services.postgres_store.get_latest_signals_batch", _fail_if_called)
+
+        resp = asyncio.run(predictions.get_cached_signals_batch(symbols="TCS", market="IN", horizon="medium"))
+        assert resp["signals"]["TCS"] == {"signal": "SELL", "confidence": 90.0, "cached": True}
+
+    def test_symbol_with_no_snapshot_either_stays_not_cached(self, monkeypatch, no_background_compute):
+        monkeypatch.setenv("USE_POSTGRES", "1")
+        monkeypatch.setattr("services.postgres_store.get_latest_signals_batch", lambda symbols, horizon: {})
+        resp = asyncio.run(predictions.get_cached_signals_batch(symbols="OBSCURESTOCK", market="IN", horizon="medium"))
+        assert resp["signals"]["OBSCURESTOCK"] == {"signal": None, "confidence": None, "cached": False}
+        assert no_background_compute == []
+
+    def test_mixed_batch_some_from_pred_cache_some_from_snapshots_some_uncached(self, monkeypatch, no_background_compute):
+        monkeypatch.setenv("USE_POSTGRES", "1")
+        monkeypatch.setitem(_pred_cache, "TCS:IN:medium", (time.time(), _full_payload(signal="BUY", confidence=88.0)))
+        monkeypatch.setattr(
+            "services.postgres_store.get_latest_signals_batch",
+            lambda symbols, horizon: {"INFY": {"signal": "HOLD", "confidence": 55.0, "snapshot_date": "2026-07-09"}},
+        )
+        resp = asyncio.run(predictions.get_cached_signals_batch(symbols="TCS,INFY,WIPRO", market="IN", horizon="medium"))
+        signals = resp["signals"]
+        assert signals["TCS"] == {"signal": "BUY", "confidence": 88.0, "cached": True}   # from _pred_cache
+        assert signals["INFY"] == {"signal": "HOLD", "confidence": 55.0, "cached": True}  # from score_snapshots
+        assert signals["WIPRO"] == {"signal": None, "confidence": None, "cached": False}  # neither has it
+        assert no_background_compute == []
+
+    def test_score_snapshots_lookup_failure_degrades_to_not_cached_not_a_500(self, monkeypatch, no_background_compute):
+        monkeypatch.setenv("USE_POSTGRES", "1")
+
+        def _raise(symbols, horizon):
+            raise RuntimeError("connection refused")
+        monkeypatch.setattr("services.postgres_store.get_latest_signals_batch", _raise)
+
+        resp = asyncio.run(predictions.get_cached_signals_batch(symbols="TCS", market="IN", horizon="medium"))
+        assert resp["signals"]["TCS"] == {"signal": None, "confidence": None, "cached": False}
+        assert no_background_compute == []
+
+    def test_never_invokes_prediction_engine_predict_via_the_snapshots_fallback_either(self, monkeypatch):
+        monkeypatch.setenv("USE_POSTGRES", "1")
+        monkeypatch.setattr("services.postgres_store.get_latest_signals_batch", lambda symbols, horizon: {})
+        from services.prediction_engine import PredictionEngine
+        monkeypatch.setattr(
+            PredictionEngine, "predict",
+            lambda self, *a, **kw: (_ for _ in ()).throw(AssertionError("must never call PredictionEngine.predict")),
+        )
+        resp = asyncio.run(predictions.get_cached_signals_batch(symbols="TCS", market="IN", horizon="medium"))
+        assert resp["signals"]["TCS"]["cached"] is False
