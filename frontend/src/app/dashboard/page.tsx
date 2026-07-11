@@ -9,7 +9,6 @@ import { StockContextMenu } from "@/components/StockContextMenu";
 import { useAuthGuard } from "@/hooks/useAuthGuard";
 import { useAuth } from "@/lib/AuthContext";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
-import { HORIZON_INFO } from "@/utils/horizons";
 const POPULAR_US     = ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "JPM", "META", "AMZN"];
 const POPULAR_IN     = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "WIPRO", "BAJFINANCE", "ICICIBANK", "ADANIENT"];
 const POPULAR_CRYPTO = ["BTC", "ETH", "BNB", "SOL", "XRP", "DOGE"];
@@ -146,26 +145,6 @@ export default function Dashboard() {
           </span>
         </div>
       </div>
-
-      {/* Horizon chips — compact single-line pills instead of the prior
-          full-height cards, using the canonical wording from
-          @/utils/horizons (this section previously showed "1–10 Days" /
-          "1–3 Months" / "6M – 3 Years", none of which matched the actual
-          Short/Medium/Long Term ranges used anywhere else in the app). */}
-      {market !== "COMMODITY" && (
-        <div className="flex flex-wrap gap-2">
-          {HORIZON_INFO.map(({ key, label, period, color, border }) => (
-            <span
-              key={key}
-              title={HORIZON_INFO.find(h => h.key === key)?.desc}
-              className={`inline-flex items-center gap-1.5 text-xs rounded-full border px-3 py-1.5 bg-dark-card ${border}`}
-            >
-              <span className={`font-bold ${color}`}>{label}</span>
-              <span className="text-gray-500">· {period}</span>
-            </span>
-          ))}
-        </div>
-      )}
 
       {/* Quick Access */}
       {market !== "COMMODITY" && (
