@@ -16,6 +16,7 @@ from services.recommendation_consolidation_contract import is_valid_rci_response
 from services.research_analyst.research_composer import (
     compose_prediction_response_with_research, research_analyst_v2_enabled,
 )
+from services.stock_universe import is_known_symbol
 from typing import Literal
 
 log = logging.getLogger(__name__)
@@ -82,6 +83,45 @@ def _to_python(obj):
     if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
         return None
     return obj
+
+
+def _unsupported_symbol_response(sym: str, market: str) -> JSONResponse:
+    """A symbol outside the supported static universe must never start a
+    background prediction or be conflated with a genuine provider outage —
+    this is a distinct, structured 404, checked BEFORE any cache/compute
+    logic runs, so an unsupported symbol can never produce a cached
+    {"error": ...} entry (and therefore can never fall through to
+    _cached_error_response below either)."""
+    return JSONResponse(status_code=404, content={
+        "error": {
+            "code": "SYMBOL_NOT_SUPPORTED",
+            "message": "This symbol is not available in the supported NSE universe.",
+            "symbol": sym,
+            "market": market,
+        }
+    })
+
+
+def _cached_error_response(result: dict, sym: str, market: str) -> JSONResponse:
+    """Translate a cached {"error": ...} prediction-engine result into a
+    real non-200 response. Previously this dict was serialized as a plain
+    HTTP 200 body — indistinguishable at the transport level from a
+    genuine successful prediction, which let the frontend's polling logic
+    accept it as one and fabricate a BUY/HOLD/SELL signal from missing
+    fields. Every code prediction_engine.py can currently produce
+    (DATA_PROVIDER_UNAVAILABLE) reflects a temporary data-availability
+    problem for an otherwise-valid, supported symbol — never an unsupported
+    one, since those are already rejected above before any compute starts —
+    so 503 (not 404/500) is correct here."""
+    code = result.get("code") or "DATA_PROVIDER_UNAVAILABLE"
+    return JSONResponse(status_code=503, content={
+        "error": {
+            "code": code,
+            "message": result.get("error", "Prediction data is temporarily unavailable. Please try again."),
+            "symbol": sym,
+            "market": market,
+        }
+    })
 
 
 def _fresh_cached_prediction(key: str) -> dict | None:
@@ -153,7 +193,8 @@ def _bg_thread(sym: str, market: str, horizon: str, key: str) -> None:
         import traceback
         _bglog(f"[bg_thread] EXCEPTION {key}: {type(e).__name__}: {e}\n{traceback.format_exc()[-500:]}")
         log.exception(f"[predictions.bg_thread] prediction failed for {key}")
-        err = {"error": "Prediction data is temporarily unavailable. Please try again."}
+        err = {"error": "Prediction data is temporarily unavailable. Please try again.",
+               "code": "DATA_PROVIDER_UNAVAILABLE"}
         _short_ts = time.time() - (_PRED_TTL - 120)
         from services.prediction_engine import _cache_set
         _cache_set(_pred_cache, key, (_short_ts, err))
@@ -292,10 +333,16 @@ async def get_signal_summary(
     _pred_cache entirely and has no badge-only consumer.
     """
     sym = symbol.upper()
+
+    if not is_known_symbol(sym, market):
+        return _unsupported_symbol_response(sym, market)
+
     key = f"{sym}:{market}:{horizon}"
 
     result = _fresh_cached_prediction(key)
     if result is not None:
+        if "error" in result:
+            return _cached_error_response(result, sym, market)
         return JSONResponse(content=_to_python(_signal_summary(result, sym, market, horizon)))
 
     if key not in _computing:
@@ -320,11 +367,16 @@ async def get_prediction(
             log.exception("Crypto prediction failed for %s", sym)
             return JSONResponse(status_code=500, content={"error": "Prediction failed. Please try again."})
 
+    if not is_known_symbol(sym, market):
+        return _unsupported_symbol_response(sym, market)
+
     key = f"{sym}:{market}:{horizon}"
 
     # ── 1. Cache hit — return instantly, no compute needed ──────────────────
     result = _fresh_cached_prediction(key)
     if result is not None:
+        if "error" in result:
+            return _cached_error_response(result, sym, market)
         # Recommendation Consolidation Intelligence (Epic 005, Sprint #008) —
         # the one, approved integration boundary (Sprint #007's decision):
         # an opt-in, read-only, additive composer invoked ONLY here, in the

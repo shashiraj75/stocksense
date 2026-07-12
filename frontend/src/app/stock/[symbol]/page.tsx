@@ -3,7 +3,7 @@ import { useState, useEffect } from "react";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { api, fetchQuote, fetchPrediction, fetchNews, fetchFactorAttribution, fetchScoreHistory, Market, Horizon, Signal } from "@/utils/api";
+import { api, fetchQuote, fetchPrediction, fetchNews, fetchFactorAttribution, fetchScoreHistory, Market, Horizon, Signal, PredictionError } from "@/utils/api";
 import { TradingViewWidget } from "@/components/TradingViewWidget";
 import { SignalBadge } from "@/components/SignalBadge";
 import { ConfidenceMeter } from "@/components/ConfidenceMeter";
@@ -149,13 +149,17 @@ export default function StockPage() {
 
   const horizon = (tab === "backtest" || tab === "history" || tab === "fundamentals") ? "medium" : (tab as Horizon);
 
-  const { data: quote, dataUpdatedAt: quoteUpdatedAt } = useQuery({
+  const { data: quote, dataUpdatedAt: quoteUpdatedAt, isLoading: quoteLoading, isError: quoteError } = useQuery({
     queryKey: ["quote", symbol, market],
     queryFn: () => fetchQuote(symbol, market),
     enabled: !isCrypto,
     refetchInterval: 60_000,   // backend Finnhub cache is 60s — no point polling faster
     staleTime: 55_000,
     refetchOnWindowFocus: false,
+    // A quote that genuinely doesn't exist (unsupported/delisted symbol)
+    // must render "Price unavailable," not retry 3 times and then sit on
+    // "Loading…" forever — retrying once covers a real transient blip.
+    retry: 1,
   });
 
   // For crypto, fetch price via screener/crypto-movers (already returns live prices)
@@ -173,19 +177,32 @@ export default function StockPage() {
     ? cryptoMovers?.movers.find(m => m.symbol === symbol) ?? null
     : null;
 
-  const { data: prediction, isLoading: predLoading, isFetching: predFetching, refetch: refetchPrediction, isError: predError } = useQuery({
+  const { data: prediction, isLoading: predLoading, isFetching: predFetching, refetch: refetchPrediction, isError: predError, error: predictionError } = useQuery({
     queryKey: ["prediction", symbol, isCrypto ? "CRYPTO" : market, horizon],
     queryFn: () => fetchPrediction(symbol, isCrypto ? "CRYPTO" as any : market, horizon, () => {
       setIsComputing(true);
       setComputeSeconds(0);
     }),
     enabled: tab !== "backtest",
-    retry: 2,           // fetchPrediction already polls for 120s; only retry on hard errors
+    // fetchPrediction already polls for 120s; only retry on hard errors.
+    // An unsupported symbol (SYMBOL_NOT_SUPPORTED, 404) is a permanent
+    // state — retrying it would re-run a full 120s poll loop twice more
+    // for a result that can never change. Only genuinely transient
+    // failures (provider outage, timeout) get the existing 2 retries.
+    retry: (failureCount, err) =>
+      err instanceof PredictionError && err.code === "SYMBOL_NOT_SUPPORTED" ? false : failureCount < 2,
     retryDelay: 3000,
     placeholderData: (prev) => prev,
     staleTime: 14 * 60_000,
     refetchOnWindowFocus: false,
   });
+
+  // A symbol outside the supported universe is a permanent, distinct state
+  // from a transient provider/compute failure — never shown as "HOLD," a
+  // blank confidence, or an enabled Paper Trade button (see isValidPrediction
+  // in @/utils/api, which guarantees `prediction` is only ever a real,
+  // fully-populated Prediction or undefined — never a cached error object).
+  const isUnsupportedSymbol = predictionError instanceof PredictionError && predictionError.code === "SYMBOL_NOT_SUPPORTED";
 
   // Elapsed timer while background prediction is running
   useEffect(() => {
@@ -319,24 +336,25 @@ export default function StockPage() {
     onSuccess: () => refetchVote(),
   });
 
-  // Show "not found" only if BOTH quote and prediction failed with no data
-  const notFound = !isCrypto && !predLoading && !quote && predError;
+  // Only a confirmed SYMBOL_NOT_SUPPORTED (prediction router validated the
+  // symbol against the supported universe and rejected it) short-circuits
+  // the whole page — a genuine provider outage affecting a *valid* symbol
+  // (both quote and prediction failing) is a different, temporary state
+  // and falls through to render the normal page shell, where the quote row
+  // shows "Price unavailable" and the AI Prediction card shows "Analysis
+  // temporarily unavailable" with a Retry — never this permanent-sounding
+  // "not found" page for a symbol that may well recover on its own.
+  const notFound = !isCrypto && isUnsupportedSymbol;
 
   if (notFound) {
     return (
       <div className="flex flex-col items-center justify-center py-32 text-center space-y-4">
         <div className="text-5xl">🔍</div>
-        <h1 className="text-2xl font-bold text-white">{symbol} not found</h1>
+        <h1 className="text-2xl font-bold text-white">Symbol not supported</h1>
         <p className="text-gray-400 text-sm max-w-sm">
-          The server may still be starting up — wait a moment and try refreshing.
-          If the issue persists, this symbol may be delisted or unsupported.
+          {symbol} ({market === "IN" ? "🇮🇳 NSE India" : market === "US" ? "🇺🇸 NYSE / NASDAQ" : market}) isn&apos;t available in our supported universe.
+          Double-check the ticker — StockSense360 doesn&apos;t yet cover every listed symbol.
         </p>
-        <button
-          onClick={() => window.location.reload()}
-          className="mt-2 px-5 py-2 rounded-xl bg-dark-card border border-dark-border text-white text-sm font-medium hover:bg-dark-border transition-colors"
-        >
-          Retry
-        </button>
         <a href="/" className="px-5 py-2 rounded-xl bg-brand-500 text-white text-sm font-medium hover:bg-brand-600 transition-colors">
           Back to Dashboard
         </a>
@@ -443,7 +461,9 @@ export default function StockPage() {
                     <span className="text-4xl font-black font-mono tracking-tighter">
                       {isCrypto
                         ? `$${(cryptoQuote?.price ?? prediction?.current_price ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
-                        : quote ? `${currency}${quote.price?.toLocaleString() ?? "—"}` : <span className="text-gray-600 text-2xl">Loading…</span>}
+                        : quote ? `${currency}${quote.price?.toLocaleString() ?? "—"}`
+                        : quoteError ? <span className="text-gray-500 text-lg">Price unavailable</span>
+                        : <span className="text-gray-600 text-2xl">Loading…</span>}
                     </span>
                     {!isCrypto && quote?.change != null && (
                       <span className={clsx(
@@ -670,6 +690,21 @@ export default function StockPage() {
                       <div className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-5 text-center">
                         <Loader2 size={20} className="animate-spin text-brand-500 mx-auto mb-2" />
                         <p className="text-[11px] text-gray-500">Computing…</p>
+                      </div>
+                    ) : isUnsupportedSymbol ? (
+                      <div className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-4 text-center">
+                        <p className="text-xs font-semibold text-gray-300">Symbol not supported</p>
+                        <p className="text-[11px] text-gray-500 mt-1">
+                          {symbol} ({market}) isn&apos;t in our supported universe. Check the ticker.
+                        </p>
+                      </div>
+                    ) : predError ? (
+                      <div className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-4 text-center">
+                        <p className="text-xs font-semibold text-gray-300">Analysis temporarily unavailable</p>
+                        <button onClick={() => refetchPrediction()}
+                          className="mt-2 px-3 py-1 rounded-lg bg-brand-500 text-white text-[11px] font-medium hover:bg-brand-600 transition-colors">
+                          Retry
+                        </button>
                       </div>
                     ) : null}
                   </div>
@@ -899,9 +934,23 @@ export default function StockPage() {
                     <div key={i} className="h-4 bg-dark-border rounded animate-pulse" />
                   ))}
                 </div>
+              ) : isUnsupportedSymbol ? (
+                // Distinct, permanent state — never a retry button (retrying
+                // can't change whether a symbol is in the supported
+                // universe), never a fabricated signal/confidence/target/
+                // Paper Trade below (all gated on `prediction`, which
+                // isValidPrediction in @/utils/api guarantees is undefined
+                // here, not a cached error object).
+                <div className="space-y-2 py-2">
+                  <p className="text-gray-300 text-sm font-medium">Symbol not supported</p>
+                  <p className="text-gray-500 text-xs">
+                    {symbol} ({market === "IN" ? "🇮🇳 NSE India" : market === "US" ? "🇺🇸 NYSE / NASDAQ" : market}) isn&apos;t available in our supported universe.
+                    Check the ticker — StockSense360 doesn&apos;t yet cover every listed symbol.
+                  </p>
+                </div>
               ) : predError && !prediction ? (
                 <div className="space-y-3 py-2">
-                  <p className="text-red-400 text-sm font-medium">Failed to load prediction</p>
+                  <p className="text-red-400 text-sm font-medium">Analysis temporarily unavailable</p>
                   <p className="text-gray-500 text-xs">The server isn&apos;t responding. Try again in a moment.</p>
                   <button onClick={() => { setIsComputing(false); refetchPrediction(); }}
                     className="px-4 py-2 rounded-lg bg-brand-500 text-white text-sm font-medium hover:bg-brand-600 transition-colors">

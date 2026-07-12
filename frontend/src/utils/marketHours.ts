@@ -184,9 +184,17 @@ export interface MarketStatus {
 
 const WEEKDAYS = new Set(["Mon", "Tue", "Wed", "Thu", "Fri"]);
 
-/** Format a UTC Date as "7:00 PM · Thu, 18 Jun" in the browser's local timezone. */
+/** Format a UTC Date as "7:00 PM GMT+4 · Thu, 18 Jun" in the browser's local
+ * timezone. The open/close instant itself is still computed against the
+ * exchange's own timezone (Asia/Kolkata / America/New_York, see nextEvent
+ * below) — only the *displayed* clock time is converted to the viewer's
+ * local timezone, same as before. `timeZoneName: "short"` makes that
+ * conversion visible instead of silent: without it, a non-IST viewer saw
+ * an unlabeled time that was quietly already their own local time, easily
+ * misread as the exchange's (e.g. "7:45 AM" for NSE's IST open, with
+ * nothing marking it as the viewer's own zone). */
 function fmtLocalDateTime(date: Date): string {
-  const time = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true });
+  const time = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true, timeZoneName: "short" });
   const day  = date.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
   return `${time} · ${day}`;
 }

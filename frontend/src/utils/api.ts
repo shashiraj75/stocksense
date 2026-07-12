@@ -280,21 +280,113 @@ export const fetchOHLCV = (symbol: string, market: Market, period = "1y", interv
     .get<{ data: OHLCVBar[] }>(`/api/stocks/ohlcv/${symbol}`, { params: { market, period, interval } })
     .then((r) => r.data);
 
+// Typed error for anything a prediction-backed endpoint can fail with —
+// callers (Stock Detail) branch on `.code`/`.status` to render a distinct
+// unsupported-symbol vs temporarily-unavailable state, instead of the
+// generic Error a bare `throw new Error(...)` gave no way to distinguish.
+export class PredictionError extends Error {
+  code: string;
+  status: number;
+  symbol?: string;
+  market?: string;
+  constructor(message: string, opts: { code: string; status: number; symbol?: string; market?: string }) {
+    super(message);
+    this.name = "PredictionError";
+    this.code = opts.code;
+    this.status = opts.status;
+    this.symbol = opts.symbol;
+    this.market = opts.market;
+  }
+}
+
+const VALID_SIGNALS = new Set(["BUY", "HOLD", "SELL"]);
+
+// Runtime guard for a genuinely successful, fully-populated Prediction body
+// — not just an HTTP 200. Backend cache entries that failed (unsupported
+// symbol, provider outage, insufficient history) used to be served as a
+// plain 200 `{error: "..."}` body, indistinguishable at the transport
+// level from a real prediction; a blind `as Prediction` cast let that
+// object's `undefined` signal/confidence fall through to a fabricated
+// "HOLD" with a blank confidence bar on Stock Detail. This is the single
+// point that decides whether a 200 body counts as a valid Prediction.
+export function isValidPrediction(body: unknown): body is Prediction {
+  if (!body || typeof body !== "object") return false;
+  const b = body as Record<string, unknown>;
+  if ("error" in b) return false;
+  if (typeof b.signal !== "string" || !VALID_SIGNALS.has(b.signal)) return false;
+  if (typeof b.confidence !== "number" || !Number.isFinite(b.confidence)) return false;
+  if (typeof b.symbol !== "string" || !b.symbol) return false;
+  if (typeof b.market !== "string" || !b.market) return false;
+  if (typeof b.horizon !== "string" || !b.horizon) return false;
+  if (typeof b.current_price !== "number" || !Number.isFinite(b.current_price)) return false;
+  return true;
+}
+
+// SignalSummary's own contract already treats `signal`/`confidence: null`
+// as a legitimate "nothing cached yet" state (Portfolio's non-blocking
+// dash) — so this only rejects the shapes that were never valid at all
+// (an `error` body, or a missing/malformed identifying field), not a
+// genuinely-null-but-present signal.
+export function isValidSignalSummaryBody(body: unknown): body is SignalSummary {
+  if (!body || typeof body !== "object") return false;
+  const b = body as Record<string, unknown>;
+  if ("error" in b) return false;
+  if (typeof b.symbol !== "string" || !b.symbol) return false;
+  if (typeof b.market !== "string" || !b.market) return false;
+  if (typeof b.horizon !== "string" || !b.horizon) return false;
+  if (b.signal !== null && typeof b.signal !== "string") return false;
+  if (b.confidence !== null && typeof b.confidence !== "number") return false;
+  return true;
+}
+
 // Shared 202-poll loop for the prediction-backed endpoints (/api/predictions/
 // {symbol} and its Sprint 011 signal-only variant) — one polling contract,
 // not two copies that could drift.
 const pollPredictionEndpoint = async <T>(
   url: string,
   params: { market: Market; horizon: Horizon },
-  onComputing?: () => void,
+  onComputing: (() => void) | undefined,
+  validate: (body: unknown) => body is T,
 ): Promise<T> => {
   // Poll up to 180 s (36 × 5 s) for background computation to complete
   for (let attempt = 0; attempt < 36; attempt++) {
-    const res = await api.get<T | { status: string; retry_after?: number }>(url, {
-      params,
-      validateStatus: (s) => s === 200 || s === 202,
-    });
-    if (res.status === 200) return res.data as T;
+    let res;
+    try {
+      res = await api.get<T | { status: string; retry_after?: number }>(url, {
+        params,
+        validateStatus: (s) => s === 200 || s === 202,
+      });
+    } catch (e: any) {
+      // A structured 404/503 (SYMBOL_NOT_SUPPORTED / DATA_PROVIDER_UNAVAILABLE)
+      // fails axios's validateStatus above and lands here as a thrown error
+      // — surface it as a typed PredictionError so the caller can tell
+      // "unsupported symbol" apart from "temporarily unavailable" instead
+      // of both collapsing into the same generic failure.
+      const respErr = e?.response?.data?.error;
+      if (respErr && typeof respErr === "object") {
+        throw new PredictionError(respErr.message || "Prediction unavailable.", {
+          code: respErr.code || "PREDICTION_UNAVAILABLE",
+          status: e.response.status,
+          symbol: respErr.symbol,
+          market: respErr.market,
+        });
+      }
+      throw e;
+    }
+    if (res.status === 200) {
+      if (!validate(res.data)) {
+        // Defensive fallback — should no longer be reachable now that the
+        // backend translates cached errors to a non-200 above, but a 200
+        // body that still fails runtime validation (malformed/incomplete)
+        // must never be treated as a real prediction either.
+        const bodyErr = (res.data as any)?.error;
+        throw new PredictionError(
+          typeof bodyErr === "string" ? bodyErr : "Prediction data is invalid or incomplete.",
+          { code: "INVALID_PREDICTION_RESPONSE", status: 200 },
+        );
+      }
+      return res.data;
+    }
     // Check for error field returned in a 202 response body
     if ((res.data as any)?.error) throw new Error((res.data as any).error);
     // 202 = computing in background — notify caller and wait
@@ -318,7 +410,7 @@ export const fetchPrediction = (
   horizon: Horizon,
   onComputing?: () => void,
 ): Promise<Prediction> =>
-  pollPredictionEndpoint<Prediction>(`/api/predictions/${symbol}`, { market, horizon }, onComputing);
+  pollPredictionEndpoint<Prediction>(`/api/predictions/${symbol}`, { market, horizon }, onComputing, isValidPrediction);
 
 // Sprint 011 (§20.1) — badge-only prediction summary. Served from the same
 // backend prediction cache as fetchPrediction (same signal/confidence values,
@@ -342,7 +434,7 @@ export const fetchSignalSummary = (
   market: Market,
   horizon: Horizon,
 ): Promise<SignalSummary> =>
-  pollPredictionEndpoint<SignalSummary>(`/api/predictions/${symbol}/signal`, { market, horizon });
+  pollPredictionEndpoint<SignalSummary>(`/api/predictions/${symbol}/signal`, { market, horizon }, undefined, isValidSignalSummaryBody);
 
 export interface CachedSignal {
   signal: string | null;

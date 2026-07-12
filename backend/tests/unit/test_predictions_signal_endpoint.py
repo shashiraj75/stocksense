@@ -193,16 +193,24 @@ class TestSignalRoute:
         assert body["symbol"] == "INFY"
         assert body["signal"] == "HOLD"
 
-    def test_error_cached_entry_serves_safe_nulls_not_an_error(self, monkeypatch, no_background_compute):
+    def test_error_cached_entry_is_translated_to_503_not_served_as_200(self, monkeypatch, no_background_compute):
+        """Production hotfix: a cached {"error": ...} result must never be
+        served as a plain HTTP 200 — that's indistinguishable at the
+        transport level from a genuine successful prediction, which let the
+        frontend's polling logic accept it as one and fabricate a
+        BUY/HOLD/SELL signal from the missing fields (the NDSL incident).
+        This supersedes the old "safe nulls at 200" contract."""
         monkeypatch.setitem(
             _pred_cache, "AAPL:US:medium",
-            (time.time(), {"error": "Prediction data is temporarily unavailable."}),
+            (time.time(), {"error": "Prediction data is temporarily unavailable.",
+                           "code": "DATA_PROVIDER_UNAVAILABLE"}),
         )
         resp = asyncio.run(predictions.get_signal_summary("AAPL", market="US", horizon="medium"))
-        assert resp.status_code == 200
+        assert resp.status_code == 503
         body = _body(resp)
-        assert body["signal"] is None
-        assert body["confidence"] is None
+        assert body["error"]["code"] == "DATA_PROVIDER_UNAVAILABLE"
+        assert body["error"]["symbol"] == "AAPL"
+        assert body["error"]["market"] == "US"
 
 
 @pytest.mark.unit

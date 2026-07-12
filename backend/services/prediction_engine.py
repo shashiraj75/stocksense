@@ -468,7 +468,8 @@ class PredictionEngine:
                 timeout=45.0,
             )
         except asyncio.TimeoutError:
-            return {"error": "Data fetch timed out — Yahoo Finance took too long. Try again in a moment."}
+            return {"error": "Data fetch timed out — Yahoo Finance took too long. Try again in a moment.",
+                    "code": "DATA_PROVIDER_UNAVAILABLE"}
 
         # ── Screener.in enrichment (India only) ──────────────────────────────
         # Fills missing ROE, ROCE, promoter holding, revenue/profit growth from
@@ -502,14 +503,16 @@ class PredictionEngine:
         _SHORT_TTL_TS = lambda: time.time() - (_PRED_TTL - 120)  # 2-min TTL for errors
 
         if df.empty:
-            err = {"error": "No price data returned — Yahoo Finance may be rate-limiting. Try again in a moment."}
+            err = {"error": "No price data returned — Yahoo Finance may be rate-limiting. Try again in a moment.",
+                   "code": "DATA_PROVIDER_UNAVAILABLE"}
             _cache_set(_pred_cache, cache_key, (_SHORT_TTL_TS(), err))
             return err
 
         # Drop incomplete rows (NaN close) — last bar may be partial on live market
         df = df.dropna(subset=["Close"])
         if df.empty or len(df) < 20:
-            err = {"error": "Insufficient price history (need at least 20 days)"}
+            err = {"error": "Insufficient price history (need at least 20 days)",
+                   "code": "DATA_PROVIDER_UNAVAILABLE"}
             _cache_set(_pred_cache, cache_key, (_SHORT_TTL_TS(), err))
             return err
 

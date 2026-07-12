@@ -7205,6 +7205,28 @@ IN_STOCKS = [
     ("ZYDUSLIFE","Zydus Lifesciences Limited"),("ZYDUSWELL","Zydus Wellness Limited"),
 ]
 
+# Fast O(1) membership sets, derived from the same static universe lists
+# above — used to reject a prediction request for a symbol this app has no
+# coverage for (e.g. a typo, a delisted/renamed company, or a real but not
+# yet catalogued listing) before it ever reaches yfinance. Never mutated;
+# always rebuilt from US_STOCKS/IN_STOCKS so the two can't drift apart.
+US_SYMBOLS: set[str] = {sym for sym, _ in US_STOCKS}
+IN_SYMBOLS: set[str] = {sym for sym, _ in IN_STOCKS}
+
+
+def is_known_symbol(symbol: str, market: str) -> bool:
+    """True if `symbol` is present in this market's supported static
+    universe. Markets with no static allow-list here (CRYPTO, anything
+    else) are not gated by this check — callers should only use this for
+    markets that actually have a universe list to validate against."""
+    sym = symbol.upper()
+    if market == "IN":
+        return sym in IN_SYMBOLS
+    if market == "US":
+        return sym in US_SYMBOLS
+    return True
+
+
 CRYPTO_COINS = [
     ("BTC","Bitcoin"),("ETH","Ethereum"),
     ("BNB","BNB"),("SOL","Solana"),
