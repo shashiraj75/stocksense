@@ -923,6 +923,7 @@ def _zscore_and_rank(
     regime: dict,
     regime_id: int,
     market: str = "IN",
+    production_learning_enabled: bool | None = None,
 ) -> list[dict]:
     """
     Cross-sectional z-scoring + alpha computation for the full universe.
@@ -932,14 +933,25 @@ def _zscore_and_rank(
 
     Step 2 — IC-weighted alpha (data-driven weights from ic_engine):
         combined_alpha = Σ IC_weight_k × z_k
+        (ic_weights is already containment-gated by the caller — see
+        ic_engine.get_production_ic_weights — this function just applies
+        whatever weights it's given.)
 
-    Step 3 — Meta-model alpha (if model is trained):
+    Step 3 — Meta-model alpha (if a model artifact exists):
         meta_alpha = model.predict([z_k, interactions])
-        Final ranking signal = meta_alpha if available, else combined_alpha
+        This is ALWAYS computed (shadow/diagnostic value — Learning Alpha
+        Engine remediation, Phase 1) but only becomes the ranking signal
+        when production_learning_enabled is True. While disabled (the
+        default), ranking_alpha always equals combined_alpha — the
+        meta-model's shadow output is never allowed to overwrite it.
 
     This replaces the old hand-crafted 0.45/0.30/… weight table.
     """
     from services.alpha_engine import meta_model as mm
+
+    if production_learning_enabled is None:
+        from services.alpha_engine.containment import is_production_learning_enabled
+        production_learning_enabled = is_production_learning_enabled()
 
     if not items:
         return items
@@ -980,7 +992,11 @@ def _zscore_and_rank(
 
         combined_alpha = round(combined_alpha, 4)
 
-        # Meta-model predicted return (if available)
+        # Meta-model predicted return — always computed as a shadow/diagnostic
+        # value (Learning Alpha Engine remediation, Phase 1), regardless of
+        # containment state. Never skipped, since "IC and meta-model
+        # calculations may continue only in shadow mode" — it just may not
+        # become the ranking signal below.
         meta_alpha = mm.predict(
             tech_z=zscores.get("tech", 0),
             fund_z=zscores.get("fund", 0),
@@ -992,8 +1008,16 @@ def _zscore_and_rank(
             market=market,
         )
 
-        # Ranking signal: meta_alpha when available (trained model), else IC alpha
-        ranking_alpha = round(meta_alpha, 4) if meta_alpha is not None else combined_alpha
+        # Ranking signal: meta_alpha only when production learning is
+        # explicitly enabled AND a model is trained; otherwise always the
+        # IC-weighted (containment-gated) combined_alpha. The shadow
+        # meta_alpha value above is preserved in the output below for
+        # observability, but it never overwrites ranking_alpha while
+        # contained.
+        if production_learning_enabled and meta_alpha is not None:
+            ranking_alpha = round(meta_alpha, 4)
+        else:
+            ranking_alpha = combined_alpha
 
         enriched.append({
             **row,
@@ -1002,6 +1026,11 @@ def _zscore_and_rank(
             "meta_alpha":      round(meta_alpha, 4) if meta_alpha is not None else None,
             "ranking_alpha":   ranking_alpha,
             "regime_label":    regime.get("label", "BULL_CALM"),
+            # Learning Alpha Engine remediation, Phase 1 — observability only.
+            # True only when meta_alpha actually determined ranking_alpha
+            # above; distinct from "meta_alpha is not None", which just means
+            # a shadow value was computed.
+            "meta_alpha_used_for_ranking": bool(production_learning_enabled and meta_alpha is not None),
         })
 
     return enriched
@@ -1271,14 +1300,34 @@ def _generate_picks_inner(
     and Telegram are intentionally NOT run here — they run in generate_picks()
     after the job is marked terminal so they cannot overwrite the job status.
     """
-    from services.alpha_engine.ic_engine import get_ic_weights
+    from services.alpha_engine.ic_engine import get_production_ic_weights, shadow_ic_available
+    from services.alpha_engine.meta_model import shadow_available as shadow_meta_model_available
     from services.alpha_engine.regime_cluster import detect_regime
     from services.alpha_engine.optimizer import optimize
     from services.alpha_engine.store import log_prediction
+    from services.alpha_engine.containment import (
+        is_production_learning_enabled,
+        containment_reason,
+        production_alpha_source,
+        LEARNING_DATASET_VERSION,
+    )
     from services.global_context import get_global_context
 
     start = time.time()
     currency = _CURRENCY.get(market, "₹")
+
+    # Learning Alpha Engine remediation, Phase 1: containment state is fixed
+    # for the whole run — computed once, applied to every horizon below, and
+    # persisted to daily_picks_jobs (best-effort) for durable observability.
+    _production_learning_enabled = is_production_learning_enabled()
+    _try_job_containment(
+        job_id,
+        production_alpha_source=production_alpha_source(),
+        shadow_ic_available={h: shadow_ic_available(h, market=market) for h in ("short", "medium", "long")},
+        shadow_meta_model_available={h: shadow_meta_model_available(h, market=market) for h in ("short", "medium", "long")},
+        containment_reason=containment_reason(),
+        learning_dataset_version=LEARNING_DATASET_VERSION,
+    )
 
     # Phase 2A (alpha_observations) run identity: reuse the existing durable
     # Daily Picks job_id as run_id in production. When invoked without a
@@ -1396,16 +1445,24 @@ def _generate_picks_inner(
             picks[horizon] = []
             continue
 
-        # Phase 3 — IC weights (regime-adjusted)
-        ic_weights = get_ic_weights(
+        # Phase 3 — IC weights (regime-adjusted). Containment-gated: returns
+        # the fixed academic-prior weights while production learning is
+        # disabled (the default) — see get_production_ic_weights's docstring.
+        ic_weights = get_production_ic_weights(
             horizon,
             market=market,
             regime_multipliers=regime.get("weight_multipliers"),
         )
-        log.info(f"[picks] [{market}] {horizon} IC weights: {ic_weights}")
+        log.info(
+            f"[picks] [{market}] {horizon} IC weights "
+            f"({production_alpha_source()}): {ic_weights}"
+        )
 
         # Phase 4 — Z-score + alpha
-        universe = _zscore_and_rank(items, ic_weights, regime, regime_id, market=market)
+        universe = _zscore_and_rank(
+            items, ic_weights, regime, regime_id, market=market,
+            production_learning_enabled=_production_learning_enabled,
+        )
         ranked   = sorted(universe, key=lambda x: x.get("ranking_alpha", 0), reverse=True)
 
         # Quality gates before final selection:
@@ -1573,13 +1630,22 @@ def _generate_picks_inner(
             "regime":      regime_label,
             "n_scored":    len(universe),
             "n_buy":       sum(1 for r in universe if r.get("signal") == "BUY"),
-            "meta_model":  any(r.get("meta_alpha") is not None for r in top_buy),
+            # True only when the meta-model actually determined ranking for
+            # at least one published pick — not merely that a shadow value
+            # was computed. See "meta_alpha_used_for_ranking" per-item.
+            "meta_model":  any(r.get("meta_alpha_used_for_ranking") for r in top_buy),
+            # Learning Alpha Engine remediation, Phase 1 — observability.
+            "production_alpha_source": production_alpha_source(),
+            "shadow_meta_model_available": any(r.get("meta_alpha") is not None for r in top_buy),
+            "containment_reason": containment_reason(),
+            "learning_dataset_version": LEARNING_DATASET_VERSION,
         }
         log.info(
             f"[picks] [{market}] {horizon}: {len(universe)} scored, "
             f"{alpha_engine_meta[horizon]['n_buy']} BUY, "
             f"{len(top_buy)} picks | "
-            f"meta_model={'on' if alpha_engine_meta[horizon]['meta_model'] else 'off (IC alpha)'}"
+            f"meta_model={'on' if alpha_engine_meta[horizon]['meta_model'] else 'off (IC alpha)'} | "
+            f"alpha_source={alpha_engine_meta[horizon]['production_alpha_source']}"
         )
 
     # ── Phase 7: Log predictions to SQLite ────────────────────────────────────
@@ -1803,6 +1869,23 @@ def _try_job_progress(
         record_daily_picks_job_progress(
             job_id, phase, processed, total, **kwargs
         )
+    except Exception:
+        pass
+
+
+def _try_job_containment(job_id: str | None, **fields) -> None:
+    """Best-effort persistence of Learning Alpha Engine remediation, Phase 1
+    observability fields (production_alpha_source, shadow_ic_available,
+    shadow_meta_model_available, containment_reason, learning_dataset_version)
+    onto the durable daily_picks_jobs row. Silently swallows all errors —
+    never allowed to affect the Daily Picks job lifecycle or payload, same
+    isolation pattern as _try_job_progress above. No-op without a durable
+    job_id (e.g. test/local calls to _generate_picks_inner directly)."""
+    if not job_id or os.getenv("USE_POSTGRES") != "1":
+        return
+    try:
+        from services.postgres_store import record_daily_picks_job_containment
+        record_daily_picks_job_containment(job_id, **fields)
     except Exception:
         pass
 

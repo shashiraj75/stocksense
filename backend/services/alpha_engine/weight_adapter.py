@@ -29,13 +29,40 @@ def run_adaptation(market: str = "IN"):
     Run the full adaptation cycle for one market.
     Safe to call in a background thread after picks generation.
     Non-fatal — any error is caught and logged.
-    """
-    log.info(f"[weight_adapter] Starting adaptation cycle ({market}) …")
 
-    # ── 1. Invalidate IC cache ────────────────────────────────────────────────
+    Learning Alpha Engine remediation, Phase 1: while production learning is
+    disabled (the default — see services.alpha_engine.containment), this
+    function still invalidates the IC cache (step 1) so shadow/diagnostic IC
+    values (ic_engine.get_ic_values, shadow_ic_available) stay fresh against
+    the latest resolved outcomes — but it does NOT call meta_model.train().
+    No Learning Alpha IC/meta-model production artifact is trained or
+    overwritten while containment is active. Regime KMeans (step 3) remains
+    independent and unchanged by this containment — it trains on
+    regime_log's global macro features, not the legacy predictions/outcomes
+    join, and always runs regardless of the containment flag.
+
+    Cache invalidation is safe to leave unconditional because it can only
+    affect what a FRESH call to ic_engine.get_ic_weights() (the
+    live-adaptation-eligible path) would return next — and
+    get_production_ic_weights(), the only entry point PRODUCTION Daily
+    Picks ranking calls, never calls get_ic_weights() at all while
+    contained (see ic_engine.py). A stale-vs-fresh live IC cache is
+    therefore invisible to published ranking either way; it only changes
+    what shadow diagnostics observe.
+    """
+    from services.alpha_engine.containment import is_production_learning_enabled
+
+    production_enabled = is_production_learning_enabled()
+    log.info(f"[weight_adapter] Starting adaptation cycle ({market}) …")
+    if not production_enabled:
+        log.info("Production learning disabled: legacy training data quarantined.")
+
+    # ── 1. Invalidate IC cache — always, regardless of containment. This only
+    # refreshes the shadow/diagnostic live-IC value; production ranking never
+    # reads it while contained (see docstring above and ic_engine.py).
     try:
         ic_engine.invalidate_cache()
-        log.info("[weight_adapter] IC cache invalidated — will recompute on next picks run")
+        log.info("[weight_adapter] IC cache invalidated — shadow diagnostics will recompute on next read")
     except Exception as e:
         log.warning(f"[weight_adapter] IC invalidation error: {e}")
 
@@ -43,6 +70,12 @@ def run_adaptation(market: str = "IN"):
     for horizon in ("short", "medium", "long"):
         try:
             n = count_training_rows(horizon, market=market)
+            if not production_enabled:
+                log.info(
+                    f"[weight_adapter] {market}/{horizon}: containment active — "
+                    f"meta-model retraining skipped ({n} legacy rows quarantined, diagnostics only)"
+                )
+                continue
             if n >= meta_model.MIN_ROWS:
                 success = meta_model.train(horizon, market=market)
                 if success:

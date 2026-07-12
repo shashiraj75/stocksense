@@ -90,12 +90,28 @@ def picks_status(market: str = "IN"):
     db_active = job is not None and job.get("status") in ("queued", "running")
     generating = in_memory or db_active
 
+    # Learning Alpha Engine remediation, Phase 1 — current containment
+    # config, computed live (no DB read, no generation triggered). The
+    # per-run persisted fields on `job` below (when present) are the
+    # historical record of what a specific run actually used; this is
+    # "what would a run started right now use."
+    from services.alpha_engine.containment import (
+        is_production_learning_enabled, containment_reason,
+        production_alpha_source, LEARNING_DATASET_VERSION,
+    )
+
     resp = {
         "market": market,
         "generating": generating,
         "has_today": _dp.picks_generated_today(market),
         "last_error": _dp._last_error.get(market),
         "last_trigger_received_at": _dp._last_trigger_received_at.get(market),
+        "containment": {
+            "production_learning_enabled": is_production_learning_enabled(),
+            "production_alpha_source": production_alpha_source(),
+            "containment_reason": containment_reason(),
+            "learning_dataset_version": LEARNING_DATASET_VERSION,
+        },
     }
     if job:
         resp.update({
@@ -122,6 +138,15 @@ def picks_status(market: str = "IN"):
             # universe size. processed/total above are kept for compatibility.
             "phase_task_processed": job.get("phase_task_processed"),
             "phase_task_total": job.get("phase_task_total"),
+            # Learning Alpha Engine remediation, Phase 1 — Production
+            # Containment observability. Null on any job recorded before
+            # this release — never fabricated. See services/alpha_engine/
+            # containment.py for what these mean.
+            "production_alpha_source": job.get("production_alpha_source"),
+            "shadow_ic_available": job.get("shadow_ic_available"),
+            "shadow_meta_model_available": job.get("shadow_meta_model_available"),
+            "containment_reason": job.get("containment_reason"),
+            "learning_dataset_version": job.get("learning_dataset_version"),
         })
 
     # ── 3-phase US Daily Picks upgrade: premarket finalizer status ──────────

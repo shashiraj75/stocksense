@@ -268,13 +268,13 @@ function BacktestPanel({ horizon, benchmarkLabel }: { horizon: string; benchmark
       {data.score_buckets && data.score_buckets.length > 0 && (
         <div>
           <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
-            Confidence Score Calibration — Does higher confidence = higher accuracy?
+            Signal Strength Calibration — Does higher signal strength = higher accuracy?
           </p>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-gray-500 border-b border-dark-border">
-                  <th className="text-left py-1.5 pr-3">AI Confidence</th>
+                  <th className="text-left py-1.5 pr-3">Signal Strength</th>
                   <th className="text-right py-1.5 pr-3">Signals</th>
                   <th className="text-right py-1.5 pr-3">Hit Rate</th>
                   <th className="text-right py-1.5">Avg Return</th>
@@ -300,8 +300,8 @@ function BacktestPanel({ horizon, benchmarkLabel }: { horizon: string; benchmark
             </table>
           </div>
           <p className="text-[11px] text-gray-400 mt-1.5">
-            This table shows the real hit rate for each AI confidence band — not a theoretical score.
-            If 80+ confidence picks hit 72% of the time historically, that's a calibrated signal.
+            This table shows the real hit rate for each Signal Strength band — not a theoretical score.
+            If 80+ Signal Strength picks hit 72% of the time historically, that's a calibrated signal.
           </p>
         </div>
       )}
@@ -558,12 +558,15 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
 
         <div className="mb-3">
           <div className="flex justify-between text-xs text-gray-500 mb-1">
-            <span>AI Confidence</span>
+            <span>Signal Strength</span>
             <span className={clsx("font-medium", confidenceTextColor(pick.confidence))}>{pick.confidence}%</span>
           </div>
           <div className="h-1.5 bg-dark-border rounded-full overflow-hidden">
             <div className={clsx("h-full rounded-full", confidenceGradientClass(pick.confidence))} style={{ width: `${pick.confidence}%` }} />
           </div>
+          <p className="text-[10px] text-gray-500 mt-1">
+            Signal Strength is not a guaranteed probability of profit.
+          </p>
         </div>
 
         <div className="grid grid-cols-3 gap-2 mb-3">
@@ -576,7 +579,7 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
             </p>
           </div>
           <div className="bg-green-500/10 rounded-lg p-2 text-center border border-green-500/20">
-            <p className="text-[10px] text-gray-500 mb-0.5 flex items-center justify-center gap-1"><Target size={9} />Target</p>
+            <p className="text-[10px] text-gray-500 mb-0.5 flex items-center justify-center gap-1"><Target size={9} />Scenario Target</p>
             <p className="text-xs text-green-400 font-mono font-semibold">{currency}{pick.target?.toLocaleString(locale)}</p>
           </div>
           <div className="bg-red-500/10 rounded-lg p-2 text-center border border-red-500/20">
@@ -722,7 +725,7 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
             <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Absolute Signal Scores</p>
             {pick.tech_score != null && <ScoreBar label="Technical" value={pick.tech_score} color="text-blue-400" />}
             {pick.fund_score != null && <ScoreBar label="Fundamental" value={pick.fund_score} color="text-purple-400" />}
-            <ScoreBar label="AI Confidence" value={pick.confidence} color={confidenceTextColor(pick.confidence)} />
+            <ScoreBar label="Signal Strength" value={pick.confidence} color={confidenceTextColor(pick.confidence)} />
           </div>
 
           {pick.quality_factors?.breakdown && Object.keys(pick.quality_factors.breakdown).length > 0 && (

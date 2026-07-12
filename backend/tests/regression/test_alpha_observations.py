@@ -402,7 +402,8 @@ class TestGeneratePicksInnerShadowIntegration:
     def _run(self, job_id, save_obs_mock):
         candidates = ["AAA", "BBB", "CCC"]
 
-        def fake_zscore_and_rank(items, ic_weights, regime, regime_id, market="IN"):
+        def fake_zscore_and_rank(items, ic_weights, regime, regime_id, market="IN",
+                                  production_learning_enabled=None):
             # Every candidate scored, only some are BUY (mirrors the real
             # function's contract: full cross-section in, enriched full
             # cross-section out).

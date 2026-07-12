@@ -183,3 +183,11 @@ def predict(tech_z: float, fund_z: float, sentiment_z: float,
 
 def is_trained(horizon: str, market: str = "IN") -> bool:
     return os.path.exists(_model_path(horizon, market))
+
+
+def shadow_available(horizon: str, market: str = "IN") -> bool:
+    """Learning Alpha Engine remediation, Phase 1: whether a meta-model
+    artifact exists to produce a shadow prediction — an alias of is_trained
+    for observability call sites, independent of whether that shadow value
+    is allowed to influence production ranking (see containment.py)."""
+    return is_trained(horizon, market)

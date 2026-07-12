@@ -217,6 +217,26 @@ UPDATE paper_portfolio SET cash_usd = 100000.0 WHERE cash_usd = 10000.0;
 -- for now — the column accepts the value but no backend logic acts on it yet).
 ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS trade_management_mode TEXT NOT NULL DEFAULT 'manual';
 ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS exit_reason TEXT;
+-- Learning Alpha Engine remediation, Phase 1 — paper-trade provenance
+-- foundation. Purely additive and nullable: every existing row reads back
+-- unchanged (all NULL — genuinely unknown provenance, never guessed or
+-- backfilled). New trades MAY supply these when opened from a Daily Pick;
+-- when they don't, these stay NULL exactly like a legacy row. Nothing in
+-- this remediation phase reads or reports on these columns yet — that is
+-- deliberately left for a later phase once real data starts accumulating.
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS recommendation_source TEXT;
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS daily_pick_run_id TEXT;
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS daily_pick_rank SMALLINT;
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS recommendation_generated_at TIMESTAMPTZ;
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS recommendation_reference_price DOUBLE PRECISION;
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS recommendation_entry_low DOUBLE PRECISION;
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS recommendation_entry_high DOUBLE PRECISION;
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS recommendation_original_stop_loss DOUBLE PRECISION;
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS recommendation_original_target DOUBLE PRECISION;
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS model_version TEXT;
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS execution_slippage_pct DOUBLE PRECISION;
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS signal_override BOOLEAN;
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS levels_modified_after_entry BOOLEAN;
 -- Per-user Paper Trading notification preference — gates both the trade
 -- notifier's proximity/auto-close emails and (client-side) whether the
 -- Notifications toggle asks for browser permission. Paper Trading only;
@@ -431,6 +451,22 @@ ALTER TABLE daily_picks_jobs ADD COLUMN IF NOT EXISTS universe_selection_error_c
 -- "total" describes universe breadth or a phase task count.
 ALTER TABLE daily_picks_jobs ADD COLUMN IF NOT EXISTS phase_task_processed INTEGER;
 ALTER TABLE daily_picks_jobs ADD COLUMN IF NOT EXISTS phase_task_total INTEGER;
+
+-- Learning Alpha Engine remediation, Phase 1 — Production Containment and
+-- Evidence Preservation. Additive, nullable observability columns written
+-- once per run (containment state is fixed for the whole run, not
+-- per-horizon) via record_daily_picks_job_containment — same best-effort,
+-- never-affects-job-lifecycle isolation as the Release 12C columns above.
+-- Absent/null on any job row recorded before this release, or on a run
+-- where job_id was never provided (e.g. direct/local calls) — never
+-- fabricated. shadow_ic_available / shadow_meta_model_available are
+-- per-horizon booleans (JSONB) since containment.py's flag is global but
+-- shadow-data availability legitimately varies by horizon.
+ALTER TABLE daily_picks_jobs ADD COLUMN IF NOT EXISTS production_alpha_source TEXT;
+ALTER TABLE daily_picks_jobs ADD COLUMN IF NOT EXISTS shadow_ic_available JSONB;
+ALTER TABLE daily_picks_jobs ADD COLUMN IF NOT EXISTS shadow_meta_model_available JSONB;
+ALTER TABLE daily_picks_jobs ADD COLUMN IF NOT EXISTS containment_reason TEXT;
+ALTER TABLE daily_picks_jobs ADD COLUMN IF NOT EXISTS learning_dataset_version TEXT;
 
 -- Every table above had Row-Level Security disabled, meaning anyone with
 -- this project's URL + anon key (normally embedded in frontend JS by
@@ -1054,6 +1090,42 @@ def mark_daily_picks_job_completed(
         )
 
 
+def record_daily_picks_job_containment(
+    job_id: str,
+    production_alpha_source: str,
+    shadow_ic_available: dict,
+    shadow_meta_model_available: dict,
+    containment_reason: str | None,
+    learning_dataset_version: str,
+) -> None:
+    """
+    Learning Alpha Engine remediation, Phase 1 — persist containment
+    observability once per run onto the durable daily_picks_jobs row.
+    shadow_ic_available / shadow_meta_model_available are per-horizon
+    ({"short": bool, "medium": bool, "long": bool}) dicts, stored as JSONB.
+    Best-effort — callers (daily_picks._try_job_containment) already swallow
+    any exception raised here.
+    """
+    with _get_pool().connection() as conn:
+        conn.execute(
+            """UPDATE daily_picks_jobs
+               SET production_alpha_source = %s,
+                   shadow_ic_available = %s::jsonb,
+                   shadow_meta_model_available = %s::jsonb,
+                   containment_reason = %s,
+                   learning_dataset_version = %s
+               WHERE job_id = %s""",
+            (
+                production_alpha_source,
+                json.dumps(shadow_ic_available),
+                json.dumps(shadow_meta_model_available),
+                containment_reason,
+                learning_dataset_version,
+                job_id,
+            ),
+        )
+
+
 def mark_daily_picks_job_failed(
     job_id: str,
     completed_at,
@@ -1129,7 +1201,10 @@ def get_latest_daily_picks_job(market: str) -> dict | None:
                           screener_raw_count, universe_candidate_count,
                           universe_selection_attempts, universe_selection_reason,
                           universe_selection_error_category,
-                          phase_task_processed, phase_task_total
+                          phase_task_processed, phase_task_total,
+                          production_alpha_source, shadow_ic_available,
+                          shadow_meta_model_available, containment_reason,
+                          learning_dataset_version
                    FROM daily_picks_jobs
                    WHERE market = %s
                    ORDER BY started_at DESC LIMIT 1""",
@@ -1145,7 +1220,10 @@ def get_latest_daily_picks_job(market: str) -> dict | None:
                 "screener_raw_count", "universe_candidate_count",
                 "universe_selection_attempts", "universe_selection_reason",
                 "universe_selection_error_category",
-                "phase_task_processed", "phase_task_total"]
+                "phase_task_processed", "phase_task_total",
+                "production_alpha_source", "shadow_ic_available",
+                "shadow_meta_model_available", "containment_reason",
+                "learning_dataset_version"]
         return dict(zip(cols, row))
     except Exception:
         return None

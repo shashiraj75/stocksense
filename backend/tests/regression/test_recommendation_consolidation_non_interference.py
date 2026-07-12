@@ -100,9 +100,16 @@ class TestNoChangeToExistingBehavior:
         assert hasattr(engine, "_apply_financial_strength_adjustment")
 
     def test_daily_picks_zscore_and_rank_unchanged_in_signature(self):
+        """Locks in that RCI specifically never touched this signature.
+        Learning Alpha Engine remediation, Phase 1 added
+        `production_learning_enabled` (containment gating) — an intentional,
+        unrelated change; updated here rather than a regression."""
         from services.daily_picks import _zscore_and_rank
         sig = inspect.signature(_zscore_and_rank)
-        assert list(sig.parameters) == ["items", "ic_weights", "regime", "regime_id", "market"]
+        assert list(sig.parameters) == [
+            "items", "ic_weights", "regime", "regime_id", "market",
+            "production_learning_enabled",
+        ]
 
     def test_legacy_growth_score_valuation_score_fields_remain_quality_factors_sourced(self):
         """Re-confirms Sprint #002's Discrepancy 3 finding is still true

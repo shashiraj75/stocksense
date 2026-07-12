@@ -177,6 +177,48 @@ def get_ic_weights(horizon: str, market: str = "IN",
     return weights
 
 
+def _prior_weights(horizon: str, market: str, regime_multipliers: dict[str, float] | None) -> dict[str, float]:
+    """Weights derived purely from ACADEMIC_PRIOR_IC — no live outcome data
+    involved at all, not even to decide whether to use it."""
+    ic = dict(ACADEMIC_PRIOR_IC[market][horizon])
+    if regime_multipliers:
+        ic = {k: max(0.0, v * regime_multipliers.get(k, 1.0)) for k, v in ic.items()}
+    raw = {k: max(0.0, v) for k, v in ic.items()}
+    total = sum(raw.values()) or 1.0
+    return {k: round(v / total, 4) for k, v in raw.items()}
+
+
+def get_production_ic_weights(horizon: str, market: str = "IN",
+                               regime_multipliers: dict[str, float] | None = None) -> dict[str, float]:
+    """
+    Containment-gated entry point for PRODUCTION Daily Picks ranking.
+
+    Learning Alpha Engine remediation, Phase 1: while production learning is
+    disabled (the default — see services.alpha_engine.containment), this
+    always returns the fixed academic-prior IC weights, regime-adjusted the
+    same deterministic way get_ic_weights() always has been — it never calls
+    into the legacy predictions/outcomes join. Live IC (get_ic_weights) keeps
+    computing elsewhere for shadow/diagnostic use (see shadow_ic_available)
+    but is never returned from here until production learning is explicitly
+    re-enabled with LEARNING_ALPHA_PRODUCTION_ENABLED=1.
+    """
+    from services.alpha_engine.containment import is_production_learning_enabled
+
+    if is_production_learning_enabled():
+        return get_ic_weights(horizon, market=market, regime_multipliers=regime_multipliers)
+    return _prior_weights(horizon, market, regime_multipliers)
+
+
+def shadow_ic_available(horizon: str, market: str = "IN") -> bool:
+    """
+    True when enough real outcome data exists to compute a live IC for at
+    least one factor (i.e. _compute_live_ic would return something other
+    than None) — purely observational, never used to gate production
+    ranking. Safe to call regardless of the containment flag's state.
+    """
+    return _compute_live_ic(horizon, market) is not None
+
+
 def get_ic_values(horizon: str, market: str = "IN") -> dict[str, float]:
     """Return raw IC values (not weights) for display and diagnostics."""
     get_ic_weights(horizon, market)  # populates cache

@@ -1,4 +1,5 @@
 import os
+import math
 import logging
 import threading
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -422,6 +423,23 @@ class BuyRequest(BaseModel):
     # today — validated here anyway since no client currently sends it.
     trade_management_mode: Literal["manual", "auto", "ai_assisted"] = "manual"
 
+    # Learning Alpha Engine remediation, Phase 1 — paper-trade provenance
+    # foundation. All optional/nullable: no client sends these yet, so every
+    # trade opened today still stores NULL for all of them, same as a
+    # legacy row — genuinely unknown provenance, never guessed. A future
+    # "Buy from Daily Pick" UI flow can start supplying them without any
+    # further backend change.
+    recommendation_source: str | None = None
+    daily_pick_run_id: str | None = None
+    daily_pick_rank: int | None = None
+    recommendation_generated_at: str | None = None
+    recommendation_reference_price: float | None = None
+    recommendation_entry_low: float | None = None
+    recommendation_entry_high: float | None = None
+    recommendation_original_stop_loss: float | None = None
+    recommendation_original_target: float | None = None
+    model_version: str | None = None
+
 
 class SellRequest(BaseModel):
     price: float
@@ -666,12 +684,53 @@ def paper_buy(req: BuyRequest, user_id: str = Depends(get_current_user_id)):
                 detail=f"Insufficient {req.market} funds. Available: {sym}{available:,.2f}, Required: {sym}{cost:,.2f}"
             )
 
+        # Learning Alpha Engine remediation, Phase 1 (corrected per review):
+        #
+        # execution_slippage_pct is computed only when BOTH a
+        # recommendation_source is known AND recommendation_reference_price
+        # is a finite, strictly-positive number — otherwise NULL. Guards
+        # against NaN/inf/negative/zero reference prices (a malformed or
+        # absent reference price makes the slippage figure meaningless, not
+        # just risky to divide by).
+        #
+        # signal_override is NOT derived from the client-supplied `signal`
+        # field — that field is not an authoritative recommendation record,
+        # a client could send anything. This phase has no backend
+        # validation of a trade against an actual stored Daily Pick
+        # recommendation yet, so signal_override always stays NULL here
+        # rather than fabricate true/false for provenance we cannot verify.
+        # A later phase that adds real validation against a stored
+        # recommendation can populate this without any schema change.
+        execution_slippage_pct = None
+        ref_price = req.recommendation_reference_price
+        if (
+            req.recommendation_source is not None
+            and ref_price is not None
+            and math.isfinite(ref_price)
+            and ref_price > 0
+        ):
+            execution_slippage_pct = round((req.price - ref_price) / ref_price * 100, 4)
+        signal_override = None
+
         row = conn.execute(
             """INSERT INTO paper_trades
-               (session_id, user_id, symbol, market, quantity, entry_price, signal, horizon, stop_loss, target_price, trade_management_mode)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+               (session_id, user_id, symbol, market, quantity, entry_price, signal, horizon,
+                stop_loss, target_price, trade_management_mode,
+                recommendation_source, daily_pick_run_id, daily_pick_rank,
+                recommendation_generated_at, recommendation_reference_price,
+                recommendation_entry_low, recommendation_entry_high,
+                recommendation_original_stop_loss, recommendation_original_target,
+                model_version, execution_slippage_pct, signal_override)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                       %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               RETURNING id""",
             (user_id, user_id, req.symbol.upper(), req.market, req.quantity,
-             req.price, req.signal, req.horizon, req.stop_loss, req.target_price, req.trade_management_mode)
+             req.price, req.signal, req.horizon, req.stop_loss, req.target_price, req.trade_management_mode,
+             req.recommendation_source, req.daily_pick_run_id, req.daily_pick_rank,
+             req.recommendation_generated_at, req.recommendation_reference_price,
+             req.recommendation_entry_low, req.recommendation_entry_high,
+             req.recommendation_original_stop_loss, req.recommendation_original_target,
+             req.model_version, execution_slippage_pct, signal_override)
         ).fetchone()
         remaining_cash = debited[0]  # already post-debit — RETURNING reflects the new balance
 
@@ -747,7 +806,8 @@ def paper_sell(trade_id: int, req: SellRequest, user_id: str = Depends(get_curre
 def edit_trade(trade_id: int, req: EditRequest, user_id: str = Depends(get_current_user_id)):
     with _conn() as conn:
         trade = conn.execute(
-            "SELECT user_id, status, entry_price, quantity, market FROM paper_trades WHERE id = %s",
+            "SELECT user_id, status, entry_price, quantity, market, stop_loss, target_price "
+            "FROM paper_trades WHERE id = %s",
             (trade_id,)
         ).fetchone()
         if trade is None:
@@ -757,15 +817,45 @@ def edit_trade(trade_id: int, req: EditRequest, user_id: str = Depends(get_curre
         if trade[1] != "OPEN":
             raise HTTPException(status_code=400, detail="Cannot edit a closed trade")
 
-        old_entry, qty, trade_market = trade[2], trade[3], trade[4]
+        old_entry, qty, trade_market, old_stop_loss, old_target_price = trade[2], trade[3], trade[4], trade[5], trade[6]
         if trade_market not in _CASH_COL:
             raise HTTPException(status_code=500, detail=f"Trade has an unrecognized market '{trade_market}' — cannot determine which cash ledger to adjust")
         cash_col = _CASH_COL[trade_market]
 
-        conn.execute(
-            "UPDATE paper_trades SET stop_loss = %s, target_price = %s WHERE id = %s",
-            (req.stop_loss, req.target_price, trade_id)
-        )
+        # Learning Alpha Engine remediation, Phase 1 (corrected per review):
+        #
+        # Partial-PATCH semantics: EditRequest.stop_loss/target_price both
+        # default to None, so a request body that OMITS a field is
+        # indistinguishable from one that explicitly submits null — UNLESS
+        # we check model_fields_set (which JSON keys the client actually
+        # sent), not just the resolved attribute value. An entry_price-only
+        # request (stop_loss/target_price omitted) must preserve the
+        # currently stored levels, not wipe them to NULL; an explicit
+        # `{"stop_loss": null, ...}` still clears that level, matching this
+        # endpoint's pre-existing behavior for a client that does that on
+        # purpose.
+        new_stop_loss = req.stop_loss if "stop_loss" in req.model_fields_set else old_stop_loss
+        new_target_price = req.target_price if "target_price" in req.model_fields_set else old_target_price
+
+        # levels_modified_after_entry is set TRUE only when stop_loss or
+        # target_price GENUINELY changes from its previously stored value —
+        # an entry_price-only correction (omitted or resubmitted-identical)
+        # or a no-op edit must not set it. Once TRUE it must never revert:
+        # the "unchanged" branch below simply never touches the column
+        # again (rather than writing FALSE), so a prior TRUE always
+        # survives a later no-op edit.
+        levels_changed = (new_stop_loss != old_stop_loss) or (new_target_price != old_target_price)
+        if levels_changed:
+            conn.execute(
+                "UPDATE paper_trades SET stop_loss = %s, target_price = %s, "
+                "levels_modified_after_entry = TRUE WHERE id = %s",
+                (new_stop_loss, new_target_price, trade_id)
+            )
+        else:
+            conn.execute(
+                "UPDATE paper_trades SET stop_loss = %s, target_price = %s WHERE id = %s",
+                (new_stop_loss, new_target_price, trade_id)
+            )
 
         if req.entry_price and req.entry_price > 0 and req.entry_price != old_entry:
             cash_delta = (old_entry - req.entry_price) * qty
