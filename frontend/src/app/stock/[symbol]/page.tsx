@@ -352,12 +352,24 @@ export default function StockPage() {
         <div className="text-5xl">🔍</div>
         <h1 className="text-2xl font-bold text-white">Symbol not supported</h1>
         <p className="text-gray-400 text-sm max-w-sm">
-          {symbol} ({market === "IN" ? "🇮🇳 NSE India" : market === "US" ? "🇺🇸 NYSE / NASDAQ" : market}) isn&apos;t available in our supported universe.
-          Double-check the ticker — StockSense360 doesn&apos;t yet cover every listed symbol.
+          {/* Exchange-coverage wording, not a claim about which exchange the
+              symbol itself is listed on — a real, valid company can still
+              be genuinely BSE-only, and this copy must never visually imply
+              it's an NSE listing StockSense360 simply hasn't added yet. */}
+          {market === "IN"
+            ? <>{symbol} is not available in StockSense360&apos;s NSE coverage. StockSense360 currently supports NSE-listed Indian equities. Check the ticker or search for another stock.</>
+            : market === "US"
+            ? <>{symbol} is not available in StockSense360&apos;s supported US equity universe. Check the ticker or search for another stock.</>
+            : <>{symbol} ({market}) isn&apos;t available in our supported universe. Check the ticker or search for another stock.</>}
         </p>
-        <a href="/" className="px-5 py-2 rounded-xl bg-brand-500 text-white text-sm font-medium hover:bg-brand-600 transition-colors">
-          Back to Dashboard
-        </a>
+        {/* Goes straight to /dashboard, not the public "/" landing page —
+            a user who reached an unsupported symbol via search, a direct
+            URL, or a saved link is already past the landing page and
+            shouldn't need a second click through its own "Go to Dashboard"
+            CTA to get there. */}
+        <Link href="/dashboard" className="px-5 py-2 rounded-xl bg-brand-500 text-white text-sm font-medium hover:bg-brand-600 transition-colors">
+          Go to Dashboard
+        </Link>
       </div>
     );
   }
