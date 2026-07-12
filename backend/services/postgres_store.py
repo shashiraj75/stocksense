@@ -255,6 +255,67 @@ ALTER TABLE intelligence_engine_shadow_runs ADD COLUMN IF NOT EXISTS liquidity_f
 ALTER TABLE intelligence_engine_shadow_runs ADD COLUMN IF NOT EXISTS data_confidence_average DOUBLE PRECISION;
 ALTER TABLE intelligence_engine_shadow_runs ADD COLUMN IF NOT EXISTS top_failure_reasons JSONB;
 ALTER TABLE intelligence_engine_shadow_runs ADD COLUMN IF NOT EXISTS sample_liquidity_rejections JSONB;
+
+-- Learning Alpha Engine remediation, Phase 2A — shadow-only canonical
+-- cross-sectional alpha observation store. Additive, standalone table:
+-- nothing reads from it in production yet (get_training_data/ic_engine/
+-- meta_model are untouched and keep reading `predictions`/`outcomes`
+-- exactly as before). One row per successfully scored, non-rejected Daily
+-- Picks candidate per run, written once after _zscore_and_rank(), final
+-- Top-6 selection, and portfolio optimisation have all completed — so a
+-- row's selection-metadata columns are correct at insert time and never
+-- need a follow-up UPDATE. See
+-- Documentation/Engineering-Handbook (Phase 2A report) for full rationale.
+CREATE TABLE IF NOT EXISTS alpha_observations (
+    observation_id            UUID PRIMARY KEY,
+    run_id                    TEXT NOT NULL,
+    market                    TEXT NOT NULL,
+    horizon                   TEXT NOT NULL,
+    symbol                    TEXT NOT NULL,
+    run_generated_at          TIMESTAMPTZ NOT NULL,
+    run_session_date          DATE NOT NULL,
+    reference_session_date    DATE NOT NULL,
+    reference_price           DOUBLE PRECISION NOT NULL,
+    reference_price_source    TEXT NOT NULL,
+    reference_price_basis     TEXT NOT NULL,
+    -- Raw, single-stock factor scores — NEVER a cross-sectional value.
+    technical_raw_score       DOUBLE PRECISION,
+    fundamental_raw_score     DOUBLE PRECISION,
+    sentiment_raw_score       DOUBLE PRECISION,
+    quality_raw_score         DOUBLE PRECISION,
+    -- Evidence-availability flags, captured at source (Phase 1), never
+    -- inferred after the fact from a fallback numeric value.
+    sentiment_available       BOOLEAN NOT NULL,
+    quality_available         BOOLEAN NOT NULL,
+    -- True cross-sectional z-scores from _zscore_and_rank() — never the
+    -- raw score divided by 100.
+    technical_zscore          DOUBLE PRECISION NOT NULL,
+    fundamental_zscore        DOUBLE PRECISION NOT NULL,
+    sentiment_zscore          DOUBLE PRECISION NOT NULL,
+    quality_zscore            DOUBLE PRECISION NOT NULL,
+    composite_score           DOUBLE PRECISION,
+    ic_combined_alpha         DOUBLE PRECISION NOT NULL,
+    meta_alpha                DOUBLE PRECISION,
+    ranking_alpha             DOUBLE PRECISION NOT NULL,
+    signal                    TEXT,
+    signal_confidence         DOUBLE PRECISION,
+    canonical_regime_id       SMALLINT,
+    canonical_regime_label    TEXT,
+    feature_schema_version    SMALLINT NOT NULL,
+    regime_schema_version     SMALLINT NOT NULL,
+    is_daily_pick             BOOLEAN NOT NULL DEFAULT FALSE,
+    pick_rank                 SMALLINT,
+    portfolio_weight          DOUBLE PRECISION,
+    created_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (run_id, market, horizon, symbol)
+);
+CREATE INDEX IF NOT EXISTS idx_alpha_observations_market_horizon_session
+    ON alpha_observations(market, horizon, reference_session_date);
+CREATE INDEX IF NOT EXISTS idx_alpha_observations_run
+    ON alpha_observations(run_id);
+CREATE INDEX IF NOT EXISTS idx_alpha_observations_symbol_market_horizon
+    ON alpha_observations(symbol, market, horizon);
+
 CREATE TABLE IF NOT EXISTS watchlist (
     id         BIGSERIAL PRIMARY KEY,
     user_id    TEXT NOT NULL,
@@ -385,6 +446,7 @@ ALTER TABLE predictions          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE outcomes             ENABLE ROW LEVEL SECURITY;
 ALTER TABLE regime_log           ENABLE ROW LEVEL SECURITY;
 ALTER TABLE score_snapshots      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE alpha_observations   ENABLE ROW LEVEL SECURITY;
 ALTER TABLE daily_picks_cache    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE factor_ic_history    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE paper_portfolio      ENABLE ROW LEVEL SECURITY;
@@ -718,6 +780,79 @@ def get_factor_ic_history(horizon: str) -> list[dict]:
         """, (horizon,)).fetchall()
     cols = ["factor", "window_days", "ic_value", "sample_size", "is_live", "computed_at"]
     return [dict(zip(cols, r)) for r in rows]
+
+
+# ── Learning Alpha Engine remediation, Phase 2A: shadow-only canonical ─────
+# alpha observation store. save_alpha_observations() is the ONLY write path
+# for the alpha_observations table — nothing in this module reads from it,
+# and no other service imports a read function for it yet (shadow-only, by
+# design, for this phase).
+
+def init_alpha_observations_schema() -> None:
+    """Idempotent — CREATE TABLE IF NOT EXISTS / ADD COLUMN IF NOT EXISTS are
+    already part of the shared SCHEMA_SQL executed by init_db(); this is a
+    thin, explicitly-named alias so call sites can express intent without
+    re-running the entire schema string themselves."""
+    init_db()
+
+
+def save_alpha_observations(rows: list[dict]) -> bool:
+    """
+    Bulk-insert one canonical alpha_observations row per dict in `rows` for a
+    single (run_id, market, horizon) snapshot.
+
+    Idempotent for retries of the same run: ON CONFLICT (run_id, market,
+    horizon, symbol) DO NOTHING — a retried Daily Picks run reusing the same
+    job_id/run_id simply skips rows it already wrote, while a genuinely new
+    run_id (manual rerun) always inserts fresh rows.
+
+    Returns True on success, False on any failure (exception is logged, not
+    raised) — this is shadow telemetry for this phase; a failure here must
+    never interrupt or corrupt the Daily Picks job lifecycle or payload.
+    """
+    if not rows:
+        return True
+    try:
+        with _get_pool().connection() as conn:
+            conn.executemany("""
+                INSERT INTO alpha_observations (
+                    observation_id, run_id, market, horizon, symbol,
+                    run_generated_at, run_session_date, reference_session_date,
+                    reference_price, reference_price_source, reference_price_basis,
+                    technical_raw_score, fundamental_raw_score,
+                    sentiment_raw_score, quality_raw_score,
+                    sentiment_available, quality_available,
+                    technical_zscore, fundamental_zscore,
+                    sentiment_zscore, quality_zscore,
+                    composite_score, ic_combined_alpha, meta_alpha, ranking_alpha,
+                    signal, signal_confidence,
+                    canonical_regime_id, canonical_regime_label,
+                    feature_schema_version, regime_schema_version,
+                    is_daily_pick, pick_rank, portfolio_weight
+                ) VALUES (
+                    %(observation_id)s, %(run_id)s, %(market)s, %(horizon)s, %(symbol)s,
+                    %(run_generated_at)s, %(run_session_date)s, %(reference_session_date)s,
+                    %(reference_price)s, %(reference_price_source)s, %(reference_price_basis)s,
+                    %(technical_raw_score)s, %(fundamental_raw_score)s,
+                    %(sentiment_raw_score)s, %(quality_raw_score)s,
+                    %(sentiment_available)s, %(quality_available)s,
+                    %(technical_zscore)s, %(fundamental_zscore)s,
+                    %(sentiment_zscore)s, %(quality_zscore)s,
+                    %(composite_score)s, %(ic_combined_alpha)s, %(meta_alpha)s, %(ranking_alpha)s,
+                    %(signal)s, %(signal_confidence)s,
+                    %(canonical_regime_id)s, %(canonical_regime_label)s,
+                    %(feature_schema_version)s, %(regime_schema_version)s,
+                    %(is_daily_pick)s, %(pick_rank)s, %(portfolio_weight)s
+                )
+                ON CONFLICT (run_id, market, horizon, symbol) DO NOTHING
+            """, rows)
+        return True
+    except Exception as e:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            f"[postgres_store] save_alpha_observations failed ({len(rows)} rows): {e}"
+        )
+        return False
 
 
 # ── New: Daily picks performance (section 5) ────────────────────────────────

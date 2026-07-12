@@ -27,8 +27,125 @@ import numpy as np
 import yfinance as yf
 
 from services.prediction_engine import PredictionEngine
+from services.alpha_engine import alpha_observations as _alpha_obs
 
 log = logging.getLogger(__name__)
+
+# Learning Alpha Engine remediation, Phase 2A — shadow-only canonical
+# cross-sectional alpha observation snapshot. See alpha_observations.py's
+# module docstring: nothing in production reads this table yet.
+
+
+# Keys present on internal candidate dicts (added for alpha_observations
+# construction only) that must never leak into the published Daily Picks
+# JSON payload — stripped when picks[horizon] is assigned.
+_ALPHA_OBS_ONLY_KEYS = {"sentiment_available", "quality_available", "quality_raw_score"}
+
+
+def _market_local_date(dt: datetime, market: str):
+    """Market-local calendar date for a tz-aware UTC datetime — same
+    IST/US-Eastern convention already used by picks_generated_today()."""
+    from datetime import timedelta as _timedelta
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    tz = timezone(_timedelta(hours=5, minutes=30)) if market == "IN" else _ZoneInfo("America/New_York")
+    return dt.astimezone(tz).date()
+
+
+def _parse_reference_session_date(as_of: str | None):
+    """The date component of generation_reference_as_of (a daily-bar
+    timestamp, e.g. pandas Timestamp.isoformat() — already the trading
+    session's own date, not a live quote timestamp needing tz conversion)."""
+    if not as_of:
+        return None
+    try:
+        return datetime.fromisoformat(as_of.replace("Z", "+00:00")).date()
+    except Exception:
+        return None
+
+
+def _build_alpha_observation_row(
+    item: dict, *, run_id: str, market: str, horizon: str,
+    run_generated_at: datetime, run_session_date, regime_id, regime_label,
+    pick_meta: dict | None = None,
+) -> dict | None:
+    """
+    Build one canonical alpha_observations row from a single _zscore_and_rank
+    enriched candidate. Returns None (and logs a structured warning) when
+    required generation-reference provenance is missing or reference_price
+    is not strictly positive — Part E of the Phase 2A spec explicitly
+    forbids fabricating provenance (never substitute current price or 0.0),
+    so such a row is simply omitted from this shadow-only table rather than
+    persisted with invented values.
+    """
+    symbol = item.get("symbol")
+    ref_price = item.get("generation_reference_price")
+    ref_source = item.get("generation_reference_source")
+    ref_basis = item.get("generation_reference_price_basis")
+    ref_as_of = item.get("generation_reference_as_of")
+    ref_session_date = _parse_reference_session_date(ref_as_of)
+
+    if (
+        not ref_source or not ref_basis or not ref_session_date
+        or ref_price is None or not isinstance(ref_price, (int, float))
+        or ref_price <= 0
+    ):
+        log.warning(
+            f"[alpha_observations] [{market}] [{horizon}] {symbol}: missing/invalid "
+            f"generation-reference provenance (price={ref_price!r}, source={ref_source!r}, "
+            f"basis={ref_basis!r}, as_of={ref_as_of!r}) — omitting from canonical snapshot, "
+            "not substituting current price or 0.0."
+        )
+        return None
+
+    zscores = item.get("factor_zscores") or {}
+    return {
+        "observation_id": str(_uuid.uuid4()),
+        "run_id": run_id,
+        "market": market,
+        "horizon": horizon,
+        "symbol": symbol,
+        "run_generated_at": run_generated_at,
+        "run_session_date": run_session_date,
+        "reference_session_date": ref_session_date,
+        "reference_price": float(ref_price),
+        "reference_price_source": ref_source,
+        "reference_price_basis": ref_basis,
+        # Raw scores: never fabricated when the underlying evidence was
+        # unavailable — a missing sentiment/quality reading stores NULL here
+        # even though _zscore_and_rank() may have used a fallback internally
+        # for ranking purposes (that internal fallback is unchanged by this
+        # phase; this column just never repeats it as if it were evidence).
+        "technical_raw_score": item.get("tech_score"),
+        "fundamental_raw_score": item.get("fund_score"),
+        "sentiment_raw_score": item.get("sentiment_score") if item.get("sentiment_available") else None,
+        # Never the ranking field (`quality_score`, already `or 50`-coalesced
+        # by _predict_stock) — quality_raw_score is the genuine pre-fallback
+        # source value, which correctly preserves a real 0 instead of
+        # silently reporting the ranking fallback of 50 as if it were
+        # genuine evidence.
+        "quality_raw_score": item.get("quality_raw_score") if item.get("quality_available") else None,
+        "sentiment_available": bool(item.get("sentiment_available", False)),
+        "quality_available": bool(item.get("quality_available", False)),
+        "technical_zscore": zscores.get("tech", 0.0),
+        "fundamental_zscore": zscores.get("fund", 0.0),
+        "sentiment_zscore": zscores.get("sentiment", 0.0),
+        "quality_zscore": zscores.get("quality", 0.0),
+        "composite_score": item.get("composite_score"),
+        "ic_combined_alpha": item.get("combined_alpha", 0.0),
+        "meta_alpha": item.get("meta_alpha"),
+        "ranking_alpha": item.get("ranking_alpha", item.get("combined_alpha", 0.0)),
+        "signal": item.get("signal"),
+        "signal_confidence": item.get("confidence"),
+        # Canonical GLOBAL KMeans regime — never the local per-stock
+        # BULL/BEAR/SIDEWAYS trend string PredictionEngine computes.
+        "canonical_regime_id": regime_id,
+        "canonical_regime_label": regime_label,
+        "feature_schema_version": _alpha_obs.FEATURE_SCHEMA_VERSION,
+        "regime_schema_version": _alpha_obs.REGIME_SCHEMA_VERSION,
+        "is_daily_pick": bool(pick_meta),
+        "pick_rank": (pick_meta or {}).get("pick_rank"),
+        "portfolio_weight": (pick_meta or {}).get("portfolio_weight"),
+    }
 
 def _cache_file(market: str) -> str:
     suffix = "" if market == "IN" else f"_{market.lower()}"
@@ -689,6 +806,20 @@ def _predict_stock(symbol: str, horizon: str, market: str = "IN") -> dict | None
             and math.isfinite(_sent_raw)
         )
 
+        # Phase 2A (alpha_observations): quality evidence availability AND the
+        # genuine pre-fallback source value must be captured at source, not
+        # inferred later from a numeric value. qf.get("score") below already
+        # falls back to 50 for ranking purposes via `or 50` — but `or` treats
+        # a genuine 0 as falsy, so reading that already-coalesced value back
+        # out would silently turn a real 0 into a fabricated 50. _quality_raw
+        # reads qf.get("score") directly, once, before any `or`-coalescing,
+        # so a genuine 0 is preserved exactly. This does not change the
+        # ranking field (`quality_score` below) or its `or 50` fallback at
+        # all — it is purely additional, internal-only metadata for the
+        # shadow alpha_observations builder.
+        _quality_raw = qf.get("score")
+        _quality_available = _quality_raw is not None
+
         return {
             "symbol":      symbol,
             "name":        result.get("company_name", symbol),
@@ -714,6 +845,11 @@ def _predict_stock(symbol: str, horizon: str, market: str = "IN") -> dict | None
             "fund_score":     result.get("fundamental_score", {}).get("score", 50),
             "sentiment_score": float(_sent_raw) if _sent_available else None,
             "quality_score":  qf.get("score") or 50,
+            "sentiment_available": _sent_available,
+            "quality_available":   _quality_available,
+            # alpha_observations-only: the genuine pre-fallback quality
+            # source value (never `or`-coalesced) — see _quality_raw above.
+            "quality_raw_score":   _quality_raw,
             "sentiment":      _sent.get("label", "NEUTRAL"),
             "reasoning":      reasoning,
             "summary":        _build_summary(result, horizon, _CURRENCY.get(market, "₹")),
@@ -1144,6 +1280,15 @@ def _generate_picks_inner(
     start = time.time()
     currency = _CURRENCY.get(market, "₹")
 
+    # Phase 2A (alpha_observations) run identity: reuse the existing durable
+    # Daily Picks job_id as run_id in production. When invoked without a
+    # job_id (test/local context), generate exactly ONE fallback run_id here
+    # and reuse it for every candidate and horizon in this run — never a
+    # different run_id per row.
+    _alpha_run_id = job_id or str(_uuid.uuid4())
+    _alpha_run_generated_at = datetime.now(timezone.utc)
+    _alpha_run_session_date = _market_local_date(_alpha_run_generated_at, market)
+
     # State: job is now executing — no work counts to report yet.
     # Outcome resolution for past predictions is NOT run here — it is owned
     # exclusively by the dedicated periodic _outcome_resolver_loop (api/main.py),
@@ -1365,7 +1510,64 @@ def _generate_picks_inner(
             # Cap single-pick allocation at 50% — 100% in one stock is too aggressive
             top_buy[0]["portfolio_weight"] = 0.50
 
-        picks[horizon] = top_buy
+        # Final-pick selection metadata for the alpha_observations snapshot
+        # below, kept OUT of the `top_buy`/`universe` dicts themselves —
+        # those dicts are serialized as-is into the published payload
+        # (`picks[horizon] = top_buy`), so adding new keys to them would
+        # change the published Daily Picks JSON. portfolio_weight is already
+        # set directly on `pick` above (pre-existing behavior, already part
+        # of today's payload) — only pick_rank/is_daily_pick are net-new for
+        # this phase, and they stay in this side dict instead.
+        _pick_meta_by_symbol = {
+            _pick["symbol"]: {"pick_rank": _rank, "portfolio_weight": _pick.get("portfolio_weight")}
+            for _rank, _pick in enumerate(top_buy, start=1)
+        }
+
+        # Published-payload safety: `sentiment_available`/`quality_available`
+        # (Phase 2A additions to _predict_stock's return dict, needed below
+        # to build alpha_observations rows honestly) must NOT appear in the
+        # published Daily Picks JSON — strip them from the copies assigned
+        # to `picks[horizon]` only; `universe` (used for the snapshot below)
+        # keeps the original dicts untouched.
+        picks[horizon] = [
+            {k: v for k, v in pick.items() if k not in _ALPHA_OBS_ONLY_KEYS}
+            for pick in top_buy
+        ]
+
+        # ── Phase 2A: shadow-only canonical alpha_observations snapshot ──
+        # Built from the COMPLETE enriched cross-sectional universe (every
+        # successfully scored, non-rejected candidate — not just the Top-6
+        # winners), after z-scoring, final selection, and portfolio
+        # optimisation have all completed, so selection metadata is correct
+        # at insert time. Persisted once per horizon in a single bulk call.
+        # Failure here is logged and swallowed — it must never affect the
+        # Daily Picks job lifecycle or the payload already computed above.
+        try:
+            _obs_rows = [
+                row for row in (
+                    _build_alpha_observation_row(
+                        cand, run_id=_alpha_run_id, market=market, horizon=horizon,
+                        run_generated_at=_alpha_run_generated_at,
+                        run_session_date=_alpha_run_session_date,
+                        regime_id=regime_id, regime_label=regime_label,
+                        pick_meta=_pick_meta_by_symbol.get(cand.get("symbol")),
+                    )
+                    for cand in universe
+                )
+                if row is not None
+            ]
+            if _obs_rows:
+                _ok = _alpha_obs.save_observations(_obs_rows)
+                if not _ok:
+                    log.warning(
+                        f"[alpha_observations] [{market}] [{horizon}] save_observations "
+                        f"reported failure for {len(_obs_rows)} rows (non-fatal, shadow-only)."
+                    )
+        except Exception as e:
+            log.warning(
+                f"[alpha_observations] [{market}] [{horizon}] snapshot persistence failed "
+                f"(non-fatal, shadow-only): {e}"
+            )
         alpha_engine_meta[horizon] = {
             "ic_weights":  ic_weights,
             "regime":      regime_label,
