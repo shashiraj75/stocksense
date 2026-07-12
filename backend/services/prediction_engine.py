@@ -2359,6 +2359,7 @@ class PredictionEngine:
                 signal=signal,
                 price=current_price,
                 regime_label=regime.get("trend", ""),
+                market=market,
             )
         except Exception as e:
             log.warning("Failed to log prediction for %s: %s", symbol, e)
