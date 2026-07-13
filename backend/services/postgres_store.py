@@ -599,6 +599,39 @@ def log_prediction(symbol: str, horizon: str, factor_zscores: dict,
         ))
 
 
+
+# Shared upsert SQL — used by both the single-row autocommit path
+# (log_outcome) and the transactional manifest batch writer
+# (execute_outcome_writes_transactional), so the write semantics can never
+# drift apart between the two call sites.
+_OUTCOME_UPSERT_SQL = """
+    INSERT INTO outcomes (resolved_at, symbol, horizon, pred_date, market,
+                          return_1d, return_5d, return_20d, return_60d,
+                          benchmark_return_5d, benchmark_return_20d, benchmark_return_60d)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ON CONFLICT (symbol, horizon, pred_date, market) DO UPDATE SET
+        resolved_at          = EXCLUDED.resolved_at,
+        return_1d            = COALESCE(outcomes.return_1d, EXCLUDED.return_1d),
+        return_5d            = COALESCE(outcomes.return_5d, EXCLUDED.return_5d),
+        return_20d           = COALESCE(outcomes.return_20d, EXCLUDED.return_20d),
+        return_60d           = COALESCE(outcomes.return_60d, EXCLUDED.return_60d),
+        benchmark_return_5d  = COALESCE(outcomes.benchmark_return_5d, EXCLUDED.benchmark_return_5d),
+        benchmark_return_20d = COALESCE(outcomes.benchmark_return_20d, EXCLUDED.benchmark_return_20d),
+        benchmark_return_60d = COALESCE(outcomes.benchmark_return_60d, EXCLUDED.benchmark_return_60d)
+"""
+
+
+class OutcomeDriftError(Exception):
+    """
+    Raised by execute_outcome_writes_transactional when a manifest candidate's
+    live outcome state no longer matches what the manifest recorded, detected
+    by in-transaction re-validation immediately before that row's write.
+    Raising this inside the conn.transaction() block aborts and rolls back
+    every write already staged earlier in the same batch — never a partial
+    commit.
+    """
+
+
 def log_outcome(symbol: str, horizon: str, pred_date: str,
                 return_1d: float | None, return_5d: float | None,
                 return_20d: float | None, return_60d: float | None = None,
@@ -616,27 +649,111 @@ def log_outcome(symbol: str, horizon: str, pred_date: str,
     already been resolved. resolved_at is bumped on every touch so it reflects
     the most recent write, whether that's the first partial resolution or a
     later backfill.
+
+    This is the single-row, individually-autocommitted path used by the live
+    periodic resolver. For a manifest-locked batch that must commit or roll
+    back as one unit, see execute_outcome_writes_transactional.
     """
     with _get_pool().connection() as conn:
-        conn.execute("""
-            INSERT INTO outcomes (resolved_at, symbol, horizon, pred_date, market,
-                                  return_1d, return_5d, return_20d, return_60d,
-                                  benchmark_return_5d, benchmark_return_20d, benchmark_return_60d)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (symbol, horizon, pred_date, market) DO UPDATE SET
-                resolved_at          = EXCLUDED.resolved_at,
-                return_1d            = COALESCE(outcomes.return_1d, EXCLUDED.return_1d),
-                return_5d            = COALESCE(outcomes.return_5d, EXCLUDED.return_5d),
-                return_20d           = COALESCE(outcomes.return_20d, EXCLUDED.return_20d),
-                return_60d           = COALESCE(outcomes.return_60d, EXCLUDED.return_60d),
-                benchmark_return_5d  = COALESCE(outcomes.benchmark_return_5d, EXCLUDED.benchmark_return_5d),
-                benchmark_return_20d = COALESCE(outcomes.benchmark_return_20d, EXCLUDED.benchmark_return_20d),
-                benchmark_return_60d = COALESCE(outcomes.benchmark_return_60d, EXCLUDED.benchmark_return_60d)
-        """, (
+        conn.execute(_OUTCOME_UPSERT_SQL, (
             datetime.now(timezone.utc), symbol, horizon, pred_date, market,
             return_1d, return_5d, return_20d, return_60d,
             benchmark_return_5d, benchmark_return_20d, benchmark_return_60d,
         ))
+
+
+def execute_outcome_writes_transactional(writes: list[dict]) -> list[dict]:
+    """
+    Apply a whole manifest-locked batch of outcome writes as ONE database
+    transaction (Phase 1A.3). Each write dict must have keys: symbol, horizon,
+    market, pred_date, return_1d, return_5d, return_20d, return_60d,
+    benchmark_return_5d, benchmark_return_20d, benchmark_return_60d (all
+    return_*/benchmark_* optional, None if not computed), and an optional
+    expected_existing dict ({"id":..., "return_1d":..., ...}) — the outcome
+    state the manifest recorded at generation time, used to detect drift.
+
+    For each write, in order, inside the single transaction:
+      1. SELECT ... FOR UPDATE the current outcomes row (if any) — this both
+         locks it against a concurrent writer (e.g. the live 6-hourly
+         resolver) and gives us its current value to compare.
+      2. If expected_existing was recorded and the live row's non-NULL values
+         no longer match it (or a row the manifest expected to exist is now
+         missing, or a row now exists that the manifest recorded as absent
+         while a truly conflicting value is present), raise
+         OutcomeDriftError — this is never caught here, so it propagates out
+         of the `with conn.transaction():` block, which rolls back every
+         write already applied earlier in this same call. No partial batch
+         is ever left committed.
+      3. Otherwise perform the same COALESCE upsert log_outcome uses.
+
+    Returns the list of {symbol, horizon, market, pred_date, operation} for
+    every row written, but only if the entire batch committed successfully —
+    if this function raises, nothing in `writes` was persisted.
+    """
+    results = []
+    with _get_pool().connection() as conn:
+        with conn.transaction():
+            for w in writes:
+                current = conn.execute("""
+                    SELECT id, return_1d, return_5d, return_20d, return_60d
+                    FROM outcomes
+                    WHERE symbol=%s AND horizon=%s AND market=%s AND pred_date=%s
+                    FOR UPDATE
+                """, (w["symbol"], w["horizon"], w["market"], w["pred_date"])).fetchone()
+
+                expected = w.get("expected_existing") or {}
+                if current is None:
+                    if expected.get("id") is not None:
+                        raise OutcomeDriftError(
+                            f"{w['symbol']}/{w['pred_date']}: manifest expected an existing "
+                            f"outcome row (id={expected.get('id')}) that no longer exists"
+                        )
+                else:
+                    if expected.get("id") is None:
+                        # Manifest was generated when no outcome row existed for this key,
+                        # but one exists now — most likely the normal 6-hourly resolver
+                        # created it in the meantime. Fail closed rather than silently
+                        # treating this row as the canary's own INSERT.
+                        raise OutcomeDriftError(
+                            f"{w['symbol']}/{w['pred_date']}: an outcome row (id={current[0]}) now "
+                            f"exists but the manifest recorded none — likely created by the normal "
+                            f"resolver since manifest generation; refusing to claim it as this batch's write"
+                        )
+                    current_map = {"id": current[0], "return_1d": current[1], "return_5d": current[2],
+                                    "return_20d": current[3], "return_60d": current[4]}
+                    for col in ("return_1d", "return_5d", "return_20d", "return_60d"):
+                        exp_val = expected.get(col)
+                        if exp_val is not None and current_map[col] != exp_val:
+                            raise OutcomeDriftError(
+                                f"{w['symbol']}/{w['pred_date']}: {col} changed from "
+                                f"{exp_val!r} (manifest) to {current_map[col]!r} (live) — "
+                                f"likely written by the normal resolver since manifest generation"
+                            )
+                        # A column this write intends to NEWLY populate (manifest recorded
+                        # it as NULL, and we computed a real value to fill it) but which is
+                        # now already non-NULL live: a COALESCE upsert would silently
+                        # preserve that value and no-op on this column, yet still report
+                        # the row as a successful write of this batch — falsely claiming a
+                        # value the normal resolver actually produced. Fail closed instead.
+                        if exp_val is None and w.get(col) is not None and current_map[col] is not None:
+                            raise OutcomeDriftError(
+                                f"{w['symbol']}/{w['pred_date']}: {col} was NULL when the manifest "
+                                f"was generated (this batch intended to populate it) but is now "
+                                f"{current_map[col]!r} — likely written by the normal resolver since "
+                                f"manifest generation; refusing to claim it as this batch's write"
+                            )
+
+                conn.execute(_OUTCOME_UPSERT_SQL, (
+                    datetime.now(timezone.utc), w["symbol"], w["horizon"], w["pred_date"], w["market"],
+                    w.get("return_1d"), w.get("return_5d"), w.get("return_20d"), w.get("return_60d"),
+                    w.get("benchmark_return_5d"), w.get("benchmark_return_20d"), w.get("benchmark_return_60d"),
+                ))
+                results.append({
+                    "symbol": w["symbol"], "horizon": w["horizon"], "market": w["market"],
+                    "pred_date": w["pred_date"],
+                    "operation": "UPDATE" if current is not None else "INSERT",
+                })
+    return results
 
 
 def log_regime(regime_id: int, label: str, features: list[float]):
@@ -707,16 +824,31 @@ def get_unresolved_predictions(horizon: str, min_days_old: int, market: str = "I
     (symbol, horizon, market) at *different* prices, which cannot be told
     apart once joined to the single-row-per-day outcomes key — are excluded
     entirely (fail closed) rather than guessing which one an outcome belongs
-    to. Same-price duplicates (e.g. a batch that ran twice) collapse safely
-    to one candidate since they'd resolve to the same value either way.
+    to (the HAVING clause runs before ORDER BY / any caller-side LIMIT, so
+    ambiguous groups never reach either). Same-price duplicates (e.g. a batch
+    that ran twice) collapse safely to one candidate since they'd resolve to
+    the same value either way — `prediction_id` for such a group is the
+    lowest (earliest-inserted) `predictions.id` among the duplicates, used
+    only as a stable representative for manifest/ordering purposes; the
+    outcome relationship itself is keyed by (symbol, horizon, market,
+    pred_date), not by any single prediction row (there is no FK).
+
+    Ordering is explicit and stable — oldest prediction_date first, then
+    symbol, then prediction_id — so that a caller-side batch_limit slice
+    (e.g. the operator backfill tool) is reproducible across repeated calls
+    against unchanged data, rather than relying on Postgres's unspecified
+    result order for an unordered query (the 2026-07 Phase 1A.3 finding:
+    the previous version of this query had no ORDER BY at all and didn't
+    even select predictions.id, so a batch-size slice could silently select
+    a different set of predictions from one run to the next).
     """
     if horizon not in _HORIZON_ELIGIBILITY_SQL:
         raise ValueError(f"unknown horizon: {horizon!r}")
     eligibility_clause = _HORIZON_ELIGIBILITY_SQL[horizon]
     with _get_pool().connection() as conn:
         rows = conn.execute(f"""
-            SELECT p.symbol, p.horizon, date(p.logged_at) AS pred_date,
-                   max(p.price) AS price
+            SELECT p.symbol, p.horizon, p.market, date(p.logged_at) AS pred_date,
+                   max(p.price) AS price, min(p.id) AS prediction_id
             FROM predictions p
             LEFT JOIN outcomes o
               ON o.symbol = p.symbol AND o.horizon = p.horizon AND o.market = p.market
@@ -724,11 +856,65 @@ def get_unresolved_predictions(horizon: str, min_days_old: int, market: str = "I
             WHERE p.horizon = %s AND p.market = %s
               AND now() - p.logged_at >= (%s || ' days')::interval
               AND {eligibility_clause}
-            GROUP BY p.symbol, p.horizon, date(p.logged_at)
+            GROUP BY p.symbol, p.horizon, p.market, date(p.logged_at)
             HAVING count(DISTINCT p.price) <= 1
+            ORDER BY date(p.logged_at) ASC, p.symbol ASC, min(p.id) ASC
         """, (horizon, market, str(min_days_old))).fetchall()
-    cols = ["symbol", "horizon", "pred_date", "price"]
+    cols = ["symbol", "horizon", "market", "pred_date", "price", "prediction_id"]
     return [dict(zip(cols, r)) for r in rows]
+
+
+def get_predictions_snapshot(prediction_ids: list[int]) -> dict[int, dict]:
+    """
+    Read-only current-state lookup for a list of predictions.id values, keyed
+    by id — used only by manifest preflight re-validation (Phase 1A.3) to
+    confirm a manifest's recorded prediction rows still exist and still match
+    what was recorded (symbol/market/horizon/date/price), before any write.
+    """
+    if not prediction_ids:
+        return {}
+    with _get_pool().connection() as conn:
+        rows = conn.execute("""
+            SELECT id, symbol, market, horizon, date(logged_at) AS pred_date, price
+            FROM predictions WHERE id = ANY(%s)
+        """, (list(prediction_ids),)).fetchall()
+    cols = ["id", "symbol", "market", "horizon", "pred_date", "price"]
+    return {r[0]: dict(zip(cols, r)) for r in rows}
+
+
+def get_outcome_snapshot(symbol: str, horizon: str, market: str, pred_date: str) -> dict | None:
+    """
+    Read-only current-state lookup of the (at most one) outcomes row for a
+    given (symbol, horizon, market, pred_date) key — used by manifest
+    preflight and by the transactional batch writer's in-transaction
+    re-validation (Phase 1A.3). Returns None if no row exists yet.
+    """
+    with _get_pool().connection() as conn:
+        row = conn.execute("""
+            SELECT id, return_1d, return_5d, return_20d, return_60d
+            FROM outcomes
+            WHERE symbol = %s AND horizon = %s AND market = %s AND pred_date = %s
+        """, (symbol, horizon, market, pred_date)).fetchone()
+    if row is None:
+        return None
+    cols = ["id", "return_1d", "return_5d", "return_20d", "return_60d"]
+    return dict(zip(cols, row))
+
+
+def check_ambiguous_for_key(symbol: str, horizon: str, market: str, pred_date: str) -> bool:
+    """
+    Live re-check: does the (symbol, horizon, market, pred_date) key currently
+    have more than one distinct predictions.price value? Used by manifest
+    preflight to catch a new conflicting-price prediction logged after the
+    manifest was generated, which would make a previously-clean group
+    ambiguous by the time of execution.
+    """
+    with _get_pool().connection() as conn:
+        row = conn.execute("""
+            SELECT count(DISTINCT price) FROM predictions
+            WHERE symbol = %s AND horizon = %s AND market = %s AND date(logged_at) = %s
+        """, (symbol, horizon, market, pred_date)).fetchone()
+    return (row[0] or 0) > 1
 
 
 def count_existing_outcomes(market: str, horizon: str,

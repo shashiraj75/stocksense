@@ -437,7 +437,15 @@ class TestBackfillOutcomesCLI:
             rc = script.main()
         assert rc != 0
 
-    def test_execute_with_correct_confirm_token_writes(self, store, monkeypatch):
+    def test_execute_with_correct_confirm_token_but_no_manifest_still_refuses(self, store, monkeypatch):
+        """
+        Phase 1A.3 CLI contract change: --execute no longer has a direct-write
+        path at all, even with the correct --confirm token — every write must
+        go through a reviewed, checksummed --manifest (see
+        test_manifest_backfill.py for the manifest-execute-mode write path).
+        A live re-derived candidate set can never be proven to match what an
+        operator reviewed, so direct execute is refused outright now.
+        """
         script = self._import_script()
         _log_prediction(store, symbol="AAPL", horizon="short", market="US", days_ago=10)
 
@@ -448,7 +456,7 @@ class TestBackfillOutcomesCLI:
              ]):
             rc = script.main()
 
-        assert rc == 0
+        assert rc != 0, "--execute without --manifest must be refused even with a correct --confirm token"
         with store._lock, store._conn() as c:
             rows = c.execute("SELECT * FROM outcomes").fetchall()
-        assert len(rows) == 1, "write mode with the correct confirm token must actually persist the outcome"
+        assert rows == [], "a refused execute attempt must never write anything"

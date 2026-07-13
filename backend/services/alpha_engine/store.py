@@ -114,6 +114,17 @@ def log_prediction(symbol: str, horizon: str, factor_zscores: dict,
         ))
 
 
+class OutcomeDriftError(Exception):
+    """
+    Raised by execute_outcome_writes_transactional when a manifest candidate's
+    live outcome state no longer matches what the manifest recorded. This is
+    the canonical exception type callers (manifest_backfill.py) should catch —
+    when USE_POSTGRES=1, postgres_store's own OutcomeDriftError is caught and
+    re-raised as this class so callers never need to know which backend is
+    active.
+    """
+
+
 def log_outcome(symbol: str, horizon: str, pred_date: str,
                 return_1d: float | None, return_5d: float | None,
                 return_20d: float | None, return_60d: float | None = None,
@@ -156,6 +167,93 @@ def log_outcome(symbol: str, horizon: str, pred_date: str,
         """, (
             now, symbol, horizon, pred_date, market, return_1d, return_5d, return_20d, return_60d,
         ))
+
+
+def execute_outcome_writes_transactional(writes: list[dict]) -> list[dict]:
+    """
+    Apply a whole manifest-locked batch of outcome writes as ONE transaction
+    (Phase 1A.3). See services/postgres_store.py's version for the full
+    rationale — this SQLite path mirrors it for dev/test parity.
+
+    SQLite has no per-row FOR UPDATE, but a single `with conn:` block already
+    takes an exclusive write lock on the whole database for the duration of
+    the transaction and commits on success / rolls back on any exception —
+    which is more than sufficient to serialize against a concurrent writer
+    for the purposes this batch needs (no other writer can interleave a
+    change between this transaction's re-check and its write).
+    """
+    if USE_POSTGRES:
+        try:
+            return _pg.execute_outcome_writes_transactional(writes)
+        except _pg.OutcomeDriftError as e:
+            raise OutcomeDriftError(str(e)) from e
+
+    init_db()
+    results = []
+    with _lock, _conn() as c:
+        for w in writes:
+            current = c.execute(
+                "SELECT id, return_1d, return_5d, return_20d, return_60d FROM outcomes "
+                "WHERE symbol=? AND horizon=? AND market=? AND pred_date=?",
+                (w["symbol"], w["horizon"], w["market"], w["pred_date"]),
+            ).fetchone()
+
+            expected = w.get("expected_existing") or {}
+            if current is None:
+                if expected.get("id") is not None:
+                    raise OutcomeDriftError(
+                        f"{w['symbol']}/{w['pred_date']}: manifest expected an existing "
+                        f"outcome row (id={expected.get('id')}) that no longer exists"
+                    )
+            else:
+                if expected.get("id") is None:
+                    raise OutcomeDriftError(
+                        f"{w['symbol']}/{w['pred_date']}: an outcome row (id={current['id']}) now "
+                        f"exists but the manifest recorded none — likely created by the normal "
+                        f"resolver since manifest generation; refusing to claim it as this batch's write"
+                    )
+                for col in ("return_1d", "return_5d", "return_20d", "return_60d"):
+                    exp_val = expected.get(col)
+                    if exp_val is not None and current[col] != exp_val:
+                        raise OutcomeDriftError(
+                            f"{w['symbol']}/{w['pred_date']}: {col} changed from "
+                            f"{exp_val!r} (manifest) to {current[col]!r} (live) — "
+                            f"likely written by the normal resolver since manifest generation"
+                        )
+                    if exp_val is None and w.get(col) is not None and current[col] is not None:
+                        raise OutcomeDriftError(
+                            f"{w['symbol']}/{w['pred_date']}: {col} was NULL when the manifest "
+                            f"was generated (this batch intended to populate it) but is now "
+                            f"{current[col]!r} — likely written by the normal resolver since "
+                            f"manifest generation; refusing to claim it as this batch's write"
+                        )
+
+            now = datetime.now(timezone.utc).isoformat()
+            if current is not None:
+                c.execute("""
+                    UPDATE outcomes SET
+                        resolved_at = ?,
+                        return_1d  = COALESCE(return_1d, ?),
+                        return_5d  = COALESCE(return_5d, ?),
+                        return_20d = COALESCE(return_20d, ?),
+                        return_60d = COALESCE(return_60d, ?)
+                    WHERE id = ?
+                """, (now, w.get("return_1d"), w.get("return_5d"), w.get("return_20d"),
+                      w.get("return_60d"), current["id"]))
+            else:
+                c.execute("""
+                    INSERT INTO outcomes (resolved_at, symbol, horizon, pred_date, market,
+                                          return_1d, return_5d, return_20d, return_60d)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (now, w["symbol"], w["horizon"], w["pred_date"], w["market"],
+                      w.get("return_1d"), w.get("return_5d"), w.get("return_20d"), w.get("return_60d")))
+
+            results.append({
+                "symbol": w["symbol"], "horizon": w["horizon"], "market": w["market"],
+                "pred_date": w["pred_date"],
+                "operation": "UPDATE" if current is not None else "INSERT",
+            })
+    return results
 
 
 def log_regime(regime_id: int, label: str, features: list[float]):
@@ -216,7 +314,14 @@ def get_unresolved_predictions(horizon: str, min_days_old: int, market: str = "I
     stays eligible until every column its own horizon cares about is filled;
     it does not stop being offered the instant *any* outcome row exists.
     Ambiguous groups (multiple same-day predictions at different prices for
-    the same symbol/horizon/market) are excluded — fail closed.
+    the same symbol/horizon/market) are excluded — fail closed, before
+    ORDER BY / any caller-side LIMIT.
+
+    Ordering is explicit and stable (pred_date ASC, symbol ASC, prediction_id
+    ASC — prediction_id is min(id) within a same-price duplicate group) so a
+    caller-side batch_limit slice is reproducible across repeated calls
+    against unchanged data (Phase 1A.3 fix — the prior version had no
+    ORDER BY and didn't select predictions.id at all).
     """
     if USE_POSTGRES:
         return _pg.get_unresolved_predictions(horizon, min_days_old, market=market)
@@ -226,8 +331,8 @@ def get_unresolved_predictions(horizon: str, min_days_old: int, market: str = "I
     init_db()
     with _lock, _conn() as c:
         rows = c.execute(f"""
-            SELECT p.symbol, p.horizon, date(p.logged_at) AS pred_date,
-                   max(p.price) AS price
+            SELECT p.symbol, p.horizon, p.market, date(p.logged_at) AS pred_date,
+                   max(p.price) AS price, min(p.id) AS prediction_id
             FROM predictions p
             LEFT JOIN outcomes o
               ON o.symbol = p.symbol AND o.horizon = p.horizon AND o.market = p.market
@@ -235,10 +340,55 @@ def get_unresolved_predictions(horizon: str, min_days_old: int, market: str = "I
             WHERE p.horizon = ? AND p.market = ?
               AND julianday('now') - julianday(p.logged_at) >= ?
               AND {eligibility_clause}
-            GROUP BY p.symbol, p.horizon, date(p.logged_at)
+            GROUP BY p.symbol, p.horizon, p.market, date(p.logged_at)
             HAVING count(DISTINCT p.price) <= 1
+            ORDER BY date(p.logged_at) ASC, p.symbol ASC, min(p.id) ASC
         """, (horizon, market, min_days_old)).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_predictions_snapshot(prediction_ids: list[int]) -> dict[int, dict]:
+    """SQLite mirror of postgres_store.get_predictions_snapshot — used only by
+    manifest preflight re-validation (Phase 1A.3)."""
+    if USE_POSTGRES:
+        return _pg.get_predictions_snapshot(prediction_ids)
+    if not prediction_ids:
+        return {}
+    init_db()
+    placeholders = ",".join("?" * len(prediction_ids))
+    with _lock, _conn() as c:
+        rows = c.execute(f"""
+            SELECT id, symbol, market, horizon, date(logged_at) AS pred_date, price
+            FROM predictions WHERE id IN ({placeholders})
+        """, list(prediction_ids)).fetchall()
+    return {r["id"]: dict(r) for r in rows}
+
+
+def get_outcome_snapshot(symbol: str, horizon: str, market: str, pred_date: str) -> dict | None:
+    """SQLite mirror of postgres_store.get_outcome_snapshot."""
+    if USE_POSTGRES:
+        return _pg.get_outcome_snapshot(symbol, horizon, market, pred_date)
+    init_db()
+    with _lock, _conn() as c:
+        row = c.execute("""
+            SELECT id, return_1d, return_5d, return_20d, return_60d
+            FROM outcomes
+            WHERE symbol=? AND horizon=? AND market=? AND pred_date=?
+        """, (symbol, horizon, market, pred_date)).fetchone()
+    return dict(row) if row is not None else None
+
+
+def check_ambiguous_for_key(symbol: str, horizon: str, market: str, pred_date: str) -> bool:
+    """SQLite mirror of postgres_store.check_ambiguous_for_key."""
+    if USE_POSTGRES:
+        return _pg.check_ambiguous_for_key(symbol, horizon, market, pred_date)
+    init_db()
+    with _lock, _conn() as c:
+        row = c.execute("""
+            SELECT count(DISTINCT price) FROM predictions
+            WHERE symbol=? AND horizon=? AND market=? AND date(logged_at)=?
+        """, (symbol, horizon, market, pred_date)).fetchone()
+    return (row[0] or 0) > 1
 
 
 def count_existing_outcomes(market: str, horizon: str,
