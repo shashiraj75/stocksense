@@ -329,17 +329,59 @@ def write_universe(us: list, india: list, crypto: list):
         TRACKING_ONLY_SYMBOLS = {"GLD", "SLV", "GOLDBEES", "SILVERBEES"}
     ''')
 
+    # is_known_symbol/US_SYMBOLS/IN_SYMBOLS — api/routers/predictions.py
+    # imports is_known_symbol directly, so it must survive every
+    # regeneration. Same class of bug as TRACKING_ONLY_SYMBOLS above: this
+    # was previously only a hand-edit to the generated file, silently wiped
+    # the next time the generator ran and rewrote stock_universe.py from
+    # this template — which caused a production ImportError crash on the
+    # next restart. Now part of the template itself, positioned right after
+    # IN_STOCKS to match the committed file's existing layout.
+    known_symbols_fn = textwrap.dedent('''\
+
+        # Fast O(1) membership sets, derived from the same static universe lists
+        # above — used to reject a prediction request for a symbol this app has no
+        # coverage for (e.g. a typo, a delisted/renamed company, or a real but not
+        # yet catalogued listing) before it ever reaches yfinance. Never mutated;
+        # always rebuilt from US_STOCKS/IN_STOCKS so the two can't drift apart.
+        US_SYMBOLS: set[str] = {sym for sym, _ in US_STOCKS}
+        IN_SYMBOLS: set[str] = {sym for sym, _ in IN_STOCKS}
+
+
+        def is_known_symbol(symbol: str, market: str) -> bool:
+            """True if `symbol` is present in this market's supported static
+            universe. Markets with no static allow-list here (CRYPTO, anything
+            else) are not gated by this check — callers should only use this for
+            markets that actually have a universe list to validate against."""
+            sym = symbol.upper()
+            if market == "IN":
+                return sym in IN_SYMBOLS
+            if market == "US":
+                return sym in US_SYMBOLS
+            return True
+    ''')
+
     content = (
         header
         + format_list("US_STOCKS", us) + "\n\n"
-        + format_list("IN_STOCKS", india) + "\n\n"
+        + format_list("IN_STOCKS", india) + "\n"
+        + known_symbols_fn + "\n"
         + format_list("CRYPTO_COINS", crypto)
         + tracking_only
         + search_fn
     )
 
-    with open(OUT_FILE, "w", encoding="utf-8") as f:
+    # Atomic replace: write to a temp file in the same directory first, then
+    # os.replace() into place. A crash or interrupted write mid-`open(...).write()`
+    # previously could leave OUT_FILE truncated/partial — a syntax error or a
+    # missing symbol on the next import, the same class of production crash
+    # this fix addresses for is_known_symbol specifically. os.replace() is
+    # atomic on the same filesystem, so OUT_FILE is always either the old
+    # complete file or the new complete file, never a partial one.
+    tmp_path = OUT_FILE + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
         f.write(content)
+    os.replace(tmp_path, OUT_FILE)
 
     print(f"\n✅  Written to {OUT_FILE}")
     print(f"    US: {len(us)}  |  IN: {len(india)}  |  CRYPTO: {len(crypto)}")
