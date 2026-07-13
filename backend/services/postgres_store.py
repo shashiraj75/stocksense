@@ -606,13 +606,32 @@ def log_outcome(symbol: str, horizon: str, pred_date: str,
                 benchmark_return_20d: float | None = None,
                 benchmark_return_60d: float | None = None,
                 market: str = "IN"):
+    """
+    Upsert an outcome row. On conflict, each forward-return / benchmark column
+    is filled in via COALESCE(existing, new) — a column that already holds a
+    resolved value is never overwritten, and a column this call didn't compute
+    (passed as None) never clobbers a value a *later* sweep already wrote.
+    This makes repeated resolver runs safe to backfill later horizons (e.g.
+    return_20d arriving weeks after return_5d) without disturbing what's
+    already been resolved. resolved_at is bumped on every touch so it reflects
+    the most recent write, whether that's the first partial resolution or a
+    later backfill.
+    """
     with _get_pool().connection() as conn:
         conn.execute("""
             INSERT INTO outcomes (resolved_at, symbol, horizon, pred_date, market,
                                   return_1d, return_5d, return_20d, return_60d,
                                   benchmark_return_5d, benchmark_return_20d, benchmark_return_60d)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (symbol, horizon, pred_date, market) DO NOTHING
+            ON CONFLICT (symbol, horizon, pred_date, market) DO UPDATE SET
+                resolved_at          = EXCLUDED.resolved_at,
+                return_1d            = COALESCE(outcomes.return_1d, EXCLUDED.return_1d),
+                return_5d            = COALESCE(outcomes.return_5d, EXCLUDED.return_5d),
+                return_20d           = COALESCE(outcomes.return_20d, EXCLUDED.return_20d),
+                return_60d           = COALESCE(outcomes.return_60d, EXCLUDED.return_60d),
+                benchmark_return_5d  = COALESCE(outcomes.benchmark_return_5d, EXCLUDED.benchmark_return_5d),
+                benchmark_return_20d = COALESCE(outcomes.benchmark_return_20d, EXCLUDED.benchmark_return_20d),
+                benchmark_return_60d = COALESCE(outcomes.benchmark_return_60d, EXCLUDED.benchmark_return_60d)
         """, (
             datetime.now(timezone.utc), symbol, horizon, pred_date, market,
             return_1d, return_5d, return_20d, return_60d,
@@ -660,23 +679,111 @@ def get_training_data(horizon: str, market: str = "IN", window_days: int | None 
     return [dict(zip(cols, r)) for r in rows]
 
 
+# Which forward-return columns a horizon's resolver sweep is ever responsible
+# for (mirrors outcome_logger.py's horizon_config d1/d5/d20/d60 flags). Keyed
+# off a fixed, hardcoded allow-list — never built from caller-supplied text —
+# so a prediction stays eligible for re-resolution until *every* column its
+# own horizon cares about is filled, instead of being excluded the instant
+# any outcome row exists at all (the bug that permanently orphaned return_5d/
+# return_20d/return_60d as NULL — see the 2026-07-13 forensic audit).
+_HORIZON_ELIGIBILITY_SQL = {
+    "short":  "(o.id IS NULL OR o.return_1d IS NULL OR o.return_5d IS NULL)",
+    "medium": "(o.id IS NULL OR o.return_5d IS NULL OR o.return_20d IS NULL)",
+    "long":   "(o.id IS NULL OR o.return_60d IS NULL)",
+}
+
+
 def get_unresolved_predictions(horizon: str, min_days_old: int, market: str = "IN") -> list[dict]:
+    """
+    Predictions whose horizon-relevant outcome columns are still incomplete —
+    either no outcome row exists yet, or one does but at least one column this
+    horizon is responsible for (see _HORIZON_ELIGIBILITY_SQL) is still NULL.
+
+    A prediction is only ever re-offered for resolution while genuinely
+    incomplete; once every relevant column is populated it stops appearing
+    here (safe no-op for the resolver — see log_outcome's COALESCE upsert).
+
+    Ambiguous groups — multiple predictions logged the same day for the same
+    (symbol, horizon, market) at *different* prices, which cannot be told
+    apart once joined to the single-row-per-day outcomes key — are excluded
+    entirely (fail closed) rather than guessing which one an outcome belongs
+    to. Same-price duplicates (e.g. a batch that ran twice) collapse safely
+    to one candidate since they'd resolve to the same value either way.
+    """
+    if horizon not in _HORIZON_ELIGIBILITY_SQL:
+        raise ValueError(f"unknown horizon: {horizon!r}")
+    eligibility_clause = _HORIZON_ELIGIBILITY_SQL[horizon]
     with _get_pool().connection() as conn:
-        rows = conn.execute("""
-            SELECT p.symbol, p.horizon, date(p.logged_at) AS pred_date, p.price
+        rows = conn.execute(f"""
+            SELECT p.symbol, p.horizon, date(p.logged_at) AS pred_date,
+                   max(p.price) AS price
             FROM predictions p
+            LEFT JOIN outcomes o
+              ON o.symbol = p.symbol AND o.horizon = p.horizon AND o.market = p.market
+             AND o.pred_date = date(p.logged_at)
             WHERE p.horizon = %s AND p.market = %s
               AND now() - p.logged_at >= (%s || ' days')::interval
-              AND NOT EXISTS (
-                  SELECT 1 FROM outcomes o
-                  WHERE o.symbol = p.symbol
-                    AND o.horizon = p.horizon
-                    AND o.market = p.market
-                    AND o.pred_date = date(p.logged_at)
-              )
-            GROUP BY p.symbol, p.horizon, date(p.logged_at), p.price
+              AND {eligibility_clause}
+            GROUP BY p.symbol, p.horizon, date(p.logged_at)
+            HAVING count(DISTINCT p.price) <= 1
         """, (horizon, market, str(min_days_old))).fetchall()
     cols = ["symbol", "horizon", "pred_date", "price"]
+    return [dict(zip(cols, r)) for r in rows]
+
+
+def count_existing_outcomes(market: str, horizon: str,
+                             start_date: str | None = None, end_date: str | None = None) -> dict:
+    """
+    Read-only summary of existing outcomes rows for a (market, horizon),
+    optionally bounded to a pred_date range — used only by the operator
+    backfill tool's dry-run report (requirement D "outcome rows found" /
+    "missing Nd fields").
+    """
+    clauses = ["market = %s", "horizon = %s"]
+    params: list = [market, horizon]
+    if start_date:
+        clauses.append("pred_date >= %s")
+        params.append(start_date)
+    if end_date:
+        clauses.append("pred_date <= %s")
+        params.append(end_date)
+    where = " AND ".join(clauses)
+    with _get_pool().connection() as conn:
+        row = conn.execute(f"""
+            SELECT count(*) AS total,
+                   count(*) FILTER (WHERE return_5d IS NULL)  AS missing_5d,
+                   count(*) FILTER (WHERE return_20d IS NULL) AS missing_20d,
+                   count(*) FILTER (WHERE return_60d IS NULL) AS missing_60d
+            FROM outcomes WHERE {where}
+        """, params).fetchone()
+    return {"total": row[0], "missing_5d": row[1], "missing_20d": row[2], "missing_60d": row[3]}
+
+
+def get_ambiguous_pending_predictions(horizon: str, min_days_old: int, market: str = "IN") -> list[dict]:
+    """
+    Companion to get_unresolved_predictions: groups excluded from normal
+    resolution because they had >1 distinct price for the same
+    (symbol, horizon, market, pred_date) key — used only by the operator
+    backfill tool's dry-run report, never by the live resolver.
+    """
+    if horizon not in _HORIZON_ELIGIBILITY_SQL:
+        raise ValueError(f"unknown horizon: {horizon!r}")
+    eligibility_clause = _HORIZON_ELIGIBILITY_SQL[horizon]
+    with _get_pool().connection() as conn:
+        rows = conn.execute(f"""
+            SELECT p.symbol, p.horizon, date(p.logged_at) AS pred_date,
+                   count(*) AS n_predictions, count(DISTINCT p.price) AS n_distinct_prices
+            FROM predictions p
+            LEFT JOIN outcomes o
+              ON o.symbol = p.symbol AND o.horizon = p.horizon AND o.market = p.market
+             AND o.pred_date = date(p.logged_at)
+            WHERE p.horizon = %s AND p.market = %s
+              AND now() - p.logged_at >= (%s || ' days')::interval
+              AND {eligibility_clause}
+            GROUP BY p.symbol, p.horizon, date(p.logged_at)
+            HAVING count(DISTINCT p.price) > 1
+        """, (horizon, market, str(min_days_old))).fetchall()
+    cols = ["symbol", "horizon", "pred_date", "n_predictions", "n_distinct_prices"]
     return [dict(zip(cols, r)) for r in rows]
 
 
@@ -951,7 +1058,8 @@ def get_daily_picks_performance(horizon: str, window_days: int = 90) -> list[dic
                    o.benchmark_return_5d, o.benchmark_return_20d, o.benchmark_return_60d
             FROM predictions p
             LEFT JOIN outcomes o
-              ON p.symbol = o.symbol AND p.horizon = o.horizon AND o.pred_date = date(p.logged_at)
+              ON p.symbol = o.symbol AND p.horizon = o.horizon AND p.market = o.market
+             AND o.pred_date = date(p.logged_at)
             WHERE p.horizon = %s AND p.is_daily_pick = TRUE
               AND p.logged_at >= now() - (%s || ' days')::interval
             ORDER BY p.logged_at DESC

@@ -118,6 +118,16 @@ def log_outcome(symbol: str, horizon: str, pred_date: str,
                 return_1d: float | None, return_5d: float | None,
                 return_20d: float | None, return_60d: float | None = None,
                 market: str = "IN", **kwargs):
+    """
+    Upsert (SELECT-then-INSERT-or-UPDATE, since the SQLite outcomes table has
+    no UNIQUE constraint to target with ON CONFLICT). A column that already
+    holds a resolved value is preserved via COALESCE(existing, new) — this
+    lets a later sweep backfill return_20d/return_60d without disturbing
+    return_1d/return_5d a prior sweep already wrote, or losing a value if a
+    later sweep can't compute one for a given horizon. Mirrors
+    services/postgres_store.py's log_outcome exactly for behavioral parity
+    between the SQLite (dev/test) and Postgres (production) backends.
+    """
     if USE_POSTGRES:
         return _pg.log_outcome(symbol, horizon, pred_date, return_1d, return_5d, return_20d,
                                 return_60d=return_60d, market=market, **kwargs)
@@ -127,15 +137,24 @@ def log_outcome(symbol: str, horizon: str, pred_date: str,
             "SELECT id FROM outcomes WHERE symbol=? AND horizon=? AND pred_date=? AND market=?",
             (symbol, horizon, pred_date, market)
         ).fetchone()
+        now = datetime.now(timezone.utc).isoformat()
         if existing:
+            c.execute("""
+                UPDATE outcomes SET
+                    resolved_at = ?,
+                    return_1d  = COALESCE(return_1d, ?),
+                    return_5d  = COALESCE(return_5d, ?),
+                    return_20d = COALESCE(return_20d, ?),
+                    return_60d = COALESCE(return_60d, ?)
+                WHERE id = ?
+            """, (now, return_1d, return_5d, return_20d, return_60d, existing["id"]))
             return
         c.execute("""
             INSERT INTO outcomes (resolved_at, symbol, horizon, pred_date, market,
                                   return_1d, return_5d, return_20d, return_60d)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            datetime.now(timezone.utc).isoformat(),
-            symbol, horizon, pred_date, market, return_1d, return_5d, return_20d, return_60d,
+            now, symbol, horizon, pred_date, market, return_1d, return_5d, return_20d, return_60d,
         ))
 
 
@@ -179,28 +198,99 @@ def get_training_data(horizon: str, market: str = "IN", window_days: int | None 
     return [dict(r) for r in rows]
 
 
+# Mirrors services/postgres_store.py's _HORIZON_ELIGIBILITY_SQL — a fixed,
+# hardcoded allow-list (never built from caller-supplied text) of which
+# forward-return columns each horizon's resolver sweep is responsible for.
+_HORIZON_ELIGIBILITY_SQL = {
+    "short":  "(o.id IS NULL OR o.return_1d IS NULL OR o.return_5d IS NULL)",
+    "medium": "(o.id IS NULL OR o.return_5d IS NULL OR o.return_20d IS NULL)",
+    "long":   "(o.id IS NULL OR o.return_60d IS NULL)",
+}
+
+
 def get_unresolved_predictions(horizon: str, min_days_old: int, market: str = "IN") -> list[dict]:
     """
-    Fetch predictions logged ≥ min_days_old ago that have no outcome entry yet.
-    Used by the outcome logger to know which prices to fetch.
+    Predictions whose horizon-relevant outcome columns are still incomplete —
+    see services/postgres_store.py's get_unresolved_predictions for the full
+    rationale (this SQLite path mirrors it for dev/test parity). A prediction
+    stays eligible until every column its own horizon cares about is filled;
+    it does not stop being offered the instant *any* outcome row exists.
+    Ambiguous groups (multiple same-day predictions at different prices for
+    the same symbol/horizon/market) are excluded — fail closed.
     """
     if USE_POSTGRES:
         return _pg.get_unresolved_predictions(horizon, min_days_old, market=market)
+    if horizon not in _HORIZON_ELIGIBILITY_SQL:
+        raise ValueError(f"unknown horizon: {horizon!r}")
+    eligibility_clause = _HORIZON_ELIGIBILITY_SQL[horizon]
     init_db()
     with _lock, _conn() as c:
-        rows = c.execute("""
-            SELECT p.symbol, p.horizon, date(p.logged_at) AS pred_date, p.price
+        rows = c.execute(f"""
+            SELECT p.symbol, p.horizon, date(p.logged_at) AS pred_date,
+                   max(p.price) AS price
             FROM predictions p
+            LEFT JOIN outcomes o
+              ON o.symbol = p.symbol AND o.horizon = p.horizon AND o.market = p.market
+             AND o.pred_date = date(p.logged_at)
             WHERE p.horizon = ? AND p.market = ?
               AND julianday('now') - julianday(p.logged_at) >= ?
-              AND NOT EXISTS (
-                  SELECT 1 FROM outcomes o
-                  WHERE o.symbol = p.symbol
-                    AND o.horizon = p.horizon
-                    AND o.market = p.market
-                    AND o.pred_date = date(p.logged_at)
-              )
-            GROUP BY p.symbol, date(p.logged_at)
+              AND {eligibility_clause}
+            GROUP BY p.symbol, p.horizon, date(p.logged_at)
+            HAVING count(DISTINCT p.price) <= 1
+        """, (horizon, market, min_days_old)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_existing_outcomes(market: str, horizon: str,
+                            start_date: str | None = None, end_date: str | None = None) -> dict:
+    """SQLite mirror of postgres_store.count_existing_outcomes — used only by
+    the operator backfill tool's dry-run report."""
+    if USE_POSTGRES:
+        return _pg.count_existing_outcomes(market, horizon, start_date=start_date, end_date=end_date)
+    init_db()
+    clauses = ["market = ?", "horizon = ?"]
+    params: list = [market, horizon]
+    if start_date:
+        clauses.append("pred_date >= ?")
+        params.append(start_date)
+    if end_date:
+        clauses.append("pred_date <= ?")
+        params.append(end_date)
+    where = " AND ".join(clauses)
+    with _lock, _conn() as c:
+        row = c.execute(f"""
+            SELECT count(*) AS total,
+                   sum(CASE WHEN return_5d  IS NULL THEN 1 ELSE 0 END) AS missing_5d,
+                   sum(CASE WHEN return_20d IS NULL THEN 1 ELSE 0 END) AS missing_20d,
+                   sum(CASE WHEN return_60d IS NULL THEN 1 ELSE 0 END) AS missing_60d
+            FROM outcomes WHERE {where}
+        """, params).fetchone()
+    return {"total": row[0] or 0, "missing_5d": row[1] or 0,
+            "missing_20d": row[2] or 0, "missing_60d": row[3] or 0}
+
+
+def get_ambiguous_pending_predictions(horizon: str, min_days_old: int, market: str = "IN") -> list[dict]:
+    """SQLite mirror of postgres_store.get_ambiguous_pending_predictions — used
+    only by the operator backfill tool's dry-run report."""
+    if USE_POSTGRES:
+        return _pg.get_ambiguous_pending_predictions(horizon, min_days_old, market=market)
+    if horizon not in _HORIZON_ELIGIBILITY_SQL:
+        raise ValueError(f"unknown horizon: {horizon!r}")
+    eligibility_clause = _HORIZON_ELIGIBILITY_SQL[horizon]
+    init_db()
+    with _lock, _conn() as c:
+        rows = c.execute(f"""
+            SELECT p.symbol, p.horizon, date(p.logged_at) AS pred_date,
+                   count(*) AS n_predictions, count(DISTINCT p.price) AS n_distinct_prices
+            FROM predictions p
+            LEFT JOIN outcomes o
+              ON o.symbol = p.symbol AND o.horizon = p.horizon AND o.market = p.market
+             AND o.pred_date = date(p.logged_at)
+            WHERE p.horizon = ? AND p.market = ?
+              AND julianday('now') - julianday(p.logged_at) >= ?
+              AND {eligibility_clause}
+            GROUP BY p.symbol, p.horizon, date(p.logged_at)
+            HAVING count(DISTINCT p.price) > 1
         """, (horizon, market, min_days_old)).fetchall()
     return [dict(r) for r in rows]
 
