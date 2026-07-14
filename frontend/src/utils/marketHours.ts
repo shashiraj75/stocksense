@@ -175,6 +175,46 @@ function nseMarketHolidays(year: number): Set<string> {
   ]);
 }
 
+function isNseTradingDay(dateKey: string, weekday: string, year: number): boolean {
+  return WEEKDAYS.has(weekday) && !nseMarketHolidays(year).has(dateKey) && !NSE_EXTRA_HOLIDAYS.includes(dateKey);
+}
+
+/** "YYYY-MM-DD" for `date` as seen in NSE's own timezone (Asia/Kolkata). */
+export function toIstDateKey(date: Date): string {
+  return getZonedParts(date, "Asia/Kolkata").dateKey;
+}
+
+/** Whether the given date, as seen in NSE's own timezone, is a regular NSE trading day. */
+export function isNseTradingSessionDate(date: Date): boolean {
+  const p = getZonedParts(date, "Asia/Kolkata");
+  return isNseTradingDay(p.dateKey, p.weekday, p.year);
+}
+
+/**
+ * India Daily Picks session-freshness containment (Phase 0): the latest NSE
+ * trading session that should have a completed, published daily bar as of
+ * `now` — i.e. the session a fresh generation_reference_as_of must equal.
+ * Walks backward day-by-day from "today" (or "yesterday" if today's own
+ * session hasn't closed yet) over the SAME weekend/holiday calendar
+ * `getMarketStatus("IN", ...)` already uses, so this can never disagree
+ * with the page's own open/closed logic. Returns null only if 15
+ * consecutive days produce no trading day — effectively unreachable with a
+ * real calendar, but callers must treat null as "unknown," never "fresh."
+ */
+export function getExpectedLatestCompletedSession(now: Date = new Date()): string | null {
+  const MS_DAY = 24 * 60 * 60 * 1000;
+  const CLOSE_MIN = 15 * 60 + 30; // NSE regular-session close, 15:30 IST
+  const today = getZonedParts(now, "Asia/Kolkata");
+
+  let cursor = today.minutesSinceMidnight >= CLOSE_MIN ? now : new Date(now.getTime() - MS_DAY);
+  for (let i = 0; i < 15; i++) {
+    const p = getZonedParts(cursor, "Asia/Kolkata");
+    if (isNseTradingDay(p.dateKey, p.weekday, p.year)) return p.dateKey;
+    cursor = new Date(cursor.getTime() - MS_DAY);
+  }
+  return null;
+}
+
 export interface MarketStatus {
   isOpen: boolean;
   label: string;

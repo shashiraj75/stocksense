@@ -6,6 +6,7 @@ import { api, fetchQuote } from "@/utils/api";
 import { computeEstimatedUpsidePct, hasValidGenerationBasis, isValidPrice, selectPriceBasis } from "@/utils/priceBasis";
 import { evaluateEntryZoneActionability, isQuoteVerifiedComparable, isVerifiedOutsideEntryZone, selectUnverifiedEntryZoneNote } from "@/utils/actionability";
 import { getMarketStatus } from "@/utils/marketHours";
+import { evaluateSessionFreshness, formatSessionDate, type FreshnessResult } from "@/utils/sessionFreshness";
 import {
   TrendingUp, Clock, AlertCircle, ChevronDown, ChevronUp,
   Loader2, Target, ShieldAlert, Zap, CheckCircle, BarChart2, Activity, FlaskConical,
@@ -422,7 +423,12 @@ function LivePerformanceTracker({ horizon, currency, locale, benchmarkLabel }: {
 }
 
 // ── Pick Card ─────────────────────────────────────────────────────────────────
-function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: number; market: "IN" | "US"; currency: string; locale: string }) {
+function PickCard({ pick, rank, market, currency, locale, freshness }: { pick: Pick; rank: number; market: "IN" | "US"; currency: string; locale: string; freshness?: FreshnessResult | null }) {
+  // India Daily Picks session-freshness containment (Phase 0). `freshness`
+  // is only ever passed for the IN market — US Daily Picks and any legacy
+  // caller that omits the prop render exactly as before this change.
+  const isStaleOrUnknown = !!freshness && freshness.freshnessStatus !== "fresh";
+  const referenceDateLabel = freshness ? formatSessionDate(freshness.referenceSessionDate, locale) : null;
   const router = useRouter();
   const [expanded, setExpanded] = useState(false);
   const [showPaperTrade, setShowPaperTrade] = useState(false);
@@ -513,6 +519,19 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
 
       {/* Clickable body */}
       <div onClick={() => router.push(buildPickStockHref(pick.symbol, market, pick.horizon))} className="p-4 cursor-pointer flex-1">
+        {/* India Daily Picks session-freshness containment (Phase 0) — prominent,
+            unmissable warning ahead of everything else on the card. */}
+        {isStaleOrUnknown && (
+          <div className={clsx("mb-3 flex items-start gap-1.5 text-[11px] rounded-lg px-2.5 py-1.5 border",
+            freshness!.freshnessStatus === "stale" ? "text-yellow-400 bg-yellow-500/10 border-yellow-500/30" : "text-gray-400 bg-dark-border/40 border-dark-border")}>
+            <AlertCircle size={11} className="shrink-0 mt-0.5" />
+            <span>
+              {freshness!.freshnessStatus === "stale"
+                ? `Price reference is stale — this pick used market data from ${referenceDateLabel}, not the latest completed NSE session.`
+                : "Price freshness could not be verified."}
+            </span>
+          </div>
+        )}
         <div className="flex items-start justify-between mb-2">
           <div>
             <span className="font-mono font-bold text-white text-lg group-hover:text-green-400 transition-colors">{pick.symbol}</span>
@@ -522,10 +541,20 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
             <div className="text-sm font-semibold text-white">
               {displayPrice != null ? `${currency}${displayPrice.toLocaleString(locale)}` : "—"}
             </div>
-            {showGenerationPriceLine && (
-              <div className="text-[10px] text-gray-500">was {currency}{pick.price!.toLocaleString(locale)} at generation</div>
+            {isStaleOrUnknown ? (
+              isValidPrice(pick.price) && (
+                <div className="text-[10px] text-gray-500">
+                  Calculation reference: {currency}{pick.price.toLocaleString(locale)} · as of {referenceDateLabel} · {freshness!.freshnessStatus === "stale" ? "stale" : "unverified"}
+                </div>
+              )
+            ) : (
+              showGenerationPriceLine && (
+                <div className="text-[10px] text-gray-500">was {currency}{pick.price!.toLocaleString(locale)} at generation</div>
+              )
             )}
-            {upsidePct != null ? (
+            {isStaleOrUnknown ? (
+              <div className="text-[10px] text-gray-500">Estimated upside hidden — not actionable until refreshed</div>
+            ) : upsidePct != null ? (
               <div className={clsx("text-xs font-medium", upsidePct >= 0 ? "text-green-400" : "text-yellow-400")}>
                 {upsidePct >= 0 ? "+" : ""}{upsidePct.toFixed(1)}% est. upside
                 {upsideFromCurrent
@@ -538,7 +567,11 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
           </div>
         </div>
 
-        {verifiedOutside && (
+        {/* Session-freshness containment: a stale/unknown reference already has
+            its own warning above — suppressing these keeps the card from also
+            claiming a "verified" before-and-after comparison against an entry
+            zone that is itself calculated from an unverified reference. */}
+        {verifiedOutside && !isStaleOrUnknown && (
           <div className="mb-3 flex items-center gap-1.5 text-[11px] text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 rounded-lg px-2.5 py-1.5">
             <AlertCircle size={11} className="shrink-0" />
             {actionability === "verified_above_entry_zone"
@@ -546,7 +579,7 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
               : "Current verified quote is below the entry zone — reassess before acting."}
           </div>
         )}
-        {!verifiedOutside && unverifiedQuoteDiffers && (
+        {!verifiedOutside && unverifiedQuoteDiffers && !isStaleOrUnknown && (
           <div className="mb-3 flex items-center gap-1.5 text-[11px] text-gray-400 bg-dark-border/40 rounded-lg px-2.5 py-1.5">
             <AlertCircle size={11} className="shrink-0" />
             {/* Release 12A2: closed-market guidance takes display priority
@@ -569,29 +602,34 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
           </p>
         </div>
 
-        <div className="grid grid-cols-3 gap-2 mb-3">
-          <div className={clsx("rounded-lg p-2 text-center", verifiedOutside ? "bg-yellow-500/10 border border-yellow-500/30" : "bg-dark-border/40")}>
-            <p className="text-[10px] text-gray-500 mb-0.5">Entry Zone{verifiedOutside && " (passed)"}</p>
-            <p className={clsx("text-xs font-mono", verifiedOutside ? "text-yellow-400 line-through" : "text-white")}>
-              {pick.entry_low && pick.entry_high
+        {isStaleOrUnknown && (
+          <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-1.5">
+            Not actionable until refreshed
+          </p>
+        )}
+        <div className={clsx("grid grid-cols-3 gap-2 mb-3", isStaleOrUnknown && "opacity-50")}>
+          <div className={clsx("rounded-lg p-2 text-center", !isStaleOrUnknown && verifiedOutside ? "bg-yellow-500/10 border border-yellow-500/30" : "bg-dark-border/40")}>
+            <p className="text-[10px] text-gray-500 mb-0.5">Entry Zone{!isStaleOrUnknown && verifiedOutside && " (passed)"}</p>
+            <p className={clsx("text-xs font-mono", !isStaleOrUnknown && verifiedOutside ? "text-yellow-400 line-through" : "text-white")}>
+              {isStaleOrUnknown ? "—" : pick.entry_low && pick.entry_high
                 ? `${currency}${pick.entry_low.toLocaleString(locale)}–${pick.entry_high.toLocaleString(locale)}`
                 : `${currency}${pick.price?.toLocaleString(locale)}`}
             </p>
           </div>
           <div className="bg-green-500/10 rounded-lg p-2 text-center border border-green-500/20">
             <p className="text-[10px] text-gray-500 mb-0.5 flex items-center justify-center gap-1"><Target size={9} />Scenario Target</p>
-            <p className="text-xs text-green-400 font-mono font-semibold">{currency}{pick.target?.toLocaleString(locale)}</p>
+            <p className="text-xs text-green-400 font-mono font-semibold">{isStaleOrUnknown ? "—" : `${currency}${pick.target?.toLocaleString(locale)}`}</p>
           </div>
           <div className="bg-red-500/10 rounded-lg p-2 text-center border border-red-500/20">
             <p className="text-[10px] text-gray-500 mb-0.5 flex items-center justify-center gap-1"><ShieldAlert size={9} />Stop Loss</p>
             <p className="text-xs text-red-400 font-mono font-semibold">
-              {pick.stop_loss ? `${currency}${pick.stop_loss.toLocaleString(locale)}` : "—"}
+              {isStaleOrUnknown ? "—" : pick.stop_loss ? `${currency}${pick.stop_loss.toLocaleString(locale)}` : "—"}
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-3 text-xs text-gray-500 mb-3">
-          {pick.risk_reward && <span>R:R <span className="text-white font-semibold">1:{pick.risk_reward.toFixed(1)}</span></span>}
+          {pick.risk_reward && !isStaleOrUnknown && <span>R:R <span className="text-white font-semibold">1:{pick.risk_reward.toFixed(1)}</span></span>}
           {piotroski != null && (
             <span className={clsx("px-1.5 py-0.5 rounded font-semibold",
               piotroski >= 7 ? "bg-green-500/20 text-green-400" : piotroski <= 3 ? "bg-red-500/20 text-red-400" : "bg-yellow-500/20 text-yellow-400")}>
@@ -629,8 +667,20 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
             Always label it as such so it can't read as a second, competing
             "current" upside; and when the generation price/target were invalid
             the backend fabricates "₹0.00 / 0% upside" into the sentence, so
-            suppress the raw text entirely rather than show a fabricated claim. */}
-        {pick.summary && (
+            suppress the raw text entirely rather than show a fabricated claim.
+            India Daily Picks session-freshness containment (Phase 0 gap
+            closure): pick.summary is raw backend prose that can itself
+            contain "Target ₹X implies Y% upside" language computed from the
+            same stale/unverified reference — the structured fields above are
+            already hidden for stale/unknown picks, so this narrative must
+            never be the one place that language still leaks through. */}
+        {isStaleOrUnknown ? (
+          <div className="bg-dark-border/30 rounded-lg p-3 border border-dark-border">
+            <p className="text-xs text-gray-500">
+              Analysis summary withheld because the price reference is stale or could not be verified. Refresh the pick before reviewing price targets or trade levels.
+            </p>
+          </div>
+        ) : pick.summary && (
           hasValidGenerationBasis(pick.price, pick.target) ? (
             <div className="bg-dark-border/30 rounded-lg p-3 border border-dark-border">
               <p className="text-[10px] text-gray-500 mb-1.5">
@@ -649,8 +699,11 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
       {/* Action bar */}
       <div className="flex border-t border-dark-border">
         <button
-          onClick={(e) => { e.stopPropagation(); setShowPaperTrade(true); }}
-          className="flex items-center gap-1.5 px-4 py-2.5 text-xs text-brand-400 hover:text-white hover:bg-brand-500/10 transition-colors border-r border-dark-border font-medium"
+          onClick={(e) => { e.stopPropagation(); if (!isStaleOrUnknown) setShowPaperTrade(true); }}
+          disabled={isStaleOrUnknown}
+          title={isStaleOrUnknown ? "Paper Trade is disabled until this pick's price reference is refreshed" : undefined}
+          className={clsx("flex items-center gap-1.5 px-4 py-2.5 text-xs transition-colors border-r border-dark-border font-medium",
+            isStaleOrUnknown ? "text-gray-600 cursor-not-allowed" : "text-brand-400 hover:text-white hover:bg-brand-500/10")}
         >
           <FlaskConical size={11} /> Paper Trade
         </button>
@@ -661,7 +714,7 @@ function PickCard({ pick, rank, market, currency, locale }: { pick: Pick; rank: 
         </button>
       </div>
 
-      {showPaperTrade && pick.price && (
+      {showPaperTrade && pick.price && !isStaleOrUnknown && (
         <PaperTradeModal
           symbol={pick.symbol}
           market={market}
@@ -798,6 +851,26 @@ export default function DailyPicksPage() {
 
   const currency = data?.currency ?? marketCfg.currency;
   const picks = data?.picks?.[horizon] ?? [];
+
+  // India Daily Picks session-freshness containment (Phase 0). Scoped to IN
+  // only — US Daily Picks are untouched by this workstream. Computed once
+  // per render for the displayed (current-horizon) picks, keyed by symbol
+  // so PickCard and the batch notice below use the exact same evaluation.
+  const freshnessBySymbol: Record<string, FreshnessResult> | null =
+    market === "IN"
+      ? (() => {
+          const now = new Date();
+          const map: Record<string, FreshnessResult> = {};
+          for (const pick of picks) map[pick.symbol] = evaluateSessionFreshness(pick.generation_reference_as_of, now);
+          return map;
+        })()
+      : null;
+  const freshnessCounts = freshnessBySymbol
+    ? Object.values(freshnessBySymbol).reduce(
+        (acc, f) => { acc[f.freshnessStatus]++; return acc; },
+        { fresh: 0, stale: 0, unknown: 0 },
+      )
+    : null;
   // Product Integrity Workstream #001: already explicitly converted to
   // this market's own timezone (correct, predating this workstream) — the
   // only fix needed here is disclosing WHICH timezone, via tzLabel, since
@@ -1010,6 +1083,22 @@ export default function DailyPicksPage() {
         </div>
       )}
 
+      {/* India Daily Picks session-freshness containment (Phase 0) — page-level
+          notice when any currently-displayed India pick is stale or unknown. */}
+      {freshnessCounts && (freshnessCounts.stale > 0 || freshnessCounts.unknown > 0) && (
+        <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4 flex items-start gap-3">
+          <AlertCircle size={18} className="text-yellow-400 mt-0.5 shrink-0" />
+          <div>
+            <p className="text-sm font-semibold text-yellow-300">
+              Some India Daily Picks use unverified or outdated price references. Review the freshness status on each card before using trade levels.
+            </p>
+            <p className="text-xs text-yellow-400/70 mt-0.5">
+              {freshnessCounts.fresh} fresh · {freshnessCounts.stale} stale · {freshnessCounts.unknown} unknown
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Picks grid */}
       {isLoading ? (
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -1017,7 +1106,7 @@ export default function DailyPicksPage() {
         </div>
       ) : picks.length > 0 ? (
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {picks.map((pick, i) => <PickCard key={pick.symbol} pick={pick} rank={i + 1} market={market} currency={currency} locale={marketCfg.locale} />)}
+          {picks.map((pick, i) => <PickCard key={pick.symbol} pick={pick} rank={i + 1} market={market} currency={currency} locale={marketCfg.locale} freshness={freshnessBySymbol?.[pick.symbol]} />)}
         </div>
       ) : (
         <div className="flex flex-col items-center justify-center py-20 text-center">
