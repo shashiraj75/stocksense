@@ -4,7 +4,7 @@
 
 **Use this document for current state.** Historical sprint reports, Epic closures, SSDS documents, and audit reports remain authoritative evidence for their own completed scope, but they do not automatically describe the current production operating state.
 
-**As of:** 2026-07-12 — maintained as a live operational register
+**As of:** 2026-07-14 — maintained as a live operational register
 
 ---
 
@@ -23,14 +23,31 @@
 
 ## Release 12B — Daily Picks Universe and Reliability Validation
 
-**Status:** Deployed — controlled production validation pending.
+**Status:** Deployed — India and US natural-generation evidence now recorded (2026-07-14); scheduler-timing reliability remains a separate open item.
 
-- India validation requires a genuine fresh post-release generation window.
-- US validation requires a normal US market session and a separate controlled validation.
-- No Daily Picks scheduler enablement is approved until India and US validations both pass.
-- No validation result may be described as passed until its release-specific evidence record is complete.
-- **Superseded scope note (2026-07-10):** this release's original universe-construction logic (`yf.screen()`-based, market-cap-descending with a hard cutoff) has been replaced entirely — see the Daily Picks Large/Mid/Small-Cap Stratification entry in `STOCKSENSE_DOCUMENTATION.md` §27 Session 10. Any pending or future validation of "Release 12B's universe behavior" must be re-scoped against the new `stock_fundamentals_cache`-sourced, tier-stratified universe, not treated as still covering the old Yahoo-screener logic. Scheduler enablement remains blocked either way — this note does not itself unblock or reblock anything, it only prevents a future validation pass from silently validating logic that no longer exists.
-- **Hardening preflight recorded (2026-07-12, markets closed):** a planning-only preflight for runtime/provider hardening (timeouts, retry/backoff, per-symbol failure isolation, stale-cache detection, and related areas) was recorded at [Preflight — Daily Picks Runtime/Provider Hardening](../Releases/Preflight-Daily-Picks-Runtime-Provider-Hardening.md). It does not change generation logic, does not enable the scheduler, and does not itself advance or substitute for this release's still-pending India/US validation.
+Original gate criteria, reviewed individually rather than declared passed as a block:
+
+| Criterion (as originally stated) | Classification | Evidence |
+|---|---|---|
+| "India validation requires a genuine fresh post-release generation window." | **Passed by the 2026-07-14 India evidence** | India's scheduled Daily Picks run completed on the current deployed code (commit `36d4b33`, includes both Sprint #014's stratified universe and Phase 1A.6): `has_today: true`, `last_error: null`, `universe_degraded: false`. This is a genuine natural (scheduler-fired, not manually triggered) generation window post-release. |
+| "US validation requires a normal US market session and a separate controlled validation." | **Passed by the 2026-07-14 US evidence** | A separate scheduled US job (`942231a1`) completed on the same commit on a live US market day: `has_today: true`, `last_error: null`, `universe_used: "fundamentals_cache"`, `universe_degraded: false`, `universe_candidate_count: 400` (matches Sprint #014's `_TARGET_UNIVERSE_SIZE`). This is also the first live confirmation Sprint #014's stratified universe completes end-to-end for US. |
+| "No Daily Picks scheduler enablement is approved until India and US validations both pass." | **Superseded by later implementation** | There is no separate application-level "scheduler enabled" flag to approve — GitHub Actions cron for both markets already exists, is active, and both markets' triggers are what produced the passing evidence above. What remains genuinely open is scheduler-*timing* reliability (see below), not a gate on whether the pipeline itself may run. |
+| "No validation result may be described as passed until its release-specific evidence record is complete." | **Still governs — satisfied for this update** | Evidence for both markets is recorded in [Product Integrity #003](../Releases/Product-Integrity-003-Phase-1A6-Production-Migration-and-Natural-Run-Verification.md). This rule itself remains standing policy. |
+
+- **Superseded scope note (2026-07-10):** this release's original universe-construction logic (`yf.screen()`-based, market-cap-descending with a hard cutoff) has been replaced entirely — see the Daily Picks Large/Mid/Small-Cap Stratification entry in `STOCKSENSE_DOCUMENTATION.md` §27 Session 10. The 2026-07-14 evidence above is scoped against this replacement (`stock_fundamentals_cache`-sourced, tier-stratified universe), not the old Yahoo-screener logic — resolving the concern this note originally flagged.
+- **Hardening preflight recorded (2026-07-12, markets closed):** a planning-only preflight for runtime/provider hardening (timeouts, retry/backoff, per-symbol failure isolation, stale-cache detection, and related areas) was recorded at [Preflight — Daily Picks Runtime/Provider Hardening](../Releases/Preflight-Daily-Picks-Runtime-Provider-Hardening.md). No code from that preflight has been implemented; it remains a planning record only, unaffected by the 2026-07-14 evidence above.
+- **What "natural generation works" does NOT mean:** it does not mean all Daily Picks runtime/provider hardening work is complete (the 2026-07-12 preflight above remains unimplemented), and it does not mean granular output quality (real tier diversity, confidence distribution, total runtime) has been inspected — see the still-open items in `Releases/Sprint-014-Daily-Picks-Cap-Stratification-and-Confidence-Priority.md`'s own Recommendations section.
+- **Scheduler reliability — separately gated, open work.** GitHub Actions' scheduled cron for both markets has repeatedly fired hours later than its nominal time (US: nominal 04:00 UTC, observed firing at 06:04 UTC on 2026-07-14, 06:45 UTC on 2026-07-13, 07:27 UTC on 2026-07-10, 15:33 UTC on 2026-07-09 — see [Product Integrity #003](../Releases/Product-Integrity-003-Phase-1A6-Production-Migration-and-Natural-Run-Verification.md)). A GitHub Actions run reporting "success" only certifies that the asynchronous trigger `POST` was accepted (202) — it does **not** certify that the downstream generation job actually completed; those are two different, decoupled facts. Scheduler timing and end-to-end completion monitoring require a separate forensic design review — not solved by, and not blocking, the evidence recorded above.
+
+## Phase 1A.6 — Market Integrity Hardening and Database-Default Closure
+
+**Status:** Deployed and verified live (2026-07-14). Write-boundary and schema-default closure is **COMPLETE**. Historical contamination repair is **NOT STARTED**. Canonical clean learning-dataset construction is **NOT STARTED**. Learning re-enablement is **NOT AUTHORIZED**.
+
+- Commit `36d4b338377026ad7aa69014cf3efe4edc45a572` deployed to Railway (deployment `07ff8c6d`, `SUCCESS`/Online); live logs confirm the new market-integrity containment logic is active against real production traffic.
+- `predictions.market` and `outcomes.market`'s database-level `DEFAULT 'IN'` was dropped on 2026-07-14T05:54:02Z under a separately authorized, evidenced production migration. Both columns remain `NOT NULL`. Pre/post row counts are identical for both tables — zero historical rows were changed, relabeled, or repaired by this action.
+- Production learning remains quarantined: `production_learning_enabled: false`, `production_alpha_source: "fixed_academic_prior"`, `learning_dataset_version: "legacy-quarantined-2026-07-12"` — unaffected by the above.
+- Full detail: [Phase 1A.6 architecture document](../Architecture/Phase-1A6-Market-Integrity-Hardening-and-Repair-Planning.md) (design/implementation/closure) and [Product Integrity #003](../Releases/Product-Integrity-003-Phase-1A6-Production-Migration-and-Natural-Run-Verification.md) (production evidence).
+- Historical contamination repair, the unreconciled Phase 1A.5-vs-planner duplicate-count discrepancy, and canonical clean learning-dataset construction all remain separately gated, future, explicitly-authorized work — none of it began or was implied by the above.
 
 ## Release 13C — Recommendation Consolidation Observability
 
@@ -61,8 +78,9 @@
 
 ## Operational Safety Rules
 
-- No scheduler enablement before both India and US Release 12B validations pass.
+- Daily Picks generation itself is live for both markets, with recorded India and US natural-run evidence (2026-07-14) — see Release 12B above. This does **not** authorize skipping evidence-based validation for future generation-logic changes, and does **not** resolve the separately-tracked GitHub Actions scheduler-timing reliability issue (see Release 12B).
 - No RCI feature-flag change without explicit approval.
 - No production-status documentation may claim a validation passed without recorded evidence.
 - Historical test totals remain historical snapshots. Current test status must be taken from the latest validated release or CI evidence.
 - Intelligence Engine V1's runtime-validation criteria (IN and US shadow telemetry at `source_commit = bb5d3cf` or later, with `tradability`/`liquidity`/`data_confidence` all `available = true`) were met on 2026-07-08 — evidence recorded in the Runtime Validation Closure record. Formal closure of the initiative remains a separate, explicit decision.
+- No historical market-integrity contamination repair, backfill, or relabeling may be executed without a separate, explicit authorization — see Phase 1A.6 above. Production learning remains quarantined (`production_learning_enabled: false`) until a canonical clean learning dataset is separately constructed and validated.

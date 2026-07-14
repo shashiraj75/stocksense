@@ -1,6 +1,6 @@
 # Sprint #014 — Daily Picks Large/Mid/Small-Cap Stratification and Confidence Priority
 
-**Status:** Complete (code + tests + docs). Not yet observed in a real production generation run — see Testing Status.
+**Status:** Complete (code + tests + docs). **Observed in a real production generation run 2026-07-14** (both markets, natural scheduler-fired runs, deployed as part of commit `36d4b33` — see Testing Status and [Product Integrity #003](Product-Integrity-003-Phase-1A6-Production-Migration-and-Natural-Run-Verification.md)).
 
 **Prompted by:** a user question about which India market-cap horizons Daily Picks covers, following the Multibagger pledge-NULL investigation (Sprint report: none dedicated, see `Documentation/STOCKSENSE_DOCUMENTATION.md` §27 Session 10's Multibagger entry). Confirmed via direct code reading, then agreed with the user across a multi-turn discussion (recorded in this session's plan file) before implementation began.
 
@@ -46,7 +46,7 @@ The universe-discovery boundary moved from a live Yahoo Finance screener call to
 - **US small-cap junk floor ($100M) is a judgment call**, explicitly flagged as adjustable during planning — not empirically calibrated against real US small-cap data quality in `stock_fundamentals_cache` (unlike India's ₹100 Cr floor, inherited unchanged from the prior release).
 - **`_MEDIUM_LONG_TIER_QUOTA_6` (2/2/2)** is a simplification of the population-level 40/30/30 split, chosen because 6 slots doesn't divide cleanly — reasonable, but a different rounding choice (e.g. 3/2/1) was equally defensible and this one wasn't re-confirmed with the user after the initial 40/30/30 population-level agreement.
 - **Short-term can now legitimately show fewer than 6 (or 0) picks** on a low-conviction day — an intentional design choice per explicit user instruction, but a behavior change from today's near-always-6 pattern that could read as "broken" to a user unfamiliar with the new rule until the UI/copy communicates it (not addressed by this sprint — backend only).
-- **No live production generation run has exercised this yet** — see Testing Status.
+- ~~No live production generation run has exercised this yet~~ — **resolved 2026-07-14**, see Testing Status.
 
 ## Migration Notes
 
@@ -59,7 +59,8 @@ The universe-discovery boundary moved from a live Yahoo Finance screener call to
 - **1517/1517 full backend suite passing** locally.
 - New/updated coverage: tier-boundary edge cases (both markets' conventions), stratified-sampling honesty when a tier is short (no cross-tier backfill at the Phase-1-pool stage), thin-cache/exception fallback truthfulness, tier-quota top-N-and-top-up-from-leftover behavior, short-term confidence-priority fill-down (including a zero-high-confidence day and an alpha-as-secondary-key check).
 - Sanity-checked per this repo's SES-003 §4 discipline: deliberately removed the final alpha re-sort from `_select_with_tier_quota`, confirmed the corresponding test failed with a clear message, restored the file byte-identical, confirmed the suite green again.
-- **What is not covered**: no live end-to-end run of `_generate_picks_inner` against real market data — per standing protocol, the production `/api/picks/generate` endpoint was never called directly during this sprint. Verification was via unit tests and direct read-only production checks (confirmed via the live Multibagger endpoint that `stock_fundamentals_cache` is genuinely populated and fresh for both markets — India: 52/167/73 across its three screens; US: 19 for `quality_compounder`, refreshed same-day). The actual Daily Picks generation behavior (real tier diversity in the output, real confidence distribution for short-term, real total runtime) has not yet been observed and should be checked read-only after the next natural scheduled run.
+- **What was not covered during this sprint itself**: no live end-to-end run of `_generate_picks_inner` against real market data — per standing protocol, the production `/api/picks/generate` endpoint was never called directly during this sprint. Verification at the time was via unit tests and direct read-only production checks (confirmed via the live Multibagger endpoint that `stock_fundamentals_cache` is genuinely populated and fresh for both markets — India: 52/167/73 across its three screens; US: 19 for `quality_compounder`, refreshed same-day).
+- **Update (2026-07-14): the next natural scheduled run happened.** India and US both completed successfully on this exact logic, deployed as part of commit `36d4b33` (see `Operations/Current-Release-Status.md` → Release 12B, and [Product Integrity #003](Product-Integrity-003-Phase-1A6-Production-Migration-and-Natural-Run-Verification.md)). This confirms the pipeline **completes end-to-end without error** for both markets, including US's `universe_candidate_count: 400` matching `_TARGET_UNIVERSE_SIZE` exactly. It does **not** yet confirm the finer-grained items this sprint's own Recommendations section called for (real tier diversity in medium/long picks, real short-term confidence distribution, actual total runtime vs. the ~60-90 minute estimate) — those remain open, read-only follow-up items, not yet inspected.
 
 ## Errors Found and Fixed During Implementation
 
