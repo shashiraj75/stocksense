@@ -2,6 +2,14 @@
 3-phase US Daily Picks upgrade, Phase 2 — POST /api/picks/premarket-finalize
 and services.premarket_finalizer.finalize_premarket().
 
+Daily Picks Scheduler Remediation Phase 1A: base payloads used in these
+tests now carry source_job_id and, where finalization is expected to
+succeed, a mocked get_daily_picks_job_by_id() returning a matching
+completed/persisted US job row — the new fail-closed provenance contract
+(see services/premarket_finalizer.py and
+tests/regression/test_premarket_finalizer_base_integrity.py for the full
+validation-matrix coverage).
+
 All tests are deterministic and fully mocked — no real DB, no external
 providers, no Daily Picks generation runs, no live network. Matches this
 repo's tests/integration convention: multiple in-process modules together,
@@ -26,16 +34,33 @@ def client(monkeypatch):
     return TestClient(app)
 
 
-def _base_payload(with_picks=True):
+def _base_payload(with_picks=True, generated_at="2026-07-06T04:10:00+00:00",
+                   source_job_id="job-us-fresh"):
     picks = {
         "short": [{"symbol": "AAPL", "price": 200.0, "confidence": 70, "signal": "BUY"}],
         "medium": [],
         "long": [],
     } if with_picks else {"short": [], "medium": [], "long": []}
     return {
-        "generated_at": "2026-07-06T04:10:00+00:00",
+        "generated_at": generated_at,
         "market": "US",
         "picks": picks,
+        "source_job_id": source_job_id,
+    }
+
+
+def _completed_job_row(job_id="job-us-fresh", *, completed_at="2026-07-06T04:00:00+00:00",
+                        persisted_picks_timestamp="2026-07-06T04:00:01+00:00"):
+    """A durable job row satisfying every provenance check (G-K)."""
+    return {
+        "job_id": job_id,
+        "market": "US",
+        "status": "completed",
+        "started_at": "2026-07-06T03:00:00+00:00",
+        "completed_at": completed_at,
+        "persisted_picks_timestamp": persisted_picks_timestamp,
+        "universe_degraded": False,
+        "last_error": None,
     }
 
 
@@ -92,21 +117,35 @@ class TestPremarketFinalizeWindowGuard:
         from services.premarket_finalizer import finalize_premarket
         now = datetime(2026, 7, 6, 11, 35, tzinfo=timezone.utc)
         with patch("services.daily_picks.get_cached_picks", return_value=_base_payload()), \
+             patch("services.postgres_store.get_daily_picks_job_by_id", return_value=_completed_job_row()), \
+             patch("services.postgres_store.save_picks_to_db", return_value=True), \
              patch("services.market_data.MarketDataService.get_quote", new=AsyncMock(return_value=None)), \
-             patch("services.global_context.get_global_context", side_effect=Exception("no network in test")):
+             patch("services.global_context.get_global_context", side_effect=Exception("no network in test")), \
+             patch.dict("os.environ", {"USE_POSTGRES": "1"}):
             result = await finalize_premarket("US", now=now)
-        assert result["status"] == "completed_with_limited_premarket_data"
+        assert result["status"] == "completed"
+        assert result["reason"] == "finalized"
 
     @pytest.mark.asyncio
     async def test_est_cron_candidate_runs_during_est(self):
         """12:35 UTC maps to ~7:35 AM New York during EST (January) — allowed."""
         from services.premarket_finalizer import finalize_premarket
         now = datetime(2026, 1, 6, 12, 35, tzinfo=timezone.utc)
-        with patch("services.daily_picks.get_cached_picks", return_value=_base_payload()), \
+        # EST is UTC-5 in January (vs. UTC-4 EDT in July) — 04:10 UTC would
+        # land on the PRIOR ET calendar day (23:10 ET Jan 5), so this fixture
+        # uses 09:10 UTC = 04:10 AM ET, the same ET day as `now` (07:35 AM ET).
+        payload = _base_payload(generated_at="2026-01-06T09:10:00+00:00")
+        job_row = _completed_job_row(completed_at="2026-01-06T09:00:00+00:00",
+                                      persisted_picks_timestamp="2026-01-06T09:00:01+00:00")
+        with patch("services.daily_picks.get_cached_picks", return_value=payload), \
+             patch("services.postgres_store.get_daily_picks_job_by_id", return_value=job_row), \
+             patch("services.postgres_store.save_picks_to_db", return_value=True), \
              patch("services.market_data.MarketDataService.get_quote", new=AsyncMock(return_value=None)), \
-             patch("services.global_context.get_global_context", side_effect=Exception("no network in test")):
+             patch("services.global_context.get_global_context", side_effect=Exception("no network in test")), \
+             patch.dict("os.environ", {"USE_POSTGRES": "1"}):
             result = await finalize_premarket("US", now=now)
-        assert result["status"] == "completed_with_limited_premarket_data"
+        assert result["status"] == "completed"
+        assert result["reason"] == "finalized"
 
     @pytest.mark.asyncio
     async def test_est_candidate_is_now_also_inside_window_during_edt_but_idempotency_guard_skips_it(self):
@@ -115,20 +154,23 @@ class TestPremarketFinalizeWindowGuard:
         7:30-9:00 window (unlike the old 30-minute window, where this
         candidate safely fell outside it). This is the expected behavior
         change from widening the window past the 1-hour EDT/EST cron gap:
-        both candidates now land in-window, so it's the same-day
+        both candidates now land in-window, so it's the exact-base
         idempotency guard — not the window boundary — that prevents this
         from being a second, duplicate finalization once the EDT candidate
         (11:35 UTC) has already run earlier that same morning.
         """
         from services.premarket_finalizer import finalize_premarket
-        already_finalized_today = datetime(2026, 7, 6, 11, 35, tzinfo=timezone.utc).isoformat()
+        already_finalized_at = datetime(2026, 7, 6, 11, 35, tzinfo=timezone.utc).isoformat()
         payload = _base_payload()
-        payload["premarket_finalized_at"] = already_finalized_today
+        payload["premarket_finalized_at"] = already_finalized_at
+        payload["premarket_finalized_for_job_id"] = payload["source_job_id"]
+        payload["premarket_finalized_for_base"] = payload["generated_at"]
         now = datetime(2026, 7, 6, 12, 35, tzinfo=timezone.utc)
-        with patch("services.daily_picks.get_cached_picks", return_value=payload):
+        with patch("services.daily_picks.get_cached_picks", return_value=payload), \
+             patch.dict("os.environ", {"USE_POSTGRES": "1"}):
             result = await finalize_premarket("US", now=now)
         assert result["status"] == "skipped"
-        assert result["reason"] == "already_finalized_today"
+        assert result["reason"] == "already_finalized"
 
     @pytest.mark.asyncio
     async def test_edt_cron_candidate_noops_during_est(self):
@@ -151,32 +193,38 @@ class TestPremarketFinalizeDataAvailability:
     _IN_WINDOW = datetime(2026, 7, 6, 8, 15, tzinfo=__import__("zoneinfo").ZoneInfo("America/New_York"))
 
     @pytest.mark.asyncio
-    async def test_missing_base_picks_returns_safe_failed_status(self):
+    async def test_missing_base_picks_returns_safe_skipped_status(self):
         from services.premarket_finalizer import finalize_premarket
         with patch("services.daily_picks.get_cached_picks", return_value=None):
             result = await finalize_premarket("US", now=self._IN_WINDOW)
-        assert result["status"] == "failed"
-        assert result["reason"] == "no_base_picks_available"
+        assert result["status"] == "skipped"
+        assert result["reason"] == "skipped_no_base"
 
     @pytest.mark.asyncio
-    async def test_empty_picks_payload_returns_safe_failed_status(self):
+    async def test_empty_picks_payload_returns_safe_skipped_status(self):
         from services.premarket_finalizer import finalize_premarket
         with patch("services.daily_picks.get_cached_picks",
-                   return_value={"generated_at": "2026-07-06T04:10:00+00:00", "picks": {}}):
+                   return_value={"generated_at": "2026-07-06T04:10:00+00:00",
+                                 "market": "US", "picks": {}}):
             result = await finalize_premarket("US", now=self._IN_WINDOW)
-        assert result["status"] == "failed"
+        assert result["status"] == "skipped"
+        assert result["reason"] == "skipped_no_base"
 
     @pytest.mark.asyncio
     async def test_missing_premarket_data_completes_with_limited_status_not_a_crash(self):
         from services.premarket_finalizer import finalize_premarket
         with patch("services.daily_picks.get_cached_picks", return_value=_base_payload()), \
              patch("services.daily_picks._cache_file", return_value="/dev/null"), \
+             patch("services.postgres_store.get_daily_picks_job_by_id", return_value=_completed_job_row()), \
+             patch("services.postgres_store.save_picks_to_db", return_value=True), \
              patch("services.market_data.MarketDataService.get_quote",
                    new=AsyncMock(side_effect=Exception("provider down"))), \
              patch("services.global_context.get_global_context",
-                   side_effect=Exception("provider down")):
+                   side_effect=Exception("provider down")), \
+             patch.dict("os.environ", {"USE_POSTGRES": "1"}):
             result = await finalize_premarket("US", now=self._IN_WINDOW)
-        assert result["status"] == "completed_with_limited_premarket_data"
+        assert result["status"] == "completed"
+        assert result["reason"] == "finalized"
         assert result["premarket_data_available"] is False
         assert "price_gap_pct" in result["premarket_missing_inputs"]
         assert "index_proxy_direction" in result["premarket_missing_inputs"]
@@ -192,27 +240,33 @@ class TestPremarketFinalizeDataAvailability:
         quote = {"symbol": "AAPL", "market": "US", "price": 201.0}
         with patch("services.daily_picks.get_cached_picks", return_value=_base_payload()), \
              patch("services.daily_picks._cache_file", return_value="/dev/null"), \
+             patch("services.postgres_store.get_daily_picks_job_by_id", return_value=_completed_job_row()), \
+             patch("services.postgres_store.save_picks_to_db", return_value=True), \
              patch("services.market_data.MarketDataService.get_quote",
                    new=AsyncMock(return_value=quote)), \
              patch("services.global_context.get_global_context",
-                   side_effect=Exception("no network in test")):
+                   side_effect=Exception("no network in test")), \
+             patch.dict("os.environ", {"USE_POSTGRES": "1"}):
             result = await finalize_premarket("US", now=self._IN_WINDOW)
-        assert result["status"] == "completed_with_limited_premarket_data"
+        assert result["status"] == "completed"
         assert result["premarket_data_available"] is True
 
     @pytest.mark.asyncio
     async def test_never_mutates_scoring_or_ranking_fields(self):
-        """The finalizer must only ADD premarket_* keys — base pick fields
-        (price, confidence, signal) must be byte-for-byte unchanged."""
+        """The finalizer must only ADD premarket_*/base_* keys — base pick
+        fields (price, confidence, signal) must be byte-for-byte unchanged."""
         from services.premarket_finalizer import finalize_premarket
         base = _base_payload()
         original_pick = dict(base["picks"]["short"][0])
         with patch("services.daily_picks.get_cached_picks", return_value=base), \
              patch("services.daily_picks._cache_file", return_value="/dev/null"), \
+             patch("services.postgres_store.get_daily_picks_job_by_id", return_value=_completed_job_row()), \
+             patch("services.postgres_store.save_picks_to_db", return_value=True), \
              patch("services.market_data.MarketDataService.get_quote",
                    new=AsyncMock(return_value=None)), \
              patch("services.global_context.get_global_context",
-                   side_effect=Exception("no network in test")):
+                   side_effect=Exception("no network in test")), \
+             patch.dict("os.environ", {"USE_POSTGRES": "1"}):
             await finalize_premarket("US", now=self._IN_WINDOW)
         finalized_pick = base["picks"]["short"][0]
         for key, value in original_pick.items():

@@ -1685,6 +1685,17 @@ def _generate_picks_inner(
     payload = {
         "generated_at":      datetime.now(timezone.utc).isoformat(),
         "market":            market,
+        # source_job_id: durable base-job provenance for this payload. Equals
+        # the daily_picks_jobs.job_id supplied to generate_picks() in
+        # production endpoint-driven generation. In test/local generation
+        # (no durable job_id — job_id param is None), left as None rather
+        # than fabricated — never the Alpha Observation fallback run_id
+        # (_alpha_run_id above), which exists for a different purpose and
+        # is not a durable job-state row this field can be verified against.
+        # Consumed by services.premarket_finalizer's fail-closed base
+        # validation to confirm which specific base run a premarket
+        # finalization is being applied to.
+        "source_job_id":     job_id,
         "currency":          currency,
         "picks":             picks,
         "alpha_engine":      alpha_engine_meta,

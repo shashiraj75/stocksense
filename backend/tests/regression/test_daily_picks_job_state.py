@@ -118,6 +118,77 @@ def test_get_latest_daily_picks_job_returns_none_on_exception():
     assert result is None
 
 
+# ─── get_daily_picks_job_by_id (Scheduler Remediation Phase 1A) ──────────────
+
+def test_get_daily_picks_job_by_id_returns_row_when_found():
+    """get_daily_picks_job_by_id returns exactly the documented field set."""
+    from services.postgres_store import get_daily_picks_job_by_id
+
+    row = ("job-1", "US", "completed",
+           datetime(2026, 7, 6, 4, 0, tzinfo=timezone.utc),
+           datetime(2026, 7, 6, 4, 40, tzinfo=timezone.utc),
+           datetime(2026, 7, 6, 4, 40, 1, tzinfo=timezone.utc),
+           False, None)
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = row
+    mock_conn = MagicMock()
+    mock_conn.execute.return_value = mock_cursor
+    mock_conn.__enter__ = lambda s: s
+    mock_conn.__exit__ = MagicMock(return_value=False)
+    mock_pool = MagicMock()
+    mock_pool.connection.return_value = mock_conn
+
+    with patch("services.postgres_store._get_pool", return_value=mock_pool):
+        result = get_daily_picks_job_by_id("job-1")
+
+    assert result == {
+        "job_id": "job-1", "market": "US", "status": "completed",
+        "started_at": row[3], "completed_at": row[4],
+        "persisted_picks_timestamp": row[5],
+        "universe_degraded": False, "last_error": None,
+    }
+    sql_called = mock_conn.execute.call_args[0][0]
+    assert "WHERE job_id = %s" in sql_called
+    params = mock_conn.execute.call_args[0][1]
+    assert params == ("job-1",)
+
+
+def test_get_daily_picks_job_by_id_returns_none_when_not_found():
+    """A genuine 'no such row' lookup returns None, not an error."""
+    from services.postgres_store import get_daily_picks_job_by_id
+
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = None
+    mock_conn = MagicMock()
+    mock_conn.execute.return_value = mock_cursor
+    mock_conn.__enter__ = lambda s: s
+    mock_conn.__exit__ = MagicMock(return_value=False)
+    mock_pool = MagicMock()
+    mock_pool.connection.return_value = mock_conn
+
+    with patch("services.postgres_store._get_pool", return_value=mock_pool):
+        result = get_daily_picks_job_by_id("does-not-exist")
+
+    assert result is None
+
+
+def test_get_daily_picks_job_by_id_raises_on_genuine_db_error():
+    """
+    A database error must propagate, never be silently converted to None —
+    unlike get_active_daily_picks_job/get_latest_daily_picks_job. Callers
+    verifying base-job provenance must be able to distinguish "not found"
+    from "could not check."
+    """
+    from services.postgres_store import get_daily_picks_job_by_id
+
+    mock_pool = MagicMock()
+    mock_pool.connection.side_effect = Exception("connection refused")
+
+    with patch("services.postgres_store._get_pool", return_value=mock_pool):
+        with pytest.raises(Exception, match="connection refused"):
+            get_daily_picks_job_by_id("job-1")
+
+
 # ─── generate_picks lifecycle ─────────────────────────────────────────────────
 
 def test_generate_picks_marks_completed_when_save_succeeds():

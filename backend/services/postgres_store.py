@@ -1650,3 +1650,37 @@ def get_latest_daily_picks_job(market: str) -> dict | None:
         return dict(zip(cols, row))
     except Exception:
         return None
+
+
+def get_daily_picks_job_by_id(job_id: str) -> dict | None:
+    """
+    Exact, parameterized lookup of a single daily_picks_jobs row by job_id —
+    Daily Picks Scheduler Remediation Phase 1A base-job provenance.
+
+    Returns only the fields needed to verify base-job provenance for
+    premarket finalization: job_id, market, status, started_at, completed_at,
+    persisted_picks_timestamp, universe_degraded, last_error.
+
+    Returns None ONLY when no row matches job_id. A genuine database error
+    (bad connection, query failure) is deliberately NOT caught here and
+    propagates to the caller — unlike get_active_daily_picks_job/
+    get_latest_daily_picks_job above, which swallow errors for their own
+    presentation-only use cases. Provenance verification must be able to
+    distinguish "this job_id does not exist" from "the lookup itself could
+    not be performed"; collapsing both into None would let a database outage
+    silently masquerade as a malformed-provenance rejection. Read-only —
+    issues no writes.
+    """
+    with _get_pool().connection() as conn:
+        row = conn.execute(
+            """SELECT job_id, market, status, started_at, completed_at,
+                      persisted_picks_timestamp, universe_degraded, last_error
+               FROM daily_picks_jobs
+               WHERE job_id = %s""",
+            (job_id,),
+        ).fetchone()
+    if not row:
+        return None
+    cols = ["job_id", "market", "status", "started_at", "completed_at",
+            "persisted_picks_timestamp", "universe_degraded", "last_error"]
+    return dict(zip(cols, row))

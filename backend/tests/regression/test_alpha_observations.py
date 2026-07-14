@@ -487,6 +487,12 @@ class TestGeneratePicksInnerShadowIntegration:
         def strip_nondeterministic(p):
             p = copy.deepcopy(p)
             p.pop("generated_at", None)
+            # source_job_id (Daily Picks Scheduler Remediation Phase 1A base-job
+            # provenance) is set from the job_id argument passed to _run() —
+            # this test deliberately varies job_id across calls to prove
+            # ranking/selection/output is unaffected by it, so it is expected,
+            # intentional nondeterminism here, not a regression to mask.
+            p.pop("source_job_id", None)
             return p
 
         assert strip_nondeterministic(payload_a) == strip_nondeterministic(payload_b)
@@ -507,6 +513,12 @@ class TestGeneratePicksInnerShadowIntegration:
         def strip_nondeterministic(p):
             p = copy.deepcopy(p)
             p.pop("generated_at", None)
+            # source_job_id (Daily Picks Scheduler Remediation Phase 1A base-job
+            # provenance) is set from the job_id argument passed to _run() —
+            # this test deliberately varies job_id across calls to prove
+            # ranking/selection/output is unaffected by it, so it is expected,
+            # intentional nondeterminism here, not a regression to mask.
+            p.pop("source_job_id", None)
             return p
 
         payload_success, *_ = self._run("job-6a", lambda rows: True)
