@@ -7,6 +7,7 @@ import { computeEstimatedUpsidePct, hasValidGenerationBasis, isValidPrice, selec
 import { evaluateEntryZoneActionability, isQuoteVerifiedComparable, isVerifiedOutsideEntryZone, selectUnverifiedEntryZoneNote } from "@/utils/actionability";
 import { getMarketStatus } from "@/utils/marketHours";
 import { evaluateSessionFreshness, formatSessionDate, type FreshnessResult } from "@/utils/sessionFreshness";
+import { selectPayloadForMarket } from "@/utils/payloadMarketGuard";
 import {
   TrendingUp, Clock, AlertCircle, ChevronDown, ChevronUp,
   Loader2, Target, ShieldAlert, Zap, CheckCircle, BarChart2, Activity, FlaskConical,
@@ -836,7 +837,7 @@ export default function DailyPicksPage() {
 
   const marketCfg = MARKETS.find(m => m.key === market)!;
 
-  const { data, isLoading, error: queryError } = useQuery<DailyPicksResponse>({
+  const { data: rawDailyPicksData, isLoading, error: queryError } = useQuery<DailyPicksResponse>({
     queryKey: ["daily-picks", market],
     queryFn: () => api.get(`/api/picks/daily?market=${market}`).then(r => r.data),
     // Poll every 60s when generating, every 5 min when idle
@@ -848,6 +849,19 @@ export default function DailyPicksPage() {
     // the header's right-aligned button cluster visibly jump position.
     placeholderData: keepPreviousData,
   });
+
+  // Cross-market retained-payload containment bypass fix. `keepPreviousData`
+  // above means `rawDailyPicksData` can legitimately still be the OTHER
+  // market's payload for one or more renders after `market` state has
+  // already changed (the query key changed; the new query hasn't resolved
+  // yet). Every `data?.xxx` read below — cards, freshness containment,
+  // regime, macro, screened-from count, premarket status — must never
+  // trust a payload that doesn't provably belong to the currently selected
+  // market. Shadowing `data` here means every existing read downstream
+  // (unchanged) is now guarded automatically; nothing after this line ever
+  // sees a mismatched-market payload.
+  const data = selectPayloadForMarket(rawDailyPicksData, market);
+  const isMarketTransitioning = !!rawDailyPicksData && !data;
 
   const currency = data?.currency ?? marketCfg.currency;
   const picks = data?.picks?.[horizon] ?? [];
@@ -1100,7 +1114,7 @@ export default function DailyPicksPage() {
       )}
 
       {/* Picks grid */}
-      {isLoading ? (
+      {isLoading || isMarketTransitioning ? (
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
           {[...Array(5)].map((_, i) => <div key={i} className="bg-dark-card border border-dark-border rounded-xl p-4 animate-pulse h-72" />)}
         </div>
