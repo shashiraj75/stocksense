@@ -191,16 +191,37 @@ def _run_manifest_out(args) -> int:
         return 2
 
     print("Mode: MANIFEST GENERATION (preview — zero database writes)")
-    manifest = manifest_backfill.build_manifest(
-        args.market, args.horizon,
-        start_date=args.start_date, end_date=args.end_date, batch_limit=args.batch_size,
-    )
+    try:
+        manifest = manifest_backfill.build_manifest(
+            args.market, args.horizon,
+            start_date=args.start_date, end_date=args.end_date, batch_limit=args.batch_size,
+        )
+    except manifest_backfill.ManifestGenerationError as e:
+        print(f"MANIFEST GENERATION REFUSED — zero writes performed. Reason: {e}", file=sys.stderr)
+        return 3
     with open(args.manifest_out, "w") as f:
         json.dump(manifest, f, indent=2, default=str)
 
     print(f"Market={manifest['market']} Horizon={manifest['horizon']} "
-          f"Candidates={manifest['candidate_count']}")
+          f"Requested={manifest['requested_candidate_count']} "
+          f"Actual={manifest['actual_candidate_count']} "
+          f"SourcePopulationExhausted={manifest['source_population_exhausted']}")
+    if manifest["actual_candidate_count"] < manifest["requested_candidate_count"]:
+        print(f"NOTE: this manifest is under-filled — the eligible pool was exhausted "
+              f"before reaching the requested count. This is recorded explicitly in the "
+              f"manifest (source_population_exhausted=true) and will be re-validated by "
+              f"the loader before any execution.")
     print(f"Date span: {manifest['start_date'] or '(unbounded)'} .. {manifest['end_date'] or '(unbounded)'}")
+    sr = manifest.get("scan_report", {})
+    print(f"Scan report: eligible_scanned={sr.get('eligible_scanned')} "
+          f"usable_candidates={sr.get('usable_candidates')} "
+          f"market_conflict_exclusions={sr.get('market_conflict_exclusions')} "
+          f"unknown_symbol_warnings={sr.get('unknown_symbol_warnings')} "
+          f"ambiguous_group_exclusions={sr.get('ambiguous_group_exclusions')} "
+          f"missing_price_exclusions={sr.get('missing_price_exclusions')} "
+          f"semantically_empty_exclusions={sr.get('semantically_empty_exclusions')} "
+          f"requested_batch_limit={sr.get('requested_batch_limit')} "
+          f"pool_exhausted_before_limit={sr.get('pool_exhausted_before_limit')}")
     print(f"Manifest written to: {args.manifest_out}")
     print(f"manifest_sha256: {manifest['manifest_sha256']}")
     print("\nThis was a preview — zero rows were written.")

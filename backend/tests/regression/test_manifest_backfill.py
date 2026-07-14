@@ -201,6 +201,8 @@ def test_duplicate_manifest_ids_fail_closed(store):
     dup = json.loads(json.dumps(manifest))
     dup["candidates"].append(dict(dup["candidates"][0]))
     dup["candidate_count"] = len(dup["candidates"])
+    dup["actual_candidate_count"] = len(dup["candidates"])
+    dup["requested_candidate_count"] = len(dup["candidates"])
     dup["manifest_sha256"] = manifest_backfill.compute_checksum(dup)
 
     with pytest.raises(manifest_backfill.ManifestValidationError, match="duplicate"):
@@ -728,12 +730,13 @@ def test_execute_manifest_never_calls_fetch_return(store):
 
 
 def test_empty_manifest_reports_zero_written_not_false_success(store):
+    # Phase 1A.6: a manifest generation must fail closed when candidate_count
+    # would be zero, rather than silently producing an empty-but-"valid"
+    # manifest that could later execute as an unremarked no-op — this
+    # supersedes the pre-1A.6 behavior where an empty manifest was buildable.
     with patch("services.alpha_engine.outcome_logger._fetch_return", return_value=1.5):
-        manifest = manifest_backfill.build_manifest("US", "short", batch_limit=10)
-    assert manifest["candidate_count"] == 0
-
-    result = manifest_backfill.execute_manifest(manifest, manifest["manifest_sha256"], dry_run=False)
-    assert result["written"] == []
+        with pytest.raises(manifest_backfill.ManifestGenerationError, match="zero usable candidates"):
+            manifest_backfill.build_manifest("US", "short", batch_limit=10)
 
 
 def test_unknown_extra_manifest_field_does_not_alter_behavior(store):

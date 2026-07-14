@@ -1665,6 +1665,7 @@ def _generate_picks_inner(
                     is_daily_pick=True,
                     pick_rank=rank,
                     market=market,
+                    _writer_source="daily_picks.phase7_final_pick",
                 )
             except Exception as e:
                 log.warning(f"[picks] [{market}] Log error for {pick['symbol']}: {e}")

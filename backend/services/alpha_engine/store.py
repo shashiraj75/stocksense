@@ -7,10 +7,15 @@ Tables:
   regime_log  — historical regime snapshots for KMeans retraining
 """
 
+import logging
 import os
 import sqlite3
 import threading
 from datetime import datetime, timezone
+
+from services.market_integrity import MISSING_MARKET, require_explicit_market
+
+log = logging.getLogger(__name__)
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "../../../alpha_engine.db")
 _lock = threading.Lock()
@@ -36,7 +41,7 @@ def init_db():
             logged_at      TEXT    NOT NULL,
             symbol         TEXT    NOT NULL,
             horizon        TEXT    NOT NULL,
-            market         TEXT    NOT NULL DEFAULT 'IN',
+            market         TEXT    NOT NULL,
             tech_z         REAL,
             fund_z         REAL,
             sentiment_z    REAL,
@@ -53,7 +58,7 @@ def init_db():
             resolved_at  TEXT NOT NULL,
             symbol       TEXT NOT NULL,
             horizon      TEXT NOT NULL,
-            market       TEXT NOT NULL DEFAULT 'IN',
+            market       TEXT NOT NULL,
             pred_date    TEXT NOT NULL,
             return_1d    REAL,
             return_5d    REAL,
@@ -79,6 +84,18 @@ def init_db():
         # CREATE TABLE IF NOT EXISTS doesn't add columns to a table that
         # already existed before `market` was introduced — guard each ALTER
         # since SQLite errors (not no-ops) on a duplicate column.
+        #
+        # Phase 1A.6: this specific fallback intentionally KEEPS a default,
+        # unlike the fresh CREATE TABLE above — it's a narrow backward-
+        # compatibility path for a genuinely ancient, already-populated
+        # SQLite file that predates the `market` column entirely. SQLite
+        # requires a non-NULL default to ADD a NOT NULL column to a
+        # non-empty table; this never fires against any DB created by the
+        # CREATE TABLE statement above (the column already exists there, so
+        # this becomes a no-op caught by the except below), and it never
+        # rewrites any historical row — the default only governs what a
+        # *future* insert would get if it omitted the column, which
+        # log_prediction/log_outcome never do.
         for stmt in (
             "ALTER TABLE predictions ADD COLUMN market TEXT NOT NULL DEFAULT 'IN'",
             "ALTER TABLE outcomes ADD COLUMN market TEXT NOT NULL DEFAULT 'IN'",
@@ -92,10 +109,23 @@ def init_db():
 def log_prediction(symbol: str, horizon: str, factor_zscores: dict,
                    combined_alpha: float, meta_alpha: float | None,
                    signal: str, price: float, regime_label: str = "",
-                   market: str = "IN", **kwargs):
+                   *, market=MISSING_MARKET, _writer_source: str = "unknown", **kwargs):
+    """
+    market is required and keyword-only, defaulting to the MISSING_MARKET
+    sentinel — see services/postgres_store.py's log_prediction for the
+    full Phase 1A.6 rationale (this SQLite path mirrors it for dev/test
+    parity). Raises MissingMarketContextError / InvalidMarketError /
+    MarketSymbolConflictError; logs (never silently accepts or rejects)
+    an UNKNOWN symbol. Every check runs before any SQLite connection is
+    opened.
+    """
+    result = require_explicit_market(symbol, market, writer_context=_writer_source)
+    market = result.market
+
     if USE_POSTGRES:
         return _pg.log_prediction(symbol, horizon, factor_zscores, combined_alpha,
-                                   meta_alpha, signal, price, regime_label, market=market, **kwargs)
+                                   meta_alpha, signal, price, regime_label, market=market,
+                                   _writer_source=_writer_source, **kwargs)
     init_db()
     with _lock, _conn() as c:
         c.execute("""
@@ -128,7 +158,7 @@ class OutcomeDriftError(Exception):
 def log_outcome(symbol: str, horizon: str, pred_date: str,
                 return_1d: float | None, return_5d: float | None,
                 return_20d: float | None, return_60d: float | None = None,
-                market: str = "IN", **kwargs):
+                *, market=MISSING_MARKET, _writer_source: str = "unknown", **kwargs):
     """
     Upsert (SELECT-then-INSERT-or-UPDATE, since the SQLite outcomes table has
     no UNIQUE constraint to target with ON CONFLICT). A column that already
@@ -138,10 +168,19 @@ def log_outcome(symbol: str, horizon: str, pred_date: str,
     later sweep can't compute one for a given horizon. Mirrors
     services/postgres_store.py's log_outcome exactly for behavioral parity
     between the SQLite (dev/test) and Postgres (production) backends.
+
+    market carries the same explicit-market contract as log_prediction
+    (Phase 1A.6 remediation) — required, keyword-only, MISSING_MARKET
+    sentinel default. Validated before any SQLite connection is opened and
+    before delegating to the Postgres path.
     """
+    result = require_explicit_market(symbol, market, writer_context=_writer_source)
+    market = result.market
+
     if USE_POSTGRES:
         return _pg.log_outcome(symbol, horizon, pred_date, return_1d, return_5d, return_20d,
-                                return_60d=return_60d, market=market, **kwargs)
+                                return_60d=return_60d, market=market,
+                                _writer_source=_writer_source, **kwargs)
     init_db()
     with _lock, _conn() as c:
         existing = c.execute(
@@ -273,15 +312,24 @@ def get_training_data(horizon: str, market: str = "IN", window_days: int | None 
     Join predictions with outcomes to get labelled training rows.
     Forward return column selected by horizon. IN and US train separately —
     see services/postgres_store.py's get_training_data for why.
+
+    Phase 1A.6: excludes any row with a definitive market/symbol conflict
+    (services.market_integrity) — see postgres_store.get_training_data's
+    docstring for why this matters even though it's rare in practice.
     """
     if USE_POSTGRES:
         return _pg.get_training_data(horizon, market=market, window_days=window_days)
+    from services.market_integrity import (
+        EVENT_PERFORMANCE_CONFLICTS_EXCLUDED, REASON_DEFINITIVE_CONFLICT,
+        emit_market_event, is_definitive_conflict,
+    )
+
     init_db()
     # long horizon = 60D forward return (≈3 months), matching the stated holding period
     fwd_col = {"short": "return_5d", "medium": "return_20d", "long": "return_60d"}[horizon]
     with _lock, _conn() as c:
         rows = c.execute(f"""
-            SELECT p.tech_z, p.fund_z, p.sentiment_z, p.quality_z,
+            SELECT p.symbol, p.tech_z, p.fund_z, p.sentiment_z, p.quality_z,
                    p.combined_alpha, p.meta_alpha, p.signal, p.regime_label,
                    o.{fwd_col} AS fwd_return
             FROM predictions p
@@ -293,7 +341,25 @@ def get_training_data(horizon: str, market: str = "IN", window_days: int | None 
             WHERE p.horizon = ? AND p.market = ?
               AND o.{fwd_col} IS NOT NULL
         """, (horizon, market)).fetchall()
-    return [dict(r) for r in rows]
+    kept = []
+    excluded_count = 0
+    for r in rows:
+        d = dict(r)
+        symbol = d.pop("symbol")
+        if is_definitive_conflict(symbol, market):
+            excluded_count += 1
+        else:
+            kept.append(d)
+    if excluded_count:
+        emit_market_event(
+            EVENT_PERFORMANCE_CONFLICTS_EXCLUDED,
+            f"[alpha_engine.store] get_training_data horizon={horizon!r} market={market!r}: "
+            f"excluded {excluded_count} definitive market/symbol conflict(s)",
+            level=logging.WARNING, reason_code=REASON_DEFINITIVE_CONFLICT, market=market,
+            writer_context="get_training_data",
+            fetched_count=len(rows), excluded_count=excluded_count, eligible_count=len(kept),
+        )
+    return kept
 
 
 # Mirrors services/postgres_store.py's _HORIZON_ELIGIBILITY_SQL — a fixed,

@@ -116,15 +116,52 @@ def resolve_pair(market: str, horizon: str, min_days: int,
     phase does not further distinguish "not enough trading days yet" from
     "missing/suspended/delisted price data", both surface as a skip), and
     pending (count of predictions offered this call, after start_date/
-    end_date filtering and batch_limit truncation).
+    end_date filtering, market-conflict exclusion, and batch_limit
+    truncation).
+
+    Phase 1A.6: predictions with a definitive market/symbol conflict (e.g. a
+    US-only symbol logged under market=IN — the exact shape of the 13,605
+    legacy rows found in the forensic investigation) are excluded here,
+    BEFORE batch_limit truncation — so they no longer permanently occupy
+    "oldest eligible" slots that would otherwise go to genuinely resolvable
+    predictions, and the resolver stops making doomed yfinance requests for
+    a symbol/suffix combination that can never succeed. Excluded rows are
+    reported separately (market_conflict_excluded), never silently dropped.
     """
     from services.alpha_engine.store import get_unresolved_predictions, log_outcome
+    from services.market_integrity import (
+        EVENT_RESOLVER_CONFLICT_SKIPPED, REASON_DEFINITIVE_CONFLICT, SymbolMarketClass,
+        classify_symbol, emit_market_event, is_definitive_conflict,
+    )
 
-    pending = get_unresolved_predictions(horizon, min_days_old=min_days, market=market)
+    all_pending = get_unresolved_predictions(horizon, min_days_old=min_days, market=market)
     if start_date or end_date:
-        pending = [p for p in pending if _in_date_range(p["pred_date"], start_date, end_date)]
+        all_pending = [p for p in all_pending if _in_date_range(p["pred_date"], start_date, end_date)]
+
+    pending = []
+    market_conflict_excluded = []
+    unknown_symbol_count = 0
+    for p in all_pending:
+        if is_definitive_conflict(p["symbol"], market):
+            market_conflict_excluded.append(p)
+            continue
+        if classify_symbol(p["symbol"]) == SymbolMarketClass.UNKNOWN:
+            unknown_symbol_count += 1
+        pending.append(p)
+
+    eligible_scanned = len(all_pending)
     if batch_limit is not None:
         pending = pending[:batch_limit]
+
+    if market_conflict_excluded:
+        emit_market_event(
+            EVENT_RESOLVER_CONFLICT_SKIPPED,
+            f"[outcome_logger] [{market}/{horizon}] excluded {len(market_conflict_excluded)} "
+            f"definitive market/symbol conflict(s) from candidate selection "
+            f"(e.g. {market_conflict_excluded[0]['symbol']!r})",
+            level=logging.WARNING, reason_code=REASON_DEFINITIVE_CONFLICT, market=market,
+            excluded_count=len(market_conflict_excluded), eligible_count=eligible_scanned,
+        )
 
     log.info(
         f"[outcome_logger] [{market}/{horizon}] {len(pending)} unresolved "
@@ -132,7 +169,10 @@ def resolve_pair(market: str, horizon: str, min_days: int,
     )
 
     stats = {"market": market, "horizon": horizon, "examined": 0,
-             "resolved": 0, "skipped": 0, "pending": len(pending), "dry_run": dry_run}
+             "resolved": 0, "skipped": 0, "pending": len(pending), "dry_run": dry_run,
+             "eligible_scanned": eligible_scanned,
+             "market_conflict_excluded": len(market_conflict_excluded),
+             "unknown_symbol_count": unknown_symbol_count}
 
     for row in pending:
         symbol    = row["symbol"]

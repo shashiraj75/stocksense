@@ -65,6 +65,22 @@ def _pred_date_str(logged_at_iso: str) -> str:
     return logged_at_iso[:10]
 
 
+def _raw_log_outcome(store, symbol, horizon, pred_date, market, return_1d=None,
+                      return_5d=None, return_20d=None, return_60d=None):
+    """Insert an outcome directly (bypassing log_outcome's Phase 1A.6
+    market/symbol validation) — used only where a test's own intent is to
+    exercise cross-market JOIN isolation with a symbol/market combination
+    that the hardened log_outcome would now correctly refuse to write in
+    the first place."""
+    now = datetime.now(timezone.utc).isoformat()
+    with store._lock, store._conn() as c:
+        c.execute("""
+            INSERT INTO outcomes (resolved_at, symbol, horizon, pred_date, market,
+                                  return_1d, return_5d, return_20d, return_60d)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (now, symbol, horizon, pred_date, market, return_1d, return_5d, return_20d, return_60d))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. No outcome -> create early-horizon outcome
 # ─────────────────────────────────────────────────────────────────────────────
@@ -229,8 +245,12 @@ def test_wrong_market_outcome_cannot_be_joined(store):
 
     # An outcome for the *same* symbol/horizon/date but a *different* market —
     # e.g. a hypothetical IN-listed symbol collision — must not satisfy the
-    # US prediction's eligibility.
-    store.log_outcome("V", "short", pred_date, return_1d=1.0, return_5d=2.0, return_20d=None, market="IN")
+    # US prediction's eligibility. Raw insert: "V" is US_ONLY per the
+    # canonical classifier, so the real log_outcome() would now correctly
+    # refuse to write it under market="IN" (Phase 1A.6) — this test's own
+    # intent is to prove the JOIN's market-isolation, not to exercise
+    # write-boundary validation, so it seeds the row directly.
+    _raw_log_outcome(store, "V", "short", pred_date, market="IN", return_1d=1.0, return_5d=2.0)
 
     pending = store.get_unresolved_predictions("short", min_days_old=3, market="US")
     assert len(pending) == 1, "an outcome logged under a different market must not resolve this prediction"

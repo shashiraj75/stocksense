@@ -15,12 +15,17 @@ Render's frequent cold-starts make pooled/short-lived connections safer than
 the direct Postgres port.
 """
 
+import logging
 import os
 import json
 from datetime import datetime, timezone
 
 import psycopg
 from psycopg_pool import ConnectionPool
+
+from services.market_integrity import MISSING_MARKET, require_explicit_market
+
+log = logging.getLogger(__name__)
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
@@ -99,7 +104,18 @@ CREATE TABLE IF NOT EXISTS predictions (
 -- IC engine and meta-model were trained only on (the subset of) IN outcomes
 -- that resolved, yet that single learned weighting was applied to ranking
 -- both markets. Added market so IN and US each learn from their own outcomes.
-ALTER TABLE predictions ADD COLUMN IF NOT EXISTS market TEXT NOT NULL DEFAULT 'IN';
+-- Phase 1A.6: no DEFAULT — this ADD COLUMN only ever fires on a genuinely
+-- fresh database (IF NOT EXISTS guards it; an already-migrated production
+-- table already has the column and this line is a no-op there). A bare
+-- NOT NULL with no default is valid DDL against an empty table. The write
+-- boundary (log_prediction) requires an explicit market on every insert —
+-- see services/market_integrity.py — so no code path ever needs a
+-- database-level default. The live production column still carries its
+-- original DEFAULT 'IN' until the separate, manually-run migration in
+-- scripts/migrations/phase_1a6_drop_predictions_market_default.sql is
+-- applied — this idempotent bootstrap script deliberately never touches
+-- an already-existing column's default itself.
+ALTER TABLE predictions ADD COLUMN IF NOT EXISTS market TEXT NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_predictions_symbol_date ON predictions(symbol, logged_at);
 CREATE INDEX IF NOT EXISTS idx_predictions_horizon     ON predictions(horizon, logged_at);
 CREATE INDEX IF NOT EXISTS idx_predictions_daily_picks ON predictions(is_daily_pick, horizon, logged_at) WHERE is_daily_pick;
@@ -120,7 +136,11 @@ CREATE TABLE IF NOT EXISTS outcomes (
     benchmark_return_60d DOUBLE PRECISION,
     UNIQUE (symbol, horizon, pred_date)
 );
-ALTER TABLE outcomes ADD COLUMN IF NOT EXISTS market TEXT NOT NULL DEFAULT 'IN';
+-- Phase 1A.6: no DEFAULT — see the identical note on the predictions.market
+-- column above. Live production still carries its original default until
+-- scripts/migrations/phase_1a6_drop_predictions_market_default.sql is
+-- manually applied.
+ALTER TABLE outcomes ADD COLUMN IF NOT EXISTS market TEXT NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_outcomes_lookup ON outcomes(symbol, pred_date, horizon);
 
 CREATE TABLE IF NOT EXISTS regime_log (
@@ -556,6 +576,7 @@ def _migrate_outcomes_market_constraint(conn) -> None:
 def log_prediction(symbol: str, horizon: str, factor_zscores: dict,
                    combined_alpha: float, meta_alpha: float | None,
                    signal: str, price: float, regime_label: str = "",
+                   *, market=MISSING_MARKET,
                    contributions: dict | None = None,
                    composite_score: float | None = None,
                    confidence_score: float | None = None,
@@ -565,7 +586,39 @@ def log_prediction(symbol: str, horizon: str, factor_zscores: dict,
                    bear_case: list | None = None,
                    is_daily_pick: bool = False,
                    pick_rank: int | None = None,
-                   market: str = "IN"):
+                   _writer_source: str = "unknown"):
+    """
+    market is required and keyword-only, defaulting to the MISSING_MARKET
+    sentinel rather than a bare `market: str` with no default (Phase
+    1A.6; see market_integrity.py). A required-keyword-only argument with
+    no default raises Python's own TypeError for an omitted call *before
+    this function body runs at all* — no structured event could ever be
+    emitted for that case. The sentinel default makes omission a value
+    require_explicit_market can see, log, and reject on its own terms.
+
+    Before commit 536fd3d, one call site silently dropped an already-
+    resolved `market` variable and fell through to this function's old
+    `market="IN"` default, mislabeling 13,605 US predictions as IN over
+    several weeks before the gap was noticed. That call site was fixed, but
+    the API itself still allowed the same class of mistake — this closes it
+    at the single shared choke point every writer goes through, rather than
+    trusting each caller to remember.
+
+    Raises (see services.market_integrity for the full hierarchy):
+      MissingMarketContextError — market was never supplied
+      InvalidMarketError        — market was supplied but blank/unsupported
+      MarketSymbolConflictError — the symbol's canonical classification
+                                  definitively contradicts the claimed market
+    A BOTH (dual-listed) symbol is valid under either explicit market. An
+    UNKNOWN symbol (absent from both canonical universes) is never
+    rejected on that basis alone — logged as an observable event and
+    persisted as claimed, since many legitimate symbols simply aren't in
+    the curated static universe yet. Every check runs, and every
+    structured event is emitted, before this function ever touches
+    _get_pool().
+    """
+    result = require_explicit_market(symbol, market, writer_context=_writer_source)
+    market = result.market
     contributions = contributions or {}
     with _get_pool().connection() as conn:
         conn.execute("""
@@ -638,7 +691,7 @@ def log_outcome(symbol: str, horizon: str, pred_date: str,
                 benchmark_return_5d: float | None = None,
                 benchmark_return_20d: float | None = None,
                 benchmark_return_60d: float | None = None,
-                market: str = "IN"):
+                *, market=MISSING_MARKET, _writer_source: str = "unknown"):
     """
     Upsert an outcome row. On conflict, each forward-return / benchmark column
     is filled in via COALESCE(existing, new) — a column that already holds a
@@ -653,7 +706,21 @@ def log_outcome(symbol: str, horizon: str, pred_date: str,
     This is the single-row, individually-autocommitted path used by the live
     periodic resolver. For a manifest-locked batch that must commit or roll
     back as one unit, see execute_outcome_writes_transactional.
+
+    market carries the exact same explicit-market contract as log_prediction
+    (Phase 1A.6 remediation): required, keyword-only, defaulting to the
+    MISSING_MARKET sentinel rather than a bare `market: str = "IN"`. Before
+    this remediation, market silently defaulted to "IN" here — the same
+    defect class 536fd3d fixed for log_prediction, just on the sibling
+    outcomes table. scripts/migrate_sqlite_to_postgres.py's log_outcome call
+    was the one caller that actually omitted it; it has been fixed to pass
+    the source row's own market explicitly. See services/market_integrity.py
+    for the full exception hierarchy. Every check runs, and every structured
+    event is emitted, before this function ever touches _get_pool().
     """
+    result = require_explicit_market(symbol, market, writer_context=_writer_source)
+    market = result.market
+
     with _get_pool().connection() as conn:
         conn.execute(_OUTCOME_UPSERT_SQL, (
             datetime.now(timezone.utc), symbol, horizon, pred_date, market,
@@ -773,12 +840,27 @@ def get_training_data(horizon: str, market: str = "IN", window_days: int | None 
             the same factor weights transfer between them.
     window_days: if set, only include predictions logged within the last N days
                  (used by the multi-window IC engine).
+
+    Phase 1A.6: a prediction with a definitive market/symbol conflict (see
+    services.market_integrity) can only reach this join when it also has a
+    matching same-market outcome row — expected to be rare, since the
+    write boundary now rejects new conflicting rows outright, but legacy
+    rows predating that enforcement could still have one. Excluded here so
+    the IC engine and meta-model never train on a mislabeled row, never
+    silently included. BOTH and UNKNOWN symbols remain included. Emits a
+    structured summary event with fetched/excluded/eligible counts
+    whenever at least one row is excluded.
     """
+    from services.market_integrity import (
+        EVENT_PERFORMANCE_CONFLICTS_EXCLUDED, REASON_DEFINITIVE_CONFLICT,
+        emit_market_event, is_definitive_conflict,
+    )
+
     fwd_col = {"short": "return_5d", "medium": "return_20d", "long": "return_60d"}[horizon]
     window_clause = "AND p.logged_at >= now() - interval '%s days'" % window_days if window_days else ""
     with _get_pool().connection() as conn:
         rows = conn.execute(f"""
-            SELECT p.tech_z, p.fund_z, p.sentiment_z, p.quality_z,
+            SELECT p.symbol, p.tech_z, p.fund_z, p.sentiment_z, p.quality_z,
                    p.combined_alpha, p.meta_alpha, p.signal, p.regime_label,
                    o.{fwd_col} AS fwd_return
             FROM predictions p
@@ -791,9 +873,23 @@ def get_training_data(horizon: str, market: str = "IN", window_days: int | None 
               AND o.{fwd_col} IS NOT NULL
               {window_clause}
         """, (horizon, market)).fetchall()
-    cols = ["tech_z", "fund_z", "sentiment_z", "quality_z", "combined_alpha",
+    cols = ["symbol", "tech_z", "fund_z", "sentiment_z", "quality_z", "combined_alpha",
             "meta_alpha", "signal", "regime_label", "fwd_return"]
-    return [dict(zip(cols, r)) for r in rows]
+    all_rows = [dict(zip(cols, r)) for r in rows]
+    kept = [r for r in all_rows if not is_definitive_conflict(r["symbol"], market)]
+    excluded_count = len(all_rows) - len(kept)
+    if excluded_count:
+        emit_market_event(
+            EVENT_PERFORMANCE_CONFLICTS_EXCLUDED,
+            f"[postgres_store] get_training_data horizon={horizon!r} market={market!r}: "
+            f"excluded {excluded_count} definitive market/symbol conflict(s)",
+            level=logging.WARNING, reason_code=REASON_DEFINITIVE_CONFLICT, market=market,
+            writer_context="get_training_data",
+            fetched_count=len(all_rows), excluded_count=excluded_count, eligible_count=len(kept),
+        )
+    for r in kept:
+        del r["symbol"]
+    return kept
 
 
 # Which forward-return columns a horizon's resolver sweep is ever responsible
@@ -1235,10 +1331,31 @@ def load_picks_from_db(market: str = "IN") -> dict | None:
 
 
 def get_daily_picks_performance(horizon: str, window_days: int = 90) -> list[dict]:
-    """All daily-pick predictions in the window, joined with outcomes if resolved."""
+    """All daily-pick predictions in the window, joined with outcomes if resolved.
+
+    Phase 1A.6: this query has no market filter — it reports every
+    is_daily_pick row across both markets in one combined window, so a
+    legacy market/symbol conflict (a US-only symbol stored under
+    market='IN', the exact shape of the pre-536fd3d contamination) would
+    otherwise be silently counted into these hit-rate/P&L numbers. Rows
+    with a definitive conflict (services.market_integrity.
+    is_definitive_conflict) are excluded after fetch, never included with
+    a null/zeroed return — this is the smallest safe fail-closed
+    exclusion; it does not change ranking, scoring, or which rows are
+    is_daily_pick in the first place. BOTH (dual-listed) and UNKNOWN
+    symbols, and valid IN_ONLY/US_ONLY rows, all remain included —
+    numerator and denominator both derive from the same filtered list.
+    Emits a structured summary event with fetched/excluded/eligible
+    counts whenever at least one row is excluded.
+    """
+    from services.market_integrity import (
+        EVENT_PERFORMANCE_CONFLICTS_EXCLUDED, REASON_DEFINITIVE_CONFLICT,
+        emit_market_event, is_definitive_conflict,
+    )
+
     with _get_pool().connection() as conn:
         rows = conn.execute("""
-            SELECT p.symbol, date(p.logged_at) AS pred_date, p.price AS entry_price,
+            SELECT p.symbol, p.market, date(p.logged_at) AS pred_date, p.price AS entry_price,
                    p.composite_score, p.confidence_score,
                    o.return_5d, o.return_20d, o.return_60d,
                    o.benchmark_return_5d, o.benchmark_return_20d, o.benchmark_return_60d
@@ -1250,10 +1367,22 @@ def get_daily_picks_performance(horizon: str, window_days: int = 90) -> list[dic
               AND p.logged_at >= now() - (%s || ' days')::interval
             ORDER BY p.logged_at DESC
         """, (horizon, str(window_days))).fetchall()
-    cols = ["symbol", "date", "entry_price", "score", "confidence",
+    cols = ["symbol", "market", "date", "entry_price", "score", "confidence",
             "return_5d", "return_20d", "return_60d",
             "benchmark_return_5d", "benchmark_return_20d", "benchmark_return_60d"]
-    return [dict(zip(cols, r)) for r in rows]
+    all_rows = [dict(zip(cols, r)) for r in rows]
+    filtered = [r for r in all_rows if not is_definitive_conflict(r["symbol"], r["market"])]
+    excluded_count = len(all_rows) - len(filtered)
+    if excluded_count:
+        emit_market_event(
+            EVENT_PERFORMANCE_CONFLICTS_EXCLUDED,
+            f"[postgres_store] get_daily_picks_performance horizon={horizon!r}: "
+            f"excluded {excluded_count} definitive market/symbol conflict(s)",
+            level=logging.WARNING, reason_code=REASON_DEFINITIVE_CONFLICT,
+            writer_context="get_daily_picks_performance",
+            fetched_count=len(all_rows), excluded_count=excluded_count, eligible_count=len(filtered),
+        )
+    return filtered
 
 
 # ── Daily Picks job-state helpers (#002D-E) ──────────────────────────────────

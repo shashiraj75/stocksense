@@ -44,6 +44,13 @@ def main():
                              "sentiment": p["sentiment_z"], "quality": p["quality_z"]},
             combined_alpha=p["combined_alpha"], meta_alpha=p["meta_alpha"],
             signal=p["signal"], price=p["price"], regime_label=p["regime_label"] or "",
+            # Phase 1A.6: market is now required and keyword-only — must come
+            # from the source row, never the old silent "IN" default. This
+            # migration script previously omitted it entirely. Fails loudly
+            # (KeyError) rather than inferring IN if a source row somehow
+            # lacks the column.
+            market=p["market"],
+            _writer_source="migrate_sqlite_to_postgres",
         )
 
     outcomes = conn.execute("SELECT * FROM outcomes").fetchall()
@@ -52,6 +59,14 @@ def main():
         pg.log_outcome(
             symbol=o["symbol"], horizon=o["horizon"], pred_date=o["pred_date"],
             return_1d=o["return_1d"], return_5d=o["return_5d"], return_20d=o["return_20d"],
+            # Phase 1A.6 remediation: market is now required and keyword-only
+            # on log_outcome too — must come from the source row, never a
+            # default. This call previously omitted it entirely (the same
+            # defect shape the log_prediction call above was already fixed
+            # for). Fails loudly (KeyError) rather than inferring IN if a
+            # source row somehow lacks the column.
+            market=o["market"],
+            _writer_source="migrate_sqlite_to_postgres",
         )
 
     regimes = conn.execute("SELECT * FROM regime_log").fetchall()

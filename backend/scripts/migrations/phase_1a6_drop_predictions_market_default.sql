@@ -1,0 +1,49 @@
+-- Phase 1A.6 — drop the silent database-level default on predictions.market
+-- and outcomes.market.
+--
+-- THIS FILE IS NOT EXECUTED AUTOMATICALLY BY ANY APPLICATION CODE PATH.
+-- It is not imported by init_db(), not run at startup, and not wired into
+-- any script. An operator must run it manually against the target
+-- database, once, deliberately.
+--
+-- Why: the write boundary (services/market_integrity.py's
+-- require_explicit_market, enforced by log_prediction in both
+-- services/postgres_store.py and services/alpha_engine/store.py) already
+-- requires every caller to supply an explicit, validated market. The
+-- database-level DEFAULT 'IN' on these two columns is therefore now
+-- provably dead weight for any insert that goes through the application —
+-- but it still exists on the live production schema (added before this
+-- phase, and never dropped by this phase's idempotent, additive
+-- ADD COLUMN IF NOT EXISTS bootstrap statements, which only ever run
+-- against a column that doesn't exist yet and cannot alter one that
+-- already does). Dropping it here removes the last silent-default surface
+-- at the schema level, for any INSERT that might someday bypass the
+-- application's own write boundary (e.g. a manual psql session, an
+-- untested future migration script).
+--
+-- This does NOT rewrite any historical row. Every existing row already has
+-- a concrete, stored market value (either 'IN', 'US', or whatever a prior
+-- write set it to) — DROP DEFAULT only changes what a *future* INSERT that
+-- omits the column would receive (from silently 'IN' to a NOT NULL
+-- constraint violation, which is the desired fail-closed behavior).
+--
+-- Preconditions before running this against production:
+--   1. Confirm services/market_integrity.py's require_explicit_market is
+--      deployed and live (so no in-flight code path can still omit market).
+--   2. Confirm no other application, script, or manual process still
+--      relies on the database silently supplying 'IN' when market is
+--      omitted from an INSERT.
+--   3. Run during a low-traffic window; this is a fast metadata-only
+--      change (ALTER COLUMN ... DROP DEFAULT does not rewrite table rows
+--      in Postgres) but should still go through the project's normal
+--      deployment/change-control process, not be run ad hoc.
+--
+-- To apply (manually, by an operator, against the intended database only):
+--   psql "$DATABASE_URL" -f backend/scripts/migrations/phase_1a6_drop_predictions_market_default.sql
+
+ALTER TABLE predictions ALTER COLUMN market DROP DEFAULT;
+ALTER TABLE outcomes ALTER COLUMN market DROP DEFAULT;
+
+-- NOT NULL is left untouched on both columns — dropping the default does
+-- not affect the NOT NULL constraint, and no row (past or future) is
+-- permitted to have a NULL market either way.
