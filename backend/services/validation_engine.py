@@ -209,6 +209,36 @@ HORIZON_PERIOD = {"short": "3y", "medium": "5y", "long": "7y"}
 BUY_THRESHOLD  = {"short": 60, "medium": 60, "long": 60}
 SELL_THRESHOLD = {"short": 45, "medium": 45, "long": 45}
 
+# Explicit universe -> market map (Phase GPI-1) and the single source of
+# truth for which universe strings run_validation() accepts at all. Passed
+# down to _backtest_stock/_resolve_yahoo_symbol so routing never has to be
+# re-derived from a symbol's own shape — see _resolve_yahoo_symbol's
+# docstring for the defect this replaced. An unrecognized universe string
+# is rejected by run_validation() before any work happens (see
+# _require_known_universe) — it is never silently remapped to NIFTY_100,
+# and market is never silently defaulted to "IN".
+UNIVERSE_MARKET = {"nifty100": "IN", "midcap": "IN", "us": "US"}
+
+
+def _require_known_universe(universe: str) -> None:
+    """
+    Fail-closed universe gate for run_validation(). Matches the API layer's
+    existing contract exactly (api/routers/validation.py's
+    Literal["nifty100", "midcap", "us"] query param) — case-sensitive, no
+    whitespace trimming, no aliasing. Every current caller (the validation
+    router and api/main.py's scheduler, which only ever iterates the literal
+    tuple ("nifty100", "midcap", "us")) already only ever passes one of
+    these three exact strings, so this can never fire in normal operation —
+    it exists purely so a malformed or unknown universe can never silently
+    fall back to NIFTY_100 or silently default its market to "IN".
+    """
+    if universe not in UNIVERSE_MARKET:
+        raise ValueError(
+            f"run_validation: unsupported universe {universe!r} — must be exactly one "
+            f"of {sorted(UNIVERSE_MARKET)} (case-sensitive; no whitespace or alias "
+            f"normalization)"
+        )
+
 
 # ── Database ──────────────────────────────────────────────────────────────────
 
@@ -301,7 +331,7 @@ def init_db():
 
 # ── Scoring (uses ONLY data at index i — no look-ahead) ──────────────────────
 
-def _score_at(df: pd.DataFrame, i: int, nifty_close: pd.Series | None, fund_score: float, regime_adj: float) -> dict:
+def _score_at(df: pd.DataFrame, i: int, benchmark_close: pd.Series | None, fund_score: float, regime_adj: float) -> dict:
     """
     Compute composite score at row i using only df[:i+1].
     Returns dict with composite_score and sub-scores.
@@ -358,18 +388,22 @@ def _score_at(df: pd.DataFrame, i: int, nifty_close: pd.Series | None, fund_scor
 
     tech = max(0.0, min(100.0, tech))
 
-    # ── Relative strength vs Nifty (1M, 3M) ─────────────────────────────────
+    # ── Relative strength vs benchmark (1M, 3M) ─────────────────────────────
+    # Benchmark is Nifty 50 for India universes, S&P 500 for the US universe
+    # (see run_validation's UNIVERSE_MARKET / benchmark_ticker) — this
+    # function itself is market-agnostic, it just compares against whichever
+    # benchmark_close series the caller supplied.
     rs_score = 50.0
-    if nifty_close is not None and pd.notna(close):
+    if benchmark_close is not None and pd.notna(close):
         close_series = df["Close"].iloc[:i+1]
         for days in (21, 63):
-            if i >= days and len(nifty_close) > 0:
+            if i >= days and len(benchmark_close) > 0:
                 try:
-                    nifty_at_i   = nifty_close.iloc[min(i, len(nifty_close)-1)]
-                    nifty_at_im  = nifty_close.iloc[max(0, min(i-days, len(nifty_close)-1))]
+                    benchmark_at_i  = benchmark_close.iloc[min(i, len(benchmark_close)-1)]
+                    benchmark_at_im = benchmark_close.iloc[max(0, min(i-days, len(benchmark_close)-1))]
                     stock_ret = (close_series.iloc[-1] - close_series.iloc[-days]) / close_series.iloc[-days] * 100 if close_series.iloc[-days] != 0 else 0
-                    nifty_ret = (nifty_at_i - nifty_at_im) / nifty_at_im * 100 if nifty_at_im != 0 else 0
-                    rs = stock_ret - nifty_ret
+                    benchmark_ret = (benchmark_at_i - benchmark_at_im) / benchmark_at_im * 100 if benchmark_at_im != 0 else 0
+                    rs = stock_ret - benchmark_ret
                     if rs > 10:    rs_score += 10
                     elif rs > 4:   rs_score += 5
                     elif rs < -10: rs_score -= 10
@@ -440,7 +474,42 @@ def _score_at(df: pd.DataFrame, i: int, nifty_close: pd.Series | None, fund_scor
     }
 
 
-def _backtest_stock(symbol: str, horizon: str, nifty_df: pd.DataFrame | None) -> list[dict]:
+def _resolve_yahoo_symbol(symbol: str, market: str) -> str:
+    """
+    Deterministically resolve a validation-universe symbol to its Yahoo
+    Finance ticker for an EXPLICITLY supplied market — never inferred from
+    the symbol's own shape (length, presence/absence of a dot, casing).
+    `market` must be the caller's already-known universe context
+    (run_validation's UNIVERSE_MARKET maps nifty100/midcap -> "IN",
+    us -> "US"); this function does not guess it.
+
+    Phase GPI-1: replaces the confirmed defect where a length/punctuation
+    heuristic in this function's old body misrouted short NSE symbols
+    (INFY, TCS, SBIN, M&M, ...) to bare Yahoo tickers — silently resolving
+    some of them to unrelated US-listed instruments (e.g. INFY's own NYSE
+    ADR) instead of failing or routing to the correct NSE line.
+    """
+    if market == "IN":
+        return symbol if symbol.endswith(".NS") else f"{symbol}.NS"
+    if market == "US":
+        # US tickers are used exactly as configured — including any dotted
+        # or dashed class-share form (e.g. "BRK.B", "BRK-B") — never
+        # suffixed, never rewritten.
+        return symbol
+    raise ValueError(
+        f"_resolve_yahoo_symbol: unsupported market {market!r} for symbol {symbol!r} — "
+        f"must be explicitly 'IN' or 'US', never inferred"
+    )
+
+
+def _backtest_stock(
+    symbol: str,
+    horizon: str,
+    benchmark_df: pd.DataFrame | None,
+    market: str,
+    *,
+    universe: str | None = None,
+) -> list[dict]:
     """
     Walk-forward backtest for one stock over HORIZON_PERIOD[horizon].
 
@@ -448,10 +517,18 @@ def _backtest_stock(symbol: str, horizon: str, nifty_df: pd.DataFrame | None) ->
     signal date i — exactly the data that would have been available in real-time.
     No future prices leak into EMA, MACD, OBV, or any other indicator.
 
-    Returns list of signal dicts, empty list on error.
+    `market` is required and explicit ("IN" or "US") — see
+    _resolve_yahoo_symbol's docstring for why this replaced ticker-shape
+    inference. `universe` is optional, carried only for failure-diagnostic
+    logging (which universe/run this symbol belonged to), not for routing.
+
+    Returns list of signal dicts, empty list on error or insufficient data
+    (both cases are logged with full symbol/market/universe/horizon context
+    so a caller reviewing effective sample size can see WHY a requested
+    symbol contributed zero signals — see run_validation's
+    n_stocks_with_signals).
     """
-    is_us   = not symbol.endswith(".NS") and "." not in symbol and len(symbol) <= 5
-    yf_sym  = symbol if is_us else symbol + ".NS"
+    yf_sym = _resolve_yahoo_symbol(symbol, market)
     fwd_days  = HORIZON_DAYS[horizon]
     step      = HORIZON_STEP[horizon]
     threshold = HORIZON_THRESHOLDS[horizon]
@@ -462,6 +539,11 @@ def _backtest_stock(symbol: str, horizon: str, nifty_df: pd.DataFrame | None) ->
     try:
         df = yf.Ticker(yf_sym).history(period=HORIZON_PERIOD[horizon])
         if len(df) < MIN_WARMUP + fwd_days:
+            log.info(
+                "[validation] insufficient history — symbol=%s yf_symbol=%s market=%s "
+                "universe=%s horizon=%s rows=%d needed=%d",
+                symbol, yf_sym, market, universe, horizon, len(df), MIN_WARMUP + fwd_days,
+            )
             return []
         # Do NOT call compute_indicators on full df — that causes look-ahead bias.
         # Raw OHLCV df is kept clean; indicators are computed per window inside loop.
@@ -485,19 +567,19 @@ def _backtest_stock(symbol: str, horizon: str, nifty_df: pd.DataFrame | None) ->
         fund_score = max(0.0, min(100.0, fund_score))
 
         # Align benchmark index to stock dates
-        nifty_close = None
-        if nifty_df is not None and not nifty_df.empty:
-            nifty_close = nifty_df["Close"].reindex(df.index).ffill().bfill()
+        benchmark_close = None
+        if benchmark_df is not None and not benchmark_df.empty:
+            benchmark_close = benchmark_df["Close"].reindex(df.index).ffill().bfill()
 
         # Precompute regime adjustments from benchmark only (no stock data → no bias)
         regime_adjs = []
-        if nifty_close is not None:
-            ema50_bench = nifty_close.ewm(span=50).mean()
+        if benchmark_close is not None:
+            ema50_bench = benchmark_close.ewm(span=50).mean()
             for idx in range(len(df)):
                 try:
-                    cur  = float(nifty_close.iloc[idx])
+                    cur  = float(benchmark_close.iloc[idx])
                     e50  = float(ema50_bench.iloc[idx])
-                    base = float(nifty_close.iloc[max(0, idx - 63)])
+                    base = float(benchmark_close.iloc[max(0, idx - 63)])
                     r3m  = (cur - base) / base if base != 0 else 0
                     if cur > e50 and r3m > 0.03:    regime_adjs.append(5.0)
                     elif cur < e50 and r3m < -0.03: regime_adjs.append(-5.0)
@@ -516,20 +598,20 @@ def _backtest_stock(symbol: str, horizon: str, nifty_df: pd.DataFrame | None) ->
                     continue
                 fwd_ret = (exit_ - entry) / entry * 100
 
-                # Nifty forward return over same window (for alpha calculation)
-                nifty_fwd_ret = 0.0
-                if nifty_close is not None and i + fwd_days < len(nifty_close):
-                    n_entry = float(nifty_close.iloc[i])
-                    n_exit  = float(nifty_close.iloc[i + fwd_days])
-                    if n_entry != 0:
-                        nifty_fwd_ret = (n_exit - n_entry) / n_entry * 100
+                # Benchmark forward return over same window (for alpha calculation)
+                benchmark_fwd_ret = 0.0
+                if benchmark_close is not None and i + fwd_days < len(benchmark_close):
+                    b_entry = float(benchmark_close.iloc[i])
+                    b_exit  = float(benchmark_close.iloc[i + fwd_days])
+                    if b_entry != 0:
+                        benchmark_fwd_ret = (b_exit - b_entry) / b_entry * 100
 
                 # ── Look-ahead-free indicator computation ──────────────────────
                 # Slice only rows 0..i (inclusive) — no future data visible
                 window = df.iloc[:i + 1].copy()
                 window = compute_indicators(window)
                 # Score uses the last row of the window (= day i)
-                sc = _score_at(window, len(window) - 1, nifty_close, fund_score, regime_adjs[i])
+                sc = _score_at(window, len(window) - 1, benchmark_close, fund_score, regime_adjs[i])
                 composite = sc["composite"]
 
                 buy_thr  = BUY_THRESHOLD[horizon]
@@ -537,10 +619,10 @@ def _backtest_stock(symbol: str, horizon: str, nifty_df: pd.DataFrame | None) ->
                 predicted = "BUY" if composite >= buy_thr else ("SELL" if composite <= sell_thr else "HOLD")
 
                 # "correct" = benchmark-relative:
-                #   BUY is correct  if stock outperforms Nifty by > 0 over fwd window
-                #   SELL is correct if stock underperforms Nifty by > 0 over fwd window
-                #   HOLD is correct if stock is within ±threshold% of Nifty return
-                alpha = fwd_ret - nifty_fwd_ret
+                #   BUY is correct  if stock outperforms the benchmark by > 0 over fwd window
+                #   SELL is correct if stock underperforms the benchmark by > 0 over fwd window
+                #   HOLD is correct if stock is within ±threshold% of the benchmark return
+                alpha = fwd_ret - benchmark_fwd_ret
                 if predicted == "BUY":
                     correct = alpha > 0
                 elif predicted == "SELL":
@@ -562,7 +644,11 @@ def _backtest_stock(symbol: str, horizon: str, nifty_df: pd.DataFrame | None) ->
                     "mfi_score":       sc["mfi"],
                     "predicted":       predicted,
                     "fwd_return_pct":  round(fwd_ret, 3),
-                    "nifty_fwd_ret_pct": round(nifty_fwd_ret, 3),
+                    # Persisted column/JSON key name (val_signals.nifty_fwd_ret_pct) —
+                    # kept unchanged to avoid a schema migration; the underlying
+                    # value is the run's benchmark forward return regardless of
+                    # market (Nifty 50 for IN, S&P 500 for US).
+                    "nifty_fwd_ret_pct": round(benchmark_fwd_ret, 3),
                     "alpha_pct":       round(alpha, 3),
                     "actual_direction": actual_dir,
                     "correct":         int(correct),
@@ -573,7 +659,11 @@ def _backtest_stock(symbol: str, horizon: str, nifty_df: pd.DataFrame | None) ->
         return signals
 
     except Exception as e:
-        print(f"[validation] {symbol}/{horizon} failed: {e}")
+        log.warning(
+            "[validation] backtest failed — symbol=%s yf_symbol=%s market=%s "
+            "universe=%s horizon=%s error=%s",
+            symbol, yf_sym, market, universe, horizon, e,
+        )
         return []
 
 
@@ -620,7 +710,7 @@ def _max_drawdown(rets: list[float]) -> float | None:
     return round(max_dd, 1)
 
 
-def _compute_metrics(signals: list[dict], nifty_return_pct: float, horizon: str = "medium") -> dict:
+def _compute_metrics(signals: list[dict], benchmark_return_pct: float, horizon: str = "medium") -> dict:
     """Compute all aggregate validation metrics from raw signals."""
     if not signals:
         return {}
@@ -669,7 +759,7 @@ def _compute_metrics(signals: list[dict], nifty_return_pct: float, horizon: str 
     buy_rets   = [s["fwd_return_pct"] for s in buys]
     buy_alphas = [s["alpha_pct"] for s in buys if s.get("alpha_pct") is not None]
     model_avg  = _avg_ret(buys) or 0.0
-    outperformance = round(model_avg - nifty_return_pct, 2) if nifty_return_pct is not None else None
+    outperformance = round(model_avg - benchmark_return_pct, 2) if benchmark_return_pct is not None else None
 
     def _avg(lst):
         return round(float(np.mean(lst)), 2) if lst else None
@@ -687,7 +777,7 @@ def _compute_metrics(signals: list[dict], nifty_return_pct: float, horizon: str 
         "avg_return_on_buy_pct":      _avg_ret(buys),
         "avg_alpha_on_buy_pct":       _avg(buy_alphas),
         "avg_return_on_sell_pct":     _avg_ret(sells),
-        "avg_return_benchmark_pct":   round(nifty_return_pct, 2) if nifty_return_pct else None,
+        "avg_return_benchmark_pct":   round(benchmark_return_pct, 2) if benchmark_return_pct else None,
         "buy_outperformance_pct":     outperformance,
         "sharpe_on_buys":             _sharpe(buy_rets) if buy_rets else None,
         "sharpe_on_alphas":           _sharpe(buy_alphas) if buy_alphas else None,
@@ -715,19 +805,26 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
     """
     Run a full walk-forward validation.
 
-    universe options:
+    universe options (case-sensitive, exact match — no other value accepted):
       "nifty100"  — Nifty 100 large-cap India (default, ~125 stocks)
       "midcap"    — Mid-cap NSE sample (~100 stocks beyond Nifty 100)
       "us"        — US S&P 500 basket (~48 stocks, all major sectors)
 
+    Raises ValueError for any other universe string, before any database
+    initialization, benchmark fetch, or executor submission happens — see
+    _require_known_universe. There is no fallback to NIFTY_100 and no
+    default market.
+
     Stores results in Postgres/SQLite and returns summary metrics.
     """
+    _require_known_universe(universe)
+
     universe_map = {
         "nifty100": NIFTY_100,
         "midcap":   NSE_MIDCAP,
         "us":       US_BASKET,
     }
-    stocks   = universe_map.get(universe, NIFTY_100)
+    stocks   = universe_map[universe]
     n_stocks = len(stocks)
     label    = f"{horizon}-{universe}"
 
@@ -742,8 +839,7 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
 
     # Benchmark ticker: Nifty 50 for India universes, S&P 500 for US
     benchmark_ticker = "^GSPC" if universe == "us" else "^NSEI"
-    # Yahoo Finance suffix for price lookup
-    yf_suffix = "" if universe == "us" else ".NS"
+    market = UNIVERSE_MARKET[universe]  # safe — _require_known_universe already validated this
 
     try:
         _init_db()
@@ -758,22 +854,28 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
                 x = float(bench_df["Close"].iloc[i + fwd_days])
                 if e != 0:
                     bench_rets.append((x - e) / e * 100)
-            nifty_avg_ret = float(np.mean(bench_rets)) if bench_rets else 0.0
-            nifty_df = bench_df  # reuse variable name — passed to _backtest_stock
+            benchmark_avg_ret = float(np.mean(bench_rets)) if bench_rets else 0.0
+            benchmark_df = bench_df
         except Exception:
-            nifty_df = pd.DataFrame()
-            nifty_avg_ret = 0.0
+            benchmark_df = pd.DataFrame()
+            benchmark_avg_ret = 0.0
 
         all_signals: list[dict] = []
+        symbols_with_signals: set[str] = set()
         done = 0
 
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(_backtest_stock, sym, horizon, nifty_df): sym for sym in stocks}
+            futures = {
+                pool.submit(_backtest_stock, sym, horizon, benchmark_df, market, universe=universe): sym
+                for sym in stocks
+            }
             for future in as_completed(futures):
                 sym = futures[future]
                 try:
                     sigs = future.result()
                     all_signals.extend(sigs)
+                    if sigs:
+                        symbols_with_signals.add(sym)
                     done += 1
                     with _status_lock:
                         _run_status["progress"] = done
@@ -784,13 +886,20 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
                         _run_status["progress"] = done
                         _run_status["log"].append(f"[{done}/{n_stocks}] {sym}: ERROR {e}")
 
-        metrics = _compute_metrics(all_signals, nifty_avg_ret, horizon)
+        metrics = _compute_metrics(all_signals, benchmark_avg_ret, horizon)
         metrics["horizon"]   = horizon
         metrics["universe"]  = universe
-        metrics["n_stocks_tested"] = n_stocks
+        metrics["n_stocks_tested"] = n_stocks  # kept unchanged for backward compat — see below
+        # n_stocks_tested has historically reported the size of the requested
+        # universe, not how many symbols actually returned usable signals.
+        # These two fields make that distinction explicit without changing
+        # n_stocks_tested's existing meaning or touching persisted schema
+        # (both live inside the JSON/JSONB summary column).
+        metrics["n_stocks_requested"]     = n_stocks
+        metrics["n_stocks_with_signals"]  = len(symbols_with_signals)
         metrics["run_at"] = datetime.now(timezone.utc).isoformat()
-        metrics["benchmark_avg_fwd_return_pct"] = round(nifty_avg_ret, 2)
-        metrics["nifty_avg_fwd_return_pct"]     = round(nifty_avg_ret, 2)  # backward compat
+        metrics["benchmark_avg_fwd_return_pct"] = round(benchmark_avg_ret, 2)
+        metrics["nifty_avg_fwd_return_pct"]     = round(benchmark_avg_ret, 2)  # backward compat
 
         # Persist — convert numpy scalars to native Python first
         def _jsonify(obj):
