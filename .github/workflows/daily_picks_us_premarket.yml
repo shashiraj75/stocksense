@@ -2,31 +2,35 @@ name: Daily Stock Picks — US Premarket Finalizer
 
 # GitHub Actions cron is UTC-only and does not observe US daylight saving
 # time, so two fixed-UTC schedules are used to approximate the same
-# 7:35 AM New York local time year-round. The backend endpoint itself is
+# 6:00 AM New York local time year-round. The backend endpoint itself is
 # the source of truth for whether it is actually inside the allowed
 # premarket window (America/New_York, DST-aware via zoneinfo) — one of
 # these two triggers will always land inside the window and run, the
-# other will always land outside the window and safely no-op.
+# other will always land outside the window and safely no-op. The US base
+# workflow (daily_picks_us.yml) must complete and durably persist its
+# picks first — this finalizer only ever re-checks an already-generated
+# base, it never generates one itself (see premarket_finalizer.py).
 #
-# 2026-07-13 change: moved 30 minutes earlier (was 8:05 AM ET) and the
-# backend's own acceptance window widened from 30 to 90 minutes (7:30-9:00
-# AM ET — see in_premarket_window() in premarket_finalizer.py), after a real
-# missed run: GitHub Actions' scheduled cron didn't fire this workflow at
-# all before its old 8:00-8:30 AM ET window closed (confirmed live via the
-# Actions UI — 0 runs recorded, and /api/picks/status showing
-# premarket_finalized_at still null past 9:00 AM ET). GH Actions scheduled
-# triggers are best-effort and can run late by more than the old 30-minute
-# window allowed for — this doesn't fully protect against a pathological
-# multi-hour delay (this repo has seen one on a different Daily Picks
-# workflow, see Product-Integrity-001C), but absorbs the ~30-90 minute class
-# of delay that actually recurred here without requiring the trigger to
-# land at the exact right minute.
+# 2026-07-15 change: moved from ~7:35 AM ET to 6:00 AM ET so 6:00 AM ET
+# becomes the authoritative finalization attempt, with the backend's
+# acceptance window correspondingly narrowed and shifted to 6:00-7:30 AM ET
+# (still ~90 minutes, absorbing the same class of GitHub Actions dispatch
+# delay documented below — see in_premarket_window() in
+# premarket_finalizer.py). This did NOT reintroduce the missed-run failure
+# mode the 2026-07-13 change (see CHANGELOG.md and Product-Integrity docs
+# for that history, left unchanged as historical evidence) fixed: this
+# window is the same ~90-minute width, just retargeted earlier, and the two
+# fixed-UTC candidates below still straddle it the same way for both DST
+# offsets. GitHub Actions scheduled triggers remain best-effort and can run
+# late; this class of delay is absorbed, a pathological multi-hour delay
+# (this repo has seen one on a different Daily Picks workflow, see
+# Product-Integrity-001C) is not, a known, accepted residual risk.
 on:
   schedule:
-    # EDT candidate: 11:35 UTC = 7:35 AM New York during EDT (Mar-Nov)
-    - cron: "35 11 * * 1-5"
-    # EST candidate: 12:35 UTC = 7:35 AM New York during EST (Nov-Mar)
-    - cron: "35 12 * * 1-5"
+    # EDT candidate: 10:00 UTC = 6:00 AM New York during EDT (Mar-Nov)
+    - cron: "0 10 * * 1-5"
+    # EST candidate: 11:00 UTC = 6:00 AM New York during EST (Nov-Mar)
+    - cron: "0 11 * * 1-5"
   workflow_dispatch:
 
 jobs:
@@ -67,5 +71,5 @@ jobs:
           echo "$RESPONSE"
           echo ""
           echo "Premarket finalizer call complete. The backend guards execution to the"
-          echo "7:30-9:00 AM America/New_York window and safely no-ops outside it (e.g."
+          echo "6:00-7:30 AM America/New_York window and safely no-ops outside it (e.g."
           echo "the EDT/EST candidate that isn't the active DST offset today)."

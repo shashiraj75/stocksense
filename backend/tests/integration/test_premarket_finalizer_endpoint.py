@@ -10,6 +10,11 @@ completed/persisted US job row — the new fail-closed provenance contract
 tests/regression/test_premarket_finalizer_base_integrity.py for the full
 validation-matrix coverage).
 
+2026-07-15: fixtures and window-guard tests updated for the 6:00 AM ET
+finalizer retargeting (was ~7:35 AM ET) and the 6:00-7:30 AM ET acceptance
+window (was 7:30-9:00 AM ET) — see premarket_finalizer.py's
+in_premarket_window() docstring for the full history.
+
 All tests are deterministic and fully mocked — no real DB, no external
 providers, no Daily Picks generation runs, no live network. Matches this
 repo's tests/integration convention: multiple in-process modules together,
@@ -34,7 +39,7 @@ def client(monkeypatch):
     return TestClient(app)
 
 
-def _base_payload(with_picks=True, generated_at="2026-07-06T04:10:00+00:00",
+def _base_payload(with_picks=True, generated_at="2026-07-06T06:10:00+00:00",
                    source_job_id="job-us-fresh"):
     picks = {
         "short": [{"symbol": "AAPL", "price": 200.0, "confidence": 70, "signal": "BUY"}],
@@ -49,14 +54,14 @@ def _base_payload(with_picks=True, generated_at="2026-07-06T04:10:00+00:00",
     }
 
 
-def _completed_job_row(job_id="job-us-fresh", *, completed_at="2026-07-06T04:00:00+00:00",
-                        persisted_picks_timestamp="2026-07-06T04:00:01+00:00"):
+def _completed_job_row(job_id="job-us-fresh", *, completed_at="2026-07-06T06:00:00+00:00",
+                        persisted_picks_timestamp="2026-07-06T06:00:01+00:00"):
     """A durable job row satisfying every provenance check (G-K)."""
     return {
         "job_id": job_id,
         "market": "US",
         "status": "completed",
-        "started_at": "2026-07-06T03:00:00+00:00",
+        "started_at": "2026-07-06T02:00:00+00:00",
         "completed_at": completed_at,
         "persisted_picks_timestamp": persisted_picks_timestamp,
         "universe_degraded": False,
@@ -105,7 +110,7 @@ class TestPremarketFinalizeWindowGuard:
     @pytest.mark.asyncio
     async def test_outside_window_is_a_safe_noop(self):
         from services.premarket_finalizer import finalize_premarket
-        # 20:00 UTC on a July weekday is nowhere near 8-8:30 AM ET.
+        # 20:00 UTC on a July weekday is nowhere near 6:00-7:30 AM ET.
         now = datetime(2026, 7, 6, 20, 0, tzinfo=timezone.utc)
         result = await finalize_premarket("US", now=now)
         assert result == {"market": "US", "status": "skipped",
@@ -113,9 +118,9 @@ class TestPremarketFinalizeWindowGuard:
 
     @pytest.mark.asyncio
     async def test_edt_cron_candidate_runs_during_edt(self):
-        """11:35 UTC maps to ~7:35 AM New York during EDT (July) — allowed."""
+        """10:00 UTC maps to 6:00 AM New York during EDT (July) — allowed."""
         from services.premarket_finalizer import finalize_premarket
-        now = datetime(2026, 7, 6, 11, 35, tzinfo=timezone.utc)
+        now = datetime(2026, 7, 6, 10, 0, tzinfo=timezone.utc)
         with patch("services.daily_picks.get_cached_picks", return_value=_base_payload()), \
              patch("services.postgres_store.get_daily_picks_job_by_id", return_value=_completed_job_row()), \
              patch("services.postgres_store.save_picks_to_db", return_value=True), \
@@ -128,15 +133,16 @@ class TestPremarketFinalizeWindowGuard:
 
     @pytest.mark.asyncio
     async def test_est_cron_candidate_runs_during_est(self):
-        """12:35 UTC maps to ~7:35 AM New York during EST (January) — allowed."""
+        """11:00 UTC maps to 6:00 AM New York during EST (January) — allowed."""
         from services.premarket_finalizer import finalize_premarket
-        now = datetime(2026, 1, 6, 12, 35, tzinfo=timezone.utc)
-        # EST is UTC-5 in January (vs. UTC-4 EDT in July) — 04:10 UTC would
-        # land on the PRIOR ET calendar day (23:10 ET Jan 5), so this fixture
-        # uses 09:10 UTC = 04:10 AM ET, the same ET day as `now` (07:35 AM ET).
-        payload = _base_payload(generated_at="2026-01-06T09:10:00+00:00")
-        job_row = _completed_job_row(completed_at="2026-01-06T09:00:00+00:00",
-                                      persisted_picks_timestamp="2026-01-06T09:00:01+00:00")
+        now = datetime(2026, 1, 6, 11, 0, tzinfo=timezone.utc)
+        # EST is UTC-5 in January (vs. UTC-4 EDT in July) — 06:10 UTC would
+        # land on the PRIOR ET calendar day (01:10 ET Jan 6 is fine, but the
+        # base must still be same-day) — this fixture uses 11:10 UTC =
+        # 6:10 AM ET, the same ET day as `now` (6:00 AM ET).
+        payload = _base_payload(generated_at="2026-01-06T11:10:00+00:00")
+        job_row = _completed_job_row(completed_at="2026-01-06T11:00:00+00:00",
+                                      persisted_picks_timestamp="2026-01-06T11:00:01+00:00")
         with patch("services.daily_picks.get_cached_picks", return_value=payload), \
              patch("services.postgres_store.get_daily_picks_job_by_id", return_value=job_row), \
              patch("services.postgres_store.save_picks_to_db", return_value=True), \
@@ -150,22 +156,21 @@ class TestPremarketFinalizeWindowGuard:
     @pytest.mark.asyncio
     async def test_est_candidate_is_now_also_inside_window_during_edt_but_idempotency_guard_skips_it(self):
         """
-        12:35 UTC during EDT (July) is ~8:35 AM ET — still inside the new
-        7:30-9:00 window (unlike the old 30-minute window, where this
-        candidate safely fell outside it). This is the expected behavior
-        change from widening the window past the 1-hour EDT/EST cron gap:
-        both candidates now land in-window, so it's the exact-base
+        11:00 UTC during EDT (July) is 7:00 AM ET — still inside the
+        6:00-7:30 window (the same behavior the 2026-07-13 widened window
+        already had, just retargeted earlier). This is the expected
+        behavior: both candidates land in-window, so it's the exact-base
         idempotency guard — not the window boundary — that prevents this
         from being a second, duplicate finalization once the EDT candidate
-        (11:35 UTC) has already run earlier that same morning.
+        (10:00 UTC) has already run earlier that same morning.
         """
         from services.premarket_finalizer import finalize_premarket
-        already_finalized_at = datetime(2026, 7, 6, 11, 35, tzinfo=timezone.utc).isoformat()
+        already_finalized_at = datetime(2026, 7, 6, 10, 0, tzinfo=timezone.utc).isoformat()
         payload = _base_payload()
         payload["premarket_finalized_at"] = already_finalized_at
         payload["premarket_finalized_for_job_id"] = payload["source_job_id"]
         payload["premarket_finalized_for_base"] = payload["generated_at"]
-        now = datetime(2026, 7, 6, 12, 35, tzinfo=timezone.utc)
+        now = datetime(2026, 7, 6, 11, 0, tzinfo=timezone.utc)
         with patch("services.daily_picks.get_cached_picks", return_value=payload), \
              patch.dict("os.environ", {"USE_POSTGRES": "1"}):
             result = await finalize_premarket("US", now=now)
@@ -174,11 +179,11 @@ class TestPremarketFinalizeWindowGuard:
 
     @pytest.mark.asyncio
     async def test_edt_cron_candidate_noops_during_est(self):
-        """11:35 UTC during EST (January) is ~6:35 AM ET — still outside the
+        """10:00 UTC during EST (January) is 5:00 AM ET — still outside the
         window on this side (EST shifts it earlier, not later), so this one
         remains a genuine window no-op, not an idempotency-guard skip."""
         from services.premarket_finalizer import finalize_premarket
-        now = datetime(2026, 1, 6, 11, 35, tzinfo=timezone.utc)
+        now = datetime(2026, 1, 6, 10, 0, tzinfo=timezone.utc)
         result = await finalize_premarket("US", now=now)
         assert result["status"] == "skipped"
         assert result["reason"] == "outside_premarket_finalizer_window"
@@ -188,9 +193,9 @@ class TestPremarketFinalizeWindowGuard:
 
 @pytest.mark.integration
 class TestPremarketFinalizeDataAvailability:
-    # 8:15 AM America/New_York local time, directly — not a UTC conversion,
+    # 6:15 AM America/New_York local time, directly — not a UTC conversion,
     # to avoid an off-by-offset bug that would silently land outside the window.
-    _IN_WINDOW = datetime(2026, 7, 6, 8, 15, tzinfo=__import__("zoneinfo").ZoneInfo("America/New_York"))
+    _IN_WINDOW = datetime(2026, 7, 6, 6, 15, tzinfo=__import__("zoneinfo").ZoneInfo("America/New_York"))
 
     @pytest.mark.asyncio
     async def test_missing_base_picks_returns_safe_skipped_status(self):
@@ -204,7 +209,7 @@ class TestPremarketFinalizeDataAvailability:
     async def test_empty_picks_payload_returns_safe_skipped_status(self):
         from services.premarket_finalizer import finalize_premarket
         with patch("services.daily_picks.get_cached_picks",
-                   return_value={"generated_at": "2026-07-06T04:10:00+00:00",
+                   return_value={"generated_at": "2026-07-06T06:10:00+00:00",
                                  "market": "US", "picks": {}}):
             result = await finalize_premarket("US", now=self._IN_WINDOW)
         assert result["status"] == "skipped"

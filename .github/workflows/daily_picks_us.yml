@@ -2,13 +2,31 @@ name: Daily Stock Picks — US Pre-Open
 
 on:
   schedule:
-    # US base run: 04:00 UTC = 8:00 AM Dubai = 9:30 AM IST
-    # Runs many hours before the 9:30 AM ET US market open
-    # Mon-Fri UTC = US market days (US run does not cross into the next UTC calendar day)
+    # US base run: 06:00 UTC = 10:00 AM Dubai = 11:30 AM IST
     # This is the heavy/full Daily Picks base run — a lightweight premarket
-    # finalizer (daily_picks_us_premarket.yml) runs separately, shortly
-    # before market open, to refresh/review these base picks.
-    - cron: "0 4 * * 1-5"
+    # finalizer (daily_picks_us_premarket.yml) runs separately at ~6:00 AM
+    # America/New_York to review/finalize these already-persisted base
+    # picks. It never generates a base itself, so this run must complete
+    # and durably persist first.
+    #
+    # 2026-07-15 change (Daily Stock Picks — US Premarket Finalizer moved to
+    # 6:00 AM ET): the previous 04:00 UTC schedule is incompatible with the
+    # finalizer's same-ET-calendar-day provenance requirement during EST.
+    # 04:00 UTC during EST (UTC-5) is 23:00 ET the PREVIOUS calendar date —
+    # a base generated then is permanently stale from the finalizer's
+    # perspective the next ET morning (generated_at.date() != today), so
+    # the finalizer would reject every EST-season base as
+    # skipped_stale_base regardless of any finalizer schedule change (see
+    # premarket_finalizer.py's validate_base_for_finalization() check E).
+    # 06:00 UTC avoids this in both DST offsets: EDT (UTC-4) -> 02:00 ET,
+    # EST (UTC-5) -> 01:00 ET, both same-calendar-day and several hours
+    # before either 6:00 AM ET finalizer candidate, leaving ample execution
+    # buffer. This also incidentally fixes a related latent bug in
+    # services.daily_picks.picks_generated_today("US"), which compares
+    # generated_at against today's ET date the same way and would have
+    # under-counted "already generated today" during EST for the same
+    # reason.
+    - cron: "0 6 * * 1-5"
   workflow_dispatch:
 
 jobs:

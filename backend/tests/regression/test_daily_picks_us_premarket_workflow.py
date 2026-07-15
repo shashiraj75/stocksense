@@ -15,9 +15,18 @@ _WORKFLOWS = _REPO_ROOT / ".github" / "workflows"
 
 @pytest.mark.regression
 class TestUsBaseWorkflowCronChanged:
-    def test_cron_changed_to_early_run(self):
+    def test_cron_is_the_dst_corrected_early_run(self):
+        # 2026-07-15: moved from 04:00 UTC to 06:00 UTC — 04:00 UTC during
+        # EST (UTC-5) lands at 23:00 ET the PREVIOUS calendar date, which
+        # would make every EST-season base permanently fail the premarket
+        # finalizer's same-ET-day provenance check (see
+        # daily_picks_us.yml's own comment and premarket_finalizer.py's
+        # validate_base_for_finalization() check E). 06:00 UTC lands on the
+        # correct ET calendar day in both EDT and EST, several hours before
+        # either 6:00 AM ET finalizer candidate.
         src = (_WORKFLOWS / "daily_picks_us.yml").read_text()
-        assert 'cron: "0 4 * * 1-5"' in src
+        assert 'cron: "0 6 * * 1-5"' in src
+        assert 'cron: "0 4 * * 1-5"' not in src  # superseded 2026-07-15
         assert 'cron: "17 12 * * 1-5"' not in src
 
     def test_still_calls_generate_endpoint_for_us(self):
@@ -54,13 +63,16 @@ class TestUsPremarketFinalizerWorkflowExists:
         assert (_WORKFLOWS / "daily_picks_us_premarket.yml").exists()
 
     def test_has_both_dst_cron_candidates(self):
-        # 2026-07-13: moved 30 min earlier (was "5 12"/"5 13") to build in
-        # buffer against GitHub Actions' own scheduling delay, alongside
-        # widening the backend's acceptance window (see
-        # services/premarket_finalizer.py's in_premarket_window).
+        # 2026-07-15: moved from ~7:35 AM ET ("35 11"/"35 12") to 6:00 AM ET
+        # so 6:00 AM ET becomes the authoritative finalization attempt (see
+        # services/premarket_finalizer.py's in_premarket_window() docstring
+        # for the full history, including the 2026-07-13 missed-run
+        # rationale this retargeting deliberately preserves).
         src = (_WORKFLOWS / "daily_picks_us_premarket.yml").read_text()
-        assert 'cron: "35 11 * * 1-5"' in src   # EDT candidate
-        assert 'cron: "35 12 * * 1-5"' in src   # EST candidate
+        assert 'cron: "0 10 * * 1-5"' in src   # EDT candidate
+        assert 'cron: "0 11 * * 1-5"' in src   # EST candidate
+        assert 'cron: "35 11 * * 1-5"' not in src  # superseded 2026-07-15
+        assert 'cron: "35 12 * * 1-5"' not in src  # superseded 2026-07-15
 
     def test_workflow_dispatch_present(self):
         src = (_WORKFLOWS / "daily_picks_us_premarket.yml").read_text()

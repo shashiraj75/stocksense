@@ -84,20 +84,28 @@ type LivePick = {
 // ── Constants ─────────────────────────────────────────────────────────────────
 const MARKETS = [
   { key: "IN" as const, short: "🇮🇳 IN", label: "🇮🇳 NSE India",  currency: "₹", locale: "en-IN", tz: "Asia/Kolkata",     genTime: "2 AM IST",   tzLabel: "IST" },
-  // US base run moved much earlier (04:00 UTC = 8:00 AM Dubai = 9:30 AM IST,
-  // see .github/workflows/daily_picks_us.yml) with a separate lightweight
-  // premarket finalizer running shortly before US market open — replaces
-  // the previous evening-IST claim, which was both stale and described the
-  // wrong timezone reference point for a US market.
-  { key: "US" as const, short: "🇺🇸 US", label: "🇺🇸 NYSE/NASDAQ", currency: "$", locale: "en-US", tz: "America/New_York", genTime: "8:00 AM Dubai / 9:30 AM IST", tzLabel: "ET" },
+  // This is the US Pre-Open BASE generation schedule only (heavy/full
+  // pipeline, see .github/workflows/daily_picks_us.yml) — NOT the separate
+  // Premarket Review stage, which runs afterward at ~6:00 AM America/New_York
+  // (see .github/workflows/daily_picks_us_premarket.yml and
+  // PREMARKET_STATUS_LABEL below). Do not collapse these into one label —
+  // see the two-stage badge rendering further down this file.
+  { key: "US" as const, short: "🇺🇸 US", label: "🇺🇸 NYSE/NASDAQ", currency: "$", locale: "en-US", tz: "America/New_York", genTime: "10:00 AM Dubai / 11:30 AM IST", tzLabel: "ET" },
 ];
 
+// Premarket Review stage — scheduled for ~6:00 AM America/New_York
+// (both EDT and EST candidates converge on the backend's DST-aware
+// 6:00-7:30 AM ET acceptance window; see premarket_finalizer.py). This is
+// always a truthful *status* label, never a claim that finalization
+// happened at exactly this time — the actual completion timestamp is
+// rendered separately from data.premarket_finalized_at when present.
+const PREMARKET_REVIEW_SCHEDULE_LABEL = "Scheduled for 6:00 AM ET";
 const PREMARKET_STATUS_LABEL: Record<string, string> = {
-  pending: "Premarket Pending",
-  completed: "Premarket Confirmed",
-  completed_with_limited_premarket_data: "Premarket Limited Data",
-  skipped: "Premarket Skipped",
-  failed: "Premarket Failed",
+  pending: "Premarket Review Pending",
+  completed: "Premarket Review Completed",
+  completed_with_limited_premarket_data: "Premarket Review Completed (Limited Data)",
+  skipped: "Premarket Review Skipped",
+  failed: "Premarket Review Failed",
 };
 const PREMARKET_STATUS_CLASS: Record<string, string> = {
   pending: "border-dark-border text-gray-500",
@@ -900,6 +908,15 @@ export default function DailyPicksPage() {
         timeZone: marketCfg.tz, day: "2-digit", month: "short",
         year: "numeric", hour: "2-digit", minute: "2-digit", hour12: true,
       })} ${marketCfg.tzLabel}` : null;
+  // Premarket Review's own actual completion timestamp — never fabricated,
+  // never inferred from the 6:00 AM ET schedule; absent whenever the
+  // backend hasn't written premarket_finalized_at (no run yet, or a
+  // skipped/failed outcome that intentionally leaves it null).
+  const premarketFinalizedAt = data?.premarket_finalized_at
+    ? `${new Date(data.premarket_finalized_at).toLocaleString(marketCfg.locale, {
+        timeZone: marketCfg.tz, day: "2-digit", month: "short",
+        year: "numeric", hour: "2-digit", minute: "2-digit", hour12: true,
+      })} ${marketCfg.tzLabel}` : null;
   const alphaForHorizon = data?.alpha_engine?.[horizon];
 
   return (
@@ -937,6 +954,12 @@ export default function DailyPicksPage() {
           {generatedAt && (() => {
             const ageHours = data?.generated_at ? Math.floor((Date.now() - new Date(data.generated_at).getTime()) / 3_600_000) : 0;
             const isStale = ageHours >= 4;
+            // US shows this as the Pre-Open BASE snapshot explicitly — the
+            // separate Premarket Review stage (badge below) has its own
+            // schedule and its own actual completion timestamp, never
+            // conflated with this one. IN has no second stage, so its
+            // label is unchanged.
+            const label = market === "US" ? "Base generated" : "Updated";
             return (
               // w-full on mobile (its own row instead of squeezing next to
               // the other badges and overflowing the viewport — flex-wrap on
@@ -947,25 +970,40 @@ export default function DailyPicksPage() {
               <div className={clsx("flex items-start gap-1.5 text-xs bg-dark-card border rounded-lg px-3 py-2 w-full sm:w-auto",
                 isStale ? "border-yellow-500/40 text-yellow-400" : "border-dark-border text-gray-500")}>
                 <Clock size={12} className="shrink-0 mt-0.5" />
-                <span className="break-words">Updated {generatedAt}{isStale ? ` · ${ageHours}h ago` : ""}</span>
+                <span className="break-words">{label} {generatedAt}{isStale ? ` · ${ageHours}h ago` : ""}</span>
               </div>
             );
           })()}
-          {/* 3-phase US Daily Picks upgrade: premarket status badge. Only
-              rendered for US when the backend has actually written a
-              premarket_status (absent on IN, and on any US payload no
-              premarket run has touched yet) — never a fabricated default. */}
-          {market === "US" && data?.premarket_status && (
-            <span className={clsx("shrink-0 whitespace-nowrap text-xs bg-dark-card border rounded-lg px-3 py-2",
-              PREMARKET_STATUS_CLASS[data.premarket_status] ?? "border-dark-border text-gray-500")}>
-              {PREMARKET_STATUS_LABEL[data.premarket_status] ?? "Premarket Pending"}
-            </span>
-          )}
+          {/* Premarket Review stage badge — a separate stage from Pre-Open
+              base generation above, rendered unconditionally for US (not
+              gated on data?.premarket_status being truthy) so "no finalizer
+              run yet today" has a truthful, visible "Pending" state instead
+              of silently showing nothing. Absent entirely on IN, which has
+              no premarket-review stage. The actual premarket_finalized_at
+              timestamp is shown only for outcomes where the backend
+              actually completed a run (completed/completed_with_limited_
+              premarket_data) — never fabricated for pending/skipped/failed. */}
+          {market === "US" && (() => {
+            const effectiveStatus = data?.premarket_status ?? "pending";
+            const isCompletedOutcome = effectiveStatus === "completed"
+              || effectiveStatus === "completed_with_limited_premarket_data";
+            return (
+              <span className={clsx("shrink-0 whitespace-nowrap text-xs bg-dark-card border rounded-lg px-3 py-2",
+                PREMARKET_STATUS_CLASS[effectiveStatus] ?? "border-dark-border text-gray-500")}>
+                {PREMARKET_STATUS_LABEL[effectiveStatus] ?? PREMARKET_STATUS_LABEL.pending}
+                {isCompletedOutcome && premarketFinalizedAt
+                  ? ` · ${premarketFinalizedAt}`
+                  : !isCompletedOutcome
+                    ? ` · ${PREMARKET_REVIEW_SCHEDULE_LABEL}`
+                    : ""}
+              </span>
+            );
+          })()}
         </div>
       </div>
       <p className="text-sm text-gray-400">
-        Top 6 AI-selected BUY calls per horizon · generated daily at {marketCfg.genTime}
-        {market === "US" ? " · Premarket refresh runs before US market open" : ""}
+        Top 6 AI-selected BUY calls per horizon · {market === "US" ? "base picks generated" : "generated daily"} at {marketCfg.genTime}
+        {market === "US" ? ` · Premarket review ${PREMARKET_REVIEW_SCHEDULE_LABEL.toLowerCase()}, after today's base picks complete` : ""}
         {/* Release 12B coverage truthfulness: real returned count only, never
             a hardcoded number, and never a full-exchange claim. */}
         {data?.screened_from

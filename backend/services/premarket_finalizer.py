@@ -3,14 +3,15 @@ US Daily Picks premarket finalizer — Phase 2 of the 3-phase US Daily Picks
 upgrade (see .github/workflows/daily_picks_us_premarket.yml).
 
 Problem this solves: the heavy US base Daily Picks run
-(.github/workflows/daily_picks_us.yml, 04:00 UTC = 8:00 AM Dubai = 9:30 AM
-IST) now completes many hours before the 9:30 AM ET US market open. This
-module provides a lightweight, separate finalizer that re-checks the
-already-generated base picks shortly before market open using whatever
-premarket-relevant signals this codebase already has a safe, existing
-provider for. It never recomputes the US universe, never re-runs
-PredictionEngine, and never invents data for a signal this codebase has no
-provider for.
+(.github/workflows/daily_picks_us.yml, 06:00 UTC = 10:00 AM Dubai = 11:30 AM
+IST) completes well before market open. This module provides a lightweight,
+separate finalizer that re-checks the already-generated base picks at
+approximately 6:00 AM America/New_York — the authoritative finalization
+attempt for this feature — using whatever premarket-relevant signals this
+codebase already has a safe, existing provider for. It never recomputes the
+US universe, never re-runs PredictionEngine, and never invents data for a
+signal this codebase has no provider for. See in_premarket_window() for the
+exact 6:00-7:30 AM ET acceptance window and DST handling.
 
 What is explicitly NOT done here, and why:
   - No new stock-universe scan, no re-scoring, no re-ranking — Phase 0-7 of
@@ -347,20 +348,27 @@ _ALWAYS_MISSING_INPUTS = (
 
 
 def in_premarket_window(now_et: datetime) -> bool:
-    """7:30-9:00 AM America/New_York, Mon-Fri, excluding US market holidays.
+    """6:00-7:30 AM America/New_York, Mon-Fri, excluding US market holidays.
 
-    Widened from the original 8:00-8:30 (30 min) on 2026-07-13 after a real
-    missed run: the triggering GitHub Actions cron (daily_picks_us_premarket.yml)
-    didn't fire at all before the old, narrower window closed — confirmed
-    live (0 recorded workflow runs, premarket_finalized_at still null well
-    past 8:30 AM ET). GitHub Actions scheduled triggers are best-effort and
+    2026-07-15 change: retargeted from 7:30-9:00 AM (see prior docstring
+    below, and CHANGELOG.md / Product-Integrity docs for that history, left
+    unchanged as historical evidence) to make 6:00 AM ET the authoritative
+    finalization attempt, while keeping the same ~90-minute width that
+    absorbs GitHub Actions' own scheduling delay. 7:30 AM ET is chosen as
+    the new upper bound to stay well before the 9:30 AM open without
+    blurring into regular-session data, mirroring the old design's rationale
+    at its new target.
+
+    Prior (2026-07-13) rationale, preserved for context: widened from the
+    original 8:00-8:30 (30 min) after a real missed run — the triggering
+    GitHub Actions cron (daily_picks_us_premarket.yml) didn't fire at all
+    before the old, narrower window closed (confirmed live: 0 recorded
+    workflow runs, premarket_finalized_at still null well past the old
+    window's close). GitHub Actions scheduled triggers are best-effort and
     can run late by more than 30 minutes; 90 minutes absorbs that class of
     delay (this repo has seen a multi-hour delay on a different Daily Picks
     workflow — see Product-Integrity-001C — which this width still would not
     cover, a known, accepted residual risk, not a claim of a hard guarantee).
-    9:00 AM ET is chosen as the upper bound specifically to stay genuinely
-    "premarket" — 30 minutes before the 9:30 AM open, not blurring into
-    regular-session data.
 
     Reuses the existing exchange-calendar holiday utility
     (services.market_hours._us_fixed_holidays) rather than a Mon-Fri-only
@@ -370,8 +378,8 @@ def in_premarket_window(now_et: datetime) -> bool:
         return False
     if now_et.date() in _us_fixed_holidays(now_et.year):
         return False
-    start = now_et.replace(hour=7, minute=30, second=0, microsecond=0)
-    end = now_et.replace(hour=9, minute=0, second=0, microsecond=0)
+    start = now_et.replace(hour=6, minute=0, second=0, microsecond=0)
+    end = now_et.replace(hour=7, minute=30, second=0, microsecond=0)
     return start <= now_et <= end
 
 

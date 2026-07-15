@@ -29,13 +29,13 @@ import pytest
 # Part 1 — validate_base_for_finalization: pure function, no mocking needed
 # ─────────────────────────────────────────────────────────────────────────
 
-_NOW_ET = datetime(2026, 7, 6, 8, 15, tzinfo=__import__("zoneinfo").ZoneInfo("America/New_York"))
+_NOW_ET = datetime(2026, 7, 6, 6, 15, tzinfo=__import__("zoneinfo").ZoneInfo("America/New_York"))
 
 
 def _valid_payload(**overrides):
     payload = {
         "market": "US",
-        "generated_at": "2026-07-06T04:10:00+00:00",  # same ET calendar date as _NOW_ET
+        "generated_at": "2026-07-06T06:10:00+00:00",  # same ET calendar date as _NOW_ET
         "picks": {"short": [{"symbol": "AAPL"}], "medium": [], "long": []},
         "source_job_id": "job-us-1",
     }
@@ -48,9 +48,9 @@ def _valid_job_row(**overrides):
         "job_id": "job-us-1",
         "market": "US",
         "status": "completed",
-        "started_at": "2026-07-06T03:00:00+00:00",
-        "completed_at": "2026-07-06T04:00:00+00:00",
-        "persisted_picks_timestamp": "2026-07-06T04:00:01+00:00",
+        "started_at": "2026-07-06T02:00:00+00:00",
+        "completed_at": "2026-07-06T06:00:00+00:00",
+        "persisted_picks_timestamp": "2026-07-06T06:00:01+00:00",
         "universe_degraded": False,
         "last_error": None,
     }
@@ -220,11 +220,9 @@ class TestValidateBaseForFinalization:
 # Part 2 — finalize_premarket(): integration behavior
 # ─────────────────────────────────────────────────────────────────────────
 
-_IN_WINDOW = datetime(2026, 7, 6, 8, 15, tzinfo=timezone.utc).astimezone(
-    __import__("zoneinfo").ZoneInfo("America/New_York")
-)
-# Use a UTC instant that lands inside the window when converted to ET.
-_IN_WINDOW_UTC = datetime(2026, 7, 6, 12, 15, tzinfo=timezone.utc)  # 8:15 AM EDT
+# Use a UTC instant that lands inside the 6:00-7:30 AM ET window when
+# converted to ET.
+_IN_WINDOW_UTC = datetime(2026, 7, 6, 10, 15, tzinfo=timezone.utc)  # 6:15 AM EDT
 
 
 def _postgres_env():
