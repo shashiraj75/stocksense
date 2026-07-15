@@ -75,6 +75,18 @@ describe("Premarket Review is rendered as its own 6:00 AM ET stage", () => {
   it("does not imply the finalizer starts before base generation", () => {
     expect(pageSource).toContain("after today's base picks complete");
   });
+
+  it("only pending gets the future-looking schedule label — skipped/failed do not (SES-006 corrective release, 2026-07-15)", () => {
+    // Appending "Scheduled for 6:00 AM ET" to a skipped/failed outcome would
+    // misleadingly imply an imminent retry when today's window has already
+    // closed with a genuine terminal outcome. Only "pending" is a genuine
+    // future-looking state.
+    expect(pageSource).toContain(
+      'const isPending = !isCompletedOutcome && effectiveStatus !== "skipped"',
+    );
+    expect(pageSource).toContain('effectiveStatus !== "failed";');
+    expect(pageSource).toMatch(/isPending\s*\n?\s*\?\s*` · \$\{PREMARKET_REVIEW_SCHEDULE_LABEL\}`/);
+  });
 });
 
 describe("India never displays a US premarket stage", () => {

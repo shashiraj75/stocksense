@@ -57,7 +57,7 @@ def daily_picks(market: str = "IN"):
 
     data = _dp.get_cached_picks(market)
     if not data:
-        next_run = "2 AM IST" if market == "IN" else "9 AM ET (pre-market)"
+        next_run = "2 AM IST" if market == "IN" else "06:00 UTC (10:00 AM Dubai / 11:30 AM IST)"
         return {
             "generated_at": None,
             "market": market,
@@ -66,7 +66,9 @@ def daily_picks(market: str = "IN"):
             "message": (
                 "Picks are being generated now — check back in a few minutes."
                 if generating else
-                f"Picks not yet generated. Generated at {next_run} daily — check back then."
+                f"Picks not yet generated. Generated at {next_run} daily"
+                + ("" if market == "IN" else "; US Premarket Review targets ~6:00 AM ET")
+                + " — check back then."
             ),
         }
     return {**data, "generating": generating}
@@ -163,8 +165,8 @@ def picks_status(market: str = "IN"):
             "premarket_finalized_at":     cached.get("premarket_finalized_at"),
             "premarket_status":           cached.get("premarket_status"),
             "premarket_finalizer_version": cached.get("premarket_finalizer_version"),
-            "next_base_run_hint":         "04:00 UTC / 8:00 AM Dubai / 9:30 AM IST, Mon-Fri",
-            "next_premarket_run_hint":    "~8:05 AM America/New_York, Mon-Fri (EDT: 12:05 UTC, EST: 13:05 UTC)",
+            "next_base_run_hint":         "06:00 UTC / 10:00 AM Dubai / 11:30 AM IST, Mon-Fri",
+            "next_premarket_run_hint":    "~6:00 AM America/New_York, Mon-Fri (EDT candidate: 10:00 UTC, EST candidate: 11:00 UTC; backend acceptance window 6:00-7:30 AM ET)",
         })
     return resp
 
@@ -207,9 +209,13 @@ def intelligence_shadow(market: str = "IN"):
 @router.post("/generate")
 def trigger_generation(background_tasks: BackgroundTasks, market: str = "IN", x_secret: str = Header(None)):
     """
-    Trigger a fresh pick generation run in the background, for one market at a time.
+    Trigger a fresh, full/heavy Daily Picks base generation run in the background,
+    for one market at a time. This is the US Pre-Open base generation stage,
+    distinct from and always prior to the separate, lightweight US Premarket
+    Review (see /premarket-finalize below).
     Protected by X-Secret header to prevent abuse.
-    Called by GitHub Actions cron: IN at 20:30 UTC (2 AM IST), US at 12:30 UTC (~8:30 AM ET).
+    Called by GitHub Actions cron: IN at 20:30 UTC (2 AM IST), US at 06:00 UTC
+    (10:00 AM Dubai / 11:30 AM IST).
 
     HTTP contract:
       202 — accepted and queued
@@ -330,17 +336,19 @@ async def premarket_finalize(market: str = "US", x_secret: str = Header(None)):
     known limitations.
 
     Protected by the same X-Secret header as /generate. Guards its own
-    execution window (7:30-9:00 AM America/New_York, Mon-Fri, excluding US
-    market holidays — widened from the original 30-minute window on
-    2026-07-13 after a real missed run; see in_premarket_window()'s own
-    docstring) internally and safely no-ops outside it — the calling
-    workflow (daily_picks_us_premarket.yml) fires two fixed-UTC candidate
-    times per day (one for EDT, one for EST) since GitHub Actions cron is
-    UTC-only and does not observe US DST. Unlike the original 30-minute
-    window, this wider one is wider than the 1-hour EDT/EST gap between the
-    two candidates, so BOTH now land inside it on the same day — a same-day
-    idempotency guard in finalize_premarket() (not this endpoint) makes the
-    second call a safe no-op rather than a duplicate run.
+    execution window (6:00-7:30 AM America/New_York, Mon-Fri, excluding US
+    market holidays — retargeted from the prior 7:30-9:00 AM window on
+    2026-07-15 so 6:00 AM ET becomes the authoritative finalization target;
+    see in_premarket_window()'s own docstring) internally and safely no-ops
+    outside it — the calling workflow (daily_picks_us_premarket.yml) fires
+    two fixed-UTC candidate times per day (one for EDT at 10:00 UTC, one for
+    EST at 11:00 UTC) since GitHub Actions cron is UTC-only and does not
+    observe US DST. Because the window is wider than the 1-hour EDT/EST gap
+    between the two candidates, BOTH may land inside it on the same day — a
+    same-day idempotency guard in finalize_premarket() (not this endpoint)
+    makes the second call a safe no-op rather than a duplicate run. The
+    finalizer only reviews an already-persisted US Pre-Open base run
+    (validate_base_for_finalization()) — it never generates a base itself.
 
     Only market=US is supported — India Daily Picks timing/behavior is
     explicitly out of scope for this feature and untouched.

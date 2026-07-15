@@ -324,3 +324,43 @@ class TestExistingEndpointsUnaffected:
             assert field in body
         # Existing fields must still be present — no regression.
         assert "market" in body and "generating" in body and "has_today" in body
+
+    def test_status_hints_reflect_6am_et_schedule_not_stale_values(self, client):
+        """SES-006 corrective release (2026-07-15): next_base_run_hint/
+        next_premarket_run_hint must reflect the deployed 06:00 UTC base /
+        6:00 AM ET premarket schedule, not the pre-corrective stale values
+        that were blocked by an unrelated staged file in a prior phase."""
+        resp = client.get("/api/picks/status", params={"market": "US"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["next_base_run_hint"] == "06:00 UTC / 10:00 AM Dubai / 11:30 AM IST, Mon-Fri"
+        assert "6:00 AM America/New_York" in body["next_premarket_run_hint"]
+        assert "10:00 UTC" in body["next_premarket_run_hint"]
+        assert "11:00 UTC" in body["next_premarket_run_hint"]
+        for stale in ("04:00 UTC", "8:00 AM Dubai", "9:30 AM IST", "8:05 AM",
+                      "12:05 UTC", "13:05 UTC"):
+            assert stale not in body["next_base_run_hint"]
+            assert stale not in body["next_premarket_run_hint"]
+
+    def test_us_empty_state_message_no_longer_claims_9am_et(self, client):
+        """Empty-state message must not claim the base is generated at
+        9 AM ET — that was never true and predates the 3-phase split."""
+        with patch("services.daily_picks.get_cached_picks", return_value=None):
+            resp = client.get("/api/picks/daily", params={"market": "US"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "9 AM ET" not in body["message"]
+        assert "06:00 UTC" in body["message"]
+
+    def test_generate_docstring_reflects_current_base_schedule(self):
+        from api.routers.picks import trigger_generation
+        doc = trigger_generation.__doc__ or ""
+        assert "06:00 UTC" in doc
+        assert "12:30 UTC" not in doc
+        assert "8:30 AM ET" not in doc
+
+    def test_premarket_finalize_docstring_reflects_6to730_window(self):
+        from api.routers.picks import premarket_finalize
+        doc = premarket_finalize.__doc__ or ""
+        assert "execution window (6:00-7:30 AM America/New_York" in doc
+        assert "execution window (7:30-9:00" not in doc

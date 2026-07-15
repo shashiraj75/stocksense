@@ -987,13 +987,18 @@ export default function DailyPicksPage() {
             const effectiveStatus = data?.premarket_status ?? "pending";
             const isCompletedOutcome = effectiveStatus === "completed"
               || effectiveStatus === "completed_with_limited_premarket_data";
+            // Only "pending" is a genuine future-looking state — skipped/failed
+            // are terminal outcomes for today's window, so appending a future
+            // schedule label there would misleadingly imply an imminent retry.
+            const isPending = !isCompletedOutcome && effectiveStatus !== "skipped"
+              && effectiveStatus !== "failed";
             return (
               <span className={clsx("shrink-0 whitespace-nowrap text-xs bg-dark-card border rounded-lg px-3 py-2",
                 PREMARKET_STATUS_CLASS[effectiveStatus] ?? "border-dark-border text-gray-500")}>
                 {PREMARKET_STATUS_LABEL[effectiveStatus] ?? PREMARKET_STATUS_LABEL.pending}
                 {isCompletedOutcome && premarketFinalizedAt
                   ? ` · ${premarketFinalizedAt}`
-                  : !isCompletedOutcome
+                  : isPending
                     ? ` · ${PREMARKET_REVIEW_SCHEDULE_LABEL}`
                     : ""}
               </span>
