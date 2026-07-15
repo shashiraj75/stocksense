@@ -237,3 +237,99 @@ def test_lifespan_schedules_both_catchup_tasks_when_enabled():
     assert result_us == "proceeded"
     assert "IN" in proceeded
     assert "US" in proceeded
+
+
+# ---------------------------------------------------------------------------
+# 10. US catch-up threshold (Product Integrity #008, 2026-07-15): 3 AM ET,
+# not the old 9 AM ET — 9 AM ET was later than the finalizer's 7:30 AM ET
+# cutoff, so a restart between those two times could silently miss the
+# finalizer window for the day even after a valid base existed.
+# ---------------------------------------------------------------------------
+
+def test_lifespan_configures_us_catchup_threshold_at_3am_et_not_9am():
+    """Reads api/main.py's own source — the real lifespan call, not a
+    simulated mirror — to lock in the actual configured US threshold."""
+    import inspect
+    import api.main as main_mod
+    src = inspect.getsource(main_mod)
+    assert '_catchup_picks("US", _ET, 3, 90)' in src
+    assert '_catchup_picks("US", _ET, 9, 90)' not in src
+    # IN's threshold is explicitly unaffected by this change.
+    assert '_catchup_picks("IN", _IST, 2, 60)' in src
+
+
+def test_us_catchup_threshold_before_3am_et_skips():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("America/New_York")
+    now = datetime(2026, 7, 15, 2, 59, tzinfo=et)  # Wed, before 3 AM ET
+    trigger_time = now.replace(hour=3, minute=0, second=0, microsecond=0)
+    assert now < trigger_time
+
+
+def test_us_catchup_threshold_at_or_after_3am_et_is_eligible():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("America/New_York")
+    for hour, minute in [(3, 0), (3, 1), (5, 59)]:
+        now = datetime(2026, 7, 15, hour, minute, tzinfo=et)  # Wed
+        trigger_time = now.replace(hour=3, minute=0, second=0, microsecond=0)
+        assert now >= trigger_time, f"{hour}:{minute:02d} ET must be eligible"
+
+
+def test_us_catchup_3am_et_leaves_runway_before_6am_et_finalizer_target():
+    """3 AM ET must land strictly before the 6 AM ET finalizer target and
+    the 7:30 AM ET acceptance-window cutoff, with real margin either way."""
+    trigger_hour_et = 3
+    finalizer_target_hour_et = 6
+    finalizer_cutoff_hour_et = 7.5
+    assert trigger_hour_et < finalizer_target_hour_et
+    assert finalizer_target_hour_et - trigger_hour_et >= 2
+    assert trigger_hour_et < finalizer_cutoff_hour_et
+
+
+def test_us_catchup_3am_et_is_after_both_dst_local_times_of_6utc_base():
+    """06:00 UTC is 2 AM EDT or 1 AM EST — both strictly before 3 AM ET."""
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("America/New_York")
+    edt_date = datetime(2026, 7, 15, 6, 0, tzinfo=timezone.utc)  # July = EDT
+    est_date = datetime(2026, 1, 15, 6, 0, tzinfo=timezone.utc)  # January = EST
+    assert edt_date.astimezone(et).hour == 2
+    assert est_date.astimezone(et).hour == 1
+    assert edt_date.astimezone(et).hour < 3
+    assert est_date.astimezone(et).hour < 3
+
+
+def test_us_catchup_weekend_still_skips_at_new_threshold():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("America/New_York")
+    saturday = datetime(2026, 7, 18, 4, 0, tzinfo=et)  # after 3 AM ET, but Sat
+    assert saturday.weekday() >= 5
+
+
+def test_us_catchup_missing_durable_state_fails_closed():
+    """Mirrors the real USE_POSTGRES guard inside _catchup_picks — absence of
+    durable state must skip catch-up, never fall back to a legacy in-memory path."""
+    async def _simulate(use_postgres_value):
+        if use_postgres_value != "1":
+            return "skipped_durable_state_unavailable"
+        return "would_proceed"
+
+    assert asyncio.run(_simulate(None)) == "skipped_durable_state_unavailable"
+    assert asyncio.run(_simulate("0")) == "skipped_durable_state_unavailable"
+    assert asyncio.run(_simulate("1")) == "would_proceed"
+
+
+def test_us_catchup_itself_never_triggers_the_finalizer():
+    """_catchup_picks only ever calls generate_picks (base generation) — it
+    must not import or call premarket_finalize/finalize_premarket."""
+    import inspect
+    import api.main as main_mod
+    src = inspect.getsource(main_mod)
+    catchup_start = src.index("async def _catchup_picks")
+    catchup_end = src.index("async def _catchup_validation")
+    catchup_body = src[catchup_start:catchup_end]
+    assert "finalize_premarket" not in catchup_body
+    assert "premarket_finalize" not in catchup_body

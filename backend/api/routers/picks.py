@@ -257,6 +257,17 @@ def trigger_generation(background_tasks: BackgroundTasks, market: str = "IN", x_
                          "message": f"{market} picks generation is already in progress."},
             )
 
+    # Step 4a: US workload overlap protection (2026-07-15). Daily Picks has
+    # priority over the US Multibagger refresh (they share yfinance). If a
+    # refresh is currently running, ask it to stop at its next per-symbol
+    # boundary and proceed immediately — Daily Picks never waits for it, and
+    # the request is best-effort/cooperative (see us_fundamentals_refresh.
+    # run_full_refresh's should_stop). No-op for IN, which has no such flag.
+    if market == "US":
+        from api.routers.multibagger import _refresh_state as _mb_state, request_us_stop
+        if _mb_state["US"]["running"]:
+            request_us_stop()
+
     # Step 5: Atomic durable reservation via partial unique index
     job_id = str(uuid.uuid4())
     try:
@@ -361,6 +372,14 @@ async def premarket_finalize(market: str = "US", x_secret: str = Header(None)):
     """
     if x_secret != PICKS_SECRET:
         raise HTTPException(status_code=401, detail="Invalid secret")
+
+    # US workload overlap protection (2026-07-15) — same cooperative signal
+    # as /generate's Step 4a; pure addition, does not touch finalizer
+    # decision logic. See request_us_stop()'s own docstring.
+    if market == "US":
+        from api.routers.multibagger import _refresh_state as _mb_state, request_us_stop
+        if _mb_state["US"]["running"]:
+            request_us_stop()
 
     from services.premarket_finalizer import finalize_premarket
     result = await finalize_premarket(market)

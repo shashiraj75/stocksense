@@ -456,11 +456,19 @@ async def lifespan(app: FastAPI):
     _IST = _tz(_td(hours=5, minutes=30))
     _ET = ZoneInfo("America/New_York")  # DST-aware, matches services/market_hours.py
     # IN: catch up any time after 2 AM IST (the scheduled run time) on a weekday.
-    # US: cron fires ~12:30 UTC (8:30 AM ET / 7:30 AM ET depending on DST).
-    # trigger_hour=9 leaves margin either way before declaring the run missed.
+    # US: base-generation cron fires at 06:00 UTC (2 AM EDT / 1 AM EST).
+    # trigger_hour=3 (3 AM ET) is safely after both DST local times of that
+    # run and leaves runway before the 6 AM ET Premarket Finalizer target.
     if startup_catchup_enabled():
         picks_catchup_task = asyncio.create_task(_catchup_picks("IN", _IST, 2, 60))
-        picks_catchup_task_us = asyncio.create_task(_catchup_picks("US", _ET, 9, 90))
+        # 2026-07-15: US threshold moved from 9 AM ET to 3 AM ET (Product
+        # Integrity #008) — 9 AM ET was later than the Premarket Finalizer's
+        # 7:30 AM ET cutoff, so a restart between 7:30 and 9 AM ET would have
+        # let catch-up silently miss the finalizer window for that day even
+        # after generating a valid base. 3 AM ET is safely after both DST
+        # local times of the 06:00 UTC base run (2 AM EDT / 1 AM EST) and
+        # leaves hours of runway before the 6 AM ET finalizer target.
+        picks_catchup_task_us = asyncio.create_task(_catchup_picks("US", _ET, 3, 90))
     else:
         log.info("[startup] Daily Picks startup catch-up disabled by configuration.")
         async def _no_catchup(): pass

@@ -3,13 +3,15 @@ name: Multibagger Fundamentals Refresh (Nightly)
 on:
   schedule:
     # 17:00 UTC = 10:30 PM IST — deliberately NOT during Daily Picks' window.
-    # IN Daily Picks starts 20:30 UTC (2 AM IST) and runs ~4 hrs; US Daily Picks
-    # starts 12:30 UTC and is generously assumed done well before this. Both
-    # this job and Daily Picks hit screener.in through the same backend
-    # process — running them concurrently would compound load on a single
-    # screener.in session and risk slowing/blocking both. ~2,300 NSE stocks
-    # at a polite scrape pace takes roughly 1-2 hours, finishing with a
-    # comfortable buffer before IN Daily Picks starts at 20:30 UTC.
+    # IN Daily Picks currently starts 21:56 UTC (3:26 AM IST, see
+    # daily_picks_in.yml) and runs ~4 hrs; US Daily Picks base generation
+    # starts 06:00 UTC (see daily_picks_us.yml) and is done in ~10-20
+    # minutes, many hours before this. Both this job and IN Daily Picks hit
+    # screener.in through the same backend process — running them
+    # concurrently would compound load on a single screener.in session and
+    # risk slowing/blocking both. ~2,300 NSE stocks at a polite scrape pace
+    # takes roughly 1-2 hours, finishing with a comfortable buffer before IN
+    # Daily Picks starts at 21:56 UTC.
     - cron: "0 17 * * 0-4"    # Sun–Thu UTC = Mon–Fri IST evening (market days)
   workflow_dispatch:           # allow manual trigger from GitHub UI
 

@@ -46,7 +46,15 @@ def _is_financial(sector: str | None, industry: str | None) -> bool:
     return any(k in text for k in _FINANCIAL_KEYWORDS)
 
 
-def run_full_refresh() -> dict:
+def run_full_refresh(should_stop=None) -> dict:
+    """
+    should_stop: optional zero-arg callable checked once per symbol
+    (2026-07-15, US workload overlap protection). Lets US Daily Picks base
+    generation — which has priority over this job — cooperatively signal
+    this refresh to yield the shared yfinance provider rather than run both
+    concurrently. Checked between symbols only (never mid-fetch), so a stop
+    always lands on a clean per-symbol boundary — no partial/torn writes.
+    """
     cache.ensure_table()
 
     universe = [(sym, name) for sym, name in US_STOCKS if _is_common_stock(name)]
@@ -54,12 +62,18 @@ def run_full_refresh() -> dict:
     refreshed = 0
     skipped = 0
     failed = 0
+    stopped_early = False
     started = time.time()
 
     print(f"[us_fundamentals_refresh] Starting full refresh — {total} common stocks "
           f"(filtered from {len(US_STOCKS)} total universe entries)")
 
     for i, (symbol, _name) in enumerate(universe, 1):
+        if should_stop is not None and should_stop():
+            stopped_early = True
+            print(f"[us_fundamentals_refresh] Stopping early at {i}/{total} — "
+                  f"yielding to US Daily Picks base generation.")
+            break
         try:
             data = fetch_us_fundamentals(symbol)
             if not data.get("available"):
@@ -111,6 +125,7 @@ def run_full_refresh() -> dict:
     summary = {
         "total": total, "refreshed": refreshed, "skipped": skipped,
         "failed": failed, "elapsed_minutes": round(elapsed / 60, 1),
+        "stopped_early": stopped_early,
     }
     print(f"[us_fundamentals_refresh] Done: {summary}")
     return summary

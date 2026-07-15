@@ -472,6 +472,27 @@ ALTER TABLE daily_picks_jobs ADD COLUMN IF NOT EXISTS universe_selection_error_c
 ALTER TABLE daily_picks_jobs ADD COLUMN IF NOT EXISTS phase_task_processed INTEGER;
 ALTER TABLE daily_picks_jobs ADD COLUMN IF NOT EXISTS phase_task_total INTEGER;
 
+-- US workload overlap protection (2026-07-15): durable state for the US
+-- Multibagger fundamentals refresh, so cross-process/restart-durable mutual
+-- exclusion with daily_picks_jobs (US) is possible the same way Daily Picks
+-- already protects itself. IN Multibagger intentionally has no durable row
+-- here — it never conflicted with anything in the scheduler matrix and stays
+-- on its existing in-memory-only behavior, unchanged by this release.
+CREATE TABLE IF NOT EXISTS multibagger_refresh_jobs (
+    id                  BIGSERIAL PRIMARY KEY,
+    job_id              TEXT NOT NULL UNIQUE,
+    market              TEXT NOT NULL CHECK (market IN ('US')),
+    status              TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+    runner_instance_id  TEXT NOT NULL,
+    started_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at        TIMESTAMPTZ,
+    stopped_early        BOOLEAN,
+    last_error          TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_multibagger_refresh_jobs_one_active_per_market
+    ON multibagger_refresh_jobs (market)
+    WHERE status = 'running';
+
 -- Learning Alpha Engine remediation, Phase 1 — Production Containment and
 -- Evidence Preservation. Additive, nullable observability columns written
 -- once per run (containment state is fixed for the whole run, not
@@ -1603,6 +1624,85 @@ def get_active_daily_picks_job(market: str) -> dict | None:
                 "universe_selection_error_category",
                 "phase_task_processed", "phase_task_total"]
         return dict(zip(cols, row))
+    except Exception:
+        return None
+
+
+def has_active_daily_picks_job_or_unknown(market: str) -> bool:
+    """
+    Fail-closed conflict check for US Multibagger refresh (2026-07-15):
+    True if a queued/running Daily Picks job exists for `market`, OR if the
+    lookup itself failed — a DB error must never be read as "no conflict".
+    Unlike get_active_daily_picks_job(), this does not swallow exceptions
+    into None; only used where an unknown state must block, not proceed.
+    """
+    try:
+        with _get_pool().connection() as conn:
+            row = conn.execute(
+                """SELECT 1 FROM daily_picks_jobs
+                   WHERE market = %s AND status IN ('queued', 'running')
+                   LIMIT 1""",
+                (market,),
+            ).fetchone()
+        return row is not None
+    except Exception:
+        return True
+
+
+def try_reserve_multibagger_job(job_id: str, market: str, runner_instance_id: str) -> bool:
+    """
+    Atomically insert a new 'running' Multibagger refresh row for `market`.
+    Same ON CONFLICT DO NOTHING gate as try_reserve_daily_picks_job(), backed
+    by the partial unique index on (market) WHERE status = 'running'.
+    Returns True if this call now owns the reservation, False if another
+    process already holds it. Raises on genuine DB error — callers treat
+    that as durable_job_state_unavailable, same as Daily Picks does.
+    """
+    with _get_pool().connection() as conn:
+        result = conn.execute(
+            """INSERT INTO multibagger_refresh_jobs
+                   (job_id, market, status, runner_instance_id, started_at)
+               VALUES (%s, %s, 'running', %s, now())
+               ON CONFLICT DO NOTHING""",
+            (job_id, market, runner_instance_id),
+        )
+        return result.rowcount == 1
+
+
+def mark_multibagger_job_completed(job_id: str, stopped_early: bool = False) -> None:
+    with _get_pool().connection() as conn:
+        conn.execute(
+            """UPDATE multibagger_refresh_jobs
+               SET status = 'completed', completed_at = now(), stopped_early = %s
+               WHERE job_id = %s""",
+            (stopped_early, job_id),
+        )
+
+
+def mark_multibagger_job_failed(job_id: str, error: str) -> None:
+    with _get_pool().connection() as conn:
+        conn.execute(
+            """UPDATE multibagger_refresh_jobs
+               SET status = 'failed', completed_at = now(), last_error = %s
+               WHERE job_id = %s""",
+            (error, job_id),
+        )
+
+
+def get_active_multibagger_job(market: str) -> dict | None:
+    """Most recent running Multibagger refresh row for `market`, or None. Swallows DB errors."""
+    try:
+        with _get_pool().connection() as conn:
+            row = conn.execute(
+                """SELECT job_id, status, started_at, runner_instance_id
+                   FROM multibagger_refresh_jobs
+                   WHERE market = %s AND status = 'running'
+                   ORDER BY started_at DESC LIMIT 1""",
+                (market,),
+            ).fetchone()
+        if not row:
+            return None
+        return dict(zip(["job_id", "status", "started_at", "runner_instance_id"], row))
     except Exception:
         return None
 

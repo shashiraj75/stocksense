@@ -47,7 +47,7 @@
 ### What StockSense360 Does
 
 - Generates **BUY / HOLD / SELL signals** for Nifty 100, US large-cap, and top cryptocurrencies
-- Delivers Daily Picks — up to 6 BUY ideas per horizon (short / medium / long), screened from the NSE and US universes. Designed schedule: India at 2 AM IST and US at 6 PM IST (approximately 8:30 AM ET pre-market). Automated GitHub Actions triggering is active for both markets and has natural-run completion evidence for both (2026-07-14); scheduled-trigger **timing** has repeatedly fired hours later than its nominal cron time and remains a separate, open reliability concern. See the Current Release Status register (Release 12B) for live operational state and evidence.
+- Delivers Daily Picks — up to 6 BUY ideas per horizon (short / medium / long), screened from the NSE and US universes. India generates once daily (designed schedule: ~2 AM IST). US generates in two stages: a Pre-Open **base** run (06:00 UTC / 10:00 AM Dubai / 11:30 AM IST) followed by a separate, lightweight **Premarket Review** targeting ~6:00 AM America/New_York (backend acceptance window 6:00-7:30 AM ET) — see Product Integrity #007/#008. Automated GitHub Actions triggering is active for both markets and has natural-run completion evidence for both (2026-07-14); scheduled-trigger **timing** has repeatedly fired hours later than its nominal cron time and remains a separate, open reliability concern. See the Current Release Status register (Release 12B) for live operational state and evidence.
 - Shows **why** every signal was generated — factor breakdown, confidence scores, reasoning bullets
 - Provides **trade levels** — entry zone, stop-loss, and target price with R:R ratio
 - Runs a **learning engine** — tracks prediction outcomes and retrains factor weights weekly
@@ -1255,9 +1255,19 @@ The Picks page has a collapsible **"Show Real Accuracy"** panel with three layer
 
 **Directory:** `.github/workflows/`
 
-### daily_picks.yml — Daily Picks Generation
+### Daily Picks Generation — daily_picks_in.yml, daily_picks_us.yml, daily_picks_us_premarket.yml
 
-Daily Picks generation is triggered by two separate repository workflows, one per market (`daily_picks_us.yml`, cron `0 4 * * 1-5` = 04:00 UTC; the India equivalent runs at 20:30 UTC / 2:00 AM IST). Each trigger calls the Railway Daily Picks generation endpoint using an `X-Secret` header. Both are live and have natural-run completion evidence for both markets (2026-07-14, see Current Release Status → Release 12B) — but observed actual trigger times have repeatedly landed hours after the nominal cron time (e.g. the US workflow fired at 06:04 UTC on 2026-07-14 against its 04:00 UTC nominal schedule), a GitHub Actions scheduling-reliability issue tracked separately, not a code defect in this repository. A GitHub Actions run reporting "success" certifies only that the trigger `POST` was accepted — not that the downstream generation job completed. See the Current Release Status register for live operational state.
+India Daily Picks generates once daily (`daily_picks_in.yml`, cron `56 21 * * 0-4` = 21:56 UTC / 3:26 AM IST). US Daily Picks generates in two stages, each its own workflow:
+- **Pre-Open base generation** (`daily_picks_us.yml`, cron `0 6 * * 1-5` = 06:00 UTC / 10:00 AM Dubai / 11:30 AM IST) — the heavy/full generation run.
+- **Premarket Finalizer** (`daily_picks_us_premarket.yml`, cron `0 10 * * 1-5` and `0 11 * * 1-5` = two fixed-UTC candidates for EDT/EST, since GitHub Actions cron is UTC-only) — a lightweight review of the already-persisted base, targeting ~6:00 AM America/New_York with a 6:00-7:30 AM ET backend acceptance window. It never generates a base itself. See Product Integrity #007/#008.
+
+Each trigger calls its Railway endpoint (`/api/picks/generate` or `/api/picks/premarket-finalize`) using an `X-Secret` header. All are live; scheduler dispatch is best-effort — observed actual trigger times have repeatedly landed hours after the nominal cron time (a GitHub Actions scheduling-reliability issue tracked separately, not a code defect in this repository). A GitHub Actions run reporting "success" certifies only that the trigger `POST` was accepted — not that the downstream job completed. See the Current Release Status register for live operational state and natural-run evidence.
+
+### Multibagger Fundamentals Refresh — multibagger_refresh.yml, multibagger_refresh_us.yml
+
+Nightly full-universe fundamentals refresh feeding the Multibagger Screen, one workflow per market:
+- **India** (`multibagger_refresh.yml`, cron `0 17 * * 0-4` = 17:00 UTC) — ~2,300 NSE stocks via screener.in, ~1-2 hours.
+- **US** (`multibagger_refresh_us.yml`, cron `0 8 * * 1-5` = 08:00 UTC) — ~5,300 common stocks via yfinance, ~5-6 hours. Scheduled to start after US Daily Picks' base run typically completes and to finish well before India's evening jobs; also protected by a durable, fail-closed conflict check against an active US Daily Picks job (`POST /api/multibagger/refresh?market=US` refuses to start while one is active) and a cooperative stop signal US Daily Picks can raise if the refresh is still running — see Product Integrity #008.
 
 ### Model Validation Scheduling
 

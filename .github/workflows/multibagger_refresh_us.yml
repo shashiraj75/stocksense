@@ -2,13 +2,34 @@ name: Multibagger Fundamentals Refresh — US (Nightly)
 
 on:
   schedule:
-    # 02:00 UTC — deliberately in the wide-open gap between US Daily Picks
-    # (12:30 UTC start) and IN Daily Picks (20:30 UTC start), and well clear
-    # of the IN Multibagger refresh (17:00 UTC, ~1-2hr). ~5,300 common
-    # stocks at a conservative pace (2.5s/symbol, slower than the IN job —
-    # yfinance backs live pricing app-wide, so it carries more risk than
-    # screener.in) takes roughly 5-6 hours, finishing well before 12:30 UTC.
-    - cron: "0 2 * * 1-5"     # Mon-Fri UTC
+    # 2026-07-15 change (Product Integrity #008 — US scheduler compatibility):
+    # moved from 02:00 UTC. That slot was chosen when US Daily Picks base
+    # generation ran at 12:30 UTC; once the base moved to 06:00 UTC
+    # (Product Integrity #007), a 5-6 hour job starting 02:00 UTC finishes
+    # ~07:00-08:00 UTC — directly inside the 06:00 UTC base run and the
+    # 6:00-7:30 AM ET (10:00-11:00 UTC candidate) Premarket Finalizer window.
+    #
+    # 08:00 UTC Mon-Fri was chosen instead of an evening Sun-Thu slot (the
+    # IN Multibagger/Daily Picks pattern) because IN Daily Picks' actual
+    # cron (see daily_picks_in.yml, "56 21 * * 0-4") plus its own ~4-hour
+    # runtime occupies 21:56-~01:56 UTC — an evening/overnight US
+    # Multibagger start would land inside that window instead. 08:00 UTC
+    # gives ~2 hours of buffer after US Daily Picks' typical ~10-20 minute
+    # base-generation completion (06:00-06:20 UTC) before this heavier job
+    # starts, finishes ~13:00-14:00 UTC (well before IN Multibagger's
+    # 17:00 UTC and IN Daily Picks' 21:56 UTC), and is backstopped by a
+    # durable, fail-closed conflict check against an active US Daily Picks
+    # job (POST /api/multibagger/refresh?market=US refuses to start while
+    # one is active) plus a cooperative stop signal US Daily Picks can raise
+    # if this job is still running when it starts — see
+    # services/us_fundamentals_refresh.py's run_full_refresh(should_stop=...)
+    # and api/routers/multibagger.py's request_us_stop(). This job does
+    # still partially overlap the lightweight Premarket Finalizer window
+    # (10:00/11:00 UTC candidates); that overlap is accepted deliberately —
+    # the finalizer "never recomputes the universe, never re-runs
+    # PredictionEngine" (see premarket_finalizer.py) and is not a heavy
+    # yfinance consumer, unlike base generation.
+    - cron: "0 8 * * 1-5"     # 08:00 UTC Mon-Fri
   workflow_dispatch:           # allow manual trigger from GitHub UI
 
 jobs:
