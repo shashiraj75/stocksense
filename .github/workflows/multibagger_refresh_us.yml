@@ -2,42 +2,37 @@ name: Multibagger Fundamentals Refresh — US (Weekly)
 
 on:
   schedule:
-    # Product Integrity #009 (2026-07-16): converted from daily weekday
-    # (08:00 UTC Mon-Fri, Product Integrity #008) to weekly. Most
-    # financial-statement fundamentals change quarterly, not daily — a
-    # daily full-universe yfinance scrape was unnecessary provider load,
-    # Railway resource pressure, and daily scheduler-collision risk for
-    # data that barely moves day to day.
+    # Product Integrity #010 (2026-07-16): replaced #009's two-DST-
+    # candidate design (0 7 * * 0 EDT / 0 8 * * 0 EST) with ONE fixed
+    # Sunday 08:00 UTC cron. This is a deliberate final decision, not an
+    # oversight:
+    #   - EST (winter): 08:00 UTC = 3:00 AM America/New_York.
+    #   - EDT (summer): 08:00 UTC = 4:00 AM America/New_York.
+    # A one-hour seasonal difference in when a WEEKLY long-term
+    # fundamentals refresh starts is immaterial to the product; it is
+    # materially SAFER than two candidate crons, which required the
+    # backend to treat one as authoritative and the other as an expected
+    # no-op, and left more surface for DST-window ambiguity bugs (see
+    # Product Integrity #010's own forensic audit, which found the
+    # weekly-period unique index predicate itself had drifted from its
+    # intended definition in production despite the migration code looking
+    # correct — the fewer moving parts here, the safer).
     #
-    # Target: Sunday 3:00 AM America/New_York. GitHub Actions cron is
-    # UTC-only and does not observe US DST, so two fixed-UTC candidates are
-    # required, same dual-cron pattern as the Premarket Finalizer
-    # (Product Integrity #007):
-    #   - EDT: 07:00 UTC Sunday = 3:00 AM ET
-    #   - EST: 08:00 UTC Sunday = 3:00 AM ET
-    # The backend is the DST-aware local-window authority — POST
-    # /api/multibagger/refresh only accepts a scheduled call inside Sunday
-    # 2:30-4:30 AM America/New_York (see services/multibagger_schedule.py's
-    # us_scheduled_window()), so only the DST-active candidate actually
-    # starts a job; the inactive one safely receives
-    # outside_scheduled_window (422) and does nothing. Durable
-    # weekly-period idempotency (scheduled_period_key) additionally means
-    # that even if both candidates somehow landed inside the window on the
-    # same real day (they can't under normal DST transitions, six months
-    # apart), only the first would start a job — the second would see
-    # already_completed_for_period.
-    #
-    # This job no longer has any dependency on, or coupling with, the
-    # Premarket Finalizer or US Daily Picks base generation — the 2026-07-15
+    # This job has no dependency on, or coupling with, the Premarket
+    # Finalizer or US Daily Picks base generation — the 2026-07-15
     # "cooperative stop" mechanism (Product Integrity #008) was removed in
-    # #009. Weekly scheduling makes a real overlap with US Daily Picks rare
-    # by design; the exceptional case is handled by a durable
-    # US_YFINANCE_HEAVY lease, not by one job stopping another.
+    # #009 and stays removed. Weekly scheduling makes a real overlap with
+    # US Daily Picks rare by design; the exceptional case is handled by a
+    # durable US_YFINANCE_HEAVY lease (Product Integrity #010 §9), not by
+    # one job stopping another.
     #
     # Expected US runtime: ~5-6 hours for ~5,300 common stocks — Sunday
-    # 3:00-9:00 AM ET has no other scheduled heavy job anywhere near it.
-    - cron: "0 7 * * 0"    # Sunday 07:00 UTC — EDT candidate (3:00 AM ET)
-    - cron: "0 8 * * 0"    # Sunday 08:00 UTC — EST candidate (3:00 AM ET)
+    # 3/4:00-9/10:00 AM ET has no other scheduled heavy job anywhere near
+    # it. The backend accepts this scheduled call for the full Sunday
+    # America/New_York local day (not a narrow arrival window) — GitHub
+    # Actions' own scheduled delivery is best-effort and has been observed
+    # arriving hours late in this repository (Product Integrity #003).
+    - cron: "0 8 * * 0"    # Sunday 08:00 UTC (3:00 AM EST / 4:00 AM EDT)
   workflow_dispatch:         # exceptional, explicitly authorized manual refresh only
 
 jobs:
@@ -67,10 +62,12 @@ jobs:
           fi
           echo "Triggering US fundamentals refresh at $(date -u) UTC (trigger_source=$TRIGGER_SOURCE)..."
 
-          # Bounded retry (Product Integrity #009 §15): 409 resource_busy and
-          # 503 durable_state_unavailable are retryable; 422
-          # outside_scheduled_window means the INACTIVE DST candidate fired —
-          # that is an expected, non-retryable, safe no-op, not a failure.
+          # Bounded retry (Product Integrity #009/#010 §15/§18): 409
+          # resource_busy and 503 durable_state_unavailable are retryable.
+          # 422 outside_scheduled_day would mean this fired on the wrong
+          # local weekday — not expected with a single fixed cron, but
+          # handled as a safe no-op rather than a hard failure if it ever
+          # occurs (e.g. a leap-second/clock edge case).
           MAX_ATTEMPTS=5
           for i in $(seq 1 $MAX_ATTEMPTS); do
             HTTP_CODE=$(curl -sS --max-time 30 -o /tmp/refresh_resp.json -w "%{http_code}" \
@@ -90,7 +87,7 @@ jobs:
                 exit 0
                 ;;
               422)
-                echo "Outside the scheduled window — this is the inactive DST candidate for today's offset. Expected, not an error."
+                echo "Outside the scheduled day — unexpected for a single fixed cron, but treated as a safe no-op."
                 exit 0
                 ;;
               409|503)

@@ -24,20 +24,20 @@ describe("Multibagger page describes the weekly refresh schedule truthfully", ()
     expect(pageSource).toMatch(/Full fundamentals refreshed weekly/i);
   });
 
-  it("shows India's Saturday 3:00 AM IST schedule and US's Sunday 3:00 AM ET schedule, not stale Dubai/nightly values", () => {
+  it("shows India's Saturday 3:00 AM IST schedule, not stale Dubai/nightly values", () => {
     expect(pageSource).toContain('"Saturday 3:00 AM IST"');
-    expect(pageSource).toContain('"Sunday 3:00 AM ET"');
     expect(pageSource).not.toContain("10:30 PM IST");
     expect(pageSource).not.toContain("7:30 AM IST");
   });
 
-  it("does not claim a single fixed UTC conversion for the US schedule without DST handling", () => {
-    // The schedule label itself is local-time (ET), consistent year-round —
-    // no separate EDT/EST string needed in the frontend, matching the
-    // Premarket Review pattern (Product Integrity #007). Backend owns the
-    // DST-aware UTC mapping (services/multibagger_schedule.py).
-    expect(pageSource).not.toMatch(/Sunday.*07:00 UTC/i);
-    expect(pageSource).not.toMatch(/Sunday.*08:00 UTC/i);
+  it("US schedule truthfully discloses both EST and EDT local times for the single fixed 08:00 UTC cron", () => {
+    // Product Integrity #010: replaced the #009 dual-DST-candidate design
+    // with one fixed Sunday 08:00 UTC cron. Since that single UTC instant
+    // maps to two different local times across the year (3 AM EST / 4 AM
+    // EDT), the frontend must disclose both — a single "3:00 AM ET"
+    // year-round claim would be wrong for half the year.
+    expect(pageSource).toContain("Sunday 08:00 UTC (3:00 AM EST / 4:00 AM EDT)");
+    expect(pageSource).not.toMatch(/"Sunday 3:00 AM ET"/);
   });
 });
 

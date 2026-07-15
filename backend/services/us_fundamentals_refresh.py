@@ -1,8 +1,12 @@
 """
-Nightly batch job: pulls yfinance fundamentals for the US common-stock
-universe and caches the result in Postgres (stock_fundamentals_cache,
-market='US'), so the Multibagger Screen feature can run instant SQL
-filters instead of fetching live on every request.
+Weekly batch job (Product Integrity #009/#010; was nightly/daily through
+#008): pulls yfinance fundamentals for the US common-stock universe and
+stages the result per-symbol for later atomic promotion into Postgres
+(stock_fundamentals_cache, market='US') — see
+services/postgres_store.py's promote_staged_symbols() and Product
+Integrity #010 §11-12 for why staging replaced writing directly into the
+active cache. Backs the Multibagger Screen feature so it can run instant
+SQL filters instead of fetching live on every request.
 
 Deliberately more conservative than the IN job's pace: yfinance is the
 live pricing/quote backbone for the ENTIRE app (not just this feature), so
@@ -46,36 +50,60 @@ def _is_financial(sector: str | None, industry: str | None) -> bool:
     return any(k in text for k in _FINANCIAL_KEYWORDS)
 
 
-def run_full_refresh(on_progress=None) -> dict:
+def run_full_refresh(stage_fn, on_progress=None, already_staged=None) -> dict:
     """
+    stage_fn(symbol, outcome, fields, is_financial): required — called once
+    per symbol instead of writing to the active cache directly. Promotion
+    into stock_fundamentals_cache happens separately, only after this
+    function returns, and only for a run that traversed the full universe
+    (see api/routers/multibagger.py's _run_refresh_job).
+
     on_progress: optional callable(processed: int, total: int) invoked
     periodically (every 100 symbols) for durable heartbeat/progress
-    persistence — see Product Integrity #009 §8. This job now always runs
-    to completion or a genuine per-symbol exception; it is never
-    cooperatively stopped by another workload (that coupling — should_stop,
-    the 2026-07-15 Daily-Picks-priority mechanism — was removed in #009:
-    weekly scheduling makes concurrent runs rare, and the remaining
-    exceptional-overlap case is handled by a durable heavy-workload lease
-    acquired before this function is ever called, not by cancelling a job
-    already in flight).
+    persistence (Product Integrity #009 §8).
+
+    already_staged: optional set of symbols already staged for this job_id
+    on a prior attempt (Product Integrity #010 §11 resume support) — these
+    are counted as processed/refreshed without re-fetching from yfinance.
+
+    This job now always runs to completion or a genuine per-symbol
+    exception; it is never cooperatively stopped by another workload (that
+    coupling — should_stop, the 2026-07-15 Daily-Picks-priority mechanism —
+    was removed in #009: weekly scheduling makes concurrent runs rare, and
+    the remaining exceptional-overlap case is handled by a durable
+    heavy-workload lease acquired before this function is ever called, not
+    by cancelling a job already in flight).
     """
     cache.ensure_table()
+    already_staged = already_staged or set()
 
     universe = [(sym, name) for sym, name in US_STOCKS if _is_common_stock(name)]
     total = len(universe)
     refreshed = 0
     skipped = 0
     failed = 0
+    resumed = 0
     started = time.time()
 
     print(f"[us_fundamentals_refresh] Starting full refresh — {total} common stocks "
-          f"(filtered from {len(US_STOCKS)} total universe entries)")
+          f"(filtered from {len(US_STOCKS)} total universe entries)"
+          + (f", resuming with {len(already_staged)} already staged" if already_staged else ""))
 
     for i, (symbol, _name) in enumerate(universe, 1):
+        if symbol in already_staged:
+            resumed += 1
+            refreshed += 1  # counted toward totals; already reconciled in staging from the prior attempt
+            if i % 100 == 0 and on_progress is not None:
+                try:
+                    on_progress(i, total)
+                except Exception:
+                    log.warning("[us_fundamentals_refresh] on_progress callback failed", exc_info=True)
+            continue
         try:
             data = fetch_us_fundamentals(symbol)
             if not data.get("available"):
                 skipped += 1
+                stage_fn(symbol, "skipped", None, None)
                 continue
 
             is_fin = _is_financial(data.get("sector"), data.get("industry"))
@@ -100,17 +128,21 @@ def run_full_refresh(on_progress=None) -> dict:
                 # StockSense360 Business Quality Engine (SSDS-003) — additive,
                 # Sprint #005. fetch_us_fundamentals already computes these
                 # via _build()'s in-scope ticker/info; just threading them
-                # through to the cache here, not computing anything new.
+                # through here, not computing anything new.
                 "business_quality_score": data.get("business_quality_score"),
                 "business_quality_grade": data.get("business_quality_grade"),
                 "business_quality_style": data.get("business_quality_style"),
             }
-            cache.upsert(symbol, "US", is_fin, fields)
+            stage_fn(symbol, "refreshed", fields, is_fin)
             refreshed += 1
 
         except Exception as e:
             failed += 1
             log.warning("[us_fundamentals_refresh] %s failed: %s", symbol, e)
+            try:
+                stage_fn(symbol, "failed", None, None)
+            except Exception:
+                log.warning("[us_fundamentals_refresh] failed to stage failure outcome for %s", symbol, exc_info=True)
 
         if i % 100 == 0:
             elapsed = time.time() - started
@@ -127,7 +159,8 @@ def run_full_refresh(on_progress=None) -> dict:
     elapsed = time.time() - started
     summary = {
         "total": total, "refreshed": refreshed, "skipped": skipped,
-        "failed": failed, "elapsed_minutes": round(elapsed / 60, 1),
+        "failed": failed, "resumed_from_checkpoint": resumed,
+        "elapsed_minutes": round(elapsed / 60, 1),
     }
     print(f"[us_fundamentals_refresh] Done: {summary}")
     return summary

@@ -410,7 +410,7 @@ def test_post_generate_returns_409_when_db_reserve_conflict():
     """POST /generate returns 409 when try_reserve returns False (DB conflict)."""
     with patch("services.daily_picks.picks_generated_today", return_value=False), \
          patch.dict("os.environ", {"USE_POSTGRES": "1"}), \
-         patch("services.postgres_store.try_reserve_daily_picks_job", return_value=False), \
+         patch("services.postgres_store.try_reserve_daily_picks_job_with_lease", return_value="already_running"), \
          patch("services.postgres_store.get_active_daily_picks_job",
                return_value={"job_id": "other-job"}):
         resp = _picks_client().post("/api/picks/generate?market=IN",
@@ -439,8 +439,7 @@ def test_post_generate_returns_202_on_success():
     """POST /generate returns 202 with job_id when reservation succeeds."""
     with patch("services.daily_picks.picks_generated_today", return_value=False), \
          patch.dict("os.environ", {"USE_POSTGRES": "1"}), \
-         patch("services.postgres_store.try_reserve_daily_picks_job", return_value=True), \
-         patch("services.postgres_store.try_acquire_heavy_workload_lease", return_value=True), \
+         patch("services.postgres_store.try_reserve_daily_picks_job_with_lease", return_value="started"), \
          patch("services.postgres_store.release_heavy_workload_lease"), \
          patch("services.daily_picks.generate_picks"):
         resp = _picks_client().post("/api/picks/generate?market=IN",
@@ -472,8 +471,7 @@ def test_api_marks_reserved_job_failed_when_background_dispatch_raises():
 
     with patch("services.daily_picks.picks_generated_today", return_value=False), \
          patch.dict("os.environ", {"USE_POSTGRES": "1"}), \
-         patch("services.postgres_store.try_reserve_daily_picks_job", return_value=True), \
-         patch("services.postgres_store.try_acquire_heavy_workload_lease", return_value=True), \
+         patch("services.postgres_store.try_reserve_daily_picks_job_with_lease", return_value="started"), \
          patch("services.postgres_store.release_heavy_workload_lease"), \
          patch("services.postgres_store.get_active_daily_picks_job", return_value=None), \
          patch("services.postgres_store.mark_daily_picks_job_failed", mock_mark_failed):

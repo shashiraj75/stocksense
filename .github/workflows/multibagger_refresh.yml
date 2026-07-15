@@ -12,15 +12,15 @@ on:
     # Saturday pre-dawn IST avoids both India Daily Picks (Fri/Sun-Thu
     # 21:56 UTC, ~4h runtime — a different day of the UTC week from this
     # Friday slot) and India Multibagger's own prior nightly slot. The
-    # backend is the DST-aware (though IST has no DST) local-window
-    # authority: POST /api/multibagger/refresh only accepts this scheduled
-    # call inside Saturday 2:30-4:30 AM IST — see
-    # services/multibagger_schedule.py's in_scheduled_window(). GitHub
-    # Actions' own scheduled dispatch is best-effort and can arrive late;
-    # the wider 2-hour window absorbs moderate delay.
+    # backend is the local-day authority (Product Integrity #010): POST
+    # /api/multibagger/refresh accepts this scheduled call any time on the
+    # Saturday IST it lands on — not a narrow arrival window — see
+    # services/multibagger_schedule.py's in_scheduled_day(). GitHub
+    # Actions' own scheduled dispatch is best-effort and has been observed
+    # arriving hours late in this repository; day-only acceptance absorbs
+    # that without rejecting a legitimately delayed but same-day dispatch.
     #
-    # Expected India runtime: ~1-2 hours for ~2,300 NSE stocks — comfortably
-    # inside the window's remaining slack even with dispatch delay.
+    # Expected India runtime: ~1-2 hours for ~2,300 NSE stocks.
     - cron: "30 21 * * 5"    # Friday 21:30 UTC = Saturday 3:00 AM IST
   workflow_dispatch:           # exceptional, explicitly authorized manual refresh only
 
@@ -74,6 +74,10 @@ jobs:
                 ;;
               200)
                 echo "India Multibagger refresh already completed/queued/running for this scheduled period — safe no-op."
+                exit 0
+                ;;
+              422)
+                echo "Outside the scheduled day — unexpected for this cron, but treated as a safe no-op."
                 exit 0
                 ;;
               409|503)

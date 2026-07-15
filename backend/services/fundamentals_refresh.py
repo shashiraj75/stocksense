@@ -33,27 +33,49 @@ def _is_financial(sector_name: str | None, industry_name: str | None) -> bool:
     return any(k in text for k in _FINANCIAL_KEYWORDS)
 
 
-def run_full_refresh(on_progress=None) -> dict:
+def run_full_refresh(stage_fn, on_progress=None, already_staged=None) -> dict:
     """
+    stage_fn(symbol, outcome, fields, is_financial): required — called once
+    per symbol instead of writing to the active cache directly. Promotion
+    into stock_fundamentals_cache happens separately, only after this
+    function returns, and only for a run that traversed the full universe
+    (Product Integrity #010 §11-12).
+
     on_progress: optional callable(processed: int, total: int) invoked
     periodically (every 100 symbols) for durable heartbeat/progress
-    persistence — see Product Integrity #009 §8.
+    persistence (Product Integrity #009 §8).
+
+    already_staged: optional set of symbols already staged for this job_id
+    on a prior attempt (Product Integrity #010 §11 resume support).
     """
     cache.ensure_table()
+    already_staged = already_staged or set()
 
     total = len(IN_STOCKS)
     refreshed = 0
     skipped = 0
     failed = 0
+    resumed = 0
     started = time.time()
 
-    print(f"[fundamentals_refresh] Starting full refresh — {total} symbols")
+    print(f"[fundamentals_refresh] Starting full refresh — {total} symbols"
+          + (f", resuming with {len(already_staged)} already staged" if already_staged else ""))
 
     for i, (symbol, _name) in enumerate(IN_STOCKS, 1):
+        if symbol in already_staged:
+            resumed += 1
+            refreshed += 1
+            if i % 100 == 0 and on_progress is not None:
+                try:
+                    on_progress(i, total)
+                except Exception:
+                    log.warning("[fundamentals_refresh] on_progress callback failed", exc_info=True)
+            continue
         try:
             data = fetch_screener_data(symbol)
             if not data.get("available"):
                 skipped += 1
+                stage_fn(symbol, "skipped", None, None)
                 continue
 
             is_fin = _is_financial(data.get("sector_name"), data.get("industry_name"))
@@ -65,7 +87,7 @@ def run_full_refresh(on_progress=None) -> dict:
             # us_fundamentals.py's _build(), so request-time latency is
             # unaffected (the Multibagger screen still serves from cache).
             # Failure is non-fatal: the four fields stay absent and the row
-            # upserts with everything else, mirroring the US try/except.
+            # stages with everything else, mirroring the US try/except.
             bq = compute_india_business_quality(symbol, data, market="IN")
             if bq is not None:
                 data["business_quality_score"] = bq.get("score")
@@ -73,12 +95,16 @@ def run_full_refresh(on_progress=None) -> dict:
                 data["business_quality_style"] = (bq.get("metadata") or {}).get("suitable_investment_style")
                 data["business_quality_confidence"] = bq.get("confidence")
 
-            cache.upsert(symbol, "IN", is_fin, data)
+            stage_fn(symbol, "refreshed", data, is_fin)
             refreshed += 1
 
         except Exception as e:
             failed += 1
             log.warning("[fundamentals_refresh] %s failed: %s", symbol, e)
+            try:
+                stage_fn(symbol, "failed", None, None)
+            except Exception:
+                log.warning("[fundamentals_refresh] failed to stage failure outcome for %s", symbol, exc_info=True)
 
         if i % 100 == 0:
             elapsed = time.time() - started
@@ -95,7 +121,8 @@ def run_full_refresh(on_progress=None) -> dict:
     elapsed = time.time() - started
     summary = {
         "total": total, "refreshed": refreshed, "skipped": skipped,
-        "failed": failed, "elapsed_minutes": round(elapsed / 60, 1),
+        "failed": failed, "resumed_from_checkpoint": resumed,
+        "elapsed_minutes": round(elapsed / 60, 1),
     }
     print(f"[fundamentals_refresh] Done: {summary}")
     return summary

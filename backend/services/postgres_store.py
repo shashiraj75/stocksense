@@ -507,9 +507,29 @@ ALTER TABLE multibagger_refresh_jobs ADD COLUMN IF NOT EXISTS source_commit TEXT
 ALTER TABLE multibagger_refresh_jobs DROP CONSTRAINT IF EXISTS multibagger_refresh_jobs_status_check;
 ALTER TABLE multibagger_refresh_jobs ADD CONSTRAINT multibagger_refresh_jobs_status_check
     CHECK (status IN ('queued', 'running', 'completed', 'failed', 'interrupted', 'expired'));
+-- Product Integrity #010 (2026-07-16) — explicit legacy-schema repair.
+-- CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT EXISTS are pure
+-- name-existence checks in Postgres — they never diff or alter an existing
+-- object's actual definition. Confirmed via direct production
+-- introspection (pg_constraint / pg_indexes) that #008's original
+-- CHECK (market = 'US') and the original WHERE status = 'running' active-
+-- index predicate were BOTH still live in production after #009 deployed,
+-- because the table and index already existed under those old names —
+-- meaning every India Multibagger job insert had been silently failing
+-- (IntegrityError) since #009 shipped, with zero rows ever durably
+-- recorded for either market. Explicit DROP-then-ADD/CREATE, same proven
+-- pattern as the status constraint above, actually repairs a pre-existing
+-- production object rather than silently no-op'ing against it.
+ALTER TABLE multibagger_refresh_jobs DROP CONSTRAINT IF EXISTS multibagger_refresh_jobs_market_check;
+ALTER TABLE multibagger_refresh_jobs ADD CONSTRAINT multibagger_refresh_jobs_market_check
+    CHECK (market IN ('IN', 'US'));
 -- At most one active (queued/running) row per market at a time — unchanged
--- semantics from #008, now covering IN as well as US.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_multibagger_refresh_jobs_one_active_per_market
+-- semantics from #008, now covering IN as well as US. DROP+CREATE (not
+-- CREATE ... IF NOT EXISTS) because the #008-era index of this exact name
+-- already exists in production with the old status='running'-only
+-- predicate; IF NOT EXISTS would silently keep that stale predicate.
+DROP INDEX IF EXISTS idx_multibagger_refresh_jobs_one_active_per_market;
+CREATE UNIQUE INDEX idx_multibagger_refresh_jobs_one_active_per_market
     ON multibagger_refresh_jobs (market)
     WHERE status IN ('queued', 'running');
 -- Weekly-period idempotency: at most one queued/running/completed
@@ -543,6 +563,31 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_heavy_workload_leases_active
 CREATE INDEX IF NOT EXISTS idx_heavy_workload_leases_owner
     ON heavy_workload_leases (owner_job_id);
 ALTER TABLE heavy_workload_leases ENABLE ROW LEVEL SECURITY;
+
+-- Product Integrity #010 (2026-07-16): per-symbol staging for the
+-- Multibagger weekly refresh. A refresh loop now stages each symbol's
+-- outcome here instead of writing directly into the user-visible
+-- stock_fundamentals_cache — the active cache is only touched by an
+-- atomic promotion step once the FULL intended universe has been
+-- traversed, so a run that fails or is interrupted partway through never
+-- leaves a half-updated active cache. UNIQUE(job_id, symbol) with
+-- ON CONFLICT DO UPDATE also makes this the resume checkpoint: a restarted
+-- run for the same job_id can see which symbols are already staged and
+-- skip re-fetching them.
+CREATE TABLE IF NOT EXISTS multibagger_staging (
+    id            BIGSERIAL PRIMARY KEY,
+    job_id        TEXT NOT NULL,
+    market        TEXT NOT NULL CHECK (market IN ('IN', 'US')),
+    symbol        TEXT NOT NULL,
+    outcome       TEXT NOT NULL CHECK (outcome IN ('refreshed', 'skipped', 'failed')),
+    is_financial  BOOLEAN,
+    fields        JSONB,
+    staged_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_multibagger_staging_job_symbol
+    ON multibagger_staging (job_id, symbol);
+CREATE INDEX IF NOT EXISTS idx_multibagger_staging_job ON multibagger_staging (job_id);
+ALTER TABLE multibagger_staging ENABLE ROW LEVEL SECURITY;
 
 -- Learning Alpha Engine remediation, Phase 1 — Production Containment and
 -- Evidence Preservation. Additive, nullable observability columns written
@@ -1679,56 +1724,7 @@ def get_active_daily_picks_job(market: str) -> dict | None:
         return None
 
 
-def has_active_daily_picks_job_or_unknown(market: str) -> bool:
-    """
-    Fail-closed conflict check for US Multibagger refresh (2026-07-15):
-    True if a queued/running Daily Picks job exists for `market`, OR if the
-    lookup itself failed — a DB error must never be read as "no conflict".
-    Unlike get_active_daily_picks_job(), this does not swallow exceptions
-    into None; only used where an unknown state must block, not proceed.
-    """
-    try:
-        with _get_pool().connection() as conn:
-            row = conn.execute(
-                """SELECT 1 FROM daily_picks_jobs
-                   WHERE market = %s AND status IN ('queued', 'running')
-                   LIMIT 1""",
-                (market,),
-            ).fetchone()
-        return row is not None
-    except Exception:
-        return True
-
-
 _MULTIBAGGER_ORPHAN_TIMEOUT_HOURS = 7  # longer than the ~5-6h US refresh; see Product Integrity #009 §9
-
-
-def try_reserve_multibagger_job(
-    job_id: str, market: str, runner_instance_id: str,
-    trigger_source: str, scheduled_period_key: str | None,
-) -> bool:
-    """
-    Atomically insert a new 'queued' Multibagger refresh row for `market`.
-    Two independent partial-unique-index gates apply automatically via the
-    schema (not re-checked here): at most one active row per market, and —
-    for trigger_source='scheduled' only — at most one queued/running/
-    completed row per (market, scheduled_period_key), so a duplicate DST
-    candidate or a retry of an already-succeeded week safely conflicts here
-    rather than starting a second job. Manual runs never set
-    scheduled_period_key's uniqueness gate since it only applies to
-    trigger_source='scheduled'. Returns True if this call now owns the
-    reservation, False on any conflict. Raises on genuine DB error.
-    """
-    with _get_pool().connection() as conn:
-        result = conn.execute(
-            """INSERT INTO multibagger_refresh_jobs
-                   (job_id, market, status, runner_instance_id, started_at,
-                    trigger_source, scheduled_period_key, last_runner_heartbeat_at)
-               VALUES (%s, %s, 'queued', %s, now(), %s, %s, now())
-               ON CONFLICT DO NOTHING""",
-            (job_id, market, runner_instance_id, trigger_source, scheduled_period_key),
-        )
-        return result.rowcount == 1
 
 
 def mark_multibagger_job_running(job_id: str) -> None:
@@ -1739,6 +1735,127 @@ def mark_multibagger_job_running(job_id: str) -> None:
                WHERE job_id = %s AND status = 'queued'""",
             (job_id,),
         )
+
+
+def try_claim_queued_multibagger_job(job_id: str) -> bool:
+    """
+    Product Integrity #010 §11 — atomic worker claim via SELECT ... FOR
+    UPDATE SKIP LOCKED + UPDATE. Two workers (e.g. two Railway instances,
+    or a restarted process racing a still-alive old one) attempting to
+    claim the same job_id cannot both succeed: SKIP LOCKED means a second
+    concurrent claimant simply finds no row to lock and returns False
+    immediately, rather than blocking or double-processing. This backend
+    currently runs as a single Railway instance, so this is a forward-
+    looking safety property, not a currently-exercised multi-instance path
+    — but it costs nothing and closes the gap if that ever changes.
+    """
+    with _get_pool().connection() as conn:
+        row = conn.execute(
+            """SELECT job_id FROM multibagger_refresh_jobs
+               WHERE job_id = %s AND status = 'queued'
+               FOR UPDATE SKIP LOCKED""",
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        conn.execute(
+            """UPDATE multibagger_refresh_jobs
+               SET status = 'running', last_runner_heartbeat_at = now()
+               WHERE job_id = %s""",
+            (job_id,),
+        )
+        return True
+
+
+def get_staged_symbols(job_id: str) -> set:
+    """Symbols already staged for job_id — used to skip re-fetching on a resumed run."""
+    with _get_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT symbol FROM multibagger_staging WHERE job_id = %s", (job_id,)
+        ).fetchall()
+    return {r[0] for r in rows}
+
+
+def stage_multibagger_symbol(
+    job_id: str, market: str, symbol: str, outcome: str,
+    fields: dict | None = None, is_financial: bool | None = None,
+) -> None:
+    """
+    Upsert one symbol's outcome for this job — the resumable checkpoint.
+    ON CONFLICT DO UPDATE so re-processing a symbol after a resume
+    overwrites cleanly rather than erroring on the (job_id, symbol) unique
+    index. Does NOT touch stock_fundamentals_cache — see
+    promote_staged_symbols() for the only path that does.
+    """
+    import json
+    with _get_pool().connection() as conn:
+        conn.execute(
+            """INSERT INTO multibagger_staging (job_id, market, symbol, outcome, is_financial, fields, staged_at)
+               VALUES (%s, %s, %s, %s, %s, %s, now())
+               ON CONFLICT (job_id, symbol) DO UPDATE
+                   SET outcome = EXCLUDED.outcome, is_financial = EXCLUDED.is_financial,
+                       fields = EXCLUDED.fields, staged_at = now()""",
+            (job_id, market, symbol, outcome, is_financial,
+             json.dumps(fields) if fields is not None else None),
+        )
+
+
+def count_staged_outcomes(job_id: str) -> dict:
+    """{'refreshed': N, 'skipped': N, 'failed': N} — used to reconcile against job progress before promotion."""
+    with _get_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT outcome, count(*) FROM multibagger_staging WHERE job_id = %s GROUP BY outcome",
+            (job_id,),
+        ).fetchall()
+    return {outcome: n for outcome, n in rows}
+
+
+def promote_staged_symbols(job_id: str, market: str) -> int:
+    """
+    Product Integrity #010 §12 — the ONLY function that writes a
+    Multibagger refresh's results into the user-visible
+    stock_fundamentals_cache. Called once, after the full intended universe
+    has been traversed for job_id (never mid-run) — promotes every
+    'refreshed' staged row in one transaction. A prior failed/interrupted
+    run's cache rows for symbols this run marked 'skipped' or 'failed' are
+    deliberately left untouched (not overwritten, not deleted) — a
+    temporary provider failure for one symbol must not erase that symbol's
+    last-known-good data. Returns the number of rows promoted. Raises on
+    genuine DB error — caller must not mark the job completed if this raises.
+
+    Column list is generated from fundamentals_cache.FIELD_MAP — the same
+    single source of truth cache.upsert() itself uses — rather than
+    hand-duplicated here, so a future field added to FIELD_MAP is picked up
+    automatically instead of silently promoting NULL for it.
+    """
+    from services.fundamentals_cache import FIELD_MAP
+    numeric_fields = {
+        "company_name", "sector_name", "industry_name",
+        "business_quality_grade", "business_quality_style",
+    }  # the rest of FIELD_MAP's values are numeric columns; these four are text
+
+    select_exprs = []
+    update_clauses = []
+    for field_key, column in FIELD_MAP.items():
+        cast = "" if field_key in numeric_fields else "::numeric"
+        select_exprs.append(f"(s.fields->>'{field_key}'){cast}")
+        update_clauses.append(f"{column} = EXCLUDED.{column}")
+
+    columns = ["symbol", "market", "is_financial"] + list(FIELD_MAP.values()) + ["updated_at"]
+    select_list = ["s.symbol", "s.market", "s.is_financial"] + select_exprs + ["now()"]
+    update_list = ["is_financial = EXCLUDED.is_financial"] + update_clauses + ["updated_at = now()"]
+
+    sql = f"""
+        INSERT INTO stock_fundamentals_cache ({", ".join(columns)})
+        SELECT {", ".join(select_list)}
+        FROM multibagger_staging s
+        WHERE s.job_id = %s AND s.market = %s AND s.outcome = 'refreshed'
+        ON CONFLICT (symbol, market) DO UPDATE SET {", ".join(update_list)}
+    """
+    with _get_pool().connection() as conn:
+        result = conn.execute(sql, (job_id, market))
+        conn.commit()
+        return result.rowcount
 
 
 def record_multibagger_job_heartbeat(job_id: str) -> None:
@@ -1937,6 +2054,91 @@ def has_active_heavy_workload_lease(resource: str) -> bool:
         return row is not None
     except Exception:
         return True
+
+
+def try_reserve_multibagger_job_with_lease(
+    job_id: str, market: str, runner_instance_id: str,
+    trigger_source: str, scheduled_period_key: str | None, resource: str,
+) -> str:
+    """
+    Product Integrity #010 §9 — atomic job+lease reservation. Both INSERTs
+    happen inside the SAME connection/transaction (one `with` block); a
+    lease-acquisition failure explicitly rolls back the job-row insert too,
+    so a caller never sees an orphaned queued row with no lease behind it —
+    the previous #009 design acquired these in two separate calls/
+    transactions, leaving a real (if narrow) window where a job could be
+    reserved and then never actually run because the lease step failed
+    independently.
+
+    Returns one of: 'started', 'already_completed_for_period'
+    (trigger_source='scheduled' only), 'already_running'
+    (trigger_source='manual'), 'resource_busy'.
+    Raises on genuine DB error — caller treats that as durable_state_unavailable.
+    """
+    with _get_pool().connection() as conn:
+        job_result = conn.execute(
+            """INSERT INTO multibagger_refresh_jobs
+                   (job_id, market, status, runner_instance_id, started_at,
+                    trigger_source, scheduled_period_key, last_runner_heartbeat_at)
+               VALUES (%s, %s, 'queued', %s, now(), %s, %s, now())
+               ON CONFLICT DO NOTHING""",
+            (job_id, market, runner_instance_id, trigger_source, scheduled_period_key),
+        )
+        if job_result.rowcount != 1:
+            conn.rollback()
+            return "already_completed_for_period" if trigger_source == "scheduled" else "already_running"
+
+        lease_result = conn.execute(
+            """INSERT INTO heavy_workload_leases (resource, owner_type, owner_job_id, market, acquired_at)
+               VALUES (%s, 'multibagger', %s, %s, now())
+               ON CONFLICT DO NOTHING""",
+            (resource, job_id, market),
+        )
+        if lease_result.rowcount != 1:
+            conn.rollback()
+            return "resource_busy"
+
+        conn.commit()
+        return "started"
+
+
+def try_reserve_daily_picks_job_with_lease(
+    job_id: str, market: str, runner_instance_id: str, resource: str,
+) -> str:
+    """
+    Same atomic job+lease pattern as try_reserve_multibagger_job_with_lease(),
+    for Daily Picks (Product Integrity #010 §10). Uses daily_picks_jobs'
+    existing (market) WHERE status IN ('queued','running') gate — unchanged,
+    same table/constraint Daily Picks has always used; only the lease
+    acquisition is now folded into the same transaction.
+
+    Returns one of: 'started', 'already_running', 'resource_busy'.
+    Raises on genuine DB error.
+    """
+    with _get_pool().connection() as conn:
+        job_result = conn.execute(
+            """INSERT INTO daily_picks_jobs
+                   (job_id, market, status, runner_instance_id, started_at)
+               VALUES (%s, %s, 'queued', %s, now())
+               ON CONFLICT DO NOTHING""",
+            (job_id, market, runner_instance_id),
+        )
+        if job_result.rowcount != 1:
+            conn.rollback()
+            return "already_running"
+
+        lease_result = conn.execute(
+            """INSERT INTO heavy_workload_leases (resource, owner_type, owner_job_id, market, acquired_at)
+               VALUES (%s, 'daily_picks', %s, %s, now())
+               ON CONFLICT DO NOTHING""",
+            (resource, job_id, market),
+        )
+        if lease_result.rowcount != 1:
+            conn.rollback()
+            return "resource_busy"
+
+        conn.commit()
+        return "started"
 
 
 def get_latest_daily_picks_job(market: str) -> dict | None:

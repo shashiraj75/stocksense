@@ -128,14 +128,17 @@ export default function MultibaggerPage() {
     ? Math.floor((Date.now() - lastRefreshedDate.getTime()) / 3_600_000)
     : null;
 
-  // Product Integrity #009 (2026-07-16): full-universe fundamentals refresh
-  // is weekly for both markets. This is a market-reference schedule
-  // concept, shown as secondary context — never the primary freshness
-  // indicator, and never converted into the viewer's timezone, since it
-  // describes a local-market target, not an instant.
+  // Product Integrity #009/#010 (2026-07-16): full-universe fundamentals
+  // refresh is weekly for both markets. This is a market-reference
+  // schedule concept, shown as secondary context — never the primary
+  // freshness indicator, and never converted into the viewer's timezone,
+  // since it describes a local-market target, not an instant. US uses a
+  // single fixed 08:00 UTC cron (#010) — truthfully disclosing both
+  // possible local times (3 AM EST / 4 AM EDT) rather than claiming one
+  // fixed "3:00 AM ET" year-round, which would be wrong for half the year.
   const normalScheduleMarketTime = market === "IN"
     ? "Saturday 3:00 AM IST"
-    : "Sunday 3:00 AM ET";
+    : "Sunday 08:00 UTC (3:00 AM EST / 4:00 AM EDT)";
   const isStale = status?.is_stale ?? false;
 
   // isFetching without isLoading means placeholderData is showing a prior

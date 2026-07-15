@@ -2,11 +2,17 @@
 Regression tests for the Sprint #007 India refresh wiring + cache schema.
 
 Two things must stay true:
-  1. The IN refresh loop still upserts every row even when the new Business
+  1. The IN refresh loop still stages every row even when the new Business
      Quality block fails or returns None (backward compatibility — the
      screen must never lose IN coverage because of the new engine).
   2. The cache's FIELD_MAP / _SELECT_COLS additions stay internally
      consistent so the upsert SQL and read SQL can't drift.
+
+Product Integrity #010: the refresh loop now stages each symbol via a
+stage_fn callback instead of calling cache.upsert() directly — promotion
+into the active cache happens separately, only after the full universe is
+traversed (see api/routers/multibagger.py). These tests capture what's
+passed to stage_fn in place of what used to be captured from cache.upsert.
 """
 
 import pytest
@@ -28,9 +34,9 @@ def test_business_quality_columns_consistent_across_cache_wiring():
 
 
 @pytest.mark.regression
-def test_refresh_upserts_row_even_when_business_quality_returns_none(monkeypatch):
+def test_refresh_stages_row_even_when_business_quality_returns_none(monkeypatch):
     """If the adapter returns None (e.g. screener data too sparse for the
-    engine), the row must still upsert with its screener fields intact and
+    engine), the row must still stage with its screener fields intact and
     the four BQ fields simply absent — never a skipped or failed row."""
     import services.fundamentals_refresh as refresh
 
@@ -40,24 +46,25 @@ def test_refresh_upserts_row_even_when_business_quality_returns_none(monkeypatch
         return {"available": True, "sector_name": "X", "industry_name": "Y",
                 "roe_pct": 10.0}
 
-    def _fake_upsert(symbol, market, is_fin, data):
-        captured["data"] = data
+    def _fake_stage(symbol, outcome, fields, is_fin):
+        captured["outcome"] = outcome
+        captured["fields"] = fields
 
     monkeypatch.setattr(refresh, "fetch_screener_data", _fake_fetch)
     monkeypatch.setattr(refresh, "compute_india_business_quality",
                         lambda sym, data, market="IN": None)
-    monkeypatch.setattr(refresh.cache, "upsert", _fake_upsert)
     monkeypatch.setattr(refresh.cache, "ensure_table", lambda: None)
     monkeypatch.setattr(refresh, "IN_STOCKS", [("TESTSYM", "Test Co")])
     monkeypatch.setattr(refresh, "REQUEST_DELAY_SECONDS", 0)
 
-    summary = refresh.run_full_refresh()
+    summary = refresh.run_full_refresh(stage_fn=_fake_stage)
 
     assert summary["refreshed"] == 1
     assert summary["failed"] == 0
+    assert captured["outcome"] == "refreshed"
     # Screener fields preserved; BQ fields absent (not None-injected).
-    assert captured["data"]["roe_pct"] == 10.0
-    assert "business_quality_score" not in captured["data"]
+    assert captured["fields"]["roe_pct"] == 10.0
+    assert "business_quality_score" not in captured["fields"]
 
 
 @pytest.mark.regression
@@ -76,14 +83,15 @@ def test_refresh_injects_all_four_bq_fields_on_success(monkeypatch):
                             "score": 77, "grade": "buy", "confidence": 91.7,
                             "metadata": {"suitable_investment_style": "Quality Compounder"},
                         })
-    monkeypatch.setattr(refresh.cache, "upsert",
-                        lambda sym, mkt, fin, data: captured.update(data=data))
     monkeypatch.setattr(refresh.cache, "ensure_table", lambda: None)
     monkeypatch.setattr(refresh, "IN_STOCKS", [("TESTSYM", "Test Co")])
     monkeypatch.setattr(refresh, "REQUEST_DELAY_SECONDS", 0)
 
-    refresh.run_full_refresh()
-    d = captured["data"]
+    def _fake_stage(symbol, outcome, fields, is_fin):
+        captured.update(fields=fields)
+
+    refresh.run_full_refresh(stage_fn=_fake_stage)
+    d = captured["fields"]
     assert d["business_quality_score"] == 77
     assert d["business_quality_grade"] == "buy"
     assert d["business_quality_style"] == "Quality Compounder"
@@ -106,10 +114,9 @@ def test_refresh_does_not_fetch_screener_twice(monkeypatch):
     monkeypatch.setattr(refresh, "fetch_screener_data", _counting_fetch)
     monkeypatch.setattr(refresh, "compute_india_business_quality",
                         lambda sym, data, market="IN": None)
-    monkeypatch.setattr(refresh.cache, "upsert", lambda *a, **k: None)
     monkeypatch.setattr(refresh.cache, "ensure_table", lambda: None)
     monkeypatch.setattr(refresh, "IN_STOCKS", [("TESTSYM", "Test Co")])
     monkeypatch.setattr(refresh, "REQUEST_DELAY_SECONDS", 0)
 
-    refresh.run_full_refresh()
+    refresh.run_full_refresh(stage_fn=lambda *a, **k: None)
     assert fetch_calls["n"] == 1

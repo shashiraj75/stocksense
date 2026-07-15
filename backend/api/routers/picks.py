@@ -257,24 +257,35 @@ def trigger_generation(background_tasks: BackgroundTasks, market: str = "IN", x_
                          "message": f"{market} picks generation is already in progress."},
             )
 
-    # Step 5: Atomic durable reservation via partial unique index
+    # Step 5-6a: Atomic durable job reservation + heavy-workload lease
+    # (Product Integrity #010 §10, replacing #009's two-separate-calls
+    # design — a lease-acquisition failure now rolls back the job
+    # reservation too, in the same transaction, instead of leaving a
+    # reserved-but-lease-less row behind). Daily Picks and Multibagger for
+    # the same market arbitrate the shared provider (yfinance for US,
+    # screener.in for IN) through this lease — exactly one wins; the other
+    # gets a clean, retryable resource_busy response. Neither cancels a job
+    # the other already started. Since Multibagger is now weekly and runs
+    # at a very different local time, this should almost never actually
+    # conflict in normal operation — it exists for the exceptional
+    # manual-overlap case.
     job_id = str(uuid.uuid4())
+    _HEAVY_RESOURCE = {"IN": "IN_SCREENER_HEAVY", "US": "US_YFINANCE_HEAVY"}[market]
     try:
         from services.postgres_store import (
-            try_reserve_daily_picks_job,
+            try_reserve_daily_picks_job_with_lease,
             get_active_daily_picks_job,
             mark_daily_picks_job_failed,
         )
-        reserved = try_reserve_daily_picks_job(job_id, market, _dp._RUNNER_ID)
+        outcome = try_reserve_daily_picks_job_with_lease(job_id, market, _dp._RUNNER_ID, _HEAVY_RESOURCE)
     except Exception as e:
         return JSONResponse(
             status_code=503,
             content={"status": "durable_job_state_unavailable", "market": market,
-                     "message": f"Could not write durable job state: {e}"},
+                     "message": f"Could not write durable job/lease state: {e}"},
         )
 
-    # Step 6: Conflict — another process holds the active slot
-    if not reserved:
+    if outcome == "already_running":
         active = get_active_daily_picks_job(market)
         return JSONResponse(
             status_code=409,
@@ -285,36 +296,7 @@ def trigger_generation(background_tasks: BackgroundTasks, market: str = "IN", x_
                 "message": f"{market} picks generation is already in progress (reserved by another process).",
             },
         )
-
-    # Step 6a: Heavy-workload lease (Product Integrity #009, replaces the
-    # 2026-07-15 "cooperative stop" coupling with Multibagger). Daily Picks
-    # and Multibagger for the same market now arbitrate the shared provider
-    # (yfinance for US, screener.in for IN) through the same transactional
-    # lease — exactly one wins; the other gets a clean, retryable
-    # resource_busy response. Neither cancels a job the other already
-    # started. Since Multibagger is now weekly and runs at a very different
-    # local time, this should almost never actually conflict in normal
-    # operation — it exists for the exceptional manual-overlap case.
-    _HEAVY_RESOURCE = {"IN": "IN_SCREENER_HEAVY", "US": "US_YFINANCE_HEAVY"}[market]
-    try:
-        from services.postgres_store import try_acquire_heavy_workload_lease
-        leased = try_acquire_heavy_workload_lease(_HEAVY_RESOURCE, "daily_picks", job_id, market)
-    except Exception as e:
-        try:
-            mark_daily_picks_job_failed(job_id, datetime.now(timezone.utc), f"lease_acquire_failed: {e}")
-        except Exception:
-            pass
-        return JSONResponse(
-            status_code=503,
-            content={"status": "durable_job_state_unavailable", "market": market,
-                     "message": f"Could not acquire heavy-workload lease: {e}"},
-        )
-    if not leased:
-        try:
-            mark_daily_picks_job_failed(job_id, datetime.now(timezone.utc),
-                                          "resource_busy: heavy-workload lease held by Multibagger")
-        except Exception:
-            pass
+    if outcome == "resource_busy":
         return JSONResponse(
             status_code=409,
             content={"status": "resource_busy", "market": market, "resource": _HEAVY_RESOURCE,
