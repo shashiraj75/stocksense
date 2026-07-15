@@ -1012,7 +1012,7 @@ Color tokens: `bull` = green (`#22c55e`), `bear` = red (`#ef4444`), `neutral` = 
 
 ### What it is
 
-Three independent, hard-filter SQL screens run against `stock_fundamentals_cache` — a Postgres table refreshed nightly (screener.in for India via `fundamentals_refresh.py`, yfinance-derived for US via `us_fundamentals_refresh.py`; the same table Daily Picks' universe stratification now also reads from, see §13). Deliberately **not** merged into one screen ("combining loose + strict criteria into one screen produces zero/over-expensive results" — the code's own stated design principle) and **not** the AI's ML-weighted composite score used elsewhere in the app — this is a separate, fully transparent, rule-based checklist.
+Three independent, hard-filter SQL screens run against `stock_fundamentals_cache` — a Postgres table refreshed weekly (screener.in for India via `fundamentals_refresh.py`, yfinance-derived for US via `us_fundamentals_refresh.py`; the same table Daily Picks' universe stratification now also reads from, see §13). See Product Integrity #009 for the move from a nightly/daily cadence to weekly. Deliberately **not** merged into one screen ("combining loose + strict criteria into one screen produces zero/over-expensive results" — the code's own stated design principle) and **not** the AI's ML-weighted composite score used elsewhere in the app — this is a separate, fully transparent, rule-based checklist.
 
 ### The three screens
 
@@ -1265,9 +1265,11 @@ Each trigger calls its Railway endpoint (`/api/picks/generate` or `/api/picks/pr
 
 ### Multibagger Fundamentals Refresh — multibagger_refresh.yml, multibagger_refresh_us.yml
 
-Nightly full-universe fundamentals refresh feeding the Multibagger Screen, one workflow per market:
-- **India** (`multibagger_refresh.yml`, cron `0 17 * * 0-4` = 17:00 UTC) — ~2,300 NSE stocks via screener.in, ~1-2 hours.
-- **US** (`multibagger_refresh_us.yml`, cron `0 8 * * 1-5` = 08:00 UTC) — ~5,300 common stocks via yfinance, ~5-6 hours. Scheduled to start after US Daily Picks' base run typically completes and to finish well before India's evening jobs; also protected by a durable, fail-closed conflict check against an active US Daily Picks job (`POST /api/multibagger/refresh?market=US` refuses to start while one is active) and a cooperative stop signal US Daily Picks can raise if the refresh is still running — see Product Integrity #008.
+Weekly full-universe fundamentals refresh feeding the Multibagger Screen, one workflow per market (converted from nightly/India and daily-weekday/US to weekly by Product Integrity #009, 2026-07-16 — most financial-statement fundamentals change quarterly, not daily):
+- **India** (`multibagger_refresh.yml`, cron `30 21 * * 5` = Friday 21:30 UTC = Saturday 3:00 AM IST) — ~2,300 NSE stocks via screener.in, ~1-2 hours.
+- **US** (`multibagger_refresh_us.yml`, two DST candidates `0 7 * * 0` / `0 8 * * 0` = Sunday 07:00/08:00 UTC, both mapping to 3:00 AM America/New_York depending on DST) — ~5,300 common stocks via yfinance, ~5-6 hours.
+
+Both markets are durable (`multibagger_refresh_jobs`, full lifecycle: queued/running/completed/failed/interrupted/expired) and protected by a transactional heavy-workload lease (`US_YFINANCE_HEAVY` / `IN_SCREENER_HEAVY`) shared with that market's Daily Picks generation — exactly one of the two wins if they'd otherwise overlap; neither cancels the other's already-running job. The backend enforces a DST-aware scheduled local-time window per market and weekly-period idempotency (`scheduled_period_key`), so a duplicate GitHub Actions dispatch or the inactive US DST candidate is a safe no-op rather than a duplicate run. See Product Integrity #009.
 
 ### Model Validation Scheduling
 

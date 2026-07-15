@@ -285,6 +285,19 @@ async def lifespan(app: FastAPI):
             log.info("[startup] Validation schema initialized")
         except Exception as e:
             log.warning(f"[startup] Validation schema init failed: {e}")
+        # Product Integrity #009 §9 — orphan/restart recovery for Multibagger
+        # weekly jobs. Startup-only, one pass: a genuinely active job's
+        # heartbeat is recent and is never touched; only a row silent for
+        # longer than a credible individual-symbol operation is reclassified
+        # 'interrupted'. Never invoked from a request path (GET /status must
+        # not mutate lifecycle state).
+        try:
+            from services.postgres_store import reconcile_stale_multibagger_jobs
+            reclaimed = reconcile_stale_multibagger_jobs()
+            if reclaimed:
+                log.warning(f"[startup] Reconciled {reclaimed} stale Multibagger job(s) to 'interrupted'")
+        except Exception as e:
+            log.warning(f"[startup] Multibagger stale-job reconciliation failed: {e}")
     # Force yfinance crumb refresh so cloud IP starts with a valid session
     try:
         import yfinance as yf

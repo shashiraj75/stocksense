@@ -46,14 +46,18 @@ def _is_financial(sector: str | None, industry: str | None) -> bool:
     return any(k in text for k in _FINANCIAL_KEYWORDS)
 
 
-def run_full_refresh(should_stop=None) -> dict:
+def run_full_refresh(on_progress=None) -> dict:
     """
-    should_stop: optional zero-arg callable checked once per symbol
-    (2026-07-15, US workload overlap protection). Lets US Daily Picks base
-    generation — which has priority over this job — cooperatively signal
-    this refresh to yield the shared yfinance provider rather than run both
-    concurrently. Checked between symbols only (never mid-fetch), so a stop
-    always lands on a clean per-symbol boundary — no partial/torn writes.
+    on_progress: optional callable(processed: int, total: int) invoked
+    periodically (every 100 symbols) for durable heartbeat/progress
+    persistence — see Product Integrity #009 §8. This job now always runs
+    to completion or a genuine per-symbol exception; it is never
+    cooperatively stopped by another workload (that coupling — should_stop,
+    the 2026-07-15 Daily-Picks-priority mechanism — was removed in #009:
+    weekly scheduling makes concurrent runs rare, and the remaining
+    exceptional-overlap case is handled by a durable heavy-workload lease
+    acquired before this function is ever called, not by cancelling a job
+    already in flight).
     """
     cache.ensure_table()
 
@@ -62,18 +66,12 @@ def run_full_refresh(should_stop=None) -> dict:
     refreshed = 0
     skipped = 0
     failed = 0
-    stopped_early = False
     started = time.time()
 
     print(f"[us_fundamentals_refresh] Starting full refresh — {total} common stocks "
           f"(filtered from {len(US_STOCKS)} total universe entries)")
 
     for i, (symbol, _name) in enumerate(universe, 1):
-        if should_stop is not None and should_stop():
-            stopped_early = True
-            print(f"[us_fundamentals_refresh] Stopping early at {i}/{total} — "
-                  f"yielding to US Daily Picks base generation.")
-            break
         try:
             data = fetch_us_fundamentals(symbol)
             if not data.get("available"):
@@ -118,6 +116,11 @@ def run_full_refresh(should_stop=None) -> dict:
             elapsed = time.time() - started
             print(f"[us_fundamentals_refresh] {i}/{total} processed "
                   f"({refreshed} ok, {skipped} skipped, {failed} failed) — {elapsed/60:.1f}m elapsed")
+            if on_progress is not None:
+                try:
+                    on_progress(i, total)
+                except Exception:
+                    log.warning("[us_fundamentals_refresh] on_progress callback failed", exc_info=True)
 
         time.sleep(REQUEST_DELAY_SECONDS)
 
@@ -125,7 +128,6 @@ def run_full_refresh(should_stop=None) -> dict:
     summary = {
         "total": total, "refreshed": refreshed, "skipped": skipped,
         "failed": failed, "elapsed_minutes": round(elapsed / 60, 1),
-        "stopped_early": stopped_early,
     }
     print(f"[us_fundamentals_refresh] Done: {summary}")
     return summary

@@ -1,36 +1,44 @@
-name: Multibagger Fundamentals Refresh — US (Nightly)
+name: Multibagger Fundamentals Refresh — US (Weekly)
 
 on:
   schedule:
-    # 2026-07-15 change (Product Integrity #008 — US scheduler compatibility):
-    # moved from 02:00 UTC. That slot was chosen when US Daily Picks base
-    # generation ran at 12:30 UTC; once the base moved to 06:00 UTC
-    # (Product Integrity #007), a 5-6 hour job starting 02:00 UTC finishes
-    # ~07:00-08:00 UTC — directly inside the 06:00 UTC base run and the
-    # 6:00-7:30 AM ET (10:00-11:00 UTC candidate) Premarket Finalizer window.
+    # Product Integrity #009 (2026-07-16): converted from daily weekday
+    # (08:00 UTC Mon-Fri, Product Integrity #008) to weekly. Most
+    # financial-statement fundamentals change quarterly, not daily — a
+    # daily full-universe yfinance scrape was unnecessary provider load,
+    # Railway resource pressure, and daily scheduler-collision risk for
+    # data that barely moves day to day.
     #
-    # 08:00 UTC Mon-Fri was chosen instead of an evening Sun-Thu slot (the
-    # IN Multibagger/Daily Picks pattern) because IN Daily Picks' actual
-    # cron (see daily_picks_in.yml, "56 21 * * 0-4") plus its own ~4-hour
-    # runtime occupies 21:56-~01:56 UTC — an evening/overnight US
-    # Multibagger start would land inside that window instead. 08:00 UTC
-    # gives ~2 hours of buffer after US Daily Picks' typical ~10-20 minute
-    # base-generation completion (06:00-06:20 UTC) before this heavier job
-    # starts, finishes ~13:00-14:00 UTC (well before IN Multibagger's
-    # 17:00 UTC and IN Daily Picks' 21:56 UTC), and is backstopped by a
-    # durable, fail-closed conflict check against an active US Daily Picks
-    # job (POST /api/multibagger/refresh?market=US refuses to start while
-    # one is active) plus a cooperative stop signal US Daily Picks can raise
-    # if this job is still running when it starts — see
-    # services/us_fundamentals_refresh.py's run_full_refresh(should_stop=...)
-    # and api/routers/multibagger.py's request_us_stop(). This job does
-    # still partially overlap the lightweight Premarket Finalizer window
-    # (10:00/11:00 UTC candidates); that overlap is accepted deliberately —
-    # the finalizer "never recomputes the universe, never re-runs
-    # PredictionEngine" (see premarket_finalizer.py) and is not a heavy
-    # yfinance consumer, unlike base generation.
-    - cron: "0 8 * * 1-5"     # 08:00 UTC Mon-Fri
-  workflow_dispatch:           # allow manual trigger from GitHub UI
+    # Target: Sunday 3:00 AM America/New_York. GitHub Actions cron is
+    # UTC-only and does not observe US DST, so two fixed-UTC candidates are
+    # required, same dual-cron pattern as the Premarket Finalizer
+    # (Product Integrity #007):
+    #   - EDT: 07:00 UTC Sunday = 3:00 AM ET
+    #   - EST: 08:00 UTC Sunday = 3:00 AM ET
+    # The backend is the DST-aware local-window authority — POST
+    # /api/multibagger/refresh only accepts a scheduled call inside Sunday
+    # 2:30-4:30 AM America/New_York (see services/multibagger_schedule.py's
+    # us_scheduled_window()), so only the DST-active candidate actually
+    # starts a job; the inactive one safely receives
+    # outside_scheduled_window (422) and does nothing. Durable
+    # weekly-period idempotency (scheduled_period_key) additionally means
+    # that even if both candidates somehow landed inside the window on the
+    # same real day (they can't under normal DST transitions, six months
+    # apart), only the first would start a job — the second would see
+    # already_completed_for_period.
+    #
+    # This job no longer has any dependency on, or coupling with, the
+    # Premarket Finalizer or US Daily Picks base generation — the 2026-07-15
+    # "cooperative stop" mechanism (Product Integrity #008) was removed in
+    # #009. Weekly scheduling makes a real overlap with US Daily Picks rare
+    # by design; the exceptional case is handled by a durable
+    # US_YFINANCE_HEAVY lease, not by one job stopping another.
+    #
+    # Expected US runtime: ~5-6 hours for ~5,300 common stocks — Sunday
+    # 3:00-9:00 AM ET has no other scheduled heavy job anywhere near it.
+    - cron: "0 7 * * 0"    # Sunday 07:00 UTC — EDT candidate (3:00 AM ET)
+    - cron: "0 8 * * 0"    # Sunday 08:00 UTC — EST candidate (3:00 AM ET)
+  workflow_dispatch:         # exceptional, explicitly authorized manual refresh only
 
 jobs:
   refresh-fundamentals-us:
@@ -52,10 +60,51 @@ jobs:
 
       - name: Trigger US fundamentals refresh
         run: |
-          echo "Triggering US fundamentals refresh at $(date -u) UTC..."
-          curl -sS --fail-with-body --max-time 30 \
-            -X POST \
-            -H "x-secret: ${{ secrets.PICKS_SECRET }}" \
-            "https://stocksense-production-7e0d.up.railway.app/api/multibagger/refresh?market=US"
-          echo ""
-          echo "Refresh started in the background. ~5,300 US common stocks at a conservative pace — expect 5-6 hours."
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            TRIGGER_SOURCE="scheduled"
+          else
+            TRIGGER_SOURCE="manual"
+          fi
+          echo "Triggering US fundamentals refresh at $(date -u) UTC (trigger_source=$TRIGGER_SOURCE)..."
+
+          # Bounded retry (Product Integrity #009 §15): 409 resource_busy and
+          # 503 durable_state_unavailable are retryable; 422
+          # outside_scheduled_window means the INACTIVE DST candidate fired —
+          # that is an expected, non-retryable, safe no-op, not a failure.
+          MAX_ATTEMPTS=5
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            HTTP_CODE=$(curl -sS --max-time 30 -o /tmp/refresh_resp.json -w "%{http_code}" \
+              -X POST \
+              -H "x-secret: ${{ secrets.PICKS_SECRET }}" \
+              "https://stocksense-production-7e0d.up.railway.app/api/multibagger/refresh?market=US&trigger_source=$TRIGGER_SOURCE")
+            BODY=$(cat /tmp/refresh_resp.json)
+            echo "Attempt $i: HTTP $HTTP_CODE — $BODY"
+
+            case "$HTTP_CODE" in
+              202)
+                echo "US Multibagger refresh started — ~5,300 common stocks, expect 5-6 hours."
+                exit 0
+                ;;
+              200)
+                echo "US Multibagger refresh already completed/queued/running for this scheduled period — safe no-op."
+                exit 0
+                ;;
+              422)
+                echo "Outside the scheduled window — this is the inactive DST candidate for today's offset. Expected, not an error."
+                exit 0
+                ;;
+              409|503)
+                if [ "$i" -lt "$MAX_ATTEMPTS" ]; then
+                  echo "Retryable response ($HTTP_CODE) — waiting 60s before retry ($i/$MAX_ATTEMPTS)..."
+                  sleep 60
+                else
+                  echo "Exhausted $MAX_ATTEMPTS attempts with retryable response $HTTP_CODE — giving up for this run."
+                  exit 1
+                fi
+                ;;
+              *)
+                echo "Non-retryable response: HTTP $HTTP_CODE — not retrying."
+                exit 1
+                ;;
+            esac
+          done

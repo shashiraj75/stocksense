@@ -1,6 +1,7 @@
 import logging
 import os
 import uuid
+from datetime import datetime, timezone
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 from typing import Literal
@@ -17,33 +18,23 @@ _SCREEN_UNAVAILABLE_MESSAGE = "Screen data is temporarily unavailable."
 # Actions-triggered background jobs protected the same way.
 MULTIBAGGER_SECRET = os.getenv("PICKS_SECRET", "")
 
-# IN and US refresh independently — different jobs, different schedules,
-# neither should block the other from being triggered.
+# Product Integrity #009 (2026-07-16): the full-universe fundamentals
+# refresh is now weekly for both markets (previously nightly for IN, daily
+# for US), and both markets are durable (previously IN was process-local
+# only). This in-memory dict remains for the fast-path "already running"
+# check and the GET /status fallback when durable state is unavailable —
+# it is no longer the sole source of truth.
 _refresh_state = {
     "IN": {"running": False, "last_summary": None},
     "US": {"running": False, "last_summary": None},
 }
 
-# US workload overlap protection (2026-07-15): a cooperative stop signal US
-# Daily Picks generation can raise when it needs the shared yfinance
-# provider — see run_full_refresh()'s should_stop param. IN has no
-# equivalent flag; it has never conflicted with anything in the scheduler
-# matrix and is untouched by this release.
-_stop_requested = {"US": False}
+_RESOURCE_FOR_MARKET = {"IN": "IN_SCREENER_HEAVY", "US": "US_YFINANCE_HEAVY"}
+_STALENESS_DAYS = 9  # see Product Integrity #009 §13 — wider than the 7-day weekly cadence, absorbing one missed/delayed run
 
 # Distinct per-process runner id, same pattern as services.daily_picks._RUNNER_ID
 # — identifies which backend instance holds a given durable reservation.
 _RUNNER_ID = str(uuid.uuid4())
-
-
-def request_us_stop() -> None:
-    """
-    Called by POST /api/picks/generate (market=US) when it observes an
-    active US Multibagger refresh — see picks.py's Step 4a. Best-effort and
-    cooperative: the refresh loop checks this once per symbol and exits
-    cleanly at the next boundary; it is never force-killed mid-fetch.
-    """
-    _stop_requested["US"] = True
 
 
 @router.get("/screen")
@@ -53,17 +44,13 @@ def get_screen(
 ):
     """
     Run a hard AND-filter screen against the cached fundamentals table.
-    Instant — no live scraping happens here, only against the nightly cache.
+    Instant — no live scraping happens here, only against the weekly cache.
     """
     from services import fundamentals_cache as cache
     from services.multibagger_scorecard import annotate_and_rank
     try:
         cache.ensure_table()
         rows = annotate_and_rank(cache.query_screen(screen, market), market)
-        # status="ok" here covers BOTH a non-empty result AND a genuine,
-        # successfully-evaluated zero-result outcome (count=0, no exception) —
-        # the frontend must be able to tell that apart from a computation
-        # failure below, which also sets count=0 but status="unavailable".
         return {
             "screen": screen,
             "market": market,
@@ -73,8 +60,6 @@ def get_screen(
             "last_refreshed": cache.last_refreshed(market),
         }
     except Exception as e:
-        # Full exception detail stays server-side only — never expose raw
-        # Python/library error text (e.g. Decimal/float TypeErrors) to the UI.
         log.exception(f"[multibagger] screen computation failed ({market}/{screen})")
         return {
             "screen": screen,
@@ -89,48 +74,116 @@ def get_screen(
 
 @router.get("/status")
 def refresh_status(market: Literal["IN", "US"] = Query("IN")):
+    """
+    Product Integrity #009: durable-first status. When Postgres is enabled,
+    job_status/timestamps are sourced from multibagger_refresh_jobs — a
+    restart never fabricates a healthy idle state, since the durable row
+    (not the in-memory dict a restart resets) is authoritative. GET never
+    mutates lifecycle state — see reconcile_stale_multibagger_jobs() for
+    where orphan reconciliation actually happens.
+    """
     from services import fundamentals_cache as cache
     try:
         cache.ensure_table()
         last_refreshed = cache.last_refreshed(market)
     except Exception:
         last_refreshed = None
-    return {
+
+    resp = {
         "market": market,
         "running": _refresh_state[market]["running"],
         "last_summary": _refresh_state[market]["last_summary"],
         "last_refreshed": last_refreshed,
+        "schedule_frequency": "weekly",
+        "next_scheduled_refresh_hint": (
+            "Saturday 3:00 AM IST (Friday 21:30 UTC)" if market == "IN"
+            else "Sunday 3:00 AM America/New_York (EDT candidate: 07:00 UTC, EST candidate: 08:00 UTC)"
+        ),
+        "stale_after_days": _STALENESS_DAYS,
+        "durable_state_available": False,
     }
 
+    if os.getenv("USE_POSTGRES") != "1":
+        return resp
 
-def _run_refresh_job(market: str, job_id: str | None = None):
+    from services.postgres_store import get_latest_multibagger_job, get_last_successful_multibagger_refresh
+    try:
+        latest = get_latest_multibagger_job(market)
+        last_success = get_last_successful_multibagger_refresh(market)
+    except Exception:
+        return resp
+
+    resp["durable_state_available"] = True
+    if latest:
+        resp.update({
+            "job_id": latest.get("job_id"),
+            "job_status": latest.get("status"),
+            "trigger_source": latest.get("trigger_source"),
+            "scheduled_period_key": latest.get("scheduled_period_key"),
+            "processed": latest.get("processed"),
+            "total": latest.get("total"),
+            "last_error": latest.get("last_error"),
+            "last_runner_heartbeat_at": latest.get("last_runner_heartbeat_at"),
+            "last_progress_at": latest.get("last_progress_at"),
+        })
+        resp["running"] = latest.get("status") in ("queued", "running")
+    last_successful_at = last_success.get("completed_at") if last_success else None
+    resp["last_successful_refresh_at"] = last_successful_at
+    if last_successful_at is not None:
+        age_days = (datetime.now(timezone.utc) - last_successful_at).days
+        resp["is_stale"] = age_days > _STALENESS_DAYS
+    else:
+        resp["is_stale"] = True
+    return resp
+
+
+def _run_refresh_job(market: str, job_id: str):
+    """
+    Background task body. Marks the durable row 'running', runs the actual
+    refresh with a progress callback wired to durable heartbeat/progress
+    persistence, then durably records the terminal outcome — never claiming
+    'completed' unless that write itself succeeded (Product Integrity #009
+    §10). The heavy-workload lease acquired before this task was dispatched
+    is always released in `finally`, regardless of outcome.
+    """
+    from services.postgres_store import (
+        mark_multibagger_job_running, record_multibagger_job_progress,
+        mark_multibagger_job_completed, mark_multibagger_job_failed,
+        release_heavy_workload_lease,
+    )
     _refresh_state[market]["running"] = True
-    if market == "US":
-        _stop_requested["US"] = False
+    try:
+        mark_multibagger_job_running(job_id)
+    except Exception:
+        log.error("[multibagger] failed to mark job_id=%s running", job_id)
+
+    def _on_progress(processed: int, total: int):
+        try:
+            record_multibagger_job_progress(job_id, processed, total)
+        except Exception:
+            log.warning("[multibagger] failed to persist progress for job_id=%s", job_id)
+
     try:
         if market == "IN":
             from services.fundamentals_refresh import run_full_refresh
-            summary = run_full_refresh()
         else:
             from services.us_fundamentals_refresh import run_full_refresh
-            summary = run_full_refresh(should_stop=lambda: _stop_requested["US"])
+        summary = run_full_refresh(on_progress=_on_progress)
         _refresh_state[market]["last_summary"] = summary
-        if market == "US" and job_id:
-            from services.postgres_store import mark_multibagger_job_completed
-            try:
-                mark_multibagger_job_completed(job_id, stopped_early=bool(summary.get("stopped_early")))
-            except Exception:
-                pass
+        if not mark_multibagger_job_completed(job_id):
+            log.error("[multibagger] durable completion write failed for job_id=%s market=%s "
+                      "— job remains in a prior lifecycle state until reconciliation", job_id, market)
     except Exception as e:
-        if market == "US" and job_id:
-            from services.postgres_store import mark_multibagger_job_failed
-            try:
-                mark_multibagger_job_failed(job_id, str(e))
-            except Exception:
-                pass
-        raise
+        log.exception("[multibagger] refresh raised for job_id=%s market=%s", job_id, market)
+        if not mark_multibagger_job_failed(job_id, str(e)):
+            log.error("[multibagger] durable failure write ALSO failed for job_id=%s market=%s "
+                      "— job remains in a prior lifecycle state until reconciliation", job_id, market)
     finally:
         _refresh_state[market]["running"] = False
+        try:
+            release_heavy_workload_lease(job_id)
+        except Exception:
+            log.error("[multibagger] failed to release heavy-workload lease for job_id=%s", job_id)
 
 
 @router.post("/refresh")
@@ -138,85 +191,117 @@ def trigger_refresh(
     background_tasks: BackgroundTasks,
     x_secret: str = Header(None),
     market: Literal["IN", "US"] = Query("IN"),
+    trigger_source: Literal["scheduled", "manual"] = Query("scheduled"),
 ):
     """
-    Trigger a full-universe fundamentals refresh in the background.
-    IN: ~1-2 hours for ~2,300 NSE stocks. US: ~5-6 hours for ~5,300 common
-    stocks (more conservative pace — yfinance backs live pricing app-wide,
-    so it carries more risk than the IN job's screener.in dependency).
-    Protected by X-Secret header — called by a GitHub Actions cron, same
-    pattern as POST /api/picks/generate.
+    Trigger a full-universe fundamentals refresh in the background. Weekly
+    for both markets since Product Integrity #009 (previously nightly for
+    IN, daily for US) — see that release doc for the full rationale and the
+    removed "cooperative stop" design this superseded.
 
-    US workload overlap protection (2026-07-15): US Daily Picks base
-    generation has priority over this job (they share yfinance and the
-    schedule was designed so this refresh normally finishes hours before
-    the 06:00 UTC base run — see .github/workflows/multibagger_refresh_us.yml
-    and Product-Integrity-008). If an active/queued US Daily Picks job is
-    detected — or that check itself cannot be performed — this endpoint
-    refuses to start rather than risk running both at once. IN is
-    unaffected: no durable state, no conflict check, unchanged behavior.
+    trigger_source distinguishes the two call shapes:
+      - scheduled (default): the calling GitHub Actions cron identifies
+        itself this way. Subject to the DST-aware local scheduled-window
+        check and weekly-period idempotency — a call outside the window, or
+        a duplicate for a period already queued/running/completed, is
+        rejected without starting anything.
+      - manual: an exceptional, explicitly authorized run. May run outside
+        the scheduled window, still respects the heavy-workload lease and
+        active-job uniqueness, but never occupies or satisfies a scheduled
+        period's idempotency slot — it can never be mistaken for, or block,
+        that week's real scheduled refresh.
 
-    HTTP contract (US only; IN keeps its original in-memory-only contract):
-      202 — accepted and queued
-      200 — already_fresh — not applicable here (no freshness concept)
-      409 — already_running (another Multibagger refresh already reserved
-            the slot) or deferred_daily_picks_priority (US Daily Picks is
-            active; Multibagger yields)
-      503 — durable_job_state_unavailable (USE_POSTGRES != "1", the
-            conflict check failed, or the durable insert failed)
+    Both markets are now durable (USE_POSTGRES=1 required) and both are
+    protected against running concurrently with their market's Daily Picks
+    via a transactional heavy-workload lease (US_YFINANCE_HEAVY /
+    IN_SCREENER_HEAVY) — see try_acquire_heavy_workload_lease().
+
+    HTTP contract:
+      202 — started
+      200 — already_completed_for_period (scheduled only, that week already succeeded/queued/running)
+      409 — already_running | resource_busy
+      422 — outside_scheduled_window (scheduled only)
+      503 — durable_state_unavailable
     """
     if x_secret != MULTIBAGGER_SECRET:
         raise HTTPException(status_code=401, detail="Invalid secret")
 
-    if market == "IN":
-        if _refresh_state["IN"]["running"]:
-            return {"status": "already_running", "market": "IN"}
-        background_tasks.add_task(_run_refresh_job, "IN")
-        return {"status": "started", "market": "IN"}
-
-    # market == "US" — durable path with Daily Picks priority.
     if os.getenv("USE_POSTGRES") != "1":
         return JSONResponse(
             status_code=503,
-            content={"status": "durable_job_state_unavailable", "market": "US",
-                     "message": "USE_POSTGRES is not enabled; US Multibagger refresh requires durable job state."},
+            content={"status": "durable_state_unavailable", "market": market,
+                     "message": "USE_POSTGRES is not enabled; Multibagger refresh requires durable job state."},
         )
 
-    if _refresh_state["US"]["running"]:
-        return JSONResponse(status_code=409,
-                             content={"status": "already_running", "market": "US"})
+    from services import multibagger_schedule as sched
+    from services.postgres_store import try_reserve_multibagger_job, try_acquire_heavy_workload_lease
 
-    from services.postgres_store import has_active_daily_picks_job_or_unknown
-    try:
-        conflict = has_active_daily_picks_job_or_unknown("US")
-    except Exception as e:
+    now_utc = datetime.now(timezone.utc)
+
+    if trigger_source == "scheduled" and not sched.scheduled_window_ok(market, now_utc):
         return JSONResponse(
-            status_code=503,
-            content={"status": "durable_job_state_unavailable", "market": "US",
-                     "message": f"Could not check for a conflicting US Daily Picks job: {e}"},
-        )
-    if conflict:
-        return JSONResponse(
-            status_code=409,
-            content={"status": "deferred_daily_picks_priority", "market": "US",
-                      "message": "US Daily Picks base generation is active or the conflict check "
-                                 "could not be verified; Multibagger refresh yields and did not start."},
+            status_code=422,
+            content={"status": "outside_scheduled_window", "market": market,
+                     "message": f"{market} scheduled refresh must arrive inside its weekly local window; "
+                                 "this call did not — no job started. Use trigger_source=manual for an "
+                                 "explicitly authorized out-of-window run."},
         )
 
+    if _refresh_state[market]["running"]:
+        return JSONResponse(status_code=409, content={"status": "already_running", "market": market})
+
+    period_key = sched.scheduled_period_key(market, now_utc) if trigger_source == "scheduled" else None
     job_id = str(uuid.uuid4())
+
     try:
-        from services.postgres_store import try_reserve_multibagger_job
-        reserved = try_reserve_multibagger_job(job_id, "US", _RUNNER_ID)
+        reserved = try_reserve_multibagger_job(job_id, market, _RUNNER_ID, trigger_source, period_key)
     except Exception as e:
         return JSONResponse(
             status_code=503,
-            content={"status": "durable_job_state_unavailable", "market": "US",
+            content={"status": "durable_state_unavailable", "market": market,
                      "message": f"Could not write durable job state: {e}"},
         )
     if not reserved:
-        return JSONResponse(status_code=409,
-                             content={"status": "already_running", "market": "US"})
+        if trigger_source == "scheduled":
+            return JSONResponse(
+                status_code=200,
+                content={"status": "already_completed_for_period", "market": market,
+                          "scheduled_period_key": period_key,
+                          "message": f"{market}'s scheduled refresh for period {period_key} is already "
+                                      "queued, running, or completed — this duplicate call is a safe no-op."},
+            )
+        return JSONResponse(status_code=409, content={"status": "already_running", "market": market})
 
-    background_tasks.add_task(_run_refresh_job, "US", job_id)
-    return JSONResponse(status_code=202,
-                         content={"status": "started", "market": "US", "job_id": job_id})
+    resource = _RESOURCE_FOR_MARKET[market]
+    try:
+        leased = try_acquire_heavy_workload_lease(resource, "multibagger", job_id, market)
+    except Exception as e:
+        from services.postgres_store import mark_multibagger_job_failed
+        try:
+            mark_multibagger_job_failed(job_id, f"lease_acquire_failed: {e}")
+        except Exception:
+            pass
+        return JSONResponse(
+            status_code=503,
+            content={"status": "durable_state_unavailable", "market": market,
+                     "message": f"Could not acquire heavy-workload lease: {e}"},
+        )
+    if not leased:
+        from services.postgres_store import mark_multibagger_job_failed
+        try:
+            mark_multibagger_job_failed(job_id, "resource_busy: heavy-workload lease held by another job")
+        except Exception:
+            pass
+        return JSONResponse(
+            status_code=409,
+            content={"status": "resource_busy", "market": market, "resource": resource,
+                      "message": f"{resource} is currently held by {market} Daily Picks (or another "
+                                  "Multibagger run) — this request did not start and may be retried."},
+        )
+
+    background_tasks.add_task(_run_refresh_job, market, job_id)
+    return JSONResponse(
+        status_code=202,
+        content={"status": "started", "market": market, "job_id": job_id,
+                  "trigger_source": trigger_source, "scheduled_period_key": period_key},
+    )

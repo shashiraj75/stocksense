@@ -472,26 +472,77 @@ ALTER TABLE daily_picks_jobs ADD COLUMN IF NOT EXISTS universe_selection_error_c
 ALTER TABLE daily_picks_jobs ADD COLUMN IF NOT EXISTS phase_task_processed INTEGER;
 ALTER TABLE daily_picks_jobs ADD COLUMN IF NOT EXISTS phase_task_total INTEGER;
 
--- US workload overlap protection (2026-07-15): durable state for the US
--- Multibagger fundamentals refresh, so cross-process/restart-durable mutual
--- exclusion with daily_picks_jobs (US) is possible the same way Daily Picks
--- already protects itself. IN Multibagger intentionally has no durable row
--- here — it never conflicted with anything in the scheduler matrix and stays
--- on its existing in-memory-only behavior, unchanged by this release.
+-- Product Integrity #009 (2026-07-16): durable state for the Multibagger
+-- weekly full-universe fundamentals refresh, both markets. Originally
+-- US-only, daily, and process-local for IN (#008); now both markets are
+-- durable, weekly, and carry a full lifecycle (queued/running/completed/
+-- failed/interrupted/expired) with heartbeat/progress and weekly-period
+-- idempotency, matching daily_picks_jobs' own established pattern.
 CREATE TABLE IF NOT EXISTS multibagger_refresh_jobs (
-    id                  BIGSERIAL PRIMARY KEY,
-    job_id              TEXT NOT NULL UNIQUE,
-    market              TEXT NOT NULL CHECK (market IN ('US')),
-    status              TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
-    runner_instance_id  TEXT NOT NULL,
-    started_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    completed_at        TIMESTAMPTZ,
-    stopped_early        BOOLEAN,
-    last_error          TEXT
+    id                        BIGSERIAL PRIMARY KEY,
+    job_id                    TEXT NOT NULL UNIQUE,
+    market                    TEXT NOT NULL CHECK (market IN ('IN', 'US')),
+    status                    TEXT NOT NULL,
+    runner_instance_id        TEXT NOT NULL,
+    started_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at              TIMESTAMPTZ,
+    stopped_early             BOOLEAN,
+    last_error                TEXT
 );
+-- Additive columns (Product Integrity #009): weekly-period identity,
+-- trigger provenance, heartbeat/progress, retry observability.
+ALTER TABLE multibagger_refresh_jobs ADD COLUMN IF NOT EXISTS trigger_source TEXT;
+ALTER TABLE multibagger_refresh_jobs ADD COLUMN IF NOT EXISTS scheduled_period_key TEXT;
+ALTER TABLE multibagger_refresh_jobs ADD COLUMN IF NOT EXISTS last_runner_heartbeat_at TIMESTAMPTZ;
+ALTER TABLE multibagger_refresh_jobs ADD COLUMN IF NOT EXISTS last_progress_at TIMESTAMPTZ;
+ALTER TABLE multibagger_refresh_jobs ADD COLUMN IF NOT EXISTS processed INTEGER;
+ALTER TABLE multibagger_refresh_jobs ADD COLUMN IF NOT EXISTS total INTEGER;
+ALTER TABLE multibagger_refresh_jobs ADD COLUMN IF NOT EXISTS attempt INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE multibagger_refresh_jobs ADD COLUMN IF NOT EXISTS source_commit TEXT;
+-- Lifecycle widened from ('running','completed','failed') to the full
+-- queued/running/completed/failed/interrupted/expired set — dropped and
+-- recreated idempotently so this ALTER is safe to run on every startup,
+-- same DROP-IF-EXISTS-then-ADD pattern used for other constraint changes
+-- in this file.
+ALTER TABLE multibagger_refresh_jobs DROP CONSTRAINT IF EXISTS multibagger_refresh_jobs_status_check;
+ALTER TABLE multibagger_refresh_jobs ADD CONSTRAINT multibagger_refresh_jobs_status_check
+    CHECK (status IN ('queued', 'running', 'completed', 'failed', 'interrupted', 'expired'));
+-- At most one active (queued/running) row per market at a time — unchanged
+-- semantics from #008, now covering IN as well as US.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_multibagger_refresh_jobs_one_active_per_market
     ON multibagger_refresh_jobs (market)
-    WHERE status = 'running';
+    WHERE status IN ('queued', 'running');
+-- Weekly-period idempotency: at most one queued/running/completed
+-- *scheduled* row per (market, scheduled_period_key) — a failed/
+-- interrupted/expired attempt does NOT hold this slot, so a retry within
+-- the same week is allowed; manual (trigger_source='manual') runs are
+-- excluded entirely and never occupy or block a scheduled period.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_multibagger_refresh_jobs_one_per_scheduled_period
+    ON multibagger_refresh_jobs (market, scheduled_period_key)
+    WHERE trigger_source = 'scheduled' AND status IN ('queued', 'running', 'completed');
+ALTER TABLE multibagger_refresh_jobs ENABLE ROW LEVEL SECURITY;
+
+-- Product Integrity #009: transactional heavy-workload arbitration between
+-- Daily Picks and Multibagger for the same market's shared provider
+-- (yfinance for US, screener.in for IN). One row per currently-held lease;
+-- the partial unique index on (resource) WHERE released_at IS NULL is the
+-- sole atomic gate — an INSERT with ON CONFLICT DO NOTHING either wins the
+-- lease outright or fails, with no separate "check then start" race window.
+CREATE TABLE IF NOT EXISTS heavy_workload_leases (
+    id             BIGSERIAL PRIMARY KEY,
+    resource       TEXT NOT NULL CHECK (resource IN ('US_YFINANCE_HEAVY', 'IN_SCREENER_HEAVY')),
+    owner_type     TEXT NOT NULL CHECK (owner_type IN ('daily_picks', 'multibagger')),
+    owner_job_id   TEXT NOT NULL,
+    market         TEXT NOT NULL CHECK (market IN ('IN', 'US')),
+    acquired_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    released_at    TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_heavy_workload_leases_active
+    ON heavy_workload_leases (resource)
+    WHERE released_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_heavy_workload_leases_owner
+    ON heavy_workload_leases (owner_job_id);
+ALTER TABLE heavy_workload_leases ENABLE ROW LEVEL SECURITY;
 
 -- Learning Alpha Engine remediation, Phase 1 — Production Containment and
 -- Evidence Preservation. Additive, nullable observability columns written
@@ -1649,62 +1700,243 @@ def has_active_daily_picks_job_or_unknown(market: str) -> bool:
         return True
 
 
-def try_reserve_multibagger_job(job_id: str, market: str, runner_instance_id: str) -> bool:
+_MULTIBAGGER_ORPHAN_TIMEOUT_HOURS = 7  # longer than the ~5-6h US refresh; see Product Integrity #009 §9
+
+
+def try_reserve_multibagger_job(
+    job_id: str, market: str, runner_instance_id: str,
+    trigger_source: str, scheduled_period_key: str | None,
+) -> bool:
     """
-    Atomically insert a new 'running' Multibagger refresh row for `market`.
-    Same ON CONFLICT DO NOTHING gate as try_reserve_daily_picks_job(), backed
-    by the partial unique index on (market) WHERE status = 'running'.
-    Returns True if this call now owns the reservation, False if another
-    process already holds it. Raises on genuine DB error — callers treat
-    that as durable_job_state_unavailable, same as Daily Picks does.
+    Atomically insert a new 'queued' Multibagger refresh row for `market`.
+    Two independent partial-unique-index gates apply automatically via the
+    schema (not re-checked here): at most one active row per market, and —
+    for trigger_source='scheduled' only — at most one queued/running/
+    completed row per (market, scheduled_period_key), so a duplicate DST
+    candidate or a retry of an already-succeeded week safely conflicts here
+    rather than starting a second job. Manual runs never set
+    scheduled_period_key's uniqueness gate since it only applies to
+    trigger_source='scheduled'. Returns True if this call now owns the
+    reservation, False on any conflict. Raises on genuine DB error.
     """
     with _get_pool().connection() as conn:
         result = conn.execute(
             """INSERT INTO multibagger_refresh_jobs
-                   (job_id, market, status, runner_instance_id, started_at)
-               VALUES (%s, %s, 'running', %s, now())
+                   (job_id, market, status, runner_instance_id, started_at,
+                    trigger_source, scheduled_period_key, last_runner_heartbeat_at)
+               VALUES (%s, %s, 'queued', %s, now(), %s, %s, now())
                ON CONFLICT DO NOTHING""",
-            (job_id, market, runner_instance_id),
+            (job_id, market, runner_instance_id, trigger_source, scheduled_period_key),
         )
         return result.rowcount == 1
 
 
-def mark_multibagger_job_completed(job_id: str, stopped_early: bool = False) -> None:
+def mark_multibagger_job_running(job_id: str) -> None:
     with _get_pool().connection() as conn:
         conn.execute(
             """UPDATE multibagger_refresh_jobs
-               SET status = 'completed', completed_at = now(), stopped_early = %s
-               WHERE job_id = %s""",
-            (stopped_early, job_id),
+               SET status = 'running', last_runner_heartbeat_at = now()
+               WHERE job_id = %s AND status = 'queued'""",
+            (job_id,),
         )
 
 
-def mark_multibagger_job_failed(job_id: str, error: str) -> None:
+def record_multibagger_job_heartbeat(job_id: str) -> None:
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "UPDATE multibagger_refresh_jobs SET last_runner_heartbeat_at = now() WHERE job_id = %s",
+            (job_id,),
+        )
+
+
+def record_multibagger_job_progress(job_id: str, processed: int, total: int) -> None:
     with _get_pool().connection() as conn:
         conn.execute(
             """UPDATE multibagger_refresh_jobs
-               SET status = 'failed', completed_at = now(), last_error = %s
+               SET processed = %s, total = %s, last_progress_at = now(), last_runner_heartbeat_at = now()
                WHERE job_id = %s""",
-            (error, job_id),
+            (processed, total, job_id),
         )
+
+
+def mark_multibagger_job_completed(job_id: str) -> bool:
+    """
+    Returns True only if the terminal write was durably persisted — callers
+    must not report 'completed' to anything (in-memory state, the calling
+    workflow, a background-task caller) unless this returns True. See
+    Product Integrity #009 §10 (terminal-write-failure handling).
+    """
+    try:
+        with _get_pool().connection() as conn:
+            result = conn.execute(
+                """UPDATE multibagger_refresh_jobs
+                   SET status = 'completed', completed_at = now()
+                   WHERE job_id = %s""",
+                (job_id,),
+            )
+        return result.rowcount == 1
+    except Exception:
+        log.error("[multibagger] durable completion write failed for job_id=%s", job_id)
+        return False
+
+
+def mark_multibagger_job_failed(job_id: str, error: str) -> bool:
+    """Same durable-write-failure contract as mark_multibagger_job_completed()."""
+    try:
+        with _get_pool().connection() as conn:
+            result = conn.execute(
+                """UPDATE multibagger_refresh_jobs
+                   SET status = 'failed', completed_at = now(), last_error = %s
+                   WHERE job_id = %s""",
+                (error, job_id),
+            )
+        return result.rowcount == 1
+    except Exception:
+        log.error("[multibagger] durable failure write failed for job_id=%s", job_id)
+        return False
 
 
 def get_active_multibagger_job(market: str) -> dict | None:
-    """Most recent running Multibagger refresh row for `market`, or None. Swallows DB errors."""
+    """Most recent queued/running Multibagger refresh row for `market`, or None. Swallows DB errors."""
     try:
         with _get_pool().connection() as conn:
             row = conn.execute(
-                """SELECT job_id, status, started_at, runner_instance_id
+                """SELECT job_id, status, started_at, runner_instance_id,
+                          trigger_source, scheduled_period_key, processed, total,
+                          last_runner_heartbeat_at, last_progress_at
                    FROM multibagger_refresh_jobs
-                   WHERE market = %s AND status = 'running'
+                   WHERE market = %s AND status IN ('queued', 'running')
                    ORDER BY started_at DESC LIMIT 1""",
                 (market,),
             ).fetchone()
         if not row:
             return None
-        return dict(zip(["job_id", "status", "started_at", "runner_instance_id"], row))
+        cols = ["job_id", "status", "started_at", "runner_instance_id",
+                "trigger_source", "scheduled_period_key", "processed", "total",
+                "last_runner_heartbeat_at", "last_progress_at"]
+        return dict(zip(cols, row))
     except Exception:
         return None
+
+
+def get_latest_multibagger_job(market: str) -> dict | None:
+    """Most recent Multibagger row for `market` regardless of status, or None. Swallows DB errors."""
+    try:
+        with _get_pool().connection() as conn:
+            row = conn.execute(
+                """SELECT job_id, status, started_at, completed_at, trigger_source,
+                          scheduled_period_key, processed, total, last_error,
+                          last_runner_heartbeat_at, last_progress_at
+                   FROM multibagger_refresh_jobs
+                   WHERE market = %s
+                   ORDER BY started_at DESC LIMIT 1""",
+                (market,),
+            ).fetchone()
+        if not row:
+            return None
+        cols = ["job_id", "status", "started_at", "completed_at", "trigger_source",
+                "scheduled_period_key", "processed", "total", "last_error",
+                "last_runner_heartbeat_at", "last_progress_at"]
+        return dict(zip(cols, row))
+    except Exception:
+        return None
+
+
+def get_last_successful_multibagger_refresh(market: str) -> dict | None:
+    """Most recent *completed* Multibagger row for `market`, or None — the basis for staleness."""
+    try:
+        with _get_pool().connection() as conn:
+            row = conn.execute(
+                """SELECT job_id, completed_at
+                   FROM multibagger_refresh_jobs
+                   WHERE market = %s AND status = 'completed'
+                   ORDER BY completed_at DESC LIMIT 1""",
+                (market,),
+            ).fetchone()
+        if not row:
+            return None
+        return dict(zip(["job_id", "completed_at"], row))
+    except Exception:
+        return None
+
+
+def reconcile_stale_multibagger_jobs() -> int:
+    """
+    Orphan/restart recovery (Product Integrity #009 §9): a queued/running row
+    whose heartbeat has gone silent for longer than a credible individual-
+    symbol provider operation is reclassified 'interrupted' — never deleted,
+    never reclaimed while genuinely active. Also releases any heavy-workload
+    lease still held by a row this call reclassifies, transactionally in the
+    same statement set. Read-only GET endpoints must never call this — only
+    an explicit reconciliation path (e.g. startup) may.
+    Returns the number of rows reclassified. Swallows DB errors (best-effort;
+    a failed reconciliation pass just tries again next time, same as Daily
+    Picks' own restart-catchup pattern).
+    """
+    try:
+        with _get_pool().connection() as conn:
+            stale = conn.execute(
+                f"""UPDATE multibagger_refresh_jobs
+                    SET status = 'interrupted', completed_at = now(),
+                        last_error = 'reconciled: no heartbeat for over {_MULTIBAGGER_ORPHAN_TIMEOUT_HOURS}h'
+                    WHERE status IN ('queued', 'running')
+                      AND COALESCE(last_runner_heartbeat_at, started_at)
+                          < now() - interval '{_MULTIBAGGER_ORPHAN_TIMEOUT_HOURS} hours'
+                    RETURNING job_id"""
+            )
+            stale_job_ids = [r[0] for r in stale.fetchall()]
+            if stale_job_ids:
+                conn.execute(
+                    """UPDATE heavy_workload_leases
+                       SET released_at = now()
+                       WHERE released_at IS NULL AND owner_job_id = ANY(%s)""",
+                    (stale_job_ids,),
+                )
+        return len(stale_job_ids)
+    except Exception:
+        log.error("[multibagger] stale-job reconciliation pass failed")
+        return 0
+
+
+def try_acquire_heavy_workload_lease(resource: str, owner_type: str, owner_job_id: str, market: str) -> bool:
+    """
+    Atomically insert an active lease row for `resource`. The partial unique
+    index on (resource) WHERE released_at IS NULL is the sole gate — one
+    INSERT either wins the lease or conflicts; there is no separate
+    check-then-start step for a caller to race against. Raises on genuine
+    DB error — callers must treat that as a fail-closed 503, never as "lease
+    available."
+    """
+    with _get_pool().connection() as conn:
+        result = conn.execute(
+            """INSERT INTO heavy_workload_leases (resource, owner_type, owner_job_id, market, acquired_at)
+               VALUES (%s, %s, %s, %s, now())
+               ON CONFLICT DO NOTHING""",
+            (resource, owner_type, owner_job_id, market),
+        )
+        return result.rowcount == 1
+
+
+def release_heavy_workload_lease(owner_job_id: str) -> None:
+    """Idempotent — releasing an already-released or never-held lease is a no-op, not an error."""
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "UPDATE heavy_workload_leases SET released_at = now() WHERE owner_job_id = %s AND released_at IS NULL",
+            (owner_job_id,),
+        )
+
+
+def has_active_heavy_workload_lease(resource: str) -> bool:
+    """Fail-closed: True both when a lease is actually held and when the check itself fails."""
+    try:
+        with _get_pool().connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM heavy_workload_leases WHERE resource = %s AND released_at IS NULL LIMIT 1",
+                (resource,),
+            ).fetchone()
+        return row is not None
+    except Exception:
+        return True
 
 
 def get_latest_daily_picks_job(market: str) -> dict | None:

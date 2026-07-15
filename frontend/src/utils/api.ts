@@ -785,6 +785,20 @@ export const importPortfolioHoldings = (
   ).then(r => r.data);
 
 export const fetchMultibaggerStatus = (market: "IN" | "US" = "IN") =>
-  api.get<{ market: string; running: boolean; last_summary: MultibaggerRefreshSummary | null; last_refreshed: string | null }>(
+  api.get<{
+    market: string;
+    running: boolean;
+    last_summary: MultibaggerRefreshSummary | null;
+    last_refreshed: string | null;
+    // Product Integrity #009 — weekly refresh, durable status contract.
+    schedule_frequency: "weekly";
+    next_scheduled_refresh_hint: string;
+    stale_after_days: number;
+    durable_state_available: boolean;
+    last_successful_refresh_at?: string | null;
+    is_stale?: boolean;
+    job_status?: "queued" | "running" | "completed" | "failed" | "interrupted" | "expired";
+    trigger_source?: "scheduled" | "manual";
+  }>(
     "/api/multibagger/status", { params: { market } }
   ).then((r) => r.data);

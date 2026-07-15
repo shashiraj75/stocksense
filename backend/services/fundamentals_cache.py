@@ -1,6 +1,7 @@
 """
-Cached fundamentals for the full NSE universe, refreshed nightly by
-fundamentals_refresh.py. Backs the Multibagger Screen feature — screening
+Cached fundamentals for the full NSE universe, refreshed weekly by
+fundamentals_refresh.py (Product Integrity #009 — moved from nightly).
+Backs the Multibagger Screen feature — screening
 2,300+ stocks live against screener.in on every request isn't viable (too
 slow, and it would hammer screener.in hard enough to risk getting our IP
 blocked, which we also depend on for predictions and the Fundamentals tab).

@@ -33,7 +33,12 @@ def _is_financial(sector_name: str | None, industry_name: str | None) -> bool:
     return any(k in text for k in _FINANCIAL_KEYWORDS)
 
 
-def run_full_refresh() -> dict:
+def run_full_refresh(on_progress=None) -> dict:
+    """
+    on_progress: optional callable(processed: int, total: int) invoked
+    periodically (every 100 symbols) for durable heartbeat/progress
+    persistence — see Product Integrity #009 §8.
+    """
     cache.ensure_table()
 
     total = len(IN_STOCKS)
@@ -79,6 +84,11 @@ def run_full_refresh() -> dict:
             elapsed = time.time() - started
             print(f"[fundamentals_refresh] {i}/{total} processed "
                   f"({refreshed} ok, {skipped} skipped, {failed} failed) — {elapsed/60:.1f}m elapsed")
+            if on_progress is not None:
+                try:
+                    on_progress(i, total)
+                except Exception:
+                    log.warning("[fundamentals_refresh] on_progress callback failed", exc_info=True)
 
         time.sleep(REQUEST_DELAY_SECONDS)
 

@@ -1,22 +1,31 @@
-name: Multibagger Fundamentals Refresh (Nightly)
+name: Multibagger Fundamentals Refresh — India (Weekly)
 
 on:
   schedule:
-    # 17:00 UTC = 10:30 PM IST — deliberately NOT during Daily Picks' window.
-    # IN Daily Picks currently starts 21:56 UTC (3:26 AM IST, see
-    # daily_picks_in.yml) and runs ~4 hrs; US Daily Picks base generation
-    # starts 06:00 UTC (see daily_picks_us.yml) and is done in ~10-20
-    # minutes, many hours before this. Both this job and IN Daily Picks hit
-    # screener.in through the same backend process — running them
-    # concurrently would compound load on a single screener.in session and
-    # risk slowing/blocking both. ~2,300 NSE stocks at a polite scrape pace
-    # takes roughly 1-2 hours, finishing with a comfortable buffer before IN
-    # Daily Picks starts at 21:56 UTC.
-    - cron: "0 17 * * 0-4"    # Sun–Thu UTC = Mon–Fri IST evening (market days)
-  workflow_dispatch:           # allow manual trigger from GitHub UI
+    # Product Integrity #009 (2026-07-16): converted from nightly (Sun-Thu
+    # 17:00 UTC) to weekly. Most financial-statement fundamentals change
+    # quarterly, not daily — a nightly full-universe scrape was unnecessary
+    # provider load, Railway resource pressure, and daily scheduler-
+    # collision risk for data that barely moves day to day.
+    #
+    # 21:30 UTC Friday = 3:00 AM IST Saturday = 1:30 AM Dubai Saturday.
+    # Saturday pre-dawn IST avoids both India Daily Picks (Fri/Sun-Thu
+    # 21:56 UTC, ~4h runtime — a different day of the UTC week from this
+    # Friday slot) and India Multibagger's own prior nightly slot. The
+    # backend is the DST-aware (though IST has no DST) local-window
+    # authority: POST /api/multibagger/refresh only accepts this scheduled
+    # call inside Saturday 2:30-4:30 AM IST — see
+    # services/multibagger_schedule.py's in_scheduled_window(). GitHub
+    # Actions' own scheduled dispatch is best-effort and can arrive late;
+    # the wider 2-hour window absorbs moderate delay.
+    #
+    # Expected India runtime: ~1-2 hours for ~2,300 NSE stocks — comfortably
+    # inside the window's remaining slack even with dispatch delay.
+    - cron: "30 21 * * 5"    # Friday 21:30 UTC = Saturday 3:00 AM IST
+  workflow_dispatch:           # exceptional, explicitly authorized manual refresh only
 
 jobs:
-  refresh-fundamentals:
+  refresh-fundamentals-in:
     runs-on: ubuntu-latest
     steps:
       - name: Check Railway backend is healthy
@@ -33,12 +42,52 @@ jobs:
             sleep 10
           done
 
-      - name: Trigger fundamentals refresh
+      - name: Trigger India fundamentals refresh
         run: |
-          echo "Triggering full-universe fundamentals refresh at $(date -u) UTC (10:30 PM IST)..."
-          curl -sS --fail-with-body --max-time 30 \
-            -X POST \
-            -H "x-secret: ${{ secrets.PICKS_SECRET }}" \
-            "https://stocksense-production-7e0d.up.railway.app/api/multibagger/refresh"
-          echo ""
-          echo "Refresh started in the background. ~2,300 NSE stocks — expect completion in 1-2 hours."
+          # scheduled vs workflow_dispatch distinguishes trigger_source —
+          # a manual run must never impersonate the scheduled weekly period.
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            TRIGGER_SOURCE="scheduled"
+          else
+            TRIGGER_SOURCE="manual"
+          fi
+          echo "Triggering India fundamentals refresh at $(date -u) UTC (trigger_source=$TRIGGER_SOURCE)..."
+
+          # Bounded retry (Product Integrity #009 §15): only 409 resource_busy
+          # and 503 durable_state_unavailable are retryable — both mean "the
+          # backend deliberately declined to start, try again shortly," not
+          # "something is broken." 5 attempts, 60s apart (5 minutes max) is
+          # enough to absorb a brief lease conflict without retrying forever.
+          MAX_ATTEMPTS=5
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            HTTP_CODE=$(curl -sS --max-time 30 -o /tmp/refresh_resp.json -w "%{http_code}" \
+              -X POST \
+              -H "x-secret: ${{ secrets.PICKS_SECRET }}" \
+              "https://stocksense-production-7e0d.up.railway.app/api/multibagger/refresh?market=IN&trigger_source=$TRIGGER_SOURCE")
+            BODY=$(cat /tmp/refresh_resp.json)
+            echo "Attempt $i: HTTP $HTTP_CODE — $BODY"
+
+            case "$HTTP_CODE" in
+              202)
+                echo "India Multibagger refresh started — ~2,300 NSE stocks, expect 1-2 hours."
+                exit 0
+                ;;
+              200)
+                echo "India Multibagger refresh already completed/queued/running for this scheduled period — safe no-op."
+                exit 0
+                ;;
+              409|503)
+                if [ "$i" -lt "$MAX_ATTEMPTS" ]; then
+                  echo "Retryable response ($HTTP_CODE) — waiting 60s before retry ($i/$MAX_ATTEMPTS)..."
+                  sleep 60
+                else
+                  echo "Exhausted $MAX_ATTEMPTS attempts with retryable response $HTTP_CODE — giving up for this run."
+                  exit 1
+                fi
+                ;;
+              *)
+                echo "Non-retryable response: HTTP $HTTP_CODE — not retrying."
+                exit 1
+                ;;
+            esac
+          done

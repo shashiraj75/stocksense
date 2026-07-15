@@ -128,15 +128,15 @@ export default function MultibaggerPage() {
     ? Math.floor((Date.now() - lastRefreshedDate.getTime()) / 3_600_000)
     : null;
 
-  // The scheduled refresh time remains a market-reference concept — shown
-  // only as secondary context, never as the primary freshness indicator,
-  // and never converted into the viewer's timezone. Preserved verbatim from
-  // the prior copy (unchanged wording/values — only its priority in the UI
-  // changes here, from primary to secondary): this audit found no source
-  // evidence of what timezone basis the actual GitHub Actions cron uses, so
-  // the existing "IST" label for both markets is kept as-is rather than
-  // guessed at.
-  const normalScheduleMarketTime = market === "IN" ? "10:30 PM IST" : "7:30 AM IST";
+  // Product Integrity #009 (2026-07-16): full-universe fundamentals refresh
+  // is weekly for both markets. This is a market-reference schedule
+  // concept, shown as secondary context — never the primary freshness
+  // indicator, and never converted into the viewer's timezone, since it
+  // describes a local-market target, not an instant.
+  const normalScheduleMarketTime = market === "IN"
+    ? "Saturday 3:00 AM IST"
+    : "Sunday 3:00 AM ET";
+  const isStale = status?.is_stale ?? false;
 
   // isFetching without isLoading means placeholderData is showing a prior
   // market/screen's already-successful result while a new one loads —
@@ -157,7 +157,7 @@ export default function MultibaggerPage() {
               {status?.last_summary?.total ? ` · screened from ${status.last_summary.total.toLocaleString()} ${market === "IN" ? "NSE" : "US"} stocks` : ""}
             </p>
             <p className="text-xs text-gray-600 mt-0.5">
-              Normal schedule: {normalScheduleMarketTime} market reference
+              Full fundamentals refreshed weekly · Scheduled {normalScheduleMarketTime}
             </p>
           </div>
         </div>
@@ -173,11 +173,21 @@ export default function MultibaggerPage() {
             <span className="flex items-center gap-1.5 text-xs text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 rounded-lg px-3 py-1.5">
               <Wifi size={12} className="animate-pulse" /> Refreshing fundamentals…
             </span>
+          ) : status?.job_status === "failed" ? (
+            <span className="flex items-center gap-1.5 text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-1.5">
+              <Clock size={12} /> Last weekly refresh failed
+              {lastRefreshed ? ` · previous data from ${lastRefreshed}` : ""}
+            </span>
           ) : lastRefreshed && (
-            <span className="flex items-center gap-1.5 text-xs text-gray-500 bg-dark-card border border-dark-border rounded-lg px-3 py-1.5">
+            <span className={`flex items-center gap-1.5 text-xs rounded-lg px-3 py-1.5 border ${
+              isStale
+                ? "text-yellow-400 bg-yellow-500/10 border-yellow-500/30"
+                : "text-gray-500 bg-dark-card border-dark-border"
+            }`}>
               <Clock size={12} />
               Last refreshed: {lastRefreshed}
               {lastRefreshedAgeHours != null ? ` · ${lastRefreshedAgeHours}h ago` : ""}
+              {isStale ? " · data is stale" : ""}
             </span>
           )}
         </div>
@@ -191,6 +201,13 @@ export default function MultibaggerPage() {
         Review the Stock Detail signal, risks, valuation and portfolio fit before acting.
         These screens may feed future Core Investment (6 months–3 years) research — Core Investment itself is future/planned and is not a live signal today.
       </p>
+
+      {isStale && (
+        <p className="text-xs text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 rounded-xl px-4 py-3 leading-relaxed">
+          Fundamentals data has not refreshed successfully within the expected weekly window (stale after {status?.stale_after_days ?? 9} days).
+          Figures below may not reflect the latest quarterly filings or market data — treat scores and rankings with extra caution until the next successful refresh.
+        </p>
+      )}
 
       {/* Screen selector */}
       <div className="grid sm:grid-cols-3 gap-3">
@@ -351,7 +368,7 @@ export default function MultibaggerPage() {
       </div>
 
       <p className="text-xs text-gray-600 text-center">
-        Data sourced from {market === "IN" ? "screener.in" : "Yahoo Finance"} · Refreshed nightly · Research screens only — not buy/sell calls or investment advice.
+        Data sourced from {market === "IN" ? "screener.in" : "Yahoo Finance"} · Refreshed weekly · Research screens only — not buy/sell calls or investment advice.
         Do your own due diligence, including the Stock Detail signal, risks, and valuation, before acting on any screen result.
       </p>
     </div>

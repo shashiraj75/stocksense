@@ -159,6 +159,8 @@ def test_api_trigger_contract_is_unchanged_when_startup_catchup_disabled(monkeyp
     client = TestClient(app)
 
     with patch("services.postgres_store.try_reserve_daily_picks_job", return_value=True), \
+         patch("services.postgres_store.try_acquire_heavy_workload_lease", return_value=True), \
+         patch("services.postgres_store.release_heavy_workload_lease"), \
          patch("services.daily_picks.picks_generated_today", return_value=False), \
          patch("services.daily_picks.generate_picks"):
         resp = client.post("/api/picks/generate", params={"market": "US"}, headers={"x-secret": "test-secret"})

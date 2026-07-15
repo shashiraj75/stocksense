@@ -257,17 +257,6 @@ def trigger_generation(background_tasks: BackgroundTasks, market: str = "IN", x_
                          "message": f"{market} picks generation is already in progress."},
             )
 
-    # Step 4a: US workload overlap protection (2026-07-15). Daily Picks has
-    # priority over the US Multibagger refresh (they share yfinance). If a
-    # refresh is currently running, ask it to stop at its next per-symbol
-    # boundary and proceed immediately — Daily Picks never waits for it, and
-    # the request is best-effort/cooperative (see us_fundamentals_refresh.
-    # run_full_refresh's should_stop). No-op for IN, which has no such flag.
-    if market == "US":
-        from api.routers.multibagger import _refresh_state as _mb_state, request_us_stop
-        if _mb_state["US"]["running"]:
-            request_us_stop()
-
     # Step 5: Atomic durable reservation via partial unique index
     job_id = str(uuid.uuid4())
     try:
@@ -297,22 +286,66 @@ def trigger_generation(background_tasks: BackgroundTasks, market: str = "IN", x_
             },
         )
 
+    # Step 6a: Heavy-workload lease (Product Integrity #009, replaces the
+    # 2026-07-15 "cooperative stop" coupling with Multibagger). Daily Picks
+    # and Multibagger for the same market now arbitrate the shared provider
+    # (yfinance for US, screener.in for IN) through the same transactional
+    # lease — exactly one wins; the other gets a clean, retryable
+    # resource_busy response. Neither cancels a job the other already
+    # started. Since Multibagger is now weekly and runs at a very different
+    # local time, this should almost never actually conflict in normal
+    # operation — it exists for the exceptional manual-overlap case.
+    _HEAVY_RESOURCE = {"IN": "IN_SCREENER_HEAVY", "US": "US_YFINANCE_HEAVY"}[market]
+    try:
+        from services.postgres_store import try_acquire_heavy_workload_lease
+        leased = try_acquire_heavy_workload_lease(_HEAVY_RESOURCE, "daily_picks", job_id, market)
+    except Exception as e:
+        try:
+            mark_daily_picks_job_failed(job_id, datetime.now(timezone.utc), f"lease_acquire_failed: {e}")
+        except Exception:
+            pass
+        return JSONResponse(
+            status_code=503,
+            content={"status": "durable_job_state_unavailable", "market": market,
+                     "message": f"Could not acquire heavy-workload lease: {e}"},
+        )
+    if not leased:
+        try:
+            mark_daily_picks_job_failed(job_id, datetime.now(timezone.utc),
+                                          "resource_busy: heavy-workload lease held by Multibagger")
+        except Exception:
+            pass
+        return JSONResponse(
+            status_code=409,
+            content={"status": "resource_busy", "market": market, "resource": _HEAVY_RESOURCE,
+                      "message": f"{_HEAVY_RESOURCE} is currently held by a Multibagger refresh — "
+                                  "this request did not start and may be retried."},
+        )
+
     # Step 7: Set in-memory flag AFTER successful DB reservation
     with _dp._generating_lock:
         _dp._generating[market] = True
 
-    # Step 8: Launch background task; clean up durable reservation if dispatch itself fails
+    # Step 8: Launch background task; clean up durable reservation and the
+    # heavy-workload lease if dispatch itself fails; release the lease when
+    # generation finishes, regardless of outcome.
     def _run():
         try:
             _dp.generate_picks(market, job_id=job_id)
         finally:
             with _dp._generating_lock:
                 _dp._generating[market] = False
+            try:
+                from services.postgres_store import release_heavy_workload_lease
+                release_heavy_workload_lease(job_id)
+            except Exception:
+                pass
 
     try:
         background_tasks.add_task(_run)
     except Exception as dispatch_err:
-        # Dispatch failure: mark the reserved row failed so it does not block future runs
+        # Dispatch failure: mark the reserved row failed and release the
+        # lease so neither blocks future runs.
         with _dp._generating_lock:
             _dp._generating[market] = False
         try:
@@ -320,6 +353,11 @@ def trigger_generation(background_tasks: BackgroundTasks, market: str = "IN", x_
                 job_id, datetime.now(timezone.utc),
                 f"failed_to_start: {dispatch_err}",
             )
+        except Exception:
+            pass
+        try:
+            from services.postgres_store import release_heavy_workload_lease
+            release_heavy_workload_lease(job_id)
         except Exception:
             pass
         return JSONResponse(
@@ -372,14 +410,6 @@ async def premarket_finalize(market: str = "US", x_secret: str = Header(None)):
     """
     if x_secret != PICKS_SECRET:
         raise HTTPException(status_code=401, detail="Invalid secret")
-
-    # US workload overlap protection (2026-07-15) — same cooperative signal
-    # as /generate's Step 4a; pure addition, does not touch finalizer
-    # decision logic. See request_us_stop()'s own docstring.
-    if market == "US":
-        from api.routers.multibagger import _refresh_state as _mb_state, request_us_stop
-        if _mb_state["US"]["running"]:
-            request_us_stop()
 
     from services.premarket_finalizer import finalize_premarket
     result = await finalize_premarket(market)

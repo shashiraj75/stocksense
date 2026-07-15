@@ -297,6 +297,8 @@ class TestExistingEndpointsUnaffected:
         monkeypatch.setenv("USE_POSTGRES", "1")
         with patch.object(dp, "generate_picks"), \
              patch("services.postgres_store.try_reserve_daily_picks_job", return_value=True), \
+             patch("services.postgres_store.try_acquire_heavy_workload_lease", return_value=True), \
+             patch("services.postgres_store.release_heavy_workload_lease"), \
              patch("services.daily_picks.picks_generated_today", return_value=False):
             resp = client.post("/api/picks/generate", params={"market": "US"},
                                 headers={"x-secret": TEST_SECRET})
