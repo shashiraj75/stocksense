@@ -15,6 +15,7 @@ These are binding on all future implementation work, not reference material to c
 - [SES-003 — Testing Standards](SES/SES-003-Testing-Standards.md) — pytest layout, the four test categories, isolation, sanity-checking your own tests.
 - [SES-004 — Documentation Standards](SES/SES-004-Documentation-Standards.md) — where documents live, what every audit/sprint-report/roadmap must contain.
 - [SES-005 — StockSense360 Branding Standard](SES/SES-005-StockSense360-Branding-Standard.md) — official product name, approved naming conventions, what's explicitly out of scope to rename.
+- [SES-006 — End-to-End Implementation and Release Standard](SES/SES-006-End-to-End-Implementation-and-Release-Standard.md) — the binding standard for how material implementation work is delivered, normally as one complete end-to-end prompt: senior-programmer role, a mandatory prompt coverage declaration, repository-wide consistency audits (before and after implementation), full-stack review, decision/data-integrity preservation, testing (references SES-003), documentation (references SES-004), a Final Release Review gate before any commit, commit hygiene (references SES-001 §5), a production safety gate before push, normal deployment with exact-SHA verification, post-deployment verification, natural-run verification for scheduled/background work, explicit safety boundaries for when a change must be split across prompts, a self-correction rule for incomplete prompts, and standard evidence-based completion states. Companion templates: [Implementation Prompt Template](Templates/StockSense360-End-to-End-Implementation-Prompt-Template.md), [Release Evidence Template](Templates/StockSense360-End-to-End-Release-Evidence-Template.md).
 
 ## System Design Specifications (SSDS)
 
@@ -118,8 +119,8 @@ These are binding on all future implementation work, not reference material to c
 
 ## How to use this handbook
 
-1. Before starting any implementation task, read SES-001–005 if you haven't already internalized them this session.
+1. Before starting any implementation task, read SES-001–006 if you haven't already internalized them this session.
 2. Check the [Product Glossary](Glossary/StockSense360-Product-Glossary.md) before naming any engine, score, or feature — use the name it specifies, don't invent a new one.
 3. For anything spanning more than one engine or service, read [SSDS-000](SSDS/SSDS-000-StockSense360-System-Architecture.md) first. Before starting a feature or a sprint, fill out the matching SSDS-001/002 template.
-4. While working, follow the relevant SES standard for the kind of change you're making.
+4. While working, follow the relevant SES standard for the kind of change you're making. For material implementation work (SES-006 §2), start from the [Implementation Prompt Template](Templates/StockSense360-End-to-End-Implementation-Prompt-Template.md) and deliver the lifecycle SES-006 requires, ending in one of its evidence-based completion states.
 5. When you finish a sprint, write its report under `Releases/` per SES-004 §3, and update this INDEX if you added a new governing document.
