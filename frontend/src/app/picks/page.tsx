@@ -16,6 +16,7 @@ import clsx from "clsx";
 import { PaperTradeModal } from "@/components/PaperTradeModal";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
 import { UnsupportedMarketNotice } from "@/components/UnsupportedMarketNotice";
+import { INTEGRITY_HOLD_ACTIVE, ValidationIntegrityHold } from "@/components/ValidationIntegrityHold";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type ReasonItem = { indicator: string; signal: string; reason: string };
@@ -833,6 +834,9 @@ function PickCard({ pick, rank, market, currency, locale, freshness }: { pick: P
 export default function DailyPicksPage() {
   const [market] = useMarketPreference(["IN", "US"] as const, "IN");
   const [horizon, setHorizon] = useState<"short" | "medium" | "long">("short");
+  // Restored for the INTEGRITY_HOLD_ACTIVE === false branch below — always
+  // declared (hooks must be called unconditionally) but only read/rendered
+  // when the hold is off, so it has no effect while the hold is active.
   const [showTruth, setShowTruth] = useState(false);
 
   const marketCfg = MARKETS.find(m => m.key === market)!;
@@ -920,12 +924,16 @@ export default function DailyPicksPage() {
           <span className="shrink-0 whitespace-nowrap text-xs px-3 py-1.5 rounded-lg bg-dark-card border border-dark-border text-gray-400">
             Market: {marketCfg.short}
           </span>
-          {/* Toggle truth panel */}
-          <button onClick={() => setShowTruth(v => !v)}
-            className={clsx("flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg border transition-colors",
-              showTruth ? "bg-blue-500/20 border-blue-500/40 text-blue-300" : "bg-dark-card border-dark-border text-gray-400 hover:text-white")}>
-            <CheckCircle size={12} /> {showTruth ? "Hide" : "Show"} Real Accuracy
-          </button>
+          {/* Original opt-in "Real Accuracy" control — withheld while
+              INTEGRITY_HOLD_ACTIVE is true (see ValidationIntegrityHold.tsx),
+              restored verbatim once it's false. */}
+          {!INTEGRITY_HOLD_ACTIVE && (
+            <button onClick={() => setShowTruth(v => !v)}
+              className={clsx("flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg border transition-colors",
+                showTruth ? "bg-blue-500/20 border-blue-500/40 text-blue-300" : "bg-dark-card border-dark-border text-gray-400 hover:text-white")}>
+              <CheckCircle size={12} /> {showTruth ? "Hide" : "Show"} Real Accuracy
+            </button>
+          )}
           {generatedAt && (() => {
             const ageHours = data?.generated_at ? Math.floor((Date.now() - new Date(data.generated_at).getTime()) / 3_600_000) : 0;
             const isStale = ageHours >= 4;
@@ -1071,11 +1079,28 @@ export default function DailyPicksPage() {
         ))}
       </div>
 
-      {/* Priority 1 + 2: Backtest truth panel (toggle) */}
-      {showTruth && <BacktestPanel horizon={horizon} benchmarkLabel={market === "IN" ? "Nifty" : "S&P 500"} />}
+      {/* Product Integrity Workstream — Phase GPI-0, true two-branch hold.
+          true  -> ValidationIntegrityHold only; BacktestPanel/
+                   LivePerformanceTracker appear in neither branch's JSX
+                   here, so their useQuery calls cannot mount/fire — not a
+                   CSS-only hide.
+          false -> exact pre-containment opt-in interface: the "Show Real
+                   Accuracy" control (restored above) plus both panels,
+                   each still gated behind the user's own showTruth click,
+                   unchanged from before this workstream. See
+                   ValidationIntegrityHold.tsx for the removal criteria that
+                   must all be true before flipping this flag. */}
+      {INTEGRITY_HOLD_ACTIVE ? (
+        <ValidationIntegrityHold />
+      ) : (
+        <>
+          {/* Priority 1 + 2: Backtest truth panel (toggle) */}
+          {showTruth && <BacktestPanel horizon={horizon} benchmarkLabel={market === "IN" ? "Nifty" : "S&P 500"} />}
 
-      {/* Priority 3: Live performance tracker (toggle) */}
-      {showTruth && <LivePerformanceTracker horizon={horizon} currency={currency} locale={marketCfg.locale} benchmarkLabel={market === "IN" ? "Nifty" : "S&P 500"} />}
+          {/* Priority 3: Live performance tracker (toggle) */}
+          {showTruth && <LivePerformanceTracker horizon={horizon} currency={currency} locale={marketCfg.locale} benchmarkLabel={market === "IN" ? "Nifty" : "S&P 500"} />}
+        </>
+      )}
 
       {/* Loading */}
       {isLoading && (
