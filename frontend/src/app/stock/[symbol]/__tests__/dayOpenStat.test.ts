@@ -38,3 +38,18 @@ describe("Day Open stat pill", () => {
     expect(openIdx).toBeLessThan(highIdx);
   });
 });
+
+describe("Stat pill row scroll affordance", () => {
+  it("stays single-line (flex-nowrap) rather than wrapping to a second row", () => {
+    expect(pageSource).toContain('className="flex flex-nowrap gap-2 mb-3 overflow-x-auto');
+  });
+
+  it("forces a persistently visible styled scrollbar, matching portfolio/page.tsx's holdings-table convention", () => {
+    // Native scrollbars are invisible until actively scrolling on macOS/
+    // trackpad systems — an overflow-x-auto row with no visible scrollbar
+    // looks like a truncation bug, not "scroll for more". Same fix as the
+    // portfolio holdings table.
+    expect(pageSource).toContain("[&::-webkit-scrollbar]:h-1.5");
+    expect(pageSource).toContain("[&::-webkit-scrollbar-thumb]:bg-dark-border");
+  });
+});

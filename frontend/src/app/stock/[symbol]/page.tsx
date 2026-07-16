@@ -499,7 +499,13 @@ export default function StockPage() {
 
                   {/* Row 3: stats chips */}
                   {!isCrypto && quote && (
-                    <div className="flex flex-nowrap gap-2 mb-3 overflow-x-auto">
+                    // Native scrollbars are invisible until actively scrolling on
+                    // macOS/trackpad systems, which makes a cut-off pill row look
+                    // broken rather than "scroll for more" (same root cause as
+                    // portfolio/page.tsx's holdings table) — force a persistently
+                    // visible, styled thin scrollbar instead of relying on the OS
+                    // default.
+                    <div className="flex flex-nowrap gap-2 mb-3 overflow-x-auto max-w-full [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-dark-border [&::-webkit-scrollbar-thumb]:rounded-full">
                       {[
                         ...(quote.open != null ? [["Day Open", `${currency}${quote.open.toLocaleString()}`, "text-gray-200"]] : []),
                         ...(quote.high != null ? [["Day High", `${currency}${quote.high.toLocaleString()}`, "text-gray-200"]] : []),
