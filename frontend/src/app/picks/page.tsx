@@ -83,7 +83,7 @@ type LivePick = {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const MARKETS = [
-  { key: "IN" as const, short: "🇮🇳 IN", label: "🇮🇳 NSE India",  currency: "₹", locale: "en-IN", tz: "Asia/Kolkata",     genTime: "2 AM IST",   tzLabel: "IST" },
+  { key: "IN" as const, short: "🇮🇳 IN", label: "🇮🇳 NSE India",  currency: "₹", locale: "en-IN", tz: "Asia/Kolkata",     genTime: "2:07 AM IST",   tzLabel: "IST" },
   // This is the US Pre-Open BASE generation schedule only (heavy/full
   // pipeline, see .github/workflows/daily_picks_us.yml) — NOT the separate
   // Premarket Review stage, which runs afterward at ~6:00 AM America/New_York

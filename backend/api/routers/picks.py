@@ -57,7 +57,7 @@ def daily_picks(market: str = "IN"):
 
     data = _dp.get_cached_picks(market)
     if not data:
-        next_run = "2 AM IST" if market == "IN" else "06:00 UTC (10:00 AM Dubai / 11:30 AM IST)"
+        next_run = "2:07 AM IST" if market == "IN" else "06:00 UTC (10:00 AM Dubai / 11:30 AM IST)"
         return {
             "generated_at": None,
             "market": market,
@@ -214,7 +214,7 @@ def trigger_generation(background_tasks: BackgroundTasks, market: str = "IN", x_
     distinct from and always prior to the separate, lightweight US Premarket
     Review (see /premarket-finalize below).
     Protected by X-Secret header to prevent abuse.
-    Called by GitHub Actions cron: IN at 20:30 UTC (2 AM IST), US at 06:00 UTC
+    Called by GitHub Actions cron: IN at 20:37 UTC (2:07 AM IST), US at 06:00 UTC
     (10:00 AM Dubai / 11:30 AM IST).
 
     HTTP contract:

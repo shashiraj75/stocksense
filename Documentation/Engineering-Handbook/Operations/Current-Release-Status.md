@@ -53,13 +53,24 @@ Original gate criteria, reviewed individually rather than declared passed as a b
 
 ## Product Integrity #012 — NSE Bhavcopy Last-Resort Price Correction
 
-**Status:** Implemented, tested, locally committed — pending production safety gate and push confirmation. See [Product Integrity #012](../Releases/Product-Integrity-012-NSE-Bhavcopy-Price-Correction-Fallback.md).
+**Status:** Deployed to production (2026-07-16, commit `b83b12a`). See [Product Integrity #012](../Releases/Product-Integrity-012-NSE-Bhavcopy-Price-Correction-Fallback.md).
 
 - Builds on #011: when yfinance's 3-attempt retry budget is exhausted and a bar is still stale, adds one last-resort lookup against NSE's own official daily bhavcopy archive (`https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_{DDMMYYYY}.csv`) before accepting the stale price.
 - Reachability from Railway's production network was verified directly (not assumed) via a read-only probe run from inside the actual production container: `HTTP_CODE: 200`, real ~369KB daily file returned.
 - **Meaningfully changes #011's stated scope**: when a bhavcopy correction fires, `current_price` — and therefore entry/target/stop-loss trade levels, not just the displayed reference price — is computed from NSE's corrected close rather than the stale Yahoo one. This is deliberate and disclosed, not incidental.
 - Does not touch OHLC history or technical indicators (bhavcopy has no history, only a single day's close) — a corrected pick's price is accurate; its technical indicators may still be computed from history that includes a stale last bar. Does not add a US equivalent.
 - Natural-run verification (checking for `generation_reference_source: "nse_bhavcopy"` on any pick) is pending the next scheduled India generation.
+
+## Product Integrity #013 — India Daily Picks Schedule Move (2:07 AM IST) and Stale-Copy Repair
+
+**Status:** Implemented, tested, locally committed — pending production safety gate and push confirmation. See [Product Integrity #013](../Releases/Product-Integrity-013-India-Daily-Picks-Schedule-Move-and-Stale-Copy-Repair.md).
+
+- India Daily Picks cron moved from `56 21 * * 0-4` UTC (3:26 AM IST) to `37 20 * * 0-4` UTC (**2:07 AM IST**), by explicit user request.
+- In the process, found and fixed a pre-existing, silent staleness: the frontend's `"generated daily at 2 AM IST"` label had been wrong for about a week (since the cron moved to 3:26 AM IST on 2026-07-09 without the label following). Now correctly reads `"2:07 AM IST"`, matching the new live schedule.
+- Confirmed (did not need to fix) that `"screened from N eligible NSE stocks"` is not a hardcoded/stale number — it's a live template driven by the backend's actual `screened_from` field each run.
+- Corrected a related functional drift in `main.py`'s startup catch-up threshold, which had assumed generation starts near 2 AM IST while the real cron had drifted to 3:26 AM IST — the schedule move itself resolves this (2:07 AM IST is close enough to the existing hour=2 threshold), the code comment was updated to state the current reality rather than the stale one.
+- Two "frozen schedule" regression tests (Product Integrity #010) were deliberately updated to the new cron — that freeze exists to prevent *accidental* drift from unrelated work, not to block an explicit, user-directed scheduling decision like this one.
+- Scope was explicitly limited to functional code (workflow YAML, frontend label, backend strings/comments, tests) — the ~12 `Documentation/*.md`/`README.md` prose references to "2 AM IST" were left as-is per user direction, and remain a known stale-reference risk for a future doc pass.
 
 ## Phase 1A.6 — Market Integrity Hardening and Database-Default Closure
 

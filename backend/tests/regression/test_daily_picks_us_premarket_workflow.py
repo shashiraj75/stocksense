@@ -45,8 +45,10 @@ class TestUsBaseWorkflowCronChanged:
 @pytest.mark.regression
 class TestIndiaWorkflowUntouched:
     def test_cron_unchanged(self):
+        # Product Integrity #013 (2026-07-16): deliberately moved to
+        # 20:37 UTC (2:07 AM IST) by explicit user request.
         src = (_WORKFLOWS / "daily_picks_in.yml").read_text()
-        assert 'cron: "56 21 * * 0-4"' in src
+        assert 'cron: "37 20 * * 0-4"' in src
 
     def test_still_calls_generate_endpoint_for_in(self):
         src = (_WORKFLOWS / "daily_picks_in.yml").read_text()

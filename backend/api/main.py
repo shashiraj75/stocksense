@@ -468,7 +468,15 @@ async def lifespan(app: FastAPI):
     from datetime import timezone as _tz, timedelta as _td
     _IST = _tz(_td(hours=5, minutes=30))
     _ET = ZoneInfo("America/New_York")  # DST-aware, matches services/market_hours.py
-    # IN: catch up any time after 2 AM IST (the scheduled run time) on a weekday.
+    # IN: catch up any time after 2 AM IST on a weekday. trigger_hour has
+    # only hour-level granularity; the actual IN cron fires at 2:07 AM IST
+    # (.github/workflows/daily_picks_in.yml), ~7 min after this threshold —
+    # close enough that a restart in that narrow window simply lets the
+    # atomic job-reservation path (try_reserve_daily_picks_job) decide which
+    # of catch-up-vs-cron wins, rather than needing minute-level precision
+    # here. Previously drifted stale for ~1 week (2026-07-09 to 2026-07-16)
+    # when the cron moved to 3:26 AM IST without this threshold following —
+    # see Product Integrity #013.
     # US: base-generation cron fires at 06:00 UTC (2 AM EDT / 1 AM EST).
     # trigger_hour=3 (3 AM ET) is safely after both DST local times of that
     # run and leaves runway before the 6 AM ET Premarket Finalizer target.

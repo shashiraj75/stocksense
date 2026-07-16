@@ -3,6 +3,12 @@ Product Integrity #010 §6 — Daily Picks and Premarket Finalizer schedules
 are explicitly frozen by this release. This test reads the actual workflow
 YAML files (not a copy of the values) and fails if any of these crons ever
 drift, intentionally or accidentally, as part of Multibagger-scoped work.
+
+Product Integrity #013 (2026-07-16): the India Daily Picks cron itself was
+deliberately moved (20:37 UTC / 2:07 AM IST) by explicit user request, not
+Multibagger-scoped drift — this is exactly the kind of change this freeze
+is meant to require deliberate updating for, not prevent outright. The
+assertion below was updated to match; everything else remains frozen.
 """
 import os
 import yaml
@@ -23,7 +29,7 @@ def _crons(workflow):
 
 
 def test_india_daily_picks_cron_unchanged():
-    assert _crons(_load("daily_picks_in.yml")) == ["56 21 * * 0-4"]
+    assert _crons(_load("daily_picks_in.yml")) == ["37 20 * * 0-4"]
 
 
 def test_us_daily_picks_base_cron_unchanged():

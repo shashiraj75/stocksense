@@ -1,10 +1,10 @@
-name: Daily Stock Picks — India 3:26 AM IST
+name: Daily Stock Picks — India 2:07 AM IST
 
 on:
   schedule:
-    # India: 21:56 UTC = 3:26 AM IST next day = 1:56 AM Dubai
+    # India: 20:37 UTC = 2:07 AM IST next day = 0:37 AM Dubai
     # Sun–Thu UTC = Mon–Fri IST market days
-    - cron: "56 21 * * 0-4"
+    - cron: "37 20 * * 0-4"
   workflow_dispatch:
 
 jobs:
