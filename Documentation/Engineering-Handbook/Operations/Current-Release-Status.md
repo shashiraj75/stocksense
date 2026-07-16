@@ -140,12 +140,22 @@ Original gate criteria, reviewed individually rather than declared passed as a b
 
 ## Product Integrity #021 — High Conviction Picks Filter
 
-**Status:** Implemented, tested, locally committed — pending production safety gate and push confirmation. See [Product Integrity #021](../Releases/Product-Integrity-021-High-Conviction-Picks-Filter.md).
+**Status:** Deployed to production (commit `37cf159`) — verified live on stocksense360.com. See [Product Integrity #021](../Releases/Product-Integrity-021-High-Conviction-Picks-Filter.md).
 
 - User asked how to find Daily Picks with >85% AI confidence — there was no way to do this; picks could only be scanned manually per horizon tab.
 - Added a "High Conviction Only (≥85%)" toggle to the Picks page, alongside the existing horizon tabs. Filters the current horizon's picks to `confidence >= 85` and sorts highest-first; composes with (doesn't replace) the horizon tabs. Distinct empty state when a horizon has picks but none clear the bar.
 - Pure client-side view filter — no backend/ranking/confidence-computation change.
 - 13 new tests (wiring + real behavioral assertions on the exact filter/sort logic, including the 84%/85% boundary), full frontend suite 334/334 passing, clean typecheck, clean production build. No backend changes.
+- **Live-verified in browser**: toggle renders, activates with correct styling, filters/sorts correctly (confirmed against real India Long Term data — LUPIN 91%, NATIONALUM 88%), and the freshness-notice count correctly follows the filtered set.
+
+## Product Integrity #022 — Risk-Based Position Sizing in Paper Trade
+
+**Status:** Implemented, tested, locally committed — pending production safety gate and push confirmation. See [Product Integrity #022](../Releases/Product-Integrity-022-Risk-Based-Position-Sizing.md).
+
+- Follow-up to a user question about why US paper trading had a 75.6% win rate but a net loss while India (61.4% win rate) was profitable. Pulling the user's actual closed trades showed the cause: a flat share count (e.g. "10 shares") carries wildly different dollar risk by stock price — the 3 largest US losses ($1,439/$604/$944) were all large-notional positions (10 shares of $1,189/$824/$751 stocks), dwarfing many small wins on cheap stocks.
+- Added a risk-based quantity suggestion to the Paper Trade modal: sizes the position so a stop-loss hit costs ~1% of available virtual capital, capped at what the account can afford. Auto-fills Quantity (editable, same pattern as the existing AI stop-loss/target pre-fill) with a visible "risks ~$X (1% of $Y available)" hint.
+- Pure client-side suggestion — no backend or trade-execution logic change; purely additive to the existing manual Buy flow.
+- 13 new tests on the extracted pure sizing function, including a reproduction of the user's real MU incident confirming the fix would have suggested far fewer than the 10 flat shares that caused the actual loss. Full frontend suite 347/347 passing, clean typecheck, clean production build. No backend changes.
 
 ## Phase 1A.6 — Market Integrity Hardening and Database-Default Closure
 

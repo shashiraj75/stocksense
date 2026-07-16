@@ -4,9 +4,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { X, TrendingUp, TrendingDown, Minus, AlertCircle, Loader2, ShieldAlert, Target, Clock } from "lucide-react";
 import clsx from "clsx";
 import Link from "next/link";
-import { placePaperBuy, closePaperTrade, fetchPrediction, type Market, type Horizon, type TradeManagementMode } from "@/utils/api";
+import { placePaperBuy, closePaperTrade, fetchPrediction, fetchPaperPortfolio, type Market, type Horizon, type TradeManagementMode } from "@/utils/api";
 import { useAuth } from "@/lib/AuthContext";
 import { getMarketStatus } from "@/utils/marketHours";
+import { computeSuggestedQuantity, RISK_PCT_OF_CAPITAL } from "@/utils/riskBasedSizing";
 
 interface Props {
   symbol: string;
@@ -65,6 +66,7 @@ export function PaperTradeModal({
   // Track whether the user manually edited the fields so we don't overwrite their changes
   const stopLossEdited = useRef(false);
   const targetPriceEdited = useRef(false);
+  const quantityEdited = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -88,6 +90,17 @@ export function PaperTradeModal({
     retry: false,
     enabled: !isSell,
   });
+
+  // Same queryKey/queryFn as the Paper Trading page's own portfolio fetch
+  // (paper-trading/page.tsx) — react-query dedupes against that cache when
+  // it's already loaded, and fetches fresh here otherwise (e.g. opened
+  // directly from the Picks or Stock Detail page).
+  const { data: portfolio } = useQuery({
+    queryKey: ["paper-portfolio", userId],
+    queryFn: () => fetchPaperPortfolio(userId, user?.email),
+    enabled: !isSell && !!userId,
+  });
+  const availableCash = market === "IN" ? portfolio?.cash : portfolio?.cash_usd;
 
   // When the prediction for the selected horizon loads, sync AI-suggested values
   // unless the user has already manually edited those fields.
@@ -121,6 +134,27 @@ export function PaperTradeModal({
   const stopLossPct = stopLossValue && stopLossValue > 0
     ? ((stopLossValue - currentPrice) / currentPrice * 100)
     : null;
+
+  // Risk-based quantity suggestion — see riskBasedSizing.ts for the math
+  // and rationale. perShareRisk is derived here (not inside the util) since
+  // it's also used directly by the hint text below.
+  const perShareRisk = stopLossValue && stopLossValue > 0 && currentPrice > 0
+    ? Math.abs(currentPrice - stopLossValue)
+    : null;
+  const suggestedQuantity = computeSuggestedQuantity({
+    currentPrice, stopLoss: stopLossValue, availableCash,
+  });
+
+  // Auto-apply the suggestion once it's available, same pattern as the AI
+  // stop-loss/target auto-fill above — pre-filled but never fights a
+  // manual edit, and re-applies when the horizon (and therefore the
+  // stop-loss distance) changes.
+  useEffect(() => {
+    if (suggestedQuantity != null && !quantityEdited.current) {
+      setQuantity(suggestedQuantity);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestedQuantity]);
 
   const targetPriceValue = targetPrice ? parseFloat(targetPrice) : null;
   const targetPricePct = targetPriceValue && targetPriceValue > 0
@@ -241,7 +275,7 @@ export function PaperTradeModal({
               <div className="grid grid-cols-3 gap-1.5">
                 {HORIZONS.map(({ key, label, desc }) => (
                   <button key={key}
-                    onClick={() => { setSelectedHorizon(key); setError(null); stopLossEdited.current = false; targetPriceEdited.current = false; }}
+                    onClick={() => { setSelectedHorizon(key); setError(null); stopLossEdited.current = false; targetPriceEdited.current = false; quantityEdited.current = false; }}
                     className={clsx("rounded-lg px-2 py-1.5 sm:py-2 text-center border transition-colors",
                       selectedHorizon === key ? "bg-brand-500/20 border-brand-500 text-white" : "bg-dark-bg border-dark-border text-gray-400 hover:border-white/30 hover:text-white")}>
                     <p className="text-xs font-semibold">{label}</p>
@@ -313,14 +347,28 @@ export function PaperTradeModal({
             <div>
               <label className="text-xs text-gray-400 mb-1 block">Quantity</label>
               <div className="flex items-center gap-2">
-                <button onClick={() => setQuantity(q => Math.max(1, q - 1))}
+                <button onClick={() => { quantityEdited.current = true; setQuantity(q => Math.max(1, q - 1)); }}
                   className="w-8 h-8 rounded-lg bg-dark-bg border border-dark-border text-white hover:bg-white/10 transition-colors font-bold text-sm shrink-0">−</button>
                 <input type="number" min={1} value={quantity}
-                  onChange={e => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
+                  onChange={e => { quantityEdited.current = true; setQuantity(Math.max(1, parseInt(e.target.value) || 1)); }}
                   className="flex-1 bg-dark-bg border border-dark-border rounded-lg px-3 py-1.5 text-center font-mono font-bold text-white focus:outline-none focus:border-brand-500 text-sm" />
-                <button onClick={() => setQuantity(q => q + 1)}
+                <button onClick={() => { quantityEdited.current = true; setQuantity(q => q + 1); }}
                   className="w-8 h-8 rounded-lg bg-dark-bg border border-dark-border text-white hover:bg-white/10 transition-colors font-bold text-sm shrink-0">+</button>
               </div>
+              {suggestedQuantity != null ? (
+                <p className="text-[10px] text-gray-500 mt-1">
+                  Risk-based suggestion: {suggestedQuantity} shares — risks ~{currency}{(perShareRisk! * suggestedQuantity).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                  {" "}({(RISK_PCT_OF_CAPITAL * 100).toFixed(0)}% of {currency}{availableCash!.toLocaleString(undefined, { maximumFractionDigits: 0 })} available)
+                  {quantityEdited.current && quantity !== suggestedQuantity && (
+                    <button onClick={() => { quantityEdited.current = false; setQuantity(suggestedQuantity); }}
+                      className="ml-1.5 text-brand-400 hover:text-brand-300 underline underline-offset-2">Use suggestion</button>
+                  )}
+                </p>
+              ) : (
+                <p className="text-[10px] text-gray-600 mt-1">
+                  Set a stop loss to get a risk-based quantity suggestion (risks a fixed % of your available capital per trade).
+                </p>
+              )}
             </div>
           )}
 
