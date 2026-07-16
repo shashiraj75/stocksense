@@ -159,13 +159,22 @@ Original gate criteria, reviewed individually rather than declared passed as a b
 
 ## Product Integrity #023 — Post-Job Memory Retention Fix
 
-**Status:** Implemented, tested, locally committed — pending production safety gate and push confirmation. See [Product Integrity #023](../Releases/Product-Integrity-023-Post-Job-Memory-Retention-Fix.md).
+**Status:** Deployed to production (commit `637ef34`). See [Product Integrity #023](../Releases/Product-Integrity-023-Post-Job-Memory-Retention-Fix.md).
 
 - User spotted a "⚠ 2" Out of Memory badge on the Railway dashboard. Investigated via Railway's own memory metrics API: one genuine OOM occurred at 15:48 UTC 2026-07-16 — memory climbed to 98% of the 8GB container limit during a US Daily Picks run and **stayed pinned there for 90 minutes after the job had already completed**, then crashed and auto-restarted. (The other two detected "cliffs" were confirmed to be ordinary deploy-triggered restarts, not OOMs.)
 - Root cause: `generate_picks()`'s `raw` accumulator holds all ~1,200 candidate×horizon full result entries (reasoning, quality breakdowns, bull/bear cases) simultaneously for the entire function, even though the per-horizon ranking loop only needs one horizon at a time and the one consumer needing the full set already finished beforehand.
 - Fix: release each horizon's `raw[horizon]` reference immediately after it's captured for that horizon's processing, so at most one horizon's full candidate pool is held at a time instead of all three. Also added start/completion timing logs to the un-joined background thread (`weight_adapter.run_adaptation`) that continues running after the job is marked complete — a plausible but not-yet-conclusively-sized contributor to the 90-minute stall, now directly measurable on the next run.
 - 7 new tests (4 structural, verifying the release happens at the right point and `raw` is never read again; 3 behavioral, verifying the new timing logs), full backend suite 2200/2200 passing. No frontend changes.
 - Does not increase the Railway memory limit (deferred as a fallback) and does not conclusively prove the background thread is the sole cause of the plateau — natural-run verification against the next heavy US run is the real test.
+
+## Product Integrity #024 — Paper Trading Horizon Summary and Overdue Flag
+
+**Status:** Implemented, tested, locally committed — pending production safety gate and push confirmation. See [Product Integrity #024](../Releases/Product-Integrity-024-Paper-Trading-Horizon-Summary-and-Overdue-Flag.md).
+
+- User asked whether their open paper-trade positions actually conform to their horizon's stated holding window. Checked the code: `horizon` is a static label frozen at trade-open time, never checked against actual holding duration — confirmed concretely via the user's own real NNY position (opened 29/6, still bucketed "Short Term (1-5 trading days)" 17 days later, no warning anywhere).
+- Added an "⏱ Overdue for {horizon}" flag on any open position that has exceeded its horizon's expected calendar-day window (short: 7 days, medium: 28, long: 183 — documented calendar-day approximations, not a precise trading-day calendar).
+- Added a per-horizon summary strip (Invested, Unr. P&L, % of Total Investment, Avg Days Held) below each Short/Medium/Long group header on the Open Positions section.
+- 10 new tests on the extracted pure `horizonHolding.ts` utility, including a direct reproduction of the real NNY overdue case. Full frontend suite 357/357 passing, clean typecheck, clean production build. No backend changes.
 
 ## Phase 1A.6 — Market Integrity Hardening and Database-Default Closure
 

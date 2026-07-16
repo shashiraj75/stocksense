@@ -1,6 +1,6 @@
 # Product Integrity Workstream #023 — Post-Job Memory Retention Fix
 
-**Status:** Implemented and tested. Push/deploy is subject to the pre-push production safety gate documented in this same turn's final report.
+**Status:** Deployed to production (2026-07-16, commit `637ef34`).
 
 ## 1. Trigger
 

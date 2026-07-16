@@ -21,6 +21,7 @@ import { SignalBadge } from "@/components/SignalBadge";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
 import { useMarketOpen } from "@/hooks/useMarketOpen";
 import { UnsupportedMarketNotice } from "@/components/UnsupportedMarketNotice";
+import { daysHeld, isOverdueForHorizon } from "@/utils/horizonHolding";
 
 // Code-split out of this route's initial JS — Trade History is a large,
 // below-the-fold section (was ~260 of this file's 1483 lines) that isn't
@@ -717,6 +718,11 @@ function OpenTradeRow({
       <td className="px-4 py-3 text-xs text-gray-300">
         {new Date(trade.opened_at).toLocaleDateString("en-IN")}
         <p className="text-xs font-medium text-brand-400 mt-0.5">{daysSinceLabel(trade.opened_at)}</p>
+        {isOverdueForHorizon(trade.horizon, daysHeld(trade.opened_at)) && (
+          <p className="text-[10px] text-yellow-400 mt-0.5" title="This position has been held longer than its horizon's expected window.">
+            ⏱ Overdue for {trade.horizon}
+          </p>
+        )}
       </td>
       <td className="px-4 py-3 text-right">
         <button
@@ -949,24 +955,6 @@ export default function PaperTradingPage() {
   // slicing of a mixed closed-trade list to build these sections.
   const marketClosedHistory = portfolio.closed_trade_history_by_horizon[market];
 
-  // Group open positions into Short/Medium/Long blocks, each sorted by
-  // Action Queue priority — how urgently the trade needs the user's
-  // attention, not just raw distance to its trigger. See actionQueueTier's
-  // own comment for the exact 8-tier ordering.
-  const groupedOpenTrades = HORIZON_BLOCKS.map(block => ({
-    ...block,
-    trades: openTrades
-      .map(trade => ({ trade, livePrice: priceByTradeId.get(trade.id) ?? null }))
-      .filter(({ trade }) => trade.horizon === block.key)
-      .sort((a, b) => {
-        const tierA = actionQueueTier(a.trade, a.livePrice);
-        const tierB = actionQueueTier(b.trade, b.livePrice);
-        if (tierA !== tierB) return tierA - tierB;
-        return actionQueueSecondary(a.trade, a.livePrice, tierA) - actionQueueSecondary(b.trade, b.livePrice, tierB);
-      })
-      .map(({ trade }) => trade),
-  }));
-
   const totalUnrealizedPnl = openTrades.reduce((sum, trade) => {
     const price = priceByTradeId.get(trade.id);
     if (price == null || trade.entry_price == null) return sum;
@@ -975,6 +963,48 @@ export default function PaperTradingPage() {
   const unrealizedLoaded = openTrades.some(t => priceByTradeId.get(t.id) != null);
 
   const totalInvested = openTrades.reduce((s, t) => s + t.invested, 0);
+
+  // Group open positions into Short/Medium/Long blocks, each sorted by
+  // Action Queue priority — how urgently the trade needs the user's
+  // attention, not just raw distance to its trigger. See actionQueueTier's
+  // own comment for the exact 8-tier ordering. Also computes a per-horizon
+  // summary (invested, unrealized P&L, % of the market's total investment,
+  // average days held) so each block's overall shape is visible without
+  // scanning every row — user-requested, 2026-07-16.
+  const groupedOpenTrades = HORIZON_BLOCKS.map(block => {
+    const trades = openTrades
+      .map(trade => ({ trade, livePrice: priceByTradeId.get(trade.id) ?? null }))
+      .filter(({ trade }) => trade.horizon === block.key)
+      .sort((a, b) => {
+        const tierA = actionQueueTier(a.trade, a.livePrice);
+        const tierB = actionQueueTier(b.trade, b.livePrice);
+        if (tierA !== tierB) return tierA - tierB;
+        return actionQueueSecondary(a.trade, a.livePrice, tierA) - actionQueueSecondary(b.trade, b.livePrice, tierB);
+      });
+
+    const blockInvested = trades.reduce((s, { trade }) => s + trade.invested, 0);
+    const blockUnrealizedPnl = trades.reduce((s, { trade, livePrice }) => {
+      if (livePrice == null) return s;
+      return s + (livePrice - trade.entry_price) * trade.quantity;
+    }, 0);
+    const blockUnrealizedLoaded = trades.some(({ livePrice }) => livePrice != null);
+    const blockPctOfTotal = totalInvested > 0 ? (blockInvested / totalInvested) * 100 : null;
+    const avgDaysHeld = trades.length > 0
+      ? trades.reduce((s, { trade }) => s + daysHeld(trade.opened_at), 0) / trades.length
+      : null;
+
+    return {
+      ...block,
+      trades: trades.map(({ trade }) => trade),
+      summary: {
+        invested: blockInvested,
+        unrealizedPnl: blockUnrealizedPnl,
+        unrealizedLoaded: blockUnrealizedLoaded,
+        pctOfTotal: blockPctOfTotal,
+        avgDaysHeld,
+      },
+    };
+  });
   const unrealizedPct = totalInvested > 0 ? (totalUnrealizedPnl / totalInvested) * 100 : null;
   const realizedPct = closedOverview.total_invested > 0 ? (totalRealized / closedOverview.total_invested) * 100 : null;
   const portfolioValue = cash + totalInvested;
@@ -1153,7 +1183,7 @@ export default function PaperTradingPage() {
           </div>
         ) : (
           <div className="space-y-4">
-            {groupedOpenTrades.map(({ key, label, sub, accent, trades }) => trades.length > 0 && (
+            {groupedOpenTrades.map(({ key, label, sub, accent, trades, summary }) => trades.length > 0 && (
               <div key={key} className={clsx("bg-dark-card border border-dark-border rounded-xl overflow-hidden border-l-4", accent)}>
                 <div className="px-4 py-2.5 flex items-center gap-2 border-b border-dark-border bg-white/[0.02]">
                   <h3 className="font-semibold text-sm text-white">{label}</h3>
@@ -1162,6 +1192,37 @@ export default function PaperTradingPage() {
                     {trades.length}
                   </span>
                   <span className="text-[11px] text-gray-400 ml-auto">Sorted by action priority</span>
+                </div>
+                {/* Per-horizon summary strip — user-requested, 2026-07-16.
+                    A separate row from the header above so the header's
+                    existing label/count/sort-order text doesn't get crowded
+                    by four more numbers on the same line. */}
+                <div className="px-4 py-2 flex flex-wrap items-center gap-x-5 gap-y-1 border-b border-dark-border bg-white/[0.01] text-xs">
+                  <span className="text-gray-500">
+                    Invested <span className="text-gray-300 font-mono font-medium">{marketCfg.currency}{fmt(summary.invested, 0, marketCfg.locale)}</span>
+                  </span>
+                  <span className="text-gray-500">
+                    Unr. P&amp;L{" "}
+                    {summary.unrealizedLoaded ? (
+                      <span className={clsx("font-mono font-medium", summary.unrealizedPnl >= 0 ? "text-bull" : "text-bear")}>
+                        {summary.unrealizedPnl >= 0 ? "+" : ""}{marketCfg.currency}{fmt(summary.unrealizedPnl, 0, marketCfg.locale)}
+                      </span>
+                    ) : (
+                      <span className="text-gray-600">Loading…</span>
+                    )}
+                  </span>
+                  <span className="text-gray-500">
+                    % of Total{" "}
+                    <span className="text-gray-300 font-mono font-medium">
+                      {summary.pctOfTotal != null ? `${summary.pctOfTotal.toFixed(1)}%` : "—"}
+                    </span>
+                  </span>
+                  <span className="text-gray-500">
+                    Avg Days Held{" "}
+                    <span className="text-gray-300 font-mono font-medium">
+                      {summary.avgDaysHeld != null ? summary.avgDaysHeld.toFixed(0) : "—"}
+                    </span>
+                  </span>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
