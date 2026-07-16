@@ -90,6 +90,30 @@ _ticker_map_cache: tuple[float, dict[str, int]] | None = None
 _FACTS_TTL = 12 * 3600
 _facts_lock = threading.Lock()
 _facts_cache: dict[int, tuple[float, Optional[dict]]] = {}
+# Product Integrity #020 — this cache was unbounded (no cap, no eviction)
+# while every other cross-run cache in the prediction pipeline is capped
+# (prediction_engine.py's _CACHE_MAX = 300, "to prevent OOM on free-tier
+# 512MB Render" per its own comment). A single companyfacts payload can
+# span up to 17 years of full XBRL tag history per issuer — with the US
+# Daily Picks universe raised to 400 symbols (Sprint #014), this cache
+# could hold up to 400 uncapped payloads simultaneously by the end of one
+# run. Confirmed via direct production DB read: a US Daily Picks job
+# stalled for ~5 hours after a 2026-07-15 Railway OOM kill (and again
+# 2026-07-16), on the same day/pattern this cache would be filling up
+# fastest — matching the same 300-entry cap already proven safe elsewhere
+# in this exact pipeline, not a new/untested number.
+_FACTS_CACHE_MAX = 300
+
+
+def _facts_cache_set(cik: int, value: tuple[float, Optional[dict]]) -> None:
+    """Insert into _facts_cache, evicting the oldest entry when the cap is
+    reached. Caller must hold _facts_lock. Mirrors prediction_engine.py's
+    _cache_set — same eviction strategy, same cap, applied to the one
+    cross-run cache in this file that lacked it."""
+    if cik not in _facts_cache and len(_facts_cache) >= _FACTS_CACHE_MAX:
+        oldest = min(_facts_cache, key=lambda k: _facts_cache[k][0])
+        del _facts_cache[oldest]
+    _facts_cache[cik] = value
 
 # A small, evidence-based fallback for the representative tickers this
 # sprint's brief names, sourced from a live call to _TICKER_MAP_URL during
@@ -254,7 +278,7 @@ def fetch_company_facts(cik: int) -> Optional[dict]:
         log.warning("[sec_edgar] companyfacts fetch failed for CIK %010d (status=%s)", cik, status)
 
     with _facts_lock:
-        _facts_cache[cik] = (time.time(), result)
+        _facts_cache_set(cik, (time.time(), result))
     return result
 
 

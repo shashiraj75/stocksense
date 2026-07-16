@@ -120,13 +120,23 @@ Original gate criteria, reviewed individually rather than declared passed as a b
 
 ## Product Integrity #019 — News & Sentiment Pipeline Freshness Fixes
 
-**Status:** Implemented, tested (including live end-to-end verification), locally committed — pending production safety gate and push confirmation. See [Product Integrity #019](../Releases/Product-Integrity-019-News-Sentiment-Pipeline-Freshness-Fixes.md).
+**Status:** Deployed to production (commit `fa0afe3`) — live-verified against the real production news endpoint. See [Product Integrity #019](../Releases/Product-Integrity-019-News-Sentiment-Pipeline-Freshness-Fixes.md).
 
 - User reported DIXON's News & Sentiment section showed only 4-8 month old articles and "Insufficient fresh company-specific news evidence" despite genuine same-day coverage existing. Also asked whether this affects the AI signal — **verified via code trace: it does not**, missing news evidence is excluded and its weight redistributed to technicals/fundamentals rather than defaulting to neutral or degrading confidence.
 - Four independent, confirmed bugs found (not thin coverage): (A) Google News RSS query had no recency operator — ranked by relevance not date; (B) the company-relevance classifier required the full run-on company-name phrase including the trailing country word, so ordinary title-case headlines like "Dixon Technologies shares rally 5%" were excluded; (C) the Economic Times per-symbol RSS feed is dead (verified live — returns generic homepage HTML); (D) the Yahoo Finance RSS feed is deprecated (verified live — returns generic homepage HTML). C and D were silently contributing zero articles for every symbol, not just DIXON.
 - Fixes: added `when:14d` to Google News queries (matching the existing freshness window); accepted the already-computed 2-word company-name prefix as an additional relevance-match path (ticker case-sensitivity deliberately untouched — an existing test protects it against a specific false-positive); removed both dead feeds.
 - **Live end-to-end verified**, not just unit-tested: 3 DIXON articles now correctly classify as fresh + company-specific, all from the prior week.
 - 10 new regression tests, all 22 pre-existing news-relevance tests still passing, full backend suite 2187/2187. No frontend changes.
+
+## Product Integrity #020 — SEC EDGAR Facts Cache Memory Cap
+
+**Status:** Implemented, tested, locally committed — pending production safety gate and push confirmation. See [Product Integrity #020](../Releases/Product-Integrity-020-SEC-EDGAR-Facts-Cache-Memory-Cap.md).
+
+- User noticed US Daily Picks hadn't refreshed in 54+ hours. Direct production DB read found a US job stuck `running` for ~5 hours (finalized as a separate direct data correction, not part of this release), and a prior US job that failed the day before with a confirmed Railway OOM.
+- Root cause found: `sec_edgar_adapter.py`'s `_facts_cache` was the one cross-run cache in the prediction pipeline with no size cap or eviction, unlike `prediction_engine.py`'s `_pred_cache`/`_regime_cache` (already capped at 300 specifically to prevent OOM on Render's free 512MB tier). With the US universe at 400 symbols, a single run could grow this cache unboundedly, each entry holding a full multi-year SEC EDGAR companyfacts payload.
+- Fix: added `_FACTS_CACHE_MAX = 300` (matching the already-proven-safe cap elsewhere) and a `_facts_cache_set()` helper that evicts the oldest entry when the cap is reached; `fetch_company_facts()` now writes through it instead of a direct dict assignment.
+- 6 new tests (cap value, eviction order, 400-symbol simulated run, re-insert behavior, write-through regression guard), all 5 pre-existing SEC EDGAR test files re-verified passing (39/39), full backend suite 2193/2193. No frontend changes.
+- Natural-run verification pending: the next US Daily Picks run is the first real-world test of this fix.
 
 ## Phase 1A.6 — Market Integrity Hardening and Database-Default Closure
 
