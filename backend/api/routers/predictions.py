@@ -295,7 +295,7 @@ async def get_cached_signals_batch(
         try:
             from services.postgres_store import get_latest_signals_batch
             loop = asyncio.get_running_loop()
-            persisted = await loop.run_in_executor(None, get_latest_signals_batch, still_uncached, horizon)
+            persisted = await loop.run_in_executor(None, get_latest_signals_batch, still_uncached, market, horizon)
         except Exception as e:
             log.warning(f"[cached-batch] score_snapshots lookup failed: {e}")
             persisted = {}

@@ -280,8 +280,8 @@ export default function StockPage() {
   });
 
   const { data: scoreHistory, isLoading: scoreHistoryLoading, isError: scoreHistoryError } = useQuery({
-    queryKey: ["score-history", symbol, historyHorizon],
-    queryFn: () => fetchScoreHistory(symbol, historyHorizon, 90),
+    queryKey: ["score-history", symbol, market, historyHorizon],
+    queryFn: () => fetchScoreHistory(symbol, market, historyHorizon, 90),
     enabled: tab === "history" && !isCrypto,
     staleTime: 60 * 60_000,
     refetchOnWindowFocus: false,

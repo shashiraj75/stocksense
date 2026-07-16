@@ -525,11 +525,11 @@ export interface ScoreHistoryPoint {
   signal: string | null;
 }
 
-export const fetchScoreHistory = (symbol: string, horizon: Horizon, days = 90) =>
+export const fetchScoreHistory = (symbol: string, market: Market, horizon: Horizon, days = 90) =>
   api
-    .get<{ symbol: string; horizon: string; window_days: number; points: ScoreHistoryPoint[] }>(
+    .get<{ symbol: string; market: string; horizon: string; window_days: number; points: ScoreHistoryPoint[] }>(
       `/api/stocks/${symbol}/score-history`,
-      { params: { horizon, days } }
+      { params: { market, horizon, days } }
     )
     .then((r) => r.data);
 

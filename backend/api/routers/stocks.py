@@ -206,6 +206,7 @@ async def get_factor_attribution(
 @router.get("/{symbol}/score-history")
 async def get_score_history(
     symbol: str,
+    market: Literal["IN", "US"] = Query("IN"),
     horizon: Literal["short", "medium", "long"] = Query("medium"),
     days: int = Query(90, ge=7, le=365),
 ):
@@ -213,13 +214,19 @@ async def get_score_history(
     Daily score-snapshot history for a stock. Empty until snapshots accumulate
     (populated by the daily picks cron once USE_POSTGRES=1). Degrades gracefully
     to an empty series if Postgres isn't configured.
+
+    Product Integrity #016: market-scoped as of this release — score_snapshots
+    previously had no market column, so a symbol existing in both IN and US
+    universes could show the wrong market's history (confirmed in production,
+    not just theoretical). Defaults to "IN" to match this endpoint's prior
+    unscoped behavior for the vast majority of callers that never collided.
     """
     points: list[dict] = []
     if os.getenv("USE_POSTGRES") == "1":
         try:
             from services.postgres_store import get_score_history as _gsh
             loop = asyncio.get_running_loop()
-            rows = await loop.run_in_executor(None, _gsh, symbol.upper(), horizon, days)
+            rows = await loop.run_in_executor(None, _gsh, symbol.upper(), market, horizon, days)
             points = [
                 {
                     "date": str(r["date"]),
@@ -236,10 +243,10 @@ async def get_score_history(
                 for r in rows
             ]
         except Exception as e:
-            return {"symbol": symbol.upper(), "horizon": horizon, "window_days": days,
+            return {"symbol": symbol.upper(), "market": market, "horizon": horizon, "window_days": days,
                     "points": [], "error": str(e)}
 
-    return {"symbol": symbol.upper(), "horizon": horizon, "window_days": days, "points": points}
+    return {"symbol": symbol.upper(), "market": market, "horizon": horizon, "window_days": days, "points": points}
 
 
 @router.get("/indices")

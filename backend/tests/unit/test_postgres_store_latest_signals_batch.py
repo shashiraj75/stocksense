@@ -35,7 +35,7 @@ class TestGetLatestSignalsBatch:
                 ("INFY", "HOLD", 51.0, "2026-07-10"),
             ]),
         )
-        result = postgres_store.get_latest_signals_batch(["TCS", "INFY"], "medium")
+        result = postgres_store.get_latest_signals_batch(["TCS", "INFY"], "IN", "medium")
         assert result == {
             "TCS": {"signal": "BUY", "confidence": 72.5, "snapshot_date": "2026-07-10"},
             "INFY": {"signal": "HOLD", "confidence": 51.0, "snapshot_date": "2026-07-10"},
@@ -49,14 +49,14 @@ class TestGetLatestSignalsBatch:
             postgres_store, "_get_pool",
             lambda: _mock_pool_returning([("TCS", "BUY", 72.5, "2026-07-10")]),
         )
-        result = postgres_store.get_latest_signals_batch(["TCS", "NEVERSCORED"], "medium")
+        result = postgres_store.get_latest_signals_batch(["TCS", "NEVERSCORED"], "IN", "medium")
         assert "TCS" in result
         assert "NEVERSCORED" not in result
 
     def test_empty_symbol_list_returns_empty_dict_without_querying(self, monkeypatch):
         pool = MagicMock()
         monkeypatch.setattr(postgres_store, "_get_pool", lambda: pool)
-        result = postgres_store.get_latest_signals_batch([], "medium")
+        result = postgres_store.get_latest_signals_batch([], "IN", "medium")
         assert result == {}
         pool.connection.assert_not_called()
 
@@ -79,10 +79,13 @@ class TestGetLatestSignalsBatch:
             return pool
 
         monkeypatch.setattr(postgres_store, "_get_pool", _fake_pool)
-        postgres_store.get_latest_signals_batch(["TCS"], "medium")
+        postgres_store.get_latest_signals_batch(["TCS"], "IN", "medium")
         assert "DISTINCT ON (symbol)" in captured["sql"]
         assert "ORDER BY symbol, snapshot_date DESC" in captured["sql"]
-        assert captured["params"] == (["TCS"], "medium")
+        # Product Integrity #016 — market IS NULL still matches, so a
+        # symbol that never actually collided keeps working unchanged.
+        assert "market = %s OR market IS NULL" in captured["sql"]
+        assert captured["params"] == (["TCS"], "medium", "IN")
 
     def test_symbols_are_uppercased(self, monkeypatch):
         captured = {}
@@ -99,5 +102,5 @@ class TestGetLatestSignalsBatch:
             return pool
 
         monkeypatch.setattr(postgres_store, "_get_pool", _fake_pool)
-        postgres_store.get_latest_signals_batch(["tcs", "infy"], "medium")
+        postgres_store.get_latest_signals_batch(["tcs", "infy"], "IN", "medium")
         assert captured["params"][0] == ["TCS", "INFY"]

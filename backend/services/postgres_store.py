@@ -171,6 +171,28 @@ CREATE TABLE IF NOT EXISTS score_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_score_snapshots_symbol ON score_snapshots(symbol, horizon, snapshot_date);
 
+-- Product Integrity #016: score_snapshots had no market column, so a
+-- symbol string existing in both IN and US universes (confirmed in
+-- production: 225 such symbols, e.g. AAPL, ADBE, ABT) shared one row per
+-- (symbol, horizon, snapshot_date) — the second market to write on a given
+-- day silently overwrote the first via ON CONFLICT DO UPDATE. Nullable, no
+-- backfill guess for pre-existing rows: which market they actually belong
+-- to for the ~5% of symbols that did collide is genuinely unrecoverable
+-- from this table alone, and guessing would fabricate history rather than
+-- honestly represent it as unknown. New writes (daily_picks.py) always
+-- pass a real market going forward.
+ALTER TABLE score_snapshots ADD COLUMN IF NOT EXISTS market TEXT;
+-- DROP-then-ADD rather than relying on IF NOT EXISTS for the constraint/
+-- index shape itself — IF NOT EXISTS is a pure name check in Postgres and
+-- would silently no-op if an object of the same name already existed with
+-- the old (market-less) definition, exactly the #009/#010 pitfall from the
+-- Multibagger schema repair earlier this project.
+ALTER TABLE score_snapshots DROP CONSTRAINT IF EXISTS score_snapshots_symbol_horizon_snapshot_date_key;
+ALTER TABLE score_snapshots ADD CONSTRAINT score_snapshots_symbol_market_horizon_snapshot_date_key
+    UNIQUE (symbol, market, horizon, snapshot_date);
+DROP INDEX IF EXISTS idx_score_snapshots_symbol;
+CREATE INDEX IF NOT EXISTS idx_score_snapshots_symbol_market ON score_snapshots(symbol, market, horizon, snapshot_date);
+
 CREATE TABLE IF NOT EXISTS daily_picks_cache (
     id           BIGSERIAL PRIMARY KEY,
     generated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -1204,7 +1226,7 @@ def count_training_rows(horizon: str, market: str = "IN") -> int:
 
 # ── New: Score history (section 4) ──────────────────────────────────────────
 
-def log_score_snapshot(snapshot_date: str, symbol: str, horizon: str,
+def log_score_snapshot(snapshot_date: str, symbol: str, market: str, horizon: str,
                         composite_score: float, signal: str | None = None,
                         quality_score: float | None = None,
                         growth_score: float | None = None,
@@ -1214,14 +1236,17 @@ def log_score_snapshot(snapshot_date: str, symbol: str, horizon: str,
                         risk_score: float | None = None,
                         confidence_score: float | None = None,
                         factor_breakdown: dict | None = None):
+    # Product Integrity #016: market is required (no default) — a caller
+    # that doesn't know its market shouldn't silently guess one, since a
+    # wrong guess here is exactly how the pre-#016 collisions happened.
     with _get_pool().connection() as conn:
         conn.execute("""
             INSERT INTO score_snapshots
-              (snapshot_date, symbol, horizon, composite_score, signal,
+              (snapshot_date, symbol, market, horizon, composite_score, signal,
                quality_score, growth_score, valuation_score, technical_score,
                sentiment_score, risk_score, confidence_score, factor_breakdown)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (symbol, horizon, snapshot_date) DO UPDATE SET
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (symbol, market, horizon, snapshot_date) DO UPDATE SET
               composite_score = EXCLUDED.composite_score,
               signal = EXCLUDED.signal,
               quality_score = EXCLUDED.quality_score,
@@ -1233,29 +1258,34 @@ def log_score_snapshot(snapshot_date: str, symbol: str, horizon: str,
               confidence_score = EXCLUDED.confidence_score,
               factor_breakdown = EXCLUDED.factor_breakdown
         """, (
-            snapshot_date, symbol, horizon, composite_score, signal,
+            snapshot_date, symbol, market, horizon, composite_score, signal,
             quality_score, growth_score, valuation_score, technical_score,
             sentiment_score, risk_score, confidence_score,
             json.dumps(factor_breakdown) if factor_breakdown else None,
         ))
 
 
-def get_score_history(symbol: str, horizon: str, days: int = 90) -> list[dict]:
+def get_score_history(symbol: str, market: str, horizon: str, days: int = 90) -> list[dict]:
+    # Product Integrity #016: `market IS NULL` covers pre-migration rows
+    # that predate the column — those symbols were never verified to NOT
+    # collide, but excluding them entirely would silently truncate history
+    # for the ~95% of symbols that never actually collided. Rows written
+    # after this migration always carry a real market and filter exactly.
     with _get_pool().connection() as conn:
         rows = conn.execute("""
             SELECT snapshot_date, composite_score, signal, quality_score, growth_score,
                    valuation_score, technical_score, sentiment_score, risk_score, confidence_score
             FROM score_snapshots
-            WHERE symbol = %s AND horizon = %s
+            WHERE symbol = %s AND horizon = %s AND (market = %s OR market IS NULL)
               AND snapshot_date >= now() - (%s || ' days')::interval
             ORDER BY snapshot_date ASC
-        """, (symbol, horizon, str(days))).fetchall()
+        """, (symbol, horizon, market, str(days))).fetchall()
     cols = ["date", "composite_score", "signal", "quality_score", "growth_score",
             "valuation_score", "technical_score", "sentiment_score", "risk_score", "confidence_score"]
     return [dict(zip(cols, r)) for r in rows]
 
 
-def get_latest_signals_batch(symbols: list[str], horizon: str) -> dict[str, dict]:
+def get_latest_signals_batch(symbols: list[str], market: str, horizon: str) -> dict[str, dict]:
     """
     Portfolio Signal-column hotfix (Session 13) — the root cause of "Not
     cached" showing for almost every holding: the in-memory `_pred_cache`
@@ -1275,13 +1305,16 @@ def get_latest_signals_batch(symbols: list[str], horizon: str) -> dict[str, dict
     computed here, only the last one Daily Picks already computed and
     persisted is looked up.
 
-    NOT market-scoped — score_snapshots has no market column today (the
-    same pre-existing limitation get_score_history above already has for
-    the History tab chart); a symbol string colliding across IN and US is
-    structurally possible but hasn't been observed in practice. Returns
-    {symbol: {signal, confidence, snapshot_date}} only for symbols that
-    have at least one snapshot; callers should treat a missing key as "no
-    persisted signal either," not an error.
+    Product Integrity #016 — market-scoped as of this release. A direct
+    production audit found 225 symbols genuinely existing in both IN and US
+    universes (e.g. AAPL, ADBE, ABT) — the "hasn't been observed in
+    practice" note this docstring used to carry was wrong. `market IS NULL`
+    still matches pre-migration rows (can't retroactively attribute them to
+    a market with confidence) so symbols that never actually collided keep
+    working exactly as before. Returns {symbol: {signal, confidence,
+    snapshot_date}} only for symbols that have at least one snapshot;
+    callers should treat a missing key as "no persisted signal either," not
+    an error.
     """
     symbols = [s.upper() for s in symbols if s]
     if not symbols:
@@ -1290,9 +1323,9 @@ def get_latest_signals_batch(symbols: list[str], horizon: str) -> dict[str, dict
         rows = conn.execute("""
             SELECT DISTINCT ON (symbol) symbol, signal, confidence_score, snapshot_date
             FROM score_snapshots
-            WHERE symbol = ANY(%s) AND horizon = %s
+            WHERE symbol = ANY(%s) AND horizon = %s AND (market = %s OR market IS NULL)
             ORDER BY symbol, snapshot_date DESC
-        """, (symbols, horizon)).fetchall()
+        """, (symbols, horizon, market)).fetchall()
     return {
         row[0]: {"signal": row[1], "confidence": row[2], "snapshot_date": str(row[3])}
         for row in rows

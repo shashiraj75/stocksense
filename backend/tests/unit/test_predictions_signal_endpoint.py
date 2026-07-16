@@ -313,7 +313,7 @@ class TestCachedSignalsBatchScoreSnapshotsFallback:
         monkeypatch.setenv("USE_POSTGRES", "1")
         monkeypatch.setattr(
             "services.postgres_store.get_latest_signals_batch",
-            lambda symbols, horizon: {"TCS": {"signal": "BUY", "confidence": 72.0, "snapshot_date": "2026-07-10"}},
+            lambda symbols, market, horizon: {"TCS": {"signal": "BUY", "confidence": 72.0, "snapshot_date": "2026-07-10"}},
         )
         resp = asyncio.run(predictions.get_cached_signals_batch(symbols="TCS", market="IN", horizon="medium"))
         assert resp["signals"]["TCS"] == {"signal": "BUY", "confidence": 72.0, "cached": True}
@@ -326,7 +326,7 @@ class TestCachedSignalsBatchScoreSnapshotsFallback:
         monkeypatch.setenv("USE_POSTGRES", "1")
         monkeypatch.setitem(_pred_cache, "TCS:IN:medium", (time.time(), _full_payload(signal="SELL", confidence=90.0)))
 
-        def _fail_if_called(symbols, horizon):
+        def _fail_if_called(symbols, market, horizon):
             raise AssertionError("score_snapshots must not be queried for an already-fresh symbol")
         monkeypatch.setattr("services.postgres_store.get_latest_signals_batch", _fail_if_called)
 
@@ -345,7 +345,7 @@ class TestCachedSignalsBatchScoreSnapshotsFallback:
         monkeypatch.setitem(_pred_cache, "TCS:IN:medium", (time.time(), _full_payload(signal="BUY", confidence=88.0)))
         monkeypatch.setattr(
             "services.postgres_store.get_latest_signals_batch",
-            lambda symbols, horizon: {"INFY": {"signal": "HOLD", "confidence": 55.0, "snapshot_date": "2026-07-09"}},
+            lambda symbols, market, horizon: {"INFY": {"signal": "HOLD", "confidence": 55.0, "snapshot_date": "2026-07-09"}},
         )
         resp = asyncio.run(predictions.get_cached_signals_batch(symbols="TCS,INFY,WIPRO", market="IN", horizon="medium"))
         signals = resp["signals"]
@@ -357,7 +357,7 @@ class TestCachedSignalsBatchScoreSnapshotsFallback:
     def test_score_snapshots_lookup_failure_degrades_to_not_cached_not_a_500(self, monkeypatch, no_background_compute):
         monkeypatch.setenv("USE_POSTGRES", "1")
 
-        def _raise(symbols, horizon):
+        def _raise(symbols, market, horizon):
             raise RuntimeError("connection refused")
         monkeypatch.setattr("services.postgres_store.get_latest_signals_batch", _raise)
 

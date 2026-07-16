@@ -918,6 +918,7 @@ def _write_score_snapshots(raw: dict[str, list], market: str = "IN"):
                 log_score_snapshot(
                     snapshot_date=snapshot_date,
                     symbol=r["symbol"],
+                    market=market,
                     horizon=horizon,
                     composite_score=r.get("composite_score") or 0.0,
                     signal=r.get("signal"),

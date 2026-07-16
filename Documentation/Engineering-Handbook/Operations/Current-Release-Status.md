@@ -83,12 +83,22 @@ Original gate criteria, reviewed individually rather than declared passed as a b
 
 ## Product Integrity #015 — Stock Detail Page Forensic Audit, MEDIUM/LOW-Severity Fixes
 
-**Status:** Implemented, tested, locally committed — pending production safety gate and push confirmation. See [Product Integrity #015](../Releases/Product-Integrity-015-Stock-Detail-Page-Forensic-Audit-MEDIUM-LOW-Severity-Fixes.md).
+**Status:** Deployed to production (commit `1e3c627`). See [Product Integrity #015](../Releases/Product-Integrity-015-Stock-Detail-Page-Forensic-Audit-MEDIUM-LOW-Severity-Fixes.md).
 
-- Follows PI-014 directly — fixes 15 of the 16 remaining findings from the same audit (10 MEDIUM, 5 of 6 LOW).
+- Follows PI-014 directly — fixed 15 of the 16 remaining findings from the same audit (10 MEDIUM, 5 of 6 LOW).
 - Highlights: Market Regime/Evidence/Research panels gated to horizon tabs only (previously leaked onto Fundamentals/History/Backtest unlabeled); Take Profit color now reflects win/loss instead of raw price-direction (was showing red for a SELL's successful target, indistinguishable from its stop-loss); Mkt Cap uses ₹ Cr for India instead of a contradicting T/B/M convention elsewhere on the same page; History chart dates pinned to UTC (could previously show the wrong calendar day for non-IST viewers); Debt/Equity convention unified with the Multibagger page (× ratio instead of raw-scale %); several backend-computed US fundamentals fields (ROCE, EV/EBITDA, OPM%, interest coverage, P/S) surfaced for the first time.
-- **Finding #15 excluded from this release** — requires a backend database schema change (`score_snapshots` has no `market` column), a materially different risk category than the other 15 fixes. Tracked separately, pending explicit confirmation before any DB work.
+- Finding #15 was excluded (backend DB schema change, different risk category) — see [Product Integrity #016](../Releases/Product-Integrity-016-Score-Snapshots-Market-Scoping.md) immediately below.
 - 21 new regression tests, full frontend suite 312/312 passing, clean typecheck. No backend changes.
+
+## Product Integrity #016 — Score Snapshots Market Scoping
+
+**Status:** Implemented, tested, locally committed — pending production safety gate and push confirmation. See [Product Integrity #016](../Releases/Product-Integrity-016-Score-Snapshots-Market-Scoping.md).
+
+- Closes finding #15 from the Stock Detail page audit — `score_snapshots` had no `market` column.
+- **A direct production audit found this wasn't hypothetical**: 225 symbols genuinely exist in both IN and US markets (AAPL, ADBE, ABT, and others), and since the old unique constraint was `(symbol, horizon, snapshot_date)` with `ON CONFLICT DO UPDATE`, this means one market's score-history data may have been silently overwritten by the other's for any of those symbols scored by both markets on the same day — not just a display bug.
+- Migration: nullable `market` column added (no backfill guess for existing rows — genuinely unrecoverable which market a legacy colliding row belongs to), unique constraint and index rebuilt to include `market`, using the DROP-then-ADD idempotent pattern established in Product Integrity #010 (not relying on `IF NOT EXISTS` alone). Self-applies via `init_db()` on backend startup, same mechanism PI-010 used.
+- Write path (`daily_picks.py`) and both read paths (History tab chart, Portfolio's Signal-column fallback — a second caller with the identical pre-existing gap, found in the same pass) now require `market`, matching `market IS NULL` too so the ~95% of symbols that never collided keep their pre-migration history intact.
+- 16 new regression tests (12 backend, 4 frontend), full suites passing (2169/2169 backend, 316/316 frontend), clean typecheck.
 
 ## Phase 1A.6 — Market Integrity Hardening and Database-Default Closure
 
