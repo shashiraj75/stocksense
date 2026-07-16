@@ -2,11 +2,12 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
-// Stock Detail hero card — "Day Open" stat pill. page.tsx mounts through
-// live data-fetching (useQuery, router, auth context) that isn't practically
-// mountable in isolation here, matching this repo's existing convention for
-// this situation (see picks/__tests__/premarketSchedule.test.ts) — source-text
-// assertions instead of a full render.
+// Stock Detail hero card — quote stat pill row (Open/High/Low/52W/Mkt Cap/
+// Vol). page.tsx mounts through live data-fetching (useQuery, router, auth
+// context) that isn't practically mountable in isolation here, matching
+// this repo's existing convention for this situation (see
+// picks/__tests__/premarketSchedule.test.ts) — source-text assertions
+// instead of a full render.
 const pageSource = readFileSync(
   path.resolve(process.cwd(), "src/app/stock/[symbol]/page.tsx"),
   "utf-8",
@@ -23,19 +24,39 @@ describe("StockQuote type declares open price", () => {
   });
 });
 
-describe("Day Open stat pill", () => {
+describe("Open stat pill", () => {
   it("renders only when quote.open is present, matching the existing high/low pattern", () => {
     expect(pageSource).toContain(
-      '...(quote.open != null ? [["Day Open", `${currency}${quote.open.toLocaleString()}`, "text-gray-200"]] : []),'
+      '...(quote.open != null ? [["Open", `${currency}${quote.open.toLocaleString()}`, "text-gray-200"]] : []),'
     );
   });
 
-  it("Day Open appears before Day High/Day Low in the pill array (left-to-right reading order)", () => {
-    const openIdx = pageSource.indexOf('["Day Open",');
-    const highIdx = pageSource.indexOf('["Day High",');
+  it("Open appears before High/Low in the pill array (left-to-right reading order)", () => {
+    const openIdx = pageSource.indexOf('["Open",');
+    const highIdx = pageSource.indexOf('["High",');
     expect(openIdx).toBeGreaterThan(-1);
     expect(highIdx).toBeGreaterThan(-1);
     expect(openIdx).toBeLessThan(highIdx);
+  });
+});
+
+describe("Abbreviated pill labels", () => {
+  it("Day-prefixed labels were shortened to Open/High/Low — the '52W' prefix on the other pair keeps them unambiguous", () => {
+    expect(pageSource).not.toContain('"Day Open"');
+    expect(pageSource).not.toContain('"Day High"');
+    expect(pageSource).not.toContain('"Day Low"');
+    expect(pageSource).toContain('["High", `${currency}${quote.high.toLocaleString()}`');
+    expect(pageSource).toContain('["Low", `${currency}${quote.low.toLocaleString()}`');
+  });
+
+  it("Volume was shortened to Vol", () => {
+    expect(pageSource).toContain('["Vol", quote.volume?.toLocaleString() ?? "—", "text-gray-200"]');
+  });
+
+  it("52W High/Low and Mkt Cap keep their full existing labels (already compact, changing them risks ambiguity next to the new High/Low pills)", () => {
+    expect(pageSource).toContain('"52W High"');
+    expect(pageSource).toContain('"52W Low"');
+    expect(pageSource).toContain('"Mkt Cap"');
   });
 });
 

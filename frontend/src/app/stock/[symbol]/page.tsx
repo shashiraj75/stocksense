@@ -507,9 +507,14 @@ export default function StockPage() {
                     // default.
                     <div className="flex flex-nowrap gap-2 mb-3 overflow-x-auto max-w-full [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-dark-border [&::-webkit-scrollbar-thumb]:rounded-full">
                       {[
-                        ...(quote.open != null ? [["Day Open", `${currency}${quote.open.toLocaleString()}`, "text-gray-200"]] : []),
-                        ...(quote.high != null ? [["Day High", `${currency}${quote.high.toLocaleString()}`, "text-gray-200"]] : []),
-                        ...(quote.low != null ? [["Day Low", `${currency}${quote.low.toLocaleString()}`, "text-gray-200"]] : []),
+                        // Abbreviated from "Day Open/High/Low" and "Volume" — the
+                        // "Day" qualifier is redundant this close to "52W High/Low"
+                        // (which keeps its own prefix, so no ambiguity), and O/H/L/
+                        // Vol are standard stock-quote shorthand. Saves enough width
+                        // that the row is far less likely to need horizontal scroll.
+                        ...(quote.open != null ? [["Open", `${currency}${quote.open.toLocaleString()}`, "text-gray-200"]] : []),
+                        ...(quote.high != null ? [["High", `${currency}${quote.high.toLocaleString()}`, "text-gray-200"]] : []),
+                        ...(quote.low != null ? [["Low", `${currency}${quote.low.toLocaleString()}`, "text-gray-200"]] : []),
                         ["52W High", `${currency}${quote.fifty_two_week_high?.toLocaleString()}`, "text-gray-200"],
                         ["52W Low",  `${currency}${quote.fifty_two_week_low?.toLocaleString()}`,  "text-gray-200"],
                         ["Mkt Cap",  (() => {
@@ -519,7 +524,7 @@ export default function StockPage() {
                           if (v >= 1e9)  return `${currency}${(v/1e9).toFixed(2)}B`;
                           return `${currency}${(v/1e6).toFixed(0)}M`;
                         })(), "text-gray-200"],
-                        ["Volume", quote.volume?.toLocaleString() ?? "—", "text-gray-200"],
+                        ["Vol", quote.volume?.toLocaleString() ?? "—", "text-gray-200"],
                       ].map(([label, value, valueColor]) => (
                         <div key={label} className="flex items-center gap-2 bg-white/[0.05] border border-white/[0.09] rounded-lg px-3 py-1.5 flex-shrink-0">
                           <span className="text-xs text-gray-500">{label}</span>
