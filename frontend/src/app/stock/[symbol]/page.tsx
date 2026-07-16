@@ -499,7 +499,7 @@ export default function StockPage() {
 
                   {/* Row 3: stats chips */}
                   {!isCrypto && quote && (
-                    <div className="flex flex-wrap gap-2 mb-3">
+                    <div className="flex flex-nowrap gap-2 mb-3 overflow-x-auto">
                       {[
                         ...(quote.open != null ? [["Day Open", `${currency}${quote.open.toLocaleString()}`, "text-gray-200"]] : []),
                         ...(quote.high != null ? [["Day High", `${currency}${quote.high.toLocaleString()}`, "text-gray-200"]] : []),
@@ -515,7 +515,7 @@ export default function StockPage() {
                         })(), "text-gray-200"],
                         ["Volume", quote.volume?.toLocaleString() ?? "—", "text-gray-200"],
                       ].map(([label, value, valueColor]) => (
-                        <div key={label} className="flex items-center gap-2 bg-white/[0.05] border border-white/[0.09] rounded-lg px-3 py-1.5">
+                        <div key={label} className="flex items-center gap-2 bg-white/[0.05] border border-white/[0.09] rounded-lg px-3 py-1.5 flex-shrink-0">
                           <span className="text-xs text-gray-500">{label}</span>
                           <span className={clsx("text-sm font-mono font-bold", valueColor)}>{value}</span>
                         </div>
