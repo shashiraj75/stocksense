@@ -13,11 +13,49 @@ const FACTOR_LINES: { key: keyof ScoreHistoryPoint; label: string; color: string
 ];
 
 function fmtDate(d: string) {
-  return new Date(d).toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
+  // `d` is a date-only string (e.g. "2026-07-15") — new Date(d) parses that
+  // as UTC midnight, but toLocaleDateString without an explicit timeZone
+  // renders in the BROWSER's local timezone. For any viewer west of UTC
+  // (most of the Americas), UTC midnight falls into the previous local
+  // evening, so the label could show one day earlier than the actual
+  // snapshot date. Pinning timeZone: "UTC" makes the label match exactly
+  // what was parsed, regardless of where the viewer is.
+  return new Date(d).toLocaleDateString("en-IN", { day: "2-digit", month: "short", timeZone: "UTC" });
 }
 
-export function ScoreHistoryChart({ points }: { points: ScoreHistoryPoint[] }) {
+export function ScoreHistoryChart({
+  points,
+  isLoading,
+  isError,
+}: {
+  points: ScoreHistoryPoint[];
+  isLoading?: boolean;
+  isError?: boolean;
+}) {
   const [view, setView] = useState<"score" | "factors">("score");
+
+  // A real backend failure previously looked identical to "no data yet" —
+  // both fell into the same empty-points branch below. A user seeing an
+  // error message needs to know something's actually broken (worth
+  // retrying/reporting), not that they should just "check back in a few
+  // days" for a symbol that in fact has history the fetch failed to load.
+  if (isLoading) {
+    return (
+      <div className="bg-dark-card border border-dark-border rounded-2xl p-6 text-center">
+        <h2 className="font-bold text-lg mb-2">Score History</h2>
+        <p className="text-gray-500 text-sm animate-pulse">Loading…</p>
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <div className="bg-dark-card border border-dark-border rounded-2xl p-6 text-center">
+        <h2 className="font-bold text-lg mb-2">Score History</h2>
+        <p className="text-bear text-sm">Couldn&apos;t load score history — try again in a moment.</p>
+      </div>
+    );
+  }
 
   if (!points || points.length === 0) {
     return (

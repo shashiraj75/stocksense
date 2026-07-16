@@ -279,7 +279,7 @@ export default function StockPage() {
     refetchOnWindowFocus: false,
   });
 
-  const { data: scoreHistory } = useQuery({
+  const { data: scoreHistory, isLoading: scoreHistoryLoading, isError: scoreHistoryError } = useQuery({
     queryKey: ["score-history", symbol, historyHorizon],
     queryFn: () => fetchScoreHistory(symbol, historyHorizon, 90),
     enabled: tab === "history" && !isCrypto,
@@ -474,9 +474,14 @@ export default function StockPage() {
                           </span>
                         );
                       })()}
-                      {(screenerFund?.company_name || quote?.company_name) && (
+                      {/* Same fallback chain as the sticky ticker bar above —
+                          this one was previously missing usFund?.company_name,
+                          so a US stock could show one name here and a
+                          different one in the sticky bar once the
+                          Fundamentals tab's usFund query resolved. */}
+                      {(screenerFund?.company_name || usFund?.company_name || quote?.company_name) && (
                         <span className="text-2xl font-bold text-gray-400">
-                          {screenerFund?.company_name || quote?.company_name}
+                          {screenerFund?.company_name || usFund?.company_name || quote?.company_name}
                         </span>
                       )}
                     </div>
@@ -537,6 +542,13 @@ export default function StockPage() {
                         ["Mkt Cap",  (() => {
                           const v = quote.market_cap;
                           if (!v) return "—";
+                          // India uses ₹ Cr everywhere else on this page (the
+                          // Fundamentals tab's own Market Cap row, getCapCategory's
+                          // threshold logic) — T/B/M here was a contradicting
+                          // second convention for the same number on the same
+                          // page. Same /1e7 raw-INR→crore conversion as
+                          // getCapCategory above.
+                          if (market === "IN") return `₹${Math.round(v / 1e7).toLocaleString()} Cr`;
                           if (v >= 1e12) return `${currency}${(v/1e12).toFixed(2)}T`;
                           if (v >= 1e9)  return `${currency}${(v/1e9).toFixed(2)}B`;
                           return `${currency}${(v/1e6).toFixed(0)}M`;
@@ -622,6 +634,14 @@ export default function StockPage() {
                                 while on these tabs either. */}
                             {(tab === "fundamentals" || tab === "history") && (
                               <span className="normal-case tracking-normal text-gray-600"> · Medium Term</span>
+                            )}
+                            {/* Paper Trade button already disables during this
+                                window (see below) — this makes the reason
+                                visible too, matching the "Updating…" badge the
+                                "AI Prediction" card already shows further down
+                                the page for the same predFetching condition. */}
+                            {predFetching && (
+                              <span className="normal-case tracking-normal text-yellow-500/80"> · updating…</span>
                             )}
                           </p>
                           <p className={clsx("text-2xl font-black tracking-wider", tone.text)}>
@@ -776,8 +796,12 @@ export default function StockPage() {
                 )}
               </div>
 
-              {/* Market Regime inline row — compact, above tabs */}
-              {prediction?.market_regime && !predLoading && (() => {
+              {/* Market Regime inline row — compact, above tabs. Gated to the
+                  same tabs as Trade Levels below (Short/Medium/Long only) —
+                  previously had no tab restriction at all and would render
+                  the medium-horizon fallback's regime/signal unlabeled on
+                  Fundamentals/History/Backtest too. */}
+              {tab !== "backtest" && tab !== "history" && tab !== "fundamentals" && prediction?.market_regime && !predLoading && (() => {
                 const label: string = prediction.market_regime?.trend ?? "";
                 if (!label || label === "SIDEWAYS") return null;
                 const isHighRisk = label === "BEAR_VOLATILE" || label === "BULL_VOLATILE";
@@ -831,14 +855,17 @@ export default function StockPage() {
               {/* Evidence Summary — Epic 005 RCI. Renders nothing while
                   RCI_LIVE_STOCK_ANALYSIS_ENABLED is disabled in Railway,
                   since the backend then never includes
-                  recommendation_consolidation on the prediction object. */}
-              {!predLoading && <EvidenceSummary prediction={prediction} />}
+                  recommendation_consolidation on the prediction object.
+                  Gated to horizon tabs only — same reasoning as Market
+                  Regime above (previously had no tab restriction). */}
+              {tab !== "backtest" && tab !== "history" && tab !== "fundamentals" && !predLoading && <EvidenceSummary prediction={prediction} />}
 
               {/* AI Research Summary — Epic 008B Phase 2/3. Renders nothing
                   while RESEARCH_ANALYST_V2_ENABLED is disabled in Railway
                   (default), since the backend then never includes
-                  research_report on the prediction object. */}
-              {!predLoading && <ResearchSummary prediction={prediction} />}
+                  research_report on the prediction object. Same tab gating
+                  as EvidenceSummary above. */}
+              {tab !== "backtest" && tab !== "history" && tab !== "fundamentals" && !predLoading && <ResearchSummary prediction={prediction} />}
 
               {/* Tabs row */}
               <div className="flex gap-2 flex-wrap mt-4 pt-4 border-t border-white/[0.06]">
@@ -871,6 +898,15 @@ export default function StockPage() {
             const tl = (prediction as any).trade_levels;
             if (!tl || tl.entry_low == null || tl.entry_high == null || tl.stop_loss == null || tl.take_profit == null) return null;
             const sig = prediction.signal;
+            // Backend enforces stop_loss < price < take_profit for BUY (and
+            // the reverse for SELL) by construction — this page previously
+            // trusted that invariant blindly with no guard of its own. Cheap
+            // insurance against a future backend regression rendering
+            // nonsensical numbers (e.g. a SELL target above current price)
+            // with no indication anything's wrong; fail safe by omission,
+            // same pattern as the null-guard immediately above.
+            if (sig === "BUY" && !(tl.stop_loss < tl.entry_low && tl.take_profit > tl.entry_high)) return null;
+            if (sig === "SELL" && !(tl.stop_loss > tl.entry_high && tl.take_profit < tl.entry_low)) return null;
             const cp: number | null = prediction.current_price ?? null;
             const fmt = (n: number) => n.toLocaleString();
             const pctFrom = (price: number) => cp ? ((price - cp) / cp * 100).toFixed(1) : null;
@@ -894,11 +930,17 @@ export default function StockPage() {
                   </div>
                   {(() => {
                     const tpPct = pctFrom(tl.take_profit);
-                    const tpUp = tpPct === null || parseFloat(tpPct) >= 0;
+                    // Take Profit is definitionally the "win" outcome for both
+                    // BUY and SELL — a SELL's target sits below current price
+                    // by design, so coloring off raw price-direction (as this
+                    // used to) rendered it red, visually indistinguishable
+                    // from the Stop Loss box (also always red) right next to
+                    // it. Always bull/success color here, same way Stop Loss
+                    // is always bear/failure color regardless of direction.
                     return (
-                      <div className={`rounded-xl border p-4 ${tpUp ? "bg-bull/10 border-bull/30" : "bg-bear/10 border-bear/30"}`}>
+                      <div className="rounded-xl border p-4 bg-bull/10 border-bull/30">
                         <p className="text-xs text-gray-400 mb-1">Take Profit</p>
-                        <p className={`font-mono font-bold text-sm ${tpUp ? "text-bull" : "text-bear"}`}>
+                        <p className="font-mono font-bold text-sm text-bull">
                           {currency}{fmt(tl.take_profit)}
                           {tpPct && <span className="ml-2 text-xs font-normal">{parseFloat(tpPct) >= 0 ? "+" : ""}{tpPct}%</span>}
                         </p>
@@ -1312,6 +1354,19 @@ export default function StockPage() {
 
           <section>
             <h2 className="text-lg font-semibold mb-3">News & Sentiment</h2>
+            {/* The "Sentiment" score shown elsewhere on this page (Row 4 pill,
+                Technical Signals tab) comes from the `prediction` query
+                (staleTime 14min); the article list below comes from a
+                separate `news` query (staleTime 10min) with its own fetch
+                schedule. Nothing links the two, so the score can reflect a
+                different, not-necessarily-overlapping time window than the
+                specific headlines shown here — disclosed rather than left
+                implicit, since a user could otherwise reasonably expect a
+                displayed "Sentiment 72%" to summarize exactly the articles
+                right below it. */}
+            <p className="text-xs text-gray-500 -mt-2 mb-3">
+              Sentiment score above is computed independently and may not reflect the exact same fetch window as the articles below.
+            </p>
             {/* Wave 0C + 0D1 display truthfulness: separate fresh
                 company-specific articles (used in current company sentiment)
                 from recent contextual articles and historical context.
@@ -1484,19 +1539,39 @@ export default function StockPage() {
                     { label: "P/E Ratio",       val: usFund.pe_ratio,            fmt: (v: number) => v.toFixed(1) + "×" },
                     { label: "Forward P/E",     val: usFund.forward_pe,          fmt: (v: number) => v.toFixed(1) + "×" },
                     { label: "P/B Ratio",       val: usFund.price_to_book,       fmt: (v: number) => v.toFixed(1) + "×" },
+                    { label: "P/S Ratio",       val: usFund.price_to_sales,      fmt: (v: number) => v.toFixed(1) + "×" },
                     { label: "ROE",             val: usFund.roe_pct,             fmt: (v: number) => v.toFixed(1) + "%" },
                     { label: "ROA",             val: usFund.roa_pct,             fmt: (v: number) => v.toFixed(1) + "%" },
+                    // Backend-computed (us_fundamentals.py) but previously
+                    // never surfaced here, even though India's Key Ratios
+                    // card shows the equivalent ROCE.
+                    { label: "ROCE",            val: usFund.roce_pct,            fmt: (v: number) => v.toFixed(1) + "%" },
+                    { label: "Operating Margin", val: usFund.opm_pct,            fmt: (v: number) => v.toFixed(1) + "%" },
                     { label: "Profit Margin",   val: usFund.profit_margin_pct,   fmt: (v: number) => v.toFixed(1) + "%" },
+                    { label: "EV/EBITDA",       val: usFund.ev_ebitda,           fmt: (v: number) => v.toFixed(1) + "×" },
+                    { label: "Interest Coverage", val: usFund.interest_coverage_ratio, fmt: (v: number) => v.toFixed(1) + "×" },
                     { label: "Book Value",      val: usFund.book_value,          fmt: (v: number) => "$" + v.toLocaleString() },
                     { label: "Dividend Yield",  val: usFund.dividend_yield_pct,  fmt: (v: number) => v.toFixed(2) + "%" },
                     { label: "Market Cap",      val: usFund.market_cap,          fmt: (v: number) => "$" + (v / 1e9).toFixed(1) + "B" },
-                    { label: "Debt/Equity",     val: usFund.debt_to_equity,      fmt: (v: number) => v.toFixed(1) + "%" },
-                    { label: "Revenue Growth",  val: usFund.revenue_growth_pct,  fmt: (v: number) => (v >= 0 ? "+" : "") + v.toFixed(1) + "%" },
-                    { label: "Earnings Growth", val: usFund.earnings_growth_pct, fmt: (v: number) => (v >= 0 ? "+" : "") + v.toFixed(1) + "%" },
-                  ].filter(r => r.val != null).map(({ label, val, fmt }) => (
+                    // Same 0-300+ scale as India's debt_to_equity_pct
+                    // (screener_data.py's own comment confirms this) — shown
+                    // as a × ratio here to match the convention already used
+                    // on the Multibagger page for the identical field,
+                    // instead of the raw scale value suffixed with "%".
+                    { label: "Debt/Equity",     val: usFund.debt_to_equity,      fmt: (v: number) => (v / 100).toFixed(2) + "×" },
+                    // Color-coded like the 3-Year CAGR card and India's
+                    // Compounded Growth Rates table just below — these two
+                    // rows previously rendered in plain white regardless of
+                    // sign, unlike every other growth figure on the page.
+                    { label: "Revenue Growth",  val: usFund.revenue_growth_pct,  fmt: (v: number) => (v >= 0 ? "+" : "") + v.toFixed(1) + "%", colored: true },
+                    { label: "Earnings Growth", val: usFund.earnings_growth_pct, fmt: (v: number) => (v >= 0 ? "+" : "") + v.toFixed(1) + "%", colored: true },
+                  ].filter(r => r.val != null).map(({ label, val, fmt, colored }) => (
                     <div key={label} className="bg-dark-bg rounded-xl p-3">
                       <p className="text-[11px] text-gray-500 mb-1">{label}</p>
-                      <p className="text-white font-bold text-sm tabular-nums">{fmt(val as number)}</p>
+                      <p className={clsx(
+                        "font-bold text-sm tabular-nums",
+                        colored ? ((val as number) >= 0 ? "text-green-400" : "text-red-400") : "text-white"
+                      )}>{fmt(val as number)}</p>
                     </div>
                   ))}
                 </div>
@@ -1902,7 +1977,10 @@ export default function StockPage() {
                         </table>
                         {screenerFund.debt_to_equity_pct != null && (
                           <p className="text-[11px] text-gray-500 mt-3">
-                            Debt-to-Equity (latest): <span className="text-gray-300 font-mono font-medium">{screenerFund.debt_to_equity_pct.toFixed(1)}%</span>
+                            {/* Same × ratio convention as the US Key Ratios
+                                card above and the Multibagger page — was "%"
+                                here, a third convention for the same field. */}
+                            Debt-to-Equity (latest): <span className="text-gray-300 font-mono font-medium">{(screenerFund.debt_to_equity_pct / 100).toFixed(2)}×</span>
                           </p>
                         )}
                       </div>
@@ -1994,7 +2072,11 @@ export default function StockPage() {
               Score history is available for stocks only.
             </div>
           ) : (
-            <ScoreHistoryChart points={scoreHistory?.points ?? []} />
+            <ScoreHistoryChart
+              points={scoreHistory?.points ?? []}
+              isLoading={scoreHistoryLoading}
+              isError={scoreHistoryError}
+            />
           )}
         </div>
       )}
@@ -2042,7 +2124,13 @@ export default function StockPage() {
 
           {btError && <p className="text-bear text-sm">{btError}</p>}
 
-          {btData && (
+          {btData && btData.total_tests === 0 && (
+            <div className="bg-dark-card border border-dark-border rounded-2xl p-6 text-center text-gray-500 text-sm">
+              No signals to backtest for this symbol/horizon in the available history window — try a different horizon.
+            </div>
+          )}
+
+          {btData && btData.total_tests > 0 && (
             <div className="space-y-5">
               {/* Summary cards */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
