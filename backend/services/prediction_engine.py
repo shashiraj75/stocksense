@@ -2660,7 +2660,17 @@ class PredictionEngine:
         return confidence_score, confidence_band, components
 
     def _estimate_target(self, price, signal, confidence, horizon, df, info):
-        conf_factor = max(0.5, confidence / 100)
+        # Product Integrity #018 — the BUY/SELL floors below (e.g. "a
+        # long-term BUY always shows at least +15% upside") used to be flat
+        # constants, completely decoupled from `confidence`. A 12%-confidence
+        # BUY and a 90%-confidence BUY got the identical minimum-guaranteed
+        # target, which is exactly backwards — a weak-conviction call
+        # shouldn't advertise the same upside as a strong one. Floor was
+        # 0.5 (never below half the "full-confidence" magnitude); lowered to
+        # 0.2 so low confidence visibly shrinks the floor instead of being
+        # mostly absorbed by it. Still never 0 — a BUY at any confidence must
+        # show *some* positive edge, or "BUY" itself would be self-contradictory.
+        conf_factor = max(0.2, confidence / 100)
 
         if horizon == "short":
             atr = (df["High"] - df["Low"]).rolling(14).mean().iloc[-1]
@@ -2676,19 +2686,21 @@ class PredictionEngine:
             if analyst_target and analyst_target > 0:
                 blend = (analyst_target * 0.7 + price * 0.3)
                 if signal == "BUY":
-                    return round(max(blend, price * 1.05), 2)
+                    return round(max(blend, price * (1 + 0.05 * conf_factor)), 2)
                 elif signal == "SELL":
-                    return round(min(blend, price * 0.95), 2)
-                # HOLD: cap within ±8% — a big target contradicts a HOLD signal
+                    return round(min(blend, price * (1 - 0.05 * conf_factor)), 2)
+                # HOLD: cap within ±8% — a big target contradicts a HOLD signal.
+                # Not confidence-scaled — HOLD makes no directional conviction
+                # claim for a floor to be proportional to in the first place.
                 return round(min(max(blend, price * 0.96), price * 1.08), 2)
 
             monthly_ret = df["Close"].pct_change(21).dropna()
             avg_monthly = monthly_ret.mean()
             projected = price * (1 + avg_monthly * 3 * conf_factor)
             if signal == "BUY":
-                return round(max(projected, price * 1.05), 2)
+                return round(max(projected, price * (1 + 0.05 * conf_factor)), 2)
             elif signal == "SELL":
-                return round(min(projected, price * 0.92), 2)
+                return round(min(projected, price * (1 - 0.08 * conf_factor)), 2)
             # HOLD: cap within ±8%
             return round(min(max(projected, price * 0.96), price * 1.08), 2)
 
@@ -2724,8 +2736,8 @@ class PredictionEngine:
             long_target = max(long_target, price * 0.40)
 
             if signal == "BUY":
-                return round(max(long_target, price * 1.15), 2)
+                return round(max(long_target, price * (1 + 0.15 * conf_factor)), 2)
             elif signal == "SELL":
-                return round(min(long_target, price * 0.80), 2)
+                return round(min(long_target, price * (1 - 0.20 * conf_factor)), 2)
             # HOLD: cap within ±10% — large upside should trigger BUY not HOLD
             return round(min(max(long_target, price * 0.95), price * 1.10), 2)

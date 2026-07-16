@@ -102,11 +102,21 @@ Original gate criteria, reviewed individually rather than declared passed as a b
 
 ## Product Integrity #017 — AI Prediction Confidence Display Fixes
 
-**Status:** Implemented, tested, locally committed — pending production safety gate and push confirmation. See [Product Integrity #017](../Releases/Product-Integrity-017-AI-Prediction-Confidence-Display-Fixes.md).
+**Status:** Deployed to production (commit `58632de`). See [Product Integrity #017](../Releases/Product-Integrity-017-AI-Prediction-Confidence-Display-Fixes.md).
 
 - User feedback on a live low-confidence pick (DIXON, 12% confidence BUY): the "AI Prediction" card showed Confidence twice in a row (Signal Strip + a redundant standalone `ConfidenceMeter` using a *different* muting threshold than the strip); Trade Levels rendered a fully precise, confident-looking setup with no acknowledgment the underlying signal was only 12% confident.
 - Fixes: removed the duplicate `ConfidenceMeter`; added a low-confidence warning banner to Trade Levels (`confidence < 45`, the same threshold `getSignalTone` already uses to mute a weak BUY) — discloses rather than hides the numbers, since they're still mathematically valid ATR-based levels.
 - 5 new regression tests, full frontend suite 321/321 passing, clean typecheck. No backend changes.
+- Follow-up: the user's own sharper question ("how is 12% confidence + 15.8% upside possible?") led directly to Product Integrity #018 below, which fixes the actual root cause rather than just disclosing it.
+
+## Product Integrity #018 — Confidence-Scaled Target Price Floors
+
+**Status:** Implemented, tested, locally committed — pending production safety gate and push confirmation. See [Product Integrity #018](../Releases/Product-Integrity-018-Confidence-Scaled-Target-Price-Floors.md).
+
+- **Root cause of PI-017's reported mismatch**: `_estimate_target()`'s BUY/SELL minimum target floors (e.g. "a long-term BUY always shows at least +15% upside") were flat constants, completely decoupled from `confidence` — a 12%-confidence BUY and a 90%-confidence BUY got the identical guaranteed floor.
+- Fix: `conf_factor`'s floor lowered from 0.5 to 0.2 and applied consistently to every BUY/SELL floor across short/medium/long horizons (medium and long previously had no confidence scaling on their floors at all). At full confidence, floors match the original flat constants exactly — zero behavior change for high-confidence picks. HOLD's target band is intentionally untouched (no directional-conviction claim to scale).
+- This is core `predict()` logic, not just Stock Detail page display — the fix propagates automatically into Daily Picks, Multibagger, and backtest target-price consumers, since they all read the same `target_price`/`trade_levels` fields. Verified (not assumed): `_trade_levels()` takes `target` directly as its `take_profit` value, and its own stop-loss-tightening logic already has a "surface the honest sub-1.5 risk/reward rather than fake the take-profit" fallback, so Risk/Reward now also honestly reflects weak signals as a side effect, no extra code needed.
+- 8 new behavioral tests (real numeric assertions on `_estimate_target()`, not source-text checks), full backend suite 2177/2177 passing. No frontend changes.
 
 ## Phase 1A.6 — Market Integrity Hardening and Database-Default Closure
 
