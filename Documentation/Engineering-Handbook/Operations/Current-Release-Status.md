@@ -111,12 +111,22 @@ Original gate criteria, reviewed individually rather than declared passed as a b
 
 ## Product Integrity #018 — Confidence-Scaled Target Price Floors
 
-**Status:** Implemented, tested, locally committed — pending production safety gate and push confirmation. See [Product Integrity #018](../Releases/Product-Integrity-018-Confidence-Scaled-Target-Price-Floors.md).
+**Status:** Deployed to production (commit `970e0d6`). See [Product Integrity #018](../Releases/Product-Integrity-018-Confidence-Scaled-Target-Price-Floors.md).
 
 - **Root cause of PI-017's reported mismatch**: `_estimate_target()`'s BUY/SELL minimum target floors (e.g. "a long-term BUY always shows at least +15% upside") were flat constants, completely decoupled from `confidence` — a 12%-confidence BUY and a 90%-confidence BUY got the identical guaranteed floor.
 - Fix: `conf_factor`'s floor lowered from 0.5 to 0.2 and applied consistently to every BUY/SELL floor across short/medium/long horizons (medium and long previously had no confidence scaling on their floors at all). At full confidence, floors match the original flat constants exactly — zero behavior change for high-confidence picks. HOLD's target band is intentionally untouched (no directional-conviction claim to scale).
 - This is core `predict()` logic, not just Stock Detail page display — the fix propagates automatically into Daily Picks, Multibagger, and backtest target-price consumers, since they all read the same `target_price`/`trade_levels` fields. Verified (not assumed): `_trade_levels()` takes `target` directly as its `take_profit` value, and its own stop-loss-tightening logic already has a "surface the honest sub-1.5 risk/reward rather than fake the take-profit" fallback, so Risk/Reward now also honestly reflects weak signals as a side effect, no extra code needed.
 - 8 new behavioral tests (real numeric assertions on `_estimate_target()`, not source-text checks), full backend suite 2177/2177 passing. No frontend changes.
+
+## Product Integrity #019 — News & Sentiment Pipeline Freshness Fixes
+
+**Status:** Implemented, tested (including live end-to-end verification), locally committed — pending production safety gate and push confirmation. See [Product Integrity #019](../Releases/Product-Integrity-019-News-Sentiment-Pipeline-Freshness-Fixes.md).
+
+- User reported DIXON's News & Sentiment section showed only 4-8 month old articles and "Insufficient fresh company-specific news evidence" despite genuine same-day coverage existing. Also asked whether this affects the AI signal — **verified via code trace: it does not**, missing news evidence is excluded and its weight redistributed to technicals/fundamentals rather than defaulting to neutral or degrading confidence.
+- Four independent, confirmed bugs found (not thin coverage): (A) Google News RSS query had no recency operator — ranked by relevance not date; (B) the company-relevance classifier required the full run-on company-name phrase including the trailing country word, so ordinary title-case headlines like "Dixon Technologies shares rally 5%" were excluded; (C) the Economic Times per-symbol RSS feed is dead (verified live — returns generic homepage HTML); (D) the Yahoo Finance RSS feed is deprecated (verified live — returns generic homepage HTML). C and D were silently contributing zero articles for every symbol, not just DIXON.
+- Fixes: added `when:14d` to Google News queries (matching the existing freshness window); accepted the already-computed 2-word company-name prefix as an additional relevance-match path (ticker case-sensitivity deliberately untouched — an existing test protects it against a specific false-positive); removed both dead feeds.
+- **Live end-to-end verified**, not just unit-tested: 3 DIXON articles now correctly classify as fresh + company-specific, all from the prior week.
+- 10 new regression tests, all 22 pre-existing news-relevance tests still passing, full backend suite 2187/2187. No frontend changes.
 
 ## Phase 1A.6 — Market Integrity Hardening and Database-Default Closure
 

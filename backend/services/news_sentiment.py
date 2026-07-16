@@ -342,13 +342,29 @@ def _phrase_in(norm_text: str, phrase: str) -> bool:
 def _target_mentioned(raw_text: str, norm_text: str, symbol: str, market: str) -> bool:
     """Strong target identifier: safe uppercase ticker token (len >= 3,
     matched case-sensitively against the ORIGINAL text so prose words can't
-    collide), or a word-boundary match of the canonical name / an alias."""
+    collide — deliberately NOT case-relaxed, see
+    test_word_boundaries_prevent_false_positive_matches: "the tsm format is
+    a file extension" must never match ticker TSM), or a word-boundary
+    match of the canonical name / an alias.
+
+    The canonical-name check previously only tried the FULL run-on phrase
+    (e.g. "dixon technologies india" for "Dixon Technologies (India)
+    Limited") — real headlines essentially never include the trailing
+    country/suffix word, so ordinary title-case coverage like "Dixon
+    Technologies shares rally 5%" was silently classified `unknown` and
+    excluded from sentiment. `_target_identifiers` already computes a
+    2-word own_prefix for exactly this kind of matching (used for peer
+    EXCLUSION) but it was discarded here (`_`) instead of also being
+    accepted as a target match. Now checked as an additional, still
+    conservative (2+ word, not single-word) signal."""
     sym = symbol.upper()
     if len(sym) >= 3 and sym not in _UPPER_TOKEN_STOPWORDS:
         if re.search(rf"\b{re.escape(sym)}\b", raw_text or ""):
             return True
-    phrases, _ = _target_identifiers(sym, market)
-    return any(_phrase_in(norm_text, p) for p in phrases)
+    phrases, own_prefixes = _target_identifiers(sym, market)
+    if any(_phrase_in(norm_text, p) for p in phrases):
+        return True
+    return any(_phrase_in(norm_text, p) for p in own_prefixes)
 
 
 def _peer_mentioned(raw_title: str, norm_title: str, symbol: str, market: str) -> bool:
@@ -527,28 +543,41 @@ _news_cache: dict[str, tuple[float, dict]] = {}
 _news_lock = threading.Lock()
 _NEWS_TTL = 10 * 60  # 10 minutes
 
-# Free public RSS feeds — no API key needed
+# Free public RSS feeds — no API key needed.
+#
+# Product Integrity #019: two of these were confirmed DEAD in production
+# (returning HTML, not RSS — silently contributing zero articles for every
+# symbol, not just one) and have been removed rather than left in place:
+#   - feeds.finance.yahoo.com/rss/... — Yahoo discontinued this endpoint;
+#     verified live (both US and IN query shapes) returns Yahoo's generic
+#     HTML homepage, not a feed.
+#   - economictimes.indiatimes.com/markets/stocks/rssfeeds/{symbol}.cms —
+#     ET's real per-stock RSS scheme keys on internal numeric IDs, not
+#     ticker symbols (no such mapping exists in this codebase); verified
+#     live this ticker-shaped URL returns ET's generic "Most Viewed"
+#     homepage, not a symbol-specific feed. ET's macro feed below (a
+#     numeric ID) is NOT affected — verified live, returns valid RSS.
+#
+# The Google News query gained a `when:{N}d` recency operator matching
+# SENTIMENT_MAX_AGE_DAYS["general"] (14 days) — without it, Google ranks by
+# relevance, not date, so the feed could return only months-old articles
+# even though same-day coverage existed and was one query parameter away.
 RSS_FEEDS = {
     "US": [
-        "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US",
-        "https://news.google.com/rss/search?q={symbol}+stock&hl=en-US&gl=US&ceid=US:en",
+        "https://news.google.com/rss/search?q={symbol}+stock+when:14d&hl=en-US&gl=US&ceid=US:en",
     ],
     "IN": [
-        "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}.NS&region=IN&lang=en-IN",
-        "https://news.google.com/rss/search?q={symbol}+NSE+India+stock&hl=en-IN&gl=IN&ceid=IN:en",
-        "https://economictimes.indiatimes.com/markets/stocks/rssfeeds/{symbol}.cms",
+        "https://news.google.com/rss/search?q={symbol}+NSE+India+stock+when:14d&hl=en-IN&gl=IN&ceid=IN:en",
         "https://www.moneycontrol.com/rss/buzzingstocks.xml",
     ],
 }
 
 MACRO_FEEDS = {
     "US": [
-        "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EGSPC&region=US&lang=en-US",
-        "https://news.google.com/rss/search?q=US+Federal+Reserve+interest+rates+economy&hl=en-US&gl=US&ceid=US:en",
+        "https://news.google.com/rss/search?q=US+Federal+Reserve+interest+rates+economy+when:14d&hl=en-US&gl=US&ceid=US:en",
     ],
     "IN": [
-        "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5ENSEI&region=IN&lang=en-IN",
-        "https://news.google.com/rss/search?q=RBI+India+Nifty+Sensex+economy&hl=en-IN&gl=IN&ceid=IN:en",
+        "https://news.google.com/rss/search?q=RBI+India+Nifty+Sensex+economy+when:14d&hl=en-IN&gl=IN&ceid=IN:en",
         "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
         "https://www.moneycontrol.com/rss/marketreports.xml",
         "https://www.moneycontrol.com/rss/economy.xml",
