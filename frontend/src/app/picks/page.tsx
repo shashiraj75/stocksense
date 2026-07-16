@@ -10,7 +10,7 @@ import { evaluateSessionFreshness, formatSessionDate, type FreshnessResult } fro
 import { selectPayloadForMarket } from "@/utils/payloadMarketGuard";
 import {
   TrendingUp, Clock, AlertCircle, ChevronDown, ChevronUp,
-  Loader2, Target, ShieldAlert, Zap, CheckCircle, BarChart2, Activity, FlaskConical,
+  Loader2, Target, ShieldAlert, Zap, CheckCircle, BarChart2, Activity, FlaskConical, RefreshCw,
 } from "lucide-react";
 import clsx from "clsx";
 import { PaperTradeModal } from "@/components/PaperTradeModal";
@@ -869,6 +869,20 @@ export default function DailyPicksPage() {
     placeholderData: keepPreviousData,
   });
 
+  // Live generation-progress badge. `/api/picks/daily` above only tells us
+  // `generating: true/false` — the processed/total counters live on
+  // `/api/picks/status`, a separate lightweight endpoint backed by the same
+  // daily_picks_jobs row. Only polled while a run is actually in progress
+  // (enabled gate below), so idle page loads never pay for it.
+  const isGenerating = !!(rawDailyPicksData as any)?.generating;
+  const { data: statusData } = useQuery<{ processed?: number | null; total?: number | null; generating?: boolean }>({
+    queryKey: ["picks-status", market],
+    queryFn: () => api.get(`/api/picks/status?market=${market}`).then(r => r.data),
+    enabled: isGenerating,
+    refetchInterval: isGenerating ? 15_000 : false,
+    staleTime: 10_000, refetchOnWindowFocus: false, retry: 2,
+  });
+
   // Cross-market retained-payload containment bypass fix. `keepPreviousData`
   // above means `rawDailyPicksData` can legitimately still be the OTHER
   // market's payload for one or more renders after `market` state has
@@ -987,6 +1001,23 @@ export default function DailyPicksPage() {
                 isStale ? "border-yellow-500/40 text-yellow-400" : "border-dark-border text-gray-500")}>
                 <Clock size={12} className="shrink-0 mt-0.5" />
                 <span className="break-words">{label} {generatedAt}{isStale ? ` · ${ageHours}h ago` : ""}</span>
+              </div>
+            );
+          })()}
+          {isGenerating && (() => {
+            const processed = statusData?.processed;
+            const total = statusData?.total;
+            // Counters are absent until the backend's counting phase starts
+            // (e.g. early in a run) — never fabricate a fraction from
+            // partial data, fall back to a plain "Updating…" badge instead.
+            const hasCounts = typeof processed === "number" && typeof total === "number" && total > 0;
+            const pct = hasCounts ? Math.round((processed! / total!) * 100) : null;
+            return (
+              <div className="flex items-center gap-1.5 text-xs bg-dark-card border border-blue-500/40 text-blue-300 rounded-lg px-3 py-2 w-full sm:w-auto">
+                <RefreshCw size={12} className="shrink-0 animate-spin" />
+                <span className="break-words">
+                  Updating{hasCounts ? ` — ${processed}/${total} (~${pct}%)` : "…"}
+                </span>
               </div>
             );
           })()}
