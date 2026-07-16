@@ -92,13 +92,21 @@ Original gate criteria, reviewed individually rather than declared passed as a b
 
 ## Product Integrity #016 — Score Snapshots Market Scoping
 
-**Status:** Implemented, tested, locally committed — pending production safety gate and push confirmation. See [Product Integrity #016](../Releases/Product-Integrity-016-Score-Snapshots-Market-Scoping.md).
+**Status:** Deployed to production (commit `883b304`) — migration confirmed live via direct DB query (market column present, new constraint/index in place, old ones gone). See [Product Integrity #016](../Releases/Product-Integrity-016-Score-Snapshots-Market-Scoping.md).
 
 - Closes finding #15 from the Stock Detail page audit — `score_snapshots` had no `market` column.
 - **A direct production audit found this wasn't hypothetical**: 225 symbols genuinely exist in both IN and US markets (AAPL, ADBE, ABT, and others), and since the old unique constraint was `(symbol, horizon, snapshot_date)` with `ON CONFLICT DO UPDATE`, this means one market's score-history data may have been silently overwritten by the other's for any of those symbols scored by both markets on the same day — not just a display bug.
-- Migration: nullable `market` column added (no backfill guess for existing rows — genuinely unrecoverable which market a legacy colliding row belongs to), unique constraint and index rebuilt to include `market`, using the DROP-then-ADD idempotent pattern established in Product Integrity #010 (not relying on `IF NOT EXISTS` alone). Self-applies via `init_db()` on backend startup, same mechanism PI-010 used.
+- Migration: nullable `market` column added (no backfill guess for existing rows — genuinely unrecoverable which market a legacy colliding row belongs to), unique constraint and index rebuilt to include `market`, using the DROP-then-ADD idempotent pattern established in Product Integrity #010 (not relying on `IF NOT EXISTS` alone). Self-applied via `init_db()` on backend startup, same mechanism PI-010 used.
 - Write path (`daily_picks.py`) and both read paths (History tab chart, Portfolio's Signal-column fallback — a second caller with the identical pre-existing gap, found in the same pass) now require `market`, matching `market IS NULL` too so the ~95% of symbols that never collided keep their pre-migration history intact.
 - 16 new regression tests (12 backend, 4 frontend), full suites passing (2169/2169 backend, 316/316 frontend), clean typecheck.
+
+## Product Integrity #017 — AI Prediction Confidence Display Fixes
+
+**Status:** Implemented, tested, locally committed — pending production safety gate and push confirmation. See [Product Integrity #017](../Releases/Product-Integrity-017-AI-Prediction-Confidence-Display-Fixes.md).
+
+- User feedback on a live low-confidence pick (DIXON, 12% confidence BUY): the "AI Prediction" card showed Confidence twice in a row (Signal Strip + a redundant standalone `ConfidenceMeter` using a *different* muting threshold than the strip); Trade Levels rendered a fully precise, confident-looking setup with no acknowledgment the underlying signal was only 12% confident.
+- Fixes: removed the duplicate `ConfidenceMeter`; added a low-confidence warning banner to Trade Levels (`confidence < 45`, the same threshold `getSignalTone` already uses to mute a weak BUY) — discloses rather than hides the numbers, since they're still mathematically valid ATR-based levels.
+- 5 new regression tests, full frontend suite 321/321 passing, clean typecheck. No backend changes.
 
 ## Phase 1A.6 — Market Integrity Hardening and Database-Default Closure
 

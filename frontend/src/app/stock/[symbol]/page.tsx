@@ -921,6 +921,20 @@ export default function StockPage() {
             return (
               <div className="bg-dark-card border border-dark-border rounded-2xl p-6">
                 <h2 className="font-bold text-lg mb-4">Trade Levels <span className="text-xs font-normal text-gray-500 ml-2">({tab} term)</span></h2>
+                {/* This card previously rendered identically regardless of
+                    confidence — precise Buy Zone/Take Profit/Stop Loss/
+                    Risk-Reward numbers looked just as actionable at 12%
+                    confidence as at 90%, even though the Signal card right
+                    above already visually mutes a weak BUY (getSignalTone,
+                    same 45% threshold used here). A user reasonably expects
+                    a card this detailed and precise-looking to reflect
+                    genuine conviction — flag it plainly instead of leaving
+                    that mismatch implicit. */}
+                {prediction.confidence < 45 && (
+                  <p className="text-xs text-yellow-500/90 bg-yellow-500/10 border border-yellow-500/20 rounded-lg px-3 py-2 mb-4">
+                    ⚠ Low confidence ({prediction.confidence}%) — these levels are the AI&apos;s calculated risk boundaries for this signal, not a high-conviction trade setup.
+                  </p>
+                )}
                 <div className={`grid ${gridCols} gap-4`}>
                   <div className={`rounded-xl border p-4 ${entryBg}`}>
                     <p className="text-xs text-gray-400 mb-1">{entryLabel}</p>
@@ -1127,10 +1141,14 @@ export default function StockPage() {
                   </div>
                     );
                   })()}
-                  <ConfidenceMeter
-                    value={prediction.confidence}
-                    label="Confidence"
-                  />
+                  {/* A standalone ConfidenceMeter used to render here,
+                      immediately repeating the exact number the Signal
+                      Strip above already shows — and using a DIFFERENT
+                      muting threshold (70/40) than getSignalTone's 60/45,
+                      so the same confidence value could imply two
+                      different "how sure is this" readings a few pixels
+                      apart. Removed; the Signal Strip is the one place on
+                      this card confidence is shown. */}
                   <div>
                     <p className="text-gray-400 text-sm mb-2">Key Reasons</p>
                     <ul className="space-y-1.5">
