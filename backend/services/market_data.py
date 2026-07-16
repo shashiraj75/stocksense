@@ -6,16 +6,25 @@ from typing import Optional
 from services import finnhub_client
 from services import nse_client
 
-# Static symbol→name map built from the universe list — instant fallback,
-# no API call needed. Populated lazily on first use.
+# Static (symbol, market)→name map built from the universe list — instant
+# fallback, no API call needed. Populated lazily on first use.
+#
+# 2026-07-17: previously keyed by bare symbol only (suffix stripped), with
+# IN_STOCKS and US_STOCKS flattened into one dict — any ticker that exists
+# in both universes (e.g. "CUB" = City Union Bank on NSE vs. Lionheart
+# Holdings on US markets) collided, and whichever list was inserted last
+# silently won for every caller regardless of which market they asked
+# about. Keying by (symbol, market) keeps the two universes isolated.
 _STATIC_NAMES: dict[str, str] = {}
 def _get_static_names() -> dict[str, str]:
     global _STATIC_NAMES
     if not _STATIC_NAMES:
         try:
             from services.stock_universe import IN_STOCKS, US_STOCKS
-            for sym, name in (IN_STOCKS + US_STOCKS):
-                _STATIC_NAMES[sym.upper().replace(".NS","").replace(".BO","")] = name
+            for market_key, stocks in (("IN", IN_STOCKS), ("US", US_STOCKS)):
+                for sym, name in stocks:
+                    clean_sym = sym.upper().replace(".NS", "").replace(".BO", "")
+                    _STATIC_NAMES[f"{clean_sym}:{market_key}"] = name
         except Exception:
             pass
     return _STATIC_NAMES
@@ -216,7 +225,7 @@ class MarketDataService:
             else:
                 # (c) static universe list — instant, no network call
                 clean_sym = symbol.upper().replace(".NS", "").replace(".BO", "")
-                static_name = _get_static_names().get(clean_sym, "")
+                static_name = _get_static_names().get(f"{clean_sym}:{market}", "")
                 if static_name:
                     result["company_name"] = static_name
                     _name_cache[key] = (time.time(), static_name)
