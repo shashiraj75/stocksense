@@ -857,6 +857,12 @@ def _predict_stock(symbol: str, horizon: str, market: str = "IN") -> dict | None
             # the source of truth for display; these are provenance only.
             "generation_reference_is_stale": (result.get("price_reference") or {}).get("is_stale"),
             "generation_reference_expected_session": (result.get("price_reference") or {}).get("expected_session"),
+            # Product Integrity #012 diagnostic (2026-07-17): surfaces why
+            # the bhavcopy correction didn't apply on a stale pick, so a
+            # failure mode (blocked egress, 404, timeout) is visible in the
+            # persisted pick itself instead of a log line that a 1000+
+            # symbol run can bury.
+            "generation_reference_bhavcopy_failure_reason": (result.get("price_reference") or {}).get("bhavcopy_failure_reason"),
             "risk_reward": trade.get("risk_reward_ratio"),
             "confidence":  result.get("confidence"),
             # Raw factor scores — kept for cross-sectional z-scoring

@@ -498,14 +498,17 @@ class PredictionEngine:
         # day's close; OHLC history/indicators still come from df exactly as
         # before (bhavcopy has no history, only the day's close).
         _bhavcopy_close = None
+        _bhavcopy_failure_reason = None
         if (
             _expected_session is not None
             and not df.empty
             and hasattr(df.index[-1], "date")
             and df.index[-1].date() < _expected_session
         ):
-            from services.nse_bhavcopy import get_bhavcopy_close
+            from services.nse_bhavcopy import get_bhavcopy_close, get_bhavcopy_failure_reason
             _bhavcopy_close = get_bhavcopy_close(symbol, _expected_session)
+            if _bhavcopy_close is None:
+                _bhavcopy_failure_reason = get_bhavcopy_failure_reason(_expected_session)
 
         # ── Screener.in enrichment (India only) ──────────────────────────────
         # Fills missing ROE, ROCE, promoter holding, revenue/profit growth from
@@ -609,6 +612,10 @@ class PredictionEngine:
                     )
                 ),
                 "expected_session": _expected_session.isoformat() if _expected_session is not None else None,
+                # Product Integrity #012 diagnostic (2026-07-17): why the
+                # bhavcopy correction didn't apply, when it was expected to.
+                # None whenever bhavcopy wasn't attempted or it succeeded.
+                "bhavcopy_failure_reason": _bhavcopy_failure_reason,
             },
                 "signal": signal,
                 "confidence": confidence,
@@ -928,6 +935,10 @@ class PredictionEngine:
                     )
                 ),
                 "expected_session": _expected_session.isoformat() if _expected_session is not None else None,
+                # Product Integrity #012 diagnostic (2026-07-17): why the
+                # bhavcopy correction didn't apply, when it was expected to.
+                # None whenever bhavcopy wasn't attempted or it succeeded.
+                "bhavcopy_failure_reason": _bhavcopy_failure_reason,
             },
             "signal": signal,
             "confidence": confidence,
