@@ -126,6 +126,12 @@ const HORIZONS = [
   { key: "long",   label: "Long Term",   sub: "3–6 months"       },
 ] as const;
 
+// High Conviction filter — surfaces only picks at/above this AI confidence
+// threshold, sorted highest-first. 85 matches the top slice users actually
+// see in practice (long-horizon picks routinely reach 85-100%; short/medium
+// rarely do), not an arbitrary round number.
+const HIGH_CONVICTION_THRESHOLD = 85;
+
 const SIGNAL_COLOR: Record<string, string> = {
   BUY: "text-green-400", BULLISH: "text-green-400",
   SELL: "text-red-400",  BEARISH: "text-red-400",
@@ -842,6 +848,7 @@ function PickCard({ pick, rank, market, currency, locale, freshness }: { pick: P
 export default function DailyPicksPage() {
   const [market] = useMarketPreference(["IN", "US"] as const, "IN");
   const [horizon, setHorizon] = useState<"short" | "medium" | "long">("short");
+  const [highConvictionOnly, setHighConvictionOnly] = useState(false);
   // Restored for the INTEGRITY_HOLD_ACTIVE === false branch below — always
   // declared (hooks must be called unconditionally) but only read/rendered
   // when the hold is off, so it has no effect while the hold is active.
@@ -878,16 +885,25 @@ export default function DailyPicksPage() {
   const currency = data?.currency ?? marketCfg.currency;
   const picks = data?.picks?.[horizon] ?? [];
 
+  // High Conviction filter — applied within the currently selected horizon,
+  // not across horizons, so it composes with the existing horizon tabs
+  // rather than replacing them. Sorted by confidence descending so the
+  // strongest signal always leads.
+  const visiblePicks = highConvictionOnly
+    ? [...picks].filter(p => p.confidence >= HIGH_CONVICTION_THRESHOLD).sort((a, b) => b.confidence - a.confidence)
+    : picks;
+
   // India Daily Picks session-freshness containment (Phase 0). Scoped to IN
   // only — US Daily Picks are untouched by this workstream. Computed once
-  // per render for the displayed (current-horizon) picks, keyed by symbol
-  // so PickCard and the batch notice below use the exact same evaluation.
+  // per render for the displayed (current-horizon, current-filter) picks,
+  // keyed by symbol so PickCard and the batch notice below use the exact
+  // same evaluation.
   const freshnessBySymbol: Record<string, FreshnessResult> | null =
     market === "IN"
       ? (() => {
           const now = new Date();
           const map: Record<string, FreshnessResult> = {};
-          for (const pick of picks) map[pick.symbol] = evaluateSessionFreshness(pick.generation_reference_as_of, now);
+          for (const pick of visiblePicks) map[pick.symbol] = evaluateSessionFreshness(pick.generation_reference_as_of, now);
           return map;
         })()
       : null;
@@ -1110,7 +1126,7 @@ export default function DailyPicksPage() {
       })()}
 
       {/* Horizon tabs */}
-      <div className="flex gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         {HORIZONS.map(({ key, label, sub }) => (
           <button key={key} onClick={() => setHorizon(key)}
             className={clsx("px-4 py-2.5 rounded-xl text-sm font-medium transition-all",
@@ -1120,6 +1136,15 @@ export default function DailyPicksPage() {
             <span className={clsx("ml-1.5 text-xs", horizon === key ? "text-blue-200" : "text-gray-600")}>({sub})</span>
           </button>
         ))}
+        <button onClick={() => setHighConvictionOnly(v => !v)}
+          title={`Show only picks with AI confidence ≥ ${HIGH_CONVICTION_THRESHOLD}%, sorted highest first`}
+          className={clsx("px-4 py-2.5 rounded-xl text-sm font-medium transition-all flex items-center gap-1.5 ml-auto",
+            highConvictionOnly ? "bg-emerald-500 text-white shadow-lg shadow-emerald-500/20"
+              : "bg-dark-card border border-dark-border text-gray-400 hover:text-white")}>
+          <Zap size={14} />
+          High Conviction Only
+          <span className={clsx("text-xs", highConvictionOnly ? "text-emerald-100" : "text-gray-600")}>(≥{HIGH_CONVICTION_THRESHOLD}%)</span>
+        </button>
       </div>
 
       {/* Product Integrity Workstream — Phase GPI-0, true two-branch hold.
@@ -1186,9 +1211,23 @@ export default function DailyPicksPage() {
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
           {[...Array(5)].map((_, i) => <div key={i} className="bg-dark-card border border-dark-border rounded-xl p-4 animate-pulse h-72" />)}
         </div>
-      ) : picks.length > 0 ? (
+      ) : visiblePicks.length > 0 ? (
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {picks.map((pick, i) => <PickCard key={pick.symbol} pick={pick} rank={i + 1} market={market} currency={currency} locale={marketCfg.locale} freshness={freshnessBySymbol?.[pick.symbol]} />)}
+          {visiblePicks.map((pick, i) => <PickCard key={pick.symbol} pick={pick} rank={i + 1} market={market} currency={currency} locale={marketCfg.locale} freshness={freshnessBySymbol?.[pick.symbol]} />)}
+        </div>
+      ) : highConvictionOnly && picks.length > 0 ? (
+        // Distinct from the "no BUY signals at all" empty state below — real
+        // picks exist for this horizon, just none clear the confidence bar.
+        <div className="flex flex-col items-center justify-center py-20 text-center">
+          <Zap size={40} className="text-gray-600 mb-4" />
+          <h3 className="text-lg font-semibold text-gray-300 mb-2">No picks ≥{HIGH_CONVICTION_THRESHOLD}% confidence right now</h3>
+          <p className="text-sm text-gray-500 max-w-sm">
+            {picks.length} {picks.length === 1 ? "pick" : "picks"} available in {HORIZONS.find(h => h.key === horizon)?.label.toLowerCase()}, but none reach {HIGH_CONVICTION_THRESHOLD}% AI confidence today. Try another horizon or turn off the filter.
+          </p>
+          <button onClick={() => setHighConvictionOnly(false)}
+            className="mt-4 px-4 py-2 rounded-lg text-sm font-medium bg-dark-card border border-dark-border text-gray-300 hover:text-white transition-all">
+            Show all {picks.length} picks
+          </button>
         </div>
       ) : (
         <div className="flex flex-col items-center justify-center py-20 text-center">

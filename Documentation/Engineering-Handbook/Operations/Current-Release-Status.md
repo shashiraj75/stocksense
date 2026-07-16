@@ -130,13 +130,22 @@ Original gate criteria, reviewed individually rather than declared passed as a b
 
 ## Product Integrity #020 — SEC EDGAR Facts Cache Memory Cap
 
-**Status:** Implemented, tested, locally committed — pending production safety gate and push confirmation. See [Product Integrity #020](../Releases/Product-Integrity-020-SEC-EDGAR-Facts-Cache-Memory-Cap.md).
+**Status:** Deployed to production (commit `0af3dbd`). See [Product Integrity #020](../Releases/Product-Integrity-020-SEC-EDGAR-Facts-Cache-Memory-Cap.md).
 
 - User noticed US Daily Picks hadn't refreshed in 54+ hours. Direct production DB read found a US job stuck `running` for ~5 hours (finalized as a separate direct data correction, not part of this release), and a prior US job that failed the day before with a confirmed Railway OOM.
 - Root cause found: `sec_edgar_adapter.py`'s `_facts_cache` was the one cross-run cache in the prediction pipeline with no size cap or eviction, unlike `prediction_engine.py`'s `_pred_cache`/`_regime_cache` (already capped at 300 specifically to prevent OOM on Render's free 512MB tier). With the US universe at 400 symbols, a single run could grow this cache unboundedly, each entry holding a full multi-year SEC EDGAR companyfacts payload.
 - Fix: added `_FACTS_CACHE_MAX = 300` (matching the already-proven-safe cap elsewhere) and a `_facts_cache_set()` helper that evicts the oldest entry when the cap is reached; `fetch_company_facts()` now writes through it instead of a direct dict assignment.
 - 6 new tests (cap value, eviction order, 400-symbol simulated run, re-insert behavior, write-through regression guard), all 5 pre-existing SEC EDGAR test files re-verified passing (39/39), full backend suite 2193/2193. No frontend changes.
-- Natural-run verification pending: the next US Daily Picks run is the first real-world test of this fix.
+- Natural-run verification: a manually-triggered US Daily Picks run was used as the first real-world test of this fix (same day as deploy, since the automatic GitHub Actions cron had already fired once for the day before the fix landed).
+
+## Product Integrity #021 — High Conviction Picks Filter
+
+**Status:** Implemented, tested, locally committed — pending production safety gate and push confirmation. See [Product Integrity #021](../Releases/Product-Integrity-021-High-Conviction-Picks-Filter.md).
+
+- User asked how to find Daily Picks with >85% AI confidence — there was no way to do this; picks could only be scanned manually per horizon tab.
+- Added a "High Conviction Only (≥85%)" toggle to the Picks page, alongside the existing horizon tabs. Filters the current horizon's picks to `confidence >= 85` and sorts highest-first; composes with (doesn't replace) the horizon tabs. Distinct empty state when a horizon has picks but none clear the bar.
+- Pure client-side view filter — no backend/ranking/confidence-computation change.
+- 13 new tests (wiring + real behavioral assertions on the exact filter/sort logic, including the 84%/85% boundary), full frontend suite 334/334 passing, clean typecheck, clean production build. No backend changes.
 
 ## Phase 1A.6 — Market Integrity Hardening and Database-Default Closure
 

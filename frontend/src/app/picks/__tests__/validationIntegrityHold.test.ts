@@ -121,7 +121,7 @@ describe("Phase GPI-0 — true two-branch integrity hold", () => {
 
   it("Daily Pick cards and non-price research evidence remain available", () => {
     expect(pageSource).toContain("function PickCard(");
-    expect(pageSource).toContain("{picks.map((pick, i) => <PickCard");
+    expect(pageSource).toContain("{visiblePicks.map((pick, i) => <PickCard");
     expect(pageSource).toContain("<TopReasons reasoning={pick.reasoning ?? []} />");
   });
 
