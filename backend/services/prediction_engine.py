@@ -497,13 +497,30 @@ class PredictionEngine:
         # below are based on the corrected price. Only ever replaces a single
         # day's close; OHLC history/indicators still come from df exactly as
         # before (bhavcopy has no history, only the day's close).
+        # 2026-07-17: yfinance can return a placeholder row for the current
+        # session with Close=NaN before that session's data is actually
+        # populated (confirmed directly: MARICO.NS's raw history() carried a
+        # 2026-07-16 row with Close=NaN at a time when the real close was
+        # already published elsewhere). df.index[-1] alone can't tell a
+        # populated bar from that placeholder — it must be checked against
+        # the LAST VALID (non-null) close, or this looks "fresh" and skips
+        # the bhavcopy correction entirely, even though the price actually
+        # used below (after the dropna() a few lines down) falls back to
+        # the prior session. This was why every symbol in the 2026-07-16
+        # India Daily Picks run showed is_stale=True yet bhavcopy never
+        # fired: the raw last row's date matched _expected_session exactly.
         _bhavcopy_close = None
         _bhavcopy_failure_reason = None
+        _valid_close = df["Close"].dropna() if not df.empty else df["Close"]
+        _last_valid_date = (
+            _valid_close.index[-1].date()
+            if not _valid_close.empty and hasattr(_valid_close.index[-1], "date")
+            else None
+        )
         if (
             _expected_session is not None
-            and not df.empty
-            and hasattr(df.index[-1], "date")
-            and df.index[-1].date() < _expected_session
+            and _last_valid_date is not None
+            and _last_valid_date < _expected_session
         ):
             from services.nse_bhavcopy import get_bhavcopy_close, get_bhavcopy_failure_reason
             _bhavcopy_close = get_bhavcopy_close(symbol, _expected_session)

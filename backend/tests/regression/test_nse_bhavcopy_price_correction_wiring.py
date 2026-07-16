@@ -63,3 +63,42 @@ def test_bhavcopy_import_is_lazy_matching_existing_file_convention():
     top_level_src = inspect.getsource(pe)
     import_lines = [l for l in top_level_src.splitlines()[:60] if l.strip().startswith(("import ", "from "))]
     assert not any("nse_bhavcopy" in l for l in import_lines)
+
+
+def test_bhavcopy_trigger_uses_last_VALID_close_not_the_raw_last_row():
+    """2026-07-17 regression: every symbol in the 2026-07-16 India Daily
+    Picks run showed is_stale=True with bhavcopy never firing. Root cause,
+    confirmed by directly inspecting yfinance's raw response: it can return
+    a placeholder row for the current session with Close=NaN before that
+    session's real close is populated. df.index[-1].date() alone can't
+    distinguish that placeholder from a genuinely fresh bar — it looks
+    "today", so the staleness check (< _expected_session) came back False
+    and skipped the bhavcopy correction entirely, even though the price
+    actually used a few lines later (after the existing dropna(subset=
+    ["Close"]) call) silently fell back to the prior session's close. The
+    trigger must be evaluated against the last row with a non-null Close,
+    not the raw last index entry."""
+    src = _src()
+    assert 'df["Close"].dropna()' in src
+    assert "_last_valid_date" in src
+    assert "_last_valid_date is not None" in src
+    assert "_last_valid_date < _expected_session" in src
+
+
+import pandas as pd
+
+
+def test_last_valid_close_date_skips_a_trailing_nan_placeholder_row():
+    """Direct behavioral proof of the fixed lookup logic (the same
+    operation predict() now performs on its `df`): with a trailing
+    Close=NaN row for the current session, the last VALID close's date
+    must resolve to the prior (actually-populated) session, not today's
+    placeholder date."""
+    idx = pd.to_datetime(["2026-07-14", "2026-07-15", "2026-07-16"])
+    df = pd.DataFrame({"Close": [848.25, 844.45, None]}, index=idx)
+
+    valid_close = df["Close"].dropna()
+    last_valid_date = valid_close.index[-1].date()
+
+    assert last_valid_date == pd.Timestamp("2026-07-15").date()
+    assert last_valid_date != df.index[-1].date()  # the bug: raw last row is the NaN placeholder
