@@ -157,6 +157,16 @@ Original gate criteria, reviewed individually rather than declared passed as a b
 - Pure client-side suggestion — no backend or trade-execution logic change; purely additive to the existing manual Buy flow.
 - 13 new tests on the extracted pure sizing function, including a reproduction of the user's real MU incident confirming the fix would have suggested far fewer than the 10 flat shares that caused the actual loss. Full frontend suite 347/347 passing, clean typecheck, clean production build. No backend changes.
 
+## Product Integrity #023 — Post-Job Memory Retention Fix
+
+**Status:** Implemented, tested, locally committed — pending production safety gate and push confirmation. See [Product Integrity #023](../Releases/Product-Integrity-023-Post-Job-Memory-Retention-Fix.md).
+
+- User spotted a "⚠ 2" Out of Memory badge on the Railway dashboard. Investigated via Railway's own memory metrics API: one genuine OOM occurred at 15:48 UTC 2026-07-16 — memory climbed to 98% of the 8GB container limit during a US Daily Picks run and **stayed pinned there for 90 minutes after the job had already completed**, then crashed and auto-restarted. (The other two detected "cliffs" were confirmed to be ordinary deploy-triggered restarts, not OOMs.)
+- Root cause: `generate_picks()`'s `raw` accumulator holds all ~1,200 candidate×horizon full result entries (reasoning, quality breakdowns, bull/bear cases) simultaneously for the entire function, even though the per-horizon ranking loop only needs one horizon at a time and the one consumer needing the full set already finished beforehand.
+- Fix: release each horizon's `raw[horizon]` reference immediately after it's captured for that horizon's processing, so at most one horizon's full candidate pool is held at a time instead of all three. Also added start/completion timing logs to the un-joined background thread (`weight_adapter.run_adaptation`) that continues running after the job is marked complete — a plausible but not-yet-conclusively-sized contributor to the 90-minute stall, now directly measurable on the next run.
+- 7 new tests (4 structural, verifying the release happens at the right point and `raw` is never read again; 3 behavioral, verifying the new timing logs), full backend suite 2200/2200 passing. No frontend changes.
+- Does not increase the Railway memory limit (deferred as a fallback) and does not conclusively prove the background thread is the sole cause of the plateau — natural-run verification against the next heavy US run is the real test.
+
 ## Phase 1A.6 — Market Integrity Hardening and Database-Default Closure
 
 **Status:** Deployed and verified live (2026-07-14). Write-boundary and schema-default closure is **COMPLETE**. Historical contamination repair is **NOT STARTED**. Canonical clean learning-dataset construction is **NOT STARTED**. Learning re-enablement is **NOT AUTHORIZED**.

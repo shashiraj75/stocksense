@@ -17,6 +17,7 @@ ic_engine.py / meta_model.py for why).
 """
 
 import logging
+import time
 
 from services.alpha_engine import ic_engine, meta_model, regime_cluster
 from services.alpha_engine.store import count_training_rows
@@ -53,6 +54,15 @@ def run_adaptation(market: str = "IN"):
     from services.alpha_engine.containment import is_production_learning_enabled
 
     production_enabled = is_production_learning_enabled()
+    _started_at = time.time()
+    # Product Integrity #023 — this runs as an un-joined daemon thread fired
+    # from generate_picks()'s `finally` block, after the picks job has
+    # already been marked "completed" in Postgres. Start/end timestamps here
+    # are the only way to know how long it actually runs past that point —
+    # needed after a 2026-07-16 production memory investigation found the
+    # process's RSS stayed pinned near the container's OOM limit for ~90
+    # minutes after a Daily Picks job's completed_at timestamp, with this
+    # thread as one of the only things still running in that window.
     log.info(f"[weight_adapter] Starting adaptation cycle ({market}) …")
     if not production_enabled:
         log.info("Production learning disabled: legacy training data quarantined.")
@@ -106,4 +116,5 @@ def run_adaptation(market: str = "IN"):
     except Exception as e:
         log.warning(f"[weight_adapter] Diagnostics error: {e}")
 
-    log.info(f"[weight_adapter] Adaptation cycle complete ({market}).")
+    _elapsed = time.time() - _started_at
+    log.info(f"[weight_adapter] Adaptation cycle complete ({market}) in {_elapsed:.1f}s.")

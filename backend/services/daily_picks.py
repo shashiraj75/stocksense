@@ -1461,6 +1461,17 @@ def _generate_picks_inner(
 
     for horizon in ("short", "medium", "long"):
         items = raw[horizon]
+        # Drop `raw`'s own reference now that `items` holds it for this
+        # horizon's processing. `raw` is never read again after this line
+        # (verified — only `items = raw[horizon]` reads it, once per
+        # horizon) and score snapshots were already written for the full
+        # set above, so nothing downstream needs `raw` to keep all three
+        # horizons' full candidate pools (~400 symbols each, every field
+        # including reasoning/summary/quality_factors text) alive
+        # simultaneously. Without this, a 400-symbol run holds all ~1,200
+        # candidate× horizon entries in memory for the entire function,
+        # instead of at most one horizon's worth at a time.
+        raw[horizon] = None
         if not items:
             picks[horizon] = []
             continue
