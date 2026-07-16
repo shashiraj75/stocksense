@@ -24,16 +24,16 @@ describe("StockQuote type declares open price", () => {
   });
 });
 
-describe("Open stat pill", () => {
+describe("D-Open stat pill", () => {
   it("renders only when quote.open is present, matching the existing high/low pattern", () => {
     expect(pageSource).toContain(
-      '...(quote.open != null ? [["Open", `${currency}${quote.open.toLocaleString()}`, "text-gray-200"]] : []),'
+      '...(quote.open != null ? [["D-Open", `${currency}${quote.open.toLocaleString()}`, "text-gray-200"]] : []),'
     );
   });
 
-  it("Open appears before High/Low in the pill array (left-to-right reading order)", () => {
-    const openIdx = pageSource.indexOf('["Open",');
-    const highIdx = pageSource.indexOf('["High",');
+  it("D-Open appears before D-High/D-Low in the pill array (left-to-right reading order)", () => {
+    const openIdx = pageSource.indexOf('["D-Open",');
+    const highIdx = pageSource.indexOf('["D-High",');
     expect(openIdx).toBeGreaterThan(-1);
     expect(highIdx).toBeGreaterThan(-1);
     expect(openIdx).toBeLessThan(highIdx);
@@ -41,19 +41,19 @@ describe("Open stat pill", () => {
 });
 
 describe("Abbreviated pill labels", () => {
-  it("Day-prefixed labels were shortened to Open/High/Low — the '52W' prefix on the other pair keeps them unambiguous", () => {
+  it("Day-prefixed labels were shortened to D-Open/D-High/D-Low — the 'D-' prefix mirrors '52W' so day-vs-52-week stays explicit", () => {
     expect(pageSource).not.toContain('"Day Open"');
     expect(pageSource).not.toContain('"Day High"');
     expect(pageSource).not.toContain('"Day Low"');
-    expect(pageSource).toContain('["High", `${currency}${quote.high.toLocaleString()}`');
-    expect(pageSource).toContain('["Low", `${currency}${quote.low.toLocaleString()}`');
+    expect(pageSource).toContain('["D-High", `${currency}${quote.high.toLocaleString()}`');
+    expect(pageSource).toContain('["D-Low", `${currency}${quote.low.toLocaleString()}`');
   });
 
   it("Volume was shortened to Vol", () => {
     expect(pageSource).toContain('["Vol", quote.volume?.toLocaleString() ?? "—", "text-gray-200"]');
   });
 
-  it("52W High/Low and Mkt Cap keep their full existing labels (already compact, changing them risks ambiguity next to the new High/Low pills)", () => {
+  it("52W High/Low and Mkt Cap keep their full existing labels (already compact, and 52W already carries its own distinguishing prefix)", () => {
     expect(pageSource).toContain('"52W High"');
     expect(pageSource).toContain('"52W Low"');
     expect(pageSource).toContain('"Mkt Cap"');

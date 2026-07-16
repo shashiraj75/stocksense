@@ -507,14 +507,13 @@ export default function StockPage() {
                     // default.
                     <div className="flex flex-nowrap gap-2 mb-3 overflow-x-auto max-w-full [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-dark-border [&::-webkit-scrollbar-thumb]:rounded-full">
                       {[
-                        // Abbreviated from "Day Open/High/Low" and "Volume" — the
-                        // "Day" qualifier is redundant this close to "52W High/Low"
-                        // (which keeps its own prefix, so no ambiguity), and O/H/L/
-                        // Vol are standard stock-quote shorthand. Saves enough width
-                        // that the row is far less likely to need horizontal scroll.
-                        ...(quote.open != null ? [["Open", `${currency}${quote.open.toLocaleString()}`, "text-gray-200"]] : []),
-                        ...(quote.high != null ? [["High", `${currency}${quote.high.toLocaleString()}`, "text-gray-200"]] : []),
-                        ...(quote.low != null ? [["Low", `${currency}${quote.low.toLocaleString()}`, "text-gray-200"]] : []),
+                        // Abbreviated from "Day Open/High/Low" and "Volume" to
+                        // "D-Open"/"D-High"/"D-Low"/"Vol" — the "D-" prefix mirrors
+                        // "52W"'s own prefix on the next two pills, so day-vs-52-week
+                        // stays explicit at a glance while still being compact.
+                        ...(quote.open != null ? [["D-Open", `${currency}${quote.open.toLocaleString()}`, "text-gray-200"]] : []),
+                        ...(quote.high != null ? [["D-High", `${currency}${quote.high.toLocaleString()}`, "text-gray-200"]] : []),
+                        ...(quote.low != null ? [["D-Low", `${currency}${quote.low.toLocaleString()}`, "text-gray-200"]] : []),
                         ["52W High", `${currency}${quote.fifty_two_week_high?.toLocaleString()}`, "text-gray-200"],
                         ["52W Low",  `${currency}${quote.fifty_two_week_low?.toLocaleString()}`,  "text-gray-200"],
                         ["Mkt Cap",  (() => {
