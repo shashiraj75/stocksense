@@ -781,6 +781,18 @@ def _predict_stock(symbol: str, horizon: str, market: str = "IN") -> dict | None
         if not result:
             return None
 
+        # Product Integrity #011: an error-shaped result (e.g. timeout,
+        # empty history, insufficient data — predict() returns
+        # {"error": ..., "code": ...} in several places) is truthy and has
+        # no "signal" key, so it previously fell through both checks below
+        # and got appended into the batch with mostly None/default fields
+        # instead of being cleanly excluded. Skip it the same way a
+        # REJECTED result is skipped.
+        if result.get("error"):
+            log.info(f"[picks] {symbol} data-provider error ({horizon}): "
+                      f"{result.get('code')} — {result.get('error')}")
+            return None
+
         # Hard quality gate — silently skip, but log
         if result.get("signal") == "REJECTED":
             log.info(f"[picks] {symbol} REJECTED ({horizon}): {result.get('rejection_reasons', [])}")
@@ -838,6 +850,13 @@ def _predict_stock(symbol: str, horizon: str, market: str = "IN") -> dict | None
             "generation_reference_source": (result.get("price_reference") or {}).get("source"),
             "generation_reference_price_basis": (result.get("price_reference") or {}).get("price_basis"),
             "generation_reference_as_of": (result.get("price_reference") or {}).get("as_of"),
+            # Product Integrity #011: authoritative at generation time (the
+            # backend already checked and, where possible, retried) —
+            # additive, the frontend's own independent client-side
+            # recomputation (sessionFreshness.ts) is unaffected and remains
+            # the source of truth for display; these are provenance only.
+            "generation_reference_is_stale": (result.get("price_reference") or {}).get("is_stale"),
+            "generation_reference_expected_session": (result.get("price_reference") or {}).get("expected_session"),
             "risk_reward": trade.get("risk_reward_ratio"),
             "confidence":  result.get("confidence"),
             # Raw factor scores — kept for cross-sectional z-scoring

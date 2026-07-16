@@ -10,6 +10,7 @@ log = logging.getLogger(__name__)
 import pandas as pd
 import numpy as np
 from services.technical_indicators import compute_indicators, get_signal_summary
+from services.market_hours import get_expected_latest_completed_nse_session
 from services.news_sentiment import NewsSentimentService
 from services.global_context import get_global_context
 from services.quality_factors import compute_all_quality_factors
@@ -402,11 +403,27 @@ class PredictionEngine:
         # ── Round 1: fetch price history + ticker.info + regime in parallel ─────
         period = {"short": "6mo", "medium": "2y", "long": "5y"}[horizon]
 
+        # Product Integrity #011 — India session-freshness backend gate.
+        # Computed once per call, outside the retry loop (pure/cheap, no
+        # network access) — the same expected-session date is used both to
+        # decide whether a retry is worthwhile and later to label the
+        # persisted price_reference honestly, without needing to thread
+        # extra state out of the _fetch_history closure.
+        _expected_session = get_expected_latest_completed_nse_session() if market == "IN" else None
+
         def _fetch_history():
             for attempt in range(3):
                 try:
                     df = yf.Ticker(symbol + suffix).history(period=period)
                     if not df.empty:
+                        if _expected_session is not None and attempt < 2:
+                            last_bar_date = df.index[-1].date() if hasattr(df.index[-1], "date") else None
+                            if last_bar_date is not None and last_bar_date < _expected_session:
+                                # Provider hasn't published the expected session yet for
+                                # this symbol — retry within the existing attempt budget
+                                # rather than silently accepting a stale bar as fresh.
+                                time.sleep(2 + attempt * 2)
+                                continue
                         return df
                     # Empty but no exception — crumb/session issue; reset and retry
                     if attempt < 2:
@@ -554,6 +571,16 @@ class PredictionEngine:
                 "source": "yahoo_daily_history",
                 "price_basis": "adjusted_close",
                 "as_of": df.index[-1].isoformat() if hasattr(df.index[-1], "isoformat") else str(df.index[-1]),
+                # Product Integrity #011 — authoritative at generation time,
+                # not reconstructed later from as_of alone. is_stale is None
+                # (not False) for US, where no expected-session check exists
+                # yet — never asserted fresh without having actually checked.
+                "is_stale": (
+                    (df.index[-1].date() < _expected_session)
+                    if _expected_session is not None and hasattr(df.index[-1], "date")
+                    else None
+                ),
+                "expected_session": _expected_session.isoformat() if _expected_session is not None else None,
             },
                 "signal": signal,
                 "confidence": confidence,
@@ -854,6 +881,16 @@ class PredictionEngine:
                 "source": "yahoo_daily_history",
                 "price_basis": "adjusted_close",
                 "as_of": df.index[-1].isoformat() if hasattr(df.index[-1], "isoformat") else str(df.index[-1]),
+                # Product Integrity #011 — authoritative at generation time,
+                # not reconstructed later from as_of alone. is_stale is None
+                # (not False) for US, where no expected-session check exists
+                # yet — never asserted fresh without having actually checked.
+                "is_stale": (
+                    (df.index[-1].date() < _expected_session)
+                    if _expected_session is not None and hasattr(df.index[-1], "date")
+                    else None
+                ),
+                "expected_session": _expected_session.isoformat() if _expected_session is not None else None,
             },
             "signal": signal,
             "confidence": confidence,

@@ -108,6 +108,39 @@ def _us_fixed_holidays(year: int) -> set[datetime.date]:
     }
 
 
+def _is_nse_trading_day(d: datetime.date) -> bool:
+    return (
+        d.weekday() < 5
+        and d not in _nse_fixed_holidays(d.year)
+        and d.strftime("%Y-%m-%d") not in NSE_EXTRA_HOLIDAYS
+    )
+
+
+def get_expected_latest_completed_nse_session(now: datetime.datetime | None = None) -> datetime.date | None:
+    """
+    Product Integrity #011 — backend mirror of frontend
+    marketHours.ts's getExpectedLatestCompletedSession() (Product Integrity
+    #004). The latest NSE trading session that should already have a
+    completed, published daily bar as of `now` — walks backward day-by-day
+    from "today" (or "yesterday" if today's own 3:30 PM IST close hasn't
+    happened yet) over the same weekend/holiday calendar is_market_open()
+    already uses. Used at Daily Picks generation time to detect a
+    provider-returned price bar that is unexpectedly behind — see
+    prediction_engine.py's _fetch_history().
+    """
+    if now is None:
+        now = datetime.datetime.now(IST)
+    else:
+        now = now.astimezone(IST) if now.tzinfo else now.replace(tzinfo=IST)
+    close_time = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    cursor = now.date() if now >= close_time else (now - datetime.timedelta(days=1)).date()
+    for _ in range(15):
+        if _is_nse_trading_day(cursor):
+            return cursor
+        cursor -= datetime.timedelta(days=1)
+    return None
+
+
 def is_market_open(market: str) -> bool:
     if market == "IN":
         now = datetime.datetime.now(IST)
