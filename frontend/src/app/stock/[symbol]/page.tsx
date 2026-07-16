@@ -147,6 +147,20 @@ export default function StockPage() {
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
+  // Backtest results are plain useState, not a useQuery, so they have no
+  // queryKey scoping by symbol/market — this component instance is reused
+  // across client-side navigation (e.g. clicking a different symbol from
+  // Watchlist/Screener/Dashboard), so without this reset a backtest run for
+  // the PREVIOUS symbol would keep rendering under the new symbol's header
+  // until the user manually re-ran it. BacktestResult.symbol/market would
+  // let us detect this after the fact, but clearing eagerly on navigation
+  // is simpler and avoids ever showing wrong-symbol numbers even briefly.
+  useEffect(() => {
+    setBtData(null);
+    setBtError("");
+    setBtRunning(false);
+  }, [symbol, market]);
+
   const horizon = (tab === "backtest" || tab === "history" || tab === "fundamentals") ? "medium" : (tab as Horizon);
 
   const { data: quote, dataUpdatedAt: quoteUpdatedAt, isLoading: quoteLoading, isError: quoteError } = useQuery({
@@ -514,8 +528,12 @@ export default function StockPage() {
                         ...(quote.open != null ? [["D-Open", `${currency}${quote.open.toLocaleString()}`, "text-gray-200"]] : []),
                         ...(quote.high != null ? [["D-High", `${currency}${quote.high.toLocaleString()}`, "text-gray-200"]] : []),
                         ...(quote.low != null ? [["D-Low", `${currency}${quote.low.toLocaleString()}`, "text-gray-200"]] : []),
-                        ["52W High", `${currency}${quote.fifty_two_week_high?.toLocaleString()}`, "text-gray-200"],
-                        ["52W Low",  `${currency}${quote.fifty_two_week_low?.toLocaleString()}`,  "text-gray-200"],
+                        // Guarded like D-Open/High/Low — a recently-listed stock
+                        // without a full year of trading history can genuinely
+                        // have no 52-week range yet; rendering unconditionally
+                        // would show the literal string "₹undefined" as a pill.
+                        ...(quote.fifty_two_week_high != null ? [["52W High", `${currency}${quote.fifty_two_week_high.toLocaleString()}`, "text-gray-200"]] : []),
+                        ...(quote.fifty_two_week_low != null ? [["52W Low", `${currency}${quote.fifty_two_week_low.toLocaleString()}`, "text-gray-200"]] : []),
                         ["Mkt Cap",  (() => {
                           const v = quote.market_cap;
                           if (!v) return "—";
@@ -594,7 +612,18 @@ export default function StockPage() {
                       <>
                         {/* Big signal display */}
                         <div className={clsx("w-full rounded-xl border px-4 py-3 text-center", tone.container)}>
-                          <p className="text-[10px] text-gray-500 uppercase tracking-widest mb-0.5">AI Signal</p>
+                          <p className="text-[10px] text-gray-500 uppercase tracking-widest mb-0.5">
+                            AI Signal
+                            {/* Fundamentals/History have no horizon of their own — the
+                                prediction shown here silently falls back to Medium Term
+                                (see the `horizon` computation above). Without this label
+                                a user has no way to tell that's what they're looking at,
+                                since the Short/Medium/Long tab row shows nothing selected
+                                while on these tabs either. */}
+                            {(tab === "fundamentals" || tab === "history") && (
+                              <span className="normal-case tracking-normal text-gray-600"> · Medium Term</span>
+                            )}
+                          </p>
                           <p className={clsx("text-2xl font-black tracking-wider", tone.text)}>
                             {prediction.signal === "BUY" ? "▲ BUY" : prediction.signal === "SELL" ? "▼ SELL" : "— HOLD"}
                           </p>
@@ -648,19 +677,32 @@ export default function StockPage() {
                           const isSell = prediction.signal === "SELL";
                           return (
                             <div className="w-full flex flex-col gap-1">
+                              {/* placeholderData keeps the previous horizon's
+                                  prediction on screen (no loading flash) while a
+                                  new one fetches in the background — but that
+                                  means `prediction` here can briefly be stale for
+                                  the horizon the user just switched to, with no
+                                  visual cue on this panel specifically (unlike
+                                  the "AI Prediction" card below, which does show
+                                  an "Updating…" badge). Disable the button during
+                                  that window rather than let a trade get placed
+                                  against the wrong horizon's signal/stop/target. */}
                               <button
                                 onClick={() => setShowPaperModal(true)}
+                                disabled={predFetching}
                                 className={clsx(
                                   "w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border transition-all",
-                                  isBuy  ? "bg-bull/15 border-bull/40 text-bull hover:bg-bull/25"
-                                  : isSell ? "bg-bear/15 border-bear/40 text-red-400 hover:bg-bear/25"
-                                  : "bg-white/5 border-white/10 text-gray-400 hover:text-white hover:border-white/20"
+                                  predFetching
+                                    ? "bg-white/5 border-white/10 text-gray-500 cursor-not-allowed"
+                                    : isBuy  ? "bg-bull/15 border-bull/40 text-bull hover:bg-bull/25"
+                                    : isSell ? "bg-bear/15 border-bear/40 text-red-400 hover:bg-bear/25"
+                                    : "bg-white/5 border-white/10 text-gray-400 hover:text-white hover:border-white/20"
                                 )}
                               >
-                                <Beaker size={12} />
-                                {isBuy ? "Paper Buy" : isSell ? "Paper Sell / Short" : "Paper Trade"}
+                                {predFetching ? <Loader2 size={12} className="animate-spin" /> : <Beaker size={12} />}
+                                {predFetching ? "Updating…" : isBuy ? "Paper Buy" : isSell ? "Paper Sell / Short" : "Paper Trade"}
                               </button>
-                              {(isSell || prediction.signal === "HOLD") && (
+                              {!predFetching && (isSell || prediction.signal === "HOLD") && (
                                 <p className={clsx("text-[11px] text-center leading-tight",
                                   isSell ? "text-red-400/80" : "text-gray-400")}>
                                   {isSell ? "AI signals exit — caution" : "No strong entry signal"}
@@ -898,6 +940,18 @@ export default function StockPage() {
                 <p className="text-xs text-gray-500 mt-1">
                   Based on 14-day ATR · Not financial advice — always set your own risk limits.
                 </p>
+                {/* These levels are computed off prediction.current_price (frozen
+                    at generation time, staleTime 14min), not the live quote.price
+                    shown in the hero above — PaperTradeModal already discloses
+                    this drift at execution time; without an equivalent note here,
+                    a user could see the hero's live price and this card's levels
+                    disagree with no explanation why. Same $0.01 threshold as
+                    PaperTradeModal to avoid flagging float-rounding noise. */}
+                {!isCrypto && quote?.price != null && cp != null && Math.abs(quote.price - cp) > 0.01 && (
+                  <p className="text-xs text-yellow-500/80 mt-1">
+                    Levels based on {currency}{fmt(cp)} (price when this prediction was generated) — current price is {currency}{quote.price.toLocaleString()}.
+                  </p>
+                )}
               </div>
             );
           })()}
@@ -1006,12 +1060,18 @@ export default function StockPage() {
                 </div>
               ) : prediction?.signal ? (
                 <>
-                  {/* Signal strip */}
+                  {/* Signal strip — uses getSignalTone (same as the hero card
+                      above and SignalBadge below) so a low-confidence BUY mutes
+                      consistently everywhere on the page. Previously this strip
+                      colored itself off signal alone, which could show a muted
+                      gray SignalBadge chip next to a bright green border and
+                      confidence number for the exact same weak-confidence BUY. */}
+                  {(() => {
+                    const stripTone = getSignalTone(prediction.signal, prediction.confidence);
+                    return (
                   <div className={clsx(
                     "flex items-center justify-between rounded-xl px-4 py-3 border",
-                    prediction.signal === "BUY"  ? "bg-bull/10 border-bull/30" :
-                    prediction.signal === "SELL" ? "bg-bear/10 border-bear/30" :
-                    "bg-neutral/10 border-neutral/30"
+                    stripTone.container
                   )}>
                     <div>
                       <p className="text-xs text-gray-400 mb-0.5">AI Signal</p>
@@ -1019,12 +1079,12 @@ export default function StockPage() {
                     </div>
                     <div className="text-right">
                       <p className="text-xs text-gray-400 mb-0.5">Confidence</p>
-                      <p className={clsx("text-2xl font-black tabular-nums",
-                        prediction.signal === "BUY"  ? "text-bull" :
-                        prediction.signal === "SELL" ? "text-bear" : "text-neutral"
-                      )}>{prediction.confidence}<span className="text-sm font-medium">%</span></p>
+                      <p className={clsx("text-2xl font-black tabular-nums", stripTone.text)}>
+                        {prediction.confidence}<span className="text-sm font-medium">%</span></p>
                     </div>
                   </div>
+                    );
+                  })()}
                   <ConfidenceMeter
                     value={prediction.confidence}
                     label="Confidence"

@@ -63,7 +63,7 @@ Original gate criteria, reviewed individually rather than declared passed as a b
 
 ## Product Integrity #013 — India Daily Picks Schedule Move (2:07 AM IST) and Stale-Copy Repair
 
-**Status:** Implemented, tested, locally committed — pending production safety gate and push confirmation. See [Product Integrity #013](../Releases/Product-Integrity-013-India-Daily-Picks-Schedule-Move-and-Stale-Copy-Repair.md).
+**Status:** Deployed to production. See [Product Integrity #013](../Releases/Product-Integrity-013-India-Daily-Picks-Schedule-Move-and-Stale-Copy-Repair.md).
 
 - India Daily Picks cron moved from `56 21 * * 0-4` UTC (3:26 AM IST) to `37 20 * * 0-4` UTC (**2:07 AM IST**), by explicit user request.
 - In the process, found and fixed a pre-existing, silent staleness: the frontend's `"generated daily at 2 AM IST"` label had been wrong for about a week (since the cron moved to 3:26 AM IST on 2026-07-09 without the label following). Now correctly reads `"2:07 AM IST"`, matching the new live schedule.
@@ -71,6 +71,15 @@ Original gate criteria, reviewed individually rather than declared passed as a b
 - Corrected a related functional drift in `main.py`'s startup catch-up threshold, which had assumed generation starts near 2 AM IST while the real cron had drifted to 3:26 AM IST — the schedule move itself resolves this (2:07 AM IST is close enough to the existing hour=2 threshold), the code comment was updated to state the current reality rather than the stale one.
 - Two "frozen schedule" regression tests (Product Integrity #010) were deliberately updated to the new cron — that freeze exists to prevent *accidental* drift from unrelated work, not to block an explicit, user-directed scheduling decision like this one.
 - Scope was explicitly limited to functional code (workflow YAML, frontend label, backend strings/comments, tests) — the ~12 `Documentation/*.md`/`README.md` prose references to "2 AM IST" were left as-is per user direction, and remain a known stale-reference risk for a future doc pass.
+
+## Product Integrity #014 — Stock Detail Page Forensic Audit, HIGH-Severity Fixes
+
+**Status:** Implemented, tested, locally committed — pending production safety gate and push confirmation. See [Product Integrity #014](../Releases/Product-Integrity-014-Stock-Detail-Page-Forensic-Audit-HIGH-Severity-Fixes.md).
+
+- Full forensic audit of `stocksense360.com/stock/{symbol}` (~2,100-line page, live quote + per-horizon AI predictions + fundamentals + backtest + score history + news/sentiment) triggered by a user-reported ambiguity: the AI Signal card silently showed Medium Term data on the Fundamentals tab with no disclosure. Five parallel read-only audits found **23 distinct findings** (7 HIGH, 10 MEDIUM, 6 LOW) plus a documented list of verified-clean areas.
+- This release fixes the 7 HIGH-severity findings only, per explicit user sequencing (HIGH first, MEDIUM/LOW deferred to later passes): (1) AI Signal card now discloses "· Medium Term" on Fundamentals/History tabs; (2) 52W High/Low pills null-guarded (previously could render the literal string "₹undefined"); (3) AI Prediction card's signal strip now uses `getSignalTone` so a low-confidence BUY mutes consistently instead of showing a muted badge next to a bright-green strip; (4) Trade Levels card discloses when it's computed off a stale `prediction.current_price` vs. the live quote price; (5) Paper Trade button disables during a background horizon refetch instead of risking a trade against the wrong horizon's data; (6) Backtest results now clear on symbol/market navigation instead of potentially showing a previous stock's results under a new stock's header.
+- 12 new regression tests, full frontend suite 291/291 passing, clean typecheck. No backend changes.
+- The 16 MEDIUM/LOW findings remain open, tracked in the release doc — including a pre-existing, code-acknowledged gap (score-history has no market column) and several presentation-consistency issues (Mkt Cap units, company-name fallback chain, sentiment/news drift).
 
 ## Phase 1A.6 — Market Integrity Hardening and Database-Default Closure
 
