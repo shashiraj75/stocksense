@@ -1,6 +1,6 @@
 # Product Integrity Workstream #015 — Stock Detail Page Forensic Audit, MEDIUM/LOW-Severity Fixes
 
-**Status:** Implemented, tested, and locally committed. Push/deploy is subject to the pre-push production safety gate documented in this same turn's final report.
+**Status:** Deployed to production (2026-07-16, commit `1e3c627`).
 
 **Follows directly on [Product Integrity #014](Product-Integrity-014-Stock-Detail-Page-Forensic-Audit-HIGH-Severity-Fixes.md)**, which fixed the 7 HIGH-severity findings from the same audit. This release fixes the remaining 15 of 16 open findings (10 MEDIUM, 5 of 6 LOW); finding #15 is excluded — it requires a backend database schema change (adding a `market` column to `score_snapshots`) and is a materially different risk category than the rest, so it's tracked separately pending explicit confirmation before any DB work.
 

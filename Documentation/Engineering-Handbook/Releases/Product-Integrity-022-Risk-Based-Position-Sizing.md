@@ -1,6 +1,6 @@
 # Product Integrity Workstream #022 — Risk-Based Position Sizing in Paper Trade
 
-**Status:** Implemented and tested. Push/deploy is subject to the pre-push production safety gate documented in this same turn's final report.
+**Status:** Deployed to production (2026-07-16, commit `0ef83a7`) — confirmed live via the deployed JS bundle (exact "Risk-based suggestion:" and fallback hint strings found in production).
 
 ## 1. Trigger
 
@@ -27,7 +27,7 @@ Added risk-based quantity suggestion to `PaperTradeModal.tsx` (buy flow only):
 - New `riskBasedSizing.test.ts` — 13 tests, real numeric assertions (not source-text checks): standard sizing case; a scaled reproduction of the user's actual MU incident (confirms the function would suggest far fewer than the 10 flat shares that caused the real $1,439 loss); the available-cash cap on a very tight stop loss; the 1-share floor; null returns for missing/invalid stop loss, zero-distance stop loss, missing/non-positive cash, and non-positive/non-finite price; direction-agnostic sizing (SELL-side stop above entry behaves symmetrically); a custom `riskPct` override; and an India-scale (₹) example using real DIXON trade levels seen earlier this session.
 - Full frontend suite: **347/347 passed** (334 baseline + 13 new).
 - Clean `tsc --noEmit` and clean `next build` (all 18 routes generated).
-- Browser verification limited: the modal requires an authenticated session, which wasn't available in this pass's local preview (same constraint as PI-021's CORS limitation). Verified instead via a clean dev-server compile (no runtime errors) plus the full behavioral test suite covering the exact sizing math end to end, including the specific real-world incident this feature targets.
+- Interactive browser verification limited: the modal requires an authenticated session, which wasn't available in this pass's local preview (same constraint as PI-021's CORS limitation). Verified instead via a clean dev-server compile (no runtime errors), the full behavioral test suite covering the exact sizing math end to end (including the specific real-world incident this feature targets), and — post-deploy — a direct check of the live production JS bundle confirming the exact "Risk-based suggestion:" and fallback hint strings shipped.
 
 ## 5. Rollback
 

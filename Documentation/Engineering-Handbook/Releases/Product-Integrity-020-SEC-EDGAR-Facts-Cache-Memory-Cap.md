@@ -1,6 +1,6 @@
 # Product Integrity Workstream #020 — SEC EDGAR Facts Cache Memory Cap
 
-**Status:** Implemented and tested. Push/deploy is subject to the pre-push production safety gate documented in this same turn's final report.
+**Status:** Deployed to production (2026-07-16, commit `0af3dbd`) — confirmed working via a full ~1-hour natural US Daily Picks production run with no OOM/stall, well past the point (367/1188 symbols processed) where the prior incident job died.
 
 ## 1. Trigger
 
@@ -38,6 +38,8 @@ Mirrors the exact pattern already proven safe in `prediction_engine.py`:
 ## 6. Natural-run verification plan
 
 The next scheduled US Daily Picks cron run (or the next manually-triggered run, once approved) is the first real-world test of this fix together with the prior turn's stuck-job finalization: a full 400-symbol US run completing without a repeat OOM/stall would confirm the fix in production conditions. Will monitor `daily_picks_jobs` status and Railway memory behavior on that next run.
+
+**Confirmed 2026-07-16, same day.** A manually-triggered US Daily Picks run (job `6b880529`, market-open hours) processed the full ~400-symbol universe end-to-end in ~1 hour (13:24–14:21 UTC) with `status: completed`, `last_error: null`, no OOM, no stall — well past the 367/1188-symbol point where the prior incident job (`a16c189d`) died. Production picks confirmed live and dated the same day via `GET /api/picks/daily?market=US`. This is the first real-world confirmation the fix holds under the actual OOM-triggering load pattern; the next natural pre-market cron run (06:00 UTC) is a secondary confirmation opportunity but is no longer the sole evidence.
 
 ## 7. Rollback
 

@@ -1,6 +1,6 @@
 # Product Integrity Workstream #021 — High Conviction Picks Filter
 
-**Status:** Implemented and tested. Push/deploy is subject to the pre-push production safety gate documented in this same turn's final report.
+**Status:** Deployed to production (2026-07-16, commit `37cf159`) — verified live on stocksense360.com: toggle renders, activates with correct styling, and correctly filters/sorts against real India Long Term data (LUPIN 91%, NATIONALUM 88%).
 
 ## 1. Trigger
 

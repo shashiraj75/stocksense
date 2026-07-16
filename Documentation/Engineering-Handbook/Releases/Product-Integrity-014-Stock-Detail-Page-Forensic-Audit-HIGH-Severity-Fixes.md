@@ -1,6 +1,6 @@
 # Product Integrity Workstream #014 — Stock Detail Page Forensic Audit, HIGH-Severity Fixes
 
-**Status:** Implemented, tested, and locally committed. Push/deploy is subject to the pre-push production safety gate documented in this same turn's final report.
+**Status:** Deployed to production (2026-07-16, commit `645a7c8`).
 
 ## 1. Trigger
 

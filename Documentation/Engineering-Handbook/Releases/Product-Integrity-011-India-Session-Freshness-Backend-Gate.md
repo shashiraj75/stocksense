@@ -1,6 +1,6 @@
 # Product Integrity Workstream #011 — India Session-Freshness Backend Gate
 
-**Status:** Implemented, tested, and locally committed. Push/deploy is subject to the pre-push production safety gate documented in this same turn's final report.
+**Status:** Deployed to production (2026-07-16, commit `ec3cef0`).
 
 **Scope note:** this closes the backend half of the gap Product Integrity #004 explicitly deferred ("a backend-side freshness gate... out of scope for this phase... a separate not-yet-scheduled follow-up phase"). It does not change Daily Picks scoring, ranking, confidence, entry/target/stop-loss formulas, universe selection, or the frontend's own independent client-side freshness disclosure (Product Integrity #004), which remains the display source of truth and is unaffected by this release. Scoped to India (`market == "IN"`) only, matching the disclosed issue; a US-side audit of the identical pattern is explicitly flagged as future work, not silently assumed unnecessary.
 

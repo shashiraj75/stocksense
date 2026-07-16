@@ -1,6 +1,6 @@
 # Product Integrity Workstream #008 — US Scheduler Workload Overlap Compatibility
 
-**Status:** Implemented, tested, and locally committed. Push/deploy is subject to the pre-push production safety gate documented in this same turn's final report — see that report for the gate result.
+**Status:** Deployed to production (2026-07-15, commit `797b11a`). Superseded by [Product Integrity #009](Product-Integrity-009-Weekly-Multibagger-Refresh-and-Durable-Lifecycle.md)'s weekly Multibagger schedule — this entry's daily-weekday US Multibagger cron and cooperative-stop mechanism no longer describe the current schedule.
 
 **Superseded in part by [Product Integrity #009](Product-Integrity-009-Weekly-Multibagger-Refresh-and-Durable-Lifecycle.md) (2026-07-16):** the daily-weekday US Multibagger schedule this workstream introduced (`0 8 * * 1-5`) and the "cooperative stop" coupling with Daily Picks/the Premarket Finalizer described below were both replaced — the refresh is now weekly for both markets, and the stop coupling was removed in favor of a durable heavy-workload lease. This document's own content below is preserved unedited as the historical record of what #008 actually shipped and why; it does not describe current behavior.
 

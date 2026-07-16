@@ -1,6 +1,6 @@
 # Product Integrity Workstream #007 — US Premarket Finalizer Moved to 6:00 AM ET
 
-**Status:** Implemented, tested, and locally committed. Push/deploy is subject to the pre-push restart-safety gate documented separately in this same turn's report — see that report for the gate result.
+**Status:** Deployed to production (2026-07-15, commit `02ae2f4`).
 
 **Scope note:** this is a narrowly scoped schedule change to the Daily Stock Picks — US Premarket Finalizer, plus the minimal, proven-necessary base-schedule correction it depends on. It does not touch Daily Picks scoring, ranking, or persistence logic; does not touch Phase 1A/1A.3 outcome or backfill code; and does not touch GPI-0 (the validation/performance integrity hold, which remains enabled).
 

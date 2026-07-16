@@ -1,6 +1,6 @@
 # Product Integrity Workstream #010 — Multibagger Production Hardening and Legacy-Schema Repair
 
-**Status:** Implemented, tested, and locally committed. Push/deploy is subject to the pre-push production safety gate documented in this same turn's final report.
+**Status:** Deployed to production (2026-07-16, commit `5ade20c`) — repair confirmed live via direct read-only introspection (market constraint now `IN ('IN','US')`, active-job index now `WHERE status IN ('queued','running')`).
 
 **Scope note:** this corrects defects in #009's own implementation — discovered through a direct, read-only production-database forensic audit performed for this release, not assumed from source code — and finalizes the Multibagger architecture: single-cron US scheduling, atomic job+lease reservation, a resumable staged worker with atomic cache promotion, and a real legacy-schema repair migration. It does not touch Daily Picks scoring, ranking, universe selection, PredictionEngine logic, Premarket Finalizer decision/provenance logic, Phase 1A/1A.3, backfill tooling, outcome remediation, GPI-0, or India/US market separation. Daily Picks and Premarket Finalizer schedules are explicitly frozen and regression-tested (§2).
 

@@ -1,6 +1,6 @@
 # Product Integrity Workstream #019 — News & Sentiment Pipeline Freshness Fixes
 
-**Status:** Implemented, tested (including live end-to-end verification), and locally committed. Push/deploy is subject to the pre-push production safety gate documented in this same turn's final report.
+**Status:** Deployed to production (2026-07-16, commit `fa0afe3`) — live-verified against the real production news endpoint.
 
 ## 1. Trigger
 

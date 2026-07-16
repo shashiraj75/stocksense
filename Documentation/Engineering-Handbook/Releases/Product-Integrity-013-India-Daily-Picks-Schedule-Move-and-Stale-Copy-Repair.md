@@ -1,6 +1,6 @@
 # Product Integrity Workstream #013 — India Daily Picks Schedule Move (2:07 AM IST) and Stale-Copy Repair
 
-**Status:** Implemented, tested, and locally committed. Push/deploy is subject to the pre-push production safety gate documented in this same turn's final report.
+**Status:** Deployed to production (2026-07-16, commit `1687854`).
 
 ## 1. Trigger
 

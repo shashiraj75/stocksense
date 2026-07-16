@@ -1,6 +1,6 @@
 # Product Integrity Workstream #018 — Confidence-Scaled Target Price Floors
 
-**Status:** Implemented, tested, and locally committed. Push/deploy is subject to the pre-push production safety gate documented in this same turn's final report.
+**Status:** Deployed to production (2026-07-16, commit `970e0d6`).
 
 **Follows directly from user feedback on [Product Integrity #017](Product-Integrity-017-AI-Prediction-Confidence-Display-Fixes.md)** — after PI-017 added a low-confidence warning banner to the Trade Levels card, the user asked the sharper question underneath it: *"showing only 12% confidence but upside is 15.8% for long term, how's that possible?"* PI-017 treated the symptom (disclose that the numbers might not be trustworthy); this release treats the actual cause.
 

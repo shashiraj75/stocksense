@@ -1,6 +1,6 @@
 # Product Integrity Workstream #016 — Score Snapshots Market Scoping
 
-**Status:** Implemented, tested, and locally committed. Push/deploy is subject to the pre-push production safety gate documented in this same turn's final report.
+**Status:** Deployed to production (2026-07-16, commit `883b304`) — migration confirmed live via direct DB query (market column present, new constraint/index in place, old ones gone).
 
 ## 1. Trigger
 

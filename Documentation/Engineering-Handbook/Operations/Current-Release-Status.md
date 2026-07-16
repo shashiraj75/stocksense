@@ -4,7 +4,7 @@
 
 **Use this document for current state.** Historical sprint reports, Epic closures, SSDS documents, and audit reports remain authoritative evidence for their own completed scope, but they do not automatically describe the current production operating state.
 
-**As of:** 2026-07-14 — maintained as a live operational register
+**As of:** 2026-07-16 — maintained as a live operational register
 
 ---
 
@@ -150,7 +150,7 @@ Original gate criteria, reviewed individually rather than declared passed as a b
 
 ## Product Integrity #022 — Risk-Based Position Sizing in Paper Trade
 
-**Status:** Implemented, tested, locally committed — pending production safety gate and push confirmation. See [Product Integrity #022](../Releases/Product-Integrity-022-Risk-Based-Position-Sizing.md).
+**Status:** Deployed to production (commit `0ef83a7`) — confirmed live via the deployed JS bundle. See [Product Integrity #022](../Releases/Product-Integrity-022-Risk-Based-Position-Sizing.md).
 
 - Follow-up to a user question about why US paper trading had a 75.6% win rate but a net loss while India (61.4% win rate) was profitable. Pulling the user's actual closed trades showed the cause: a flat share count (e.g. "10 shares") carries wildly different dollar risk by stock price — the 3 largest US losses ($1,439/$604/$944) were all large-notional positions (10 shares of $1,189/$824/$751 stocks), dwarfing many small wins on cheap stocks.
 - Added a risk-based quantity suggestion to the Paper Trade modal: sizes the position so a stop-loss hit costs ~1% of available virtual capital, capped at what the account can afford. Auto-fills Quantity (editable, same pattern as the existing AI stop-loss/target pre-fill) with a visible "risks ~$X (1% of $Y available)" hint.
