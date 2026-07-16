@@ -1185,23 +1185,20 @@ export default function PaperTradingPage() {
           <div className="space-y-4">
             {groupedOpenTrades.map(({ key, label, sub, accent, trades, summary }) => trades.length > 0 && (
               <div key={key} className={clsx("bg-dark-card border border-dark-border rounded-xl overflow-hidden border-l-4", accent)}>
-                <div className="px-4 py-2.5 flex items-center gap-2 border-b border-dark-border bg-white/[0.02]">
+                {/* Header + per-horizon summary on one line (user-requested,
+                    2026-07-16, folded back into the header row it was
+                    originally split from — flex-wrap lets it drop to a
+                    second line on narrow screens instead of clipping). */}
+                <div className="px-4 py-2.5 flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-dark-border bg-white/[0.02]">
                   <h3 className="font-semibold text-sm text-white">{label}</h3>
                   <span className="text-xs text-gray-500">({sub})</span>
-                  <span className="bg-white/10 text-gray-300 text-[11px] px-1.5 py-0.5 rounded-full font-medium ml-1">
+                  <span className="bg-white/10 text-gray-300 text-[11px] px-1.5 py-0.5 rounded-full font-medium ml-1 mr-3">
                     {trades.length}
                   </span>
-                  <span className="text-[11px] text-gray-400 ml-auto">Sorted by action priority</span>
-                </div>
-                {/* Per-horizon summary strip — user-requested, 2026-07-16.
-                    A separate row from the header above so the header's
-                    existing label/count/sort-order text doesn't get crowded
-                    by four more numbers on the same line. */}
-                <div className="px-4 py-2 flex flex-wrap items-center gap-x-5 gap-y-1 border-b border-dark-border bg-white/[0.01] text-xs">
-                  <span className="text-gray-500">
+                  <span className="text-xs text-gray-500">
                     Invested <span className="text-gray-300 font-mono font-medium">{marketCfg.currency}{fmt(summary.invested, 0, marketCfg.locale)}</span>
                   </span>
-                  <span className="text-gray-500">
+                  <span className="text-xs text-gray-500 ml-3">
                     Unr. P&amp;L{" "}
                     {summary.unrealizedLoaded ? (
                       <span className={clsx("font-mono font-medium", summary.unrealizedPnl >= 0 ? "text-bull" : "text-bear")}>
@@ -1211,18 +1208,19 @@ export default function PaperTradingPage() {
                       <span className="text-gray-600">Loading…</span>
                     )}
                   </span>
-                  <span className="text-gray-500">
+                  <span className="text-xs text-gray-500 ml-3">
                     % of Total{" "}
                     <span className="text-gray-300 font-mono font-medium">
                       {summary.pctOfTotal != null ? `${summary.pctOfTotal.toFixed(1)}%` : "—"}
                     </span>
                   </span>
-                  <span className="text-gray-500">
+                  <span className="text-xs text-gray-500 ml-3">
                     Avg Days Held{" "}
                     <span className="text-gray-300 font-mono font-medium">
                       {summary.avgDaysHeld != null ? summary.avgDaysHeld.toFixed(0) : "—"}
                     </span>
                   </span>
+                  <span className="text-[11px] text-gray-400 ml-auto">Sorted by action priority</span>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
