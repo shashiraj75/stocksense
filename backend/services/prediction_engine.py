@@ -488,6 +488,25 @@ class PredictionEngine:
             return {"error": "Data fetch timed out — Yahoo Finance took too long. Try again in a moment.",
                     "code": "DATA_PROVIDER_UNAVAILABLE"}
 
+        # Product Integrity #012 — NSE bhavcopy last-resort price correction.
+        # If yfinance's own 3-attempt retry budget (inside _fetch_history) was
+        # exhausted and the last bar is still behind the expected session, try
+        # NSE's official end-of-day archive once as a cross-check before
+        # accepting the stale bar. When it succeeds this corrects
+        # current_price itself, not just its label — trade levels computed
+        # below are based on the corrected price. Only ever replaces a single
+        # day's close; OHLC history/indicators still come from df exactly as
+        # before (bhavcopy has no history, only the day's close).
+        _bhavcopy_close = None
+        if (
+            _expected_session is not None
+            and not df.empty
+            and hasattr(df.index[-1], "date")
+            and df.index[-1].date() < _expected_session
+        ):
+            from services.nse_bhavcopy import get_bhavcopy_close
+            _bhavcopy_close = get_bhavcopy_close(symbol, _expected_session)
+
         # ── Screener.in enrichment (India only) ──────────────────────────────
         # Fills missing ROE, ROCE, promoter holding, revenue/profit growth from
         # screener.in — more reliable for Indian stocks than yfinance alone.
@@ -545,7 +564,7 @@ class PredictionEngine:
         from services.stock_universe import TRACKING_ONLY_SYMBOLS
         if symbol.upper() in TRACKING_ONLY_SYMBOLS:
             import datetime as _dt
-            current_price = float(df["Close"].iloc[-1])
+            current_price = _bhavcopy_close if _bhavcopy_close is not None else float(df["Close"].iloc[-1])
             atr_series = (df["High"] - df["Low"]).rolling(14).mean().dropna()
             atr = float(atr_series.iloc[-1]) if not atr_series.empty else current_price * 0.02
             signal = tech_signal["overall"]
@@ -568,17 +587,26 @@ class PredictionEngine:
             # price itself and all formulas are unchanged.
             "price_reference": {
                 "price": round(current_price, 2),
-                "source": "yahoo_daily_history",
-                "price_basis": "adjusted_close",
-                "as_of": df.index[-1].isoformat() if hasattr(df.index[-1], "isoformat") else str(df.index[-1]),
-                # Product Integrity #011 — authoritative at generation time,
-                # not reconstructed later from as_of alone. is_stale is None
-                # (not False) for US, where no expected-session check exists
-                # yet — never asserted fresh without having actually checked.
+                "source": "nse_bhavcopy" if _bhavcopy_close is not None else "yahoo_daily_history",
+                "price_basis": "official_close" if _bhavcopy_close is not None else "adjusted_close",
+                "as_of": (
+                    _expected_session.isoformat()
+                    if _bhavcopy_close is not None
+                    else (df.index[-1].isoformat() if hasattr(df.index[-1], "isoformat") else str(df.index[-1]))
+                ),
+                # Product Integrity #011/#012 — authoritative at generation
+                # time. is_stale is None (not False) for US, where no
+                # expected-session check exists yet — never asserted fresh
+                # without having actually checked. False when NSE's official
+                # bhavcopy supplied the correct close for the expected
+                # session, even though the OHLC history used for technical
+                # indicators (df) may still show an older bar.
                 "is_stale": (
-                    (df.index[-1].date() < _expected_session)
-                    if _expected_session is not None and hasattr(df.index[-1], "date")
-                    else None
+                    False if _bhavcopy_close is not None else (
+                        (df.index[-1].date() < _expected_session)
+                        if _expected_session is not None and hasattr(df.index[-1], "date")
+                        else None
+                    )
                 ),
                 "expected_session": _expected_session.isoformat() if _expected_session is not None else None,
             },
@@ -844,7 +872,7 @@ class PredictionEngine:
             week52_score=week52_score, info=info,
         )
 
-        current_price = float(df["Close"].iloc[-1])
+        current_price = _bhavcopy_close if _bhavcopy_close is not None else float(df["Close"].iloc[-1])
         atr_series = (df["High"] - df["Low"]).rolling(14).mean().dropna()
         atr = float(atr_series.iloc[-1]) if not atr_series.empty else current_price * 0.02
 
@@ -878,17 +906,26 @@ class PredictionEngine:
             # price itself and all formulas are unchanged.
             "price_reference": {
                 "price": round(current_price, 2),
-                "source": "yahoo_daily_history",
-                "price_basis": "adjusted_close",
-                "as_of": df.index[-1].isoformat() if hasattr(df.index[-1], "isoformat") else str(df.index[-1]),
-                # Product Integrity #011 — authoritative at generation time,
-                # not reconstructed later from as_of alone. is_stale is None
-                # (not False) for US, where no expected-session check exists
-                # yet — never asserted fresh without having actually checked.
+                "source": "nse_bhavcopy" if _bhavcopy_close is not None else "yahoo_daily_history",
+                "price_basis": "official_close" if _bhavcopy_close is not None else "adjusted_close",
+                "as_of": (
+                    _expected_session.isoformat()
+                    if _bhavcopy_close is not None
+                    else (df.index[-1].isoformat() if hasattr(df.index[-1], "isoformat") else str(df.index[-1]))
+                ),
+                # Product Integrity #011/#012 — authoritative at generation
+                # time. is_stale is None (not False) for US, where no
+                # expected-session check exists yet — never asserted fresh
+                # without having actually checked. False when NSE's official
+                # bhavcopy supplied the correct close for the expected
+                # session, even though the OHLC history used for technical
+                # indicators (df) may still show an older bar.
                 "is_stale": (
-                    (df.index[-1].date() < _expected_session)
-                    if _expected_session is not None and hasattr(df.index[-1], "date")
-                    else None
+                    False if _bhavcopy_close is not None else (
+                        (df.index[-1].date() < _expected_session)
+                        if _expected_session is not None and hasattr(df.index[-1], "date")
+                        else None
+                    )
                 ),
                 "expected_session": _expected_session.isoformat() if _expected_session is not None else None,
             },

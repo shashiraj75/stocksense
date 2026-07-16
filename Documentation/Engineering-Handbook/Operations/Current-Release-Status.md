@@ -44,12 +44,22 @@ Original gate criteria, reviewed individually rather than declared passed as a b
 
 ## Product Integrity #011 — India Session-Freshness Backend Gate
 
-**Status:** Implemented, tested, locally committed — pending production safety gate and push confirmation. See [Product Integrity #011](../Releases/Product-Integrity-011-India-Session-Freshness-Backend-Gate.md).
+**Status:** Deployed to production (2026-07-16, commit `ec3cef0`). See [Product Integrity #011](../Releases/Product-Integrity-011-India-Session-Freshness-Backend-Gate.md).
 
 - Root cause: per-symbol Yahoo/yfinance price-data lag for India Daily Picks (already forensically identified by Product Integrity #004, which built a frontend-only disclosure banner but explicitly deferred a backend gate). Triggered by a 2026-07-16 production screenshot review showing every India Daily Pick flagged stale.
 - Adds `get_expected_latest_completed_nse_session()` (backend port of the frontend's existing session-freshness algorithm), a retry-on-stale branch inside `_fetch_history()`'s existing 3-attempt budget, honest `is_stale`/`expected_session` labeling on `price_reference` at generation time, and a fix so error-shaped `predict()` results are excluded from the candidate pool instead of silently polluting it with `None` fields.
-- India (`market == "IN"`) only — explicitly does not address a possible identical US-side gap (flagged as open follow-up, not assumed fine) and does not change scoring, ranking, or universe selection.
-- Does not eliminate staleness entirely — a symbol still stale after all 3 attempts is generated and honestly labeled, not excluded or hidden. Natural-run verification (comparing the live stale-rate against the 2026-07-16 baseline) is pending the next scheduled India generation.
+- India (`market == "IN"`) only — does not change scoring, ranking, or universe selection.
+- Does not eliminate staleness entirely on its own — see Product Integrity #012 immediately below, which adds a real second data source for the cases retry alone can't resolve. Natural-run verification (comparing the live stale-rate against the 2026-07-16 baseline) is pending the next scheduled India generation.
+
+## Product Integrity #012 — NSE Bhavcopy Last-Resort Price Correction
+
+**Status:** Implemented, tested, locally committed — pending production safety gate and push confirmation. See [Product Integrity #012](../Releases/Product-Integrity-012-NSE-Bhavcopy-Price-Correction-Fallback.md).
+
+- Builds on #011: when yfinance's 3-attempt retry budget is exhausted and a bar is still stale, adds one last-resort lookup against NSE's own official daily bhavcopy archive (`https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_{DDMMYYYY}.csv`) before accepting the stale price.
+- Reachability from Railway's production network was verified directly (not assumed) via a read-only probe run from inside the actual production container: `HTTP_CODE: 200`, real ~369KB daily file returned.
+- **Meaningfully changes #011's stated scope**: when a bhavcopy correction fires, `current_price` — and therefore entry/target/stop-loss trade levels, not just the displayed reference price — is computed from NSE's corrected close rather than the stale Yahoo one. This is deliberate and disclosed, not incidental.
+- Does not touch OHLC history or technical indicators (bhavcopy has no history, only a single day's close) — a corrected pick's price is accurate; its technical indicators may still be computed from history that includes a stale last bar. Does not add a US equivalent.
+- Natural-run verification (checking for `generation_reference_source: "nse_bhavcopy"` on any pick) is pending the next scheduled India generation.
 
 ## Phase 1A.6 — Market Integrity Hardening and Database-Default Closure
 
