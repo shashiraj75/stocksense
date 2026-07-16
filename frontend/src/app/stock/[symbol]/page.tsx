@@ -501,6 +501,7 @@ export default function StockPage() {
                   {!isCrypto && quote && (
                     <div className="flex flex-wrap gap-2 mb-3">
                       {[
+                        ...(quote.open != null ? [["Day Open", `${currency}${quote.open.toLocaleString()}`, "text-gray-200"]] : []),
                         ...(quote.high != null ? [["Day High", `${currency}${quote.high.toLocaleString()}`, "text-gray-200"]] : []),
                         ...(quote.low != null ? [["Day Low", `${currency}${quote.low.toLocaleString()}`, "text-gray-200"]] : []),
                         ["52W High", `${currency}${quote.fifty_two_week_high?.toLocaleString()}`, "text-gray-200"],
