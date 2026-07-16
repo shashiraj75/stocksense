@@ -1388,8 +1388,15 @@ def save_alpha_observations(rows: list[dict]) -> bool:
     if not rows:
         return True
     try:
-        with _get_pool().connection() as conn:
-            conn.executemany("""
+        # Product Integrity #025 — psycopg3's Connection has no
+        # `executemany` method (only Cursor does); calling it directly on
+        # `conn` raised AttributeError on every single invocation in
+        # production, silently caught by the except block below and logged
+        # as a non-fatal warning. This table has had zero rows in
+        # production since this feature was written as a result — confirmed
+        # via a direct reproduction against the real driver, not assumed.
+        with _get_pool().connection() as conn, conn.cursor() as cur:
+            cur.executemany("""
                 INSERT INTO alpha_observations (
                     observation_id, run_id, market, horizon, symbol,
                     run_generated_at, run_session_date, reference_session_date,

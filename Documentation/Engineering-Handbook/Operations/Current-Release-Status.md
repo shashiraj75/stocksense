@@ -169,12 +169,23 @@ Original gate criteria, reviewed individually rather than declared passed as a b
 
 ## Product Integrity #024 — Paper Trading Horizon Summary and Overdue Flag
 
-**Status:** Implemented, tested, locally committed — pending production safety gate and push confirmation. See [Product Integrity #024](../Releases/Product-Integrity-024-Paper-Trading-Horizon-Summary-and-Overdue-Flag.md).
+**Status:** Deployed to production (commit `b6d812e`, layout follow-up `07cad13`) — verified live via the deployed JS bundle. See [Product Integrity #024](../Releases/Product-Integrity-024-Paper-Trading-Horizon-Summary-and-Overdue-Flag.md).
 
 - User asked whether their open paper-trade positions actually conform to their horizon's stated holding window. Checked the code: `horizon` is a static label frozen at trade-open time, never checked against actual holding duration — confirmed concretely via the user's own real NNY position (opened 29/6, still bucketed "Short Term (1-5 trading days)" 17 days later, no warning anywhere).
 - Added an "⏱ Overdue for {horizon}" flag on any open position that has exceeded its horizon's expected calendar-day window (short: 7 days, medium: 28, long: 183 — documented calendar-day approximations, not a precise trading-day calendar).
-- Added a per-horizon summary strip (Invested, Unr. P&L, % of Total Investment, Avg Days Held) below each Short/Medium/Long group header on the Open Positions section.
+- Added a per-horizon summary strip (Invested, Unr. P&L, % of Total Investment, Avg Days Held), folded into the existing group header row after user feedback that a separate row wasted vertical space.
 - 10 new tests on the extracted pure `horizonHolding.ts` utility, including a direct reproduction of the real NNY overdue case. Full frontend suite 357/357 passing, clean typecheck, clean production build. No backend changes.
+
+## Product Integrity #025 — Alpha Observations Write Path Bug
+
+**Status:** Implemented, tested, locally committed — pending production safety gate and push confirmation. See [Product Integrity #025](../Releases/Product-Integrity-025-Alpha-Observations-Write-Path-Bug.md).
+
+- Follow-up to a conceptual question about how the platform's self-learning system works: investigated why `alpha_observations` (the canonical clean dataset meant to eventually let production learning safely re-enable) had zero rows in production despite the write code appearing correctly wired.
+- Root cause, confirmed by direct reproduction against the real driver: `save_alpha_observations()` called `conn.executemany(...)` on a psycopg3 `Connection` — which has no `executemany` method (only `Cursor` does). Every call raised `AttributeError`, silently caught (by design — shadow telemetry must never break the real Daily Picks job) and logged as a non-fatal warning, invisible anywhere else. This has failed on every single Daily Picks run, both markets, since the feature was written.
+- Fix: route the insert through `conn.cursor()` instead of calling it on the connection directly. One call site.
+- Confirmed isolated, not a wider pattern: `git grep`'d every `executemany` call site in the backend — the only other matches are legitimate (a real Postgres cursor, a real `sqlite3.Connection`, which genuinely has that method).
+- Blast-radius verified, not assumed: nothing in production reads from `alpha_observations` yet, so this fix can only start populating a previously-idle table — it cannot change any ranking, confidence, or target-price output. Full backend suite 2203/2203 passing (zero regressions elsewhere), including a new test proven both ways (fails against the reverted bug with the exact real error message, passes against the fix).
+- Also found (separately, out of scope for this fix): `factor_ic_history` is also empty because its writer `log_factor_ic()` has zero callers anywhere — dead code, not the same bug class.
 
 ## Phase 1A.6 — Market Integrity Hardening and Database-Default Closure
 
