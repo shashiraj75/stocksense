@@ -41,18 +41,33 @@ import { AlertTriangle } from "lucide-react";
  * Remove this hold (set `INTEGRITY_HOLD_ACTIVE = false` below and restore
  * the two render call sites in page.tsx) only once ALL of the following are
  * true:
- *   1. validation_engine.py's market-routing heuristic is fixed to use the
- *      caller-supplied universe instead of re-deriving its own guess;
- *   2. validation results have been rerun for the correct market universe
- *      on both IN and US;
- *   3. the outcome entry-price contract is corrected so the price shown to
- *      users at generation time and the price used to resolve an outcome
- *      share one reconciled, auditable basis;
- *   4. benchmark_return_5d/20d/60d are populated by the live outcome
- *      resolver (not left NULL and defaulted to 0 client-side);
- *   5. market filtering is added to both `/api/validation/results` and
- *      `/api/picks/performance` (and their frontend query keys/requests are
- *      updated to pass and key on it).
+ *   1. [DONE — Product Integrity #006] validation_engine.py's market-routing
+ *      heuristic is fixed to use the caller-supplied universe instead of
+ *      re-deriving its own guess.
+ *   2. [DONE — 2026-07-17] validation results have been rerun for the
+ *      correct market universe on both IN and US (8 runs: short/medium/long
+ *      x nifty100/midcap, plus long/us and short/us — all using the #1 fix,
+ *      which predates these runs).
+ *   3. [OPEN] the outcome entry-price contract is corrected so the price
+ *      shown to users at generation time and the price used to resolve an
+ *      outcome share one reconciled, auditable basis. This is the ONLY
+ *      remaining condition — it's a real redesign of the prediction-
+ *      generation/outcome-resolution price contract, not a quick fix, and
+ *      deliberately wasn't rushed alongside 2/4/5 below.
+ *   4. [DONE — 2026-07-17] benchmark_return_5d/20d/60d are populated by the
+ *      live outcome resolver (services/alpha_engine/outcome_logger.py's
+ *      resolve_pair), not left NULL and defaulted to 0 client-side.
+ *   5. [DONE — 2026-07-17] market filtering is added to both
+ *      `/api/validation/results` (already had it) and `/api/picks/
+ *      performance` (added), each additive/opt-in via a new `market`
+ *      param — the frontend query keys/requests below still don't pass it,
+ *      since restoring these panels is condition 3's job, not this pass's.
+ *
+ * Do not flip INTEGRITY_HOLD_ACTIVE based on 1/2/4/5 alone — condition 3
+ * is the actual gate. Fixing it requires reconciling
+ * prediction_engine.py's generation-time price source with outcome_logger.py's
+ * independent resolution-time refetch, which is a real design decision
+ * about the entry-price contract, not a bug with one obvious fix.
  */
 export const INTEGRITY_HOLD_ACTIVE = true;
 

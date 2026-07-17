@@ -58,6 +58,17 @@ type DailyPicksResponse = {
   premarket_finalized_at?: string | null;
   premarket_status?: string | null;
   premarket_finalizer_version?: string | null;
+  // 2026-07-17 — connects the confidence % shown on each pick to its
+  // horizon's real, walk-forward validated track record (see
+  // services.validation_engine.get_track_record_summary). One entry per
+  // backtested universe (nifty100+midcap for IN, us for US); empty array
+  // means no validation run has completed for that horizon yet — never
+  // fabricated. Absent entirely on any payload from before this feature.
+  historical_track_record?: Record<
+    "short" | "medium" | "long",
+    { universe: string; beat_benchmark_pct: number | null; buy_hit_rate_pct: number | null;
+      n_signals: number | null; run_at: string | null }[]
+  >;
 };
 
 type ValidationResult = {
@@ -229,6 +240,79 @@ function TopReasons({ reasoning }: { reasoning: ReasonItem[] }) {
           <p className="text-xs text-gray-300 leading-relaxed">{r.reason}</p>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ── Historical track record (2026-07-17) ─────────────────────────────────────
+// Separate from, and NOT a substitute for, BacktestPanel/LivePerformanceTracker
+// below — those remain withheld behind INTEGRITY_HOLD_ACTIVE pending GPI-0
+// condition 3 (entry/resolution price-basis reconciliation). This reads a
+// different, already-reconciled source: services.validation_engine's own
+// walk-forward backtest results, passed straight through GET /api/picks/daily
+// as historical_track_record — no separate query, no risk of the market/
+// universe-blending defects GPI-0 was about. Renders nothing (not an error
+// state) when no validation run has completed for this horizon yet.
+function HistoricalTrackRecordSummary({
+  horizon, entries, benchmarkLabel,
+}: {
+  horizon: "short" | "medium" | "long";
+  entries?: { universe: string; beat_benchmark_pct: number | null; buy_hit_rate_pct: number | null;
+              n_signals: number | null; run_at: string | null }[];
+  benchmarkLabel: string;
+}) {
+  if (!entries || entries.length === 0) return null;
+
+  const UNIVERSE_LABEL: Record<string, string> = {
+    nifty100: "Large-cap", midcap: "Mid-cap", us: "US",
+  };
+
+  return (
+    <div className="bg-dark-card border border-dark-border rounded-xl p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <BarChart2 size={16} className="text-brand-400 shrink-0" />
+        <p className="text-sm font-semibold text-white">Historical accuracy — {horizon}-term</p>
+        <span className="text-xs text-gray-500">from real walk-forward backtests, not this run's picks</span>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {entries.map((e) => {
+          const beatBenchmark = e.beat_benchmark_pct;
+          const lowSample = (e.n_signals ?? 0) < 200;
+          const weak = beatBenchmark != null && beatBenchmark < 50;
+          return (
+            <div key={e.universe} className="bg-dark-bg/60 border border-dark-border rounded-lg p-3">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-xs font-medium text-gray-300">{UNIVERSE_LABEL[e.universe] ?? e.universe}</span>
+                {e.n_signals != null && (
+                  <span className="text-[11px] text-gray-500">{e.n_signals.toLocaleString()} backtested signals</span>
+                )}
+              </div>
+              <div className="flex items-baseline gap-3">
+                <div>
+                  <span className={clsx("text-lg font-bold", weak ? "text-amber-400" : "text-emerald-400")}>
+                    {beatBenchmark != null ? `${beatBenchmark.toFixed(1)}%` : "—"}
+                  </span>
+                  <span className="text-[11px] text-gray-500 ml-1">beat {benchmarkLabel}</span>
+                </div>
+                {e.buy_hit_rate_pct != null && (
+                  <div>
+                    <span className="text-sm font-semibold text-gray-300">{e.buy_hit_rate_pct.toFixed(1)}%</span>
+                    <span className="text-[11px] text-gray-500 ml-1">hit rate</span>
+                  </div>
+                )}
+              </div>
+              {weak && (
+                <p className="text-[11px] text-amber-400/80 mt-1.5">
+                  Below 50% — this horizon has not shown a reliable edge over {benchmarkLabel} historically.
+                </p>
+              )}
+              {lowSample && (
+                <p className="text-[11px] text-gray-500 mt-1">Small sample — treat as directional, not conclusive.</p>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -1200,6 +1284,15 @@ export default function DailyPicksPage() {
           {showTruth && <LivePerformanceTracker horizon={horizon} currency={currency} locale={marketCfg.locale} benchmarkLabel={market === "IN" ? "Nifty" : "S&P 500"} />}
         </>
       )}
+
+      {/* Historical accuracy — independent of the hold above, always shown
+          when data exists (see HistoricalTrackRecordSummary's own comment
+          for why this doesn't share GPI-0's defects). */}
+      <HistoricalTrackRecordSummary
+        horizon={horizon}
+        entries={data?.historical_track_record?.[horizon]}
+        benchmarkLabel={market === "IN" ? "Nifty" : "S&P 500"}
+      />
 
       {/* Loading */}
       {isLoading && (
