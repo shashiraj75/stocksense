@@ -12,6 +12,9 @@ import yfinance as yf
 _cache: dict[str, tuple[float, dict]] = {}
 _cache_lock = threading.Lock()
 CACHE_TTL = 4 * 3600  # 4 hours — fundamentals don't change intraday
+# 2026-07-17: was unbounded — see market_data.py's _cache_set comment for
+# the full incident context (repeated production climb-to-8GB-then-OOM).
+_CACHE_MAX = 300
 
 
 def _pct(v: float | None) -> float | None:
@@ -35,6 +38,9 @@ def fetch_us_fundamentals(symbol: str) -> dict:
     result = _build(sym)
 
     with _cache_lock:
+        if sym not in _cache and len(_cache) >= _CACHE_MAX:
+            oldest = min(_cache, key=lambda k: _cache[k][0])
+            del _cache[oldest]
         _cache[sym] = (time.time(), result)
 
     return result

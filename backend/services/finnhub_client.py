@@ -17,8 +17,18 @@ _SESSION = requests.Session()
 _SESSION.headers.update({"X-Finnhub-Token": FINNHUB_KEY})
 
 # Simple in-process cache to respect the 60 req/min free tier limit
+# 2026-07-17: was unbounded — see market_data.py's _cache_set comment for
+# the full incident context (repeated production climb-to-8GB-then-OOM).
 _cache: dict[str, tuple[float, dict]] = {}
 _QUOTE_TTL = 60  # seconds
+_CACHE_MAX = 300
+
+def _cache_set(cache: dict, key: str, value: tuple) -> None:
+    """Insert into cache, evicting the oldest entry when cap is reached."""
+    if key not in cache and len(cache) >= _CACHE_MAX:
+        oldest = min(cache, key=lambda k: cache[k][0])
+        del cache[oldest]
+    cache[key] = value
 
 
 def is_enabled_for_market(market: str) -> bool:
@@ -88,7 +98,7 @@ def get_quote(symbol: str, market: str) -> Optional[dict]:
                 if isinstance(data.get("t"), (int, float)) and data.get("t") else None
             ),
         }
-        _cache[cache_key] = (time.time(), result)
+        _cache_set(_cache, cache_key, (time.time(), result))
         return result
     except Exception as e:
         log.warning("Finnhub quote failed for %s (%s): %s", fh_sym, symbol, e)

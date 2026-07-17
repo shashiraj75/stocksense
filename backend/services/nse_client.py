@@ -186,6 +186,16 @@ def get_nifty100_quotes() -> list[dict]:
 
 _quote_cache: dict[str, tuple[float, dict]] = {}
 _QUOTE_TTL = 60  # 1 min
+# 2026-07-17: was unbounded — see market_data.py's _cache_set comment for
+# the full incident context (repeated production climb-to-8GB-then-OOM).
+_CACHE_MAX = 300
+
+def _cache_set(cache: dict, key: str, value: tuple) -> None:
+    """Insert into cache, evicting the oldest entry when cap is reached."""
+    if key not in cache and len(cache) >= _CACHE_MAX:
+        oldest = min(cache, key=lambda k: cache[k][0])
+        del cache[oldest]
+    cache[key] = value
 
 # NSE quote-equity metadata.lastUpdateTime format: "02-Jul-2026 15:59:59" (IST)
 _IST = __import__("datetime").timezone(__import__("datetime").timedelta(hours=5, minutes=30))
@@ -258,7 +268,7 @@ def get_quote(symbol: str) -> Optional[dict]:
             "quote_timestamp":   _parse_nse_update_time(
                                      (data.get("metadata") or {}).get("lastUpdateTime")),
         }
-        _quote_cache[sym] = (time.time(), result)
+        _cache_set(_quote_cache, sym, (time.time(), result))
         return result
 
     except Exception as e:

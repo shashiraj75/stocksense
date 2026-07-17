@@ -28,6 +28,9 @@ log = logging.getLogger(__name__)
 _cache: dict[str, tuple[float, dict]] = {}
 _cache_lock = threading.Lock()
 CACHE_TTL = 4 * 3600  # 4 hours — screener data is updated daily
+# 2026-07-17: was unbounded — see market_data.py's _cache_set comment for
+# the full incident context (repeated production climb-to-8GB-then-OOM).
+_CACHE_MAX = 300
 
 _SESSION = requests.Session()
 _SESSION.headers.update({
@@ -261,6 +264,9 @@ def fetch_screener_data(symbol: str) -> dict:
             break
 
     with _cache_lock:
+        if cache_key not in _cache and len(_cache) >= _CACHE_MAX:
+            oldest = min(_cache, key=lambda k: _cache[k][0])
+            del _cache[oldest]
         _cache[cache_key] = (time.time(), result)
 
     return result

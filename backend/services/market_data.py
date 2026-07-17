@@ -34,6 +34,27 @@ log = logging.getLogger(__name__)
 MARKET_SUFFIX = {"US": "", "IN": ".NS"}
 
 # ── In-process caches ──────────────────────────────────────────────────────────
+# 2026-07-17: these four were unbounded (plain dict[key] = value, no cap, no
+# eviction — the TTL constants below only ever gated whether a stale entry
+# gets USED on read, nothing ever deleted one) since this file was written,
+# even though the exact same class of bug was already identified and fixed
+# twice elsewhere in this codebase — prediction_engine.py's _pred_cache
+# ("cap at 300 entries to prevent OOM") and sec_edgar_adapter.py's
+# _facts_cache (Product Integrity #020). This is the highest-traffic file
+# in the app (every quote/stock-detail page view), across ~4,400+ possible
+# US+IN symbols with no realistic ceiling on how many distinct ones get
+# queried over a container's lifetime — a very plausible contributor to the
+# repeated climb-to-8GB-then-OOM pattern observed in production this
+# session. Same bounded-eviction pattern as those two, applied here too.
+_CACHE_MAX = 300
+
+def _cache_set(cache: dict, key: str, value: tuple) -> None:
+    """Insert into cache, evicting the oldest entry when cap is reached."""
+    if key not in cache and len(cache) >= _CACHE_MAX:
+        oldest = min(cache, key=lambda k: cache[k][0])
+        del cache[oldest]
+    cache[key] = value
+
 _quote_cache: dict[str, tuple[float, dict]] = {}
 _QUOTE_TTL = 60  # 1 min
 
@@ -137,7 +158,7 @@ class MarketDataService:
                     result = nse_q
                     # Store company name in name cache immediately
                     if nse_q.get("company_name"):
-                        _name_cache[key] = (time.time(), nse_q["company_name"])
+                        _cache_set(_name_cache, key, (time.time(), nse_q["company_name"]))
             except Exception as e:
                 log.debug("NSE quote failed for %s: %s", symbol, e)
 
@@ -221,14 +242,14 @@ class MarketDataService:
                 result["company_name"] = cached_name[1]
             elif result.get("company_name"):
                 # (b) NSE quote returned it — persist to cache
-                _name_cache[key] = (time.time(), result["company_name"])
+                _cache_set(_name_cache, key, (time.time(), result["company_name"]))
             else:
                 # (c) static universe list — instant, no network call
                 clean_sym = symbol.upper().replace(".NS", "").replace(".BO", "")
                 static_name = _get_static_names().get(f"{clean_sym}:{market}", "")
                 if static_name:
                     result["company_name"] = static_name
-                    _name_cache[key] = (time.time(), static_name)
+                    _cache_set(_name_cache, key, (time.time(), static_name))
                 else:
                     # (d) Finnhub profile inline for US or truly unknown symbols
                     sym_yf = self._sym(symbol, market)
@@ -254,7 +275,7 @@ class MarketDataService:
                             pass
 
                     if name:
-                        _name_cache[key] = (time.time(), name)
+                        _cache_set(_name_cache, key, (time.time(), name))
                         result["company_name"] = name
                     else:
                         # (e) yfinance background — populates cache for next request
@@ -270,7 +291,7 @@ class MarketDataService:
                                     timeout=5.0,
                                 )
                                 if n:
-                                    _name_cache[k] = (time.time(), n)
+                                    _cache_set(_name_cache, k, (time.time(), n))
                                     cached_q = _quote_cache.get(k)
                                     if cached_q:
                                         cached_q[1]["company_name"] = n
@@ -288,7 +309,7 @@ class MarketDataService:
         )
 
         if result:
-            _quote_cache[key] = (time.time(), result)
+            _cache_set(_quote_cache, key, (time.time(), result))
         return dict(result) if result else result
 
     def _fetch_history(self, symbol: str, market: str, period: str, interval: str):
@@ -328,7 +349,7 @@ class MarketDataService:
             log.warning("get_ohlcv failed %s/%s: %s", symbol, market, e)
             result = {"symbol": symbol, "market": market, "data": []}
 
-        _ohlcv_cache[key] = (time.time(), result)
+        _cache_set(_ohlcv_cache, key, (time.time(), result))
         return result
 
     async def get_fundamentals(self, symbol: str, market: str) -> dict:
@@ -365,7 +386,7 @@ class MarketDataService:
 
         has_data = any(v is not None for v in [result["pe_ratio"], result["roe"], result["sector"]])
         ttl = _FUND_TTL if has_data else 3600
-        _fundamentals_cache[key] = (time.time() - (_FUND_TTL - ttl), result)
+        _cache_set(_fundamentals_cache, key, (time.time() - (_FUND_TTL - ttl), result))
 
         return result
 

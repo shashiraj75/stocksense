@@ -20,6 +20,9 @@ log = logging.getLogger(__name__)
 _cache: dict[str, tuple[float, float | None]] = {}
 _cache_lock = threading.Lock()
 _TTL = 24 * 3600  # quarterly data; 24h cache is more than fresh enough
+# 2026-07-17: was unbounded — see market_data.py's _cache_set comment for
+# the full incident context (repeated production climb-to-8GB-then-OOM).
+_CACHE_MAX = 300
 
 _SESSION = requests.Session()
 _SESSION.headers.update({
@@ -60,6 +63,9 @@ def get_promoter_pledge_pct(symbol: str) -> float | None:
     result = _fetch_pledge(sym)
 
     with _cache_lock:
+        if sym not in _cache and len(_cache) >= _CACHE_MAX:
+            oldest = min(_cache, key=lambda k: _cache[k][0])
+            del _cache[oldest]
         _cache[sym] = (time.time(), result)
 
     return result

@@ -542,6 +542,9 @@ _FIN_LEXICON: list[tuple[str, float]] = [
 _news_cache: dict[str, tuple[float, dict]] = {}
 _news_lock = threading.Lock()
 _NEWS_TTL = 10 * 60  # 10 minutes
+# 2026-07-17: was unbounded — see market_data.py's _cache_set comment for
+# the full incident context (repeated production climb-to-8GB-then-OOM).
+_NEWS_CACHE_MAX = 300
 
 # Free public RSS feeds — no API key needed.
 #
@@ -680,6 +683,9 @@ class NewsSentimentService:
         }
 
         with _news_lock:
+            if cache_key not in _news_cache and len(_news_cache) >= _NEWS_CACHE_MAX:
+                oldest = min(_news_cache, key=lambda k: _news_cache[k][0])
+                del _news_cache[oldest]
             _news_cache[cache_key] = (time.time(), result)
         return result
 

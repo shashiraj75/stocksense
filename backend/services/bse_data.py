@@ -31,6 +31,11 @@ _symbol_cache: dict[str, str | None] = {}   # NSE symbol → BSE script code
 _data_cache: dict[str, tuple[float, dict]] = {}
 _lock = threading.Lock()
 _TTL = 4 * 3600
+# 2026-07-17: _data_cache was unbounded — see market_data.py's _cache_set
+# comment for the full incident context (repeated production
+# climb-to-8GB-then-OOM). _symbol_cache left as-is: naturally bounded by
+# the finite NSE symbol universe (~2,500), tiny string values.
+_CACHE_MAX = 300
 
 _SESSION = requests.Session()
 _SESSION.headers.update({
@@ -69,6 +74,9 @@ def get_bse_fundamentals(nse_symbol: str) -> dict:
     result = _fetch_bse_data(bse_code, sym)
 
     with _lock:
+        if sym not in _data_cache and len(_data_cache) >= _CACHE_MAX:
+            oldest = min(_data_cache, key=lambda k: _data_cache[k][0])
+            del _data_cache[oldest]
         _data_cache[sym] = (time.time(), result)
 
     return result
