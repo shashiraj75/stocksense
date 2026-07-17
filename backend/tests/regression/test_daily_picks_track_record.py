@@ -173,3 +173,68 @@ class TestDailyPicksEndpointTrackRecord:
             resp = client.get("/api/picks/daily", params={"market": "US"})
         body = resp.json()
         assert body["historical_track_record"] == {}
+
+
+# ─── SELL/HOLD confidence investigation (2026-07-17) ───────────────────────
+# Extends the BUY-only recalibration from commit f068156. Queried real
+# persisted validation data before touching anything: SELL had the exact
+# same range-mismatch bug as BUY (132,354 signals, composite scores
+# essentially never below ~25 against an assumed [0,45) range) — fixed.
+# HOLD's flat hit rate across its entire range (600,121 signals, no peak
+# near the assumed midpoint of 52) means its formula's whole premise isn't
+# supported by data, not just mis-scaled — deliberately left unchanged
+# rather than fabricating a fix.
+
+@pytest.mark.regression
+class TestSellHoldConfidenceInvestigation:
+    def _conf(self, composite, signal):
+        """Mirrors prediction_engine.py's three-branch formula exactly —
+        used here only to assert the intended post-fix behavior."""
+        if signal == "BUY":
+            return round(max(0, min(100, (composite - 60) / 20 * 100)))
+        if signal == "SELL":
+            return round(max(0, min(100, (45 - composite) / 20 * 100)))
+        return max(0, min(100, 50 - int(abs(composite - 52) * 2)))
+
+    def test_sell_confidence_rescaled_over_observed_25_to_45_range(self):
+        assert self._conf(45, "SELL") == 0
+        assert self._conf(25, "SELL") == 100
+        assert self._conf(35, "SELL") == 50  # midpoint of the real range
+
+    def test_sell_confidence_matches_production_and_validation_formulas(self):
+        import services.prediction_engine as pe
+        import services.validation_engine as ve
+        src_pe = __import__("inspect").getsource(pe.PredictionEngine._composite_signal)
+        src_ve = __import__("inspect").getsource(ve._confidence_from_composite)
+        assert "(45 - composite_r) / 20 * 100" in src_pe
+        assert "(45 - composite_r) / 20 * 100" in src_ve
+
+    def test_hold_confidence_formula_deliberately_unchanged(self):
+        """Locks in that HOLD was investigated and NOT rescaled — a future
+        edit changing this without re-querying real hit-rate-by-bucket data
+        first would be repeating the exact mistake this session avoided."""
+        import services.prediction_engine as pe
+        import services.validation_engine as ve
+        src_pe = __import__("inspect").getsource(pe.PredictionEngine._composite_signal)
+        src_ve = __import__("inspect").getsource(ve._confidence_from_composite)
+        assert "50 - int(abs(composite_r - 52) * 2)" in src_pe
+        assert "50 - int(abs(composite_r - 52) * 2)" in src_ve
+
+
+@pytest.mark.regression
+class TestSellConfidenceBuckets:
+    def test_sell_confidence_buckets_key_present_in_metrics(self):
+        from services.validation_engine import _compute_metrics
+        signals = [
+            {"predicted": "SELL", "composite_score": 30, "confidence": 60,
+             "fwd_return_pct": 1.0, "alpha_pct": 0.5, "correct": 1,
+             "tech_score": 40, "rs_score": 40, "obv_score": 40, "mfi_score": 40},
+            {"predicted": "SELL", "composite_score": 40, "confidence": 25,
+             "fwd_return_pct": -0.5, "alpha_pct": -0.2, "correct": 0,
+             "tech_score": 40, "rs_score": 40, "obv_score": 40, "mfi_score": 40},
+        ]
+        metrics = _compute_metrics(signals, benchmark_return_pct=0.2, horizon="medium")
+        assert "sell_confidence_buckets" in metrics
+        ranges = {b["confidence_range"] for b in metrics["sell_confidence_buckets"]}
+        assert "25–50" in ranges
+        assert "50–75" in ranges

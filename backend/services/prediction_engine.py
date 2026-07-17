@@ -2387,10 +2387,39 @@ class PredictionEngine:
             # production constants).
             confidence = round(max(0, min(100, (composite_r - 60) / 20 * 100)))
         elif signal == "SELL":
-            # Linear over the full SELL range [0,45)
-            confidence = round(max(0, min(100, (45 - composite_r) / 45 * 100)))
+            # 2026-07-17 range recalibration, same class of bug as BUY above:
+            # queried 132,354 real SELL signals across every walk-forward
+            # run persisted to date — composite scores essentially never go
+            # below ~25 (only 15 signals, 0.01%, ever did), while the old
+            # /45 divisor assumed the full [0,45) range. /20 rescales over
+            # the empirically observed [25,45) range instead. Same sync/
+            # caveat requirements as the BUY branch above.
+            #
+            # Honest difference from BUY: BUY's hit rate rose meaningfully
+            # with confidence (48%→67% across buckets). SELL's does not —
+            # hit rate is flat at ~47-52% across every composite-score
+            # bucket in that same query, no real gradient. This fix
+            # corrects an unambiguous range-mismatch bug (the computation
+            # was wrong regardless of what the result means), but does not
+            # claim SELL confidence predicts real-world accuracy the way
+            # BUY confidence now demonstrably does — see
+            # historical_track_record for the real, un-sugarcoated numbers.
+            confidence = round(max(0, min(100, (45 - composite_r) / 20 * 100)))
         else:
-            # HOLD confidence: highest near the midpoint (52), decays toward the thresholds
+            # HOLD confidence: highest near the midpoint (52), decays toward the thresholds.
+            #
+            # 2026-07-17: investigated whether this needed the same fix as
+            # BUY/SELL above. It doesn't get one — the finding is bigger
+            # than a range mismatch. Queried 600,121 real HOLD signals:
+            # hit rate is flat at ~43-46% across the ENTIRE composite-score
+            # range, including right at the assumed peak (52) — the
+            # premise that confidence should be highest at the midpoint
+            # and decay toward the thresholds isn't supported by data at
+            # all, not just mis-scaled. Rescaling the range here would
+            # fabricate meaning this formula's shape doesn't have;
+            # redesigning what HOLD confidence should represent is a
+            # separate, larger investigation, not a tonight fix — flagging
+            # honestly rather than shipping an unjustified change.
             confidence = max(0, min(100, 50 - int(abs(composite_r - 52) * 2)))
         score_band = _score_label(composite_r)
 

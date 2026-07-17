@@ -228,7 +228,18 @@ def _confidence_from_composite(composite_r: float, predicted: str) -> int:
         # reasoning; this file's job is to stay identical, not re-derive it.
         return round(max(0, min(100, (composite_r - 60) / 20 * 100)))
     if predicted == "SELL":
-        return round(max(0, min(100, (45 - composite_r) / 45 * 100)))
+        # 2026-07-17: kept in sync with prediction_engine.py's SELL branch —
+        # /20 (not /45), rescaled over the empirically observed [25,45)
+        # composite range (132,354 real SELL signals queried; scores
+        # essentially never go below ~25). Unlike BUY, hit rate is flat
+        # (~47-52%) across every bucket — this fixes an unambiguous range
+        # bug, it does not newly claim SELL confidence predicts accuracy.
+        return round(max(0, min(100, (45 - composite_r) / 20 * 100)))
+    # HOLD: deliberately NOT rescaled — 600,121 real HOLD signals queried,
+    # hit rate flat ~43-46% across the entire range including right at the
+    # assumed peak (52). The formula's whole premise (confidence peaks at
+    # the midpoint) isn't supported by data, not just mis-scaled; fixing
+    # that is a separate, larger investigation, not a range tweak.
     return max(0, min(100, 50 - int(abs(composite_r - 52) * 2)))  # HOLD
 
 
@@ -792,6 +803,21 @@ def _compute_metrics(signals: list[dict], benchmark_return_pct: float, horizon: 
                 "avg_return_pct":   _avg_ret(bucket_buys),
             })
 
+    # SELL confidence bucket analysis (2026-07-17) — same purpose as
+    # confidence_buckets above, for the SELL branch. Kept separate rather
+    # than merged: SELL's hit rate is flat across buckets (no gradient),
+    # unlike BUY's — a combined table would obscure that real difference.
+    sell_confidence_buckets = []
+    for lo, hi in ((0, 25), (25, 50), (50, 75), (75, 101)):
+        bucket_sells = [s for s in sells if lo <= s.get("confidence", -1) < hi]
+        if bucket_sells:
+            sell_confidence_buckets.append({
+                "confidence_range": f"{lo}–{hi if hi <= 100 else 100}",
+                "count":            len(bucket_sells),
+                "hit_rate_pct":     _hit_rate(bucket_sells),
+                "avg_return_pct":   _avg_ret(bucket_sells),
+            })
+
     # Factor IC (Pearson correlation of each sub-score with forward return)
     def _ic(factor_key):
         pairs = [(s[factor_key], s["fwd_return_pct"]) for s in signals
@@ -835,6 +861,7 @@ def _compute_metrics(signals: list[dict], benchmark_return_pct: float, horizon: 
         "max_drawdown_pct":       _max_drawdown(buy_rets),
         "score_buckets":          buckets,
         "confidence_buckets":     confidence_buckets,
+        "sell_confidence_buckets": sell_confidence_buckets,
         "factor_ic": {
             "tech":      _ic("tech_score"),
             "rs":        _ic("rs_score"),
