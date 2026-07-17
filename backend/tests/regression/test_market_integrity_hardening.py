@@ -815,6 +815,37 @@ class TestMetricContainment:
             result = pg.get_daily_picks_performance(horizon="short")
         assert {r["symbol"] for r in result} == {BOTH_SYM, IN_ONLY_SYM}
 
+    def test_daily_picks_performance_market_none_omits_sql_filter(self):
+        """GPI-0 condition D5: market=None (the default) must preserve the
+        exact prior no-filter behavior — no market clause, no market param."""
+        from services import postgres_store as pg
+        fake_pool, fake_conn = _make_fake_pool([])
+        with patch.object(pg, "_get_pool", return_value=fake_pool):
+            pg.get_daily_picks_performance(horizon="short")
+        sql, params = fake_conn.execute.call_args[0]
+        assert "p.market = %s" not in sql
+        assert params == ("short", "90")
+
+    def test_daily_picks_performance_market_in_adds_sql_filter(self):
+        from services import postgres_store as pg
+        fake_pool, fake_conn = _make_fake_pool([])
+        with patch.object(pg, "_get_pool", return_value=fake_pool):
+            pg.get_daily_picks_performance(horizon="short", market="IN")
+        sql, params = fake_conn.execute.call_args[0]
+        assert "p.market = %s" in sql
+        assert params == ("short", "90", "IN")
+
+    def test_daily_picks_performance_market_us_scopes_to_us_only(self):
+        from services import postgres_store as pg
+        rows = [
+            (BOTH_SYM, "US", "2026-01-01", 100.0, 0.5, 0.5, 1.0, None, None, None, None, None),
+        ]
+        fake_pool, fake_conn = _make_fake_pool(rows)
+        with patch.object(pg, "_get_pool", return_value=fake_pool):
+            pg.get_daily_picks_performance(horizon="short", market="US")
+        sql, params = fake_conn.execute.call_args[0]
+        assert params[-1] == "US"
+
     def test_training_data_excludes_definitive_conflicts(self, caplog):
         from services import postgres_store as pg
         rows = [

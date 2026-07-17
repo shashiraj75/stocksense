@@ -211,14 +211,23 @@ def picks_status(market: str = "IN"):
 
 
 @router.get("/performance")
-def picks_performance(horizon: str = "medium", window_days: int = 90):
-    """Live performance of past daily picks — hit rate, P&L, vs benchmark."""
+def picks_performance(horizon: str = "medium", window_days: int = 90, market: str | None = None):
+    """Live performance of past daily picks — hit rate, P&L, vs benchmark.
+
+    2026-07-17 (GPI-0 condition D5): `market` is optional and additive —
+    omitting it preserves the prior combined-both-markets behavior exactly.
+    Pass market=IN or market=US to scope to one market's picks only,
+    instead of them being silently blended together (the exact defect
+    Product Integrity #005's audit confirmed live: this endpoint could
+    report India results while a US-labeled UI displayed them as its own).
+    """
+    market = _norm_market(market) if market else None
     try:
         from services.postgres_store import get_daily_picks_performance
-        rows = get_daily_picks_performance(horizon=horizon, window_days=window_days)
-        return {"horizon": horizon, "window_days": window_days, "picks": rows}
+        rows = get_daily_picks_performance(horizon=horizon, window_days=window_days, market=market)
+        return {"horizon": horizon, "window_days": window_days, "market": market, "picks": rows}
     except Exception as e:
-        return {"horizon": horizon, "window_days": window_days, "picks": [], "error": str(e)}
+        return {"horizon": horizon, "window_days": window_days, "market": market, "picks": [], "error": str(e)}
 
 
 @router.get("/intelligence-shadow")

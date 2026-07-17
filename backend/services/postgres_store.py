@@ -1535,31 +1535,40 @@ def load_picks_from_db(market: str = "IN") -> dict | None:
     return None
 
 
-def get_daily_picks_performance(horizon: str, window_days: int = 90) -> list[dict]:
+def get_daily_picks_performance(horizon: str, window_days: int = 90, market: str | None = None) -> list[dict]:
     """All daily-pick predictions in the window, joined with outcomes if resolved.
 
-    Phase 1A.6: this query has no market filter — it reports every
-    is_daily_pick row across both markets in one combined window, so a
-    legacy market/symbol conflict (a US-only symbol stored under
-    market='IN', the exact shape of the pre-536fd3d contamination) would
-    otherwise be silently counted into these hit-rate/P&L numbers. Rows
-    with a definitive conflict (services.market_integrity.
-    is_definitive_conflict) are excluded after fetch, never included with
-    a null/zeroed return — this is the smallest safe fail-closed
-    exclusion; it does not change ranking, scoring, or which rows are
-    is_daily_pick in the first place. BOTH (dual-listed) and UNKNOWN
-    symbols, and valid IN_ONLY/US_ONLY rows, all remain included —
+    Phase 1A.6: with `market=None` (the default), this query has no market
+    filter — it reports every is_daily_pick row across both markets in one
+    combined window, so a legacy market/symbol conflict (a US-only symbol
+    stored under market='IN', the exact shape of the pre-536fd3d
+    contamination) would otherwise be silently counted into these
+    hit-rate/P&L numbers. Rows with a definitive conflict (services.
+    market_integrity.is_definitive_conflict) are excluded after fetch,
+    never included with a null/zeroed return — this is the smallest safe
+    fail-closed exclusion; it does not change ranking, scoring, or which
+    rows are is_daily_pick in the first place. BOTH (dual-listed) and
+    UNKNOWN symbols, and valid IN_ONLY/US_ONLY rows, all remain included —
     numerator and denominator both derive from the same filtered list.
     Emits a structured summary event with fetched/excluded/eligible
     counts whenever at least one row is excluded.
+
+    2026-07-17 (GPI-0 condition D5): `market="IN"` or `market="US"` adds an
+    explicit SQL-level filter on top of the existing conflict exclusion —
+    additive only, `market=None` preserves the exact prior behavior. This
+    is what lets a per-market caller (e.g. a market-aware Live Performance
+    Tracker) ask for one market's numbers without them being silently
+    blended with the other's.
     """
     from services.market_integrity import (
         EVENT_PERFORMANCE_CONFLICTS_EXCLUDED, REASON_DEFINITIVE_CONFLICT,
         emit_market_event, is_definitive_conflict,
     )
 
+    market_filter_sql = " AND p.market = %s" if market else ""
+    params = (horizon, str(window_days)) + ((market,) if market else ())
     with _get_pool().connection() as conn:
-        rows = conn.execute("""
+        rows = conn.execute(f"""
             SELECT p.symbol, p.market, date(p.logged_at) AS pred_date, p.price AS entry_price,
                    p.composite_score, p.confidence_score,
                    o.return_5d, o.return_20d, o.return_60d,
@@ -1570,8 +1579,9 @@ def get_daily_picks_performance(horizon: str, window_days: int = 90) -> list[dic
              AND o.pred_date = date(p.logged_at)
             WHERE p.horizon = %s AND p.is_daily_pick = TRUE
               AND p.logged_at >= now() - (%s || ' days')::interval
+              {market_filter_sql}
             ORDER BY p.logged_at DESC
-        """, (horizon, str(window_days))).fetchall()
+        """, params).fetchall()
     cols = ["symbol", "market", "date", "entry_price", "score", "confidence",
             "return_5d", "return_20d", "return_60d",
             "benchmark_return_5d", "benchmark_return_20d", "benchmark_return_60d"]
