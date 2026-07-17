@@ -1069,6 +1069,46 @@ def get_latest_results(horizon: str | None = None, universe: str = "nifty100") -
             log, "validation_engine.get_latest_results", e, "Validation data is temporarily unavailable.")}
 
 
+# 2026-07-17: connects Daily Picks' displayed confidence to real, walk-forward
+# validated track record — additive only, does not touch confidence itself,
+# the 25% BUY cutoff, or any existing consumer of get_latest_results().
+#
+# Deliberately NOT sourced from prediction_engine.py's confidence_score /
+# historical_factor_reliability: that component's only real-data path reads
+# from the same legacy IC-training join the 2026-07-12 forensic audit found
+# contaminated (~1.52x duplicate-inflated), and is active for exactly one of
+# six market/horizon combinations in production today (IN/short — the other
+# five silently default to a neutral 50). This function instead reads
+# val_runs, the walk-forward backtest table these numbers were verified
+# against directly in this session (six runs, ~30k combined signals).
+_MARKET_UNIVERSES = {"IN": ("nifty100", "midcap"), "US": ("us",)}
+
+
+def get_track_record_summary(market: str, horizon: str) -> list[dict]:
+    """Real, validated track record for every universe backtested for this
+    market/horizon — one entry per universe with an available run, empty
+    list if none exist yet. Each entry: universe, beat_benchmark_pct,
+    buy_hit_rate_pct, n_signals, run_at. Never raises — a lookup failure for
+    one universe is simply omitted, matching get_latest_results()'s own
+    fail-soft contract."""
+    out = []
+    for universe in _MARKET_UNIVERSES.get(market, ()):
+        try:
+            res = get_latest_results(horizon=horizon, universe=universe)
+        except Exception:
+            continue
+        if not res.get("available"):
+            continue
+        out.append({
+            "universe": universe,
+            "beat_benchmark_pct": res.get("beat_benchmark_pct"),
+            "buy_hit_rate_pct": res.get("buy_hit_rate_pct"),
+            "n_signals": res.get("buy_signals"),
+            "run_at": res.get("run_at"),
+        })
+    return out
+
+
 def get_per_stock_results(run_id: int | None = None, horizon: str = "medium", universe: str = "nifty100") -> list[dict]:
     """Return per-stock hit rate and average return for the latest (or given) run in a universe."""
     try:

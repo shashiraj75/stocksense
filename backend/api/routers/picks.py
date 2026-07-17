@@ -63,6 +63,7 @@ def daily_picks(market: str = "IN"):
             "market": market,
             "picks": {"short": [], "medium": [], "long": []},
             "generating": generating,
+            "historical_track_record": {},
             "message": (
                 "Picks are being generated now — check back in a few minutes."
                 if generating else
@@ -71,7 +72,22 @@ def daily_picks(market: str = "IN"):
                 + " — check back then."
             ),
         }
-    return {**data, "generating": generating}
+    # 2026-07-17: connects the confidence % shown on each pick to its
+    # horizon's REAL walk-forward validated track record (beat-benchmark
+    # rate, hit rate, sample size) — additive only. Never alters `data`
+    # itself, the confidence field, or the 25% BUY cutoff; a lookup failure
+    # here must never break the picks response, so it's best-effort and
+    # always falls back to an empty dict (frontend treats missing/empty as
+    # "no validation run yet for this horizon", already a valid state).
+    historical_track_record = {}
+    try:
+        from services.validation_engine import get_track_record_summary
+        for horizon in ("short", "medium", "long"):
+            historical_track_record[horizon] = get_track_record_summary(market, horizon)
+    except Exception:
+        pass
+
+    return {**data, "generating": generating, "historical_track_record": historical_track_record}
 
 
 @router.get("/status")
