@@ -118,11 +118,10 @@ def _build_alpha_observation_row(
         "technical_raw_score": item.get("tech_score"),
         "fundamental_raw_score": item.get("fund_score"),
         "sentiment_raw_score": item.get("sentiment_score") if item.get("sentiment_available") else None,
-        # Never the ranking field (`quality_score`, already `or 50`-coalesced
-        # by _predict_stock) — quality_raw_score is the genuine pre-fallback
-        # source value, which correctly preserves a real 0 instead of
-        # silently reporting the ranking fallback of 50 as if it were
-        # genuine evidence.
+        # Never the ranking field (`quality_score`, populated by
+        # _predict_stock) — quality_raw_score is the genuine pre-fallback
+        # source value, kept as its own independent column even though the
+        # ranking field (DP-009) now also preserves a genuine 0 correctly.
         "quality_raw_score": item.get("quality_raw_score") if item.get("quality_available") else None,
         "sentiment_available": bool(item.get("sentiment_available", False)),
         "quality_available": bool(item.get("quality_available", False)),
@@ -820,15 +819,12 @@ def _predict_stock(symbol: str, horizon: str, market: str = "IN") -> dict | None
 
         # Phase 2A (alpha_observations): quality evidence availability AND the
         # genuine pre-fallback source value must be captured at source, not
-        # inferred later from a numeric value. qf.get("score") below already
-        # falls back to 50 for ranking purposes via `or 50` — but `or` treats
-        # a genuine 0 as falsy, so reading that already-coalesced value back
-        # out would silently turn a real 0 into a fabricated 50. _quality_raw
-        # reads qf.get("score") directly, once, before any `or`-coalescing,
-        # so a genuine 0 is preserved exactly. This does not change the
-        # ranking field (`quality_score` below) or its `or 50` fallback at
-        # all — it is purely additional, internal-only metadata for the
-        # shadow alpha_observations builder.
+        # inferred later from a numeric value. _quality_raw reads
+        # qf.get("score") directly, once, before the ranking field's own
+        # missing-value fallback below (DP-009: now an explicit `is not None`
+        # check, so a genuine 0 is preserved there too — this variable
+        # remains additional, internal-only metadata for the shadow
+        # alpha_observations builder, independent of that ranking field).
         _quality_raw = qf.get("score")
         _quality_available = _quality_raw is not None
 
@@ -869,7 +865,12 @@ def _predict_stock(symbol: str, horizon: str, market: str = "IN") -> dict | None
             "tech_score":     result.get("technical", {}).get("score", 50),
             "fund_score":     result.get("fundamental_score", {}).get("score", 50),
             "sentiment_score": float(_sent_raw) if _sent_available else None,
-            "quality_score":  qf.get("score") or 50,
+            # DP-009: explicit None-check, not `or 50` — that truthiness
+            # fallback silently turned a genuine 0 into a fabricated neutral
+            # 50 (Python's `or` treats 0/0.0 as falsy). A genuine 0 is real
+            # evidence and must be preserved; only a truly missing/None
+            # score may use the neutral fallback.
+            "quality_score":  qf.get("score") if qf.get("score") is not None else 50,
             "sentiment_available": _sent_available,
             "quality_available":   _quality_available,
             # alpha_observations-only: the genuine pre-fallback quality
@@ -1010,7 +1011,13 @@ def _zscore_and_rank(
                 # to a numeric 50 — that placeholder is not evidence.
                 zscores[factor] = 0.0
                 continue
-            raw = float(raw_val or 50)
+            # DP-010: raw_val is already known not-None here (the branch
+            # above returned for that case) — `or 50` on this line was a
+            # second, redundant truthiness fallback that only ever fired on
+            # a genuine 0/0.0, silently substituting a fabricated neutral 50
+            # for real evidence. A present numeric value, including exactly
+            # 0, is evidence and must be used as-is.
+            raw = float(raw_val)
             mu, sigma = stats[factor]
             z = (raw - mu) / sigma
             zscores[factor] = round(z, 3)

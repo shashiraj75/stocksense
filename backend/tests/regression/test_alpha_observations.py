@@ -212,15 +212,15 @@ def _predict_stock_with_quality(qf_score, market="US"):
 class TestPredictStockQualityRawScoreSource:
     """End-to-end from _predict_stock's real qf extraction through to the
     alpha_observations builder — proves the fix at its actual source, and
-    that the existing ranking field is untouched."""
+    that the ranking field itself now also preserves a genuine 0 (DP-009)."""
 
     def test_genuine_zero_quality_score(self):
         cand = _predict_stock_with_quality(0)
         assert cand["quality_available"] is True
         assert cand["quality_raw_score"] == 0
-        # existing ranking field is completely unchanged by this fix —
-        # still 50, via the pre-existing, untouched `or 50` fallback.
-        assert cand["quality_score"] == 50
+        # DP-009: the ranking-facing field now also preserves a genuine 0
+        # (previously silently coalesced to 50 by the `or 50` fallback).
+        assert cand["quality_score"] == 0
 
         row = dp._build_alpha_observation_row(cand, **_COMMON_KW)
         assert row["quality_available"] is True
@@ -270,8 +270,9 @@ class TestPredictStockQualityRawScoreSource:
         assert "quality_raw_score" not in sanitized
         assert "quality_available" not in sanitized
         assert "sentiment_available" not in sanitized
-        # everything else (including the ranking-facing quality_score) is untouched
-        assert sanitized["quality_score"] == 50
+        # everything else, including the ranking-facing quality_score
+        # (DP-009: correctly preserved as genuine 0), is present and correct
+        assert sanitized["quality_score"] == 0
 
 
 class TestAlphaObservationsSqliteStore:
