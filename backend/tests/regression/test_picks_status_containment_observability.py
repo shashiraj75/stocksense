@@ -42,6 +42,13 @@ def test_containment_block_present_with_no_job_and_no_postgres(client):
         "production_alpha_source": "fixed_academic_prior",
         "containment_reason": containment.containment_reason(),
         "learning_dataset_version": containment.LEARNING_DATASET_VERSION,
+        "graduation_progress": [],  # USE_POSTGRES unset — never queried
+        "graduation_progress_note": (
+            "Row/run counts accumulated per market/horizon in the clean "
+            "alpha_observations table. Necessary but not sufficient: this "
+            "table has no outcome-resolution pipeline yet, so these "
+            "counts alone cannot support real IC computation."
+        ),
     }
 
 

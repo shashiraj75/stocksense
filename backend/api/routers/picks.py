@@ -118,6 +118,22 @@ def picks_status(market: str = "IN"):
         production_alpha_source, LEARNING_DATASET_VERSION,
     )
 
+    # 2026-07-17: the containment's own stated re-enablement criterion
+    # ("once clean canonical data has accumulated and passed walk-forward
+    # validation") has never had a concrete, checkable number behind it —
+    # this makes accumulation observable instead of an open question. See
+    # get_alpha_observations_coverage()'s docstring for an important
+    # limitation: row count is necessary but not sufficient, since
+    # alpha_observations has no outcome-resolution pipeline yet. Best-effort
+    # only — must never break /status if the query fails.
+    graduation_progress = []
+    try:
+        if os.getenv("USE_POSTGRES") == "1":
+            from services.postgres_store import get_alpha_observations_coverage
+            graduation_progress = get_alpha_observations_coverage()
+    except Exception:
+        pass
+
     resp = {
         "market": market,
         "generating": generating,
@@ -129,6 +145,13 @@ def picks_status(market: str = "IN"):
             "production_alpha_source": production_alpha_source(),
             "containment_reason": containment_reason(),
             "learning_dataset_version": LEARNING_DATASET_VERSION,
+            "graduation_progress": graduation_progress,
+            "graduation_progress_note": (
+                "Row/run counts accumulated per market/horizon in the clean "
+                "alpha_observations table. Necessary but not sufficient: this "
+                "table has no outcome-resolution pipeline yet, so these "
+                "counts alone cannot support real IC computation."
+            ),
         },
     }
     if job:

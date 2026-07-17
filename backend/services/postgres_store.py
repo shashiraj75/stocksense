@@ -1437,6 +1437,54 @@ def save_alpha_observations(rows: list[dict]) -> bool:
         return False
 
 
+def get_alpha_observations_coverage() -> list[dict]:
+    """
+    2026-07-17 — read-only observability for the Learning Alpha Engine
+    remediation's stated re-enablement criterion ("once clean canonical
+    data has accumulated and passed walk-forward validation", see
+    alpha_engine/containment.py's docstring). That criterion has never had
+    a concrete, checkable number behind it — this makes "how much has
+    accumulated" a real, queryable fact instead of an open question.
+
+    Important limitation, found while implementing this (corrects an
+    earlier recommendation to point shadow IC computation at this table
+    instead of the contaminated legacy join): alpha_observations has NO
+    outcome/forward-return column at all — it is a write-only snapshot of
+    factor z-scores and the signal/confidence produced at generation time,
+    with nothing joined back once a pick's outcome resolves. Row count
+    accumulating here is necessary but nowhere near sufficient for real IC
+    computation; an outcome-resolution pipeline for this table (mirroring
+    alpha_engine/outcome_logger.py's existing one for predictions/outcomes)
+    would need to exist first. This function reports accumulation honestly
+    as one visible precondition, not a claim that graduation is close.
+
+    Returns one row per (market, horizon) with row count, distinct run
+    count, and the earliest/latest run_generated_at seen — empty list on
+    any failure or if the table has no rows yet.
+    """
+    try:
+        with _get_pool().connection() as conn:
+            rows = conn.execute("""
+                SELECT market, horizon, COUNT(*) AS row_count,
+                       COUNT(DISTINCT run_id) AS distinct_runs,
+                       MIN(run_generated_at) AS earliest_run_at,
+                       MAX(run_generated_at) AS latest_run_at
+                FROM alpha_observations
+                GROUP BY market, horizon
+                ORDER BY market, horizon
+            """).fetchall()
+        return [
+            {
+                "market": r[0], "horizon": r[1], "row_count": r[2],
+                "distinct_runs": r[3], "earliest_run_at": r[4], "latest_run_at": r[5],
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        log.warning(f"[alpha_observations] coverage query failed: {e}")
+        return []
+
+
 # ── New: Daily picks performance (section 5) ────────────────────────────────
 
 def save_picks_to_db(payload: dict, market: str = "IN") -> bool:

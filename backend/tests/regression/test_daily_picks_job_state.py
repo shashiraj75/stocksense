@@ -1010,3 +1010,77 @@ def test_reconcile_stale_daily_picks_jobs_only_targets_queued_and_running():
     from services.postgres_store import reconcile_stale_daily_picks_jobs
     src = inspect.getsource(reconcile_stale_daily_picks_jobs)
     assert "WHERE status IN ('queued', 'running')" in src
+
+
+# ─── alpha_observations coverage observability (2026-07-17) ───────────────
+# The Learning Alpha Engine remediation's stated re-enablement criterion
+# ("once clean canonical data has accumulated") never had a concrete,
+# checkable number behind it. get_alpha_observations_coverage() makes
+# accumulation observable — but does NOT claim readiness: alpha_observations
+# has no outcome-resolution pipeline yet, so row count alone is necessary,
+# not sufficient. See its own docstring for the full reasoning, including a
+# correction of an earlier (wrong) recommendation to point shadow IC
+# computation at this table directly.
+
+def test_get_alpha_observations_coverage_returns_one_row_per_market_horizon():
+    from services.postgres_store import get_alpha_observations_coverage
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        ("IN", "short", 3870, 6, "2026-07-16T00:00:00Z", "2026-07-17T00:24:46Z"),
+        ("US", "short", 41, 1, "2026-07-17T00:24:46Z", "2026-07-17T00:24:46Z"),
+    ]
+    mock_conn.execute.return_value = mock_cursor
+    mock_conn.__enter__ = lambda s: s
+    mock_conn.__exit__ = MagicMock(return_value=False)
+    mock_pool = MagicMock()
+    mock_pool.connection.return_value = mock_conn
+    with patch("services.postgres_store._get_pool", return_value=mock_pool):
+        result = get_alpha_observations_coverage()
+    assert result == [
+        {"market": "IN", "horizon": "short", "row_count": 3870, "distinct_runs": 6,
+         "earliest_run_at": "2026-07-16T00:00:00Z", "latest_run_at": "2026-07-17T00:24:46Z"},
+        {"market": "US", "horizon": "short", "row_count": 41, "distinct_runs": 1,
+         "earliest_run_at": "2026-07-17T00:24:46Z", "latest_run_at": "2026-07-17T00:24:46Z"},
+    ]
+
+
+def test_get_alpha_observations_coverage_empty_when_no_rows():
+    from services.postgres_store import get_alpha_observations_coverage
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = []
+    mock_conn.execute.return_value = mock_cursor
+    mock_conn.__enter__ = lambda s: s
+    mock_conn.__exit__ = MagicMock(return_value=False)
+    mock_pool = MagicMock()
+    mock_pool.connection.return_value = mock_conn
+    with patch("services.postgres_store._get_pool", return_value=mock_pool):
+        assert get_alpha_observations_coverage() == []
+
+
+def test_get_alpha_observations_coverage_swallows_db_errors():
+    from services.postgres_store import get_alpha_observations_coverage
+    mock_pool = MagicMock()
+    mock_pool.connection.side_effect = Exception("db down")
+    with patch("services.postgres_store._get_pool", return_value=mock_pool):
+        assert get_alpha_observations_coverage() == []
+
+
+def test_status_endpoint_graduation_progress_present_when_postgres_enabled(monkeypatch):
+    """GET /api/picks/status must surface graduation_progress without
+    ever triggering generation or crashing when USE_POSTGRES=1."""
+    from fastapi.testclient import TestClient
+    from api.main import app
+    monkeypatch.setenv("USE_POSTGRES", "1")
+    with patch("services.daily_picks.picks_generated_today", return_value=False), \
+         patch("services.postgres_store.get_alpha_observations_coverage",
+               return_value=[{"market": "IN", "horizon": "short", "row_count": 3870,
+                              "distinct_runs": 6, "earliest_run_at": "t1", "latest_run_at": "t2"}]), \
+         patch("services.postgres_store.get_active_daily_picks_job", return_value=None):
+        client = TestClient(app)
+        resp = client.get("/api/picks/status", params={"market": "IN"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["containment"]["graduation_progress"][0]["row_count"] == 3870
+    assert "graduation_progress_note" in body["containment"]
