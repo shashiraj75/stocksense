@@ -63,7 +63,10 @@ def init_db():
             return_1d    REAL,
             return_5d    REAL,
             return_20d   REAL,
-            return_60d   REAL
+            return_60d   REAL,
+            benchmark_return_5d  REAL,
+            benchmark_return_20d REAL,
+            benchmark_return_60d REAL
         );
 
         CREATE TABLE IF NOT EXISTS regime_log (
@@ -99,6 +102,13 @@ def init_db():
         for stmt in (
             "ALTER TABLE predictions ADD COLUMN market TEXT NOT NULL DEFAULT 'IN'",
             "ALTER TABLE outcomes ADD COLUMN market TEXT NOT NULL DEFAULT 'IN'",
+            # GPI-0 condition D3 (2026-07-17) — see log_outcome's own comment
+            # for why these were added; nullable (unlike market above), no
+            # default needed since a resolved outcome without a computed
+            # benchmark return should read NULL, never a fabricated 0.
+            "ALTER TABLE outcomes ADD COLUMN benchmark_return_5d REAL",
+            "ALTER TABLE outcomes ADD COLUMN benchmark_return_20d REAL",
+            "ALTER TABLE outcomes ADD COLUMN benchmark_return_60d REAL",
         ):
             try:
                 c.execute(stmt)
@@ -181,6 +191,17 @@ def log_outcome(symbol: str, horizon: str, pred_date: str,
         return _pg.log_outcome(symbol, horizon, pred_date, return_1d, return_5d, return_20d,
                                 return_60d=return_60d, market=market,
                                 _writer_source=_writer_source, **kwargs)
+
+    # GPI-0 condition D3 (2026-07-17): mirrors postgres_store.log_outcome's
+    # own benchmark_return_5d/20d/60d params for SQLite parity — previously
+    # silently absorbed into **kwargs and dropped on this backend only,
+    # which would have made this docstring's "mirrors postgres_store.py's
+    # log_outcome exactly for behavioral parity" claim false the moment the
+    # live resolver started passing them.
+    benchmark_return_5d = kwargs.get("benchmark_return_5d")
+    benchmark_return_20d = kwargs.get("benchmark_return_20d")
+    benchmark_return_60d = kwargs.get("benchmark_return_60d")
+
     init_db()
     with _lock, _conn() as c:
         existing = c.execute(
@@ -195,16 +216,23 @@ def log_outcome(symbol: str, horizon: str, pred_date: str,
                     return_1d  = COALESCE(return_1d, ?),
                     return_5d  = COALESCE(return_5d, ?),
                     return_20d = COALESCE(return_20d, ?),
-                    return_60d = COALESCE(return_60d, ?)
+                    return_60d = COALESCE(return_60d, ?),
+                    benchmark_return_5d  = COALESCE(benchmark_return_5d, ?),
+                    benchmark_return_20d = COALESCE(benchmark_return_20d, ?),
+                    benchmark_return_60d = COALESCE(benchmark_return_60d, ?)
                 WHERE id = ?
-            """, (now, return_1d, return_5d, return_20d, return_60d, existing["id"]))
+            """, (now, return_1d, return_5d, return_20d, return_60d,
+                  benchmark_return_5d, benchmark_return_20d, benchmark_return_60d,
+                  existing["id"]))
             return
         c.execute("""
             INSERT INTO outcomes (resolved_at, symbol, horizon, pred_date, market,
-                                  return_1d, return_5d, return_20d, return_60d)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                  return_1d, return_5d, return_20d, return_60d,
+                                  benchmark_return_5d, benchmark_return_20d, benchmark_return_60d)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             now, symbol, horizon, pred_date, market, return_1d, return_5d, return_20d, return_60d,
+            benchmark_return_5d, benchmark_return_20d, benchmark_return_60d,
         ))
 
 

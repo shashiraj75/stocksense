@@ -100,7 +100,7 @@ def test_resolve_pending_outcomes_logs_outcome_only_when_a_return_resolves():
 
     logged = []
 
-    def fake_log_outcome(symbol, horizon, pred_date, r1, r5, r20, return_60d=None, market="IN"):
+    def fake_log_outcome(symbol, horizon, pred_date, r1, r5, r20, return_60d=None, market="IN", **kwargs):
         logged.append((symbol, horizon, market))
 
     with patch("services.alpha_engine.store.get_unresolved_predictions",

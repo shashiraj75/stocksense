@@ -61,16 +61,22 @@ def _in_date_range(pred_date, start_date: str | None, end_date: str | None) -> b
     return True
 
 
-def _fetch_return(symbol: str, pred_date_str: str, days: int, market: str = "IN") -> float | None:
+def _fetch_return(symbol: str, pred_date_str: str, days: int, market: str = "IN",
+                   apply_suffix: bool = True) -> float | None:
     """
     Compute the actual return from pred_date to pred_date + `days` trading days.
     Returns None if fewer than `days` trading days have elapsed since pred_date
     (avoids logging partial returns that corrupt IC calculations).
+
+    apply_suffix: False for benchmark index tickers (e.g. "^NSEI", "^GSPC")
+    — these are already complete Yahoo tickers; appending market's own
+    equity suffix (".NS" for IN) would silently 404 the whole fetch.
     """
     try:
         from pandas import Timestamp
         pred_date = Timestamp(pred_date_str)
-        ticker = yf.Ticker(symbol + _TICKER_SUFFIX.get(market, ""))
+        yf_symbol = symbol + (_TICKER_SUFFIX.get(market, "") if apply_suffix else "")
+        ticker = yf.Ticker(yf_symbol)
         # Fetch enough history: 60 trading days ≈ 90 calendar days
         hist = ticker.history(start=pred_date_str, period="4mo")
         if hist.empty or len(hist) < 2:
@@ -88,6 +94,35 @@ def _fetch_return(symbol: str, pred_date_str: str, days: int, market: str = "IN"
         return round((exit_price - entry_price) / entry_price * 100, 4)
     except Exception:
         return None
+
+
+# 2026-07-17 (GPI-0 condition D3, Product Integrity #005's global audit):
+# benchmark_return_5d/20d/60d were only ever set by a one-off migration
+# script — the live resolver below never computed or passed them, so the
+# frontend's "Alpha vs. benchmark" figure for every live-resolved outcome
+# was silently comparing against an implicit 0%, not a real benchmark
+# return. Same index tickers validation_engine.py already uses for its
+# own benchmark comparisons, so a resolved outcome's benchmark basis
+# matches the walk-forward backtest's.
+_BENCHMARK_TICKER = {"IN": "^NSEI", "US": "^GSPC"}
+
+
+def _fetch_benchmark_return(pred_date_str: str, days: int, market: str,
+                             cache: dict[tuple, float | None]) -> float | None:
+    """Same as _fetch_return, but for the market's benchmark index — and
+    cached per (market, pred_date, days) for the lifetime of one
+    resolve_pair() call, since every stock resolved for the same market on
+    the same pred_date shares the identical benchmark return; without this,
+    a batch of N pending predictions on the same day would trigger N
+    redundant Yahoo fetches for the exact same index/window."""
+    key = (market, pred_date_str, days)
+    if key not in cache:
+        ticker = _BENCHMARK_TICKER.get(market)
+        cache[key] = (
+            _fetch_return(ticker, pred_date_str, days, market, apply_suffix=False)
+            if ticker else None
+        )
+    return cache[key]
 
 
 def resolve_pair(market: str, horizon: str, min_days: int,
@@ -174,6 +209,13 @@ def resolve_pair(market: str, horizon: str, min_days: int,
              "market_conflict_excluded": len(market_conflict_excluded),
              "unknown_symbol_count": unknown_symbol_count}
 
+    # Shared across every row this call resolves — see
+    # _fetch_benchmark_return's docstring for why this must be per-call,
+    # not per-row (every stock on the same pred_date shares one benchmark
+    # return; without this a batch of N pending predictions would trigger
+    # N redundant Yahoo fetches for the identical index/window).
+    _benchmark_cache: dict[tuple, float | None] = {}
+
     for row in pending:
         symbol    = row["symbol"]
         pred_date = row["pred_date"]
@@ -186,8 +228,17 @@ def resolve_pair(market: str, horizon: str, min_days: int,
 
         if any(x is not None for x in (r1, r5, r20, r60)):
             if not dry_run:
+                # GPI-0 condition D3 — only computed for the horizons this
+                # row's config actually resolves (mirrors r5/r20/r60 above);
+                # log_outcome has no benchmark_return_1d column, matching
+                # the existing schema (5d/20d/60d only).
+                br5  = _fetch_benchmark_return(pred_date, 5,  market, _benchmark_cache) if d5  else None
+                br20 = _fetch_benchmark_return(pred_date, 20, market, _benchmark_cache) if d20 else None
+                br60 = _fetch_benchmark_return(pred_date, 60, market, _benchmark_cache) if d60 else None
                 log_outcome(symbol, horizon, pred_date, r1, r5, r20,
-                            return_60d=r60, market=market)
+                            return_60d=r60, market=market,
+                            benchmark_return_5d=br5, benchmark_return_20d=br20,
+                            benchmark_return_60d=br60)
             stats["resolved"] += 1
         else:
             stats["skipped"] += 1

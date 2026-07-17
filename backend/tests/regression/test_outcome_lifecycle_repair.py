@@ -355,6 +355,106 @@ def test_log_outcome_failure_leaves_no_partial_row(store):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# GPI-0 condition D3 (2026-07-17) — live-resolved benchmark returns
+# ─────────────────────────────────────────────────────────────────────────────
+# benchmark_return_5d/20d/60d were only ever set by a one-off migration
+# script; the live resolver never computed or passed them. These tests
+# exercise the real SQLite backend end-to-end (only _fetch_return, the real
+# yfinance call, is mocked) to prove resolve_pair() now persists real
+# benchmark returns, matching validation_engine.py's own benchmark tickers.
+
+def test_resolved_outcome_persists_real_benchmark_returns(store):
+    from services.alpha_engine import outcome_logger
+    logged_at = _log_prediction(store, symbol="RELIANCE", horizon="medium",
+                                 market="IN", days_ago=35)
+    pred_date = _pred_date_str(logged_at)
+
+    def fake_fetch(symbol, pred_date_str, days, market="IN", apply_suffix=True):
+        if symbol == "^NSEI":
+            return {5: 1.1, 20: 2.2}.get(days)
+        return {5: 3.3, 20: 4.4}.get(days)  # the stock's own return
+
+    with patch.object(outcome_logger, "_fetch_return", side_effect=fake_fetch):
+        stats = outcome_logger.resolve_pair("IN", "medium", 30, False, True, True, False)
+
+    assert stats["resolved"] == 1
+    with store._lock, store._conn() as c:
+        row = c.execute(
+            "SELECT return_5d, return_20d, benchmark_return_5d, benchmark_return_20d "
+            "FROM outcomes WHERE symbol='RELIANCE'"
+        ).fetchone()
+    assert (row["return_5d"], row["return_20d"]) == (3.3, 4.4)
+    assert (row["benchmark_return_5d"], row["benchmark_return_20d"]) == (1.1, 2.2)
+
+
+def test_benchmark_ticker_never_gets_the_stocks_market_suffix(store):
+    """^NSEI/^GSPC are already complete Yahoo tickers — appending IN's own
+    equity suffix (.NS) would 404 the whole benchmark fetch."""
+    from services.alpha_engine import outcome_logger
+    logged_at = _log_prediction(store, symbol="TCS", horizon="short",
+                                 market="IN", days_ago=5)
+    pred_date = _pred_date_str(logged_at)
+
+    seen_symbols = []
+
+    def fake_fetch(symbol, pred_date_str, days, market="IN", apply_suffix=True):
+        seen_symbols.append((symbol, apply_suffix))
+        return 1.0
+
+    with patch.object(outcome_logger, "_fetch_return", side_effect=fake_fetch):
+        outcome_logger.resolve_pair("IN", "short", 3, True, True, False, False)
+
+    assert ("^NSEI", False) in seen_symbols
+    assert ("TCS", True) in seen_symbols
+
+
+def test_benchmark_return_is_cached_across_predictions_sharing_a_pred_date(store):
+    """N pending predictions resolved on the same pred_date must trigger
+    exactly one benchmark fetch per (market, days) pair, not N redundant
+    ones — every stock resolved for the same market/date shares the
+    identical benchmark return."""
+    from services.alpha_engine import outcome_logger
+    logged_at = _log_prediction(store, symbol="INFY", horizon="short",
+                                 market="IN", days_ago=5)
+    _log_prediction(store, symbol="TCS", horizon="short", market="IN", days_ago=5)
+    _log_prediction(store, symbol="WIPRO", horizon="short", market="IN", days_ago=5)
+
+    benchmark_calls = []
+
+    def fake_fetch(symbol, pred_date_str, days, market="IN", apply_suffix=True):
+        if symbol == "^NSEI":
+            benchmark_calls.append((pred_date_str, days))
+        return 1.0
+
+    with patch.object(outcome_logger, "_fetch_return", side_effect=fake_fetch):
+        stats = outcome_logger.resolve_pair("IN", "short", 3, True, True, False, False)
+
+    assert stats["resolved"] == 3
+    assert len(benchmark_calls) == 1, (
+        f"expected exactly 1 benchmark fetch shared across 3 same-date predictions, got {benchmark_calls}"
+    )
+
+
+def test_benchmark_return_is_none_when_stock_return_unresolvable():
+    """A benchmark that can't be fetched must never crash resolution or
+    fabricate a value — matches _fetch_return's own None-on-failure
+    contract."""
+    from services.alpha_engine import outcome_logger
+    cache: dict = {}
+    with patch.object(outcome_logger, "_fetch_return", return_value=None):
+        result = outcome_logger._fetch_benchmark_return("2026-01-01", 5, "IN", cache)
+    assert result is None
+
+
+def test_unrecognized_market_has_no_benchmark_ticker_and_returns_none():
+    from services.alpha_engine import outcome_logger
+    cache: dict = {}
+    result = outcome_logger._fetch_benchmark_return("2026-01-01", 5, "CRYPTO", cache)
+    assert result is None
+    assert cache[("CRYPTO", "2026-01-01", 5)] is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # postgres_store.py — eligibility SQL selection (mocked connection; no live DB)
 # ─────────────────────────────────────────────────────────────────────────────
 
