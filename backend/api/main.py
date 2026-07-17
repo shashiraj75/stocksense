@@ -298,6 +298,18 @@ async def lifespan(app: FastAPI):
                 log.warning(f"[startup] Reconciled {reclaimed} stale Multibagger job(s) to 'interrupted'")
         except Exception as e:
             log.warning(f"[startup] Multibagger stale-job reconciliation failed: {e}")
+        # 2026-07-17 — same orphan/restart recovery as Multibagger above,
+        # for Daily Picks jobs (previously manual-only; see
+        # reconcile_stale_daily_picks_jobs()'s docstring for the incident
+        # that prompted this). Startup-only, one pass; never invoked from a
+        # request path.
+        try:
+            from services.postgres_store import reconcile_stale_daily_picks_jobs
+            reclaimed_picks = reconcile_stale_daily_picks_jobs()
+            if reclaimed_picks:
+                log.warning(f"[startup] Reconciled {reclaimed_picks} stale Daily Picks job(s) to 'interrupted'")
+        except Exception as e:
+            log.warning(f"[startup] Daily Picks stale-job reconciliation failed: {e}")
     # Force yfinance crumb refresh so cloud IP starts with a valid session
     try:
         import yfinance as yf

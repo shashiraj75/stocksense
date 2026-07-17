@@ -1766,6 +1766,27 @@ def get_active_daily_picks_job(market: str) -> dict | None:
 
 _MULTIBAGGER_ORPHAN_TIMEOUT_HOURS = 7  # longer than the ~5-6h US refresh; see Product Integrity #009 §9
 
+# 2026-07-17 production incident: a US Daily Picks base-generation job died
+# mid-run when the Railway process was OOM-killed. Its 'running' row was
+# never cleared — daily_picks_jobs had no equivalent to Multibagger's own
+# orphan recovery above, by original design (see this table's own comment:
+# "'interrupted' is a manual-only operator recovery status; no code path
+# writes it automatically"). The job sat stuck at 986/1185 for hours,
+# blocking any new US run via the (market) WHERE status IN ('queued',
+# 'running') partial unique index, while the frontend showed a permanently
+# frozen "Updating" badge. Required a human to manually UPDATE the row.
+#
+# 6h, not 7h like Multibagger: observed US base-run behavior the night this
+# was added showed ~83% complete (986/1185) after ~2h33m before the crash,
+# extrapolating to roughly ~3h05m for a full run; the India equivalent
+# completes in ~1-1.5h. The premarket-review acceptance window
+# (api/routers/picks.py's next_premarket_run_hint, ~6:00-7:30 AM ET, several
+# hours after the 06:00 UTC US base-run start) is also designed around the
+# base run finishing well before then. 6h keeps meaningful margin above the
+# longest observed/designed-for legitimate run without leaving production
+# stuck indefinitely on the next crash.
+_DAILY_PICKS_ORPHAN_TIMEOUT_HOURS = 6
+
 
 def mark_multibagger_job_running(job_id: str) -> None:
     with _get_pool().connection() as conn:
@@ -2052,6 +2073,59 @@ def reconcile_stale_multibagger_jobs() -> int:
         return len(stale_job_ids)
     except Exception:
         log.error("[multibagger] stale-job reconciliation pass failed")
+        return 0
+
+
+def reconcile_stale_daily_picks_jobs() -> int:
+    """
+    Orphan/restart recovery for Daily Picks jobs, mirroring
+    reconcile_stale_multibagger_jobs() above (2026-07-17, after a US base
+    run died mid-run to an OOM-kill and sat stuck at 'running' for hours —
+    daily_picks_jobs had no automatic recovery, only the documented
+    manual-only path, see this table's own CREATE TABLE comment). A
+    queued/running row whose heartbeat has gone silent for longer than a
+    credible full run (see _DAILY_PICKS_ORPHAN_TIMEOUT_HOURS) is
+    reclassified 'interrupted' — never deleted, never touched while
+    genuinely active. 'interrupted' is already a fully anticipated terminal
+    state elsewhere in the codebase (services/premarket_finalizer.py's
+    _JOB_STATUS_TERMINAL_FAILURE), so this doesn't introduce a new status
+    value or a new code path for consumers to handle — it only makes an
+    already-supported status reachable automatically instead of requiring
+    a human to write it by hand.
+
+    Clearing the row also releases the (market) WHERE status IN ('queued',
+    'running') partial unique index slot the crashed job was holding,
+    unblocking the next real generation for that market — and releases any
+    heavy-workload lease still held by a reclassified row, transactionally
+    in the same statement set, exactly like Multibagger's version.
+
+    Read-only GET endpoints must never call this — only an explicit
+    reconciliation path (e.g. startup) may, same constraint as Multibagger.
+    Returns the number of rows reclassified. Swallows DB errors (best-effort;
+    a failed reconciliation pass just tries again next restart).
+    """
+    try:
+        with _get_pool().connection() as conn:
+            stale = conn.execute(
+                f"""UPDATE daily_picks_jobs
+                    SET status = 'interrupted', completed_at = now(),
+                        last_error = 'reconciled: no heartbeat for over {_DAILY_PICKS_ORPHAN_TIMEOUT_HOURS}h'
+                    WHERE status IN ('queued', 'running')
+                      AND COALESCE(last_runner_heartbeat_at, started_at)
+                          < now() - interval '{_DAILY_PICKS_ORPHAN_TIMEOUT_HOURS} hours'
+                    RETURNING job_id"""
+            )
+            stale_job_ids = [r[0] for r in stale.fetchall()]
+            if stale_job_ids:
+                conn.execute(
+                    """UPDATE heavy_workload_leases
+                       SET released_at = now()
+                       WHERE released_at IS NULL AND owner_job_id = ANY(%s)""",
+                    (stale_job_ids,),
+                )
+        return len(stale_job_ids)
+    except Exception:
+        log.error("[daily_picks] stale-job reconciliation pass failed")
         return 0
 
 

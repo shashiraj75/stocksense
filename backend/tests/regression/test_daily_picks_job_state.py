@@ -914,3 +914,99 @@ def test_derive_job_health_does_not_alter_job_status_or_release_lock():
     assert result == "unresponsive"
     # Flag must not have changed
     assert _dp._generating.get("IN", False) == original_flag
+
+
+# ─── orphan / restart recovery (2026-07-17) ────────────────────────────────
+# Mirrors test_weekly_multibagger_lifecycle.py's reconcile_stale_multibagger_jobs
+# test suite — see reconcile_stale_daily_picks_jobs()'s docstring for the
+# production incident (a US base run OOM-killed mid-run, stuck at 'running'
+# for hours with no automatic recovery) that prompted adding this.
+
+def _mock_pool(rowcount=None, rows=None, raise_on_connect=None):
+    if raise_on_connect:
+        mock_pool = MagicMock()
+        mock_pool.connection.side_effect = raise_on_connect
+        return mock_pool
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    if rowcount is not None:
+        mock_cursor.rowcount = rowcount
+    if rows is not None:
+        mock_cursor.fetchall.return_value = rows
+    mock_conn.execute.return_value = mock_cursor
+    mock_conn.__enter__ = lambda s: s
+    mock_conn.__exit__ = MagicMock(return_value=False)
+    mock_pool = MagicMock()
+    mock_pool.connection.return_value = mock_conn
+    return mock_pool
+
+
+def test_reconcile_stale_daily_picks_jobs_reclassifies_and_releases_lease():
+    from services.postgres_store import reconcile_stale_daily_picks_jobs
+    mock_conn = MagicMock()
+    stale_cursor = MagicMock()
+    stale_cursor.fetchall.return_value = [("job-orphan-us-1",)]
+    mock_conn.execute.return_value = stale_cursor
+    mock_conn.__enter__ = lambda s: s
+    mock_conn.__exit__ = MagicMock(return_value=False)
+    mock_pool = MagicMock()
+    mock_pool.connection.return_value = mock_conn
+    with patch("services.postgres_store._get_pool", return_value=mock_pool):
+        count = reconcile_stale_daily_picks_jobs()
+    assert count == 1
+    assert mock_conn.execute.call_count == 2  # the UPDATE...RETURNING, then the lease release
+
+
+def test_reconcile_stale_daily_picks_jobs_no_op_when_nothing_stale():
+    from services.postgres_store import reconcile_stale_daily_picks_jobs
+    with patch("services.postgres_store._get_pool", return_value=_mock_pool(rows=[])):
+        count = reconcile_stale_daily_picks_jobs()
+    assert count == 0
+
+
+def test_reconcile_stale_daily_picks_jobs_swallows_db_errors():
+    from services.postgres_store import reconcile_stale_daily_picks_jobs
+    with patch("services.postgres_store._get_pool",
+               return_value=_mock_pool(raise_on_connect=Exception("db down"))):
+        assert reconcile_stale_daily_picks_jobs() == 0
+
+
+def test_reconcile_daily_picks_timeout_exceeds_longest_observed_real_run():
+    """6h must stay comfortably above the longest legitimate run this was
+    calibrated against (US base run observed at ~83% after ~2h33m, India
+    completes in ~1-1.5h) — see the constant's own comment for the full
+    incident and reasoning."""
+    import services.postgres_store as store
+    assert store._DAILY_PICKS_ORPHAN_TIMEOUT_HOURS >= 6
+
+
+def test_daily_picks_reconciliation_wired_into_startup():
+    """Backend startup must call the reconciliation pass exactly once per boot,
+    same as Multibagger's equivalent."""
+    import inspect
+    import api.main as main_mod
+    assert "reconcile_stale_daily_picks_jobs()" in inspect.getsource(main_mod)
+
+
+def test_daily_picks_status_endpoint_does_not_call_reconciliation():
+    """GET /api/picks/status must never mutate lifecycle state — reconciliation
+    is startup-only. Verified by source inspection of the status handler
+    (behavioral test would require a full app+DB fixture this file doesn't
+    otherwise set up; the source-level constraint mirrors Multibagger's own
+    documented rule and is what actually enforces this — see
+    reconcile_stale_daily_picks_jobs()'s own docstring)."""
+    import inspect
+    from api.routers import picks as picks_router
+    status_src = inspect.getsource(picks_router.get_status) if hasattr(picks_router, "get_status") \
+        else inspect.getsource(picks_router)
+    assert "reconcile_stale_daily_picks_jobs" not in status_src
+
+
+def test_reconcile_stale_daily_picks_jobs_only_targets_queued_and_running():
+    """The WHERE clause must never touch already-terminal rows (completed,
+    failed, interrupted, expired) — reconciliation only ever moves a row
+    forward from an active state, never re-touches a decided one."""
+    import inspect
+    from services.postgres_store import reconcile_stale_daily_picks_jobs
+    src = inspect.getsource(reconcile_stale_daily_picks_jobs)
+    assert "WHERE status IN ('queued', 'running')" in src
