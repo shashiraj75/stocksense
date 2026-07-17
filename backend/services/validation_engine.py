@@ -209,6 +209,24 @@ HORIZON_PERIOD = {"short": "3y", "medium": "5y", "long": "7y"}
 BUY_THRESHOLD  = {"short": 60, "medium": 60, "long": 60}
 SELL_THRESHOLD = {"short": 45, "medium": 45, "long": 45}
 
+# 2026-07-17: confidence-band calibration audit. Production's displayed
+# "confidence" (prediction_engine.py's _composite_signal, the one that
+# gates Daily Picks' 25% cutoff) has never been checked against realized
+# hit rate — only composite_score has a hit-rate table (see `buckets` in
+# _compute_metrics below). confidence is a pure, deterministic function of
+# composite_score + predicted signal, so it can be reconstructed here from
+# data this walk-forward backtest already computes, without touching the
+# live prediction path or any of its consumers. Mirrors
+# prediction_engine.py's exact formula — must be kept in sync if that
+# formula ever changes.
+def _confidence_from_composite(composite_r: float, predicted: str) -> int:
+    if predicted == "BUY":
+        return round(max(0, min(100, (composite_r - 60) / 40 * 100)))
+    if predicted == "SELL":
+        return round(max(0, min(100, (45 - composite_r) / 45 * 100)))
+    return max(0, min(100, 50 - int(abs(composite_r - 52) * 2)))  # HOLD
+
+
 # Explicit universe -> market map (Phase GPI-1) and the single source of
 # truth for which universe strings run_validation() accepts at all. Passed
 # down to _backtest_stock/_resolve_yahoo_symbol so routing never has to be
@@ -643,6 +661,10 @@ def _backtest_stock(
                     "obv_score":       sc["obv"],
                     "mfi_score":       sc["mfi"],
                     "predicted":       predicted,
+                    # Additive-only (see _confidence_from_composite docstring) —
+                    # not persisted to val_signals' fixed columns, in-memory
+                    # only, used solely for the confidence_buckets report below.
+                    "confidence":      _confidence_from_composite(composite, predicted),
                     "fwd_return_pct":  round(fwd_ret, 3),
                     # Persisted column/JSON key name (val_signals.nifty_fwd_ret_pct) —
                     # kept unchanged to avoid a schema migration; the underlying
@@ -747,6 +769,24 @@ def _compute_metrics(signals: list[dict], benchmark_return_pct: float, horizon: 
                 "avg_return_pct": _avg_ret(bucket_buys),
             })
 
+    # Confidence bucket analysis (2026-07-17 audit, additive-only — does not
+    # feed any live decision). Daily Picks filters BUY signals below 25%
+    # confidence (services/daily_picks.py); this table is the first place
+    # that number is checked against realized hit rate, using the same 25%
+    # boundary as one of the bucket edges. Read this before ever changing
+    # the confidence formula or the 25% cutoff — a formula change should be
+    # justified by what this table shows, not guessed at.
+    confidence_buckets = []
+    for lo, hi in ((0, 25), (25, 50), (50, 75), (75, 101)):
+        bucket_buys = [s for s in buys if lo <= s.get("confidence", -1) < hi]
+        if bucket_buys:
+            confidence_buckets.append({
+                "confidence_range": f"{lo}–{hi if hi <= 100 else 100}",
+                "count":            len(bucket_buys),
+                "hit_rate_pct":     _hit_rate(bucket_buys),
+                "avg_return_pct":   _avg_ret(bucket_buys),
+            })
+
     # Factor IC (Pearson correlation of each sub-score with forward return)
     def _ic(factor_key):
         pairs = [(s[factor_key], s["fwd_return_pct"]) for s in signals
@@ -789,6 +829,7 @@ def _compute_metrics(signals: list[dict], benchmark_return_pct: float, horizon: 
         "max_consecutive_right":  _max_consec_right(buys),
         "max_drawdown_pct":       _max_drawdown(buy_rets),
         "score_buckets":          buckets,
+        "confidence_buckets":     confidence_buckets,
         "factor_ic": {
             "tech":      _ic("tech_score"),
             "rs":        _ic("rs_score"),
