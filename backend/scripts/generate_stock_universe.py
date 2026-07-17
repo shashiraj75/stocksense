@@ -394,7 +394,18 @@ def run() -> bool:
         us = fetch_us_stocks()
         print("[universe] Fetching Indian stocks …")
         india = fetch_in_stocks()
-        if len(us) < 100 and len(india) < 100:
+        # 2026-07-17 production incident: this was `and`, so a single
+        # market's fetch silently failing/rate-limiting (e.g. NSE blocking
+        # a burst of requests from repeated same-hour restarts) while the
+        # OTHER market's fetch still succeeded was enough to pass this
+        # guard and overwrite BOTH lists — corrupting the failing market's
+        # US_SYMBOLS/IN_SYMBOLS with a near-empty set (just the hardcoded
+        # ETF entries) for the rest of that process's life, masked by the
+        # other market's healthy count. is_known_symbol() then rejected
+        # every real symbol in that market as SYMBOL_NOT_SUPPORTED. Each
+        # market's fetch must clear this floor independently — one market's
+        # success must never paper over the other's failure.
+        if len(us) < 100 or len(india) < 100:
             print("[universe] Too few stocks fetched — skipping write to avoid overwriting good data.")
             return False
         write_universe(us, india, CRYPTO_COINS)

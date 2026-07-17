@@ -132,3 +132,51 @@ class TestAtomicWrite:
 
         assert len(replace_calls) == 1
         assert replace_calls[0][1] == str(out_file)
+
+
+_FULL_US = [(f"US{i}", f"US Co {i}") for i in range(200)]
+_FULL_IN = [(f"IN{i}", f"IN Co {i}") for i in range(200)]
+_TINY_FEW = [("X", "X Corp")]  # well under the 100-item floor
+
+
+@pytest.mark.unit
+class TestRunAbortsOnEitherMarketFetchFailure:
+    """2026-07-17 production incident: run()'s guard was
+    `if len(us) < 100 and len(india) < 100`. NSE's archive endpoint got
+    rate-limited/blocked during a burst of same-hour restarts (this app
+    redeploys + refreshes the universe on every restart); the IN fetch came
+    back with only the hardcoded ETF entries while the US fetch still
+    succeeded normally. Because the guard required BOTH markets to fail
+    before aborting, it let the write through — silently overwriting the
+    committed, healthy IN_STOCKS with a near-empty list for the rest of
+    that process's life. is_known_symbol("RELIANCE", "IN") then rejected a
+    real, top-large-cap NSE stock as SYMBOL_NOT_SUPPORTED. Each market's
+    fetch must independently clear the floor — one market's success must
+    never mask the other's failure."""
+
+    def _patch_fetches(self, monkeypatch, us, india):
+        monkeypatch.setattr(gsu, "fetch_us_stocks", lambda: us)
+        monkeypatch.setattr(gsu, "fetch_in_stocks", lambda: india)
+        write_calls = []
+        monkeypatch.setattr(gsu, "write_universe", lambda *a, **k: write_calls.append(a))
+        return write_calls
+
+    def test_healthy_us_does_not_mask_a_failed_india_fetch(self, monkeypatch):
+        write_calls = self._patch_fetches(monkeypatch, _FULL_US, _TINY_FEW)
+        assert gsu.run() is False
+        assert write_calls == []
+
+    def test_healthy_india_does_not_mask_a_failed_us_fetch(self, monkeypatch):
+        write_calls = self._patch_fetches(monkeypatch, _TINY_FEW, _FULL_IN)
+        assert gsu.run() is False
+        assert write_calls == []
+
+    def test_both_markets_failing_still_aborts(self, monkeypatch):
+        write_calls = self._patch_fetches(monkeypatch, _TINY_FEW, _TINY_FEW)
+        assert gsu.run() is False
+        assert write_calls == []
+
+    def test_both_markets_healthy_proceeds_to_write(self, monkeypatch):
+        write_calls = self._patch_fetches(monkeypatch, _FULL_US, _FULL_IN)
+        assert gsu.run() is True
+        assert len(write_calls) == 1
