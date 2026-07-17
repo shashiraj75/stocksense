@@ -221,7 +221,12 @@ SELL_THRESHOLD = {"short": 45, "medium": 45, "long": 45}
 # formula ever changes.
 def _confidence_from_composite(composite_r: float, predicted: str) -> int:
     if predicted == "BUY":
-        return round(max(0, min(100, (composite_r - 60) / 40 * 100)))
+        # 2026-07-17: kept in sync with prediction_engine.py's BUY branch —
+        # /20 (not /40), rescaled over the empirically observed [60,80]
+        # composite range this validator's own confidence_buckets output
+        # was the evidence for. See that file's comment for the full
+        # reasoning; this file's job is to stay identical, not re-derive it.
+        return round(max(0, min(100, (composite_r - 60) / 20 * 100)))
     if predicted == "SELL":
         return round(max(0, min(100, (45 - composite_r) / 45 * 100)))
     return max(0, min(100, 50 - int(abs(composite_r - 52) * 2)))  # HOLD

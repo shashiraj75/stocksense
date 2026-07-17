@@ -2363,8 +2363,29 @@ class PredictionEngine:
             signal = "SELL"
 
         if signal == "BUY":
-            # Linear over the full BUY range [60,100]
-            confidence = round(max(0, min(100, (composite_r - 60) / 40 * 100)))
+            # 2026-07-17 range recalibration: six walk-forward validation
+            # runs (short/medium/long x nifty100/midcap, ~30k BUY signals
+            # combined) all showed composite scores essentially never
+            # exceeding ~80 — the 80-85 score bucket had 1-3 signals per
+            # run, out of thousands. The old /40 divisor assumed the full
+            # 60-100 range, so it crushed 82-87% of every single run's BUY
+            # signals into the bottom 0-25% confidence band regardless of
+            # horizon or universe, making Daily Picks' 25% cutoff keep only
+            # the top ~15-18% of raw signals rather than a meaningful
+            # confidence-based selection. /20 rescales linearly over the
+            # empirically observed [60,80] range instead.
+            # Caveat: this evidence comes from the walk-forward backtest's
+            # technical-only composite model (validation_engine.py), which
+            # does not replay quality/sentiment/analyst/regime factors this
+            # live model also computes — re-measure against live composite
+            # score history if that ever becomes available, rather than
+            # treating 20 as permanent. Must stay in sync with
+            # validation_engine.py's _confidence_from_composite (same
+            # divisor, same reasoning, kept as a separate duplicate by this
+            # codebase's existing convention — see that file's BUY_THRESHOLD
+            # comment for why validation intentionally doesn't import
+            # production constants).
+            confidence = round(max(0, min(100, (composite_r - 60) / 20 * 100)))
         elif signal == "SELL":
             # Linear over the full SELL range [0,45)
             confidence = round(max(0, min(100, (45 - composite_r) / 45 * 100)))
