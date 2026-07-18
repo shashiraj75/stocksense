@@ -150,11 +150,16 @@ class TestProductionProvenanceAccuracy:
         assert "optimizer" not in result.production_provenance["invoked"]
         assert "optimizer" in result.production_provenance["not_invoked"]
 
-    def test_one_candidate_provenance_never_claims_optimizer_ran(self):
+    def test_one_candidate_provenance_reflects_optimizer_invocation(self):
+        # DP-021: _compute_portfolio_allocation() no longer special-cases a
+        # single candidate — it delegates to optimizer.optimize() for any
+        # non-empty slate (n>=1), which itself now returns min(1, max_weight)
+        # for n==1 instead of a hardcoded 100%/50%. Provenance must say the
+        # optimizer ran, not that it was skipped.
         result = replay_snapshot(_snapshot([_candidate("A")]))
         assert len(result.selected_slate) == 1
-        assert "optimizer" not in result.production_provenance["invoked"]
-        assert "optimizer" in result.production_provenance["not_invoked"]
+        assert result.production_provenance["invoked"].get("optimizer") == "services.alpha_engine.optimizer.optimize"
+        assert "optimizer" not in result.production_provenance["not_invoked"]
 
     def test_two_candidate_provenance_includes_optimizer_invocation(self):
         result = replay_snapshot(_snapshot([_candidate("A"), _candidate("B")]))

@@ -443,14 +443,15 @@ def replay_snapshot(snapshot: MarketSnapshot) -> ReplayResult:
 
     alphas = [r.get("ranking_alpha", 0) for r in top_buy]
     symbols = [r["symbol"] for r in top_buy]
-    # optimizer.optimize() is only actually invoked by
-    # _compute_portfolio_allocation() when 2+ candidates reach this stage
-    # (see optimizer.py / _compute_portfolio_allocation's own n==0/n==1
-    # short-circuits) — mirror that exact condition here so provenance
-    # never falsely claims the optimizer ran.
-    optimizer_will_run = len(symbols) > 1
+    # DP-021: optimizer.optimize() is now invoked by
+    # _compute_portfolio_allocation() for ANY non-empty slate (n>=1) — the
+    # prior n==1 short-circuit was removed so a single candidate obeys the
+    # same max_weight cap as every other slate size. Only n==0 short-
+    # circuits. Mirror that exact condition here so provenance never
+    # falsely claims the optimizer did or didn't run.
+    optimizer_will_run = len(symbols) >= 1
     returns_matrix = None
-    if optimizer_will_run:
+    if len(symbols) > 1:
         returns_matrix, returns_warning = _build_returns_matrix(snapshot, symbols)
         if returns_warning:
             warnings.append(returns_warning)
@@ -471,7 +472,7 @@ def replay_snapshot(snapshot: MarketSnapshot) -> ReplayResult:
         not_invoked["optimizer"] = (
             f"services.alpha_engine.optimizer.optimize (not called for a "
             f"{len(symbols)}-candidate slate — _compute_portfolio_allocation "
-            f"handles 0/1 candidates without calling it, matching production)"
+            f"handles 0 candidates without calling it, matching production)"
         )
     production_provenance = {"invoked": invoked, "not_invoked": not_invoked}
 

@@ -93,10 +93,18 @@ class TestComputePortfolioAllocationExtractedFunction:
         assert weights == []
         assert cash == 0.0
 
-    def test_single_alpha_hardcoded_fifty_percent(self):
+    def test_single_alpha_respects_default_forty_percent_cap(self):
+        # DP-021: a single candidate is no longer special-cased at 50% —
+        # it obeys the same max_weight cap as every other candidate count,
+        # with the shortfall left as cash.
         weights, cash = dp._compute_portfolio_allocation([5.0], None, "BULL_CALM")
-        assert weights == [0.50]
-        assert cash == 0.50
+        assert weights == [0.40]
+        assert cash == 0.60
+
+    def test_single_alpha_respects_custom_max_weight(self):
+        weights, cash = dp._compute_portfolio_allocation([5.0], None, "BULL_CALM", max_weight=0.25)
+        assert weights == [0.25]
+        assert cash == 0.75
 
     def test_two_alphas_at_default_cap_yields_forty_forty_twenty_cash(self):
         weights, cash = dp._compute_portfolio_allocation([1.0, 1.0], None, "BULL_CALM")

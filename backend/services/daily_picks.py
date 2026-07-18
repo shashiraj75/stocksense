@@ -1234,24 +1234,29 @@ def _compute_portfolio_allocation(
     risk_aversion: float = 2.0,
 ) -> tuple[list[float], float]:
     """
-    DP-020 — pure portfolio-allocation step: given per-candidate ranking
-    alphas (already computed) and an optional returns matrix, compute
-    per-candidate weights and the resulting cash/unallocated fraction.
+    DP-020/DP-021 — pure portfolio-allocation step, and the SINGLE
+    allocation authority for zero, one, or many candidates: given
+    per-candidate ranking alphas (already computed) and an optional returns
+    matrix, compute per-candidate weights and the resulting cash/unallocated
+    fraction.
 
     Contains no I/O — callers are responsible for supplying `returns_matrix`
     (e.g. via `_fetch_returns_matrix` in production, or a frozen snapshot
-    array in a pipeline replay). The single-candidate case is hard-coded at
-    50% and never routes through `optimizer.optimize()`, matching
-    pre-existing production behaviour (see optimizer.py's own `n == 1`
-    branch docstring for why that branch itself is otherwise unreachable).
+    array in a pipeline replay).
+
+    DP-021: the one-candidate case is NOT special-cased here anymore — it
+    delegates to `optimizer.optimize()` exactly like every other candidate
+    count, which itself now returns `min(1, max_weight)` for a single
+    candidate (previously this function hard-coded 50%, and
+    `optimizer.optimize()` separately hard-coded 100% — two different,
+    both-wrong answers for the same case; DPD-005's hard-cap contract now
+    applies uniformly).
     """
     from services.alpha_engine.optimizer import optimize
 
     n = len(alphas)
     if n == 0:
         return [], 0.0
-    if n == 1:
-        return [0.50], 0.50
     weights = optimize(
         alphas=alphas, returns_matrix=returns_matrix,
         max_weight=max_weight, risk_aversion=risk_aversion, regime_label=regime_label,
@@ -1662,19 +1667,19 @@ def _generate_picks_inner(
         # weighting/cash math now lives in the module-level, I/O-free
         # _compute_portfolio_allocation so a pipeline replay can call it
         # directly with a frozen returns matrix instead of fetching one.
-        if len(top_buy) > 1:
+        # DP-021: _compute_portfolio_allocation is now the single allocation
+        # authority for every non-empty slate size (previously a single
+        # qualifying pick bypassed it with a separate 50% hard-code here).
+        if top_buy:
             alphas = [r.get("ranking_alpha", 0) for r in top_buy]
             symbols = [r["symbol"] for r in top_buy]
-            ret_matrix = _fetch_returns_matrix(symbols, market)
+            # A returns matrix is only useful (and only fetched) when there
+            # are 2+ names to compute a covariance across — a lone pick's
+            # allocation doesn't depend on it.
+            ret_matrix = _fetch_returns_matrix(symbols, market) if len(top_buy) > 1 else None
             port_weights, cash_pct = _compute_portfolio_allocation(alphas, ret_matrix, regime_label)
             for pick, w in zip(top_buy, port_weights):
                 pick["portfolio_weight"] = w
-            _portfolio_cash_pct[horizon] = cash_pct
-        elif len(top_buy) == 1:
-            weights, cash_pct = _compute_portfolio_allocation(
-                [top_buy[0].get("ranking_alpha", 0)], None, regime_label,
-            )
-            top_buy[0]["portfolio_weight"] = weights[0]
             _portfolio_cash_pct[horizon] = cash_pct
 
         # Final-pick selection metadata for the alpha_observations snapshot

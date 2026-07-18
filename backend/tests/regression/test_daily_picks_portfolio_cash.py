@@ -100,13 +100,15 @@ class TestPortfolioCashPctField:
             assert total_weight == pytest.approx(1.0, abs=1e-3)
             assert payload["portfolio_cash_pct"][horizon] == pytest.approx(0.0, abs=1e-3)
 
-    def test_single_buy_pick_reports_fifty_percent_cash(self):
+    def test_single_buy_pick_reports_forty_percent_weight_sixty_percent_cash(self):
+        # DP-021: a single qualifying pick now obeys the same 40% hard cap
+        # as every other slate size — no more special-cased 50%/50%.
         payload = _run(["AAA"], buy_count=1)
         for horizon in ("short", "medium", "long"):
             picks = payload["picks"][horizon]
             assert len(picks) == 1
-            assert picks[0]["portfolio_weight"] == 0.50
-            assert payload["portfolio_cash_pct"][horizon] == pytest.approx(0.50, abs=1e-3)
+            assert picks[0]["portfolio_weight"] == 0.40
+            assert payload["portfolio_cash_pct"][horizon] == pytest.approx(0.60, abs=1e-3)
 
     def test_no_buy_picks_leaves_horizon_absent_from_cash_dict(self):
         payload = _run(["AAA", "BBB"], buy_count=0)

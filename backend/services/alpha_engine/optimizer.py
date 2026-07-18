@@ -26,6 +26,8 @@ cash/unallocated is `1.0 - sum(weights)`, always >= 0 (within numeric
 tolerance) and never fabricated by scaling weights back up past their cap.
 """
 
+import math
+
 import numpy as np
 
 
@@ -59,22 +61,37 @@ def optimize(
 
     Returns:
         list[float] — portfolio weights, length == len(alphas). Sum to
-        min(1, N * max_weight) (DP-020): fully invested (sum == 1.0) whenever
-        the cap permits it, otherwise capped at max_weight per name with the
-        shortfall left as cash/unallocated (never smuggled back onto the
-        capped names). Callers needing the cash fraction should compute
-        `1.0 - sum(weights)`.
+        min(1, N * max_weight) (DP-020/DP-021): fully invested (sum == 1.0)
+        whenever the cap permits it, otherwise capped at max_weight per name
+        with the shortfall left as cash/unallocated (never smuggled back
+        onto the capped names). This applies uniformly for N=1 too (DP-021
+        — a single qualifying pick is exactly N=1 * max_weight capacity, no
+        special-cased 100%). Callers needing the cash fraction should
+        compute `1.0 - sum(weights)`.
+
+    Raises:
+        ValueError — if max_weight is not a finite number > 0. A caller
+        passing a nonsensical cap (negative, zero, NaN, or infinite) gets
+        an explicit, immediate error rather than a silently-wrong
+        allocation (matches this codebase's existing fail-fast convention
+        for malformed numeric arguments — see e.g.
+        regime_cluster.anchor_to_semantic_labels's ValueError on malformed
+        input).
     """
+    if not isinstance(max_weight, (int, float)) or isinstance(max_weight, bool) or not math.isfinite(max_weight) or max_weight <= 0:
+        raise ValueError(f"optimize: max_weight must be a finite number > 0, got {max_weight!r}")
+
     n = len(alphas)
     if n == 0:
         return []
     if n == 1:
-        # Characterization note (DP-020): the daily_picks.py call site never
-        # routes a single pick through this function — it hard-codes 50%
-        # directly (see _generate_picks_inner) — so this branch is currently
-        # unreachable in production and is intentionally left as-is; it is
-        # not part of DP-020's output contract.
-        return [1.0]
+        # DP-021 — a single candidate is not a special case: it is exactly
+        # the N=1 instance of the same "capacity-limited" rule DP-020
+        # already applies for N>=2 (target_invested = min(1, N*max_weight),
+        # which for N=1 is min(1, max_weight)). No SLSQP/fallback machinery
+        # is needed for a one-variable allocation with a fixed target — the
+        # answer is exact and deterministic.
+        return [round(min(1.0, max_weight), 4)]
 
     a = np.array(alphas, dtype=float)
 

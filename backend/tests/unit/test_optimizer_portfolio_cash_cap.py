@@ -46,17 +46,52 @@ def _force_fallback_path(monkeypatch):
     )
 
 
-class TestOneCandidateCharacterizationOnly:
-    """N=1 is NOT part of the DP-020 output contract — daily_picks.py's
-    call site hard-codes 50% directly and never calls optimize() for a
-    single pick. Documented here only so a future change to that call site
-    doesn't silently break this pre-existing, out-of-scope branch."""
+class TestOneCandidateRespectsCapWithCash:
+    """DP-021: N=1 is now part of the same hard-cap contract DP-020
+    established for N>=2 — it is the N=1 instance of
+    target_invested = min(1, N * max_weight), not a special-cased 100%.
+    daily_picks.py's call site now routes a single pick through
+    _compute_portfolio_allocation() -> optimize() like every other slate
+    size (see test_daily_picks_extracted_helpers_parity.py and
+    test_daily_picks_portfolio_cash.py for the production-path proof)."""
 
-    def test_single_candidate_returns_full_allocation_unchanged(self):
-        assert opt.optimize([5.0]) == [1.0]
+    def test_single_candidate_at_default_cap_returns_forty_percent(self):
+        assert opt.optimize([5.0]) == [0.40]
+
+    def test_single_candidate_respects_custom_caps(self):
+        assert opt.optimize([5.0], max_weight=0.25) == [0.25]
+        assert opt.optimize([5.0], max_weight=1.00) == [1.00]
+
+    def test_single_candidate_never_exceeds_max_weight(self):
+        for max_weight in (0.05, 0.10, 0.40, 0.60, 0.99, 1.00):
+            weights = opt.optimize([5.0], max_weight=max_weight)
+            assert weights[0] <= max_weight + 1e-9
+
+    def test_single_candidate_weight_plus_cash_totals_one(self):
+        weights = opt.optimize([5.0], max_weight=0.40)
+        cash = round(max(0.0, 1.0 - sum(weights)), 4)
+        assert weights[0] + cash == pytest.approx(1.0, abs=1e-6)
+        assert cash == pytest.approx(0.60, abs=1e-6)
 
     def test_zero_candidates_returns_empty_list(self):
         assert opt.optimize([]) == []
+
+
+class TestMaxWeightValidation:
+    """DP-021: max_weight is validated the same way for every N, including
+    N=1 — an invalid cap must never silently produce a nonsensical
+    allocation (fail-fast, matching this codebase's existing convention
+    for malformed numeric arguments)."""
+
+    @pytest.mark.parametrize("bad_max_weight", [0.0, -0.1, -1.0, float("nan"), float("inf"), float("-inf")])
+    def test_invalid_max_weight_raises_value_error(self, bad_max_weight):
+        with pytest.raises(ValueError):
+            opt.optimize([5.0], max_weight=bad_max_weight)
+
+    @pytest.mark.parametrize("bad_max_weight", [0.0, -0.1, float("nan")])
+    def test_invalid_max_weight_raises_for_multi_candidate_too(self, bad_max_weight):
+        with pytest.raises(ValueError):
+            opt.optimize([5.0, 3.0], max_weight=bad_max_weight)
 
 
 class TestTwoCandidatesFortyPercentCapForcesTwentyPercentCash:
