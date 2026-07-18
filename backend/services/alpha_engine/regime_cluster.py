@@ -33,6 +33,53 @@ REGIME_LABELS = {
     3: "BEAR_PANIC",
 }
 
+# DP-018 — the semantic model (SEMANTIC_ANCHOR_CENTROIDS, and every fitted/
+# loaded KMeans model anchored to them) is declared and documented as
+# operating in a [0,1] feature space. Only the VIX term was ever actually
+# bounded on both sides (`min(1.0, vix / 40.0)` bounds above; nothing
+# bounded it below, and the other four raw normalisations were unbounded on
+# both sides). An out-of-domain provider value (e.g. a negative VIX from a
+# bad feed, a DXY spike) would otherwise dominate Euclidean distance to the
+# anchors/centroids and, on retrain, could pull learned centroids outside
+# the domain the anchors and downstream logic assume. [0,1] is the sole
+# approved domain because it is already the documented normalisation/anchor
+# domain — no new economically arbitrary threshold is introduced here.
+FEATURE_MIN = 0.0
+FEATURE_MAX = 1.0
+_N_FEATURES = 5
+
+
+def bound_feature_vector(features: np.ndarray) -> np.ndarray:
+    """
+    DP-018 — clip a single 5-dim regime feature vector into the semantic
+    model's declared [FEATURE_MIN, FEATURE_MAX] domain. Returns a new array
+    (`np.clip` without `out=` never touches its input); the caller's array
+    is never mutated. Raises ValueError for any shape other than exactly
+    (5,) — a malformed vector must fail explicitly here rather than being
+    silently truncated or padded into a wrong-length feature vector.
+    """
+    arr = np.asarray(features, dtype=float)
+    if arr.shape != (_N_FEATURES,):
+        raise ValueError(
+            f"bound_feature_vector: expected a ({_N_FEATURES},) feature vector, got shape {arr.shape}"
+        )
+    return np.clip(arr, FEATURE_MIN, FEATURE_MAX)
+
+
+def bound_feature_matrix(features: np.ndarray) -> np.ndarray:
+    """
+    DP-018 — matrix form of `bound_feature_vector`, for bounding an entire
+    (n, 5) historical feature matrix at once before retraining. Returns a
+    new array; never mutates the caller's array. Raises ValueError unless
+    the input is exactly 2-D with 5 columns.
+    """
+    arr = np.asarray(features, dtype=float)
+    if arr.ndim != 2 or arr.shape[1] != _N_FEATURES:
+        raise ValueError(
+            f"bound_feature_matrix: expected an (n, {_N_FEATURES}) feature matrix, got shape {arr.shape}"
+        )
+    return np.clip(arr, FEATURE_MIN, FEATURE_MAX)
+
 # DP-017 — canonical semantic-anchor centroids, in REGIME_LABELS ID order.
 # This is the single source of truth for "what each semantic regime ID
 # means" in feature space. Used both to bootstrap the very first model (so
@@ -68,7 +115,8 @@ REGIME_WEIGHT_MULTIPLIERS: dict[str, dict[str, float]] = {
 
 
 def extract_features(global_ctx: dict) -> np.ndarray:
-    """Convert global context dict → 5-dim normalised feature vector."""
+    """Convert global context dict → 5-dim normalised feature vector,
+    bounded to the semantic model's declared [0,1] domain (DP-018)."""
     levels  = global_ctx.get("levels", {})
     changes = global_ctx.get("changes", {})
 
@@ -78,13 +126,14 @@ def extract_features(global_ctx: dict) -> np.ndarray:
     us10y     = float(levels.get("us10y") or 4.0)
     nifty_chg = float(changes.get("nifty50") or 0.0)
 
-    return np.array([
+    raw = np.array([
         min(1.0, vix / 40.0),            # VIX: 0=calm, 1=extreme fear
         (sp500_chg + 5.0) / 10.0,        # S&P trend: 0=down 5%, 1=up 5%
         (dxy - 90.0) / 20.0,             # DXY: 0=90, 1=110
         (us10y - 2.0) / 5.0,             # 10Y yield: 0=2%, 1=7%
         (nifty_chg + 5.0) / 10.0,        # Nifty trend: 0=down 5%, 1=up 5%
     ], dtype=float)
+    return bound_feature_vector(raw)
 
 
 class AnchorResult(NamedTuple):
@@ -289,8 +338,19 @@ def retrain_on_history():
             return
 
         X = np.array(history)
+        # DP-018 — fit on a bounded in-memory copy so any legacy
+        # out-of-domain snapshot (predating this safeguard) cannot pull
+        # learned centroids outside the semantic [0,1] domain. `X` (and the
+        # stored history it came from) is never mutated or written back.
+        X_bounded = bound_feature_matrix(X)
+        n_clipped = int(np.sum(X != X_bounded))
+        if n_clipped:
+            print(
+                f"[regime] Bounded {n_clipped} out-of-domain historical feature "
+                f"value(s) into [0,1] before retraining (stored history left unmodified)."
+            )
         km = KMeans(n_clusters=4, n_init=10, random_state=42)
-        km.fit(X)
+        km.fit(X_bounded)
 
         # DP-017 / DPD-007 safety constraint — a retrained model's raw
         # cluster IDs carry no stable meaning until matched back to the
