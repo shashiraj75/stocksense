@@ -57,11 +57,25 @@ def bound_feature_vector(features: np.ndarray) -> np.ndarray:
     is never mutated. Raises ValueError for any shape other than exactly
     (5,) — a malformed vector must fail explicitly here rather than being
     silently truncated or padded into a wrong-length feature vector.
+
+    DP-018 hardening: also raises ValueError if any value is non-finite
+    (NaN, +inf, -inf). `np.clip` alone leaves NaN as NaN and silently maps
+    +inf/-inf to 1.0/0.0 — falsely representing an invalid/missing provider
+    value as a genuine extreme market observation. This helper is a generic
+    bounding primitive; it deliberately does NOT decide what a non-finite
+    input should default to, because that policy differs between live
+    provider extraction (fall back to the existing missing-value default)
+    and historical retraining (exclude the contaminated row entirely) — see
+    `extract_features()` and `retrain_on_history()`.
     """
     arr = np.asarray(features, dtype=float)
     if arr.shape != (_N_FEATURES,):
         raise ValueError(
             f"bound_feature_vector: expected a ({_N_FEATURES},) feature vector, got shape {arr.shape}"
+        )
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(
+            f"bound_feature_vector: all values must be finite, got {arr.tolist()}"
         )
     return np.clip(arr, FEATURE_MIN, FEATURE_MAX)
 
@@ -71,12 +85,20 @@ def bound_feature_matrix(features: np.ndarray) -> np.ndarray:
     DP-018 — matrix form of `bound_feature_vector`, for bounding an entire
     (n, 5) historical feature matrix at once before retraining. Returns a
     new array; never mutates the caller's array. Raises ValueError unless
-    the input is exactly 2-D with 5 columns.
+    the input is exactly 2-D with 5 columns, or if any value is non-finite
+    (NaN, +inf, -inf) — see `bound_feature_vector`'s docstring for why this
+    helper never silently substitutes a default for a non-finite value.
+    Callers with potentially-contaminated data (e.g. `retrain_on_history()`)
+    must exclude non-finite rows before calling this.
     """
     arr = np.asarray(features, dtype=float)
     if arr.ndim != 2 or arr.shape[1] != _N_FEATURES:
         raise ValueError(
             f"bound_feature_matrix: expected an (n, {_N_FEATURES}) feature matrix, got shape {arr.shape}"
+        )
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(
+            "bound_feature_matrix: all values must be finite (found non-finite value(s) in the input)"
         )
     return np.clip(arr, FEATURE_MIN, FEATURE_MAX)
 
@@ -114,17 +136,60 @@ REGIME_WEIGHT_MULTIPLIERS: dict[str, dict[str, float]] = {
 }
 
 
+def _finite_float_or_default(value, default: float) -> tuple[float, bool]:
+    """
+    DP-018 hardening — convert a raw provider value into a finite float for
+    live regime feature extraction. `None`/missing evidence silently uses
+    `default` (unchanged pre-existing behaviour). A *present but invalid*
+    value — a bool (never legitimate market data), a non-numeric/malformed
+    value, `NaN`, or `+inf`/`-inf` — also falls back to `default` (the same
+    existing missing-value default; never a new imputed value), but is
+    reported back as invalid so the caller can log which fields were bad.
+    Never raises during ordinary live feature extraction.
+
+    Returns (value, was_invalid). `was_invalid` is False for both a clean
+    finite value and a simply-missing (`None`) value — only True when a
+    present value had to be discarded as unusable.
+    """
+    if value is None:
+        return default, False
+    if isinstance(value, bool):
+        return default, True
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return default, True
+    if not np.isfinite(f):
+        return default, True
+    return f, False
+
+
 def extract_features(global_ctx: dict) -> np.ndarray:
     """Convert global context dict → 5-dim normalised feature vector,
-    bounded to the semantic model's declared [0,1] domain (DP-018)."""
+    bounded to the semantic model's declared [0,1] domain (DP-018).
+
+    DP-018 hardening: a missing, non-numeric, or non-finite (NaN/±inf)
+    provider value is treated as missing/invalid EVIDENCE, not a genuine
+    extreme market observation — it falls back to the same existing
+    missing-value default already used when a value is absent."""
     levels  = global_ctx.get("levels", {})
     changes = global_ctx.get("changes", {})
 
-    vix       = float(levels.get("vix") or 18.0)
-    sp500_chg = float(changes.get("sp500") or 0.0)
-    dxy       = float(levels.get("dxy") or 100.0)
-    us10y     = float(levels.get("us10y") or 4.0)
-    nifty_chg = float(changes.get("nifty50") or 0.0)
+    vix,       vix_invalid   = _finite_float_or_default(levels.get("vix"), 18.0)
+    sp500_chg, sp500_invalid = _finite_float_or_default(changes.get("sp500"), 0.0)
+    dxy,       dxy_invalid   = _finite_float_or_default(levels.get("dxy"), 100.0)
+    us10y,     us10y_invalid = _finite_float_or_default(levels.get("us10y"), 4.0)
+    nifty_chg, nifty_invalid = _finite_float_or_default(changes.get("nifty50"), 0.0)
+
+    invalid_fields = [name for name, bad in (
+        ("vix", vix_invalid), ("sp500", sp500_invalid), ("dxy", dxy_invalid),
+        ("us10y", us10y_invalid), ("nifty50", nifty_invalid),
+    ) if bad]
+    if invalid_fields:
+        print(
+            f"[regime] Invalid (non-finite/non-numeric) provider value(s) for "
+            f"{invalid_fields} — using existing missing-value defaults."
+        )
 
     raw = np.array([
         min(1.0, vix / 40.0),            # VIX: 0=calm, 1=extreme fear
@@ -338,12 +403,38 @@ def retrain_on_history():
             return
 
         X = np.array(history)
-        # DP-018 — fit on a bounded in-memory copy so any legacy
-        # out-of-domain snapshot (predating this safeguard) cannot pull
-        # learned centroids outside the semantic [0,1] domain. `X` (and the
-        # stored history it came from) is never mutated or written back.
-        X_bounded = bound_feature_matrix(X)
-        n_clipped = int(np.sum(X != X_bounded))
+
+        # DP-018 hardening — a stored snapshot may predate finite-value
+        # validation, or a provider bug could have logged NaN/inf before
+        # this safeguard existed. A non-finite row is contaminated
+        # evidence, not an extreme observation to impute or clip — it is
+        # excluded from the in-memory retraining dataset entirely rather
+        # than guessed at. Stored history is never rewritten or repaired.
+        finite_row_mask = np.all(np.isfinite(X), axis=1)
+        n_excluded = int(len(X) - int(np.sum(finite_row_mask)))
+        if n_excluded:
+            print(
+                f"[regime] Excluded {n_excluded} historical row(s) containing "
+                f"non-finite (NaN/inf) feature values from retraining "
+                f"(stored history left unmodified)."
+            )
+        X_valid = X[finite_row_mask]
+
+        if len(X_valid) < 30:
+            print(
+                f"[regime] Not enough valid (finite) history to retrain after "
+                f"excluding non-finite rows ({len(X_valid)} valid, need >= 30) "
+                f"— prior model artifact retained; cache not invalidated."
+            )
+            return
+
+        # DP-018 — fit on a bounded in-memory copy of the (now finite-only)
+        # rows so any legacy out-of-domain-but-finite snapshot cannot pull
+        # learned centroids outside the semantic [0,1] domain. `X`/`X_valid`
+        # (and the stored history they came from) are never mutated or
+        # written back.
+        X_bounded = bound_feature_matrix(X_valid)
+        n_clipped = int(np.sum(X_valid != X_bounded))
         if n_clipped:
             print(
                 f"[regime] Bounded {n_clipped} out-of-domain historical feature "
@@ -377,7 +468,7 @@ def retrain_on_history():
             _cache_expiry = 0
 
         print(
-            f"[regime] KMeans retrained on {len(X)} historical snapshots "
+            f"[regime] KMeans retrained on {len(X_bounded)} historical snapshots "
             f"(anchored: identity={anchor_result.is_identity}, "
             f"total_distance={anchor_result.total_distance:.4f})"
         )
