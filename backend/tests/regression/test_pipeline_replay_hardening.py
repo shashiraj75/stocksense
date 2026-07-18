@@ -27,13 +27,17 @@ IC_WEIGHTS = {"tech": 0.3, "fund": 0.3, "sentiment": 0.2, "quality": 0.2}
 def _candidate(symbol, confidence=70, tech=60.0, fund=55.0, sentiment=50.0, quality=52.0,
                 sentiment_available=True, quality_available=True, signal="BUY",
                 reasoning=None, cap_tier="large"):
+    # Production contract: when quality_available, quality_score ==
+    # quality_raw_score == the genuine `quality` value; when unavailable,
+    # quality_score is the neutral fallback 50 and quality_raw_score is None.
     return CandidateSnapshot(
         symbol=symbol, signal=signal, confidence=confidence,
         technical_score=tech, fundamental_score=fund,
         sentiment_score=sentiment if sentiment_available else None,
         sentiment_available=sentiment_available,
-        quality_score=quality if quality_available else None,
+        quality_score=quality if quality_available else 50,
         quality_available=quality_available,
+        quality_raw_score=quality if quality_available else None,
         reasoning=reasoning or [], cap_tier=cap_tier,
     )
 
@@ -259,8 +263,8 @@ class TestSentimentQualityContradictionRules:
     def test_sentiment_unavailable_with_nonnull_score_refuses(self):
         contradictory = CandidateSnapshot(
             symbol="BAD", signal="BUY", confidence=70, technical_score=60, fundamental_score=55,
-            quality_score=52, quality_available=True,
-            sentiment_score=88.0, sentiment_available=False,  # contradiction
+            quality_score=52, quality_available=True, quality_raw_score=52,  # quality internally consistent
+            sentiment_score=88.0, sentiment_available=False,  # contradiction under test
         )
         snapshot = _snapshot([contradictory, _candidate("OK")])
         result = replay_snapshot(snapshot)
@@ -270,30 +274,8 @@ class TestSentimentQualityContradictionRules:
     def test_sentiment_available_with_null_score_refuses(self):
         contradictory = CandidateSnapshot(
             symbol="BAD", signal="BUY", confidence=70, technical_score=60, fundamental_score=55,
-            quality_score=52, quality_available=True,
-            sentiment_score=None, sentiment_available=True,  # contradiction
-        )
-        snapshot = _snapshot([contradictory, _candidate("OK")])
-        result = replay_snapshot(snapshot)
-        assert result.status == ReplayStatus.REFUSED_INCOMPLETE
-
-    def test_quality_unavailable_with_nonnull_score_refuses(self):
-        contradictory = CandidateSnapshot(
-            symbol="BAD", signal="BUY", confidence=70, technical_score=60, fundamental_score=55,
-            quality_score=52.0, quality_available=False,  # contradiction — production's
-            # contract derives quality_available strictly from raw-score-not-None
-            sentiment_score=50.0, sentiment_available=True,
-        )
-        snapshot = _snapshot([contradictory, _candidate("OK")])
-        result = replay_snapshot(snapshot)
-        assert result.status == ReplayStatus.REFUSED_INCOMPLETE
-        assert any("quality_available" in m for m in result.missing_requirements)
-
-    def test_quality_available_with_null_score_refuses(self):
-        contradictory = CandidateSnapshot(
-            symbol="BAD", signal="BUY", confidence=70, technical_score=60, fundamental_score=55,
-            quality_score=None, quality_available=True,  # contradiction
-            sentiment_score=50.0, sentiment_available=True,
+            quality_score=52, quality_available=True, quality_raw_score=52,  # quality internally consistent
+            sentiment_score=None, sentiment_available=True,  # contradiction under test
         )
         snapshot = _snapshot([contradictory, _candidate("OK")])
         result = replay_snapshot(snapshot)

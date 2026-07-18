@@ -31,12 +31,17 @@ IC_WEIGHTS = {"tech": 0.3, "fund": 0.3, "sentiment": 0.2, "quality": 0.2}
 def _candidate(symbol, confidence=70, tech=60.0, fund=55.0, sentiment=50.0, quality=52.0,
                 sentiment_available=True, quality_available=True, signal="BUY",
                 reasoning=None, cap_tier="large"):
+    # Production contract: when quality_available, quality_score ==
+    # quality_raw_score == the genuine `quality` value; when unavailable,
+    # quality_score is the neutral fallback 50 and quality_raw_score is None.
     return CandidateSnapshot(
         symbol=symbol, signal=signal, confidence=confidence,
         technical_score=tech, fundamental_score=fund,
         sentiment_score=sentiment if sentiment_available else None,
         sentiment_available=sentiment_available,
-        quality_score=quality, quality_available=quality_available,
+        quality_score=quality if quality_available else 50,
+        quality_available=quality_available,
+        quality_raw_score=quality if quality_available else None,
         reasoning=reasoning or [], cap_tier=cap_tier,
     )
 

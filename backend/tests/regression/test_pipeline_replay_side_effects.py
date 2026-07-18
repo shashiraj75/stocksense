@@ -32,6 +32,7 @@ def _candidate(symbol, confidence=70, tech=60.0, fund=55.0, cap_tier="large"):
         symbol=symbol, signal="BUY", confidence=confidence,
         technical_score=tech, fundamental_score=fund, quality_score=52.0,
         sentiment_score=50.0, sentiment_available=True, quality_available=True,
+        quality_raw_score=52.0,
         reasoning=[], cap_tier=cap_tier,
     )
 

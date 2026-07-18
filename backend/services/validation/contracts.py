@@ -99,6 +99,14 @@ class CandidateSnapshot:
     confidence: float | None
     technical_score: float | None
     fundamental_score: float | None
+    # quality_score is the RANKING-COMPATIBLE value — exactly what production
+    # passes to _zscore_and_rank(). Production's real contract
+    # (_predict_stock(), daily_picks.py): `"quality_score": qf.get("score")
+    # if qf.get("score") is not None else 50` — i.e. when genuine quality
+    # evidence is unavailable, quality_score is NOT None, it is the neutral
+    # fallback 50. quality_score alone therefore cannot distinguish a
+    # genuine score of 50 from a fabricated fallback of 50 — see
+    # quality_raw_score below, which is what makes that distinction.
     quality_score: float | None
     # None means genuinely missing evidence (production's real contract —
     # see DP-025 test #4). Never coalesce to a numeric default when
@@ -106,6 +114,27 @@ class CandidateSnapshot:
     sentiment_score: float | None
     sentiment_available: bool
     quality_available: bool
+    # quality_raw_score: the GENUINE pre-fallback quality source value —
+    # production's `_quality_raw` / `quality_raw_score` field. None means
+    # quality evidence was genuinely unavailable (matches
+    # quality_available=False). A genuine numeric 0 is valid evidence and
+    # MUST be preserved exactly — never truthiness-coalesced to anything
+    # else (this is the DP-009/DP-010 zero-preservation contract applied to
+    # the raw provenance field itself). When quality is available,
+    # quality_score MUST equal quality_raw_score exactly (production sets
+    # score=raw in that case) — see contracts.validate_structure().
+    quality_raw_score: float | None = None
+    # True unless this candidate was loaded from a JSON fixture that
+    # omitted `quality_raw_score` entirely (a pre-2026-07-18 fixture,
+    # before this field existed) — see _candidate_from_dict(). When False,
+    # quality PROVENANCE IS UNKNOWN: the fixture asserts a quality_score
+    # but this module cannot tell whether it is genuine evidence or a
+    # neutral fallback. STRICT mode refuses on this (see
+    # pipeline_replay._assess_strict_integrity()); DIAGNOSTIC mode proceeds
+    # but labels the result with an explicit "unknown quality provenance"
+    # warning and never claims production equivalence. Never silently
+    # treated as if provenance were known.
+    quality_raw_score_provided: bool = True
     # Indicator/reason items required by _passes_quality_gate — same shape
     # PredictionEngine's `reasoning` list already uses:
     # [{"indicator": "Risk/Reward", "reason": "...", ...}, ...]
@@ -217,6 +246,12 @@ STAGES_REPLAYABLE_ON_COMPLETION: tuple[str, ...] = (
 )
 
 
+#: quality_provenance values — see RankedCandidateResult.quality_provenance.
+QUALITY_PROVENANCE_GENUINE = "genuine"          # quality_available=True, raw score confirmed
+QUALITY_PROVENANCE_FALLBACK_NEUTRAL = "fallback_neutral"  # quality_available=False, score=50 fallback
+QUALITY_PROVENANCE_UNKNOWN = "unknown"          # quality_raw_score_provided=False (old fixture)
+
+
 @dataclass
 class RankedCandidateResult:
     symbol: str
@@ -227,6 +262,14 @@ class RankedCandidateResult:
     factor_zscores: dict[str, float]
     meta_alpha: float | None
     meta_alpha_used_for_ranking: bool
+    # Quality-provenance fix (2026-07-18): distinguishes genuine quality
+    # evidence from the neutral quality_score=50 fallback (or, for a
+    # pre-existing fixture, an unknown relationship) — one of
+    # QUALITY_PROVENANCE_GENUINE / _FALLBACK_NEUTRAL / _UNKNOWN. quality_score
+    # itself (visible via factor_zscores' inputs, not duplicated here) was
+    # still the value actually passed to the real _zscore_and_rank() —
+    # this field is provenance metadata only, never a ranking input.
+    quality_provenance: str = QUALITY_PROVENANCE_UNKNOWN
 
 
 @dataclass
@@ -303,10 +346,20 @@ class ReplayResult:
 
 
 def _candidate_from_dict(d: dict) -> CandidateSnapshot:
+    """Load one CandidateSnapshot from a JSON-decoded dict. Backward
+    compatibility for fixtures predating `quality_raw_score` (2026-07-18):
+    the field's PRESENCE in the dict (not its value) determines
+    `quality_raw_score_provided` — a fixture that explicitly writes
+    `"quality_raw_score": null` correctly declares "confirmed unavailable",
+    while a fixture that omits the key entirely is marked
+    `quality_raw_score_provided=False` ("unknown provenance"), never
+    silently inferred as either genuine or fallback."""
     d = dict(d)
     pit = d.pop("point_in_time_status", {}) or {}
+    quality_raw_score_provided = "quality_raw_score" in d
     return CandidateSnapshot(
         point_in_time_status={k: PointInTimeIntegrity(v) for k, v in pit.items()},
+        quality_raw_score_provided=quality_raw_score_provided,
         **d,
     )
 
@@ -410,18 +463,49 @@ def validate_structure(snapshot: MarketSnapshot) -> list[str]:
         if c.sentiment_available and c.sentiment_score is None:
             errors.append(f"candidate {c.symbol!r}: sentiment_available=True but sentiment_score is None")
 
-        # 9. quality_available=False must follow the exact production
-        # frozen-output contract: quality_available is derived from
-        # "raw score is not None" in _predict_stock() — the two fields
-        # must never disagree.
-        if not c.quality_available and c.quality_score is not None:
-            errors.append(
-                f"candidate {c.symbol!r}: quality_available=False but quality_score="
-                f"{c.quality_score!r} is not None (production's contract: quality_available "
-                f"is derived from the raw score being not-None, never set independently)"
-            )
-        if c.quality_available and c.quality_score is None:
-            errors.append(f"candidate {c.symbol!r}: quality_available=True but quality_score is None")
+        # 9. Quality provenance — CORRECTED (2026-07-18 quality-provenance
+        # fix) to match the exact production contract from _predict_stock():
+        #   "quality_score": qf.get("score") if qf.get("score") is not None else 50
+        # i.e. quality_available=False does NOT mean quality_score is None
+        # — it means quality_score is the neutral fallback 50, while
+        # quality_raw_score (the genuine pre-fallback value) is None. The
+        # OLD version of this rule incorrectly required quality_score to be
+        # None when unavailable; that never matched production and has been
+        # replaced below.
+        #
+        # If quality_raw_score_provided is False (a pre-2026-07-18 fixture
+        # that never declared this field at all), these consistency checks
+        # are skipped here — provenance is UNKNOWN, not necessarily
+        # inconsistent, and STRICT-mode-only refusal for that specific
+        # condition lives in pipeline_replay._assess_strict_integrity()
+        # (mirroring how the other point-in-time-only categories work).
+        if c.quality_raw_score_provided:
+            if c.quality_available:
+                if c.quality_raw_score is None:
+                    errors.append(f"candidate {c.symbol!r}: quality_available=True but quality_raw_score is None")
+                elif not _is_finite_number(c.quality_raw_score):
+                    errors.append(f"candidate {c.symbol!r}: quality_raw_score={c.quality_raw_score!r} is not a finite numeric value")
+                elif c.quality_score is None or not _is_finite_number(c.quality_score):
+                    errors.append(f"candidate {c.symbol!r}: quality_available=True but quality_score={c.quality_score!r} is not a finite numeric value")
+                elif not math.isclose(c.quality_score, c.quality_raw_score, rel_tol=1e-9, abs_tol=1e-9):
+                    errors.append(
+                        f"candidate {c.symbol!r}: quality_available=True requires quality_score == "
+                        f"quality_raw_score (production sets score=raw when available); got "
+                        f"quality_score={c.quality_score!r}, quality_raw_score={c.quality_raw_score!r}"
+                    )
+            else:
+                if c.quality_raw_score is not None:
+                    errors.append(
+                        f"candidate {c.symbol!r}: quality_available=False but quality_raw_score="
+                        f"{c.quality_raw_score!r} is not None (unavailable quality evidence must "
+                        f"carry no raw value)"
+                    )
+                if c.quality_score is None or not _is_finite_number(c.quality_score) or not math.isclose(c.quality_score, 50.0, rel_tol=0, abs_tol=1e-9):
+                    errors.append(
+                        f"candidate {c.symbol!r}: quality_available=False requires quality_score == 50 "
+                        f"(the neutral ranking fallback, never fabricated as genuine evidence); got "
+                        f"quality_score={c.quality_score!r}"
+                    )
 
         # 10. score fields must be finite numeric values or explicit None
         for field_name, value in (

@@ -104,6 +104,9 @@ from services.validation.contracts import (
     REJECTION_SHORT_TERM_OVERBOUGHT,
     REJECTION_ISSUER_DUPLICATE,
     REJECTION_NOT_SELECTED,
+    QUALITY_PROVENANCE_GENUINE,
+    QUALITY_PROVENANCE_FALLBACK_NEUTRAL,
+    QUALITY_PROVENANCE_UNKNOWN,
     validate_structure,
 )
 
@@ -195,6 +198,21 @@ def _assess_strict_integrity(snapshot: MarketSnapshot) -> list[str]:
     for flag_name, is_set in snapshot.synthetic_flags.items():
         if is_set:
             missing.append(f"synthetic_flags[{flag_name!r}] is set")
+
+    # Quality-provenance fix (2026-07-18): a candidate loaded from a
+    # pre-2026-07-18 fixture that never declared quality_raw_score has
+    # UNKNOWN quality provenance — this module cannot tell whether its
+    # quality_score is genuine evidence or the neutral 50 fallback. That is
+    # exactly the kind of gap the "quality" STRICT_MODE_REQUIRED_CATEGORIES
+    # entry exists to catch, so it refuses STRICT replay the same way a
+    # missing/synthetic quality point_in_time_status would.
+    for candidate in snapshot.candidates:
+        if not candidate.quality_raw_score_provided:
+            missing.append(
+                f"candidate {candidate.symbol!r}: quality_raw_score was not supplied "
+                f"(pre-2026-07-18 fixture) — quality provenance is unknown and cannot "
+                f"be verified as point-in-time"
+            )
 
     return missing
 
@@ -330,8 +348,24 @@ def replay_snapshot(snapshot: MarketSnapshot) -> ReplayResult:
         warnings.append(_STRICT_COMPLETION_CLARIFICATION)
     else:
         warnings.extend(_DIAGNOSTIC_DISCLAIMERS)
+        unknown_provenance_symbols = [c.symbol for c in snapshot.candidates if not c.quality_raw_score_provided]
+        if unknown_provenance_symbols:
+            warnings.append(
+                f"UNKNOWN QUALITY PROVENANCE for {unknown_provenance_symbols} — quality_raw_score "
+                "was not supplied (pre-2026-07-18 fixture); this module cannot distinguish genuine "
+                "quality evidence from the neutral quality_score=50 fallback for these candidates. "
+                "Never treated as production-equivalent."
+            )
 
     import services.daily_picks as dp  # local import: keeps this module importable without pulling in the whole app at package-import time
+
+    candidates_by_symbol = {c.symbol: c for c in snapshot.candidates}
+
+    def _quality_provenance(symbol: str) -> str:
+        c = candidates_by_symbol.get(symbol)
+        if c is None or not c.quality_raw_score_provided:
+            return QUALITY_PROVENANCE_UNKNOWN
+        return QUALITY_PROVENANCE_GENUINE if c.quality_available else QUALITY_PROVENANCE_FALLBACK_NEUTRAL
 
     rows = [
         {
@@ -372,6 +406,7 @@ def replay_snapshot(snapshot: MarketSnapshot) -> ReplayResult:
             factor_zscores=r.get("factor_zscores", {}),
             meta_alpha=r.get("meta_alpha"),
             meta_alpha_used_for_ranking=bool(r.get("meta_alpha_used_for_ranking", False)),
+            quality_provenance=_quality_provenance(r["symbol"]),
         )
         for r in ranked
     ]
