@@ -283,8 +283,9 @@ class ReplayResult:
     # Truthful, per-result dotted-path provenance: {"invoked": {...},
     # "not_invoked": {...}}. A function only appears under "invoked" if
     # this specific replay actually called it — e.g. optimizer.optimize()
-    # is listed under "not_invoked" for a 0- or 1-candidate slate, since
-    # _compute_portfolio_allocation() handles those without calling it.
+    # is listed under "not_invoked" only for a 0-candidate slate (DP-021:
+    # _compute_portfolio_allocation() invokes the optimizer for any
+    # non-empty slate, N>=1 — the prior N==1 short-circuit was removed).
     production_provenance: dict[str, dict[str, str]]
     input_integrity: dict[str, str]
     # Machine-readable stage-coverage contract — see
