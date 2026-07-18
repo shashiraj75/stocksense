@@ -1,18 +1,38 @@
 """
 DP-025 foundation (governed by DPD-009, DECIDED — DISCLOSURE HOLD) —
-offline, deterministic replay of production's Daily Picks
-composite -> confidence -> ranking -> selection -> portfolio-allocation
-pipeline, against an explicitly supplied, immutable historical snapshot.
+offline, deterministic post-prediction ranking -> eligibility -> issuer
+deduplication -> selection -> portfolio-allocation replay, against an
+explicitly supplied, frozen-at-source historical snapshot.
 
-WHAT THIS IS: a first additive foundation proving the ranking/selection/
-allocation stages of the real pipeline can be replayed deterministically
-outside production, by calling the ACTUAL production functions rather than
-a second, independently-written approximation (the exact gap DP-025
-identifies in validation_engine.py and backtester.py, both of which
-compute their own separate composite-score formula — see this module's
-call-graph note below).
+SCOPE (corrected wording — 2026-07-18 hardening follow-up): earlier
+documentation in this package described this as replaying production's
+full "composite -> confidence -> ranking -> selection -> allocation"
+pipeline. That was inaccurate. This module does NOT replay composite-score
+or confidence generation — `CandidateSnapshot` IS the already-computed
+Phase 1-2 output (signal, confidence, technical/fundamental/sentiment/
+quality scores, reasoning), SUPPLIED by the caller, never recomputed here.
+See `ReplayResult.stages_supplied_not_replayed` /
+`ReplayResult.stages_actually_replayed` for the machine-readable version of
+this boundary, and `ReplayResult.full_pipeline_replay` /
+`ReplayResult.production_equivalent` — both hardcoded `False` on every
+result this module ever produces, in every mode, including a fully
+successful STRICT_POINT_IN_TIME completion.
+
+WHAT THIS IS: a first additive foundation proving the ranking/eligibility/
+deduplication/selection/allocation stages of the real pipeline can be
+replayed deterministically outside production, by calling the ACTUAL
+production functions rather than a second, independently-written
+approximation (the exact gap DP-025 identifies in validation_engine.py and
+backtester.py, both of which compute their own separate composite-score
+formula — see this module's call-graph note below).
 
 WHAT THIS IS NOT:
+  - NOT a replay of PredictionEngine.predict() or _predict_stock() — the
+    composite score, confidence generation and later confidence
+    adjustments, target-price computation, and stop-loss/trade-level
+    computation are all SUPPLIED inputs on CandidateSnapshot, never
+    recomputed. Phase 1-2 point-in-time production replay remains future
+    work; DP-025 is not fully resolved by this foundation.
   - NOT a source of point-in-time historical fundamentals (DP-026, open).
   - NOT a survivorship-bias-free historical universe (DP-027, open).
   - NOT a fix for overlapping-window sampling (DP-028, open — this replays
@@ -20,6 +40,12 @@ WHAT THIS IS NOT:
   - NOT a transaction-cost/slippage model (DP-029, open).
   - NOT a hit-rate, return, accuracy, or profitability calculator. This
     module computes and publishes none of those numbers.
+  - NOT independent proof of historical accuracy or production
+    equivalence, even when STRICT_POINT_IN_TIME completes successfully.
+    STRICT completion means the supplied snapshot passed THIS HARNESS'S
+    OWN declared-integrity requirements (the caller's self-reported
+    point_in_time_integrity/synthetic_flags) — it does not mean the
+    harness independently verified the data actually was point-in-time.
   - NOT invoked automatically by any production code path, scheduler, or
     API endpoint. It exists only as an explicitly-run offline tool/test
     dependency.
@@ -28,16 +54,20 @@ CALL-GRAPH NOTE (read-only investigation performed before writing this
 file): production's real execution path is
   _predict_stock() -> PredictionEngine.predict() [Yahoo/news-coupled,
     produces signal/confidence/technical/fundamental/sentiment/quality
-    scores + reasoning] -> _zscore_and_rank() [pure] -> _passes_quality_gate()
-    [was a nested closure, now module-level & pure] -> _deduplicate_by_issuer()
-    [pure] -> per-horizon selection [_select_short_term_top_six() /
-    _select_with_tier_quota(), both pure] -> _compute_portfolio_allocation()
-    [pure, wraps optimizer.optimize()].
-This module starts from the FROZEN OUTPUT of Phase 1-2 (the network-coupled
-part — a CandidateSnapshot IS that frozen output) and reuses every pure
-function from _zscore_and_rank() onward, unmodified, via `import
-services.daily_picks as dp`. It does not call _predict_stock(),
-PredictionEngine.predict(), _fetch_returns_matrix(), _write_score_snapshots(),
+    scores + reasoning — SUPPLIED to this module via CandidateSnapshot,
+    never invoked by it] -> _zscore_and_rank() [pure, REPLAYED] ->
+    _passes_quality_gate() [was a nested closure, now module-level & pure,
+    REPLAYED] -> _deduplicate_by_issuer() [pure, REPLAYED] -> per-horizon
+    selection [_select_short_term_top_six() / _select_with_tier_quota(),
+    both pure, REPLAYED] -> _compute_portfolio_allocation() [pure,
+    REPLAYED, wraps optimizer.optimize() which itself only runs when 2+
+    candidates reach that stage].
+This module starts from the FROZEN OUTPUT of Phase 1-2 (a CandidateSnapshot
+IS that frozen output — the network-coupled part this foundation does not
+and cannot replay without live access) and reuses every pure function from
+_zscore_and_rank() onward, unmodified, via `import services.daily_picks as
+dp`. It does not call _predict_stock(), PredictionEngine.predict(),
+_fetch_returns_matrix(), _write_score_snapshots(),
 _build_alpha_observation_row(), or generate_picks() / _generate_picks_inner()
 — all of those are network- or persistence-coupled and are exactly what
 this foundation deliberately does NOT invoke. validation_engine.py and
@@ -66,6 +96,7 @@ from services.validation.contracts import (
     RankedCandidateResult,
     ReplayResult,
     STRICT_MODE_REQUIRED_CATEGORIES,
+    STAGES_REPLAYABLE_ON_COMPLETION,
     REJECTION_NOT_BUY_SIGNAL,
     REJECTION_CONFIDENCE_BELOW_FLOOR,
     REJECTION_RISK_REWARD_OR_GOVERNANCE,
@@ -73,9 +104,29 @@ from services.validation.contracts import (
     REJECTION_SHORT_TERM_OVERBOUGHT,
     REJECTION_ISSUER_DUPLICATE,
     REJECTION_NOT_SELECTED,
+    validate_structure,
 )
 
+# Dotted-path (or descriptive, where no single function exists) provenance
+# for stages this foundation NEVER invokes — always listed under
+# production_provenance["not_invoked"] on every result, so a reader can see
+# exactly what was supplied instead of replayed, not just infer it from
+# absence.
+_SUPPLIED_NOT_REPLAYED_PROVENANCE: dict[str, str] = {
+    "universe_construction": "services.daily_picks._bulk_screen / _get_universe_by_mcap",
+    "market_data_acquisition": "services.daily_picks._predict_stock (yfinance/news)",
+    "prediction_engine_composite_calculation": "services.prediction_engine.PredictionEngine.predict (_composite_signal)",
+    "signal_generation": "services.prediction_engine.PredictionEngine.predict (_composite_signal)",
+    "confidence_generation_and_adjustments": "services.prediction_engine.PredictionEngine._apply_risk_reward_adjustment (and related _apply_* adjustments)",
+    "target_price_calculation": "services.prediction_engine.PredictionEngine._estimate_target",
+    "stop_loss_trade_level_calculation": "services.prediction_engine.PredictionEngine._trade_levels",
+}
+
 _UNRESOLVED_METHODOLOGY_LIMITATIONS = [
+    "Composite score and confidence (including all later confidence "
+    "adjustments), target-price, and stop-loss/trade-level computation are "
+    "SUPPLIED inputs on CandidateSnapshot in this foundation, never "
+    "replayed — Phase 1-2 point-in-time production replay remains future work.",
     "DP-026 (open): fundamentals point-in-time integrity is self-declared by "
     "the snapshot author in this foundation, not independently sourced or verified.",
     "DP-027 (open): this foundation does not source or enforce a "
@@ -86,6 +137,12 @@ _UNRESOLVED_METHODOLOGY_LIMITATIONS = [
     "DP-029 (open): no transaction costs or slippage are modelled.",
     "This foundation computes no hit rate, return, accuracy, or "
     "profitability metric of any kind.",
+    "full_pipeline_replay and production_equivalent are always False on "
+    "every result this module produces, in every mode — including a "
+    "successful STRICT_POINT_IN_TIME completion, which means only that the "
+    "supplied snapshot passed this harness's own declared-integrity "
+    "requirements, not that historical accuracy or production equivalence "
+    "has been independently established.",
 ]
 
 _DIAGNOSTIC_DISCLAIMERS = [
@@ -94,6 +151,14 @@ _DIAGNOSTIC_DISCLAIMERS = [
     "NOT EVIDENCE OF HISTORICAL ACCURACY.",
     "NOT SUITABLE FOR PRODUCTION-LEARNING GRADUATION.",
 ]
+
+_STRICT_COMPLETION_CLARIFICATION = (
+    "STRICT_POINT_IN_TIME completion means the supplied snapshot passed "
+    "this harness's own declared-integrity requirements (the caller's "
+    "self-reported point_in_time_integrity / synthetic_flags) — it does "
+    "NOT mean historical accuracy or production equivalence has been "
+    "independently established. See production_equivalent (always False)."
+)
 
 
 def _assess_strict_integrity(snapshot: MarketSnapshot) -> list[str]:
@@ -161,62 +226,108 @@ def _classify_gate_rejection(r: dict, horizon: str) -> tuple[str, str]:
     return "UNKNOWN_GATE_REJECTION", "gate returned False but no known condition matched"
 
 
-def _build_returns_matrix(snapshot: MarketSnapshot, symbols: list[str]) -> np.ndarray | None:
+def _build_returns_matrix(snapshot: MarketSnapshot, symbols: list[str]) -> tuple[np.ndarray | None, str | None]:
     """Build a (T x N) array aligned to `symbols`' order from the
-    snapshot's per-symbol return series, or None if unavailable/misaligned
-    — mirroring optimizer.optimize()'s own graceful degradation to an
-    identity covariance when no usable matrix is supplied."""
+    snapshot's per-symbol return series, or (None, warning) if
+    unavailable/misaligned — mirroring optimizer.optimize()'s own graceful
+    degradation to an identity covariance when no usable matrix is
+    supplied. Non-finite values are rejected earlier by
+    contracts.validate_structure() (a hard structural error in every
+    mode); inconsistent lengths across symbols is the one case this
+    foundation downgrades to an explicit warning rather than refusing,
+    since the optimizer's own graceful degradation already handles it
+    safely."""
     if not snapshot.returns_by_symbol or len(symbols) < 2:
-        return None
+        return None, None
     if not all(sym in snapshot.returns_by_symbol for sym in symbols):
-        return None
+        return None, None
     series = [snapshot.returns_by_symbol[sym] for sym in symbols]
     lengths = {len(s) for s in series}
     if len(lengths) != 1:
-        return None
-    return np.array(series, dtype=float).T
+        return None, (
+            f"returns_by_symbol has inconsistent series lengths across the "
+            f"selected slate {symbols} ({sorted(lengths)}) — optimizer replay "
+            f"fell back to no returns matrix (identity covariance) for this horizon."
+        )
+    return np.array(series, dtype=float).T, None
+
+
+def _refuse(snapshot: MarketSnapshot, reasons: list[str], note: str) -> ReplayResult:
+    """Build a REFUSED_INCOMPLETE result — used for both structural-
+    validation failures (applies in every mode) and STRICT-mode
+    declared-integrity failures. No stage is replayed for a refusal."""
+    refused = ReplayResult(
+        status=ReplayStatus.REFUSED_INCOMPLETE,
+        replay_mode=snapshot.replay_mode,
+        snapshot_id=snapshot.snapshot_id,
+        as_of=snapshot.as_of,
+        market=snapshot.market,
+        horizon=snapshot.horizon,
+        production_provenance={"invoked": {}, "not_invoked": dict(_SUPPLIED_NOT_REPLAYED_PROVENANCE)},
+        input_integrity={k: v.value for k, v in snapshot.point_in_time_integrity.items()},
+        stages_actually_replayed=[],
+        missing_requirements=reasons,
+        warnings=[note],
+        unresolved_methodology_limitations=list(_UNRESOLVED_METHODOLOGY_LIMITATIONS),
+    )
+    refused.result_hash = refused.compute_hash()
+    return refused
 
 
 def replay_snapshot(snapshot: MarketSnapshot) -> ReplayResult:
     """
     Replay one historical cross-sectional snapshot through the REAL
-    production ranking/selection/allocation functions.
+    production ranking/eligibility/deduplication/selection/allocation
+    functions. Composite score and confidence generation are NOT replayed
+    — CandidateSnapshot supplies their already-computed values. See this
+    module's docstring for the full scope statement.
 
-    STRICT_POINT_IN_TIME (default): refuses with a structured,
-    machine-readable list of missing requirements when any mandatory
-    input category is missing, synthetic, current-day-masquerading, or
-    lacking provenance/timestamp. A refused result computes no ranking at
-    all — it cannot be interpreted as performance evidence.
+    Structural validation (contracts.validate_structure — market/horizon/
+    regime consistency/timestamp format/symbol uniqueness/score finiteness/
+    sentiment-quality contradiction checks) applies in BOTH modes and
+    refuses the replay if it fails, since a structurally malformed
+    snapshot is unsafe to replay under any mode.
 
-    DIAGNOSTIC: proceeds regardless of integrity gaps, but every result is
-    labelled with explicit diagnostic-only disclaimers.
+    STRICT_POINT_IN_TIME (default, and only after structural validation
+    passes): refuses with a structured, machine-readable list of missing
+    requirements when any mandatory input category is missing, synthetic,
+    current-day-masquerading, or lacking provenance/timestamp. A refused
+    result computes no ranking at all. A successful STRICT completion
+    means the snapshot passed this harness's own DECLARED-integrity
+    requirements — not that historical accuracy was independently proven;
+    `production_equivalent` stays False regardless.
+
+    DIAGNOSTIC: proceeds regardless of declared-integrity gaps (but never
+    regardless of structural validity), and every result is labelled with
+    explicit diagnostic-only disclaimers.
 
     Production learning is NEVER activated by this function, regardless of
     environment state — production_learning_enabled is passed as a literal
-    False on every call.
+    False on every call. full_pipeline_replay and production_equivalent
+    are hardcoded False on every result this function returns, in every
+    mode — this function never sets either to True.
     """
     mode = snapshot.replay_mode
+
+    structural_errors = validate_structure(snapshot)
+    if structural_errors:
+        return _refuse(
+            snapshot, structural_errors,
+            "Replay refused — snapshot failed structural validation (contracts.validate_structure), "
+            "which applies in every replay mode.",
+        )
+
     missing_requirements: list[str] = []
     warnings: list[str] = []
 
     if mode == ReplayMode.STRICT_POINT_IN_TIME:
         missing_requirements = _assess_strict_integrity(snapshot)
         if missing_requirements:
-            refused = ReplayResult(
-                status=ReplayStatus.REFUSED_INCOMPLETE,
-                replay_mode=mode,
-                snapshot_id=snapshot.snapshot_id,
-                as_of=snapshot.as_of,
-                market=snapshot.market,
-                horizon=snapshot.horizon,
-                production_provenance={},
-                input_integrity={k: v.value for k, v in snapshot.point_in_time_integrity.items()},
-                missing_requirements=missing_requirements,
-                warnings=["STRICT_POINT_IN_TIME replay refused — see missing_requirements."],
-                unresolved_methodology_limitations=list(_UNRESOLVED_METHODOLOGY_LIMITATIONS),
+            return _refuse(
+                snapshot, missing_requirements,
+                "STRICT_POINT_IN_TIME replay refused — see missing_requirements. " + _STRICT_COMPLETION_CLARIFICATION,
             )
-            refused.result_hash = refused.compute_hash()
-            return refused
+        warnings.append(_STRICT_COMPLETION_CLARIFICATION)
     else:
         warnings.extend(_DIAGNOSTIC_DISCLAIMERS)
 
@@ -285,24 +396,10 @@ def replay_snapshot(snapshot: MarketSnapshot) -> ReplayResult:
 
     if snapshot.horizon == "short":
         top_buy = dp._select_short_term_top_six(all_buy_deduped)
-        production_provenance = {
-            "ranking": "services.daily_picks._zscore_and_rank",
-            "quality_gate": "services.daily_picks._passes_quality_gate",
-            "issuer_dedup": "services.daily_picks._deduplicate_by_issuer",
-            "selection": "services.daily_picks._select_short_term_top_six",
-            "portfolio_allocation": "services.daily_picks._compute_portfolio_allocation",
-            "optimizer": "services.alpha_engine.optimizer.optimize",
-        }
+        selection_fn = "services.daily_picks._select_short_term_top_six"
     else:
         top_buy = dp._select_with_tier_quota(all_buy_deduped, dp._MEDIUM_LONG_TIER_QUOTA_6)
-        production_provenance = {
-            "ranking": "services.daily_picks._zscore_and_rank",
-            "quality_gate": "services.daily_picks._passes_quality_gate",
-            "issuer_dedup": "services.daily_picks._deduplicate_by_issuer",
-            "selection": "services.daily_picks._select_with_tier_quota",
-            "portfolio_allocation": "services.daily_picks._compute_portfolio_allocation",
-            "optimizer": "services.alpha_engine.optimizer.optimize",
-        }
+        selection_fn = "services.daily_picks._select_with_tier_quota"
 
     top_symbols = {c["symbol"] for c in top_buy}
     for c in all_buy_deduped:
@@ -311,9 +408,37 @@ def replay_snapshot(snapshot: MarketSnapshot) -> ReplayResult:
 
     alphas = [r.get("ranking_alpha", 0) for r in top_buy]
     symbols = [r["symbol"] for r in top_buy]
-    returns_matrix = _build_returns_matrix(snapshot, symbols) if len(symbols) > 1 else None
+    # optimizer.optimize() is only actually invoked by
+    # _compute_portfolio_allocation() when 2+ candidates reach this stage
+    # (see optimizer.py / _compute_portfolio_allocation's own n==0/n==1
+    # short-circuits) — mirror that exact condition here so provenance
+    # never falsely claims the optimizer ran.
+    optimizer_will_run = len(symbols) > 1
+    returns_matrix = None
+    if optimizer_will_run:
+        returns_matrix, returns_warning = _build_returns_matrix(snapshot, symbols)
+        if returns_warning:
+            warnings.append(returns_warning)
     weights, cash_pct = dp._compute_portfolio_allocation(alphas, returns_matrix, snapshot.regime_label)
     portfolio_weights = dict(zip(symbols, weights))
+
+    invoked = {
+        "ranking": "services.daily_picks._zscore_and_rank",
+        "quality_gate": "services.daily_picks._passes_quality_gate",
+        "issuer_dedup": "services.daily_picks._deduplicate_by_issuer",
+        "selection": selection_fn,
+        "portfolio_allocation": "services.daily_picks._compute_portfolio_allocation",
+    }
+    not_invoked = dict(_SUPPLIED_NOT_REPLAYED_PROVENANCE)
+    if optimizer_will_run:
+        invoked["optimizer"] = "services.alpha_engine.optimizer.optimize"
+    else:
+        not_invoked["optimizer"] = (
+            f"services.alpha_engine.optimizer.optimize (not called for a "
+            f"{len(symbols)}-candidate slate — _compute_portfolio_allocation "
+            f"handles 0/1 candidates without calling it, matching production)"
+        )
+    production_provenance = {"invoked": invoked, "not_invoked": not_invoked}
 
     result = ReplayResult(
         status=ReplayStatus.DIAGNOSTIC_COMPLETED if mode == ReplayMode.DIAGNOSTIC else ReplayStatus.COMPLETED,
@@ -324,6 +449,7 @@ def replay_snapshot(snapshot: MarketSnapshot) -> ReplayResult:
         horizon=snapshot.horizon,
         production_provenance=production_provenance,
         input_integrity={k: v.value for k, v in snapshot.point_in_time_integrity.items()},
+        stages_actually_replayed=list(STAGES_REPLAYABLE_ON_COMPLETION),
         missing_requirements=missing_requirements,
         ranked_universe=ranked_universe,
         rejected_candidates=rejected,

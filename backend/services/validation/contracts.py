@@ -2,25 +2,44 @@
 DP-025 (governed by DPD-009, DECIDED — DISCLOSURE HOLD) — typed,
 JSON-serializable contracts for the pipeline-replay foundation.
 
-This module defines the INPUT (a frozen historical cross-sectional
-snapshot) and OUTPUT (a structured replay result) shapes for
-`pipeline_replay.replay_snapshot()`. No network, no persistence, no
-production side effects — see pipeline_replay.py's module docstring for
-the full side-effect prohibition list this package obeys.
+SCOPE (corrected wording — see the 2026-07-18 hardening follow-up): this
+package is a post-prediction ranking -> eligibility -> issuer
+deduplication -> selection -> portfolio-allocation replay foundation. It
+does NOT replay production's composite-score or confidence generation.
+`CandidateSnapshot` is the already-computed Phase 1-2 OUTPUT (signal,
+confidence, technical/fundamental/sentiment/quality scores, reasoning) —
+those values are SUPPLIED by the caller, not recomputed. Composite
+generation, confidence generation and later confidence adjustments,
+target-price computation, and stop-loss/trade-level computation are all
+supplied inputs, never replayed by this module. Phase 1-2 point-in-time
+production replay (calling the real `PredictionEngine.predict()` /
+`_predict_stock()` against historical, point-in-time market data) remains
+future work — DP-025 is not fully resolved by this foundation.
+
+This module defines the INPUT (an explicitly supplied, frozen-at-source
+historical cross-sectional snapshot) and OUTPUT (a structured replay
+result) shapes for `pipeline_replay.replay_snapshot()`. No network, no
+persistence, no production side effects — see pipeline_replay.py's module
+docstring for the full side-effect prohibition list this package obeys.
 
 This is a foundation, not a completed validation methodology. It does NOT
 compute or claim hit rate, return, accuracy, or profitability (that is
-explicitly out of scope — see DP-026 through DP-029, all still open). It
-proves only that production's composite -> confidence -> ranking ->
-selection -> portfolio-allocation logic can be replayed deterministically
-against a supplied, honestly-labelled snapshot.
+explicitly out of scope — see DP-026 through DP-029, all still open).
+`ReplayResult.full_pipeline_replay` and `ReplayResult.production_equivalent`
+are always `False` for every result this module produces, in every mode,
+including a fully successful STRICT_POINT_IN_TIME completion — strict-mode
+completion means the supplied snapshot passed this harness's own
+DECLARED-integrity requirements, not that historical accuracy or
+production equivalence has been independently established.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field, asdict
+from datetime import datetime
 from enum import Enum
 
 
@@ -108,10 +127,14 @@ class CandidateSnapshot:
 
 @dataclass
 class MarketSnapshot:
-    """One immutable, historical cross-sectional snapshot — the sole input
-    to replay_snapshot(). Nothing in this object is fetched; it must be
-    supplied in full by the caller (a fixture file, a future point-in-time
-    export — DP-026 — or a test)."""
+    """One explicitly supplied, frozen-at-source historical cross-sectional
+    snapshot — the sole input to replay_snapshot(). "Frozen-at-source"
+    describes intent, not a runtime guarantee: this is a plain Python
+    dataclass with mutable list/dict fields, and the CLI itself overwrites
+    `replay_mode` after loading (see pipeline_replay.py's main()) — nothing
+    here is enforced as immutable by the language or this module. Nothing
+    in this object is fetched; it must be supplied in full by the caller (a
+    fixture file, a future point-in-time export — DP-026 — or a test)."""
 
     snapshot_id: str
     as_of: str  # ISO-8601 timestamp of the historical decision point
@@ -163,6 +186,37 @@ REJECTION_ISSUER_DUPLICATE = "ISSUER_DUPLICATE"
 REJECTION_NOT_SELECTED = "NOT_SELECTED_IN_FINAL_SLATE"
 
 
+# Machine-readable stage-coverage contract (2026-07-18 hardening
+# follow-up). These constants are the authoritative statement of what this
+# foundation does and does not replay — the same list on every result,
+# regardless of snapshot content, because it describes this foundation's
+# fixed design scope, not per-call execution. Never edit these to make a
+# result LOOK more complete than it is; if the harness's actual scope ever
+# grows, move an item from SUPPLIED_NOT_REPLAYED to ACTUALLY_REPLAYED only
+# once the corresponding production function is genuinely invoked.
+STAGES_SUPPLIED_NOT_REPLAYED: tuple[str, ...] = (
+    "universe_construction",
+    "market_data_acquisition",
+    "prediction_engine_composite_calculation",
+    "signal_generation",
+    "confidence_generation_and_adjustments",
+    "target_price_calculation",
+    "stop_loss_trade_level_calculation",
+)
+
+# The full set of stages this foundation is CAPABLE of replaying when a
+# replay actually completes (status COMPLETED or DIAGNOSTIC_COMPLETED). A
+# REFUSED_INCOMPLETE result replays none of these — see pipeline_replay.py.
+STAGES_REPLAYABLE_ON_COMPLETION: tuple[str, ...] = (
+    "cross_sectional_zscore_ranking",
+    "quality_eligibility",
+    "issuer_deduplication",
+    "final_horizon_selection",
+    "portfolio_allocation",
+    "cash_unallocated_calculation",
+)
+
+
 @dataclass
 class RankedCandidateResult:
     symbol: str
@@ -183,11 +237,26 @@ class ReplayResult:
     as_of: str
     market: str
     horizon: str
-    # Dotted-path provenance of every production function this replay
-    # actually invoked — proof the harness called the real implementation,
-    # not a reimplementation.
-    production_provenance: dict[str, str]
+    # Truthful, per-result dotted-path provenance: {"invoked": {...},
+    # "not_invoked": {...}}. A function only appears under "invoked" if
+    # this specific replay actually called it — e.g. optimizer.optimize()
+    # is listed under "not_invoked" for a 0- or 1-candidate slate, since
+    # _compute_portfolio_allocation() handles those without calling it.
+    production_provenance: dict[str, dict[str, str]]
     input_integrity: dict[str, str]
+    # Machine-readable stage-coverage contract — see
+    # STAGES_SUPPLIED_NOT_REPLAYED / STAGES_REPLAYABLE_ON_COMPLETION above.
+    # stages_actually_replayed is [] for a REFUSED_INCOMPLETE result (no
+    # stage ran) and the full STAGES_REPLAYABLE_ON_COMPLETION list for any
+    # completed result — this foundation always runs every stage it's
+    # capable of once it proceeds past intake validation.
+    stages_supplied_not_replayed: list[str] = field(default_factory=lambda: list(STAGES_SUPPLIED_NOT_REPLAYED))
+    stages_actually_replayed: list[str] = field(default_factory=list)
+    # Fixed False on EVERY result this module ever produces, in every mode
+    # — including a fully successful STRICT_POINT_IN_TIME completion. Never
+    # set to True anywhere in this package. See module docstring.
+    full_pipeline_replay: bool = False
+    production_equivalent: bool = False
     missing_requirements: list[str] = field(default_factory=list)
     ranked_universe: list[RankedCandidateResult] = field(default_factory=list)
     rejected_candidates: list[RejectedCandidate] = field(default_factory=list)
@@ -256,3 +325,127 @@ def snapshot_from_dict(d: dict) -> MarketSnapshot:
         point_in_time_integrity={k: PointInTimeIntegrity(v) for k, v in pit.items()},
         **d,
     )
+
+
+def _is_finite_number(x) -> bool:
+    """True for a real, finite int/float — explicitly False for bool
+    (a bool is technically an int subclass in Python but is never a valid
+    score value here), NaN, or +-inf."""
+    if isinstance(x, bool):
+        return False
+    if not isinstance(x, (int, float)):
+        return False
+    return math.isfinite(x)
+
+
+def validate_structure(snapshot: MarketSnapshot) -> list[str]:
+    """
+    Deterministic, no-network structural validation (2026-07-18 hardening
+    follow-up). These are baseline well-formedness checks, distinct from
+    the STRICT-only point-in-time integrity checks in
+    pipeline_replay._assess_strict_integrity() — a structurally malformed
+    snapshot is unsafe to replay under ANY mode, so every one of these
+    rules applies identically in STRICT_POINT_IN_TIME and DIAGNOSTIC. This
+    function performs no network-based verification of any kind — it only
+    inspects the values already present on the snapshot object.
+
+    Returns a list of structured error strings; empty means the snapshot
+    is structurally well-formed enough to attempt a replay.
+    """
+    errors: list[str] = []
+
+    # 1. market must be IN or US
+    if snapshot.market not in ("IN", "US"):
+        errors.append(f"market {snapshot.market!r} is not one of ('IN', 'US')")
+
+    # 2. horizon must be short/medium/long
+    if snapshot.horizon not in ("short", "medium", "long"):
+        errors.append(f"horizon {snapshot.horizon!r} is not one of ('short', 'medium', 'long')")
+
+    # 3 & 4. regime_id must exist in the production regime-label map, and
+    # regime_label must match what production would assign that ID.
+    try:
+        from services.alpha_engine.regime_cluster import REGIME_LABELS
+        if snapshot.regime_id not in REGIME_LABELS:
+            errors.append(
+                f"regime_id {snapshot.regime_id!r} is not in production's REGIME_LABELS "
+                f"(valid ids: {sorted(REGIME_LABELS)})"
+            )
+        elif REGIME_LABELS[snapshot.regime_id] != snapshot.regime_label:
+            errors.append(
+                f"regime_label {snapshot.regime_label!r} does not match production's label "
+                f"for regime_id {snapshot.regime_id!r} ({REGIME_LABELS[snapshot.regime_id]!r})"
+            )
+    except ImportError:
+        errors.append("could not import services.alpha_engine.regime_cluster.REGIME_LABELS to validate regime_id/regime_label")
+
+    # 5. as_of must parse as an ISO-8601 timestamp
+    try:
+        if not snapshot.as_of:
+            raise ValueError("empty")
+        datetime.fromisoformat(snapshot.as_of.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        errors.append(f"as_of {snapshot.as_of!r} does not parse as an ISO-8601 timestamp")
+
+    seen_symbols: set[str] = set()
+    for c in snapshot.candidates:
+        # 6. symbol must be non-empty
+        if not c.symbol or not c.symbol.strip():
+            errors.append("a candidate has an empty or missing symbol")
+            continue
+
+        # 7. candidate symbols must be unique
+        if c.symbol in seen_symbols:
+            errors.append(f"duplicate candidate symbol {c.symbol!r} — symbols must be unique within a snapshot")
+        seen_symbols.add(c.symbol)
+
+        # 8. sentiment_available=False must not silently carry a numeric
+        # sentiment score — that is a contradiction, not evidence.
+        if not c.sentiment_available and c.sentiment_score is not None:
+            errors.append(
+                f"candidate {c.symbol!r}: sentiment_available=False but sentiment_score="
+                f"{c.sentiment_score!r} is not None (contradictory — production's contract "
+                f"requires a numeric score only when data is genuinely available)"
+            )
+        if c.sentiment_available and c.sentiment_score is None:
+            errors.append(f"candidate {c.symbol!r}: sentiment_available=True but sentiment_score is None")
+
+        # 9. quality_available=False must follow the exact production
+        # frozen-output contract: quality_available is derived from
+        # "raw score is not None" in _predict_stock() — the two fields
+        # must never disagree.
+        if not c.quality_available and c.quality_score is not None:
+            errors.append(
+                f"candidate {c.symbol!r}: quality_available=False but quality_score="
+                f"{c.quality_score!r} is not None (production's contract: quality_available "
+                f"is derived from the raw score being not-None, never set independently)"
+            )
+        if c.quality_available and c.quality_score is None:
+            errors.append(f"candidate {c.symbol!r}: quality_available=True but quality_score is None")
+
+        # 10. score fields must be finite numeric values or explicit None
+        for field_name, value in (
+            ("confidence", c.confidence),
+            ("technical_score", c.technical_score),
+            ("fundamental_score", c.fundamental_score),
+            ("quality_score", c.quality_score),
+        ):
+            if value is not None and not _is_finite_number(value):
+                errors.append(f"candidate {c.symbol!r}: {field_name}={value!r} is not a finite numeric value or None")
+        if c.sentiment_score is not None and not _is_finite_number(c.sentiment_score):
+            errors.append(f"candidate {c.symbol!r}: sentiment_score={c.sentiment_score!r} is not a finite numeric value or None")
+
+    # 11. returns series must contain only finite numeric values when
+    # supplied. Inconsistent lengths across symbols is NOT a hard
+    # structural error here (optimizer replay already degrades gracefully
+    # to no covariance matrix in that case) — pipeline_replay.py surfaces
+    # that specific condition as an explicit warning instead, per the
+    # single documented rule this module follows for that case.
+    if snapshot.returns_by_symbol:
+        for symbol, series in snapshot.returns_by_symbol.items():
+            for value in series:
+                if not _is_finite_number(value):
+                    errors.append(f"returns_by_symbol[{symbol!r}] contains a non-finite value: {value!r}")
+                    break
+
+    return errors
