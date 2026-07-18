@@ -1142,6 +1142,124 @@ def _deduplicate_by_issuer(
     return deduped, suppressed
 
 
+# DP-025 foundation: the three functions below were extracted verbatim from
+# logic that used to live inline (a nested closure and two literal blocks)
+# inside _generate_picks_inner's per-horizon loop, so an offline pipeline-
+# replay harness (services/validation/pipeline_replay.py) can call the exact
+# same eligibility/selection/allocation logic production uses, without
+# duplicating it into a second implementation. Each is pure — no network,
+# no persistence — and _generate_picks_inner now calls these instead of
+# inlining the same logic, so there is exactly one implementation of each
+# rule. See test_daily_picks_extracted_helpers_parity.py for proof that
+# hoisting these did not change production behaviour.
+
+def _passes_quality_gate(r: dict, hz: str) -> bool:
+    """
+    Quality gates before final selection:
+      1. Confidence must be >= 25% (0% confidence picks are noise, not signals)
+      2. Short-term picks must not be overbought (RSI > 75 = likely to pull back)
+      3. No unfavorable risk/reward or severe governance red flag — these
+         demote confidence to exactly 30 in the prediction engine (see
+         _apply_risk_reward_adjustment / _apply_pledge_adjustment), which
+         clears the >=25% floor above. That floor exists to filter pure
+         noise, not to let a flagged "avoid"-level red flag back into a
+         curated "Top 6" list just because it didn't drop low enough.
+    """
+    conf = r.get("confidence") or 0
+    if conf < 25:
+        log.info(f"[picks] {r['symbol']} ({hz}) filtered: confidence {conf}% < 25%")
+        return False
+    indicators = {
+        item.get("indicator") for item in r.get("reasoning", []) if isinstance(item, dict)
+    }
+    if "Risk/Reward" in indicators or "Governance Risk" in indicators:
+        log.info(f"[picks] {r['symbol']} ({hz}) filtered: unfavorable risk/reward or governance red flag")
+        return False
+    # Confirmed live, Epic 002 Sprint #011: the Financial Strength
+    # Engine's hard liquidity_distress gate (Sprint #010) is the
+    # same severity class as Risk/Reward and Governance Risk above
+    # (confidence capped at 30 in the Prediction Engine) -- but
+    # without this check, that confidence still clears the >=25%
+    # floor above, so a liquidity-distress-flagged company could
+    # reach the curated Top 6 list despite a confirmed red flag,
+    # exactly what the two checks above already exist to prevent
+    # for their own red-flag types. Checking the indicator NAME
+    # alone (like the two checks above do) would be wrong here:
+    # "Financial Strength" is also the indicator name for a
+    # POSITIVE confidence boost (e.g. a fortress-balance-sheet
+    # company) -- a blanket name exclusion would wrongly filter
+    # out genuinely strong companies too, so this checks for the
+    # specific hard-gate phrase instead.
+    fs_reasons = " ".join(
+        item.get("reason", "") for item in r.get("reasoning", [])
+        if isinstance(item, dict) and item.get("indicator") == "Financial Strength"
+    )
+    if "liquidity distress" in fs_reasons.lower():
+        log.info(f"[picks] {r['symbol']} ({hz}) filtered: Financial Strength liquidity distress red flag")
+        return False
+    if hz == "short":
+        reasons = " ".join(
+            item.get("reason", "") if isinstance(item, dict) else str(item)
+            for item in r.get("reasoning", [])
+        )
+        if "Overbought" in reasons:
+            log.info(f"[picks] {r['symbol']} ({hz}) filtered: overbought RSI in short-term")
+            return False
+    return True
+
+
+def _select_short_term_top_six(candidates: list[dict]) -> list[dict]:
+    """
+    Confidence priority with fill-down (explicit user decision): short-term
+    cares about "best performing stock," not tier diversity, and
+    specifically wants high-conviction (>80% confidence) calls surfaced
+    first. `candidates` is already alpha-ordered, so partitioning into two
+    buckets and concatenating preserves alpha as the secondary/tiebreak key
+    within each bucket. This naturally fills down to fewer (or zero)
+    high-confidence picks on a genuinely weak-conviction day rather than
+    diluting the >80% bar to pad the count to 6 — matches this platform's
+    existing "an empty/short picks list is a legitimate outcome, not
+    something to backfill with noise" convention.
+    """
+    high_conf = [r for r in candidates if (r.get("confidence") or 0) > _SHORT_TERM_CONFIDENCE_PRIORITY]
+    rest = [r for r in candidates if (r.get("confidence") or 0) <= _SHORT_TERM_CONFIDENCE_PRIORITY]
+    return (high_conf + rest)[:6]
+
+
+def _compute_portfolio_allocation(
+    alphas: list[float],
+    returns_matrix,
+    regime_label: str,
+    max_weight: float = 0.40,
+    risk_aversion: float = 2.0,
+) -> tuple[list[float], float]:
+    """
+    DP-020 — pure portfolio-allocation step: given per-candidate ranking
+    alphas (already computed) and an optional returns matrix, compute
+    per-candidate weights and the resulting cash/unallocated fraction.
+
+    Contains no I/O — callers are responsible for supplying `returns_matrix`
+    (e.g. via `_fetch_returns_matrix` in production, or a frozen snapshot
+    array in a pipeline replay). The single-candidate case is hard-coded at
+    50% and never routes through `optimizer.optimize()`, matching
+    pre-existing production behaviour (see optimizer.py's own `n == 1`
+    branch docstring for why that branch itself is otherwise unreachable).
+    """
+    from services.alpha_engine.optimizer import optimize
+
+    n = len(alphas)
+    if n == 0:
+        return [], 0.0
+    if n == 1:
+        return [0.50], 0.50
+    weights = optimize(
+        alphas=alphas, returns_matrix=returns_matrix,
+        max_weight=max_weight, risk_aversion=risk_aversion, regime_label=regime_label,
+    )
+    cash_pct = round(max(0.0, 1.0 - sum(weights)), 4)
+    return weights, cash_pct
+
+
 def generate_picks(market: str = "IN", job_id: str | None = None) -> dict:
     """
     Learning Alpha Engine pipeline:
@@ -1336,7 +1454,6 @@ def _generate_picks_inner(
     from services.alpha_engine.ic_engine import get_production_ic_weights, shadow_ic_available
     from services.alpha_engine.meta_model import shadow_available as shadow_meta_model_available
     from services.alpha_engine.regime_cluster import detect_regime
-    from services.alpha_engine.optimizer import optimize
     from services.alpha_engine.store import log_prediction
     from services.alpha_engine.containment import (
         is_production_learning_enabled,
@@ -1516,59 +1633,11 @@ def _generate_picks_inner(
         )
         ranked   = sorted(universe, key=lambda x: x.get("ranking_alpha", 0), reverse=True)
 
-        # Quality gates before final selection:
-        # 1. Confidence must be >= 25% (0% confidence picks are noise, not signals)
-        # 2. Short-term picks must not be overbought (RSI > 75 = likely to pull back)
-        # 3. No unfavorable risk/reward or severe governance red flag — these
-        #    demote confidence to exactly 30 in the prediction engine (see
-        #    _apply_risk_reward_adjustment / _apply_pledge_adjustment), which
-        #    clears the >=25% floor above. That floor exists to filter pure
-        #    noise, not to let a flagged "avoid"-level red flag back into a
-        #    curated "Top 6" list just because it didn't drop low enough.
-        def _passes_quality_gate(r: dict, hz: str) -> bool:
-            conf = r.get("confidence") or 0
-            if conf < 25:
-                log.info(f"[picks] {r['symbol']} ({hz}) filtered: confidence {conf}% < 25%")
-                return False
-            indicators = {
-                item.get("indicator") for item in r.get("reasoning", []) if isinstance(item, dict)
-            }
-            if "Risk/Reward" in indicators or "Governance Risk" in indicators:
-                log.info(f"[picks] {r['symbol']} ({hz}) filtered: unfavorable risk/reward or governance red flag")
-                return False
-            # Confirmed live, Epic 002 Sprint #011: the Financial Strength
-            # Engine's hard liquidity_distress gate (Sprint #010) is the
-            # same severity class as Risk/Reward and Governance Risk above
-            # (confidence capped at 30 in the Prediction Engine) -- but
-            # without this check, that confidence still clears the >=25%
-            # floor above, so a liquidity-distress-flagged company could
-            # reach the curated Top 6 list despite a confirmed red flag,
-            # exactly what the two checks above already exist to prevent
-            # for their own red-flag types. Checking the indicator NAME
-            # alone (like the two checks above do) would be wrong here:
-            # "Financial Strength" is also the indicator name for a
-            # POSITIVE confidence boost (e.g. a fortress-balance-sheet
-            # company) -- a blanket name exclusion would wrongly filter
-            # out genuinely strong companies too, so this checks for the
-            # specific hard-gate phrase instead.
-            fs_reasons = " ".join(
-                item.get("reason", "") for item in r.get("reasoning", [])
-                if isinstance(item, dict) and item.get("indicator") == "Financial Strength"
-            )
-            if "liquidity distress" in fs_reasons.lower():
-                log.info(f"[picks] {r['symbol']} ({hz}) filtered: Financial Strength liquidity distress red flag")
-                return False
-            if hz == "short":
-                reasons = " ".join(
-                    item.get("reason", "") if isinstance(item, dict) else str(item)
-                    for item in r.get("reasoning", [])
-                )
-                if "Overbought" in reasons:
-                    log.info(f"[picks] {r['symbol']} ({hz}) filtered: overbought RSI in short-term")
-                    return False
-            return True
-
-        # Quality gate (unchanged) → issuer dedup → per-horizon top-6 slice
+        # Quality gate (unchanged) → issuer dedup → per-horizon top-6 slice.
+        # DP-025 foundation: _passes_quality_gate is now a module-level pure
+        # function (see above _deduplicate_by_issuer) so an offline pipeline-
+        # replay harness can call the exact same eligibility rule production
+        # uses, instead of a second, potentially-diverging implementation.
         all_buy = [
             r for r in ranked
             if r.get("signal") == "BUY" and _passes_quality_gate(r, horizon)
@@ -1579,52 +1648,34 @@ def _generate_picks_inner(
         _issuer_duplicates_suppressed += _n_suppressed
 
         if horizon == "short":
-            # Confidence priority with fill-down (explicit user decision):
-            # short-term cares about "best performing stock," not tier
-            # diversity, and specifically wants high-conviction (>80%
-            # confidence) calls surfaced first. all_buy_deduped is already
-            # alpha-ordered, so partitioning into two buckets and
-            # concatenating preserves alpha as the secondary/tiebreak key
-            # within each bucket. This naturally fills down to fewer (or
-            # zero) high-confidence picks on a genuinely weak-conviction
-            # day rather than diluting the >80% bar to pad the count to 6 —
-            # matches this platform's existing "an empty/short picks list is
-            # a legitimate outcome, not something to backfill with noise"
-            # convention (see the module docstring's Phase 5 note).
-            high_conf = [r for r in all_buy_deduped if (r.get("confidence") or 0) > _SHORT_TERM_CONFIDENCE_PRIORITY]
-            rest = [r for r in all_buy_deduped if (r.get("confidence") or 0) <= _SHORT_TERM_CONFIDENCE_PRIORITY]
-            top_buy = (high_conf + rest)[:6]
+            # DP-025 foundation: see _select_short_term_top_six's own
+            # docstring (module level, above) for the full rationale —
+            # unchanged from before extraction.
+            top_buy = _select_short_term_top_six(all_buy_deduped)
         else:
             # Medium/long-term: tier quota so the list can't collapse back to
             # all-large-cap even though large caps often score higher alpha
             # on average — the explicit reason this stratification exists.
             top_buy = _select_with_tier_quota(all_buy_deduped, _MEDIUM_LONG_TIER_QUOTA_6)
 
-        # Phase 6 — Portfolio optimisation
+        # Phase 6 — Portfolio optimisation. DP-025 foundation: the actual
+        # weighting/cash math now lives in the module-level, I/O-free
+        # _compute_portfolio_allocation so a pipeline replay can call it
+        # directly with a frozen returns matrix instead of fetching one.
         if len(top_buy) > 1:
             alphas = [r.get("ranking_alpha", 0) for r in top_buy]
             symbols = [r["symbol"] for r in top_buy]
             ret_matrix = _fetch_returns_matrix(symbols, market)
-            port_weights = optimize(
-                alphas=alphas,
-                returns_matrix=ret_matrix,
-                max_weight=0.40,
-                risk_aversion=2.0,
-                regime_label=regime_label,
-            )
+            port_weights, cash_pct = _compute_portfolio_allocation(alphas, ret_matrix, regime_label)
             for pick, w in zip(top_buy, port_weights):
                 pick["portfolio_weight"] = w
-            # DP-020 / DPD-005: optimize() no longer guarantees weights sum
-            # to 1.0 — a hard per-name cap (currently 40%) is never relaxed
-            # to force full investment, so a narrow opportunity set (e.g.
-            # exactly 2 qualifying picks) is left with a genuine shortfall.
-            # Surface that shortfall explicitly rather than letting it sit
-            # as an unexplained gap in the published weights.
-            _portfolio_cash_pct[horizon] = round(max(0.0, 1.0 - sum(port_weights)), 4)
+            _portfolio_cash_pct[horizon] = cash_pct
         elif len(top_buy) == 1:
-            # Cap single-pick allocation at 50% — 100% in one stock is too aggressive
-            top_buy[0]["portfolio_weight"] = 0.50
-            _portfolio_cash_pct[horizon] = 0.50
+            weights, cash_pct = _compute_portfolio_allocation(
+                [top_buy[0].get("ranking_alpha", 0)], None, regime_label,
+            )
+            top_buy[0]["portfolio_weight"] = weights[0]
+            _portfolio_cash_pct[horizon] = cash_pct
 
         # Final-pick selection metadata for the alpha_observations snapshot
         # below, kept OUT of the `top_buy`/`universe` dicts themselves —
