@@ -1037,7 +1037,7 @@ export default function PaperTradingPage() {
       )}
 
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
             <Beaker size={24} className="text-brand-400" />
@@ -1047,7 +1047,7 @@ export default function PaperTradingPage() {
             Practice with {marketCfg.currency}{fmt(startingCash, 0, marketCfg.locale)} virtual money · No real funds involved
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {/* IN and US are separate cash ledgers. Market is now chosen once,
               globally, via the header's GlobalMarketDropdown — this
               read-only label just shows which ledger is currently in view
@@ -1100,13 +1100,13 @@ export default function PaperTradingPage() {
 
       {/* Reset confirm */}
       {showResetConfirm && (
-        <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl px-4 py-3 flex items-center justify-between">
+        <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-yellow-300 text-sm">
-            <AlertTriangle size={16} />
+            <AlertTriangle size={16} className="shrink-0" />
             This will erase your {market} trades and reset to {marketCfg.currency}{fmt(startingCash, 0, marketCfg.locale)}.
             Your other market's portfolio is untouched. Are you sure?
           </div>
-          <div className="flex gap-2 ml-4">
+          <div className="flex gap-2">
             <button onClick={() => setShowResetConfirm(false)}
               className="px-3 py-1.5 text-xs rounded-lg border border-dark-border text-gray-400 hover:text-white">
               Cancel
