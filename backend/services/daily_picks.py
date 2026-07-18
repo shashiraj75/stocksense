@@ -1471,6 +1471,13 @@ def _generate_picks_inner(
     picks: dict[str, list] = {}
     alpha_engine_meta: dict[str, dict] = {}  # diagnostics for API
     _issuer_duplicates_suppressed = 0  # suppressed display entries across all horizons
+    # DP-020 — cash/unallocated fraction per horizon (additive; new top-level
+    # payload key, see `payload["portfolio_cash_pct"]` below). 1.0 - sum of
+    # that horizon's published portfolio_weight values. Zero whenever the
+    # cap permitted full investment (the previous, unchanged behaviour);
+    # nonzero only when DPD-005's hard-cap contract left a shortfall
+    # unallocated. Not populated for a horizon with 0 published picks.
+    _portfolio_cash_pct: dict[str, float] = {}
 
     for horizon in ("short", "medium", "long"):
         items = raw[horizon]
@@ -1607,9 +1614,17 @@ def _generate_picks_inner(
             )
             for pick, w in zip(top_buy, port_weights):
                 pick["portfolio_weight"] = w
+            # DP-020 / DPD-005: optimize() no longer guarantees weights sum
+            # to 1.0 — a hard per-name cap (currently 40%) is never relaxed
+            # to force full investment, so a narrow opportunity set (e.g.
+            # exactly 2 qualifying picks) is left with a genuine shortfall.
+            # Surface that shortfall explicitly rather than letting it sit
+            # as an unexplained gap in the published weights.
+            _portfolio_cash_pct[horizon] = round(max(0.0, 1.0 - sum(port_weights)), 4)
         elif len(top_buy) == 1:
             # Cap single-pick allocation at 50% — 100% in one stock is too aggressive
             top_buy[0]["portfolio_weight"] = 0.50
+            _portfolio_cash_pct[horizon] = 0.50
 
         # Final-pick selection metadata for the alpha_observations snapshot
         # below, kept OUT of the `top_buy`/`universe` dicts themselves —
@@ -1744,6 +1759,13 @@ def _generate_picks_inner(
         "picks":             picks,
         "alpha_engine":      alpha_engine_meta,
         "regime":            {"label": regime_label, "description": regime["description"]},
+        # DP-020 / DPD-005 (additive, new field): per-horizon cash/unallocated
+        # fraction (0-1) left over after portfolio optimisation's hard
+        # per-name cap. Zero (the previous, unchanged behaviour) whenever
+        # the cap permitted full investment; only nonzero when too few
+        # qualifying picks existed to invest 100% without exceeding the cap.
+        # Keyed only by horizons that produced at least one published pick.
+        "portfolio_cash_pct": _portfolio_cash_pct,
         # ── Legacy field — kept for backward compatibility ─────────────────────
         # Represents the size of the eligible universe entering Phase-0 bulk
         # screening (equivalent to universe_eligible_size below).  New callers

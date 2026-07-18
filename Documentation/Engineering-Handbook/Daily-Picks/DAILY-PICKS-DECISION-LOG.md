@@ -71,15 +71,19 @@
 ## DPD-005 — Portfolio cash and maximum-position contract
 
 - **Related findings:** `DP-020`, `DP-021`, `DP-022`, `DP-024`
-- **Status:** DECISION PENDING
+- **Status:** DECIDED
+- **Decision owner:** Raviraj Shetty
+- **Decision date:** 2026-07-18
 - **Question:** Must Daily Picks portfolio weights always sum to 100% invested?
-- **Options:**
+- **Options considered:**
   1. Fully invested, with dynamic cap relaxation when too few names qualify.
   2. Preserve hard per-name caps and represent remaining weight as cash/unallocated.
   3. Suppress weights entirely when too few names qualify.
-- **Recommended direction:** Option 2. A weak opportunity set should naturally produce cash rather than false concentration.
-- **Implementation block:** `DP-020` fix must not silently relax the stated cap without recording this decision.
-- **Reconsideration trigger:** A broader Portfolio Copilot mandate with portfolio-level suitability and user risk profiles.
+- **Decision:** Option 2. Hard per-position caps must not be relaxed merely because too few stocks qualify. Any allocation that cannot be assigned without exceeding the cap must remain as explicit cash/unallocated.
+- **Rationale:** A weak or narrow opportunity set should produce cash rather than false concentration.
+- **Consequences:** `DP-020`'s optimizer fix implements this directly — position weights are capped at `max_weight` unconditionally; any shortfall versus full investment is surfaced as cash/unallocated rather than silently redistributed back onto the capped names. `DP-021`/`DP-022`/`DP-024` remain governed by this same contract for their own future implementation but are not implemented by this decision.
+- **Implementation block:** None — `DP-020` may now proceed under this decision.
+- **Reconsideration trigger:** Validated portfolio-level evidence and a future Portfolio Copilot suitability framework.
 
 ## DPD-006 — Liquidity and event-risk policy
 
@@ -154,6 +158,5 @@
 2. Approve or revise `DPD-002` confidence naming.
 3. Approve or revise `DPD-003` reward/risk gate.
 4. Approve or revise `DPD-004` meaning of Top 6.
-5. Approve or revise `DPD-005` explicit cash policy.
 
-Until those decisions are made, the next safe code change remains the unambiguous zero-preservation fix `DP-009` + `DP-010`.
+`DPD-005` (explicit cash policy) was decided 2026-07-18 — see above. `DP-009`, `DP-010`, and `DP-017` (unambiguous, trade-off-free correctness defects under Decision rule 4) and `DP-020` (implemented under the newly decided `DPD-005`) have since been implemented; see `DAILY-PICKS-IMPLEMENTATION-REGISTER.md` for current status. Until `DPD-001`–`DPD-004` are decided, no further code change should touch the horizon, confidence, reward/risk, or Top-6 cap-tier findings they govern.
