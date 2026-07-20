@@ -2228,16 +2228,74 @@ def has_active_heavy_workload_lease(resource: str) -> bool:
         return True
 
 
+class _ReservationOutcome(Exception):
+    """
+    Internal control-flow signal only — never escapes this module. Raised
+    from inside a `conn.transaction()` block to force a real ROLLBACK of
+    everything done in that block (including an already-inserted job row)
+    before unwinding to the plain outcome string the public functions
+    return. See _reserve_job_with_lease()'s docstring for why this exists.
+    """
+    def __init__(self, outcome: str):
+        self.outcome = outcome
+
+
+def _reserve_job_with_lease(conn, job_insert_sql, job_insert_params,
+                             conflict_outcome, lease_insert_sql, lease_insert_params):
+    """
+    Shared atomic job+lease reservation body for both
+    try_reserve_multibagger_job_with_lease() and
+    try_reserve_daily_picks_job_with_lease().
+
+    The pool this module uses is configured with autocommit=True (see
+    _get_pool()'s own comment) — every conn.execute() call commits itself
+    the instant it runs. That made the previous single `with
+    _get_pool().connection() as conn:` block only LOOK transactional: the
+    job-row INSERT was already durably committed before the lease INSERT
+    ever ran, so a later conn.rollback() had nothing left to undo. In
+    production this left an orphaned 'queued' daily_picks_jobs row with no
+    lease behind it whenever the lease INSERT lost the race (see job
+    e49d84bf-c19e-4c1c-9a2e-5c1da3f676c3, 2026-07-20).
+
+    conn.transaction() is psycopg3's documented way to get a real
+    transaction on an autocommit connection: it issues an explicit
+    BEGIN on entry and COMMIT/ROLLBACK on exit (COMMIT on a clean exit,
+    ROLLBACK if an exception propagates out of the block) — regardless of
+    the connection's autocommit setting. Raising _ReservationOutcome from
+    inside the block is what forces the ROLLBACK for every "did not start"
+    outcome, including the case where the job INSERT itself already
+    succeeded; catching it just outside the `with conn.transaction():`
+    block converts it back to the plain string callers expect. A normal
+    (non-exception) return of "started" from inside the block lets
+    conn.transaction() commit as usual.
+    """
+    try:
+        with conn.transaction():
+            job_result = conn.execute(job_insert_sql, job_insert_params)
+            if job_result.rowcount != 1:
+                raise _ReservationOutcome(conflict_outcome)
+
+            lease_result = conn.execute(lease_insert_sql, lease_insert_params)
+            if lease_result.rowcount != 1:
+                raise _ReservationOutcome("resource_busy")
+
+            return "started"
+    except _ReservationOutcome as outcome:
+        return outcome.outcome
+
+
 def try_reserve_multibagger_job_with_lease(
     job_id: str, market: str, runner_instance_id: str,
     trigger_source: str, scheduled_period_key: str | None, resource: str,
 ) -> str:
     """
     Product Integrity #010 §9 — atomic job+lease reservation. Both INSERTs
-    happen inside the SAME connection/transaction (one `with` block); a
-    lease-acquisition failure explicitly rolls back the job-row insert too,
-    so a caller never sees an orphaned queued row with no lease behind it —
-    the previous #009 design acquired these in two separate calls/
+    happen inside the same real database transaction (see
+    _reserve_job_with_lease()'s docstring — plain conn.rollback() alone
+    does not achieve this under this module's autocommit=True pool); a
+    lease-acquisition failure rolls back the job-row insert too, so a
+    caller never sees an orphaned queued row with no lease behind it — the
+    previous #009 design acquired these in two separate calls/
     transactions, leaving a real (if narrow) window where a job could be
     reserved and then never actually run because the lease step failed
     independently.
@@ -2248,30 +2306,20 @@ def try_reserve_multibagger_job_with_lease(
     Raises on genuine DB error — caller treats that as durable_state_unavailable.
     """
     with _get_pool().connection() as conn:
-        job_result = conn.execute(
+        return _reserve_job_with_lease(
+            conn,
             """INSERT INTO multibagger_refresh_jobs
                    (job_id, market, status, runner_instance_id, started_at,
                     trigger_source, scheduled_period_key, last_runner_heartbeat_at)
                VALUES (%s, %s, 'queued', %s, now(), %s, %s, now())
                ON CONFLICT DO NOTHING""",
             (job_id, market, runner_instance_id, trigger_source, scheduled_period_key),
-        )
-        if job_result.rowcount != 1:
-            conn.rollback()
-            return "already_completed_for_period" if trigger_source == "scheduled" else "already_running"
-
-        lease_result = conn.execute(
+            "already_completed_for_period" if trigger_source == "scheduled" else "already_running",
             """INSERT INTO heavy_workload_leases (resource, owner_type, owner_job_id, market, acquired_at)
                VALUES (%s, 'multibagger', %s, %s, now())
                ON CONFLICT DO NOTHING""",
             (resource, job_id, market),
         )
-        if lease_result.rowcount != 1:
-            conn.rollback()
-            return "resource_busy"
-
-        conn.commit()
-        return "started"
 
 
 def try_reserve_daily_picks_job_with_lease(
@@ -2282,35 +2330,26 @@ def try_reserve_daily_picks_job_with_lease(
     for Daily Picks (Product Integrity #010 §10). Uses daily_picks_jobs'
     existing (market) WHERE status IN ('queued','running') gate — unchanged,
     same table/constraint Daily Picks has always used; only the lease
-    acquisition is now folded into the same transaction.
+    acquisition is now folded into the same real transaction (see
+    _reserve_job_with_lease()).
 
     Returns one of: 'started', 'already_running', 'resource_busy'.
     Raises on genuine DB error.
     """
     with _get_pool().connection() as conn:
-        job_result = conn.execute(
+        return _reserve_job_with_lease(
+            conn,
             """INSERT INTO daily_picks_jobs
                    (job_id, market, status, runner_instance_id, started_at)
                VALUES (%s, %s, 'queued', %s, now())
                ON CONFLICT DO NOTHING""",
             (job_id, market, runner_instance_id),
-        )
-        if job_result.rowcount != 1:
-            conn.rollback()
-            return "already_running"
-
-        lease_result = conn.execute(
+            "already_running",
             """INSERT INTO heavy_workload_leases (resource, owner_type, owner_job_id, market, acquired_at)
                VALUES (%s, 'daily_picks', %s, %s, now())
                ON CONFLICT DO NOTHING""",
             (resource, job_id, market),
         )
-        if lease_result.rowcount != 1:
-            conn.rollback()
-            return "resource_busy"
-
-        conn.commit()
-        return "started"
 
 
 def get_latest_daily_picks_job(market: str) -> dict | None:
