@@ -1867,23 +1867,38 @@ def try_claim_queued_multibagger_job(job_id: str) -> bool:
     currently runs as a single Railway instance, so this is a forward-
     looking safety property, not a currently-exercised multi-instance path
     — but it costs nothing and closes the gap if that ever changes.
+
+    LEASE-TX-B1 (2026-07-20): the pool this module uses is configured with
+    autocommit=True (see _get_pool()'s own comment), which means a bare
+    conn.execute() commits and releases any row lock the instant that
+    statement returns. The SELECT ... FOR UPDATE SKIP LOCKED below only
+    holds its lock for the lifetime of the transaction it runs in — under
+    autocommit=True with no explicit transaction, that transaction ended
+    (and the lock released) before the following UPDATE ever ran, so a
+    second concurrent claimant's own SELECT could observe the row as still
+    'queued' and lock it too. Wrapping both statements in one
+    `with conn.transaction():` block (psycopg3's documented way to get a
+    real BEGIN/COMMIT on an autocommit connection — same fix as
+    _reserve_job_with_lease() above) keeps the row lock held across both
+    statements, closing that window.
     """
     with _get_pool().connection() as conn:
-        row = conn.execute(
-            """SELECT job_id FROM multibagger_refresh_jobs
-               WHERE job_id = %s AND status = 'queued'
-               FOR UPDATE SKIP LOCKED""",
-            (job_id,),
-        ).fetchone()
-        if row is None:
-            return False
-        conn.execute(
-            """UPDATE multibagger_refresh_jobs
-               SET status = 'running', last_runner_heartbeat_at = now()
-               WHERE job_id = %s""",
-            (job_id,),
-        )
-        return True
+        with conn.transaction():
+            row = conn.execute(
+                """SELECT job_id FROM multibagger_refresh_jobs
+                   WHERE job_id = %s AND status = 'queued'
+                   FOR UPDATE SKIP LOCKED""",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            conn.execute(
+                """UPDATE multibagger_refresh_jobs
+                   SET status = 'running', last_runner_heartbeat_at = now()
+                   WHERE job_id = %s""",
+                (job_id,),
+            )
+            return True
 
 
 def get_staged_symbols(job_id: str) -> set:
@@ -2108,26 +2123,36 @@ def reconcile_stale_multibagger_jobs() -> int:
     Returns the number of rows reclassified. Swallows DB errors (best-effort;
     a failed reconciliation pass just tries again next time, same as Daily
     Picks' own restart-catchup pattern).
+
+    LEASE-TX-B1 (2026-07-20): under this module's autocommit=True pool, the
+    stale-job UPDATE above and the lease-release UPDATE below were each
+    committed the instant they ran, with no transaction spanning both — a
+    crash or process exit between the two could leave a job marked
+    'interrupted' with its lease still active. Both statements now run
+    inside one `with conn.transaction():` block (same fix as
+    _reserve_job_with_lease() and try_claim_queued_multibagger_job() above),
+    so they commit together or not at all.
     """
     try:
         with _get_pool().connection() as conn:
-            stale = conn.execute(
-                f"""UPDATE multibagger_refresh_jobs
-                    SET status = 'interrupted', completed_at = now(),
-                        last_error = 'reconciled: no heartbeat for over {_MULTIBAGGER_ORPHAN_TIMEOUT_HOURS}h'
-                    WHERE status IN ('queued', 'running')
-                      AND COALESCE(last_runner_heartbeat_at, started_at)
-                          < now() - interval '{_MULTIBAGGER_ORPHAN_TIMEOUT_HOURS} hours'
-                    RETURNING job_id"""
-            )
-            stale_job_ids = [r[0] for r in stale.fetchall()]
-            if stale_job_ids:
-                conn.execute(
-                    """UPDATE heavy_workload_leases
-                       SET released_at = now()
-                       WHERE released_at IS NULL AND owner_job_id = ANY(%s)""",
-                    (stale_job_ids,),
+            with conn.transaction():
+                stale = conn.execute(
+                    f"""UPDATE multibagger_refresh_jobs
+                        SET status = 'interrupted', completed_at = now(),
+                            last_error = 'reconciled: no heartbeat for over {_MULTIBAGGER_ORPHAN_TIMEOUT_HOURS}h'
+                        WHERE status IN ('queued', 'running')
+                          AND COALESCE(last_runner_heartbeat_at, started_at)
+                              < now() - interval '{_MULTIBAGGER_ORPHAN_TIMEOUT_HOURS} hours'
+                        RETURNING job_id"""
                 )
+                stale_job_ids = [r[0] for r in stale.fetchall()]
+                if stale_job_ids:
+                    conn.execute(
+                        """UPDATE heavy_workload_leases
+                           SET released_at = now()
+                           WHERE released_at IS NULL AND owner_job_id = ANY(%s)""",
+                        (stale_job_ids,),
+                    )
         return len(stale_job_ids)
     except Exception:
         log.error("[multibagger] stale-job reconciliation pass failed")
@@ -2161,26 +2186,32 @@ def reconcile_stale_daily_picks_jobs() -> int:
     reconciliation path (e.g. startup) may, same constraint as Multibagger.
     Returns the number of rows reclassified. Swallows DB errors (best-effort;
     a failed reconciliation pass just tries again next restart).
+
+    LEASE-TX-B1 (2026-07-20): same autocommit=True atomicity gap and fix as
+    reconcile_stale_multibagger_jobs() above — both statements now run
+    inside one `with conn.transaction():` block so they commit together or
+    not at all.
     """
     try:
         with _get_pool().connection() as conn:
-            stale = conn.execute(
-                f"""UPDATE daily_picks_jobs
-                    SET status = 'interrupted', completed_at = now(),
-                        last_error = 'reconciled: no heartbeat for over {_DAILY_PICKS_ORPHAN_TIMEOUT_HOURS}h'
-                    WHERE status IN ('queued', 'running')
-                      AND COALESCE(last_runner_heartbeat_at, started_at)
-                          < now() - interval '{_DAILY_PICKS_ORPHAN_TIMEOUT_HOURS} hours'
-                    RETURNING job_id"""
-            )
-            stale_job_ids = [r[0] for r in stale.fetchall()]
-            if stale_job_ids:
-                conn.execute(
-                    """UPDATE heavy_workload_leases
-                       SET released_at = now()
-                       WHERE released_at IS NULL AND owner_job_id = ANY(%s)""",
-                    (stale_job_ids,),
+            with conn.transaction():
+                stale = conn.execute(
+                    f"""UPDATE daily_picks_jobs
+                        SET status = 'interrupted', completed_at = now(),
+                            last_error = 'reconciled: no heartbeat for over {_DAILY_PICKS_ORPHAN_TIMEOUT_HOURS}h'
+                        WHERE status IN ('queued', 'running')
+                          AND COALESCE(last_runner_heartbeat_at, started_at)
+                              < now() - interval '{_DAILY_PICKS_ORPHAN_TIMEOUT_HOURS} hours'
+                        RETURNING job_id"""
                 )
+                stale_job_ids = [r[0] for r in stale.fetchall()]
+                if stale_job_ids:
+                    conn.execute(
+                        """UPDATE heavy_workload_leases
+                           SET released_at = now()
+                           WHERE released_at IS NULL AND owner_job_id = ANY(%s)""",
+                        (stale_job_ids,),
+                    )
         return len(stale_job_ids)
     except Exception:
         log.error("[daily_picks] stale-job reconciliation pass failed")
