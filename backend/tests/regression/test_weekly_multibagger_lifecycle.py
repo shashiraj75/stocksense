@@ -86,52 +86,377 @@ def test_schema_sql_explicitly_repairs_the_active_job_index_predicate():
     assert "CREATE UNIQUE INDEX idx_multibagger_refresh_jobs_one_active_per_market" in store.SCHEMA_SQL
 
 
-# ─── atomic job+lease reservation (Product Integrity #010 §9) ─────────────
+# ─── atomic job+lease reservation (Product Integrity #010 §9, LEASE-TX-A1) ──
+#
+# LEASE-TX-A1 (2026-07-20): the postgres_store pool is configured with
+# autocommit=True (see _get_pool()'s own comment) — every conn.execute()
+# call commits itself the instant it runs. The tests immediately below this
+# comment previously used a plain MagicMock connection and asserted only
+# that conn.commit()/conn.rollback() were *called* — a MagicMock's
+# rollback() is an inert no-op, so those assertions passed regardless of
+# whether the job INSERT actually got undone. That is precisely how a real
+# production defect shipped through this suite: try_reserve_daily_picks_
+# job_with_lease() called conn.execute() then conn.rollback() on
+# resource_busy, but under autocommit=True the job INSERT had already been
+# committed before the lease INSERT ever ran, so the rollback() call had
+# nothing left to undo. Production job e49d84bf-c19e-4c1c-9a2e-5c1da3f676c3
+# is exactly this: committed as status=queued with no lease row, no
+# heartbeat, and no background task ever dispatched, because a concurrent
+# Multibagger refresh held the lease at that moment (2026-07-20 incident).
+#
+# The fix (in postgres_store.py's _reserve_job_with_lease()) wraps both
+# INSERTs in an explicit `with conn.transaction():` block — psycopg3's
+# documented way to get a real BEGIN/COMMIT/ROLLBACK on an autocommit
+# connection — and raises a private _ReservationOutcome exception to force
+# a ROLLBACK for every non-"started" path, including after the job INSERT
+# already ran. FakeAutocommitConnection below replaces the MagicMock
+# connection specifically for these reservation tests: it is a small,
+# purpose-built fake that models the two behaviors that actually matter —
+# (1) execute() outside a transaction() block persists immediately and
+# unconditionally (autocommit) and rollback()/commit() called against it
+# afterward are genuine no-ops, exactly like real psycopg3 under
+# autocommit=True; (2) execute() inside a `with conn.transaction():` block
+# is buffered, merged into durable state only on a clean exit, and
+# discarded if an exception propagates out of the block. A MagicMock
+# cannot distinguish these two cases, which is why it let the original
+# defect through undetected.
+
+
+class _FakeCursor:
+    def __init__(self, rowcount):
+        self.rowcount = rowcount
+
+
+class _FakeTransactionCtx:
+    """Models psycopg3's conn.transaction(): BEGIN on enter, COMMIT on a
+    clean exit, ROLLBACK if an exception propagates out of the block —
+    this holds regardless of the connection's autocommit setting, which is
+    exactly why it is the correct fix for the autocommit=True pool."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def __enter__(self):
+        assert not self._conn._in_txn, "nested transaction() not modeled — not needed here"
+        self._conn._in_txn = True
+        self._conn._txn_buffer = {"daily_picks_jobs": [], "multibagger_jobs": [], "leases": []}
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        buf = self._conn._txn_buffer
+        self._conn._in_txn = False
+        self._conn._txn_buffer = None
+        if exc_type is None:
+            self._conn.daily_picks_jobs.extend(buf["daily_picks_jobs"])
+            self._conn.multibagger_jobs.extend(buf["multibagger_jobs"])
+            self._conn.leases.extend(buf["leases"])
+            self._conn.commit_count += 1
+            return False
+        # An exception propagating out of the block (including our own
+        # _ReservationOutcome) discards everything buffered in this
+        # transaction — the job row included, even though its own INSERT
+        # already "succeeded" moments earlier in this same block.
+        self._conn.rollback_count += 1
+        return False
+
+
+class FakeAutocommitConnection:
+    def __init__(self):
+        self.daily_picks_jobs = []      # committed rows: dict(job_id, market, status)
+        self.multibagger_jobs = []      # committed rows: dict(job_id, market, status, trigger_source, scheduled_period_key)
+        self.leases = []                # committed rows: dict(resource, owner_job_id, released_at)
+        self.commit_count = 0
+        self.rollback_count = 0
+        self.explicit_commit_calls = 0
+        self.explicit_rollback_calls = 0
+        self._in_txn = False
+        self._txn_buffer = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def transaction(self):
+        return _FakeTransactionCtx(self)
+
+    def commit(self):
+        # Under real autocommit=True, every prior execute() already
+        # committed itself — this call has nothing left to do.
+        self.explicit_commit_calls += 1
+
+    def rollback(self):
+        # Same reasoning: outside a transaction() block there is nothing
+        # left to undo. This is the exact behavior that made the old
+        # implementation's conn.rollback() call ineffective in production.
+        self.explicit_rollback_calls += 1
+
+    def _visible(self, table):
+        rows = list(getattr(self, table))
+        if self._in_txn:
+            rows += self._txn_buffer[table]
+        return rows
+
+    def _write_target(self, table):
+        return self._txn_buffer[table] if self._in_txn else getattr(self, table)
+
+    def execute(self, sql, params):
+        norm = " ".join(sql.split())
+        if "INSERT INTO daily_picks_jobs" in norm:
+            return self._insert_daily_picks_job(params)
+        if "INSERT INTO multibagger_refresh_jobs" in norm:
+            return self._insert_multibagger_job(params)
+        if "INSERT INTO heavy_workload_leases" in norm:
+            return self._insert_lease(params)
+        raise AssertionError(f"FakeAutocommitConnection: unrecognized SQL: {norm[:100]}")
+
+    def _insert_daily_picks_job(self, params):
+        job_id, market, runner_instance_id = params
+        conflict = any(r["market"] == market and r["status"] in ("queued", "running")
+                        for r in self._visible("daily_picks_jobs"))
+        if conflict:
+            return _FakeCursor(rowcount=0)
+        self._write_target("daily_picks_jobs").append(
+            {"job_id": job_id, "market": market, "status": "queued"}
+        )
+        return _FakeCursor(rowcount=1)
+
+    def _insert_multibagger_job(self, params):
+        job_id, market, runner_instance_id, trigger_source, scheduled_period_key = params
+        rows = self._visible("multibagger_jobs")
+        active_per_market = any(
+            r["market"] == market and r["status"] in ("queued", "running") for r in rows
+        )
+        period_conflict = False
+        if trigger_source == "scheduled":
+            period_conflict = any(
+                r["market"] == market and r.get("trigger_source") == "scheduled"
+                and r.get("scheduled_period_key") == scheduled_period_key
+                and r["status"] in ("queued", "running", "completed")
+                for r in rows
+            )
+        if active_per_market or period_conflict:
+            return _FakeCursor(rowcount=0)
+        self._write_target("multibagger_jobs").append({
+            "job_id": job_id, "market": market, "status": "queued",
+            "trigger_source": trigger_source, "scheduled_period_key": scheduled_period_key,
+        })
+        return _FakeCursor(rowcount=1)
+
+    def _insert_lease(self, params):
+        resource, owner_job_id, market = params
+        conflict = any(r["resource"] == resource and r["released_at"] is None
+                        for r in self._visible("leases"))
+        if conflict:
+            return _FakeCursor(rowcount=0)
+        self._write_target("leases").append(
+            {"resource": resource, "owner_job_id": owner_job_id, "released_at": None}
+        )
+        return _FakeCursor(rowcount=1)
+
+
+class _RaisingOnLeaseConnection(FakeAutocommitConnection):
+    """Raises a genuine DB error from the lease INSERT, after the job INSERT
+    already ran — proves a mid-transaction exception leaves no partial state."""
+    def _insert_lease(self, params):
+        raise RuntimeError("connection reset by peer")
+
+
+class _RaisingOnJobConnection(FakeAutocommitConnection):
+    """Raises a genuine DB error from the very first (job) INSERT."""
+    def _insert_daily_picks_job(self, params):
+        raise RuntimeError("connection reset by peer")
+
+    def _insert_multibagger_job(self, params):
+        raise RuntimeError("connection reset by peer")
+
+
+def _fake_pool(conn):
+    class _Pool:
+        def connection(self):
+            return conn
+    return _Pool()
+
+
+# ── proof the fake genuinely models autocommit=True, not just another mock ──
+
+def test_fake_connection_models_autocommit_not_transactional_by_default():
+    conn = FakeAutocommitConnection()
+    conn._insert_daily_picks_job(("ghost-job", "US", "runner-1"))
+    assert len(conn.daily_picks_jobs) == 1, "bare execute() must persist immediately (autocommit)"
+    conn.rollback()
+    assert len(conn.daily_picks_jobs) == 1, "rollback() outside a transaction() block must be a no-op"
+    assert conn.explicit_rollback_calls == 1
+
+
+def test_fake_connection_transaction_buffers_until_commit():
+    conn = FakeAutocommitConnection()
+    with conn.transaction():
+        conn._insert_daily_picks_job(("job-in-txn", "US", "runner-1"))
+        assert conn.daily_picks_jobs == [], "must not be durable before the transaction() block exits"
+    assert len(conn.daily_picks_jobs) == 1, "must be durable after a clean exit (COMMIT)"
+    assert conn.commit_count == 1
+
+
+def test_fake_connection_transaction_rolls_back_on_exception():
+    conn = FakeAutocommitConnection()
+    with pytest.raises(ValueError):
+        with conn.transaction():
+            conn._insert_daily_picks_job(("job-in-txn", "US", "runner-1"))
+            raise ValueError("boom")
+    assert conn.daily_picks_jobs == [], "an exception inside the block must discard everything buffered"
+    assert conn.rollback_count == 1
+    assert conn.commit_count == 0
+
+
+# ── Daily Picks reservation: success / already_running / resource_busy / exceptions ──
+
+def test_atomic_daily_picks_reserve_started_persists_one_job_and_one_lease():
+    from services.postgres_store import try_reserve_daily_picks_job_with_lease
+    conn = FakeAutocommitConnection()
+    with patch("services.postgres_store._get_pool", return_value=_fake_pool(conn)):
+        outcome = try_reserve_daily_picks_job_with_lease("job-dp-1", "US", "runner-1", "US_YFINANCE_HEAVY")
+    assert outcome == "started"
+    assert len(conn.daily_picks_jobs) == 1
+    assert len(conn.leases) == 1
+    assert conn.leases[0]["owner_job_id"] == "job-dp-1"
+    assert conn.commit_count == 1
+
+
+def test_atomic_daily_picks_reserve_existing_active_row_returns_already_running_no_lease():
+    from services.postgres_store import try_reserve_daily_picks_job_with_lease
+    conn = FakeAutocommitConnection()
+    conn.daily_picks_jobs.append({"job_id": "existing", "market": "US", "status": "running"})
+    with patch("services.postgres_store._get_pool", return_value=_fake_pool(conn)):
+        outcome = try_reserve_daily_picks_job_with_lease("job-dp-2", "US", "runner-1", "US_YFINANCE_HEAVY")
+    assert outcome == "already_running"
+    assert len(conn.daily_picks_jobs) == 1, "no new job row must be created"
+    assert conn.leases == []
+
+
+def test_atomic_daily_picks_reserve_resource_busy_leaves_no_new_job_row():
+    """
+    THE CORE DEFECT, reproduced: production job
+    e49d84bf-c19e-4c1c-9a2e-5c1da3f676c3 was committed as status=queued
+    even though lease acquisition returned resource_busy. This is the
+    exact shape of that incident.
+    """
+    from services.postgres_store import try_reserve_daily_picks_job_with_lease
+    conn = FakeAutocommitConnection()
+    conn.leases.append({"resource": "US_YFINANCE_HEAVY", "owner_job_id": "mb-job", "released_at": None})
+    with patch("services.postgres_store._get_pool", return_value=_fake_pool(conn)):
+        outcome = try_reserve_daily_picks_job_with_lease("job-dp-3", "US", "runner-1", "US_YFINANCE_HEAVY")
+    assert outcome == "resource_busy"
+    assert conn.daily_picks_jobs == [], "the job row must not survive a lease-acquisition failure"
+    assert len(conn.leases) == 1, "only the pre-existing Multibagger lease, no new lease row"
+    assert conn.rollback_count == 1
+    assert conn.commit_count == 0
+
+
+def test_atomic_daily_picks_reserve_lease_exception_leaves_no_new_job_row():
+    from services.postgres_store import try_reserve_daily_picks_job_with_lease
+    conn = _RaisingOnLeaseConnection()
+    with patch("services.postgres_store._get_pool", return_value=_fake_pool(conn)):
+        with pytest.raises(RuntimeError, match="connection reset by peer"):
+            try_reserve_daily_picks_job_with_lease("job-dp-4", "US", "runner-1", "US_YFINANCE_HEAVY")
+    assert conn.daily_picks_jobs == [], "a genuine DB exception must not leave a partial job row behind"
+    assert conn.leases == []
+
+
+def test_atomic_daily_picks_reserve_job_exception_creates_neither_row():
+    from services.postgres_store import try_reserve_daily_picks_job_with_lease
+    conn = _RaisingOnJobConnection()
+    with patch("services.postgres_store._get_pool", return_value=_fake_pool(conn)):
+        with pytest.raises(RuntimeError, match="connection reset by peer"):
+            try_reserve_daily_picks_job_with_lease("job-dp-5", "US", "runner-1", "US_YFINANCE_HEAVY")
+    assert conn.daily_picks_jobs == []
+    assert conn.leases == []
+
+
+# ── Multibagger reservation: success / already_completed / already_running / resource_busy / exceptions ──
 
 def test_atomic_reserve_started_when_both_inserts_succeed():
     from services.postgres_store import try_reserve_multibagger_job_with_lease
-    pool, conn = _mock_pool_sequenced(_cursor(rowcount=1), _cursor(rowcount=1))
-    with patch("services.postgres_store._get_pool", return_value=pool):
+    conn = FakeAutocommitConnection()
+    with patch("services.postgres_store._get_pool", return_value=_fake_pool(conn)):
         outcome = try_reserve_multibagger_job_with_lease(
             "job-1", "IN", "runner-1", "scheduled", "2026-07-18", "IN_SCREENER_HEAVY")
     assert outcome == "started"
-    conn.commit.assert_called_once()
-    conn.rollback.assert_not_called()
+    assert len(conn.multibagger_jobs) == 1
+    assert len(conn.leases) == 1
+    assert conn.commit_count == 1
+    assert conn.rollback_count == 0
 
 
 def test_atomic_reserve_lease_conflict_rolls_back_job_insert_too():
     """
-    The core #010 fix: when the lease insert conflicts, the job insert from
-    the SAME transaction must be rolled back — no orphaned queued row left
-    behind with no lease backing it.
+    The core #010/#LEASE-TX-A1 fix: when the lease insert conflicts, the
+    job insert from the SAME transaction must be rolled back — no
+    orphaned queued row left behind with no lease backing it.
     """
     from services.postgres_store import try_reserve_multibagger_job_with_lease
-    pool, conn = _mock_pool_sequenced(_cursor(rowcount=1), _cursor(rowcount=0))
-    with patch("services.postgres_store._get_pool", return_value=pool):
+    conn = FakeAutocommitConnection()
+    conn.leases.append({"resource": "US_YFINANCE_HEAVY", "owner_job_id": "dp-job", "released_at": None})
+    with patch("services.postgres_store._get_pool", return_value=_fake_pool(conn)):
         outcome = try_reserve_multibagger_job_with_lease(
             "job-1", "US", "runner-1", "scheduled", "2026-07-19", "US_YFINANCE_HEAVY")
     assert outcome == "resource_busy"
-    conn.rollback.assert_called_once()
-    conn.commit.assert_not_called()
+    assert conn.multibagger_jobs == [], "the job row must not survive a lease-acquisition failure"
+    assert conn.rollback_count == 1
+    assert conn.commit_count == 0
 
 
 def test_atomic_reserve_job_conflict_scheduled_reports_period_completed():
     from services.postgres_store import try_reserve_multibagger_job_with_lease
-    pool, conn = _mock_pool_sequenced(_cursor(rowcount=0))
-    with patch("services.postgres_store._get_pool", return_value=pool):
+    conn = FakeAutocommitConnection()
+    conn.multibagger_jobs.append({
+        "job_id": "mb-prev", "market": "IN", "status": "completed",
+        "trigger_source": "scheduled", "scheduled_period_key": "2026-07-18",
+    })
+    with patch("services.postgres_store._get_pool", return_value=_fake_pool(conn)):
         outcome = try_reserve_multibagger_job_with_lease(
             "job-1", "IN", "runner-1", "scheduled", "2026-07-18", "IN_SCREENER_HEAVY")
     assert outcome == "already_completed_for_period"
-    conn.rollback.assert_called_once()
+    assert len(conn.multibagger_jobs) == 1, "no new job row must be created"
+    assert conn.leases == []
 
 
 def test_atomic_reserve_job_conflict_manual_reports_already_running():
     from services.postgres_store import try_reserve_multibagger_job_with_lease
-    pool, conn = _mock_pool_sequenced(_cursor(rowcount=0))
-    with patch("services.postgres_store._get_pool", return_value=pool):
+    conn = FakeAutocommitConnection()
+    conn.multibagger_jobs.append({
+        "job_id": "mb-manual", "market": "US", "status": "running",
+        "trigger_source": "manual", "scheduled_period_key": None,
+    })
+    with patch("services.postgres_store._get_pool", return_value=_fake_pool(conn)):
         outcome = try_reserve_multibagger_job_with_lease(
             "job-1", "US", "runner-1", "manual", None, "US_YFINANCE_HEAVY")
     assert outcome == "already_running"
+    assert len(conn.multibagger_jobs) == 1
+    assert conn.leases == []
+
+
+def test_atomic_reserve_lease_exception_leaves_no_new_job_row():
+    from services.postgres_store import try_reserve_multibagger_job_with_lease
+    conn = _RaisingOnLeaseConnection()
+    with patch("services.postgres_store._get_pool", return_value=_fake_pool(conn)):
+        with pytest.raises(RuntimeError, match="connection reset by peer"):
+            try_reserve_multibagger_job_with_lease(
+                "job-4", "US", "runner-1", "scheduled", "2026-07-19", "US_YFINANCE_HEAVY")
+    assert conn.multibagger_jobs == []
+    assert conn.leases == []
+
+
+def test_atomic_reserve_job_exception_creates_neither_row():
+    from services.postgres_store import try_reserve_multibagger_job_with_lease
+    conn = _RaisingOnJobConnection()
+    with patch("services.postgres_store._get_pool", return_value=_fake_pool(conn)):
+        with pytest.raises(RuntimeError, match="connection reset by peer"):
+            try_reserve_multibagger_job_with_lease(
+                "job-4", "US", "runner-1", "scheduled", "2026-07-19", "US_YFINANCE_HEAVY")
+    assert conn.multibagger_jobs == []
+    assert conn.leases == []
 
 
 def test_atomic_reserve_raises_on_genuine_db_error():
@@ -142,22 +467,31 @@ def test_atomic_reserve_raises_on_genuine_db_error():
             try_reserve_multibagger_job_with_lease("job-4", "US", "runner-1", "scheduled", "2026-07-19", "US_YFINANCE_HEAVY")
 
 
-def test_atomic_daily_picks_reserve_started():
+# ── transaction-specific proof (LEASE-TX-A1) ──────────────────────────────
+
+def test_successful_reservation_commits_exactly_once():
     from services.postgres_store import try_reserve_daily_picks_job_with_lease
-    pool, conn = _mock_pool_sequenced(_cursor(rowcount=1), _cursor(rowcount=1))
-    with patch("services.postgres_store._get_pool", return_value=pool):
-        outcome = try_reserve_daily_picks_job_with_lease("job-dp-1", "US", "runner-1", "US_YFINANCE_HEAVY")
+    conn = FakeAutocommitConnection()
+    with patch("services.postgres_store._get_pool", return_value=_fake_pool(conn)):
+        outcome = try_reserve_daily_picks_job_with_lease("job-6", "US", "runner-1", "US_YFINANCE_HEAVY")
     assert outcome == "started"
-    conn.commit.assert_called_once()
+    assert conn.commit_count == 1, "the underlying transaction() block must commit exactly once"
+    assert conn.explicit_commit_calls == 0, (
+        "must not rely on a manual conn.commit() call outside conn.transaction() — "
+        "that call is a no-op under this pool's autocommit=True"
+    )
 
 
-def test_atomic_daily_picks_reserve_resource_busy_rolls_back():
+def test_resource_busy_after_job_insert_rolls_back_the_whole_transaction():
     from services.postgres_store import try_reserve_daily_picks_job_with_lease
-    pool, conn = _mock_pool_sequenced(_cursor(rowcount=1), _cursor(rowcount=0))
-    with patch("services.postgres_store._get_pool", return_value=pool):
-        outcome = try_reserve_daily_picks_job_with_lease("job-dp-1", "IN", "runner-1", "IN_SCREENER_HEAVY")
+    conn = FakeAutocommitConnection()
+    conn.leases.append({"resource": "US_YFINANCE_HEAVY", "owner_job_id": "mb-job", "released_at": None})
+    with patch("services.postgres_store._get_pool", return_value=_fake_pool(conn)):
+        outcome = try_reserve_daily_picks_job_with_lease("job-7", "US", "runner-1", "US_YFINANCE_HEAVY")
     assert outcome == "resource_busy"
-    conn.rollback.assert_called_once()
+    assert conn.rollback_count == 1, "the transaction() block must be rolled back, not just abandoned"
+    assert conn.commit_count == 0
+    assert conn.daily_picks_jobs == [], "the job insert made earlier in the SAME transaction must not survive"
 
 
 # ─── resumable claim (SELECT FOR UPDATE SKIP LOCKED) ───────────────────────
