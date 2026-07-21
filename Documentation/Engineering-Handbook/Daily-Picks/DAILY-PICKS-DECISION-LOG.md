@@ -155,6 +155,25 @@
 
 ---
 
+## DPD-011 — Genuine point-in-time fundamentals remediation, superseding disclosure-only containment where achievable
+
+- **Related findings:** `DP-026` (reopened), `DP-033` (new — US remediation record), `DP-031`, `DP-032` (unchanged, still separate)
+- **Status:** DECIDED
+- **Date:** 2026-07-22
+- **Decision owner:** Product owner (repository owner, `shashiraj75`), via explicit direct authorization in a chat prompt this session.
+- **Question:** `DPD-009`/`DPD-010` accepted disclosure-only containment as the correct response to DP-026 given the data available at the time. The product owner has now authorized engineering investment in a genuine fix. Does this supersede `DPD-009`/`DPD-010`, and under what conditions may the resulting warning be reduced or replaced?
+- **Options considered:**
+  1. Leave disclosure-only containment as final (rejected — explicitly superseded by this authorization).
+  2. Attempt genuine remediation for whichever markets have a legally/reliably accessible point-in-time source, keep disclosure for the rest (**decided**).
+  3. Require a single all-markets-or-nothing remediation before any warning changes (rejected — would block real US progress on an India data-access problem that may have no near-term solution).
+- **Decision:** Option 2. Genuine remediation is authorized wherever the underlying data supports it. **The existing DP-026 disclosure remains in force for any market/scope not proven to meet every acceptance criterion in this session's prompt** (temporal-integrity tests passing, controlled replay proving the corrected path is used, independent reviews passing, and — critically — merge, deployment, backfill, and production verification, none of which happened this session). Disclosure containment was correct for the previous data-availability state and is not retroactively wrong; this decision authorizes moving past it only where evidence now supports doing so.
+- **Rationale:** Product owner explicitly stated disclosure containment "is no longer the desired final product state" and authorized code/data/pipeline changes. This session found a real, evidence-based basis for US remediation (SEC EDGAR's `filed` timestamps, confirmed live) and a real, evidence-based basis for India remaining blocked (no equivalent free/reliable source found; NSE's official API returned bot-protection output on direct testing, not data).
+- **Consequences:** This decision does **not** pre-authorize arbitrary strategy-weight changes (`DP-032` remains separate and undecided) or bundling `DP-031`'s instrumentation work into this scope (it remains separately assigned, though `DP-033`'s revenue-growth/PE deferral now explicitly names it as the closing owner for that specific gap). It does not authorize a production backfill or migration — that remains a separate, later gate per the original prompt's Phase 6/Definition-of-Done requirements, not yet reached.
+- **Implementation:** See `DP-033`'s register entry for the full technical record.
+- **Reconsideration trigger:** For India specifically — a licensed point-in-time data vendor decision, or a legally/reliably accessible free structured source being found that this session's investigation missed.
+
+---
+
 ## Decision template
 
 ```text

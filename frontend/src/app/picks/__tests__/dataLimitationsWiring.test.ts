@@ -114,4 +114,28 @@ describe("DP-026 disclosure wiring — unrelated surfaces must NOT show the noti
     const occurrences = pageSource.split("<DataLimitationsNotice").length - 1;
     expect(occurrences).toBe(2);
   });
+
+  it("DP-026 remediation: the blanket notice inside HistoricalTrackRecordSummary is conditional on at least one non-remediated entry, not unconditional", () => {
+    const fnStart = pageSource.indexOf("function HistoricalTrackRecordSummary");
+    const fnEnd = pageSource.indexOf("\nfunction ", fnStart + 1);
+    const body = pageSource.slice(fnStart, fnEnd);
+    expect(body).toContain("entries.some(e => e.fundamentals_point_in_time !== true)");
+    expect(body).toContain("<DataLimitationsNotice className=\"mb-3\" />");
+  });
+
+  it("DP-026 remediation: a genuinely point-in-time entry renders its own coverage line, never the blanket 'not point-in-time' claim", () => {
+    const fnStart = pageSource.indexOf("function HistoricalTrackRecordSummary");
+    const fnEnd = pageSource.indexOf("\nfunction ", fnStart + 1);
+    const body = pageSource.slice(fnStart, fnEnd);
+    expect(body).toContain('pit === true &&');
+    expect(body).toContain("Point-in-time fundamentals coverage:");
+  });
+
+  it("DP-026 remediation: a legacy (pre-remediation) entry gets its own distinct label, not silently treated as either remediated or known-contaminated", () => {
+    const fnStart = pageSource.indexOf("function HistoricalTrackRecordSummary");
+    const fnEnd = pageSource.indexOf("\nfunction ", fnStart + 1);
+    const body = pageSource.slice(fnStart, fnEnd);
+    expect(body).toContain("pit == null &&");
+    expect(body).toContain("Legacy result");
+  });
 });

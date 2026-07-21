@@ -86,6 +86,24 @@ def _reset_fake_ticker_calls():
     _FakeTicker.calls = []
 
 
+@pytest.fixture(autouse=True)
+def _stub_sec_edgar_as_of(monkeypatch):
+    """
+    DP-026 remediation (2026-07-21): _backtest_stock() now calls
+    sec_edgar_adapter.get_fundamentals_as_of() once per US signal date.
+    None of the tests in this file are about SEC EDGAR/fundamentals — they
+    predate that remediation entirely — so this autouse stub keeps the
+    file's own "No network access anywhere in this file" guarantee true by
+    always returning a deterministic "unavailable" result, never reaching
+    the real network. Tests that specifically need fundamentals-available
+    behavior live in test_dp026_point_in_time_remediation.py instead.
+    """
+    monkeypatch.setattr(
+        ve.sec_edgar_adapter, "get_fundamentals_as_of",
+        lambda symbol, as_of: {"available": False, "reason": "stubbed in test"},
+    )
+
+
 class _NoWriteCursor:
     lastrowid = 0
 

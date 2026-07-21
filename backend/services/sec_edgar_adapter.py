@@ -37,6 +37,7 @@ Per this sprint's explicit scope:
 import logging
 import threading
 import time
+from datetime import date
 from typing import Optional
 
 import requests
@@ -573,6 +574,140 @@ def build_info_projection(fields: dict[str, dict]) -> dict:
         if record and record.get("value") is not None:
             info[info_key] = record["value"]
     return info
+
+
+# ── Point-in-time (as-of) filtering — DP-026 remediation ────────────────────
+#
+# Everything above this point answers "what does SEC EDGAR say NOW" — the
+# correct question for live Daily Picks scoring (us_financial_strength_
+# adapter.py's existing call site) and unrelated to DP-026's finding.
+#
+# DP-026's finding was specifically about services/validation_engine.py's
+# walk-forward BACKTEST reusing one present-day fundamentals snapshot across
+# every historical signal date. `fetch_company_facts()` already returns the
+# company's ENTIRE XBRL history in one call (each fact carries its own real
+# `filed` date, confirmed live for AAPL/JPM during the original SSDS-006
+# sprint) — the raw data needed for a genuine as-of answer was already being
+# fetched, just never filtered by date before being handed to
+# `normalize_fields()`, which always resolves to the single most-recent
+# value regardless of caller intent.
+#
+# `filter_facts_as_of()` below prunes a raw companyfacts payload down to
+# only the fact entries whose `filed` date is on or before a cutoff, in the
+# same shape `normalize_fields()` already expects — so `normalize_fields()`
+# itself needed NO change at all: given a pruned payload, its existing
+# recency-based `_best_entry()`/`_extract_direct()` logic already returns
+# the correct "most recent value AS OF the cutoff" answer for free.
+#
+# A `filed` date is used as the availability-timestamp proxy — SEC's own
+# submissions API additionally exposes an `acceptanceDateTime` (to-the-
+# second) per accession number, confirmed live during this session's
+# investigation; `filed` (date-only) is used here as the conservative,
+# already-present-in-companyfacts choice (no second API call per lookup),
+# and per the conservative-when-precision-is-incomplete rule, a fact filed
+# ON the same calendar date as the cutoff is treated as available only if
+# the cutoff time itself is end-of-day UTC-safe — callers pass a `date`
+# (not a `datetime`), and comparison is `filed <= as_of` (date <= date),
+# which is deliberately conservative: a filing accepted at 23:59 on the
+# cutoff date is included exactly as a filing accepted at 00:01 would be,
+# since date-only precision cannot distinguish intraday timing — the same
+# "conservative when timestamp precision is incomplete" rule this repo's
+# own temporal-integrity requirements call for elsewhere.
+
+
+def filter_facts_as_of(facts: dict, as_of: date) -> dict:
+    """
+    Prunes a raw companyfacts payload to only fact entries filed on or
+    before `as_of` (a `datetime.date`). Instant and duration facts alike
+    are filtered purely on their own `filed` date — never on `end`/`start`
+    (fiscal period dates are never sufficient proof of public availability,
+    per this repository's own temporal-integrity rule). A concept with zero
+    eligible entries as of the cutoff is dropped entirely (not replaced
+    with a stale or current value) — this is exactly how "no eligible
+    filing as of the signal date" must surface as UNAVAILABLE once the
+    pruned payload reaches `normalize_fields()`.
+
+    Never mutates `facts` — returns a new dict; `fetch_company_facts()`'s
+    cached payload must remain shared and untouched across every caller
+    and every as-of cutoff.
+    """
+    us_gaap_in = facts.get("facts", {}).get("us-gaap", {})
+    us_gaap_out: dict = {}
+    for concept, concept_data in us_gaap_in.items():
+        usd_in = concept_data.get("units", {}).get("USD", [])
+        usd_out = [
+            entry for entry in usd_in
+            if entry.get("filed") and _parse_date(entry["filed"]) is not None
+            and _parse_date(entry["filed"]) <= as_of
+        ]
+        if usd_out:
+            us_gaap_out[concept] = {"units": {"USD": usd_out}}
+    return {
+        "cik": facts.get("cik"),
+        "entityName": facts.get("entityName"),
+        "facts": {"us-gaap": us_gaap_out},
+    }
+
+
+def _parse_date(value: str) -> Optional[date]:
+    try:
+        return date.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def get_fundamentals_as_of(symbol: str, as_of: date) -> dict:
+    """
+    The point-in-time counterpart to `fetch_us_fundamentals_sec_edgar()`,
+    for historical validation/backtesting ONLY — never called by any live
+    Daily Picks path. Resolves CIK and fetches the company's full,
+    already-12h-cached XBRL history exactly as the live path does (one
+    fetch covers every historical as-of cutoff a backtest will ever ask
+    for — no per-signal-date network call, so a walk-forward backtest
+    iterating hundreds of signal dates for one symbol makes exactly one
+    companyfacts request for that symbol, not hundreds), then prunes it to
+    `as_of` before normalizing.
+
+    Returns the same shape as `fetch_us_fundamentals_sec_edgar()` plus
+    `"as_of"` and `"point_in_time": True`, so callers can distinguish a
+    genuine as-of result from a live/current one. `available: False` (never
+    a fabricated/neutral value) when CIK resolution fails, the companyfacts
+    fetch fails, or every concept is pruned away by the as-of cutoff.
+    """
+    sym = symbol.upper().strip()
+    cik = resolve_cik(sym)
+    if cik is None:
+        return {
+            "available": False, "symbol": sym, "source": PROVIDER_NAME,
+            "adapter_version": ADAPTER_VERSION, "as_of": as_of.isoformat(),
+            "point_in_time": True, "reason": "CIK not found",
+        }
+
+    facts = fetch_company_facts(cik)
+    if facts is None:
+        return {
+            "available": False, "symbol": sym, "source": PROVIDER_NAME,
+            "adapter_version": ADAPTER_VERSION, "cik": cik,
+            "as_of": as_of.isoformat(), "point_in_time": True,
+            "reason": "companyfacts fetch failed or returned an unexpected shape",
+        }
+
+    pruned = filter_facts_as_of(facts, as_of)
+    fields = normalize_fields(pruned)
+    has_any = any(v.get("value") is not None for v in fields.values())
+    return {
+        "available": has_any,
+        "symbol": sym,
+        "source": PROVIDER_NAME,
+        "adapter_version": ADAPTER_VERSION,
+        "cik": cik,
+        "company_name": facts.get("entityName"),
+        "as_of": as_of.isoformat(),
+        "point_in_time": True,
+        "fields": fields,
+        "info": build_info_projection(fields),
+        "reason": None if has_any else "no eligible filing as of the signal date",
+    }
 
 
 def fetch_us_fundamentals_sec_edgar(symbol: str) -> dict:
