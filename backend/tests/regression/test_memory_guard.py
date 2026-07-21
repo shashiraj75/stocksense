@@ -124,3 +124,42 @@ def test_cgroup_v2_unlimited_sentinel_is_treated_as_no_limit(tmp_path):
         used, limit = memory_guard.read_memory_usage()
 
     assert limit is None
+
+
+def test_cgroup_v1_unlimited_sentinel_is_treated_as_no_limit(tmp_path):
+    """cgroup v1 reports an effectively-unlimited value (commonly
+    2**63-1 rounded to a page boundary, not the literal string "max" v2
+    uses) when no limit is configured — this must be treated the same as
+    v2's sentinel, never misread as a real multi-exabyte container limit."""
+    from services import memory_guard
+
+    current = tmp_path / "memory.usage_in_bytes"
+    maxfile = tmp_path / "memory.limit_in_bytes"
+    current.write_text("104857600\n")
+    maxfile.write_text("9223372036854771712\n")  # 2**63-1 rounded to a page
+
+    with patch.object(memory_guard, "_CGROUP_V1_CURRENT", str(current)), \
+         patch.object(memory_guard, "_CGROUP_V1_MAX", str(maxfile)), \
+         patch.object(memory_guard, "_CGROUP_V2_CURRENT", "/nonexistent/memory.current"), \
+         patch.object(memory_guard, "_CGROUP_V2_MAX", "/nonexistent/memory.max"):
+        used, limit = memory_guard.read_memory_usage()
+
+    assert limit is None
+
+
+def test_cgroup_v1_reader_parses_real_limit_when_actually_set(tmp_path):
+    from services import memory_guard
+
+    current = tmp_path / "memory.usage_in_bytes"
+    maxfile = tmp_path / "memory.limit_in_bytes"
+    current.write_text("104857600\n")   # 100 MiB
+    maxfile.write_text("209715200\n")   # 200 MiB — a real, small limit
+
+    with patch.object(memory_guard, "_CGROUP_V1_CURRENT", str(current)), \
+         patch.object(memory_guard, "_CGROUP_V1_MAX", str(maxfile)), \
+         patch.object(memory_guard, "_CGROUP_V2_CURRENT", "/nonexistent/memory.current"), \
+         patch.object(memory_guard, "_CGROUP_V2_MAX", "/nonexistent/memory.max"):
+        used, limit = memory_guard.read_memory_usage()
+
+    assert used == 104857600
+    assert limit == 209715200
