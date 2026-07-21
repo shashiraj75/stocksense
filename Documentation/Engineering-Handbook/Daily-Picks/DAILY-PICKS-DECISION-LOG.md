@@ -131,6 +131,7 @@
 - **Rationale:** The current validation is useful directional evidence but differs from the production pipeline and contains methodology limitations.
 - **Consequences:** Historical track-record UI can remain, with warnings; integrity-gated panels remain held until their separate price-basis condition is resolved.
 - **Reconsideration trigger:** A production-equivalent point-in-time validation harness with costs and bias controls.
+- **2026-07-21 cross-reference:** `DP-026` investigated and disclosure-contained under this decision (Outcome C — no point-in-time fundamentals source exists in this repository for either market; see `DAILY-PICKS-IMPLEMENTATION-REGISTER.md`'s `DP-026` evidence). This did not require a new DPD — this decision's "truthful scope and limitations" language already covers it. Two new related findings proposed the same session, `DP-031` (fund/sentiment factor-IC instrumentation gap) and `DP-032` (production weight-rationale/evidence gap), are **not** covered by this decision and each need their own future DPD before implementation — they concern measurement/weight-setting, not disclosure.
 
 ---
 
