@@ -594,10 +594,14 @@ SOURCE_REGISTRY: tuple[SourceRegistryEntry, ...] = (
         # observed) can legitimately appear across multiple rows sharing
         # the SAME trailing ISIN, differing only by REDEMPTION DATE (one
         # row per redemption tranche of the same preference-share
-        # issuance) — see `grain` below. Identity must therefore be the
-        # trailing ISIN combined with REDEMPTION DATE and CONVERSION DATE,
-        # never the trailing ISIN alone.
-        primary_identity_field="trailing_undeclared_isin_field+REDEMPTION_DATE+CONVERSION_DATE",
+        # issuance) — see `grain` below. Identity must therefore never be
+        # the trailing ISIN alone. Independent-review correction: nor is
+        # ISIN+REDEMPTION DATE+CONVERSION DATE alone sufficient — two
+        # tranches can share an ISIN and both dates (e.g. both blank)
+        # while differing only in REDEMPTION AMT/CONVERSION AMT, which
+        # that narrower composite would have wrongly collapsed. Identity
+        # is the full row (every declared field plus the trailing ISIN).
+        primary_identity_field="full_row(trailing_undeclared_isin_field+all_14_declared_fields)",
         secondary_identity_fields=("SYMBOL", "SERIES"),
         header_mode=HeaderMode.HEADER_PRESENT,
         expected_headers=(

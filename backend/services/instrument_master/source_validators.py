@@ -684,11 +684,19 @@ def validate_preference(text: str) -> ValidationResult:
     _validate_trailing_isin_source() helper used by validate_warrant()
     below — that helper's identity key is the trailing ISIN alone and
     would incorrectly flag distinct tranches sharing an ISIN as
-    duplicates, undercounting real records. This validator's identity
-    key is instead the composite (trailing ISIN, REDEMPTION DATE,
-    CONVERSION DATE) — two rows are only ever treated as a duplicate
-    when all three agree, which never collapses two genuinely distinct
-    tranches, only a true exact-duplicate row.
+    duplicates, undercounting real records.
+
+    Independent-review correction (post-initial-C1-A3): an earlier
+    version of this validator keyed identity on the narrower composite
+    (trailing ISIN, REDEMPTION DATE, CONVERSION DATE). That still lost
+    data — two tranches sharing an ISIN AND both dates (e.g. both
+    blank, or coincidentally equal) but differing only in REDEMPTION AMT
+    or CONVERSION AMT would have been wrongly collapsed as duplicates,
+    the exact same class of bug this validator exists to fix. Identity
+    is therefore the FULL row (every one of the 14 declared fields plus
+    the trailing ISIN, each stripped) — two rows are only ever treated
+    as a duplicate when EVERY field agrees, which never collapses two
+    tranches differing in any column, only a true exact-duplicate row.
 
     Accepted only when: declared header matches exactly; every accepted
     row has exactly header_count + 1 fields; the trailing field passes
@@ -739,9 +747,11 @@ def validate_preference(text: str) -> ValidationResult:
     required_row_width = declared_count + 1
 
     errors: list[ValidationError] = []
-    # Composite tranche identity: (trailing ISIN, REDEMPTION DATE,
-    # CONVERSION DATE) -> occurrence count. Never keyed by ISIN alone.
-    seen_tranches: dict[tuple[str, str, str], int] = {}
+    # Full-row tranche identity: every declared field plus the trailing
+    # ISIN, stripped -> occurrence count. Never keyed by ISIN alone, and
+    # never keyed by a narrower subset of fields that could coincide
+    # across two genuinely distinct tranches (see docstring above).
+    seen_tranches: dict[tuple[str, ...], int] = {}
     record_count = 0
     isin_total_rows = 0
     isin_nonblank_rows = 0
@@ -777,23 +787,20 @@ def validate_preference(text: str) -> ValidationResult:
             continue
         isin_valid_rows += 1
 
-        tranche_key = (
-            trailing_isin,
-            row[_PREF_REDEMPTION_DATE_IDX].strip(),
-            row[_PREF_CONVERSION_DATE_IDX].strip(),
-        )
+        tranche_key = tuple(field.strip() for field in row)
         seen_tranches[tranche_key] = seen_tranches.get(tranche_key, 0) + 1
         record_count += 1
 
     dup_tranches = {k: v for k, v in seen_tranches.items() if v > 1}
     if dup_tranches:
-        for (isin_val, redemption_date, conversion_date), count in sorted(dup_tranches.items()):
+        for key, count in sorted(dup_tranches.items()):
             errors.append(
                 ValidationError(
                     None,
                     "duplicate_tranche",
-                    f"ISIN={isin_val} REDEMPTION DATE={redemption_date!r} "
-                    f"CONVERSION DATE={conversion_date!r} appears {count} times",
+                    f"ISIN={key[-1]!r} REDEMPTION DATE={key[_PREF_REDEMPTION_DATE_IDX]!r} "
+                    f"CONVERSION DATE={key[_PREF_CONVERSION_DATE_IDX]!r} "
+                    f"(full row identical) appears {count} times",
                 )
             )
         record_count -= sum(dup_tranches.values())
@@ -849,7 +856,7 @@ def validate_warrant(text: str) -> ValidationResult:
     repeated-ISIN/multi-tranche pattern has been observed for WARRANT.csv
     (only a single real row was available to inspect during C1-A2), so
     this validator is deliberately NOT switched to validate_preference()'s
-    tranche-composite identity — it still uses the shared trailing-ISIN
+    full-row tranche identity — it still uses the shared trailing-ISIN
     helper, whose identity key is the trailing ISIN alone. If live
     evidence of a WARRANT.csv multi-row-per-ISIN pattern is found in a
     future reconnaissance, this contract should be revisited, not

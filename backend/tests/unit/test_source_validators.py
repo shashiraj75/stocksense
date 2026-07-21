@@ -454,6 +454,18 @@ class TestPreferenceTrancheGrain:
         assert r.valid is True
         assert r.record_count == 1
 
+    def test_distinct_tranches_sharing_isin_and_dates_both_retained(self):
+        # Independent-review regression: two rows sharing the same ISIN
+        # AND the same (blank) REDEMPTION DATE/CONVERSION DATE, but
+        # differing in REDEMPTION AMT, are genuinely distinct tranches.
+        # A narrower (ISIN, REDEMPTION DATE, CONVERSION DATE) identity
+        # would have wrongly collapsed these as duplicates and dropped
+        # both — the full-row identity must retain both.
+        r = validate_preference(_read("pref_distinct_tranches_same_isin_and_dates.csv"))
+        assert r.valid is True
+        assert r.record_count == 2
+        assert r.error_count == 0
+
     def test_warrant_still_uses_isin_only_identity_not_tranche_composite(self):
         # WARRANT.csv has no live evidence of a repeated-ISIN pattern —
         # confirms validate_warrant() was NOT switched to the PREF

@@ -61,14 +61,21 @@ response bodies. They are not a production-ingestion approval — see
   `PER_REDEMPTION_TRANCHE` on the registry entry.
 - **Fix**: `validate_preference()` is now its own dedicated validator
   (previously shared `_validate_trailing_isin_source()` with
-  `validate_warrant()`), keyed on the composite identity `(trailing
-  ISIN, REDEMPTION DATE, CONVERSION DATE)` rather than the trailing
-  ISIN alone. Two rows are only ever treated as a duplicate when all
-  three agree — distinct tranches sharing an ISIN are never collapsed;
-  only a genuine exact-duplicate row is. `validate_warrant()` is
-  unaffected and still uses the ISIN-only shared helper — no live
-  evidence of a repeated-ISIN pattern was found for WARRANT.csv (only
-  one real row was available to inspect).
+  `validate_warrant()`), keyed on full-row identity — every one of the
+  14 declared fields plus the trailing ISIN, stripped — rather than the
+  trailing ISIN alone. Two rows are only ever treated as a duplicate
+  when every field agrees; distinct tranches sharing an ISIN are never
+  collapsed, only a genuine exact-duplicate row is.
+  (Independent-review correction: an earlier version of this fix keyed
+  identity on the narrower composite `(ISIN, REDEMPTION DATE,
+  CONVERSION DATE)`. That still lost data — two tranches sharing an
+  ISIN and both dates, but differing only in `REDEMPTION AMT` or
+  `CONVERSION AMT`, would have been wrongly collapsed. Full-row identity
+  closes that gap and is provably conservative: it can only ever be
+  *less* aggressive at merging rows than any field-subset composite.)
+  `validate_warrant()` is unaffected and still uses the ISIN-only
+  shared helper — no live evidence of a repeated-ISIN pattern was found
+  for WARRANT.csv (only one real row was available to inspect).
 
 ### WARRANT.csv (`nse_warrant`)
 
