@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/utils/api";
 import { useAuth } from "@/lib/AuthContext";
+import { DataLimitationsMark } from "@/components/DataLimitationsNotice";
 import clsx from "clsx";
 
 interface NavLink { href: string; label: string; accent?: boolean; color?: string }
@@ -25,11 +26,16 @@ function AccuracyBadge() {
   const color = accuracy >= 65 ? "text-bull" : accuracy >= 55 ? "text-yellow-400" : "text-gray-400";
 
   return (
-    <span
-      className={clsx("text-xs font-semibold tabular-nums", color)}
-      title={`Direction accuracy across ${n} resolved predictions (medium term)`}
-    >
-      ✓ {Math.round(accuracy)}% accurate
+    <span className="inline-flex items-center gap-1">
+      <span
+        className={clsx("text-xs font-semibold tabular-nums", color)}
+        title={`Direction accuracy across ${n} resolved predictions (medium term)`}
+      >
+        ✓ {Math.round(accuracy)}% accurate
+      </span>
+      {/* DP-026 — this figure comes from the same non-point-in-time
+          validation results as the Historical Accuracy panel. */}
+      <DataLimitationsMark />
     </span>
   );
 }
