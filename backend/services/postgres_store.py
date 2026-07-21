@@ -1845,6 +1845,24 @@ _MULTIBAGGER_ORPHAN_TIMEOUT_HOURS = 7  # longer than the ~5-6h US refresh; see P
 # stuck indefinitely on the next crash.
 _DAILY_PICKS_ORPHAN_TIMEOUT_HOURS = 6
 
+# Periodic (not just startup-only) sweep threshold — added after the
+# 2026-07-21 US incidents: a deployment orphaned one run mid phase_1, and
+# its replacement was itself killed (OOM-consistent signature) ~30-45s
+# after entering the ranking phase. Both times the row sat 'running' far
+# short of 6h when the next process booted, so the existing startup-only
+# pass never touched it — the row would have waited up to 6h regardless of
+# how many more restarts happened in between. This threshold is for
+# api.main's periodic reconciliation loop, which runs the sweep every few
+# minutes instead of once at boot. It must stay far above one heartbeat
+# cadence (30s, written by services.daily_picks._heartbeat_loop) so a
+# genuinely healthy job — which keeps writing a heartbeat every 30s no
+# matter how long its overall run takes — is never touched; 10 minutes is a
+# ~20x margin over that cadence, and comfortably above the existing
+# 180s "unresponsive" presentation threshold in api/routers/picks.py's
+# _derive_job_health, so this never fires on transient slowness the UI
+# itself only flags as "slow".
+_DAILY_PICKS_PERIODIC_STALE_INTERVAL = "10 minutes"
+
 
 def mark_multibagger_job_running(job_id: str) -> None:
     with _get_pool().connection() as conn:
@@ -2159,22 +2177,36 @@ def reconcile_stale_multibagger_jobs() -> int:
         return 0
 
 
-def reconcile_stale_daily_picks_jobs() -> int:
+def reconcile_stale_daily_picks_jobs(stale_interval: str | None = None) -> int:
     """
     Orphan/restart recovery for Daily Picks jobs, mirroring
     reconcile_stale_multibagger_jobs() above (2026-07-17, after a US base
     run died mid-run to an OOM-kill and sat stuck at 'running' for hours —
     daily_picks_jobs had no automatic recovery, only the documented
     manual-only path, see this table's own CREATE TABLE comment). A
-    queued/running row whose heartbeat has gone silent for longer than a
-    credible full run (see _DAILY_PICKS_ORPHAN_TIMEOUT_HOURS) is
-    reclassified 'interrupted' — never deleted, never touched while
-    genuinely active. 'interrupted' is already a fully anticipated terminal
-    state elsewhere in the codebase (services/premarket_finalizer.py's
+    queued/running row whose heartbeat has gone silent for longer than
+    `stale_interval` (a Postgres INTERVAL literal, e.g. "10 minutes"; see
+    _DAILY_PICKS_ORPHAN_TIMEOUT_HOURS when omitted) is reclassified
+    'interrupted' — never deleted, never touched while genuinely active.
+    'interrupted' is already a fully anticipated terminal state elsewhere in
+    the codebase (services/premarket_finalizer.py's
     _JOB_STATUS_TERMINAL_FAILURE), so this doesn't introduce a new status
     value or a new code path for consumers to handle — it only makes an
     already-supported status reachable automatically instead of requiring
     a human to write it by hand.
+
+    stale_interval: optional override of the default
+    "{_DAILY_PICKS_ORPHAN_TIMEOUT_HOURS} hours" threshold, as a Postgres
+    INTERVAL literal string. Always a hardcoded constant supplied by our own
+    call sites (api.main's startup hook passes nothing / the periodic sweep
+    passes _DAILY_PICKS_PERIODIC_STALE_INTERVAL) — never user input, so
+    direct string interpolation here carries no injection risk, consistent
+    with how the default hour-based interval was already embedded before
+    this parameter existed. Added 2026-07-21 so a short-interval periodic
+    sweep (api.main's reconciliation loop) can reuse this exact function and
+    its transactional lease-release semantics instead of duplicating them,
+    while the original startup-only 6h call keeps its exact prior behavior
+    unchanged when called with no argument.
 
     Clearing the row also releases the (market) WHERE status IN ('queued',
     'running') partial unique index slot the crashed job was holding,
@@ -2183,26 +2215,40 @@ def reconcile_stale_daily_picks_jobs() -> int:
     in the same statement set, exactly like Multibagger's version.
 
     Read-only GET endpoints must never call this — only an explicit
-    reconciliation path (e.g. startup) may, same constraint as Multibagger.
-    Returns the number of rows reclassified. Swallows DB errors (best-effort;
-    a failed reconciliation pass just tries again next restart).
+    reconciliation path (startup, or the periodic sweep) may, same
+    constraint as Multibagger. Returns the number of rows reclassified.
+    Swallows DB errors (best-effort; a failed pass just tries again next
+    time this runs).
 
     LEASE-TX-B1 (2026-07-20): same autocommit=True atomicity gap and fix as
     reconcile_stale_multibagger_jobs() above — both statements now run
     inside one `with conn.transaction():` block so they commit together or
     not at all.
     """
+    interval_literal = stale_interval or f"{_DAILY_PICKS_ORPHAN_TIMEOUT_HOURS} hours"
+    # Default (no override) keeps the exact pre-2026-07-21 last_error text
+    # ("...over 6h") byte-for-byte, since nothing about the startup-only 6h
+    # call site's behavior or output should change. Only the new periodic
+    # override gets a distinctly-worded reason, both so it's identifiable
+    # in logs/DB and so it doesn't need to match the hour-suffix format
+    # ("6h") that only ever made sense for a whole-number-of-hours value.
+    reason = (
+        f"reconciled: no heartbeat for over {_DAILY_PICKS_ORPHAN_TIMEOUT_HOURS}h"
+        if stale_interval is None
+        else f"reconciled: no heartbeat for over {stale_interval}"
+    )
     try:
         with _get_pool().connection() as conn:
             with conn.transaction():
                 stale = conn.execute(
                     f"""UPDATE daily_picks_jobs
                         SET status = 'interrupted', completed_at = now(),
-                            last_error = 'reconciled: no heartbeat for over {_DAILY_PICKS_ORPHAN_TIMEOUT_HOURS}h'
+                            last_error = %s
                         WHERE status IN ('queued', 'running')
                           AND COALESCE(last_runner_heartbeat_at, started_at)
-                              < now() - interval '{_DAILY_PICKS_ORPHAN_TIMEOUT_HOURS} hours'
-                        RETURNING job_id"""
+                              < now() - interval '{interval_literal}'
+                        RETURNING job_id""",
+                    (reason,),
                 )
                 stale_job_ids = [r[0] for r in stale.fetchall()]
                 if stale_job_ids:

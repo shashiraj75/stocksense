@@ -1585,332 +1585,363 @@ def _generate_picks_inner(
     # after the ThreadPoolExecutor exits.
     _try_job_progress(job_id, "ranking", None, None)
 
-    # ── Score snapshots (section 4) — persist every scored stock for history ──
-    # Piggybacks on the universe scan above so we don't re-fetch anything.
-    _write_score_snapshots(raw, market)
+    # ── Ranking / selection / persistence, wrapped as a nested closure ──────
+    # (2026-07-21 ranking-stall postmortem) so it can run under a bounded
+    # watchdog below: this is a plain re-indent of the pre-existing ranking
+    # body, not a behavioral rewrite — it closes over every local it already
+    # used (raw, regime, candidates, etc.) exactly as before. Kept as a
+    # nested function (not a module-level one) specifically so it does not
+    # need an explicit parameter list for the ~15 enclosing locals it reads —
+    # extracting it to module level would require threading all of them
+    # through as arguments, a much larger and riskier diff for the same
+    # behavior.
+    def _rank_select_and_persist():
+        # ── Phases 3-6 per horizon ────────────────────────────────────────
+        picks: dict[str, list] = {}
+        alpha_engine_meta: dict[str, dict] = {}  # diagnostics for API
+        _issuer_duplicates_suppressed = 0  # suppressed display entries across all horizons
+        # DP-020 — cash/unallocated fraction per horizon (additive; new top-level
+        # payload key, see `payload["portfolio_cash_pct"]` below). 1.0 - sum of
+        # that horizon's published portfolio_weight values. Zero whenever the
+        # cap permitted full investment (the previous, unchanged behaviour);
+        # nonzero only when DPD-005's hard-cap contract left a shortfall
+        # unallocated. Not populated for a horizon with 0 published picks.
+        _portfolio_cash_pct: dict[str, float] = {}
 
-    # ── Phases 3-6 per horizon ────────────────────────────────────────────────
-    picks: dict[str, list] = {}
-    alpha_engine_meta: dict[str, dict] = {}  # diagnostics for API
-    _issuer_duplicates_suppressed = 0  # suppressed display entries across all horizons
-    # DP-020 — cash/unallocated fraction per horizon (additive; new top-level
-    # payload key, see `payload["portfolio_cash_pct"]` below). 1.0 - sum of
-    # that horizon's published portfolio_weight values. Zero whenever the
-    # cap permitted full investment (the previous, unchanged behaviour);
-    # nonzero only when DPD-005's hard-cap contract left a shortfall
-    # unallocated. Not populated for a horizon with 0 published picks.
-    _portfolio_cash_pct: dict[str, float] = {}
+        for horizon in ("short", "medium", "long"):
+            items = raw[horizon]
+            # Drop `raw`'s own reference now that `items` holds it for this
+            # horizon's processing. `raw` is never read again after this line
+            # (verified — only `items = raw[horizon]` reads it, once per
+            # horizon), so nothing downstream needs `raw` to keep all three
+            # horizons' full candidate pools (~400 symbols each, every field
+            # including reasoning/summary/quality_factors text) alive
+            # simultaneously. Without this, a 400-symbol run holds all ~1,200
+            # candidate x horizon entries in memory for the entire function,
+            # instead of at most one horizon's worth at a time.
+            raw[horizon] = None
 
-    for horizon in ("short", "medium", "long"):
-        items = raw[horizon]
-        # Drop `raw`'s own reference now that `items` holds it for this
-        # horizon's processing. `raw` is never read again after this line
-        # (verified — only `items = raw[horizon]` reads it, once per
-        # horizon) and score snapshots were already written for the full
-        # set above, so nothing downstream needs `raw` to keep all three
-        # horizons' full candidate pools (~400 symbols each, every field
-        # including reasoning/summary/quality_factors text) alive
-        # simultaneously. Without this, a 400-symbol run holds all ~1,200
-        # candidate× horizon entries in memory for the entire function,
-        # instead of at most one horizon's worth at a time.
-        raw[horizon] = None
-        if not items:
-            picks[horizon] = []
-            continue
+            # ── Score snapshots (section 4) — persist every scored stock for
+            # history. Written per-horizon, right here, instead of once for
+            # all three horizons up front (the pre-2026-07-21 behavior) — the
+            # ranking-stall postmortem found the process killed ~30-45s after
+            # entering `ranking`, exactly when the old code held the FULL
+            # 3-horizon `raw` dict alive during this write loop. Writing one
+            # horizon's snapshots immediately after that horizon's slot in
+            # `raw` is released keeps the peak retained memory here to one
+            # horizon's pool (~400 entries) instead of all three (~1,200).
+            _write_score_snapshots({horizon: items}, market)
 
-        # Phase 3 — IC weights (regime-adjusted). Containment-gated: returns
-        # the fixed academic-prior weights while production learning is
-        # disabled (the default) — see get_production_ic_weights's docstring.
-        ic_weights = get_production_ic_weights(
-            horizon,
-            market=market,
-            regime_multipliers=regime.get("weight_multipliers"),
-        )
-        log.info(
-            f"[picks] [{market}] {horizon} IC weights "
-            f"({production_alpha_source()}): {ic_weights}"
-        )
+            if not items:
+                picks[horizon] = []
+                continue
 
-        # Phase 4 — Z-score + alpha
-        universe = _zscore_and_rank(
-            items, ic_weights, regime, regime_id, market=market,
-            production_learning_enabled=_production_learning_enabled,
-        )
-        ranked   = sorted(universe, key=lambda x: x.get("ranking_alpha", 0), reverse=True)
-
-        # Quality gate (unchanged) → issuer dedup → per-horizon top-6 slice.
-        # DP-025 foundation: _passes_quality_gate is now a module-level pure
-        # function (see above _deduplicate_by_issuer) so an offline pipeline-
-        # replay harness can call the exact same eligibility rule production
-        # uses, instead of a second, potentially-diverging implementation.
-        all_buy = [
-            r for r in ranked
-            if r.get("signal") == "BUY" and _passes_quality_gate(r, horizon)
-        ]
-        # Issuer-level dedup: prevent two share classes of the same company
-        # from both appearing as separate Daily Picks opportunities.
-        all_buy_deduped, _n_suppressed = _deduplicate_by_issuer(all_buy, market)
-        _issuer_duplicates_suppressed += _n_suppressed
-
-        if horizon == "short":
-            # DP-025 foundation: see _select_short_term_top_six's own
-            # docstring (module level, above) for the full rationale —
-            # unchanged from before extraction.
-            top_buy = _select_short_term_top_six(all_buy_deduped)
-        else:
-            # Medium/long-term: tier quota so the list can't collapse back to
-            # all-large-cap even though large caps often score higher alpha
-            # on average — the explicit reason this stratification exists.
-            top_buy = _select_with_tier_quota(all_buy_deduped, _MEDIUM_LONG_TIER_QUOTA_6)
-
-        # Phase 6 — Portfolio optimisation. DP-025 foundation: the actual
-        # weighting/cash math now lives in the module-level, I/O-free
-        # _compute_portfolio_allocation so a pipeline replay can call it
-        # directly with a frozen returns matrix instead of fetching one.
-        # DP-021: _compute_portfolio_allocation is now the single allocation
-        # authority for every non-empty slate size (previously a single
-        # qualifying pick bypassed it with a separate 50% hard-code here).
-        if top_buy:
-            alphas = [r.get("ranking_alpha", 0) for r in top_buy]
-            symbols = [r["symbol"] for r in top_buy]
-            # A returns matrix is only useful (and only fetched) when there
-            # are 2+ names to compute a covariance across — a lone pick's
-            # allocation doesn't depend on it.
-            ret_matrix = _fetch_returns_matrix(symbols, market) if len(top_buy) > 1 else None
-            port_weights, cash_pct = _compute_portfolio_allocation(alphas, ret_matrix, regime_label)
-            for pick, w in zip(top_buy, port_weights):
-                pick["portfolio_weight"] = w
-            _portfolio_cash_pct[horizon] = cash_pct
-
-        # Final-pick selection metadata for the alpha_observations snapshot
-        # below, kept OUT of the `top_buy`/`universe` dicts themselves —
-        # those dicts are serialized as-is into the published payload
-        # (`picks[horizon] = top_buy`), so adding new keys to them would
-        # change the published Daily Picks JSON. portfolio_weight is already
-        # set directly on `pick` above (pre-existing behavior, already part
-        # of today's payload) — only pick_rank/is_daily_pick are net-new for
-        # this phase, and they stay in this side dict instead.
-        _pick_meta_by_symbol = {
-            _pick["symbol"]: {"pick_rank": _rank, "portfolio_weight": _pick.get("portfolio_weight")}
-            for _rank, _pick in enumerate(top_buy, start=1)
-        }
-
-        # Published-payload safety: `sentiment_available`/`quality_available`
-        # (Phase 2A additions to _predict_stock's return dict, needed below
-        # to build alpha_observations rows honestly) must NOT appear in the
-        # published Daily Picks JSON — strip them from the copies assigned
-        # to `picks[horizon]` only; `universe` (used for the snapshot below)
-        # keeps the original dicts untouched.
-        picks[horizon] = [
-            {k: v for k, v in pick.items() if k not in _ALPHA_OBS_ONLY_KEYS}
-            for pick in top_buy
-        ]
-
-        # ── Phase 2A: shadow-only canonical alpha_observations snapshot ──
-        # Built from the COMPLETE enriched cross-sectional universe (every
-        # successfully scored, non-rejected candidate — not just the Top-6
-        # winners), after z-scoring, final selection, and portfolio
-        # optimisation have all completed, so selection metadata is correct
-        # at insert time. Persisted once per horizon in a single bulk call.
-        # Failure here is logged and swallowed — it must never affect the
-        # Daily Picks job lifecycle or the payload already computed above.
-        try:
-            _obs_rows = [
-                row for row in (
-                    _build_alpha_observation_row(
-                        cand, run_id=_alpha_run_id, market=market, horizon=horizon,
-                        run_generated_at=_alpha_run_generated_at,
-                        run_session_date=_alpha_run_session_date,
-                        regime_id=regime_id, regime_label=regime_label,
-                        pick_meta=_pick_meta_by_symbol.get(cand.get("symbol")),
-                    )
-                    for cand in universe
-                )
-                if row is not None
-            ]
-            if _obs_rows:
-                _ok = _alpha_obs.save_observations(_obs_rows)
-                if not _ok:
-                    log.warning(
-                        f"[alpha_observations] [{market}] [{horizon}] save_observations "
-                        f"reported failure for {len(_obs_rows)} rows (non-fatal, shadow-only)."
-                    )
-        except Exception as e:
-            log.warning(
-                f"[alpha_observations] [{market}] [{horizon}] snapshot persistence failed "
-                f"(non-fatal, shadow-only): {e}"
+            # Phase 3 — IC weights (regime-adjusted). Containment-gated: returns
+            # the fixed academic-prior weights while production learning is
+            # disabled (the default) — see get_production_ic_weights's docstring.
+            ic_weights = get_production_ic_weights(
+                horizon,
+                market=market,
+                regime_multipliers=regime.get("weight_multipliers"),
             )
-        alpha_engine_meta[horizon] = {
-            "ic_weights":  ic_weights,
-            "regime":      regime_label,
-            "n_scored":    len(universe),
-            "n_buy":       sum(1 for r in universe if r.get("signal") == "BUY"),
-            # True only when the meta-model actually determined ranking for
-            # at least one published pick — not merely that a shadow value
-            # was computed. See "meta_alpha_used_for_ranking" per-item.
-            "meta_model":  any(r.get("meta_alpha_used_for_ranking") for r in top_buy),
-            # Learning Alpha Engine remediation, Phase 1 — observability.
-            "production_alpha_source": production_alpha_source(),
-            "shadow_meta_model_available": any(r.get("meta_alpha") is not None for r in top_buy),
-            "containment_reason": containment_reason(),
-            "learning_dataset_version": LEARNING_DATASET_VERSION,
-        }
-        log.info(
-            f"[picks] [{market}] {horizon}: {len(universe)} scored, "
-            f"{alpha_engine_meta[horizon]['n_buy']} BUY, "
-            f"{len(top_buy)} picks | "
-            f"meta_model={'on' if alpha_engine_meta[horizon]['meta_model'] else 'off (IC alpha)'} | "
-            f"alpha_source={alpha_engine_meta[horizon]['production_alpha_source']}"
-        )
+            log.info(
+                f"[picks] [{market}] {horizon} IC weights "
+                f"({production_alpha_source()}): {ic_weights}"
+            )
 
-    # ── Phase 7: Log predictions to SQLite ────────────────────────────────────
-    for horizon, items in picks.items():
-        for rank, pick in enumerate(items, start=1):
+            # Phase 4 — Z-score + alpha
+            universe = _zscore_and_rank(
+                items, ic_weights, regime, regime_id, market=market,
+                production_learning_enabled=_production_learning_enabled,
+            )
+            ranked   = sorted(universe, key=lambda x: x.get("ranking_alpha", 0), reverse=True)
+
+            # Quality gate (unchanged) → issuer dedup → per-horizon top-6 slice.
+            # DP-025 foundation: _passes_quality_gate is now a module-level pure
+            # function (see above _deduplicate_by_issuer) so an offline pipeline-
+            # replay harness can call the exact same eligibility rule production
+            # uses, instead of a second, potentially-diverging implementation.
+            all_buy = [
+                r for r in ranked
+                if r.get("signal") == "BUY" and _passes_quality_gate(r, horizon)
+            ]
+            # Issuer-level dedup: prevent two share classes of the same company
+            # from both appearing as separate Daily Picks opportunities.
+            all_buy_deduped, _n_suppressed = _deduplicate_by_issuer(all_buy, market)
+            _issuer_duplicates_suppressed += _n_suppressed
+
+            if horizon == "short":
+                # DP-025 foundation: see _select_short_term_top_six's own
+                # docstring (module level, above) for the full rationale —
+                # unchanged from before extraction.
+                top_buy = _select_short_term_top_six(all_buy_deduped)
+            else:
+                # Medium/long-term: tier quota so the list can't collapse back to
+                # all-large-cap even though large caps often score higher alpha
+                # on average — the explicit reason this stratification exists.
+                top_buy = _select_with_tier_quota(all_buy_deduped, _MEDIUM_LONG_TIER_QUOTA_6)
+
+            # Phase 6 — Portfolio optimisation. DP-025 foundation: the actual
+            # weighting/cash math now lives in the module-level, I/O-free
+            # _compute_portfolio_allocation so a pipeline replay can call it
+            # directly with a frozen returns matrix instead of fetching one.
+            # DP-021: _compute_portfolio_allocation is now the single allocation
+            # authority for every non-empty slate size (previously a single
+            # qualifying pick bypassed it with a separate 50% hard-code here).
+            if top_buy:
+                alphas = [r.get("ranking_alpha", 0) for r in top_buy]
+                symbols = [r["symbol"] for r in top_buy]
+                # A returns matrix is only useful (and only fetched) when there
+                # are 2+ names to compute a covariance across — a lone pick's
+                # allocation doesn't depend on it.
+                ret_matrix = _fetch_returns_matrix(symbols, market) if len(top_buy) > 1 else None
+                port_weights, cash_pct = _compute_portfolio_allocation(alphas, ret_matrix, regime_label)
+                for pick, w in zip(top_buy, port_weights):
+                    pick["portfolio_weight"] = w
+                _portfolio_cash_pct[horizon] = cash_pct
+
+            # Final-pick selection metadata for the alpha_observations snapshot
+            # below, kept OUT of the `top_buy`/`universe` dicts themselves —
+            # those dicts are serialized as-is into the published payload
+            # (`picks[horizon] = top_buy`), so adding new keys to them would
+            # change the published Daily Picks JSON. portfolio_weight is already
+            # set directly on `pick` above (pre-existing behavior, already part
+            # of today's payload) — only pick_rank/is_daily_pick are net-new for
+            # this phase, and they stay in this side dict instead.
+            _pick_meta_by_symbol = {
+                _pick["symbol"]: {"pick_rank": _rank, "portfolio_weight": _pick.get("portfolio_weight")}
+                for _rank, _pick in enumerate(top_buy, start=1)
+            }
+
+            # Published-payload safety: `sentiment_available`/`quality_available`
+            # (Phase 2A additions to _predict_stock's return dict, needed below
+            # to build alpha_observations rows honestly) must NOT appear in the
+            # published Daily Picks JSON — strip them from the copies assigned
+            # to `picks[horizon]` only; `universe` (used for the snapshot below)
+            # keeps the original dicts untouched.
+            picks[horizon] = [
+                {k: v for k, v in pick.items() if k not in _ALPHA_OBS_ONLY_KEYS}
+                for pick in top_buy
+            ]
+
+            # ── Phase 2A: shadow-only canonical alpha_observations snapshot ──
+            # Built from the COMPLETE enriched cross-sectional universe (every
+            # successfully scored, non-rejected candidate — not just the Top-6
+            # winners), after z-scoring, final selection, and portfolio
+            # optimisation have all completed, so selection metadata is correct
+            # at insert time. Persisted once per horizon in a single bulk call.
+            # Failure here is logged and swallowed — it must never affect the
+            # Daily Picks job lifecycle or the payload already computed above.
             try:
-                log_prediction(
-                    symbol=pick["symbol"],
-                    horizon=horizon,
-                    factor_zscores=pick.get("factor_zscores", {}),
-                    combined_alpha=pick.get("combined_alpha", 0),
-                    meta_alpha=pick.get("meta_alpha"),
-                    signal=pick.get("signal", "BUY"),
-                    price=pick.get("price") or 0.0,
-                    regime_label=regime_label,
-                    confidence_score=pick.get("confidence"),
-                    is_daily_pick=True,
-                    pick_rank=rank,
-                    market=market,
-                    _writer_source="daily_picks.phase7_final_pick",
-                )
+                _obs_rows = [
+                    row for row in (
+                        _build_alpha_observation_row(
+                            cand, run_id=_alpha_run_id, market=market, horizon=horizon,
+                            run_generated_at=_alpha_run_generated_at,
+                            run_session_date=_alpha_run_session_date,
+                            regime_id=regime_id, regime_label=regime_label,
+                            pick_meta=_pick_meta_by_symbol.get(cand.get("symbol")),
+                        )
+                        for cand in universe
+                    )
+                    if row is not None
+                ]
+                if _obs_rows:
+                    _ok = _alpha_obs.save_observations(_obs_rows)
+                    if not _ok:
+                        log.warning(
+                            f"[alpha_observations] [{market}] [{horizon}] save_observations "
+                            f"reported failure for {len(_obs_rows)} rows (non-fatal, shadow-only)."
+                        )
             except Exception as e:
-                log.warning(f"[picks] [{market}] Log error for {pick['symbol']}: {e}")
+                log.warning(
+                    f"[alpha_observations] [{market}] [{horizon}] snapshot persistence failed "
+                    f"(non-fatal, shadow-only): {e}"
+                )
+            alpha_engine_meta[horizon] = {
+                "ic_weights":  ic_weights,
+                "regime":      regime_label,
+                "n_scored":    len(universe),
+                "n_buy":       sum(1 for r in universe if r.get("signal") == "BUY"),
+                # True only when the meta-model actually determined ranking for
+                # at least one published pick — not merely that a shadow value
+                # was computed. See "meta_alpha_used_for_ranking" per-item.
+                "meta_model":  any(r.get("meta_alpha_used_for_ranking") for r in top_buy),
+                # Learning Alpha Engine remediation, Phase 1 — observability.
+                "production_alpha_source": production_alpha_source(),
+                "shadow_meta_model_available": any(r.get("meta_alpha") is not None for r in top_buy),
+                "containment_reason": containment_reason(),
+                "learning_dataset_version": LEARNING_DATASET_VERSION,
+            }
+            log.info(
+                f"[picks] [{market}] {horizon}: {len(universe)} scored, "
+                f"{alpha_engine_meta[horizon]['n_buy']} BUY, "
+                f"{len(top_buy)} picks | "
+                f"meta_model={'on' if alpha_engine_meta[horizon]['meta_model'] else 'off (IC alpha)'} | "
+                f"alpha_source={alpha_engine_meta[horizon]['production_alpha_source']}"
+            )
 
-    elapsed = round(time.time() - start, 1)
-    total = sum(len(v) for v in picks.values())
-    # _phase0_universe_size: the ACTUAL count of symbols passed to Phase-0
-    # bulk screening for this run (post-eligibility-filter and post-screener-
-    # intersection). Replaces the former `len(_UNIVERSE.get(market, []))` which
-    # always returned the raw static-universe size (12,011 for US) regardless
-    # of what the screener returned — the root cause of the UI showing
-    # "screened from 12,079 US stocks" even when the screener narrowed it.
-    log.info(f"[picks] [{market}] Done in {elapsed}s — {total} BUY picks found across "
-          f"{len(candidates)} candidates from {_phase0_universe_size} stocks "
-          f"(universe_used={_universe_used}, degraded={_universe_degraded}).")
+        # ── Phase 7: Log predictions to SQLite ────────────────────────────────────
+        for horizon, items in picks.items():
+            for rank, pick in enumerate(items, start=1):
+                try:
+                    log_prediction(
+                        symbol=pick["symbol"],
+                        horizon=horizon,
+                        factor_zscores=pick.get("factor_zscores", {}),
+                        combined_alpha=pick.get("combined_alpha", 0),
+                        meta_alpha=pick.get("meta_alpha"),
+                        signal=pick.get("signal", "BUY"),
+                        price=pick.get("price") or 0.0,
+                        regime_label=regime_label,
+                        confidence_score=pick.get("confidence"),
+                        is_daily_pick=True,
+                        pick_rank=rank,
+                        market=market,
+                        _writer_source="daily_picks.phase7_final_pick",
+                    )
+                except Exception as e:
+                    log.warning(f"[picks] [{market}] Log error for {pick['symbol']}: {e}")
 
-    payload = {
-        "generated_at":      datetime.now(timezone.utc).isoformat(),
-        "market":            market,
-        # source_job_id: durable base-job provenance for this payload. Equals
-        # the daily_picks_jobs.job_id supplied to generate_picks() in
-        # production endpoint-driven generation. In test/local generation
-        # (no durable job_id — job_id param is None), left as None rather
-        # than fabricated — never the Alpha Observation fallback run_id
-        # (_alpha_run_id above), which exists for a different purpose and
-        # is not a durable job-state row this field can be verified against.
-        # Consumed by services.premarket_finalizer's fail-closed base
-        # validation to confirm which specific base run a premarket
-        # finalization is being applied to.
-        "source_job_id":     job_id,
-        "currency":          currency,
-        "picks":             picks,
-        "alpha_engine":      alpha_engine_meta,
-        "regime":            {"label": regime_label, "description": regime["description"]},
-        # DP-020 / DPD-005 (additive, new field): per-horizon cash/unallocated
-        # fraction (0-1) left over after portfolio optimisation's hard
-        # per-name cap. Zero (the previous, unchanged behaviour) whenever
-        # the cap permitted full investment; only nonzero when too few
-        # qualifying picks existed to invest 100% without exceeding the cap.
-        # Keyed only by horizons that produced at least one published pick.
-        "portfolio_cash_pct": _portfolio_cash_pct,
-        # ── Legacy field — kept for backward compatibility ─────────────────────
-        # Represents the size of the eligible universe entering Phase-0 bulk
-        # screening (equivalent to universe_eligible_size below).  New callers
-        # should prefer the explicit count fields added below.
-        "screened_from":              _phase0_universe_size,
-        # ── Truthful pipeline-count fields ─────────────────────────────────────
-        # screener_raw_count: symbols returned by Yahoo screener before local
-        #   eligibility filtering.  null when screener was not used (anchor or
-        #   full-NSE fallback).  Never fabricated from a configured cap.
-        "screener_raw_count":         _screener_raw_count,
-        # universe_eligible_size: symbols remaining after local US heuristic
-        #   eligibility filter (or raw screener count for IN); these are the
-        #   symbols that entered Phase-0 bulk momentum scoring.
-        "universe_eligible_size":     _phase0_universe_size,
-        # universe_target_count: the INTENDED stratified-universe size for
-        #   this market — lets the UI distinguish "we aimed for 400 and got
-        #   400" from a degraded/truncated run. Same target for both markets
-        #   since the large/mid/small stratification is symmetric now.
-        "universe_target_count":      _TARGET_UNIVERSE_SIZE,
-        # deep_prediction_candidates: symbols actually sent to full PredictionEngine.
-        #   Equals min(universe_eligible_size, PICKS_CANDIDATES env-var cap).
-        "deep_prediction_candidates": len(candidates),
-        # phase_1_task_total: deep_prediction_candidates × evaluated horizons (3).
-        "phase_1_task_total":         _phase1_task_total,
-        # final_candidate_count: number of unique candidate objects that entered
-        #   Phase-1 deep prediction.  Equals deep_prediction_candidates and
-        #   payload["candidates"]; each symbol is counted once regardless of
-        #   how many horizons it qualifies in.  Never derived from BUY-signal
-        #   counts, per-horizon displayed picks, or issuer-dedup pass counts.
-        "final_candidate_count":      len(candidates),
-        # ── Universe metadata ──────────────────────────────────────────────────
-        "universe_used":     _universe_used,   # "screener" | "anchor" | "full_universe"
-        "universe_degraded": _universe_degraded,  # True when live screener not used (US)
-        "candidates":        len(candidates),  # legacy alias for deep_prediction_candidates
-        # ── Release 12C: explicit universe-selection observability ────────────
-        # universe_candidate_count: size of the SELECTED source universe
-        #   (screener result or fallback list) before Phase-0 momentum
-        #   scoring truncates it to n_candidates. Equal to universe_eligible_size
-        #   above — kept as its own explicitly-named field per Release 12C's
-        #   contract so a task-count field (phase_task_total, below) can never
-        #   be mistaken for universe breadth.
-        "universe_candidate_count":         _selection_meta.get("universe_candidate_count"),
-        # universe_selection_attempts: number of screener attempts actually made
-        #   (IN only retries; always 1 for US today).
-        "universe_selection_attempts":      _selection_meta.get("attempts"),
-        # universe_selection_reason: stable, human-readable machine-safe reason
-        #   — e.g. "healthy_screener_universe", "screener_rate_limit_exhausted",
-        #   "screener_transient_failure_exhausted", "screener_insufficient_symbols",
-        #   "screener_non_transient_error".
-        "universe_selection_reason":        _selection_meta.get("reason"),
-        # universe_selection_error_category: stable category, never a raw
-        #   exception/stack trace — one of "rate_limited", "transient_upstream_error",
-        #   "insufficient_symbols", "non_transient_error", "none".
-        "universe_selection_error_category": _selection_meta.get("error_category"),
-        # phase_task_processed / phase_task_total: explicitly the CURRENT
-        #   phase's work-unit counts (deep_prediction_candidates × horizons at
-        #   persist time, since Phase-1 is the last countable phase). Never
-        #   the universe size — see universe_candidate_count above for that.
-        "phase_task_processed":              _phase1_task_total,
-        "phase_task_total":                  _phase1_task_total,
-        # ── Issuer deduplication metadata ─────────────────────────────────────
-        "issuer_dedup_applied":          True,
-        # issuer_duplicates_suppressed: total display entries removed across all
-        #   horizons because their issuer already appeared earlier in that
-        #   horizon's ranked list.  Not the count of unique issuers suppressed.
-        "issuer_duplicates_suppressed":  _issuer_duplicates_suppressed,
-    }
+        elapsed = round(time.time() - start, 1)
+        total = sum(len(v) for v in picks.values())
+        # _phase0_universe_size: the ACTUAL count of symbols passed to Phase-0
+        # bulk screening for this run (post-eligibility-filter and post-screener-
+        # intersection). Replaces the former `len(_UNIVERSE.get(market, []))` which
+        # always returned the raw static-universe size (12,011 for US) regardless
+        # of what the screener returned — the root cause of the UI showing
+        # "screened from 12,079 US stocks" even when the screener narrowed it.
+        log.info(f"[picks] [{market}] Done in {elapsed}s — {total} BUY picks found across "
+              f"{len(candidates)} candidates from {_phase0_universe_size} stocks "
+              f"(universe_used={_universe_used}, degraded={_universe_degraded}).")
 
-    # State: payload fully constructed; about to write to durable storage.
-    _try_job_progress(job_id, "persisting", None, None)
+        payload = {
+            "generated_at":      datetime.now(timezone.utc).isoformat(),
+            "market":            market,
+            # source_job_id: durable base-job provenance for this payload. Equals
+            # the daily_picks_jobs.job_id supplied to generate_picks() in
+            # production endpoint-driven generation. In test/local generation
+            # (no durable job_id — job_id param is None), left as None rather
+            # than fabricated — never the Alpha Observation fallback run_id
+            # (_alpha_run_id above), which exists for a different purpose and
+            # is not a durable job-state row this field can be verified against.
+            # Consumed by services.premarket_finalizer's fail-closed base
+            # validation to confirm which specific base run a premarket
+            # finalization is being applied to.
+            "source_job_id":     job_id,
+            "currency":          currency,
+            "picks":             picks,
+            "alpha_engine":      alpha_engine_meta,
+            "regime":            {"label": regime_label, "description": regime["description"]},
+            # DP-020 / DPD-005 (additive, new field): per-horizon cash/unallocated
+            # fraction (0-1) left over after portfolio optimisation's hard
+            # per-name cap. Zero (the previous, unchanged behaviour) whenever
+            # the cap permitted full investment; only nonzero when too few
+            # qualifying picks existed to invest 100% without exceeding the cap.
+            # Keyed only by horizons that produced at least one published pick.
+            "portfolio_cash_pct": _portfolio_cash_pct,
+            # ── Legacy field — kept for backward compatibility ─────────────────────
+            # Represents the size of the eligible universe entering Phase-0 bulk
+            # screening (equivalent to universe_eligible_size below).  New callers
+            # should prefer the explicit count fields added below.
+            "screened_from":              _phase0_universe_size,
+            # ── Truthful pipeline-count fields ─────────────────────────────────────
+            # screener_raw_count: symbols returned by Yahoo screener before local
+            #   eligibility filtering.  null when screener was not used (anchor or
+            #   full-NSE fallback).  Never fabricated from a configured cap.
+            "screener_raw_count":         _screener_raw_count,
+            # universe_eligible_size: symbols remaining after local US heuristic
+            #   eligibility filter (or raw screener count for IN); these are the
+            #   symbols that entered Phase-0 bulk momentum scoring.
+            "universe_eligible_size":     _phase0_universe_size,
+            # universe_target_count: the INTENDED stratified-universe size for
+            #   this market — lets the UI distinguish "we aimed for 400 and got
+            #   400" from a degraded/truncated run. Same target for both markets
+            #   since the large/mid/small stratification is symmetric now.
+            "universe_target_count":      _TARGET_UNIVERSE_SIZE,
+            # deep_prediction_candidates: symbols actually sent to full PredictionEngine.
+            #   Equals min(universe_eligible_size, PICKS_CANDIDATES env-var cap).
+            "deep_prediction_candidates": len(candidates),
+            # phase_1_task_total: deep_prediction_candidates × evaluated horizons (3).
+            "phase_1_task_total":         _phase1_task_total,
+            # final_candidate_count: number of unique candidate objects that entered
+            #   Phase-1 deep prediction.  Equals deep_prediction_candidates and
+            #   payload["candidates"]; each symbol is counted once regardless of
+            #   how many horizons it qualifies in.  Never derived from BUY-signal
+            #   counts, per-horizon displayed picks, or issuer-dedup pass counts.
+            "final_candidate_count":      len(candidates),
+            # ── Universe metadata ──────────────────────────────────────────────────
+            "universe_used":     _universe_used,   # "screener" | "anchor" | "full_universe"
+            "universe_degraded": _universe_degraded,  # True when live screener not used (US)
+            "candidates":        len(candidates),  # legacy alias for deep_prediction_candidates
+            # ── Release 12C: explicit universe-selection observability ────────────
+            # universe_candidate_count: size of the SELECTED source universe
+            #   (screener result or fallback list) before Phase-0 momentum
+            #   scoring truncates it to n_candidates. Equal to universe_eligible_size
+            #   above — kept as its own explicitly-named field per Release 12C's
+            #   contract so a task-count field (phase_task_total, below) can never
+            #   be mistaken for universe breadth.
+            "universe_candidate_count":         _selection_meta.get("universe_candidate_count"),
+            # universe_selection_attempts: number of screener attempts actually made
+            #   (IN only retries; always 1 for US today).
+            "universe_selection_attempts":      _selection_meta.get("attempts"),
+            # universe_selection_reason: stable, human-readable machine-safe reason
+            #   — e.g. "healthy_screener_universe", "screener_rate_limit_exhausted",
+            #   "screener_transient_failure_exhausted", "screener_insufficient_symbols",
+            #   "screener_non_transient_error".
+            "universe_selection_reason":        _selection_meta.get("reason"),
+            # universe_selection_error_category: stable category, never a raw
+            #   exception/stack trace — one of "rate_limited", "transient_upstream_error",
+            #   "insufficient_symbols", "non_transient_error", "none".
+            "universe_selection_error_category": _selection_meta.get("error_category"),
+            # phase_task_processed / phase_task_total: explicitly the CURRENT
+            #   phase's work-unit counts (deep_prediction_candidates × horizons at
+            #   persist time, since Phase-1 is the last countable phase). Never
+            #   the universe size — see universe_candidate_count above for that.
+            "phase_task_processed":              _phase1_task_total,
+            "phase_task_total":                  _phase1_task_total,
+            # ── Issuer deduplication metadata ─────────────────────────────────────
+            "issuer_dedup_applied":          True,
+            # issuer_duplicates_suppressed: total display entries removed across all
+            #   horizons because their issuer already appeared earlier in that
+            #   horizon's ranked list.  Not the count of unique issuers suppressed.
+            "issuer_duplicates_suppressed":  _issuer_duplicates_suppressed,
+        }
 
-    # Save to disk (best-effort — ephemeral on Render free tier)
-    try:
-        with open(_cache_file(market), "w") as f:
-            json.dump(payload, f)
-    except Exception as e:
-        log.warning(f"[picks] [{market}] Disk cache write failed: {e}")
+        # State: payload fully constructed; about to write to durable storage.
+        _try_job_progress(job_id, "persisting", None, None)
 
-    # Save to Postgres (survives redeploys)
-    persisted_at = None
-    if os.getenv("USE_POSTGRES") == "1":
-        from services.postgres_store import save_picks_to_db
-        if save_picks_to_db(payload, market=market):
-            persisted_at = datetime.now(timezone.utc)
-            log.info(f"[picks] [{market}] Saved to Postgres.")
-        else:
-            log.warning(f"[picks] [{market}] Postgres save returned False — picks not durably persisted.")
+        # Save to disk (best-effort — ephemeral on Render free tier)
+        try:
+            with open(_cache_file(market), "w") as f:
+                json.dump(payload, f)
+        except Exception as e:
+            log.warning(f"[picks] [{market}] Disk cache write failed: {e}")
 
-    return payload, persisted_at
+        # Save to Postgres (survives redeploys)
+        persisted_at = None
+        if os.getenv("USE_POSTGRES") == "1":
+            from services.postgres_store import save_picks_to_db
+            if save_picks_to_db(payload, market=market):
+                persisted_at = datetime.now(timezone.utc)
+                log.info(f"[picks] [{market}] Saved to Postgres.")
+            else:
+                log.warning(f"[picks] [{market}] Postgres save returned False — picks not durably persisted.")
+
+        return payload, persisted_at
+
+    # Run the ranking/selection/persistence closure under a bounded watchdog
+    # only when there's a durable job row to protect (mirrors the `use_job`
+    # condition in generate_picks() above). Without a job_id (test/local
+    # direct calls to _generate_picks_inner), there is no daily_picks_jobs
+    # row that could be left falsely 'running', so the watchdog has nothing
+    # to protect and is skipped — same output either way.
+    if job_id and os.getenv("USE_POSTGRES") == "1":
+        return _run_with_ranking_watchdog(
+            _rank_select_and_persist, job_id=job_id, market=market,
+            timeout_seconds=_RANKING_WATCHDOG_SECONDS,
+        )
+    return _rank_select_and_persist()
 
 
 def get_cached_picks(market: str = "IN") -> dict | None:
@@ -1981,6 +2012,90 @@ def _heartbeat_loop(job_id: str, stop_event: _threading.Event) -> None:
             record_daily_picks_job_heartbeat(job_id, datetime.now(timezone.utc))
         except Exception:
             pass  # heartbeat failure must never affect generation
+
+
+# Ranking-stage watchdog (2026-07-21 ranking-stall postmortem). No directly
+# observed ranking-only duration exists — both 2026-07-21 US incidents died
+# before ranking ever completed (job 1: deployment orphan mid phase_1, never
+# reached ranking; job 2: process killed ~30-45s after entering ranking).
+# Derived instead from: (a) phase_1's own observed throughput for the same
+# run (1188 tasks in ~35 minutes end to end, ~130 tasks/5min steady state) —
+# ranking has no per-item external API calls (only a handful of
+# _fetch_returns_matrix lookups for the top ~6 picks per horizon) and
+# processes the same ~1,200-row candidate pool once each, so it is expected
+# to be at least an order of magnitude faster than phase_1; (b) the existing
+# _HEARTBEAT_UNRESPONSIVE_SECS=180s presentation threshold in
+# api/routers/picks.py, which this must sit comfortably above so the
+# watchdog never fires on transient slowness the UI itself only flags as
+# "slow", not dead. 600s (10 minutes) gives roughly a 20-30x margin over a
+# realistic ranking duration while staying far below phase_1's own ~35min
+# run length — revisit once real post-fix ranking-duration telemetry exists.
+_RANKING_WATCHDOG_SECONDS = 600
+
+
+class _RankingTimeoutError(Exception):
+    """Raised in the calling thread when the ranking-stage watchdog fires."""
+
+
+def _run_with_ranking_watchdog(fn, *, job_id: str, market: str, timeout_seconds: int):
+    """
+    Run `fn()` (the ranking/selection/persistence closure) under a bounded
+    watchdog so a hang in that stage cannot leave the job's durable row
+    falsely `running` forever.
+
+    Important limitation, stated explicitly rather than overclaimed: Python
+    offers no safe way to forcibly interrupt another thread's execution, so
+    if `fn` is genuinely stuck (e.g. blocked I/O, an infinite loop) the
+    watchdog cannot stop it — it only ensures the JOB'S RECORDED STATE
+    reaches a terminal, honest 'failed' status (with a lease release) once
+    the timeout elapses, in this thread, independent of whether the stuck
+    computation itself ever returns. This protects against true in-process
+    hangs. It does NOT and cannot protect against a hard process kill
+    (OOM/SIGKILL) — nothing in the killed process runs at that point,
+    including this watchdog's own timer thread. That gap is covered
+    separately by the periodic external orphan-reconciliation sweep (see
+    services.postgres_store.reconcile_stale_daily_picks_jobs and
+    api.main's periodic reconciliation loop), which runs from whatever
+    process is alive *after* a kill, not the one that died.
+    """
+    fired = _threading.Event()
+
+    def _on_timeout():
+        fired.set()
+        log.error(
+            f"[picks] [{market}] ranking watchdog fired after {timeout_seconds}s "
+            f"for job {job_id} — marking failed and releasing lease."
+        )
+        try:
+            from services.postgres_store import mark_daily_picks_job_failed
+            mark_daily_picks_job_failed(
+                job_id, datetime.now(timezone.utc),
+                f"ranking_timeout: exceeded {timeout_seconds}s watchdog",
+            )
+        except Exception as e:
+            log.warning(f"[picks] [{market}] ranking watchdog: could not mark job failed: {e}")
+        try:
+            from services.postgres_store import release_heavy_workload_lease
+            release_heavy_workload_lease(job_id)
+        except Exception as e:
+            # Logged, never re-raised: a failed lease-release attempt must
+            # not erase or mask the timeout failure just persisted above.
+            log.warning(f"[picks] [{market}] ranking watchdog: could not release lease: {e}")
+
+    timer = _threading.Timer(timeout_seconds, _on_timeout)
+    timer.daemon = True
+    timer.start()
+    try:
+        result = fn()
+    finally:
+        timer.cancel()
+    if fired.is_set():
+        # The watchdog already persisted 'failed' + released the lease above
+        # (best-effort, before `fn` happened to return) — raise so the
+        # caller's own except-block does not ALSO try to mark it terminal a
+        # second time with a different message.
+        raise _RankingTimeoutError(f"ranking exceeded {timeout_seconds}s watchdog")
+    return result
 
 
 def _try_job_progress(

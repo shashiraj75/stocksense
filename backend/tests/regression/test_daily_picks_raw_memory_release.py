@@ -8,8 +8,21 @@ memory climbing to 98% of an 8GB container limit to `generate_picks()`'s
 horizons for a full US run) and holds ALL of them — full reasoning text,
 quality-factor breakdowns, bull/bear cases — in `raw` simultaneously for
 the rest of the function, even though the per-horizon ranking loop only
-processes one horizon at a time and score snapshots (the only consumer
-that needs the full set) already ran before that loop starts.
+processes one horizon at a time.
+
+2026-07-21 update: a second incident (a different US job, ranking-stall
+postmortem) found the process killed while `_write_score_snapshots` ran
+over the FULL 3-horizon `raw` dict — which at the time still ran once,
+before this loop, specifically because it was believed to be "the one
+consumer that needs the full set". That call was moved per-horizon,
+immediately after each horizon's own `raw[horizon] = None` release, so the
+peak retained memory during the snapshot-write loop dropped from all three
+horizons' pools (~1,200 entries) to one (~400) — see
+test_score_snapshots_written_per_horizon_not_for_full_raw_dict_up_front in
+test_ranking_stage_lifecycle.py for the regression guard on that change.
+The per-horizon *release* tested below is unaffected by that change; only
+the now-obsolete "snapshots run before the loop" assumption needed
+updating (see the last test in this file).
 
 `generate_picks()` itself is a large, deeply-integrated function (screener
 calls, regime detection, DB writes, Telegram, multiple external services)
@@ -32,7 +45,7 @@ _SOURCE = (Path(__file__).parent.parent.parent / "services" / "daily_picks.py").
 def test_raw_horizon_reference_is_released_immediately_after_capture():
     assert (
         'items = raw[horizon]\n'
-        '        # Drop `raw`\'s own reference now that `items` holds it for this'
+        '            # Drop `raw`\'s own reference now that `items` holds it for this'
     ) in _SOURCE, (
         "The release must happen immediately after `items = raw[horizon]` "
         "captures the reference this horizon's processing actually needs — "
@@ -52,7 +65,7 @@ def test_release_happens_before_the_empty_items_early_return():
     # any horizon that legitimately has no items.
     idx_items = _SOURCE.index("items = raw[horizon]")
     idx_release = _SOURCE.index("raw[horizon] = None")
-    idx_early_return = _SOURCE.index("if not items:\n            picks[horizon] = []")
+    idx_early_return = _SOURCE.index("if not items:\n                picks[horizon] = []")
     assert idx_items < idx_release < idx_early_return
 
 
@@ -85,11 +98,23 @@ def test_raw_dict_is_never_read_again_after_the_horizon_loop_starts():
     )
 
 
-def test_write_score_snapshots_runs_before_the_release_loop_so_full_data_was_available():
-    # The release is only safe because _write_score_snapshots(raw, market)
-    # — the one consumer that legitimately needs every candidate's
-    # quality_factors, not just the eventual Top-6 winners — already
-    # completed before the per-horizon loop (and its release) begins.
-    idx_snapshot_call = _SOURCE.index("_write_score_snapshots(raw, market)")
-    idx_loop_start = _SOURCE.index('for horizon in ("short", "medium", "long"):')
-    assert idx_snapshot_call < idx_loop_start
+def test_write_score_snapshots_runs_per_horizon_after_that_horizons_release():
+    # 2026-07-21 update: _write_score_snapshots no longer runs once for the
+    # full `raw` dict before this loop (that was itself the peak-memory
+    # instant a later incident's process was killed at — see this file's
+    # module docstring). It now runs per-horizon, using only that horizon's
+    # `items` — captured AFTER `raw[horizon]` is released to None, so the
+    # snapshot write itself never holds more than one horizon's pool alive.
+    assert "_write_score_snapshots(raw, market)" not in _SOURCE, (
+        "the whole-`raw` snapshot call must not exist any more — it was "
+        "replaced by a per-horizon call inside the loop"
+    )
+    idx_release = _SOURCE.index("raw[horizon] = None")
+    idx_snapshot_call = _SOURCE.index("_write_score_snapshots({horizon: items}, market)")
+    idx_early_return = _SOURCE.index("if not items:\n                picks[horizon] = []")
+    assert idx_release < idx_snapshot_call < idx_early_return, (
+        "score snapshots for a horizon must be written after that horizon's "
+        "`raw` slot is released, and before the empty-items early return so "
+        "even a zero-candidate horizon's (trivial, empty) write is attempted "
+        "in the same place every time"
+    )
