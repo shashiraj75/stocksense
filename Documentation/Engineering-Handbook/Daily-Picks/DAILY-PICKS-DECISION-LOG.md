@@ -151,6 +151,7 @@
 - **Consequences:** The warning must remain visible for legacy persisted validation results that predate the `data_limitations` API field (enforced by rendering it unconditionally, never gated on that field's presence — verified by automated tests). `INTEGRITY_HOLD_ACTIVE` is not bypassed or weakened by this decision. This is disclosure, not remediation — DP-026 itself remains open; see its own status.
 - **Implementation:** `frontend/src/components/DataLimitationsNotice.tsx` (new — `DataLimitationsNotice` full banner, `DataLimitationsMark` compact non-tooltip-only marker) wired into `picks/page.tsx` (`HistoricalTrackRecordSummary`, `BacktestPanel`), `validation/page.tsx`, `NavLinks.tsx`, `stock/[symbol]/page.tsx`. Commit `257cc26`.
 - **Reconsideration trigger:** Same as `DPD-009` — a production-equivalent point-in-time validation harness with costs and bias controls would allow this warning (and DP-026 itself) to be retired, not merely reworded.
+- **2026-07-21 deployment confirmation:** Merged (PR #10, merge commit `191f1518`), deployed (Railway + Vercel both `success`), and confirmed live in production — the warning renders correctly on real legacy India results across short/medium/long horizons, the integrity hold remains intact, and contrast measures 9.15:1 (exceeds WCAG AAA). See `DAILY-PICKS-IMPLEMENTATION-REGISTER.md`'s DP-026 production-verification addendum for full evidence.
 
 ---
 
