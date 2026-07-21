@@ -36,18 +36,29 @@ def _facts(entries_by_concept: dict[str, list[dict]]) -> dict:
 @pytest.mark.unit
 class TestFilterFactsAsOf:
     def test_entry_filed_before_cutoff_is_eligible(self):
+        # 2025-10-31 is a Friday -> next trading session is Monday 2025-11-03.
         facts = _facts({"Assets": [
             {"end": "2025-09-27", "val": 100, "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2025-10-31"},
         ]})
-        pruned = sea.filter_facts_as_of(facts, date(2025, 11, 1))
+        pruned = sea.filter_facts_as_of(facts, date(2025, 11, 5))
         assert pruned["facts"]["us-gaap"]["Assets"]["units"]["USD"][0]["val"] == 100
 
-    def test_entry_filed_on_cutoff_is_eligible(self):
-        # Conservative rule: filed == as_of is included (date-only precision).
+    def test_entry_filed_on_its_own_filed_date_is_NOT_eligible(self):
+        # Conservative rule: filed date itself is never sufficient — a
+        # date-only filed timestamp is never assumed available before that
+        # same day's market open.
         facts = _facts({"Assets": [
             {"end": "2025-09-27", "val": 100, "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2025-10-31"},
         ]})
         pruned = sea.filter_facts_as_of(facts, date(2025, 10, 31))
+        assert "Assets" not in pruned["facts"]["us-gaap"]
+
+    def test_entry_eligible_exactly_on_the_next_trading_session(self):
+        # Friday filing -> eligible starting Monday (next trading session).
+        facts = _facts({"Assets": [
+            {"end": "2025-09-27", "val": 100, "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2025-10-31"},
+        ]})
+        pruned = sea.filter_facts_as_of(facts, date(2025, 11, 3))  # the following Monday
         assert pruned["facts"]["us-gaap"]["Assets"]["units"]["USD"][0]["val"] == 100
 
     def test_entry_filed_after_cutoff_is_excluded(self):
@@ -56,6 +67,40 @@ class TestFilterFactsAsOf:
         ]})
         pruned = sea.filter_facts_as_of(facts, date(2025, 10, 30))
         assert "Assets" not in pruned["facts"]["us-gaap"]
+
+    def test_friday_after_close_filing_not_eligible_until_monday(self):
+        facts = _facts({"Assets": [
+            {"end": "2026-01-01", "val": 200, "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2026-01-30"},  # Friday
+        ]})
+        assert "Assets" not in sea.filter_facts_as_of(facts, date(2026, 1, 31))["facts"]["us-gaap"]  # Saturday
+        assert "Assets" not in sea.filter_facts_as_of(facts, date(2026, 2, 1))["facts"]["us-gaap"]   # Sunday
+        assert sea.filter_facts_as_of(facts, date(2026, 2, 2))["facts"]["us-gaap"]["Assets"]["units"]["USD"]  # Monday
+
+    def test_weekend_filed_date_pushed_to_next_monday(self):
+        # SEC accepts filings on weekends occasionally (e.g. a Sunday
+        # submission ahead of Monday processing) -- must not be treated
+        # as eligible on the weekend date itself.
+        facts = _facts({"Assets": [
+            {"end": "2026-01-01", "val": 300, "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2026-02-01"},  # Sunday
+        ]})
+        assert "Assets" not in sea.filter_facts_as_of(facts, date(2026, 2, 1))["facts"]["us-gaap"]
+        assert sea.filter_facts_as_of(facts, date(2026, 2, 2))["facts"]["us-gaap"]["Assets"]["units"]["USD"]  # Monday
+
+    def test_holiday_filed_date_pushed_past_the_holiday(self):
+        # 2026 Thanksgiving is Thursday 2026-11-26; a filing dated that
+        # day must not become eligible on the Friday immediately after if
+        # that Friday is itself a valid trading day -- this test only
+        # proves the holiday itself is skipped as a candidate eligible
+        # date, using July 4th (2026-07-04, a Saturday-observed-Friday
+        # case is avoided by picking a midweek holiday: Juneteenth,
+        # 2026-06-19, a Friday).
+        facts = _facts({"Assets": [
+            {"end": "2026-01-01", "val": 400, "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2026-06-18"},  # Thursday
+        ]})
+        # Next day (Fri 6/19) is Juneteenth -- a holiday -- so eligibility
+        # must skip to the following Monday, not Friday.
+        assert "Assets" not in sea.filter_facts_as_of(facts, date(2026, 6, 19))["facts"]["us-gaap"]
+        assert sea.filter_facts_as_of(facts, date(2026, 6, 22))["facts"]["us-gaap"]["Assets"]["units"]["USD"]  # Monday
 
     def test_older_filing_survives_when_newer_one_is_excluded(self):
         # The core DP-026 fix, proven directly: a backtest signal dated

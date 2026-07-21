@@ -59,7 +59,7 @@ class _FakeTicker:
 @pytest.mark.unit
 class TestUsFundScoreAsOf:
     def test_available_computes_roe_and_margin_adjustment(self, monkeypatch):
-        monkeypatch.setattr(ve.sec_edgar_adapter, "get_fundamentals_as_of", lambda symbol, as_of: {
+        monkeypatch.setattr(ve, "_get_fundamentals_as_of_persisted_first", lambda symbol, as_of: {
             "available": True,
             "fields": {
                 "net_income": {"value": 20.0},
@@ -73,7 +73,7 @@ class TestUsFundScoreAsOf:
         assert score == pytest.approx(68.0)  # 50 + 10 + 8
 
     def test_negative_roe_and_margin_penalized(self, monkeypatch):
-        monkeypatch.setattr(ve.sec_edgar_adapter, "get_fundamentals_as_of", lambda symbol, as_of: {
+        monkeypatch.setattr(ve, "_get_fundamentals_as_of_persisted_first", lambda symbol, as_of: {
             "available": True,
             "fields": {
                 "net_income": {"value": -5.0},
@@ -86,7 +86,7 @@ class TestUsFundScoreAsOf:
         assert score == pytest.approx(32.0)  # 50 - 10 - 8
 
     def test_unavailable_when_as_of_lookup_unavailable(self, monkeypatch):
-        monkeypatch.setattr(ve.sec_edgar_adapter, "get_fundamentals_as_of", lambda symbol, as_of: {
+        monkeypatch.setattr(ve, "_get_fundamentals_as_of_persisted_first", lambda symbol, as_of: {
             "available": False, "reason": "no eligible filing as of the signal date",
         })
         score, available, reason = _us_fund_score_as_of("AAPL", date(2005, 1, 1))
@@ -95,7 +95,7 @@ class TestUsFundScoreAsOf:
         assert reason == "no eligible filing as of the signal date"
 
     def test_unavailable_when_no_usable_fields_despite_available_true(self, monkeypatch):
-        monkeypatch.setattr(ve.sec_edgar_adapter, "get_fundamentals_as_of", lambda symbol, as_of: {
+        monkeypatch.setattr(ve, "_get_fundamentals_as_of_persisted_first", lambda symbol, as_of: {
             "available": True, "fields": {"net_income": {"value": None}, "shareholders_equity": {"value": None}, "revenue": {"value": None}},
         })
         score, available, reason = _us_fund_score_as_of("AAPL", date(2024, 1, 1))
@@ -104,7 +104,7 @@ class TestUsFundScoreAsOf:
         assert "no usable" in reason
 
     def test_zero_equity_does_not_raise_zerodivisionerror(self, monkeypatch):
-        monkeypatch.setattr(ve.sec_edgar_adapter, "get_fundamentals_as_of", lambda symbol, as_of: {
+        monkeypatch.setattr(ve, "_get_fundamentals_as_of_persisted_first", lambda symbol, as_of: {
             "available": True,
             "fields": {"net_income": {"value": 20.0}, "shareholders_equity": {"value": 0.0}, "revenue": {"value": 100.0}},
         })
@@ -113,7 +113,7 @@ class TestUsFundScoreAsOf:
         assert score == pytest.approx(58.0)  # 50 + 8 (margin=20% only; ROE skipped, equity falsy)
 
     def test_score_clamped_to_0_100(self, monkeypatch):
-        monkeypatch.setattr(ve.sec_edgar_adapter, "get_fundamentals_as_of", lambda symbol, as_of: {
+        monkeypatch.setattr(ve, "_get_fundamentals_as_of_persisted_first", lambda symbol, as_of: {
             "available": True,
             "fields": {"net_income": {"value": -1000.0}, "shareholders_equity": {"value": 1.0}, "revenue": {"value": 1.0}},
         })
@@ -139,14 +139,14 @@ class TestBacktestStockUsPointInTime:
                 "net_income": {"value": 10.0}, "shareholders_equity": {"value": 100.0}, "revenue": {"value": 100.0},
             }}
 
-        monkeypatch.setattr(ve.sec_edgar_adapter, "get_fundamentals_as_of", fake_as_of)
+        monkeypatch.setattr(ve, "_get_fundamentals_as_of_persisted_first", fake_as_of)
         signals = _backtest_stock("AAPL", "medium", None, "US", universe="us")
         assert len(signals) > 1
         assert len(set(seen_as_of_dates)) > 1  # genuinely different cutoffs, not one repeated
 
     def test_fund_pit_available_true_when_edgar_data_found(self, monkeypatch):
         monkeypatch.setattr(ve.yf, "Ticker", _FakeTicker)
-        monkeypatch.setattr(ve.sec_edgar_adapter, "get_fundamentals_as_of", lambda symbol, as_of: {
+        monkeypatch.setattr(ve, "_get_fundamentals_as_of_persisted_first", lambda symbol, as_of: {
             "available": True, "fields": {
                 "net_income": {"value": 10.0}, "shareholders_equity": {"value": 100.0}, "revenue": {"value": 100.0},
             },
@@ -157,7 +157,7 @@ class TestBacktestStockUsPointInTime:
 
     def test_fund_pit_available_false_and_neutral_fallback_when_edgar_unavailable(self, monkeypatch):
         monkeypatch.setattr(ve.yf, "Ticker", _FakeTicker)
-        monkeypatch.setattr(ve.sec_edgar_adapter, "get_fundamentals_as_of", lambda symbol, as_of: {
+        monkeypatch.setattr(ve, "_get_fundamentals_as_of_persisted_first", lambda symbol, as_of: {
             "available": False, "reason": "no eligible filing as of the signal date",
         })
         signals = _backtest_stock("AAPL", "short", None, "US", universe="us")
@@ -166,7 +166,7 @@ class TestBacktestStockUsPointInTime:
 
     def test_never_calls_the_live_current_data_entry_point(self, monkeypatch):
         monkeypatch.setattr(ve.yf, "Ticker", _FakeTicker)
-        monkeypatch.setattr(ve.sec_edgar_adapter, "get_fundamentals_as_of", lambda symbol, as_of: {"available": False, "reason": "x"})
+        monkeypatch.setattr(ve, "_get_fundamentals_as_of_persisted_first", lambda symbol, as_of: {"available": False, "reason": "x"})
         live_fn = MagicMock(side_effect=AssertionError("must not be called during backtest replay"))
         monkeypatch.setattr(ve.sec_edgar_adapter, "fetch_us_fundamentals_sec_edgar", live_fn)
         _backtest_stock("AAPL", "short", None, "US", universe="us")
@@ -185,7 +185,7 @@ class TestBacktestStockUsPointInTime:
                 return {}
 
         monkeypatch.setattr(ve.yf, "Ticker", _TrackedTicker)
-        monkeypatch.setattr(ve.sec_edgar_adapter, "get_fundamentals_as_of", lambda symbol, as_of: {"available": False, "reason": "x"})
+        monkeypatch.setattr(ve, "_get_fundamentals_as_of_persisted_first", lambda symbol, as_of: {"available": False, "reason": "x"})
         _backtest_stock("AAPL", "short", None, "US", universe="us")
         assert info_accessed == []
 
@@ -206,7 +206,7 @@ class TestBacktestStockIndiaUnaffected:
 
         monkeypatch.setattr(ve.yf, "Ticker", _TrackedTicker)
         edgar_fn = MagicMock(side_effect=AssertionError("India must never call SEC EDGAR"))
-        monkeypatch.setattr(ve.sec_edgar_adapter, "get_fundamentals_as_of", edgar_fn)
+        monkeypatch.setattr(ve, "_get_fundamentals_as_of_persisted_first", edgar_fn)
 
         signals = _backtest_stock("INFY", "short", None, "IN", universe="nifty100")
         assert len(signals) > 0

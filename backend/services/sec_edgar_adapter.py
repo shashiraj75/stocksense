@@ -617,9 +617,9 @@ def build_info_projection(fields: dict[str, dict]) -> dict:
 
 def filter_facts_as_of(facts: dict, as_of: date) -> dict:
     """
-    Prunes a raw companyfacts payload to only fact entries filed on or
-    before `as_of` (a `datetime.date`). Instant and duration facts alike
-    are filtered purely on their own `filed` date — never on `end`/`start`
+    Prunes a raw companyfacts payload to only fact entries eligible as of
+    `as_of` (a `datetime.date`). Instant and duration facts alike are
+    filtered purely on their own `filed` date — never on `end`/`start`
     (fiscal period dates are never sufficient proof of public availability,
     per this repository's own temporal-integrity rule). A concept with zero
     eligible entries as of the cutoff is dropped entirely (not replaced
@@ -627,19 +627,30 @@ def filter_facts_as_of(facts: dict, as_of: date) -> dict:
     filing as of the signal date" must surface as UNAVAILABLE once the
     pruned payload reaches `normalize_fields()`.
 
+    Eligibility is `next_us_trading_session(filed_date) <= as_of`, NOT a
+    bare `filed_date <= as_of` — SEC EDGAR's `filed` value is date-only
+    (confirmed live, no intraday timestamp in companyfacts), so a fact
+    filed on day D is never treated as available before D's own market
+    open; it becomes eligible starting the next trading session after D.
+    Shared with services.sec_pit_store's persisted-store lookup — the
+    identical rule, not two independently-maintained ones.
+
     Never mutates `facts` — returns a new dict; `fetch_company_facts()`'s
     cached payload must remain shared and untouched across every caller
     and every as-of cutoff.
     """
+    from services.market_hours import next_us_trading_session
+
     us_gaap_in = facts.get("facts", {}).get("us-gaap", {})
     us_gaap_out: dict = {}
     for concept, concept_data in us_gaap_in.items():
         usd_in = concept_data.get("units", {}).get("USD", [])
-        usd_out = [
-            entry for entry in usd_in
-            if entry.get("filed") and _parse_date(entry["filed"]) is not None
-            and _parse_date(entry["filed"]) <= as_of
-        ]
+        usd_out = []
+        for entry in usd_in:
+            filed = entry.get("filed")
+            filed_date = _parse_date(filed) if filed else None
+            if filed_date is not None and next_us_trading_session(filed_date) <= as_of:
+                usd_out.append(entry)
         if usd_out:
             us_gaap_out[concept] = {"units": {"USD": usd_out}}
     return {

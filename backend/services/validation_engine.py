@@ -33,6 +33,7 @@ import yfinance as yf
 from services.safe_errors import safe_error_message
 from services.technical_indicators import compute_indicators
 from services import sec_edgar_adapter
+from services import sec_pit_store
 
 log = logging.getLogger(__name__)
 
@@ -551,15 +552,74 @@ def _resolve_yahoo_symbol(symbol: str, market: str) -> str:
 # which now also owns this specific gap; PE was dropped rather than
 # approximated because it needs a point-in-time EPS-outstanding-shares
 # figure this adapter does not extract at all today.
+# DP-033 scoring-policy decision (Phase 6 of the readiness audit): the
+# point-in-time US fund_score is NOT a drop-in replacement computing the
+# "same" score with better inputs — it uses ROE + net margin only (2
+# ratios), while the pre-existing IN/legacy formula uses PE + ROE + revenue
+# growth (3 different ratios, none of which is "ROE" in exactly the same
+# bucketing). These are NOT semantically equivalent and must not be
+# presented as interchangeable historical continuations of one score.
+# Decision: Option B — a separately versioned point-in-time scoring
+# policy, not a silent replacement of the old one. The old (IN/legacy)
+# formula is completely unversioned and untouched; this new formula is
+# explicitly named and versioned so every US signal/result can be traced
+# to exactly which formula produced it, and so a future formula change
+# (e.g. adding revenue growth once a second as-of lookup exists, per
+# DP-031) bumps this version rather than silently altering the meaning of
+# already-published historical scores.
+US_PIT_SCORING_POLICY_VERSION = "us_pit_roe_margin_v1"
+
+_pit_ingested_ciks: set[int] = set()
+_pit_ingest_lock = threading.Lock()
+
+
+def _get_fundamentals_as_of_persisted_first(symbol: str, as_of) -> dict:
+    """
+    DP-033 architecture correction (2026-07-22): historical validation
+    must not depend on live network access after ingestion, and must be
+    reproducible from immutable, persisted records — a 12h ephemeral cache
+    (sec_edgar_adapter.get_fundamentals_as_of()'s underlying
+    fetch_company_facts()) does not satisfy either property. This function
+    reads from services.sec_pit_store's immutable table FIRST; only if
+    nothing has ever been ingested for this CIK does it perform a one-time
+    live fetch + ingest (per CIK, per process — tracked in
+    `_pit_ingested_ciks` so a symbol's dozens/hundreds of signal dates in
+    one backtest run trigger at most one network round-trip, not one per
+    signal date, and a SECOND backtest run in a fresh process reads
+    entirely from the already-persisted store with zero network calls).
+    """
+    cik = sec_edgar_adapter.resolve_cik(symbol)
+    if cik is None:
+        return {"available": False, "reason": "CIK not found"}
+
+    with _pit_ingest_lock:
+        already_ingested = cik in _pit_ingested_ciks
+    if not already_ingested:
+        live_facts = sec_edgar_adapter.fetch_company_facts(cik)
+        if live_facts is not None:
+            sec_pit_store.ingest_company_facts(cik, symbol, live_facts)
+        with _pit_ingest_lock:
+            _pit_ingested_ciks.add(cik)  # mark attempted even on failure — never retry-storm a dead CIK
+
+    pruned = sec_pit_store.get_facts_as_of_persisted(symbol, cik, as_of)
+    fields = sec_edgar_adapter.normalize_fields(pruned)
+    has_any = any(v.get("value") is not None for v in fields.values())
+    return {
+        "available": has_any,
+        "fields": fields,
+        "reason": None if has_any else "no eligible filing as of the signal date (persisted store)",
+    }
+
+
 def _us_fund_score_as_of(symbol: str, as_of) -> tuple[float | None, bool, str | None]:
     """Returns (score, available, reason). `score` is None and `available`
-    is False — never a fabricated/neutral value — when SEC EDGAR has no
-    eligible filing for `symbol` as of `as_of`, or when the eligible
-    filing(s) don't contain enough of (net_income, shareholders_equity,
-    revenue) to compute either ratio. Caller decides the neutral-fallback
-    policy for the unavailable case; this function never applies one
-    itself."""
-    result = sec_edgar_adapter.get_fundamentals_as_of(symbol, as_of)
+    is False — never a fabricated/neutral value — when the persisted SEC
+    EDGAR store has no eligible filing for `symbol` as of `as_of`, or when
+    the eligible filing(s) don't contain enough of (net_income,
+    shareholders_equity, revenue) to compute either ratio. Caller decides
+    the neutral-fallback policy for the unavailable case; this function
+    never applies one itself."""
+    result = _get_fundamentals_as_of_persisted_first(symbol, as_of)
     if not result.get("available"):
         return None, False, result.get("reason", "unavailable")
 
@@ -796,6 +856,12 @@ def _backtest_stock(
                     # source exists) and for a US signal where the as-of
                     # lookup itself came back unavailable.
                     "fund_pit_available": bool(fund_pit_available_i),
+                    # DP-033 scoring-policy versioning (Option B) — None
+                    # for IN (the old, unversioned formula); the exact
+                    # policy string for a US signal, whether or not the
+                    # as-of lookup found eligible facts (fund_score_i still
+                    # went through this policy's neutral-fallback branch).
+                    "fund_score_policy_version": US_PIT_SCORING_POLICY_VERSION if market == "US" else None,
                 })
             except Exception:
                 continue
@@ -875,12 +941,23 @@ def _data_limitations_for_market(signals: list[dict], market: str | None) -> dic
             "fundamentals_point_in_time_coverage_pct": coverage_pct,
             "fundamentals_availability_vs_neutral_distinguishable": True,
             "dp_id": "DP-026",
-            "status": "remediated (US) — point-in-time via SEC EDGAR",
+            "scoring_policy_version": US_PIT_SCORING_POLICY_VERSION,
+            "status": "remediated (US, methodology) — point-in-time via persisted SEC EDGAR facts; NOT YET deployed/backfilled/production-verified",
             "reason": (
                 f"Every US signal's fund_score is computed from SEC EDGAR "
-                f"XBRL facts filed on or before that signal's own "
-                f"historical date (services.sec_edgar_adapter."
-                f"get_fundamentals_as_of()), not a present-day snapshot. "
+                f"XBRL facts persisted in services.sec_pit_store's immutable "
+                f"table (services.validation_engine._get_fundamentals_as_of_"
+                f"persisted_first()), filtered to those filed — and eligible "
+                f"per the next-US-trading-session conservative rule for "
+                f"date-only SEC filing timestamps — on or before that "
+                f"signal's own historical date. Not a present-day snapshot, "
+                f"and not dependent on live network access after the "
+                f"one-time per-CIK ingestion. Scoring policy version "
+                f"'{US_PIT_SCORING_POLICY_VERSION}' — a SEPARATELY versioned "
+                f"formula (ROE + net margin only), not a drop-in replacement "
+                f"claiming equivalence with the pre-existing PE+ROE+revenue-"
+                f"growth formula IN/legacy results still use; every US "
+                f"signal records this exact version. "
                 f"{coverage_pct}% of signals in this run ({pit_available_n}"
                 f"/{n}) found an eligible SEC filing and usable ROE/margin "
                 f"inputs as of their date; the remainder ({n - pit_available_n}"
@@ -890,14 +967,12 @@ def _data_limitations_for_market(signals: list[dict], market: str | None) -> dic
                 f"silently indistinguishable from a genuine neutral score — "
                 f"resolving the prior DP-031-owned ambiguity for this "
                 f"market). Revenue-growth and PE ratios were deliberately "
-                f"NOT reconstructed point-in-time this session (revenue "
-                f"growth needs a second, correctly-ordered as-of lookup; PE "
-                f"needs point-in-time shares-outstanding data this adapter "
-                f"does not extract) — composite scoring for US uses only "
-                f"ROE and net margin, a documented reduction in factor "
-                f"richness, not a silent one. See DP-031 for closing this "
-                f"gap alongside its neutral-vs-unavailable instrumentation "
-                f"work."
+                f"NOT reconstructed point-in-time (revenue growth needs a "
+                f"second, correctly-ordered as-of lookup; PE needs point-in-"
+                f"time shares-outstanding data this adapter does not "
+                f"extract) — a documented reduction in factor richness, not "
+                f"a silent one. See DP-031 for closing this gap alongside "
+                f"its neutral-vs-unavailable instrumentation work."
             ),
         }
 
@@ -1347,6 +1422,7 @@ def get_track_record_summary(market: str, horizon: str) -> list[dict]:
             "fundamentals_point_in_time": dl.get("fundamentals_point_in_time") if dl else None,
             "fundamentals_point_in_time_coverage_pct": dl.get("fundamentals_point_in_time_coverage_pct") if dl else None,
             "dp026_status": dl.get("status") if dl else None,
+            "scoring_policy_version": dl.get("scoring_policy_version") if dl else None,
         })
     return out
 
