@@ -582,8 +582,54 @@ def _backtest_stock(
         # Do NOT call compute_indicators on full df — that causes look-ahead bias.
         # Raw OHLCV df is kept clean; indicators are computed per window inside loop.
 
-        # Fixed fundamentals — current snapshot (not time-varying; acceptable trade-off
-        # since fundamentals change slowly and historical quarterly data isn't in yfinance)
+        # DP-026 (VERIFIED; disclosed, not remediated — see data-availability
+        # investigation below): this is a SINGLE present-day snapshot
+        # (`yf.Ticker(yf_sym).info`, called once, at whatever moment this
+        # backtest happens to run), reused unchanged as `fund_score` for
+        # EVERY historical signal date produced for this symbol, across the
+        # entire HORIZON_PERIOD[horizon] lookback window — i.e. a signal
+        # dated years in the past is scored against fundamentals as they
+        # exist today, not as they were knowable at that date. This is a
+        # real look-ahead bias, not a cosmetic one, and this line of code is
+        # UNCHANGED by the DP-026 session — only disclosed (see
+        # `_compute_metrics()`'s `data_limitations` field below).
+        #
+        # Scope of this claim (2026-07-21 DP-026 session) — precise, not a
+        # market-wide claim: neither of StockSense360's currently integrated
+        # sources (yfinance's `.info`/`.financials`/`.balance_sheet`/
+        # `.cashflow` — trailing periods only, current-day query, no
+        # accepted/filed/publication timestamp, no historical vintage — a
+        # value for a 3-year-old fiscal period returned today reflects any
+        # restatements since, with no way to recover what was actually known
+        # then; screener.in; BSE) nor any data StockSense360 itself retains
+        # (`fundamentals_cache.py`'s `stock_fundamentals_cache` table is
+        # `ON CONFLICT ... DO UPDATE` — a pure overwrite with a single
+        # `updated_at`, not a versioned history) provide a point-in-time
+        # fundamentals vintage for any past date. This does NOT establish
+        # that no provider anywhere offers point-in-time historical
+        # fundamentals (e.g. a dedicated point-in-time/vintage financial
+        # data vendor) — no such market-wide vendor survey was performed,
+        # and doing one is out of scope for DP-026. The finding is: not
+        # obtainable from what this repository currently integrates or
+        # retains, without procuring and integrating a new data source.
+        # Backward-filling, approximating from fiscal-period-end dates, or
+        # otherwise fabricating a historical value was ruled out regardless.
+        #
+        # Separate, second ambiguity (not a DP-026 fix — informational only,
+        # owned by DP-031): `fund_score` below defaults to and can land back
+        # on exactly 50.0 through at least three distinct paths — (a) the
+        # `.info` call itself failing (network/exception, `info = {}`),
+        # (b) `.info` succeeding but the specific pe/roe/revenueGrowth
+        # fields being absent for this instrument (common for financials/
+        # REITs), and (c) `.info` succeeding with all three fields present
+        # but genuinely landing in the "no adjustment" band (e.g. PE between
+        # 20-40, ROE <=15%, revenue growth 0-10%). These are not currently
+        # distinguishable from one another — this comment and
+        # `data_limitations` below do not claim they are, and do not claim
+        # every signal reflects a failed/unavailable fetch; most likely the
+        # large majority successfully retrieve *some* current data, they are
+        # simply never the fundamentals that were knowable at the signal's
+        # actual historical date, which is the DP-026 finding itself.
         try:
             info = yf.Ticker(yf_sym).info
         except Exception:
@@ -868,6 +914,56 @@ def _compute_metrics(signals: list[dict], benchmark_return_pct: float, horizon: 
             "obv":       _ic("obv_score"),
             "mfi":       _ic("mfi_score"),
             "composite": _ic("composite_score"),
+        },
+        # DP-026 (DPD-009-authorized disclosure containment — NOT a fix; the
+        # underlying calculation below is unchanged — see
+        # _backtest_stock()'s fund_score comment for the full data-
+        # availability investigation and the separate, second ambiguity
+        # this does not resolve). `fund_score` — 45% of `composite` via
+        # `composite * 0.55 + fund_score * 0.45` in `_score_at()` — is a
+        # single present-day fundamentals snapshot reused unchanged across
+        # every historical signal in this run, for 100% of signals in every
+        # market/horizon/universe combination. This is disclosed rather than
+        # silently corrected, approximated, or excluded, because no
+        # point-in-time fundamentals vintage is obtainable from what this
+        # repository currently integrates or retains (see comment above —
+        # this does not claim no such data exists anywhere in the market).
+        # `composite`, `tech`/`rs`/`obv`/`mfi` factor_ic, and every
+        # BUY/SELL/HOLD threshold and weight in this run are UNCHANGED by
+        # this disclosure — it adds no new bias and removes none, and DOES
+        # NOT mean DP-026 is resolved.
+        "data_limitations": {
+            "fundamentals_point_in_time": False,
+            "fundamentals_affected_signals_pct": 100.0,
+            "fundamentals_availability_vs_neutral_distinguishable": False,
+            "dp_id": "DP-026",
+            "status": "disclosed, not remediated",
+            "reason": (
+                "fund_score is a single current-day fundamentals snapshot "
+                "(yfinance .info, fetched once per symbol at backtest run "
+                "time), reused unchanged for every historical signal date "
+                "produced for that symbol. It is NOT the fundamentals that "
+                "were knowable as of each signal's actual date, and "
+                "constitutes look-ahead bias on the fundamentals component "
+                "of composite_score for 100% of signals in this run. This "
+                "underlying calculation is unchanged by this disclosure — "
+                "only surfaced. No point-in-time fundamentals vintage is "
+                "obtainable from StockSense360's currently integrated "
+                "sources (yfinance, screener.in, BSE) or internally "
+                "retained data (stock_fundamentals_cache is overwrite-only, "
+                "no history retained); this does not establish that no "
+                "such data exists from any provider in the market, only "
+                "that fixing this would require procuring and integrating "
+                "a new, currently unintegrated point-in-time data source — "
+                "out of scope for this finding. Separately (see DP-031, "
+                "not resolved here): whether a given signal's fund_score "
+                "reflects successfully retrieved current data or an "
+                "unavailable-data fallback is not currently distinguishable "
+                "-- do not read '100% affected' above as '100% "
+                "unavailable'; it means 100% share this same non-point-in-"
+                "time input, regardless of whether that input was "
+                "successfully retrieved."
+            ),
         },
     }
 

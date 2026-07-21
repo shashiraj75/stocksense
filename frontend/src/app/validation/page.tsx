@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/utils/api";
+import { DataLimitationsNotice } from "@/components/DataLimitationsNotice";
 import {
   FlaskConical, TrendingUp, TrendingDown, Target, Zap,
   BarChart3, CheckCircle2, XCircle, AlertCircle, Loader2, Play, RefreshCw,
@@ -319,6 +320,11 @@ export default function ValidationPage() {
               <RefreshCw size={11} /> refresh
             </button>
           </div>
+
+          {/* DP-026 — always rendered, not conditioned on the API's
+              data_limitations field (legacy runs predate it but carry the
+              same limitation). */}
+          <DataLimitationsNotice />
 
           {/* Primary metrics */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

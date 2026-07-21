@@ -17,6 +17,7 @@ import { PaperTradeModal } from "@/components/PaperTradeModal";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
 import { UnsupportedMarketNotice } from "@/components/UnsupportedMarketNotice";
 import { INTEGRITY_HOLD_ACTIVE, ValidationIntegrityHold } from "@/components/ValidationIntegrityHold";
+import { DataLimitationsNotice } from "@/components/DataLimitationsNotice";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type ReasonItem = { indicator: string; signal: string; reason: string };
@@ -274,6 +275,7 @@ function HistoricalTrackRecordSummary({
         <p className="text-sm font-semibold text-white">Historical accuracy — {horizon}-term</p>
         <span className="text-xs text-gray-500">from real walk-forward backtests, not this run's picks</span>
       </div>
+      <DataLimitationsNotice className="mb-3" />
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {entries.map((e) => {
           const beatBenchmark = e.beat_benchmark_pct;
@@ -352,6 +354,11 @@ function BacktestPanel({ horizon, benchmarkLabel }: { horizon: string; benchmark
           </p>
         )}
       </div>
+
+      {/* DP-026 — always rendered, not conditioned on data.data_limitations
+          being present (legacy runs predate that field but carry the same
+          limitation). See DataLimitationsNotice for the full rationale. */}
+      <DataLimitationsNotice />
 
       {/* Key metrics */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">

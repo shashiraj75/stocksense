@@ -21,6 +21,7 @@ import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { TradeLevelVisualizer } from "@/components/TradeLevelVisualizer";
 import { EvidenceSummary } from "@/components/EvidenceSummary";
 import { ResearchSummary } from "@/components/ResearchSummary";
+import { DataLimitationsMark } from "@/components/DataLimitationsNotice";
 
 // Kill switch — set back to true to restore the "Was this signal useful?"
 // thumbs up/down prompt. Hidden per user feedback that it looked annoying.
@@ -667,7 +668,11 @@ export default function StockPage() {
                             const color = pct >= 65 ? "text-bull" : pct >= 50 ? "text-yellow-400" : "text-gray-400";
                             return (
                               <div className="mt-2 px-2 py-1 rounded-lg bg-white/[0.04] border border-white/[0.07]">
-                                <p className={clsx("text-xs font-bold tabular-nums", color)}>✓ {pct}% accurate</p>
+                                <p className={clsx("text-xs font-bold tabular-nums flex items-center gap-1", color)}>
+                                  ✓ {pct}% accurate
+                                  {/* DP-026 — same non-point-in-time validation results as the Historical Accuracy panel. */}
+                                  <DataLimitationsMark />
+                                </p>
                                 <p className="text-[11px] text-gray-400 mt-0.5">{acc.total} past predictions</p>
                               </div>
                             );
