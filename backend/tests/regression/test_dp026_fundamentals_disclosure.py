@@ -2,21 +2,28 @@
 DP-026 — walk-forward validation's fund_score is a single present-day
 fundamentals snapshot reused unchanged across every historical signal date
 for a symbol (look-ahead bias on the fundamentals component of
-composite_score). Investigated 2026-07-21: no data source available to this
-repository (yfinance, screener.in, BSE, or the internal
-stock_fundamentals_cache — overwrite-only, no history retained) can supply a
-genuine point-in-time fundamentals vintage for a historical signal date, so
-Outcome C (not implementable with current data) applies. Governed by
-DPD-009 (DECIDED — DISCLOSURE HOLD), which already authorizes disclosing
-validation methodology limitations rather than silently correcting or
-fabricating them.
+composite_score). Investigated 2026-07-21: neither of StockSense360's
+currently integrated sources (yfinance, screener.in, BSE) nor any data it
+internally retains (stock_fundamentals_cache — overwrite-only, no history
+retained) can supply a point-in-time fundamentals vintage for a historical
+signal date. This is a precise, repository-scoped finding, not a market-wide
+claim that no provider anywhere offers point-in-time historical
+fundamentals — no vendor survey was performed. Governed by DPD-009 (DECIDED
+— DISCLOSURE HOLD), which already authorizes disclosing validation
+methodology limitations rather than silently correcting or fabricating
+them.
 
-This file proves the DP-026 containment: `_compute_metrics()` now attaches
-an honest, machine-readable `data_limitations` block to every non-empty
-validation summary, and that this is purely additive — no composite score,
-factor IC, weight, threshold, or BUY/SELL/HOLD classification is touched by
-it, in either the pure aggregation function or the end-to-end
-`run_validation()` persistence path.
+This is DISCLOSURE, not remediation: `fund_score`'s underlying calculation
+is completely unchanged by this fix. This file proves the DP-026
+containment: `_compute_metrics()` now attaches an honest, machine-readable
+`data_limitations` block to every non-empty validation summary, and that
+this is purely additive — no composite score, factor IC, weight, threshold,
+or BUY/SELL/HOLD classification is touched by it, in either the pure
+aggregation function or the end-to-end `run_validation()` persistence path.
+It also proves the disclosure itself does not overclaim: it does not assert
+that a fund_score of 50.0 means "unavailable" (see
+TestFiftyAmbiguityDisclosure below — that distinction is explicitly
+unresolved and owned by DP-031, not this finding).
 
 No network access anywhere in this file — every yfinance/DB boundary is
 monkeypatched, following the existing pattern in
@@ -133,6 +140,56 @@ class TestDataLimitationsDisclosure:
         metrics = _compute_metrics(_synthetic_signals(), benchmark_return_pct=1.0, horizon="medium")
         round_tripped = json.loads(json.dumps(metrics["data_limitations"]))
         assert round_tripped == metrics["data_limitations"]
+
+    def test_status_reflects_disclosure_not_remediation(self):
+        # A PR reviewer scanning the JSON alone must not be able to
+        # conclude the underlying look-ahead bias was fixed.
+        metrics = _compute_metrics(_synthetic_signals(), benchmark_return_pct=1.0, horizon="medium")
+        status = metrics["data_limitations"]["status"].lower()
+        assert "disclos" in status
+        assert "remediat" in status
+        assert "not remediated" in status or "not resolved" in status
+
+
+@pytest.mark.unit
+class TestScopeOfDataAvailabilityClaim:
+    """DP-026's finding must be scoped to what StockSense360 currently
+    integrates/retains — never phrased as a market-wide claim that no
+    provider anywhere offers point-in-time historical fundamentals (no
+    vendor survey was performed to support that broader claim)."""
+
+    def test_reason_names_the_currently_integrated_sources(self):
+        reason = _compute_metrics(_synthetic_signals(), benchmark_return_pct=1.0, horizon="medium")["data_limitations"]["reason"]
+        for source in ("yfinance", "screener.in", "BSE", "stock_fundamentals_cache"):
+            assert source in reason
+
+    def test_reason_does_not_claim_no_provider_anywhere_has_this_data(self):
+        reason = _compute_metrics(_synthetic_signals(), benchmark_return_pct=1.0, horizon="medium")["data_limitations"]["reason"]
+        # Must explicitly disclaim the market-wide reading, not merely omit it.
+        assert "does not establish that no such data exists" in reason
+        assert "out of scope" in reason
+
+
+@pytest.mark.unit
+class TestFiftyAmbiguityDisclosure:
+    """fund_score == 50.0 can mean (a) the .info fetch failed, (b) .info
+    succeeded but pe/roe/revenueGrowth were individually absent, or (c)
+    .info succeeded and all three genuinely landed in the no-adjustment
+    band. These are not currently distinguishable. The disclosure must say
+    so plainly and must not claim '100% affected' means '100% unavailable'."""
+
+    def test_availability_vs_neutral_flag_present_and_false(self):
+        metrics = _compute_metrics(_synthetic_signals(), benchmark_return_pct=1.0, horizon="medium")
+        assert metrics["data_limitations"]["fundamentals_availability_vs_neutral_distinguishable"] is False
+
+    def test_reason_explicitly_disclaims_100pct_unavailable_reading(self):
+        reason = _compute_metrics(_synthetic_signals(), benchmark_return_pct=1.0, horizon="medium")["data_limitations"]["reason"]
+        assert "not currently distinguishable" in reason
+        assert "100% unavailable" in reason
+
+    def test_reason_references_dp031_as_owner(self):
+        reason = _compute_metrics(_synthetic_signals(), benchmark_return_pct=1.0, horizon="medium")["data_limitations"]["reason"]
+        assert "DP-031" in reason
 
 
 @pytest.mark.unit
