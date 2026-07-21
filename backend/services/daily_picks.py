@@ -20,7 +20,6 @@ import random
 import re
 import time
 import uuid as _uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 import numpy as np
@@ -1467,9 +1466,15 @@ def _generate_picks_inner(
         LEARNING_DATASET_VERSION,
     )
     from services.global_context import get_global_context
+    from services.memory_guard import MemoryCircuitBreaker
 
     start = time.time()
     currency = _CURRENCY.get(market, "₹")
+    # See services/memory_guard.py's module docstring for the production
+    # incident this protects against. A no-op when no container memory
+    # limit is visible (e.g. local/dev), so this never behaves differently
+    # in an environment where thresholds can't be safely evaluated.
+    _mem_guard = MemoryCircuitBreaker(market, job_id=job_id)
 
     # Learning Alpha Engine remediation, Phase 1: containment state is fixed
     # for the whole run — computed once, applied to every horizon below, and
@@ -1566,28 +1571,45 @@ def _generate_picks_inner(
     _tier_map: dict[str, str] = _selection_meta.get("tier_map") or {}
 
     _try_job_progress(job_id, "phase_1", 0, len(tasks))
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        futures = {pool.submit(_predict_stock, sym, h, market): (sym, h) for sym, h in tasks}
-        done = 0
-        for future in as_completed(futures):
-            done += 1
-            if done % 30 == 0:
-                log.info(f"[picks] [{market}] {done}/{len(tasks)} done …")
-            r = future.result()
-            if r:
-                r["cap_tier"] = _tier_map.get(r["symbol"])
-                raw[r["horizon"]].append(r)
-            # Progress after each completed task (candidate × horizon)
-            _try_job_progress(job_id, "phase_1", done, len(tasks))
+    # 2026-07-21 memory-exhaustion postmortem: this used to submit ALL 1188
+    # tasks to a one-worker thread-pool executor up front
+    # (`{pool.submit(...): (sym, h) for sym, h in tasks}`), retaining every
+    # Future object — plus its captured args and, once resolved, its full
+    # result dict — simultaneously for the entire Phase 1 run, even though a
+    # single worker processes them strictly one at a time anyway. With
+    # max_workers=1 there is no concurrency to gain from submitting ahead of
+    # consumption (`as_completed` on a 1-worker pool yields in submission
+    # order regardless), so a plain sequential loop is both simpler and
+    # strictly bounded: at most one task's Future/result is ever alive at a
+    # time. max_workers=1 itself is unchanged/still required (rate-limit
+    # avoidance for the upstream Yahoo Finance IP), so _predict_stock is
+    # still called exactly once per (symbol, horizon) pair, in the same
+    # order, with the same arguments — only the retention shape changed.
+    done = 0
+    for sym, h in tasks:
+        r = _predict_stock(sym, h, market)
+        done += 1
+        if done % 30 == 0:
+            log.info(f"[picks] [{market}] {done}/{len(tasks)} done …")
+            _mem_guard.check("phase_1", done, len(tasks))
+        if r:
+            r["cap_tier"] = _tier_map.get(r["symbol"])
+            raw[r["horizon"]].append(r)
+        # Progress after each completed task (candidate × horizon)
+        _try_job_progress(job_id, "phase_1", done, len(tasks))
+        # Drop the local result reference immediately — nothing after this
+        # point needs it; the only thing retained going forward is whatever
+        # `raw[horizon]` already holds a reference to.
+        del r
 
     # State: all Phase-1 prediction tasks done; ranking/selection about to begin.
     # Written before score-snapshot I/O so the phase is truthful immediately
-    # after the ThreadPoolExecutor exits.
+    # after the sequential Phase 1 loop exits.
     _try_job_progress(job_id, "ranking", None, None)
-
-    # ── Score snapshots (section 4) — persist every scored stock for history ──
-    # Piggybacks on the universe scan above so we don't re-fetch anything.
-    _write_score_snapshots(raw, market)
+    # This is the exact phase boundary the 2026-07-21 incident's process was
+    # killed at — check here explicitly, not just periodically, before the
+    # per-horizon snapshot/ranking work begins.
+    _mem_guard.check("ranking_entry", len(tasks), len(tasks))
 
     # ── Phases 3-6 per horizon ────────────────────────────────────────────────
     picks: dict[str, list] = {}
@@ -1606,14 +1628,25 @@ def _generate_picks_inner(
         # Drop `raw`'s own reference now that `items` holds it for this
         # horizon's processing. `raw` is never read again after this line
         # (verified — only `items = raw[horizon]` reads it, once per
-        # horizon) and score snapshots were already written for the full
-        # set above, so nothing downstream needs `raw` to keep all three
+        # horizon), so nothing downstream needs `raw` to keep all three
         # horizons' full candidate pools (~400 symbols each, every field
         # including reasoning/summary/quality_factors text) alive
         # simultaneously. Without this, a 400-symbol run holds all ~1,200
-        # candidate× horizon entries in memory for the entire function,
+        # candidate x horizon entries in memory for the entire function,
         # instead of at most one horizon's worth at a time.
         raw[horizon] = None
+
+        # ── Score snapshots (section 4) — persist every scored stock for
+        # history. Written per-horizon, right here, instead of once for all
+        # three horizons up front (the 2026-07-21 memory-exhaustion
+        # postmortem found the process killed shortly after entering
+        # `ranking`, exactly when the old code held the FULL 3-horizon `raw`
+        # dict alive during this write loop). Writing one horizon's
+        # snapshots immediately after that horizon's slot in `raw` is
+        # released keeps the peak retained memory here to one horizon's
+        # pool (~400 entries) instead of all three (~1,200).
+        _write_score_snapshots({horizon: items}, market)
+
         if not items:
             picks[horizon] = []
             continue
@@ -1892,6 +1925,7 @@ def _generate_picks_inner(
 
     # State: payload fully constructed; about to write to durable storage.
     _try_job_progress(job_id, "persisting", None, None)
+    _mem_guard.check("persisting")
 
     # Save to disk (best-effort — ephemeral on Render free tier)
     try:
