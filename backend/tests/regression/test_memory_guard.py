@@ -15,6 +15,49 @@ def _fake_reader(used, limit):
     return lambda: (used, limit)
 
 
+# ─── _float_env: rejects non-finite values (2026-07-21 independent review) ─
+
+def test_float_env_rejects_nan_and_falls_back_to_default():
+    """float("nan") parses successfully, but `pct >= nan` is always False
+    in Python — a malformed env value that happens to parse as NaN would
+    otherwise silently and permanently disable whichever threshold it set,
+    reintroducing the exact unbounded-OOM-kill failure this module exists
+    to prevent, with no warning logged."""
+    from services.memory_guard import _float_env
+    with patch.dict("os.environ", {"DAILY_PICKS_MEM_ABORT_PCT": "nan"}):
+        assert _float_env("DAILY_PICKS_MEM_ABORT_PCT", 80.0) == 80.0
+
+
+def test_float_env_rejects_positive_and_negative_infinity():
+    from services.memory_guard import _float_env
+    with patch.dict("os.environ", {"DAILY_PICKS_MEM_ABORT_PCT": "inf"}):
+        assert _float_env("DAILY_PICKS_MEM_ABORT_PCT", 80.0) == 80.0
+    with patch.dict("os.environ", {"DAILY_PICKS_MEM_ABORT_PCT": "-inf"}):
+        assert _float_env("DAILY_PICKS_MEM_ABORT_PCT", 80.0) == 80.0
+
+
+def test_float_env_still_accepts_valid_finite_overrides():
+    """The fix must not reject legitimate values — only non-finite ones."""
+    from services.memory_guard import _float_env
+    with patch.dict("os.environ", {"DAILY_PICKS_MEM_ABORT_PCT": "75.5"}):
+        assert _float_env("DAILY_PICKS_MEM_ABORT_PCT", 80.0) == 75.5
+
+
+def test_abort_threshold_still_fires_when_env_is_malformed_nan():
+    """End-to-end: a NaN-valued abort threshold must not silently disable
+    the circuit breaker — it must fall back to the safe numeric default
+    and still raise when usage crosses it."""
+    from services.memory_guard import MemoryCircuitBreaker, DailyPicksMemoryLimitError, _float_env
+
+    with patch.dict("os.environ", {"DAILY_PICKS_MEM_ABORT_PCT": "nan"}):
+        abort_pct = _float_env("DAILY_PICKS_MEM_ABORT_PCT", 80.0)
+    assert abort_pct == 80.0  # sane default, not NaN
+
+    breaker = MemoryCircuitBreaker("US", reader=_fake_reader(85, 100), abort_pct=abort_pct)
+    with pytest.raises(DailyPicksMemoryLimitError):
+        breaker.check("phase_1")
+
+
 def test_no_limit_visible_is_a_safe_no_op():
     """When no container-wide limit can be determined (local dev, psutil-
     only fallback), the breaker must never raise or warn — there is nothing

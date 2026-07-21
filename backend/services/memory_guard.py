@@ -27,6 +27,7 @@ data — only phase name, task progress, and memory percentages/byte counts.
 
 import gc
 import logging
+import math
 import os
 
 log = logging.getLogger(__name__)
@@ -50,14 +51,26 @@ def _float_env(name: str, default: float) -> float:
     always return None regardless of the key/default requested, which a
     plain `float(os.getenv(name, default))` does not survive since the
     mock ignores the default argument entirely). Never raises.
+
+    Also rejects non-finite results (NaN, +inf, -inf) — `float("nan")`
+    parses successfully but `pct >= float("nan")` is always False in
+    Python, so a malformed-but-float-parseable env value (typo, bad shell
+    substitution, templating bug) would otherwise silently and permanently
+    disable whichever threshold it set — reintroducing the exact
+    unbounded-OOM-kill failure mode this module exists to prevent, with no
+    log line indicating anything is wrong. Found in independent review
+    (2026-07-21) before this was ever exercised in production.
     """
     val = os.getenv(name)
     if val is None:
         return default
     try:
-        return float(val)
+        parsed = float(val)
     except (TypeError, ValueError):
         return default
+    if not math.isfinite(parsed):
+        return default
+    return parsed
 
 
 DEFAULT_WARNING_PCT = _float_env("DAILY_PICKS_MEM_WARNING_PCT", 65.0)

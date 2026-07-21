@@ -185,7 +185,7 @@ async def _daily_picks_orphan_reconciliation_loop():
                 reconcile_stale_daily_picks_jobs,
                 _DAILY_PICKS_PERIODIC_STALE_INTERVAL,
             )
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             reclaimed = await loop.run_in_executor(
                 None, reconcile_stale_daily_picks_jobs, _DAILY_PICKS_PERIODIC_STALE_INTERVAL,
             )
