@@ -12,6 +12,7 @@ import pytest
 
 from services.instrument_master.enums import (
     AutomatedReachabilityStatus,
+    ContentContractStatus,
     HeaderMode,
     HostRole,
     PublicationBlockingStatus,
@@ -106,6 +107,10 @@ class TestRegistryCompleteness:
         assert e.parser_contract_id
         assert e.validator_contract_id
         assert isinstance(e.automated_reachability_status, AutomatedReachabilityStatus)
+        assert isinstance(e.content_contract_status, ContentContractStatus)
+        assert isinstance(e.current_environment_reachability_status, AutomatedReachabilityStatus)
+        assert isinstance(e.production_environment_reachability_status, AutomatedReachabilityStatus)
+        assert e.grain
         assert e.fallback_policy
         assert e.freshness_warning_days > 0
         assert e.hard_stale_days >= e.freshness_warning_days
@@ -374,3 +379,111 @@ class TestDeterminism:
         hash_before = canonical_registry_hash()
         assert hash_before == canonical_registry_hash()
         assert registry_by_id(SourceId.NSE_EQUITY_CURRENT).exact_url == EXPECTED_URLS[SourceId.NSE_EQUITY_CURRENT]
+
+
+class TestPhaseC1A3ReachabilityScoping:
+    """Phase C1-A3: the C1-A2 live reconnaissance fetched and inspected
+    all 11 approved URLs successfully from this repository's own
+    execution environment — but never from Railway or GitHub Actions.
+    These tests lock the resulting three-way separation so a future
+    change cannot silently re-merge "reachable from wherever we last
+    checked" back into a single, ambiguous claim."""
+
+    @pytest.mark.parametrize("source_id", list(SourceId))
+    def test_current_environment_verified_for_every_source(self, source_id):
+        # C1-A2 directly fetched and inspected all 11 sources this
+        # session — every one is VERIFIED for the current environment.
+        assert (
+            registry_by_id(source_id).current_environment_reachability_status
+            == AutomatedReachabilityStatus.VERIFIED
+        )
+
+    @pytest.mark.parametrize("source_id", list(SourceId))
+    def test_production_environment_not_verified_for_any_source(self, source_id):
+        # Railway/GitHub Actions were not exercised by C1-A2 — this must
+        # remain NOT_VERIFIED for every source, regardless of how
+        # confidently the current environment result reads.
+        assert (
+            registry_by_id(source_id).production_environment_reachability_status
+            == AutomatedReachabilityStatus.NOT_VERIFIED
+        )
+
+    @pytest.mark.parametrize("source_id", list(SourceId))
+    def test_legacy_alias_field_is_pinned_to_production_status(self, source_id):
+        # The legacy automated_reachability_status field must never read
+        # more optimistically than production_environment_reachability_status
+        # — an existing caller reading only this field is never misled.
+        entry = registry_by_id(source_id)
+        assert entry.automated_reachability_status == entry.production_environment_reachability_status
+
+    @pytest.mark.parametrize("source_id", list(SourceId))
+    def test_content_contract_verified_live_for_every_source(self, source_id):
+        # C1-A2 inspected each real response body against its declared
+        # header/field-count contract, not merely documented it.
+        assert (
+            registry_by_id(source_id).content_contract_status
+            == ContentContractStatus.CONTENT_VERIFIED_LIVE
+        )
+
+    def test_constructing_an_entry_with_mismatched_alias_and_production_status_raises(self):
+        # __post_init__ must reject a hand-constructed entry where the
+        # legacy alias claims something more optimistic than the
+        # production-scoped field says.
+        from services.instrument_master.enums import (
+            DataRole,
+            HeaderMode,
+        )
+        from services.instrument_master.source_registry import SourceRegistryEntry
+
+        with pytest.raises(ValueError, match="production_environment_reachability_status"):
+            SourceRegistryEntry(
+                source_id=SourceId.NSE_EQUITY_CURRENT,
+                category="ordinary_current_equity_segment",
+                exact_url="https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv",
+                publisher="NSE",
+                host_role=HostRole.AUTOMATED_FETCH,
+                data_role=DataRole.SECURITY_LEVEL,
+                criticality=SourceCriticality.CRITICAL_REQUIRED,
+                required_for_complete_taxonomy=True,
+                primary_identity_field="ISIN NUMBER",
+                secondary_identity_fields=("SYMBOL", "SERIES"),
+                header_mode=HeaderMode.HEADER_PRESENT,
+                expected_headers=(
+                    "SYMBOL", "NAME OF COMPANY", "SERIES", "DATE OF LISTING",
+                    "PAID UP VALUE", "MARKET LOT", "ISIN NUMBER", "FACE VALUE",
+                ),
+                minimum_field_count=8,
+                maximum_field_count=8,
+                valid_empty_allowed=False,
+                parser_contract_id="equity_current_v1",
+                validator_contract_id="equity_current_v1",
+                automated_reachability_status=AutomatedReachabilityStatus.VERIFIED,  # mismatched on purpose
+                content_contract_status=ContentContractStatus.CONTENT_VERIFIED_LIVE,
+                current_environment_reachability_status=AutomatedReachabilityStatus.VERIFIED,
+                production_environment_reachability_status=AutomatedReachabilityStatus.NOT_VERIFIED,
+                fallback_policy="last_known_good",
+                freshness_warning_days=1,
+                hard_stale_days=3,
+                publication_blocking_status=PublicationBlockingStatus.BLOCKS_SNAPSHOT,
+            )
+
+    def test_pref_grain_is_per_redemption_tranche(self):
+        assert registry_by_id(SourceId.NSE_PREFERENCE).grain == "PER_REDEMPTION_TRANCHE"
+
+    @pytest.mark.parametrize(
+        "source_id",
+        [sid for sid in SourceId if sid not in (SourceId.NSE_PREFERENCE, SourceId.NSE_SYMBOL_HISTORY, SourceId.NSE_NAME_HISTORY)],
+    )
+    def test_other_sources_default_to_per_security_grain(self, source_id):
+        assert registry_by_id(source_id).grain == "PER_SECURITY"
+
+    def test_symbol_history_secondary_identity_fields_corrected_order(self):
+        entry = registry_by_id(SourceId.NSE_SYMBOL_HISTORY)
+        assert entry.secondary_identity_fields == (
+            "company_or_scheme_name",
+            "old_symbol",
+            "new_symbol",
+            "effective_date",
+        )
+        # The previously-declared, incorrect order must not reappear.
+        assert entry.secondary_identity_fields != ("old_symbol", "new_symbol", "company_name", "date")

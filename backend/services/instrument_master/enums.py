@@ -166,11 +166,40 @@ class AutomatedReachabilityStatus(str, Enum):
     """Per the standing Phase C1-B1/B2/B3 evidence and the Phase C1-C2
     terminology correction: NOT_VERIFIED never means "globally
     unavailable" — it means the corrected automated endpoint has not yet
-    succeeded through a tested automated execution environment."""
+    succeeded through a tested automated execution environment.
+
+    Phase C1-A3 note: this enum's members are now reused across THREE
+    distinct, separately-tracked environment scopes on
+    SourceRegistryEntry (`current_environment_reachability_status`,
+    `production_environment_reachability_status`, and the legacy
+    `automated_reachability_status` alias) — see that dataclass's
+    docstring. A bare VERIFIED on the legacy field, by itself, must
+    never again be read as "approved for production automation"; only
+    `production_environment_reachability_status` carries that meaning."""
 
     VERIFIED = "verified"
     NOT_VERIFIED = "not_verified"
     UNKNOWN = "unknown"
+
+
+class ContentContractStatus(str, Enum):
+    """Whether a source's declared header/field-count/format contract
+    (expected_headers, minimum_field_count, maximum_field_count, and any
+    source-specific quirk such as a trailing undeclared field) has been
+    checked against a real response body, versus only ever documented
+    from static/secondary evidence. Added Phase C1-A3, following the
+    C1-A2 live reconnaissance that fetched and inspected all 11 approved
+    URLs from a main-site-reachable environment.
+
+    This is independent of reachability: a source can be reachable
+    (HTTP 200) while its content contract remains SCHEMA_ONLY_UNVERIFIED
+    if the response body was never actually inspected against the
+    declared contract, and vice versa is not meaningful (content cannot
+    be verified without a successful fetch, but that fetch's outcome is
+    tracked separately, on the *_reachability_status fields)."""
+
+    CONTENT_VERIFIED_LIVE = "content_verified_live"
+    SCHEMA_ONLY_UNVERIFIED = "schema_only_unverified"
 
 
 class PublicationBlockingStatus(str, Enum):
