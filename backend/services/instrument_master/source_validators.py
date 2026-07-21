@@ -203,6 +203,7 @@ def _validate_dedicated_current_source(
     expected_header: tuple[str, ...],
     isin_column: str,
     footnote_filter: bool = False,
+    optional_trailing_empty_field: bool = False,
 ) -> ValidationResult:
     if _looks_like_non_csv(text):
         return ValidationResult(
@@ -227,7 +228,17 @@ def _validate_dedicated_current_source(
             errors=(ValidationError(1, "invalid_header", "empty or missing header row"),),
         )
 
-    header = tuple(_normalize_header_cell(c) for c in next(csv.reader([lines[0]])))
+    raw_header = tuple(_normalize_header_cell(c) for c in next(csv.reader([lines[0]])))
+    # Same trailing-empty-field tolerance applied to the header row as to
+    # data rows (Phase C1-A3): the live SME_EQUITY_L.csv header itself
+    # carries the same trailing comma as every data row.
+    header = raw_header
+    if (
+        optional_trailing_empty_field
+        and len(raw_header) == len(expected_header) + 1
+        and raw_header[-1] == ""
+    ):
+        header = raw_header[:-1]
     if header != expected_header:
         return ValidationResult(
             source_id=source_id,
@@ -236,8 +247,8 @@ def _validate_dedicated_current_source(
             record_count=0,
             error_count=1,
             warning_count=0,
-            errors=(ValidationError(1, "invalid_header", f"observed={header!r} expected={expected_header!r}"),),
-            observed_header=header,
+            errors=(ValidationError(1, "invalid_header", f"observed={raw_header!r} expected={expected_header!r}"),),
+            observed_header=raw_header,
         )
 
     expected_count = len(expected_header)
@@ -257,10 +268,36 @@ def _validate_dedicated_current_source(
     # carry no content of any kind, footnote or otherwise.
     data_lines = [ln for ln in lines[1:] if ln.strip() != ""]
     for line_no, raw_line in enumerate(data_lines, start=2):
-        row = next(csv.reader([raw_line]))
-        fc = len(row)
+        raw_row = next(csv.reader([raw_line]))
+        fc = len(raw_row)
         min_fc = fc if min_fc is None else min(min_fc, fc)
         max_fc = fc if max_fc is None else max(max_fc, fc)
+
+        # SME-specific, narrowly-scoped tolerance (Phase C1-A3, confirmed
+        # against the live response body): exactly one optional trailing
+        # CSV field, tolerated ONLY when it is empty/whitespace — never
+        # treated as a real business column, and a non-empty value in
+        # that position fails closed with a distinct, explicit error
+        # rather than silently being accepted as data. This never widens
+        # to a generic "ignore trailing empties" rule for any other
+        # source — it is gated by the caller-supplied
+        # optional_trailing_empty_field flag, source-ID-scoped exactly
+        # like the PREF/WARRANT trailing-ISIN contract.
+        row = raw_row
+        if optional_trailing_empty_field and fc == expected_count + 1:
+            if raw_row[-1].strip() == "":
+                row = raw_row[:-1]
+                fc = expected_count
+            else:
+                errors.append(
+                    ValidationError(
+                        line_no,
+                        "invalid_field_count",
+                        f"observed={fc} expected={expected_count} "
+                        f"(unexpected non-empty trailing field: {raw_row[-1]!r})",
+                    )
+                )
+                continue
 
         if fc != expected_count:
             if footnote_filter and _is_known_footnote_row(source_id, row):
@@ -270,8 +307,8 @@ def _validate_dedicated_current_source(
                 continue
             # Any other field-count mismatch — including a genuinely
             # malformed/truncated data row that merely resembles a
-            # footnote in width — fails closed as a structural error,
-            # never silently dropped.
+            # footnote in width, or more than one extra trailing field —
+            # fails closed as a structural error, never silently dropped.
             errors.append(
                 ValidationError(
                     line_no,
@@ -396,6 +433,19 @@ def validate_etf(text: str) -> ValidationResult:
 def validate_sme(text: str, *, source_url: str | None = None) -> ValidationResult:
     """SME_EQUITY_L.csv: membership supports SME classification. `series`
     (SM/ST/SZ observed) is validated as data only, never as identity.
+
+    Phase C1-A3 correction (confirmed against the live response body
+    during the C1-A2 reconnaissance): every real row — and the header
+    row itself — carries a trailing comma after FACE_VALUE, producing an
+    8th, always-empty raw CSV field. This validator accepts that one
+    optional trailing field ONLY when it is empty/whitespace, silently
+    drops it during normalization (it is never treated as a real
+    business column, never exposed as a semantic value), and rejects a
+    row outright if that 8th field is non-empty or if a row has more
+    than 8 raw fields — see optional_trailing_empty_field on
+    _validate_dedicated_current_source(). The declared 7-column semantic
+    schema (expected_header below) is unchanged.
+
     If `source_url` is supplied, this validator requires it to be an
     EXACT, byte-for-byte match for the registered nse_sme_current URL
     (https://nsearchives.nseindia.com/emerge/corporates/content/SME_EQUITY_L.csv)
@@ -449,6 +499,7 @@ def validate_sme(text: str, *, source_url: str | None = None) -> ValidationResul
         source_id=SourceId.NSE_SME_CURRENT,
         expected_header=("SYMBOL", "NAME_OF_COMPANY", "SERIES", "DATE_OF_LISTING", "PAID_UP_VALUE", "ISIN_NUMBER", "FACE_VALUE"),
         isin_column="ISIN_NUMBER",
+        optional_trailing_empty_field=True,
     )
 
 
@@ -609,37 +660,200 @@ def _validate_trailing_isin_source(
     )
 
 
+_PREF_DECLARED_HEADER = (
+    "SYMBOL", "NAME OF COMPANY", "SERIES", "SECURITY NAME", "FACE VALUE",
+    "PAID UP VALUE", "MKT LOT", "DIVIDEND %", "DATE OF LISTING",
+    "DATE OF ALLOTMENT", "REDEMPTION DATE", "REDEMPTION AMT",
+    "CONVERSION DATE", "CONVERSION AMT",
+)
+_PREF_REDEMPTION_DATE_IDX = _PREF_DECLARED_HEADER.index("REDEMPTION DATE")
+_PREF_CONVERSION_DATE_IDX = _PREF_DECLARED_HEADER.index("CONVERSION DATE")
+
+
 def validate_preference(text: str) -> ValidationResult:
     """PREF.csv: confirmed real source defect — declared header has one
     fewer field than every valid data row; the trailing undeclared field
-    is the ISIN. Accepted only when: source is nse_preference (this
-    function is only ever called for that source); declared header
-    matches exactly; every accepted row has exactly header_count + 1
-    fields; the trailing field passes strict ISIN validation; all
-    preceding fields are simply carried through unvalidated beyond
-    field-count (per the ratified contract, no further semantic
-    validation of the 14 declared columns is required in this phase).
-    Grain (possibly per-redemption-tranche) is NOT resolved here — that
-    is a classification-engine concern, out of scope for C1-D1."""
-    return _validate_trailing_isin_source(
-        text,
-        source_id=SourceId.NSE_PREFERENCE,
-        declared_header=(
-            "SYMBOL", "NAME OF COMPANY", "SERIES", "SECURITY NAME", "FACE VALUE",
-            "PAID UP VALUE", "MKT LOT", "DIVIDEND %", "DATE OF LISTING",
-            "DATE OF ALLOTMENT", "REDEMPTION DATE", "REDEMPTION AMT",
-            "CONVERSION DATE", "CONVERSION AMT",
-        ),
+    is the ISIN.
+
+    Phase C1-A3 correction (confirmed against the live response body):
+    grain is PER_REDEMPTION_TRANCHE, not per-security — a single symbol
+    (JSWSTEEL, observed live) legitimately repeats the SAME trailing
+    ISIN across multiple rows that differ only by REDEMPTION DATE, one
+    row per redemption tranche of the same preference-share issuance.
+    Deliberately NOT implemented via the shared
+    _validate_trailing_isin_source() helper used by validate_warrant()
+    below — that helper's identity key is the trailing ISIN alone and
+    would incorrectly flag distinct tranches sharing an ISIN as
+    duplicates, undercounting real records. This validator's identity
+    key is instead the composite (trailing ISIN, REDEMPTION DATE,
+    CONVERSION DATE) — two rows are only ever treated as a duplicate
+    when all three agree, which never collapses two genuinely distinct
+    tranches, only a true exact-duplicate row.
+
+    Accepted only when: declared header matches exactly; every accepted
+    row has exactly header_count + 1 fields; the trailing field passes
+    strict ISIN validation; all preceding fields are simply carried
+    through unvalidated beyond field-count (per the ratified contract,
+    no further semantic validation of the 14 declared columns is
+    required in this phase)."""
+    source_id = SourceId.NSE_PREFERENCE
+    declared_header = _PREF_DECLARED_HEADER
+
+    if _looks_like_non_csv(text):
+        return ValidationResult(
+            source_id=source_id,
+            status=ValidationResultStatus.UNEXPECTED_NON_CSV_CONTENT,
+            valid=False,
+            record_count=0,
+            error_count=1,
+            warning_count=0,
+            errors=(ValidationError(None, "unexpected_non_csv_content", "response body looks like HTML, not CSV"),),
+        )
+
+    lines = _split_csv_lines(text)
+    if not lines or not lines[0].strip():
+        return ValidationResult(
+            source_id=source_id,
+            status=ValidationResultStatus.INVALID_HEADER,
+            valid=False,
+            record_count=0,
+            error_count=1,
+            warning_count=0,
+            errors=(ValidationError(1, "invalid_header", "empty or missing header row"),),
+        )
+
+    header = tuple(_normalize_header_cell(c) for c in next(csv.reader([lines[0]])))
+    if header != declared_header:
+        return ValidationResult(
+            source_id=source_id,
+            status=ValidationResultStatus.INVALID_HEADER,
+            valid=False,
+            record_count=0,
+            error_count=1,
+            warning_count=0,
+            errors=(ValidationError(1, "invalid_header", f"observed={header!r} expected={declared_header!r}"),),
+            observed_header=header,
+        )
+
+    declared_count = len(declared_header)
+    required_row_width = declared_count + 1
+
+    errors: list[ValidationError] = []
+    # Composite tranche identity: (trailing ISIN, REDEMPTION DATE,
+    # CONVERSION DATE) -> occurrence count. Never keyed by ISIN alone.
+    seen_tranches: dict[tuple[str, str, str], int] = {}
+    record_count = 0
+    isin_total_rows = 0
+    isin_nonblank_rows = 0
+    isin_valid_rows = 0
+    min_fc: int | None = None
+    max_fc: int | None = None
+
+    data_lines = [ln for ln in lines[1:] if ln != ""]
+    for line_no, raw_line in enumerate(data_lines, start=2):
+        row = next(csv.reader([raw_line]))
+        fc = len(row)
+        min_fc = fc if min_fc is None else min(min_fc, fc)
+        max_fc = fc if max_fc is None else max(max_fc, fc)
+
+        if fc != required_row_width:
+            errors.append(
+                ValidationError(
+                    line_no,
+                    "invalid_field_count",
+                    f"observed={fc} required={required_row_width} (declared_header_count + 1)",
+                )
+            )
+            continue
+
+        isin_total_rows += 1
+        trailing_isin = row[-1].strip()
+        if not trailing_isin:
+            errors.append(ValidationError(line_no, "missing_required_field", "blank trailing ISIN field"))
+            continue
+        isin_nonblank_rows += 1
+        if not is_strict_valid_isin(trailing_isin):
+            errors.append(ValidationError(line_no, "invalid_isin", f"trailing_field={trailing_isin!r}"))
+            continue
+        isin_valid_rows += 1
+
+        tranche_key = (
+            trailing_isin,
+            row[_PREF_REDEMPTION_DATE_IDX].strip(),
+            row[_PREF_CONVERSION_DATE_IDX].strip(),
+        )
+        seen_tranches[tranche_key] = seen_tranches.get(tranche_key, 0) + 1
+        record_count += 1
+
+    dup_tranches = {k: v for k, v in seen_tranches.items() if v > 1}
+    if dup_tranches:
+        for (isin_val, redemption_date, conversion_date), count in sorted(dup_tranches.items()):
+            errors.append(
+                ValidationError(
+                    None,
+                    "duplicate_tranche",
+                    f"ISIN={isin_val} REDEMPTION DATE={redemption_date!r} "
+                    f"CONVERSION DATE={conversion_date!r} appears {count} times",
+                )
+            )
+        record_count -= sum(dup_tranches.values())
+
+    if record_count == 0 and not errors:
+        status, valid = ValidationResultStatus.VALID_EMPTY, True
+    elif errors:
+        # Deterministic priority, mirroring
+        # _validate_dedicated_current_source()'s status precedence: a
+        # true structural (field-count) problem takes priority over a
+        # pure duplicate-tranche finding, so the reported status always
+        # names the actual dominant error class rather than defaulting
+        # to a generic/misleading one.
+        error_codes = {e.code for e in errors}
+        if "invalid_field_count" in error_codes:
+            status = ValidationResultStatus.INVALID_FIELD_COUNT
+        elif "missing_required_field" in error_codes:
+            status = ValidationResultStatus.MISSING_REQUIRED_FIELD
+        elif "invalid_isin" in error_codes:
+            status = ValidationResultStatus.INVALID_ISIN
+        else:
+            status = ValidationResultStatus.DUPLICATE_ISIN
+        valid = False
+    else:
+        status, valid = ValidationResultStatus.VALID, True
+
+    return ValidationResult(
+        source_id=source_id,
+        status=status,
+        valid=valid,
+        record_count=record_count,
+        error_count=len(errors),
+        warning_count=0,
+        errors=tuple(errors),
+        observed_header=header,
+        observed_min_field_count=min_fc,
+        observed_max_field_count=max_fc,
+        isin_total_rows=isin_total_rows,
+        isin_nonblank_rows=isin_nonblank_rows,
+        isin_valid_rows=isin_valid_rows,
+        isin_duplicate_count=sum(dup_tranches.values()),
     )
 
 
 def validate_warrant(text: str) -> ValidationResult:
-    """WARRANT.csv: same trailing-ISIN defect pattern as PREF.csv,
-    applied as its own fully independent contract (declared header of 5,
-    required row width of 6) — not derived from or shared with
-    validate_preference() beyond the common private helper, which itself
-    is parameterized purely by declared_header, not by any implicit
-    "any CSV with N+1 fields" generic rule."""
+    """WARRANT.csv: same trailing-undeclared-field defect pattern as
+    PREF.csv, applied as its own fully independent contract (declared
+    header of 5, required row width of 6). The trailing field is
+    explicitly declared and validated as an ISIN — strict ISO 6166
+    shape and check-digit (is_strict_valid_isin(), via
+    _validate_trailing_isin_source() below), never accepted as an
+    arbitrary extra column. Unlike PREF.csv, no live evidence of a
+    repeated-ISIN/multi-tranche pattern has been observed for WARRANT.csv
+    (only a single real row was available to inspect during C1-A2), so
+    this validator is deliberately NOT switched to validate_preference()'s
+    tranche-composite identity — it still uses the shared trailing-ISIN
+    helper, whose identity key is the trailing ISIN alone. If live
+    evidence of a WARRANT.csv multi-row-per-ISIN pattern is found in a
+    future reconnaissance, this contract should be revisited, not
+    silently assumed to already handle it."""
     return _validate_trailing_isin_source(
         text,
         source_id=SourceId.NSE_WARRANT,
@@ -803,12 +1017,55 @@ def validate_il_series(text: str | bytes) -> ValidationResult:
 _DATE_RE = re.compile(r"^\d{2}-[A-Z]{3}-\d{4}$")
 
 
+@dataclass(frozen=True)
+class SymbolChangeRecord:
+    """The single, named-field source of truth for symbolchange.csv's
+    real column order (Phase C1-A3 correction — confirmed against the
+    live response body during the C1-A2 reconnaissance):
+    (company_or_scheme_name, old_symbol, new_symbol, effective_date).
+
+    Both source_registry.py's `nse_symbol_history` entry
+    (`secondary_identity_fields`) and validate_symbol_history() below
+    are required to reference this same order — nothing in this module
+    indexes a raw symbolchange.csv row by position anywhere else, so a
+    future consumer importing this dataclass (rather than re-deriving
+    the column order by hand) cannot silently reintroduce the old,
+    incorrect (old_symbol, new_symbol, company_name, date) ordering."""
+
+    line_number: int
+    company_or_scheme_name: str
+    old_symbol: str
+    new_symbol: str
+    effective_date: str
+
+
+def parse_symbol_change_row(row: list[str], *, line_number: int) -> SymbolChangeRecord:
+    """Maps one already-split, exactly-4-field symbolchange.csv row to a
+    named SymbolChangeRecord. Never called with a row of any other
+    width — callers (validate_symbol_history() below) enforce the
+    field-count contract before calling this."""
+    if len(row) != 4:
+        raise ValueError(f"expected exactly 4 fields, got {len(row)}: {row!r}")
+    return SymbolChangeRecord(
+        line_number=line_number,
+        company_or_scheme_name=row[0].strip(),
+        old_symbol=row[1].strip(),
+        new_symbol=row[2].strip(),
+        effective_date=row[3].strip(),
+    )
+
+
 def validate_symbol_history(text: str) -> ValidationResult:
-    """symbolchange.csv: headerless, exactly 4 fields per record
-    (company_name, old_symbol, new_symbol, date), no ISIN. Lower-
-    confidence history evidence only — this validator never produces or
-    implies an automatic identity linkage; that remains a classification/
-    consumer-layer decision explicitly out of scope here."""
+    """symbolchange.csv: headerless, exactly 4 fields per record, no
+    ISIN. Field order is (company_or_scheme_name, old_symbol,
+    new_symbol, effective_date) — see SymbolChangeRecord/
+    parse_symbol_change_row() above, the single named-field mapping this
+    validator uses internally (never a bare positional row[N] lookup for
+    old_symbol/new_symbol/company name, so the old, incorrect ordering
+    cannot silently reappear here). Lower-confidence history evidence
+    only — this validator never produces or implies an automatic
+    identity linkage; that remains a classification/consumer-layer
+    decision explicitly out of scope here."""
     if _looks_like_non_csv(text):
         return ValidationResult(
             source_id=SourceId.NSE_SYMBOL_HISTORY,
@@ -827,16 +1084,17 @@ def validate_symbol_history(text: str) -> ValidationResult:
     record_count = 0
 
     for line_no, raw_line in enumerate(lines, start=1):
-        row = next(csv.reader([raw_line]))
-        fc = len(row)
+        raw_row = next(csv.reader([raw_line]))
+        fc = len(raw_row)
         min_fc = fc if min_fc is None else min(min_fc, fc)
         max_fc = fc if max_fc is None else max(max_fc, fc)
         if fc != 4:
             errors.append(ValidationError(line_no, "invalid_field_count", f"observed={fc} expected=4"))
             continue
-        date_field = row[3].strip().upper()
+        record = parse_symbol_change_row(raw_row, line_number=line_no)
+        date_field = record.effective_date.upper()
         if not _DATE_RE.match(date_field):
-            errors.append(ValidationError(line_no, "malformed_date", f"date={row[3]!r}"))
+            errors.append(ValidationError(line_no, "malformed_date", f"date={record.effective_date!r}"))
             continue
         record_count += 1
 
@@ -854,12 +1112,53 @@ def validate_symbol_history(text: str) -> ValidationResult:
     )
 
 
+def dedupe_name_history_rows(text: str) -> list[tuple[str, ...]]:
+    """Deterministic, order-preserving exact-duplicate removal for
+    namechange.csv data rows (Phase C1-A3), exposed as its own public
+    function so downstream callers/tests can observe the actual
+    deduplicated row sequence directly, not merely a count.
+
+    Behavior: each row is normalized (Unicode NFC, each field stripped)
+    before comparison. The FIRST occurrence of each distinct normalized
+    row is kept, in original input order; every later exact repeat of an
+    already-seen row is dropped. A near-duplicate — any row differing in
+    even one field from every row seen so far (including a
+    same-symbol/same-date row with a different NCH_PREV_NAME or
+    NCH_NEW_NAME) — is never collapsed; it is retained as its own
+    distinct entry. Malformed rows (field count != 4) are silently
+    skipped here — validate_name_history() is the source of truth for
+    reporting those as invalid_field_count errors; this function assumes
+    `text`'s first line is a header and only processes lines[1:]."""
+    lines = _split_csv_lines(text)
+    data_lines = [ln for ln in lines[1:] if ln != ""]
+    expected_width = 4
+
+    seen: set[tuple[str, ...]] = set()
+    ordered: list[tuple[str, ...]] = []
+    for raw_line in data_lines:
+        row = next(csv.reader([raw_line]))
+        if len(row) != expected_width:
+            continue
+        normalized = tuple(unicodedata.normalize("NFC", c.strip()) for c in row)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
+
+
 def validate_name_history(text: str) -> ValidationResult:
     """namechange.csv: exact declared header, deterministic exact-row
     deduplication (order-independent), no ISIN. Symbol-only linkage is
     enrichment evidence only. Conflicting duplicate rows (rows sharing a
     symbol/date but differing content) remain visible as warnings, never
-    silently collapsed alongside true exact duplicates."""
+    silently collapsed alongside true exact duplicates. See
+    dedupe_name_history_rows() above for the order-preserving,
+    first-occurrence-wins deduplicated row sequence itself (this
+    function's own internal dedup counting logic below applies the same
+    normalization rule independently, since it additionally needs
+    per-row error/warning attribution that the standalone function does
+    not produce)."""
     expected_header = ("NCH_SYMBOL", "NCH_PREV_NAME", "NCH_NEW_NAME", "NCH_DT")
 
     if _looks_like_non_csv(text):
