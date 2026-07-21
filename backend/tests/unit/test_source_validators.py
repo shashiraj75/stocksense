@@ -14,8 +14,11 @@ import pytest
 
 from services.instrument_master.enums import SourceId, ValidationResultStatus
 from services.instrument_master.source_validators import (
+    SymbolChangeRecord,
     ValidationResult,
+    dedupe_name_history_rows,
     is_strict_valid_isin,
+    parse_symbol_change_row,
     validate_equity_current,
     validate_etf,
     validate_idr,
@@ -217,6 +220,50 @@ class TestSmeValidator:
         r = validate_sme(_read("valid_sme.csv"), source_url=correct)
         assert r.valid is True
 
+    # -- Phase C1-A3: live-format trailing-empty-field correction --------
+
+    def test_trailing_empty_field_accepted_and_dropped(self):
+        # Confirmed live shape (C1-A2): every row, including the header,
+        # carries a trailing comma producing an 8th, always-empty field.
+        r = validate_sme(_read("sme_trailing_empty_field.csv"))
+        assert r.valid is True
+        assert r.status == ValidationResultStatus.VALID
+        assert r.record_count == 1
+        assert r.observed_max_field_count == 8  # raw width, before trimming
+        assert r.observed_header == ("SYMBOL", "NAME_OF_COMPANY", "SERIES", "DATE_OF_LISTING", "PAID_UP_VALUE", "ISIN_NUMBER", "FACE_VALUE")
+
+    def test_trailing_non_empty_field_rejected(self):
+        r = validate_sme(_read("sme_trailing_nonempty_field.csv"))
+        assert r.valid is False
+        assert r.status == ValidationResultStatus.INVALID_FIELD_COUNT
+        assert any(
+            e.code == "invalid_field_count" and "unexpected non-empty trailing field" in e.detail
+            for e in r.errors
+        )
+        assert r.record_count == 0
+
+    def test_more_than_eight_raw_fields_rejected(self):
+        r = validate_sme(_read("sme_too_many_fields.csv"))
+        assert r.valid is False
+        assert any(e.code == "invalid_field_count" for e in r.errors)
+        assert r.record_count == 0
+
+    def test_seven_field_fixture_without_trailing_comma_still_accepted(self):
+        # Backward compatible: a row with exactly the declared 7 fields
+        # (no trailing comma at all) must remain valid — the tolerance is
+        # additive, not a new requirement.
+        r = validate_sme(_read("valid_sme.csv"))
+        assert r.valid is True
+        assert r.record_count == 1
+
+    def test_trailing_empty_field_tolerance_is_source_id_scoped(self):
+        # EQUITY_L's contract must NOT tolerate an SME-shaped trailing
+        # empty field — confirms optional_trailing_empty_field is never
+        # silently applied outside validate_sme().
+        equity_with_trailing_comma = _read("valid_equity.csv").replace("10\n", "10,\n")
+        r = validate_equity_current(equity_with_trailing_comma)
+        assert r.valid is False
+
 
 class TestReitInvitValidator:
     def test_reit_footnote_row_filtered_not_treated_as_security(self):
@@ -365,6 +412,74 @@ class TestPrefWarrantTrailingIsinContract:
         r = validate_equity_current(equity_with_extra_field)
         assert r.valid is False
 
+    def test_pref_trailing_field_must_be_isin_shaped_not_arbitrary(self):
+        r = validate_preference(_read("pref_invalid_trailing_isin.csv"))
+        assert r.valid is False
+        assert any(e.code == "invalid_isin" for e in r.errors)
+
+    def test_warrant_trailing_field_must_be_isin_shaped_not_arbitrary(self):
+        r = validate_warrant(_read("warrant_invalid_trailing_isin.csv"))
+        assert r.valid is False
+        assert any(e.code == "invalid_isin" for e in r.errors)
+
+
+# ---------------------------------------------------------------------------
+# PREF.csv per-redemption-tranche grain (Phase C1-A3)
+# ---------------------------------------------------------------------------
+
+
+class TestPreferenceTrancheGrain:
+    def test_two_tranches_same_isin_both_retained(self):
+        # Live-confirmed shape: one symbol (JSWSTEEL, observed), same
+        # trailing ISIN, distinct REDEMPTION DATE per row. Both rows are
+        # real, distinct records — never collapsed by ISIN alone.
+        r = validate_preference(_read("pref_two_tranches_same_isin.csv"))
+        assert r.valid is True
+        assert r.record_count == 2
+        assert r.error_count == 0
+
+    def test_exact_duplicate_tranche_is_flagged_and_excluded(self):
+        # Same ISIN AND same REDEMPTION DATE AND same CONVERSION DATE
+        # repeated verbatim — a genuine duplicate, correctly rejected
+        # (unlike the two-distinct-tranches case above).
+        r = validate_preference(_read("pref_exact_duplicate_tranche.csv"))
+        assert r.valid is False
+        assert r.record_count == 0
+        assert any(e.code == "duplicate_tranche" for e in r.errors)
+
+    def test_single_tranche_fixture_still_accepted(self):
+        # Regression guard: the original single-row PREF fixture must
+        # still validate cleanly under the new tranche-aware validator.
+        r = validate_preference(_read("pref_trailing_isin.csv"))
+        assert r.valid is True
+        assert r.record_count == 1
+
+    def test_distinct_tranches_sharing_isin_and_dates_both_retained(self):
+        # Independent-review regression: two rows sharing the same ISIN
+        # AND the same (blank) REDEMPTION DATE/CONVERSION DATE, but
+        # differing in REDEMPTION AMT, are genuinely distinct tranches.
+        # A narrower (ISIN, REDEMPTION DATE, CONVERSION DATE) identity
+        # would have wrongly collapsed these as duplicates and dropped
+        # both — the full-row identity must retain both.
+        r = validate_preference(_read("pref_distinct_tranches_same_isin_and_dates.csv"))
+        assert r.valid is True
+        assert r.record_count == 2
+        assert r.error_count == 0
+
+    def test_warrant_still_uses_isin_only_identity_not_tranche_composite(self):
+        # WARRANT.csv has no live evidence of a repeated-ISIN pattern —
+        # confirms validate_warrant() was NOT switched to the PREF
+        # tranche-composite identity model.
+        text = (
+            "SYMBOL, NAME OF COMPANY, SERIES, DATE OF LISTING, MARKET LOT\n"
+            "SYNTHWARR,Synthetic Warrant Test,W1,01-JAN-2015,1,INTESTMN0071\n"
+            "SYNTHWARR,Synthetic Warrant Test,W1,02-JAN-2015,1,INTESTMN0071\n"
+        )
+        r = validate_warrant(text)
+        assert r.valid is False
+        assert any(e.code == "duplicate_isin" for e in r.errors)
+        assert r.record_count == 0
+
 
 # ---------------------------------------------------------------------------
 # IDR_W9.csv
@@ -498,6 +613,58 @@ class TestSymbolHistoryValidator:
         r = validate_symbol_history(bad)
         assert r.valid is False
         assert any(e.code == "malformed_date" for e in r.errors)
+
+    # -- Phase C1-A3: corrected field-order regression -------------------
+
+    def test_realistic_row_maps_fields_in_the_corrected_order(self):
+        # Exact shape observed live during C1-A2 reconnaissance:
+        # "<company/scheme name>,<old_symbol>,<new_symbol>,<date>" — NOT
+        # the previously (incorrectly) declared
+        # (old_symbol, new_symbol, company_name, date) ordering.
+        row = ["NIPPON INDIA MF - NIPPON INDIA Dual Advantage FTF Sr. x Plan E - GO", "RDAXEDG", "NDAXEDG", "30-OCT-2019"]
+        record = parse_symbol_change_row(row, line_number=1)
+        assert isinstance(record, SymbolChangeRecord)
+        assert record.company_or_scheme_name == "NIPPON INDIA MF - NIPPON INDIA Dual Advantage FTF Sr. x Plan E - GO"
+        assert record.old_symbol == "RDAXEDG"
+        assert record.new_symbol == "NDAXEDG"
+        assert record.effective_date == "30-OCT-2019"
+
+    def test_realistic_company_rename_row_maps_correctly(self):
+        # A second, differently-shaped realistic row (plain company
+        # rename, not a scheme rename) — confirms the mapping is not
+        # coincidentally correct only for scheme-style names.
+        row = ["360 ONE WAM LIMITED", "IIFLWAM", "360ONE", "23-JAN-2023"]
+        record = parse_symbol_change_row(row, line_number=1)
+        assert record.company_or_scheme_name == "360 ONE WAM LIMITED"
+        assert record.old_symbol == "IIFLWAM"
+        assert record.new_symbol == "360ONE"
+        assert record.effective_date == "23-JAN-2023"
+
+    def test_validator_uses_the_same_named_mapping_for_date_validation(self):
+        # validate_symbol_history() must reject a malformed date found in
+        # the actual 4th (effective_date) position — proves the
+        # validator's date check goes through parse_symbol_change_row()
+        # rather than a raw, independently-indexed row[N] lookup that
+        # could silently drift from the named mapping.
+        bad_date_in_correct_position = "Realistic Co Name,OLDSYM,NEWSYM,2019-10-30\n"
+        r = validate_symbol_history(bad_date_in_correct_position)
+        assert r.valid is False
+        assert any(e.code == "malformed_date" for e in r.errors)
+
+    def test_parse_symbol_change_row_rejects_wrong_width(self):
+        with pytest.raises(ValueError):
+            parse_symbol_change_row(["only", "three", "fields"], line_number=1)
+
+    def test_registry_secondary_identity_fields_match_the_corrected_order(self):
+        from services.instrument_master.source_registry import registry_by_id
+
+        entry = registry_by_id(SourceId.NSE_SYMBOL_HISTORY)
+        assert entry.secondary_identity_fields == (
+            "company_or_scheme_name",
+            "old_symbol",
+            "new_symbol",
+            "effective_date",
+        )
 
 
 class TestNameHistoryValidator:
@@ -656,3 +823,62 @@ class TestNameHistoryValidator:
         r = validate_name_history(text)
         assert not hasattr(r, "resolved_identity")
         assert not hasattr(r, "isin")
+
+
+# ---------------------------------------------------------------------------
+# namechange.csv ordered, first-occurrence-wins dedup (Phase C1-A3)
+# ---------------------------------------------------------------------------
+
+
+class TestDedupeNameHistoryRows:
+    def test_exact_duplicates_removed_keeping_first_occurrence(self):
+        text = (
+            "NCH_SYMBOL, NCH_PREV_NAME, NCH_NEW_NAME, NCH_DT\n"
+            "AAA,Old A,New A,01-JAN-2020\n"
+            "BBB,Old B,New B,02-JAN-2020\n"
+            "AAA,Old A,New A,01-JAN-2020\n"  # exact duplicate of row 1
+        )
+        result = dedupe_name_history_rows(text)
+        assert result == [
+            ("AAA", "Old A", "New A", "01-JAN-2020"),
+            ("BBB", "Old B", "New B", "02-JAN-2020"),
+        ]
+
+    def test_near_duplicates_are_never_collapsed(self):
+        # Same symbol and date, but a different NCH_PREV_NAME -- must be
+        # retained as its own distinct entry, not treated as a duplicate.
+        text = (
+            "NCH_SYMBOL, NCH_PREV_NAME, NCH_NEW_NAME, NCH_DT\n"
+            "SYNTHCO,Old Name A,New Name,01-JAN-2020\n"
+            "SYNTHCO,Old Name B,New Name,01-JAN-2020\n"
+        )
+        result = dedupe_name_history_rows(text)
+        assert len(result) == 2
+        assert ("SYNTHCO", "Old Name A", "New Name", "01-JAN-2020") in result
+        assert ("SYNTHCO", "Old Name B", "New Name", "01-JAN-2020") in result
+
+    def test_stable_input_order_preserved(self):
+        text = (
+            "NCH_SYMBOL, NCH_PREV_NAME, NCH_NEW_NAME, NCH_DT\n"
+            "ZZZ,Old Z,New Z,05-JAN-2020\n"
+            "AAA,Old A,New A,01-JAN-2020\n"
+            "MMM,Old M,New M,03-JAN-2020\n"
+        )
+        result = dedupe_name_history_rows(text)
+        # Input order (Z, A, M), never re-sorted alphabetically or by date.
+        assert [row[0] for row in result] == ["ZZZ", "AAA", "MMM"]
+
+    def test_matches_validate_name_history_record_count(self):
+        text = _read("name_change_exact_duplicates.csv")
+        deduped = dedupe_name_history_rows(text)
+        r = validate_name_history(text)
+        assert len(deduped) == r.record_count
+
+    def test_malformed_rows_silently_skipped_here_not_double_reported(self):
+        text = (
+            "NCH_SYMBOL, NCH_PREV_NAME, NCH_NEW_NAME, NCH_DT\n"
+            "AAA,Old A,New A,01-JAN-2020\n"
+            "TRUNCATED,Missing Field\n"
+        )
+        result = dedupe_name_history_rows(text)
+        assert result == [("AAA", "Old A", "New A", "01-JAN-2020")]

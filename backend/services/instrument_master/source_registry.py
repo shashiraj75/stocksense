@@ -7,6 +7,37 @@ imports nothing from any production application module. See
 test_source_registry_no_network.py for an automated guard against that
 ever regressing.
 
+Phase C1-A3 correction (post C1-A2 live reconnaissance): every entry's
+single `automated_reachability_status` field previously conflated two
+distinct claims — "reachable from whatever environment last checked it"
+and "approved for production automation." C1-A2 fetched and inspected
+all 11 approved URLs live, from this repository's own execution
+environment, but that environment is neither Railway nor GitHub
+Actions. To make the scope of that evidence impossible to
+misread, reachability is now tracked on three separate fields:
+
+  - `current_environment_reachability_status`: this repository's own
+    execution environment, as directly evidenced by the C1-A2
+    reconnaissance (all 11 sources: VERIFIED).
+  - `production_environment_reachability_status`: Railway and GitHub
+    Actions specifically. C1-A2 ran in neither, so this remains
+    NOT_VERIFIED for all 11 entries regardless of current-environment
+    result — reachability from one environment is never treated as
+    evidence for another.
+  - `automated_reachability_status`: kept for backward compatibility
+    with existing callers/tests. Its meaning is now pinned to
+    `production_environment_reachability_status` exactly (enforced in
+    `__post_init__`) — the more conservative of the two, so an existing
+    caller reading only this field can never be misled into believing
+    production approval where none exists.
+
+`content_contract_status` is tracked separately again: whether the
+declared header/field-count contract for a source has actually been
+checked against a real response body (CONTENT_VERIFIED_LIVE, as C1-A2
+did for all 11) versus only ever documented from static/secondary
+evidence (SCHEMA_ONLY_UNVERIFIED). None of this implies production
+ingestion approval — that remains a separate, not-yet-made decision.
+
 Every field on every entry is fixed at module-import time from the
 literals in SOURCE_REGISTRY below — there is no mechanism in this
 module to override a URL, host, or any other field at runtime (no
@@ -34,6 +65,7 @@ from dataclasses import dataclass, field
 from .canonicalize import canonical_json_bytes, sha256_hex
 from .enums import (
     AutomatedReachabilityStatus,
+    ContentContractStatus,
     DataRole,
     HeaderMode,
     HostRole,
@@ -286,10 +318,14 @@ class SourceRegistryEntry:
     parser_contract_id: str
     validator_contract_id: str
     automated_reachability_status: AutomatedReachabilityStatus
+    content_contract_status: ContentContractStatus
+    current_environment_reachability_status: AutomatedReachabilityStatus
+    production_environment_reachability_status: AutomatedReachabilityStatus
     fallback_policy: str
     freshness_warning_days: int
     hard_stale_days: int
     publication_blocking_status: PublicationBlockingStatus
+    grain: str = "PER_SECURITY"
     unresolved_risks: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
@@ -312,6 +348,19 @@ class SourceRegistryEntry:
         if self.header_mode is HeaderMode.HEADER_PRESENT and not self.expected_headers:
             raise ValueError(
                 f"{self.source_id}: header-present source must declare expected_headers"
+            )
+        # Phase C1-A3: the legacy `automated_reachability_status` field is
+        # kept only as an alias for the more conservative of the two
+        # environment-scoped fields — production. It must never be able
+        # to drift from `production_environment_reachability_status` and
+        # independently claim something more optimistic.
+        if self.automated_reachability_status != self.production_environment_reachability_status:
+            raise ValueError(
+                f"{self.source_id}: automated_reachability_status "
+                f"({self.automated_reachability_status!r}) must exactly equal "
+                f"production_environment_reachability_status "
+                f"({self.production_environment_reachability_status!r}) — "
+                "the legacy field is a pinned alias, never an independent claim"
             )
 
 
@@ -343,7 +392,10 @@ SOURCE_REGISTRY: tuple[SourceRegistryEntry, ...] = (
         valid_empty_allowed=False,
         parser_contract_id="equity_current_v1",
         validator_contract_id="equity_current_v1",
-        automated_reachability_status=AutomatedReachabilityStatus.VERIFIED,
+        automated_reachability_status=AutomatedReachabilityStatus.NOT_VERIFIED,
+        content_contract_status=ContentContractStatus.CONTENT_VERIFIED_LIVE,
+        current_environment_reachability_status=AutomatedReachabilityStatus.VERIFIED,
+        production_environment_reachability_status=AutomatedReachabilityStatus.NOT_VERIFIED,
         fallback_policy="last_known_good",
         freshness_warning_days=1,
         hard_stale_days=3,
@@ -376,7 +428,10 @@ SOURCE_REGISTRY: tuple[SourceRegistryEntry, ...] = (
         valid_empty_allowed=False,
         parser_contract_id="etf_current_v1",
         validator_contract_id="etf_current_v1",
-        automated_reachability_status=AutomatedReachabilityStatus.VERIFIED,
+        automated_reachability_status=AutomatedReachabilityStatus.NOT_VERIFIED,
+        content_contract_status=ContentContractStatus.CONTENT_VERIFIED_LIVE,
+        current_environment_reachability_status=AutomatedReachabilityStatus.VERIFIED,
+        production_environment_reachability_status=AutomatedReachabilityStatus.NOT_VERIFIED,
         fallback_policy="last_known_good",
         freshness_warning_days=1,
         hard_stale_days=3,
@@ -405,24 +460,45 @@ SOURCE_REGISTRY: tuple[SourceRegistryEntry, ...] = (
             "FACE_VALUE",
         ),
         minimum_field_count=7,
-        maximum_field_count=7,
+        # Phase C1-A2 live correction: every real SME_EQUITY_L.csv row (and
+        # the header itself) carries a trailing comma after FACE_VALUE,
+        # producing an 8th, always-empty raw CSV field — confirmed against
+        # the live response body, not merely inferred. maximum_field_count
+        # reflects that observed 8-wide raw shape; validate_sme() tolerates
+        # exactly one optional trailing field and requires it to be empty
+        # (see source_validators.py's optional_trailing_empty_field), never
+        # treating it as a real business column. The declared 7-column
+        # expected_headers/semantic schema is unchanged.
+        maximum_field_count=8,
         valid_empty_allowed=False,
         parser_contract_id="sme_current_v1",
         validator_contract_id="sme_current_v1",
         # Per the ratified Phase C1-C2 terminology correction: NOT_VERIFIED
         # means the corrected endpoint has not yet succeeded through either
         # tested automated execution environment (Railway or GitHub Actions,
-        # 3 attempts each) — it does NOT mean globally unavailable. The file
-        # is valid and was successfully retrieved via a normal human browser
-        # (see Phase C1-A3/C1-C1 §3 evidence).
+        # 3 attempts each) — it does NOT mean globally unavailable. Phase
+        # C1-A2 has since retrieved this exact URL successfully via a plain
+        # unauthenticated HTTPS GET, with no cookies or session priming,
+        # from this repository's own execution environment — see
+        # current_environment_reachability_status below. Railway/GitHub
+        # Actions specifically remain untested; automated_reachability_status
+        # (this field) stays pinned to production_environment_reachability_status
+        # and is therefore unchanged at NOT_VERIFIED.
         automated_reachability_status=AutomatedReachabilityStatus.NOT_VERIFIED,
+        content_contract_status=ContentContractStatus.CONTENT_VERIFIED_LIVE,
+        current_environment_reachability_status=AutomatedReachabilityStatus.VERIFIED,
+        production_environment_reachability_status=AutomatedReachabilityStatus.NOT_VERIFIED,
         fallback_policy="last_known_good_plus_operator_assisted_refresh",
         freshness_warning_days=3,
         hard_stale_days=7,
         publication_blocking_status=PublicationBlockingStatus.BLOCKS_TAXONOMY_COMPLETE,
         unresolved_risks=(
-            "automated_reachability_mechanism_unknown",
+            # "automated_reachability_mechanism_unknown" removed: C1-A2
+            # confirmed the mechanism is simply a plain HTTPS GET, same as
+            # every other nsearchives.nseindia.com source — no special
+            # cookie/session/header requirement was found.
             "grain_may_differ_from_other_current_sources_if_platform_specific_rows_appear",
+            "production_automation_reachability_from_railway_and_github_actions_still_untested",
         ),
     ),
     SourceRegistryEntry(
@@ -452,11 +528,18 @@ SOURCE_REGISTRY: tuple[SourceRegistryEntry, ...] = (
         valid_empty_allowed=False,
         parser_contract_id="reit_invit_v1",
         validator_contract_id="reit_invit_v1",
-        automated_reachability_status=AutomatedReachabilityStatus.VERIFIED,
+        automated_reachability_status=AutomatedReachabilityStatus.NOT_VERIFIED,
+        content_contract_status=ContentContractStatus.CONTENT_VERIFIED_LIVE,
+        current_environment_reachability_status=AutomatedReachabilityStatus.VERIFIED,
+        production_environment_reachability_status=AutomatedReachabilityStatus.NOT_VERIFIED,
         fallback_policy="last_known_good",
         freshness_warning_days=30,
         hard_stale_days=90,
         publication_blocking_status=PublicationBlockingStatus.NEVER_BLOCKS,
+        # Phase C1-A2 live confirmation: the real response body is exactly
+        # 3 data rows + 1 blank row + 1 "Note: the Market lot is updated..."
+        # footnote row — matching this contract's footnote_filter handling
+        # (see source_validators.py's _is_known_footnote_row) exactly.
         unresolved_risks=("known_trailing_footnote_row_requires_isin_format_filter",),
     ),
     SourceRegistryEntry(
@@ -486,11 +569,16 @@ SOURCE_REGISTRY: tuple[SourceRegistryEntry, ...] = (
         valid_empty_allowed=False,
         parser_contract_id="reit_invit_v1",
         validator_contract_id="reit_invit_v1",
-        automated_reachability_status=AutomatedReachabilityStatus.VERIFIED,
+        automated_reachability_status=AutomatedReachabilityStatus.NOT_VERIFIED,
+        content_contract_status=ContentContractStatus.CONTENT_VERIFIED_LIVE,
+        current_environment_reachability_status=AutomatedReachabilityStatus.VERIFIED,
+        production_environment_reachability_status=AutomatedReachabilityStatus.NOT_VERIFIED,
         fallback_policy="last_known_good",
         freshness_warning_days=30,
         hard_stale_days=90,
         publication_blocking_status=PublicationBlockingStatus.NEVER_BLOCKS,
+        # Phase C1-A2 live confirmation: same 3-data-row + blank + footnote
+        # shape as REITS_L.csv (see above).
         unresolved_risks=("known_trailing_footnote_row_requires_isin_format_filter",),
     ),
     SourceRegistryEntry(
@@ -502,7 +590,18 @@ SOURCE_REGISTRY: tuple[SourceRegistryEntry, ...] = (
         data_role=DataRole.SECURITY_LEVEL,
         criticality=SourceCriticality.OPTIONAL_ENRICHMENT,
         required_for_complete_taxonomy=False,
-        primary_identity_field="trailing_undeclared_isin_field",
+        # Phase C1-A2 live confirmation: a single symbol (JSWSTEEL,
+        # observed) can legitimately appear across multiple rows sharing
+        # the SAME trailing ISIN, differing only by REDEMPTION DATE (one
+        # row per redemption tranche of the same preference-share
+        # issuance) — see `grain` below. Identity must therefore never be
+        # the trailing ISIN alone. Independent-review correction: nor is
+        # ISIN+REDEMPTION DATE+CONVERSION DATE alone sufficient — two
+        # tranches can share an ISIN and both dates (e.g. both blank)
+        # while differing only in REDEMPTION AMT/CONVERSION AMT, which
+        # that narrower composite would have wrongly collapsed. Identity
+        # is the full row (every declared field plus the trailing ISIN).
+        primary_identity_field="full_row(trailing_undeclared_isin_field+all_14_declared_fields)",
         secondary_identity_fields=("SYMBOL", "SERIES"),
         header_mode=HeaderMode.HEADER_PRESENT,
         expected_headers=(
@@ -530,12 +629,21 @@ SOURCE_REGISTRY: tuple[SourceRegistryEntry, ...] = (
         valid_empty_allowed=False,
         parser_contract_id="pref_trailing_isin_v1",
         validator_contract_id="pref_trailing_isin_v1",
-        automated_reachability_status=AutomatedReachabilityStatus.VERIFIED,
+        automated_reachability_status=AutomatedReachabilityStatus.NOT_VERIFIED,
+        content_contract_status=ContentContractStatus.CONTENT_VERIFIED_LIVE,
+        current_environment_reachability_status=AutomatedReachabilityStatus.VERIFIED,
+        production_environment_reachability_status=AutomatedReachabilityStatus.NOT_VERIFIED,
         fallback_policy="last_known_good",
         freshness_warning_days=180,
         hard_stale_days=365,
         publication_blocking_status=PublicationBlockingStatus.NEVER_BLOCKS,
-        unresolved_risks=("grain_may_be_per_redemption_tranche_not_per_security",),
+        # Phase C1-A2 resolved this grain question with live evidence: 4
+        # real rows, all symbol JSWSTEEL, all sharing ISIN INE019A04016,
+        # each with a distinct REDEMPTION DATE — confirms per-tranche, not
+        # per-security. validate_preference() must never collapse these
+        # into one record by ISIN/symbol alone (see source_validators.py).
+        grain="PER_REDEMPTION_TRANCHE",
+        unresolved_risks=(),
     ),
     SourceRegistryEntry(
         source_id=SourceId.NSE_WARRANT,
@@ -546,6 +654,9 @@ SOURCE_REGISTRY: tuple[SourceRegistryEntry, ...] = (
         data_role=DataRole.SECURITY_LEVEL,
         criticality=SourceCriticality.OPTIONAL_ENRICHMENT,
         required_for_complete_taxonomy=False,
+        # Phase C1-A2 live confirmation: the trailing undeclared field is
+        # explicitly an ISIN (validate_warrant() enforces strict ISO 6166
+        # shape/check-digit on it, not merely "any extra column").
         primary_identity_field="trailing_undeclared_isin_field",
         secondary_identity_fields=("SYMBOL", "SERIES"),
         header_mode=HeaderMode.HEADER_PRESENT,
@@ -565,7 +676,10 @@ SOURCE_REGISTRY: tuple[SourceRegistryEntry, ...] = (
         valid_empty_allowed=False,
         parser_contract_id="warrant_trailing_isin_v1",
         validator_contract_id="warrant_trailing_isin_v1",
-        automated_reachability_status=AutomatedReachabilityStatus.VERIFIED,
+        automated_reachability_status=AutomatedReachabilityStatus.NOT_VERIFIED,
+        content_contract_status=ContentContractStatus.CONTENT_VERIFIED_LIVE,
+        current_environment_reachability_status=AutomatedReachabilityStatus.VERIFIED,
+        production_environment_reachability_status=AutomatedReachabilityStatus.NOT_VERIFIED,
         fallback_policy="last_known_good",
         freshness_warning_days=180,
         hard_stale_days=365,
@@ -599,11 +713,17 @@ SOURCE_REGISTRY: tuple[SourceRegistryEntry, ...] = (
         valid_empty_allowed=False,
         parser_contract_id="idr_v1",
         validator_contract_id="idr_v1",
-        automated_reachability_status=AutomatedReachabilityStatus.VERIFIED,
+        automated_reachability_status=AutomatedReachabilityStatus.NOT_VERIFIED,
+        content_contract_status=ContentContractStatus.CONTENT_VERIFIED_LIVE,
+        current_environment_reachability_status=AutomatedReachabilityStatus.VERIFIED,
+        production_environment_reachability_status=AutomatedReachabilityStatus.NOT_VERIFIED,
         fallback_policy="last_known_good",
         freshness_warning_days=180,
         hard_stale_days=365,
         publication_blocking_status=PublicationBlockingStatus.NEVER_BLOCKS,
+        # Phase C1-A2 live confirmation: exactly 1 real IDR row (STAN /
+        # Standard Chartered PLC) + 2 blank rows + 1 "*"-prefixed footnote
+        # row, matching this contract's footnote_filter handling exactly.
         unresolved_risks=("file_contains_footnote_blank_line_structure_beyond_valid_rows",),
     ),
     SourceRegistryEntry(
@@ -624,11 +744,18 @@ SOURCE_REGISTRY: tuple[SourceRegistryEntry, ...] = (
         valid_empty_allowed=True,
         parser_contract_id="il_series_v1",
         validator_contract_id="il_series_v1",
-        automated_reachability_status=AutomatedReachabilityStatus.VERIFIED,
+        automated_reachability_status=AutomatedReachabilityStatus.NOT_VERIFIED,
+        content_contract_status=ContentContractStatus.CONTENT_VERIFIED_LIVE,
+        current_environment_reachability_status=AutomatedReachabilityStatus.VERIFIED,
+        production_environment_reachability_status=AutomatedReachabilityStatus.NOT_VERIFIED,
         fallback_policy="last_known_good",
         freshness_warning_days=30,
         hard_stale_days=90,
         publication_blocking_status=PublicationBlockingStatus.NEVER_BLOCKS,
+        # Phase C1-A2 live confirmation: the real response body was
+        # header-only (zero illiquid securities currently listed) and
+        # matched IL_SERIES_VALID_EMPTY_RAW_BYTES exactly — a correctly
+        # empty result, not a source failure.
         unresolved_risks=(),
     ),
     SourceRegistryEntry(
@@ -641,7 +768,16 @@ SOURCE_REGISTRY: tuple[SourceRegistryEntry, ...] = (
         criticality=SourceCriticality.HISTORY_ONLY,
         required_for_complete_taxonomy=False,
         primary_identity_field="none_no_isin_in_this_source",
-        secondary_identity_fields=("old_symbol", "new_symbol", "company_name", "date"),
+        # Phase C1-A3 correction: the live response body's real column
+        # order is (company_or_scheme_name, old_symbol, new_symbol,
+        # effective_date) — NOT (old_symbol, new_symbol, company_name,
+        # date) as previously declared here. See
+        # source_validators.py's SymbolChangeRecord/parse_symbol_change_row
+        # for the single, named-field source of truth this metadata now
+        # mirrors; validate_symbol_history() uses that same function
+        # internally, so this ordering cannot silently drift from the
+        # actual parser again.
+        secondary_identity_fields=("company_or_scheme_name", "old_symbol", "new_symbol", "effective_date"),
         header_mode=HeaderMode.HEADERLESS,
         expected_headers=(),
         minimum_field_count=4,
@@ -649,11 +785,15 @@ SOURCE_REGISTRY: tuple[SourceRegistryEntry, ...] = (
         valid_empty_allowed=False,
         parser_contract_id="symbol_history_v1",
         validator_contract_id="symbol_history_v1",
-        automated_reachability_status=AutomatedReachabilityStatus.VERIFIED,
+        automated_reachability_status=AutomatedReachabilityStatus.NOT_VERIFIED,
+        content_contract_status=ContentContractStatus.CONTENT_VERIFIED_LIVE,
+        current_environment_reachability_status=AutomatedReachabilityStatus.VERIFIED,
+        production_environment_reachability_status=AutomatedReachabilityStatus.NOT_VERIFIED,
         fallback_policy="last_known_good",
         freshness_warning_days=7,
         hard_stale_days=30,
         publication_blocking_status=PublicationBlockingStatus.NEVER_BLOCKS,
+        grain="PER_HISTORICAL_EVENT",
         unresolved_risks=(),
     ),
     SourceRegistryEntry(
@@ -674,11 +814,19 @@ SOURCE_REGISTRY: tuple[SourceRegistryEntry, ...] = (
         valid_empty_allowed=False,
         parser_contract_id="name_history_v1",
         validator_contract_id="name_history_v1",
-        automated_reachability_status=AutomatedReachabilityStatus.VERIFIED,
+        automated_reachability_status=AutomatedReachabilityStatus.NOT_VERIFIED,
+        content_contract_status=ContentContractStatus.CONTENT_VERIFIED_LIVE,
+        current_environment_reachability_status=AutomatedReachabilityStatus.VERIFIED,
+        production_environment_reachability_status=AutomatedReachabilityStatus.NOT_VERIFIED,
         fallback_policy="last_known_good",
         freshness_warning_days=7,
         hard_stale_days=30,
         publication_blocking_status=PublicationBlockingStatus.NEVER_BLOCKS,
+        grain="PER_HISTORICAL_EVENT",
+        # Phase C1-A2 live confirmation: exact-duplicate rows (e.g. BCG,
+        # CHENNPETRO, DHANILOANS, DHANIPP, INCRED) were directly observed
+        # in the real response body — matches validate_name_history()'s
+        # existing deterministic exact-duplicate handling.
         unresolved_risks=("known_exact_duplicate_rows_present_in_source",),
     ),
 )
@@ -733,10 +881,14 @@ def _entry_to_canonical_dict(entry: SourceRegistryEntry) -> dict:
         "parser_contract_id": entry.parser_contract_id,
         "validator_contract_id": entry.validator_contract_id,
         "automated_reachability_status": entry.automated_reachability_status.value,
+        "content_contract_status": entry.content_contract_status.value,
+        "current_environment_reachability_status": entry.current_environment_reachability_status.value,
+        "production_environment_reachability_status": entry.production_environment_reachability_status.value,
         "fallback_policy": entry.fallback_policy,
         "freshness_warning_days": entry.freshness_warning_days,
         "hard_stale_days": entry.hard_stale_days,
         "publication_blocking_status": entry.publication_blocking_status.value,
+        "grain": entry.grain,
         "unresolved_risks": list(entry.unresolved_risks),
     }
 
