@@ -1351,23 +1351,28 @@ def generate_picks(market: str = "IN", job_id: str | None = None) -> dict:
             except Exception:
                 pass
 
-        # Save a minimal payload so the UI shows "no signals today" instead of spinning
+        # US Daily Picks incident (recurring: 07-15 through 07-22) — a
+        # failed run used to overwrite BOTH the disk cache file AND the
+        # Postgres `daily_picks_cache` "latest payload" row with this empty,
+        # error-tagged stand-in, which get_cached_picks()/load_picks_from_db()
+        # then served to every user as if it were today's picks: an
+        # indefinite blank page, with the LAST GENUINELY SUCCESSFUL payload
+        # silently shadowed (still in the table, just no longer "latest").
+        # The failure is already durably recorded above via
+        # mark_daily_picks_job_failed(job_id, ...) — daily_picks_jobs is the
+        # single source of truth for "did today's attempt fail and why".
+        # Deliberately NOT written to the disk cache file or
+        # daily_picks_cache here: doing so is exactly the defect. The most
+        # recent genuinely successful payload (if any) remains untouched and
+        # keeps being served — by construction, since nothing failure-path
+        # ever writes to either store again — with staleness/attempt-status
+        # metadata layered on by the API (see api/routers/picks.py and
+        # get_last_attempt_info() below), never silently presented as today's.
         payload = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "picks": {"short": [], "medium": [], "long": []},
             "error": str(e),
         }
-        try:
-            with open(_cache_file(market), "w") as f:
-                json.dump(payload, f)
-        except Exception:
-            pass
-        if os.getenv("USE_POSTGRES") == "1":
-            try:
-                from services.postgres_store import save_picks_to_db
-                save_picks_to_db(payload, market=market)  # best-effort; bool return ignored for error payloads
-            except Exception:
-                pass
         return payload
 
     finally:
@@ -1559,59 +1564,46 @@ def _generate_picks_inner(
     # No task count to report yet — phase_1 will report 0/total once tasks are built.
     _try_job_progress(job_id, "shortlist_ready", None, None)
 
-    # ── Phase 1: Deep-predict candidates ─────────────────────────────────────
+    # ── Phase 1: Deep-predict candidates, horizon-bounded ────────────────────
     # max_workers=1 to avoid Yahoo Finance rate-limiting Render's IP.
-    tasks = [(sym, h) for sym in candidates for h in ("short", "medium", "long")]
-    _phase1_task_total = len(tasks)  # deep_prediction_candidates × 3 horizons
-    raw: dict[str, list] = {"short": [], "medium": [], "long": []}
+    #
+    # 2026-07-22 memory-exhaustion incident (recurring: 07-15, 07-16, 07-17
+    # x2, 07-20/21, 07-22): the 2026-07-21 fix (see below) made the Phase 1
+    # loop itself strictly bounded — at most one task's Future/result alive
+    # at a time — but it still built ALL THREE horizons' full candidate
+    # pools (deep_prediction_candidates x 3, ~1,191 rich result dicts) into
+    # `raw` before Phases 3-6 released each horizon one at a time. The peak
+    # was therefore "all 3 horizons resident, about to release one at a
+    # time" — not "at most 1 horizon resident", the design Phases 3-6
+    # already implement for everything AFTER Phase 1. Confirmed today's
+    # abort (memory_guard, 570/1191, 80.6%) happened mid-Phase-1, before any
+    # release logic below could even run once.
+    #
+    # Fix: score each horizon's candidates immediately before that horizon's
+    # own Phases 3-6 (ranking/selection/persistence/release), instead of
+    # scoring all three horizons up front. _predict_stock(symbol, horizon,
+    # market) is a pure function of its three arguments (verified: its only
+    # shared state is the bounded, TTL'd, horizon-keyed _pred_cache/
+    # _regime_cache in prediction_engine.py, which behaves identically
+    # regardless of call order) — the SET of (symbol, horizon) calls and
+    # their arguments is byte-identical to before, only the order changed
+    # from candidate-major to horizon-major, so this cannot change any
+    # score, rank, selection, or published field (see
+    # tests/regression/test_daily_picks_horizon_bounded_memory.py for the
+    # output-equivalence proof). Peak retained Phase-1 pool drops from ~3
+    # horizons' worth (~1,191 rich dicts) to 1 horizon's worth (~397),
+    # roughly a 3x reduction in the single largest driver of peak memory.
+    _phase1_task_total = len(candidates) * 3  # deep_prediction_candidates × 3 horizons
     # Threaded through from _get_universe_by_mcap via _bulk_screen's
     # _selection_meta — lets Phase 5 apply a per-horizon tier rule (tier
     # quota for medium/long, ignored entirely for short) without re-deriving
     # cap tiers from scratch or re-querying the cache mid-pipeline.
     _tier_map: dict[str, str] = _selection_meta.get("tier_map") or {}
 
-    _try_job_progress(job_id, "phase_1", 0, len(tasks))
-    # 2026-07-21 memory-exhaustion postmortem: this used to submit ALL 1188
-    # tasks to a one-worker thread-pool executor up front
-    # (`{pool.submit(...): (sym, h) for sym, h in tasks}`), retaining every
-    # Future object — plus its captured args and, once resolved, its full
-    # result dict — simultaneously for the entire Phase 1 run, even though a
-    # single worker processes them strictly one at a time anyway. With
-    # max_workers=1 there is no concurrency to gain from submitting ahead of
-    # consumption (`as_completed` on a 1-worker pool yields in submission
-    # order regardless), so a plain sequential loop is both simpler and
-    # strictly bounded: at most one task's Future/result is ever alive at a
-    # time. max_workers=1 itself is unchanged/still required (rate-limit
-    # avoidance for the upstream Yahoo Finance IP), so _predict_stock is
-    # still called exactly once per (symbol, horizon) pair, in the same
-    # order, with the same arguments — only the retention shape changed.
-    done = 0
-    for sym, h in tasks:
-        r = _predict_stock(sym, h, market)
-        done += 1
-        if done % 30 == 0:
-            log.info(f"[picks] [{market}] {done}/{len(tasks)} done …")
-            _mem_guard.check("phase_1", done, len(tasks))
-        if r:
-            r["cap_tier"] = _tier_map.get(r["symbol"])
-            raw[r["horizon"]].append(r)
-        # Progress after each completed task (candidate × horizon)
-        _try_job_progress(job_id, "phase_1", done, len(tasks))
-        # Drop the local result reference immediately — nothing after this
-        # point needs it; the only thing retained going forward is whatever
-        # `raw[horizon]` already holds a reference to.
-        del r
+    _try_job_progress(job_id, "phase_1", 0, _phase1_task_total)
+    done = 0  # running total across all three horizons, for truthful phase_1 progress
 
-    # State: all Phase-1 prediction tasks done; ranking/selection about to begin.
-    # Written before score-snapshot I/O so the phase is truthful immediately
-    # after the sequential Phase 1 loop exits.
-    _try_job_progress(job_id, "ranking", None, None)
-    # This is the exact phase boundary the 2026-07-21 incident's process was
-    # killed at — check here explicitly, not just periodically, before the
-    # per-horizon snapshot/ranking work begins.
-    _mem_guard.check("ranking_entry", len(tasks), len(tasks))
-
-    # ── Phases 3-6 per horizon ────────────────────────────────────────────────
+    # ── Phases 1+3-6 per horizon ──────────────────────────────────────────────
     picks: dict[str, list] = {}
     alpha_engine_meta: dict[str, dict] = {}  # diagnostics for API
     _issuer_duplicates_suppressed = 0  # suppressed display entries across all horizons
@@ -1624,17 +1616,29 @@ def _generate_picks_inner(
     _portfolio_cash_pct: dict[str, float] = {}
 
     for horizon in ("short", "medium", "long"):
-        items = raw[horizon]
-        # Drop `raw`'s own reference now that `items` holds it for this
-        # horizon's processing. `raw` is never read again after this line
-        # (verified — only `items = raw[horizon]` reads it, once per
-        # horizon), so nothing downstream needs `raw` to keep all three
-        # horizons' full candidate pools (~400 symbols each, every field
-        # including reasoning/summary/quality_factors text) alive
-        # simultaneously. Without this, a 400-symbol run holds all ~1,200
-        # candidate x horizon entries in memory for the entire function,
-        # instead of at most one horizon's worth at a time.
-        raw[horizon] = None
+        # Phase 1 for THIS horizon only — see the 2026-07-22 comment above
+        # the loop. Builds and retains only this horizon's candidate pool
+        # (~397 entries), never all three simultaneously.
+        items: list = []
+        for sym in candidates:
+            r = _predict_stock(sym, horizon, market)
+            done += 1
+            if done % 30 == 0:
+                log.info(f"[picks] [{market}] {done}/{_phase1_task_total} done …")
+                _mem_guard.check("phase_1", done, _phase1_task_total)
+            if r:
+                r["cap_tier"] = _tier_map.get(r["symbol"])
+                items.append(r)
+            _try_job_progress(job_id, "phase_1", done, _phase1_task_total)
+            del r
+        # State: this horizon's Phase-1 prediction tasks done; its own
+        # ranking/selection about to begin. Checked explicitly per horizon
+        # (not just once for the whole run) — this is the exact phase
+        # boundary the 2026-07-21 incident's process was killed at, and the
+        # earliest point it's now possible to reach without first building
+        # every horizon's pool.
+        _try_job_progress(job_id, "ranking", None, None)
+        _mem_guard.check("ranking_entry", done, _phase1_task_total)
 
         # ── Score snapshots (section 4) — persist every scored stock for
         # history. Written per-horizon, right here, instead of once for all
@@ -1973,27 +1977,208 @@ def get_cached_picks(market: str = "IN") -> dict | None:
 
 
 def picks_generated_today(market: str = "IN") -> bool:
-    """Return True if today's picks (own market's local trading-day date) exist
-    and have at least one BUY pick. IN uses IST, US uses DST-aware US/Eastern."""
-    from datetime import timedelta
-    from zoneinfo import ZoneInfo
+    """Return True if a genuinely SUCCESSFUL generation exists for today
+    (own market's local trading-day date). IN uses IST, US uses DST-aware
+    US/Eastern.
+
+    US Daily Picks generation-reliability incident (2026-07-22): this used
+    to additionally require at least one non-empty picks bucket, to work
+    around the old failure path saving an empty payload that would
+    otherwise look like "today's picks" by date alone. That workaround is
+    no longer correct now that get_cached_picks()/load_picks_from_db() only
+    ever return a status='success' row — a genuine, legitimate zero-BUY day
+    IS "today's picks" and must not be reported as ungenerated (which would
+    cause the /generate endpoint and any watchdog/retry logic to treat a
+    real, valid, completed outcome as a failure needing a retry). See
+    save_picks_to_db/load_picks_from_db docstrings in postgres_store.py.
+    """
     data = get_cached_picks(market)
     if not data or not data.get("generated_at"):
         return False
     try:
-        tz = timezone(timedelta(hours=5, minutes=30)) if market == "IN" else ZoneInfo("America/New_York")
-        generated_at = datetime.fromisoformat(
-            data["generated_at"].replace("Z", "+00:00")
-        ).astimezone(tz)
-        today_local = datetime.now(tz).date()
-        if generated_at.date() < today_local:
-            return False
-        # Also require at least one actual pick — empty payload means a prior crash/0-signal run
-        picks = data.get("picks", {})
-        has_picks = any(len(v) > 0 for v in picks.values())
-        return has_picks
+        generated_at = datetime.fromisoformat(data["generated_at"].replace("Z", "+00:00"))
+        return _market_local_date(generated_at, market) >= _market_local_date(datetime.now(timezone.utc), market)
     except Exception:
         return False
+
+
+# Bounded, safe error categories for public API exposure — never a raw
+# traceback or provider payload (US Daily Picks generation-reliability
+# incident, 2026-07-22, Phase 7 requirement). New categories may be added;
+# an unmatched error always falls back to "unknown", never the raw text.
+_ERROR_CATEGORY_PATTERNS: list[tuple[str, str]] = [
+    ("memorylimiterror", "memory_limit_exceeded"),
+    ("memory usage", "memory_limit_exceeded"),
+    ("persistence_failed", "persistence_failed"),
+    ("timeout", "provider_timeout"),
+    ("timed out", "provider_timeout"),
+    ("connectionerror", "provider_connection_error"),
+    ("rate limit", "provider_rate_limited"),
+    ("429", "provider_rate_limited"),
+]
+
+
+def _categorize_error(error_text: str | None) -> str | None:
+    """Map a raw internal error string to a small, closed set of safe,
+    public category names — never returns the raw text itself."""
+    if not error_text:
+        return None
+    lowered = error_text.lower()
+    for needle, category in _ERROR_CATEGORY_PATTERNS:
+        if needle in lowered:
+            return category
+    return "unknown"
+
+
+def get_generation_attempt_status(market: str = "IN") -> dict:
+    """
+    Failure-safe publication contract (US Daily Picks generation-reliability
+    incident, 2026-07-22) — combines the last known-good SUCCESSFUL payload
+    (get_cached_picks, now status='success'-only by construction) with the
+    latest durable attempt record (daily_picks_jobs, survives Railway
+    restarts unlike the in-memory _last_error/_generating) into one bounded,
+    public-safe summary. Used by both GET /api/picks/daily (to layer
+    stale/attempt metadata onto the served payload) and GET
+    /api/picks/status (Phase 7 observability fields).
+
+    Never raises — any lookup failure degrades to a field being None/False,
+    never breaks the caller.
+    """
+    result: dict = {
+        "has_today": False,
+        "stale": False,
+        "last_successful_session_date": None,
+        "last_successful_generated_at": None,
+        "last_attempt_status": None,
+        "last_attempt_error_category": None,
+        "last_attempt_started_at": None,
+        "serving_stale_payload": False,
+    }
+
+    data = get_cached_picks(market)
+    if data and data.get("generated_at"):
+        try:
+            generated_at = datetime.fromisoformat(data["generated_at"].replace("Z", "+00:00"))
+            result["last_successful_generated_at"] = data["generated_at"]
+            result["last_successful_session_date"] = _market_local_date(generated_at, market).isoformat()
+            today_local = _market_local_date(datetime.now(timezone.utc), market)
+            is_today = _market_local_date(generated_at, market) >= today_local
+            result["has_today"] = is_today
+            result["stale"] = not is_today
+            result["serving_stale_payload"] = not is_today
+        except Exception:
+            pass
+
+    if os.getenv("USE_POSTGRES") == "1":
+        try:
+            from services.postgres_store import get_latest_daily_picks_job
+            job = get_latest_daily_picks_job(market)
+            if job:
+                result["last_attempt_status"] = job.get("status")
+                result["last_attempt_error_category"] = _categorize_error(job.get("last_error"))
+                started_at = job.get("started_at")
+                result["last_attempt_started_at"] = (
+                    started_at.isoformat() if hasattr(started_at, "isoformat") else started_at
+                )
+        except Exception:
+            pass
+
+    return result
+
+
+_MAX_DAILY_RECOVERY_ATTEMPTS = 3  # scheduled run + at most 2 governed recoveries per session date
+
+
+def attempt_governed_recovery(market: str, reason: str) -> dict:
+    """
+    Bounded, safe, non-overlapping recovery trigger (US Daily Picks
+    generation-reliability incident, 2026-07-22, Phase 6). Called from the
+    US premarket finalizer's schedule when it finds today's base missing or
+    stale — the finalizer already runs on a real cron well after the base's
+    expected completion time, so it doubles as this watchdog's check point
+    instead of requiring a brand-new scheduling mechanism.
+
+    Reuses the EXACT SAME durable reservation path as POST
+    /api/picks/generate (try_reserve_daily_picks_job_with_lease) — so
+    duplicate-job protection, the Multibagger heavy-resource lease
+    arbitration, and the (market) WHERE status IN ('queued','running')
+    partial unique index all apply identically; this can never overlap an
+    existing active job. Bounded to _MAX_DAILY_RECOVERY_ATTEMPTS total job
+    rows per market per session date (scheduled run + governed retries) —
+    never retries indefinitely. Never runs generation synchronously —
+    launches the same background-thread pattern the HTTP endpoint uses, so
+    the caller (the finalizer's async handler) returns immediately.
+
+    Returns a dict describing exactly what happened — never raises.
+    """
+    if os.getenv("USE_POSTGRES") != "1":
+        return {"triggered": False, "reason": "durable_job_state_unavailable"}
+
+    if picks_generated_today(market):
+        return {"triggered": False, "reason": "already_fresh"}
+
+    with _generating_lock:
+        if _generating.get(market, False):
+            return {"triggered": False, "reason": "already_running"}
+
+    try:
+        from services.postgres_store import (
+            get_active_daily_picks_job,
+            count_daily_picks_job_attempts_since,
+        )
+        if get_active_daily_picks_job(market) is not None:
+            return {"triggered": False, "reason": "already_running"}
+
+        today_local_midnight_utc = datetime.combine(
+            _market_local_date(datetime.now(timezone.utc), market),
+            datetime.min.time(),
+        ).replace(tzinfo=timezone.utc)
+        attempts_today = count_daily_picks_job_attempts_since(market, today_local_midnight_utc)
+        if attempts_today >= _MAX_DAILY_RECOVERY_ATTEMPTS:
+            log.error(
+                f"[picks] [{market}] [watchdog] recovery NOT attempted — "
+                f"{attempts_today} attempts already recorded for today's session "
+                f"(max {_MAX_DAILY_RECOVERY_ATTEMPTS}). trigger_reason={reason}"
+            )
+            return {"triggered": False, "reason": "max_attempts_reached", "attempts_today": attempts_today}
+    except Exception as e:
+        log.warning(f"[picks] [{market}] [watchdog] recovery precheck failed: {e}")
+        return {"triggered": False, "reason": "precheck_failed"}
+
+    job_id = str(_uuid.uuid4())
+    _HEAVY_RESOURCE = {"IN": "IN_SCREENER_HEAVY", "US": "US_YFINANCE_HEAVY"}[market]
+    try:
+        from services.postgres_store import try_reserve_daily_picks_job_with_lease
+        outcome = try_reserve_daily_picks_job_with_lease(job_id, market, _RUNNER_ID, _HEAVY_RESOURCE)
+    except Exception as e:
+        log.warning(f"[picks] [{market}] [watchdog] recovery reservation failed: {e}")
+        return {"triggered": False, "reason": "reservation_failed"}
+
+    if outcome != "reserved":
+        return {"triggered": False, "reason": outcome}
+
+    log.error(  # error level — this IS the "missed scheduled trigger" alert Phase 7 asks for
+        f"[picks] [{market}] [watchdog] scheduled generation missing/stale "
+        f"(reason={reason}) — starting governed recovery job_id={job_id}"
+    )
+
+    with _generating_lock:
+        _generating[market] = True
+
+    def _run():
+        try:
+            generate_picks(market, job_id=job_id)
+        finally:
+            with _generating_lock:
+                _generating[market] = False
+            try:
+                from services.postgres_store import release_heavy_workload_lease
+                release_heavy_workload_lease(job_id)
+            except Exception:
+                pass
+
+    _threading.Thread(target=_run, daemon=True).start()
+    return {"triggered": True, "job_id": job_id, "reason": reason}
 
 
 # Unique identifier for this process instance.  Used as runner_instance_id in the

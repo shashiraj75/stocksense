@@ -74,6 +74,19 @@ type DailyPicksResponse = {
       fundamentals_point_in_time?: boolean | null;
       fundamentals_point_in_time_coverage_pct?: number | null }[]
   >;
+  // US Daily Picks generation-reliability incident (2026-07-22) — failure-
+  // safe publication contract. `picks` above is now ALWAYS either today's
+  // genuine successful result or the last genuinely successful prior
+  // result (never an empty error stand-in); these fields say which, and
+  // give the exact vocabulary for the three states that must never be
+  // confused: today's success, stale-but-real last success, and a known
+  // terminal failure with nothing usable yet.
+  stale?: boolean;
+  serving_stale_payload?: boolean;
+  last_successful_session_date?: string | null;
+  last_attempt_status?: string | null;
+  last_attempt_error_category?: string | null;
+  message?: string;
 };
 
 type ValidationResult = {
@@ -1372,6 +1385,33 @@ export default function DailyPicksPage() {
         </div>
       )}
 
+      {/* US Daily Picks generation-reliability incident (2026-07-22) —
+          failure-safe publication contract, Phase 2. `data` (when present)
+          is now ALWAYS a genuinely successful payload — never an empty
+          error stand-in — but it may be from an EARLIER session than
+          today's if today's generation attempt failed or hasn't completed
+          yet. This banner is the one place that says so explicitly,
+          distinct from — and must never be confused with — a genuine
+          "generation completed, zero qualifying picks today" outcome
+          (which keeps generated_at as TODAY and shows the existing
+          "No BUY signals found today" copy below, unchanged). */}
+      {data?.stale && data?.generated_at && !isLoading && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 flex items-start gap-3">
+          <AlertCircle size={18} className="text-amber-400 mt-0.5 shrink-0" />
+          <div>
+            <p className="text-sm font-semibold text-amber-300">
+              Today&apos;s {market} generation is delayed. Showing the last successfully completed{" "}
+              {market} picks from {data.last_successful_session_date ?? new Date(data.generated_at).toLocaleDateString()}.
+            </p>
+            {data.last_attempt_status === "failed" && (
+              <p className="text-xs text-amber-400/70 mt-0.5">
+                Today&apos;s attempt failed{data.last_attempt_error_category ? ` (${data.last_attempt_error_category})` : ""} and is expected to retry automatically.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Picks grid */}
       {isLoading || isMarketTransitioning ? (
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -1414,11 +1454,15 @@ export default function DailyPicksPage() {
             <>
               <AlertCircle size={40} className="text-gray-600 mb-4" />
               <h3 className="text-lg font-semibold text-gray-300 mb-2">
-                {data?.generated_at ? "No BUY signals found today" : "Picks not yet generated"}
+                {data?.generated_at
+                  ? (data?.stale ? "No BUY signals in the last completed run" : "Generation completed — no stocks met today's qualification criteria")
+                  : "Picks not yet generated"}
               </h3>
               <p className="text-sm text-gray-500 max-w-sm">
                 {data?.generated_at
-                  ? `The AI didn't find strong BUY signals across ${market === "IN" ? "NSE" : "US markets"} today. Market conditions may be weak — check back tomorrow.`
+                  ? (data?.stale
+                      ? `The last successfully completed run (${data.last_successful_session_date ?? "an earlier date"}) found no strong BUY signals across ${market === "IN" ? "NSE" : "US markets"}. Today's run may still be in progress or delayed.`
+                      : `The AI didn't find strong BUY signals across ${market === "IN" ? "NSE" : "US markets"} today. Market conditions may be weak — check back tomorrow.`)
                   : `Daily picks are generated at ${marketCfg.genTime} on market days. Check back then.`}
               </p>
               {(data as any)?.generating && data?.generated_at && (
