@@ -569,45 +569,38 @@ def _resolve_yahoo_symbol(symbol: str, market: str) -> str:
 # already-published historical scores.
 US_PIT_SCORING_POLICY_VERSION = "us_pit_roe_margin_v1"
 
-_pit_ingested_ciks: set[int] = set()
-_pit_ingest_lock = threading.Lock()
-
-
-def _get_fundamentals_as_of_persisted_first(symbol: str, as_of) -> dict:
+def _get_fundamentals_as_of_replay(symbol: str, as_of) -> dict:
     """
-    DP-033 architecture correction (2026-07-22): historical validation
-    must not depend on live network access after ingestion, and must be
-    reproducible from immutable, persisted records — a 12h ephemeral cache
-    (sec_edgar_adapter.get_fundamentals_as_of()'s underlying
-    fetch_company_facts()) does not satisfy either property. This function
-    reads from services.sec_pit_store's immutable table FIRST; only if
-    nothing has ever been ingested for this CIK does it perform a one-time
-    live fetch + ingest (per CIK, per process — tracked in
-    `_pit_ingested_ciks` so a symbol's dozens/hundreds of signal dates in
-    one backtest run trigger at most one network round-trip, not one per
-    signal date, and a SECOND backtest run in a fresh process reads
-    entirely from the already-persisted store with zero network calls).
+    DP-033 architecture correction (2026-07-22, second readiness pass):
+    historical replay must NEVER perform acquisition, including on a
+    "cache miss" — the prior pass's `_get_fundamentals_as_of_persisted_
+    first()` still lazily called `fetch_company_facts()`/`resolve_cik()`
+    on first use per process, which is acquisition-during-replay in
+    everything but name. This function is genuinely acquisition-free: it
+    calls ONLY `sec_pit_store.get_facts_as_of_replay()` (itself backed by
+    the persisted `sec_pit_symbol_registry`, never a live CIK resolution)
+    — no code path here can reach `services.sec_edgar_adapter`'s live
+    functions under any circumstance, including a symbol that was never
+    ingested. A never-ingested symbol correctly returns `available:
+    False` with a distinct reason, not a lazy live fetch.
+
+    Ingestion is now an entirely separate, explicit, administrative
+    operation — see `sec_pit_store.ingest_symbol()`, invoked only by
+    dedicated ingestion tooling (scripts/sec_pit_ingest.py), never by
+    this module.
     """
-    cik = sec_edgar_adapter.resolve_cik(symbol)
-    if cik is None:
-        return {"available": False, "reason": "CIK not found"}
+    entry = sec_pit_store.get_symbol_registry_entry(symbol)
+    if entry is None:
+        return {"available": False, "reason": "symbol not ingested — no sec_pit_symbol_registry entry"}
 
-    with _pit_ingest_lock:
-        already_ingested = cik in _pit_ingested_ciks
-    if not already_ingested:
-        live_facts = sec_edgar_adapter.fetch_company_facts(cik)
-        if live_facts is not None:
-            sec_pit_store.ingest_company_facts(cik, symbol, live_facts)
-        with _pit_ingest_lock:
-            _pit_ingested_ciks.add(cik)  # mark attempted even on failure — never retry-storm a dead CIK
-
-    pruned = sec_pit_store.get_facts_as_of_persisted(symbol, cik, as_of)
+    cik = entry["cik"]
+    pruned = sec_pit_store.get_facts_as_of_replay(symbol, as_of)
     fields = sec_edgar_adapter.normalize_fields(pruned)
     has_any = any(v.get("value") is not None for v in fields.values())
     return {
         "available": has_any,
         "fields": fields,
-        "reason": None if has_any else "no eligible filing as of the signal date (persisted store)",
+        "reason": None if has_any else "ingested, but no eligible filing as of the signal date",
     }
 
 
@@ -619,7 +612,7 @@ def _us_fund_score_as_of(symbol: str, as_of) -> tuple[float | None, bool, str | 
     shareholders_equity, revenue) to compute either ratio. Caller decides
     the neutral-fallback policy for the unavailable case; this function
     never applies one itself."""
-    result = _get_fundamentals_as_of_persisted_first(symbol, as_of)
+    result = _get_fundamentals_as_of_replay(symbol, as_of)
     if not result.get("available"):
         return None, False, result.get("reason", "unavailable")
 

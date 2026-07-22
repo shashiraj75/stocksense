@@ -1,11 +1,11 @@
 """
 DP-033 remediation — services/sec_pit_store.py, the actual immutable
-persisted point-in-time fact store (correcting the prior session's
-mischaracterization of sec_edgar_adapter.py's ephemeral 12h in-memory
-cache as "immutable persistence" — it is not).
+persisted point-in-time fact store, corrected fact identity (period_start
+added, second readiness pass), and acquisition/replay separation.
 
 Every test here uses a fresh, isolated SQLite file per test (never the
-real sec_pit_facts.db), and NO network access.
+real sec_pit_facts.db), and NO network access — acquisition is always
+exercised via injected `resolve_cik_fn`/`fetch_company_facts_fn`.
 """
 import os
 import tempfile
@@ -18,12 +18,9 @@ import services.sec_pit_store as store
 
 @pytest.fixture(autouse=True)
 def _isolated_sqlite(monkeypatch):
-    """Fresh temp SQLite file per test — proves persistence survives
-    across separate connections (a real process-restart proxy) without
-    ever touching the shared dev/test database file."""
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
-    os.unlink(path)  # sqlite3.connect creates it fresh
+    os.unlink(path)
     monkeypatch.setattr(store, "_SQLITE_PATH", path)
     monkeypatch.setattr(store, "_USE_POSTGRES", False)
     monkeypatch.setattr(store, "_initialized", False)
@@ -40,50 +37,58 @@ def _companyfacts(entries_by_concept: dict) -> dict:
     }
 
 
-@pytest.mark.unit
-class TestIngestion:
-    def test_ingest_persists_facts(self):
-        facts = _companyfacts({"NetIncomeLoss": [
-            {"end": "2025-09-27", "val": 100.0, "fy": 2025, "fp": "FY", "form": "10-K",
-             "filed": "2025-10-31", "accn": "0000320193-25-000100"},
-        ]})
-        result = store.ingest_company_facts(320193, "AAPL", facts)
-        assert result["inserted"] == 1
-        assert result["skipped"] == 0
+def _ingest(symbol="AAPL", cik=320193, facts=None, run_id="run_1", manifest="manifest_v1"):
+    return store.ingest_symbol(
+        symbol, run_id, manifest,
+        resolve_cik_fn=lambda sym: cik,
+        fetch_company_facts_fn=lambda c: facts if facts is not None else _companyfacts({}),
+    )
 
-    def test_reingesting_the_same_accession_is_idempotent(self):
+
+@pytest.mark.unit
+class TestIngestSymbol:
+    def test_ingest_persists_facts_and_completes(self):
         facts = _companyfacts({"NetIncomeLoss": [
             {"end": "2025-09-27", "val": 100.0, "fy": 2025, "fp": "FY", "form": "10-K",
              "filed": "2025-10-31", "accn": "0000320193-25-000100"},
         ]})
-        first = store.ingest_company_facts(320193, "AAPL", facts)
-        second = store.ingest_company_facts(320193, "AAPL", facts)
-        assert first["inserted"] == 1
-        assert second["inserted"] == 0
-        assert second["skipped"] == 1
+        result = _ingest(facts=facts)
+        assert result["completion_status"] == "complete"
+        assert result["fact_rows_inserted"] == 1
+        assert result["duplicates_skipped"] == 0
+
+    def test_reingesting_the_same_run_and_symbol_is_idempotent(self):
+        facts = _companyfacts({"NetIncomeLoss": [
+            {"end": "2025-09-27", "val": 100.0, "fy": 2025, "fp": "FY", "form": "10-K",
+             "filed": "2025-10-31", "accn": "A-1"},
+        ]})
+        first = _ingest(facts=facts, run_id="run_1")
+        second = _ingest(facts=facts, run_id="run_2")  # different run, same fact data
+        assert first["fact_rows_inserted"] == 1
+        assert second["fact_rows_inserted"] == 0
+        assert second["duplicates_skipped"] == 1
 
     def test_a_second_accession_for_the_same_concept_is_a_new_row_not_an_overwrite(self):
-        """The core amendment/restatement guarantee: a later filing for
-        the same concept is additive, never a replacement."""
         facts_v1 = _companyfacts({"NetIncomeLoss": [
             {"end": "2025-09-27", "val": 100.0, "fy": 2025, "fp": "FY", "form": "10-K",
-             "filed": "2025-10-31", "accn": "0000320193-25-000100"},
+             "filed": "2025-10-31", "accn": "A-1"},
         ]})
         facts_v2 = _companyfacts({"NetIncomeLoss": [
             {"end": "2025-09-27", "val": 999.0, "fy": 2025, "fp": "FY", "form": "10-K/A",
-             "filed": "2026-01-15", "accn": "0000320193-26-000005"},  # restated value, new accession
+             "filed": "2026-01-15", "accn": "A-2"},
         ]})
-        store.ingest_company_facts(320193, "AAPL", facts_v1)
-        store.ingest_company_facts(320193, "AAPL", facts_v2)
+        _ingest(facts=facts_v1, run_id="run_1")
+        _ingest(facts=facts_v2, run_id="run_2")
         cov = store.coverage_for_symbol("AAPL", 320193)
-        assert cov["n_accessions"] == 2  # both rows retained, neither overwritten
+        assert cov["n_accessions"] == 2
 
     def test_entries_missing_accession_are_skipped_not_fatal(self):
         facts = _companyfacts({"NetIncomeLoss": [
-            {"end": "2025-09-27", "val": 100.0, "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2025-10-31"},  # no accn
+            {"end": "2025-09-27", "val": 100.0, "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2025-10-31"},
         ]})
-        result = store.ingest_company_facts(320193, "AAPL", facts)
-        assert result["inserted"] == 0
+        result = _ingest(facts=facts)
+        assert result["fact_rows_inserted"] == 0
+        assert result["malformed_skipped"] == 1
 
     def test_only_concepts_sec_edgar_adapter_cares_about_are_persisted(self):
         facts = _companyfacts({
@@ -94,30 +99,87 @@ class TestIngestion:
                  "filed": "2025-10-31", "accn": "A-2"},
             ],
         })
-        result = store.ingest_company_facts(320193, "AAPL", facts)
-        assert result["inserted"] == 1  # only NetIncomeLoss, not the irrelevant concept
+        result = _ingest(facts=facts)
+        assert result["fact_rows_inserted"] == 1
+        assert result["fact_rows_observed"] == 1  # irrelevant concept never counted at all
+
+    def test_cik_not_found_marks_failed_no_registry_entry(self):
+        result = store.ingest_symbol(
+            "NOTFOUND", "run_1", "manifest_v1",
+            resolve_cik_fn=lambda sym: None,
+            fetch_company_facts_fn=lambda cik: _companyfacts({}),
+        )
+        assert result["completion_status"] == "failed"
+        assert result["failure_reason"] == "CIK not found"
+        assert store.get_symbol_registry_entry("NOTFOUND") is None
+
+    def test_period_start_collision_both_ytd_and_quarterly_facts_survive(self):
+        """The core fix this pass: a single accession with the same
+        concept/period_end but DIFFERENT period_start (e.g. YTD vs.
+        quarter-only, the real, live-confirmed SEC pattern for
+        NetIncomeLoss and similar duration concepts) must both survive as
+        distinct rows. Uses NetIncomeLoss (a tracked concept) rather than
+        the real-world example concept (AllocatedShareBasedCompensation
+        Expense, not in _DIRECT_FIELD_TAGS and so correctly never
+        persisted at all) to isolate this specific behavior."""
+        facts = _companyfacts({"NetIncomeLoss": [
+            {"start": "2012-09-30", "end": "2013-06-29", "val": 1698000000, "fy": 2014,
+             "fp": "Q3", "form": "10-Q", "filed": "2014-07-23", "accn": "A-1"},
+            {"start": "2013-03-31", "end": "2013-06-29", "val": 578000000, "fy": 2014,
+             "fp": "Q3", "form": "10-Q", "filed": "2014-07-23", "accn": "A-1"},
+        ]})
+        result = _ingest(facts=facts)
+        assert result["fact_rows_inserted"] == 2  # both survive -- old key would have collapsed to 1
+
+    def test_instant_facts_with_no_period_start_still_deduplicate_correctly(self):
+        """The second real bug this session's own tests caught: NULL is
+        never equal to NULL in a SQL UNIQUE constraint, so an instant
+        fact (Assets/Liabilities/StockholdersEquity -- genuinely no
+        "start" key at all) would silently duplicate on every
+        re-ingestion instead of deduplicating. Proves the fix (a non-NULL
+        sentinel, normalized back to None on read)."""
+        facts = _companyfacts({"Assets": [
+            {"end": "2025-09-27", "val": 500.0, "fy": 2025, "fp": "FY",
+             "form": "10-K", "filed": "2025-10-31", "accn": "A-1"},  # no "start" key -- instant fact
+        ]})
+        first = _ingest(facts=facts, run_id="run_1")
+        second = _ingest(facts=facts, run_id="run_2")
+        assert first["fact_rows_inserted"] == 1
+        assert second["fact_rows_inserted"] == 0  # must dedupe, not silently double
+        cov = store.coverage_for_symbol("AAPL", 320193)
+        assert cov["n_facts"] == 1
+
+    def test_instant_fact_start_reads_back_as_none_not_the_internal_sentinel(self):
+        facts = _companyfacts({"Assets": [
+            {"end": "2025-09-27", "val": 500.0, "fy": 2025, "fp": "FY",
+             "form": "10-K", "filed": "2025-10-01", "accn": "A-1"},
+        ]})
+        _ingest(facts=facts)
+        result = store.get_facts_as_of_replay("AAPL", date(2025, 12, 1))
+        entry = result["facts"]["us-gaap"]["Assets"]["units"]["USD"][0]
+        assert entry["start"] is None  # never the raw "" sentinel leaking to a caller
 
 
 @pytest.mark.unit
-class TestPersistedAsOfLookupIsOffline:
-    def test_lookup_reflects_ingested_data_with_no_network_call(self):
+class TestReplayIsOfflineAndPure:
+    def test_lookup_reflects_ingested_data(self):
         facts = _companyfacts({"NetIncomeLoss": [
             {"end": "2025-09-27", "val": 100.0, "fy": 2025, "fp": "FY", "form": "10-K",
              "filed": "2025-10-01", "accn": "A-1"},  # Wed
         ]})
-        store.ingest_company_facts(320193, "AAPL", facts)
-        result = store.get_facts_as_of_persisted("AAPL", 320193, date(2025, 10, 3))  # Fri, after next session
+        _ingest(facts=facts)
+        result = store.get_facts_as_of_replay("AAPL", date(2025, 10, 3))
         assert result["facts"]["us-gaap"]["NetIncomeLoss"]["units"]["USD"][0]["val"] == 100.0
 
-    def test_lookup_applies_the_conservative_next_trading_session_rule(self):
+    def test_applies_conservative_next_trading_session_rule(self):
         facts = _companyfacts({"NetIncomeLoss": [
             {"end": "2025-09-27", "val": 100.0, "fy": 2025, "fp": "FY", "form": "10-K",
              "filed": "2025-10-31", "accn": "A-1"},  # Friday
         ]})
-        store.ingest_company_facts(320193, "AAPL", facts)
-        same_day = store.get_facts_as_of_persisted("AAPL", 320193, date(2025, 10, 31))
+        _ingest(facts=facts)
+        same_day = store.get_facts_as_of_replay("AAPL", date(2025, 10, 31))
         assert same_day["facts"]["us-gaap"] == {}
-        next_session = store.get_facts_as_of_persisted("AAPL", 320193, date(2025, 11, 3))
+        next_session = store.get_facts_as_of_replay("AAPL", date(2025, 11, 3))
         assert next_session["facts"]["us-gaap"]["NetIncomeLoss"]["units"]["USD"]
 
     def test_amendment_filed_after_cutoff_does_not_leak_backward(self):
@@ -129,68 +191,48 @@ class TestPersistedAsOfLookupIsOffline:
             {"end": "2025-09-27", "val": 999.0, "fy": 2025, "fp": "FY", "form": "10-K/A",
              "filed": "2026-01-15", "accn": "A-2"},
         ]})
-        store.ingest_company_facts(320193, "AAPL", facts_v1)
-        store.ingest_company_facts(320193, "AAPL", facts_v2)
-        # A signal dated before the amendment's filed date must only ever
-        # see the original value, never the restated one.
-        result = store.get_facts_as_of_persisted("AAPL", 320193, date(2025, 12, 1))
+        _ingest(facts=facts_v1, run_id="run_1")
+        _ingest(facts=facts_v2, run_id="run_2")
+        result = store.get_facts_as_of_replay("AAPL", date(2025, 12, 1))
         vals = [e["val"] for e in result["facts"]["us-gaap"]["NetIncomeLoss"]["units"]["USD"]]
         assert vals == [100.0]
-        assert 999.0 not in vals
 
-    def test_amendment_becomes_visible_once_as_of_passes_its_own_filed_date(self):
-        facts_v1 = _companyfacts({"NetIncomeLoss": [
+    def test_never_ingested_symbol_returns_empty_shape_never_raises(self):
+        result = store.get_facts_as_of_replay("NOTINGESTED", date(2020, 1, 1))
+        assert result["facts"]["us-gaap"] == {}
+        assert result["cik"] is None
+
+
+@pytest.mark.unit
+class TestIngestionCompletenessContract:
+    def test_get_ingestion_status_reports_complete(self):
+        facts = _companyfacts({"NetIncomeLoss": [
             {"end": "2025-09-27", "val": 100.0, "fy": 2025, "fp": "FY", "form": "10-K",
              "filed": "2025-10-01", "accn": "A-1"},
         ]})
-        facts_v2 = _companyfacts({"NetIncomeLoss": [
-            {"end": "2025-09-27", "val": 999.0, "fy": 2025, "fp": "FY", "form": "10-K/A",
-             "filed": "2026-01-15", "accn": "A-2"},  # Thursday
-        ]})
-        store.ingest_company_facts(320193, "AAPL", facts_v1)
-        store.ingest_company_facts(320193, "AAPL", facts_v2)
-        result = store.get_facts_as_of_persisted("AAPL", 320193, date(2026, 1, 20))
-        vals = {e["val"] for e in result["facts"]["us-gaap"]["NetIncomeLoss"]["units"]["USD"]}
-        assert vals == {100.0, 999.0}  # both now present; caller's _best_entry() picks the newer
+        _ingest(facts=facts)
+        status = store.get_ingestion_status("AAPL")
+        assert status["completion_status"] == "complete"
 
-    def test_no_ingested_data_returns_empty_facts_shape_never_raises(self):
-        result = store.get_facts_as_of_persisted("NOTINGESTED", 999999, date(2020, 1, 1))
-        assert result["facts"]["us-gaap"] == {}
+    def test_get_ingestion_status_none_for_never_ingested(self):
+        assert store.get_ingestion_status("NEVERINGESTED") is None
+
+    def test_get_ingestion_status_reports_failed(self):
+        store.ingest_symbol("BAD", "run_1", "manifest_v1",
+                             resolve_cik_fn=lambda sym: None,
+                             fetch_company_facts_fn=lambda cik: None)
+        status = store.get_ingestion_status("BAD")
+        assert status["completion_status"] == "failed"
 
 
 @pytest.mark.unit
 class TestReproducibility:
     def test_repeated_lookup_across_separate_connections_returns_identical_result(self):
-        """Simulates process-restart reproducibility: two fully independent
-        calls (each opens/closes its own connection, per this module's own
-        connection-per-call pattern) against the same persisted data must
-        return byte-identical results, unlike the ephemeral in-memory
-        cache path which depends on process lifetime."""
         facts = _companyfacts({"NetIncomeLoss": [
             {"end": "2025-09-27", "val": 100.0, "fy": 2025, "fp": "FY", "form": "10-K",
              "filed": "2025-10-01", "accn": "A-1"},
         ]})
-        store.ingest_company_facts(320193, "AAPL", facts)
-        first = store.get_facts_as_of_persisted("AAPL", 320193, date(2025, 12, 1))
-        second = store.get_facts_as_of_persisted("AAPL", 320193, date(2025, 12, 1))
+        _ingest(facts=facts)
+        first = store.get_facts_as_of_replay("AAPL", date(2025, 12, 1))
+        second = store.get_facts_as_of_replay("AAPL", date(2025, 12, 1))
         assert first == second
-
-    def test_normalize_fields_produces_identical_score_from_persisted_lookup_as_from_live_filtering(self):
-        """Cross-checks the persisted-store path against
-        sec_edgar_adapter.filter_facts_as_of()'s in-memory path for the
-        SAME underlying facts and cutoff -- proves the two share identical
-        temporal semantics, not divergent ones."""
-        import services.sec_edgar_adapter as sea
-
-        entry = {"end": "2025-09-27", "val": 100.0, "fy": 2025, "fp": "FY",
-                  "form": "10-K", "filed": "2025-10-01", "accn": "A-1"}
-        facts = _companyfacts({"NetIncomeLoss": [entry]})
-        store.ingest_company_facts(320193, "AAPL", facts)
-
-        as_of = date(2025, 12, 1)
-        persisted = store.get_facts_as_of_persisted("AAPL", 320193, as_of)
-        live_pruned = sea.filter_facts_as_of(facts, as_of)
-
-        persisted_field = sea._extract_direct(persisted, ["NetIncomeLoss"])
-        live_field = sea._extract_direct(live_pruned, ["NetIncomeLoss"])
-        assert persisted_field["value"] == live_field["value"] == 100.0

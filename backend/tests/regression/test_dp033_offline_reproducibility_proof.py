@@ -1,26 +1,13 @@
 """
-DP-033 readiness audit (2026-07-22) — the decisive offline-reproducibility
-proof requested: "a runtime cache is not evidence for this requirement."
+DP-033 second readiness pass (2026-07-22) — the decisive offline-
+reproducibility proof: "a runtime cache is not evidence for this
+requirement." Updated for the corrected acquisition/replay-separated
+architecture (ingest_symbol() / get_facts_as_of_replay()).
 
-Two-stage test:
-  Stage A (ingestion) — retrieve representative SEC data (via a
-    deterministic fake, no live network needed for THIS test's own
-    determinism, but exercising the identical ingest_company_facts() path
-    a real live fetch would use), persist immutable facts, record counts.
-  Stage B (replay) — completely disable network access (monkeypatch
-    `requests.get` to raise if called at all, not merely "assert not
-    called" on a mock that was never wired to the real transport layer),
-    use a FRESH module-level state (simulating a process restart: clears
-    _pit_ingested_ciks and re-imports nothing lives across "processes"
-    except the SQLite file itself), and prove the same historical lookup
-    and scoring produce identical results with zero network calls.
-
-Then simulates a later amended filing and proves:
-  - a signal before the amendment is unchanged;
-  - a signal after the amendment can see the amended fact;
-  - the ORIGINAL (pre-amendment) result remains reproducible forever from
-    its recorded source version, regardless of what SEC's live API would
-    return today.
+Stage A (ingestion, via the explicit ingest_symbol() path with injected
+acquisition functions) -> Stage B (replay, with requests.get AND both
+live SEC entry points monkeypatched to RAISE if called at all -- a real
+trap, not a soft assertion) -> amendment lifecycle proof.
 """
 import os
 import tempfile
@@ -57,7 +44,6 @@ def _companyfacts_v1():
 
 
 def _companyfacts_v2_amended():
-    # A later, restated value for the SAME period, under a NEW accession.
     return {
         "cik": 320193, "entityName": "AAPL",
         "facts": {"us-gaap": {"NetIncomeLoss": {"units": {"USD": [
@@ -71,68 +57,73 @@ def _companyfacts_v2_amended():
 
 @pytest.mark.unit
 def test_stage_a_then_b_zero_network_calls_identical_result(isolated_store, monkeypatch):
-    # ── Stage A: ingestion (simulates the one-time live fetch) ──────────
-    result_a = store.ingest_company_facts(320193, "AAPL", _companyfacts_v1())
-    assert result_a["inserted"] == 1
-    coverage_after_ingest = store.coverage_for_symbol("AAPL", 320193)
-    assert coverage_after_ingest["n_facts"] == 1
-    assert coverage_after_ingest["n_accessions"] == 1
+    # ── Stage A: ingestion (the ONLY path permitted acquisition) ────────
+    result_a = store.ingest_symbol(
+        "AAPL", "run_1", "manifest_v1",
+        resolve_cik_fn=lambda sym: 320193,
+        fetch_company_facts_fn=lambda cik: _companyfacts_v1(),
+    )
+    assert result_a["completion_status"] == "complete"
+    assert result_a["fact_rows_inserted"] == 1
 
-    lookup_a = store.get_facts_as_of_persisted("AAPL", 320193, date(2025, 12, 1))
+    lookup_a = store.get_facts_as_of_replay("AAPL", date(2025, 12, 1))
     value_a = lookup_a["facts"]["us-gaap"]["NetIncomeLoss"]["units"]["USD"][0]["val"]
 
     # ── Stage B: simulate a process restart + total network blackout ────
-    # A fresh, real sqlite3.connect() call against the SAME file (not a
-    # kept-open connection) proves this doesn't depend on any in-memory
-    # state from Stage A -- exactly what "survives process restart" means.
     import requests
 
     def _network_forbidden(*args, **kwargs):
-        raise AssertionError("NETWORK CALL ATTEMPTED DURING OFFLINE REPLAY -- this is the exact failure this test exists to catch")
+        raise AssertionError("NETWORK CALL ATTEMPTED DURING OFFLINE REPLAY")
 
     monkeypatch.setattr(requests, "get", _network_forbidden)
 
-    # Also blocks the two live SEC entry points directly, so even a code
-    # path that bypasses `requests` some other way is still caught.
     import services.sec_edgar_adapter as sea
     monkeypatch.setattr(sea, "fetch_company_facts", lambda cik: (_ for _ in ()).throw(
         AssertionError("live fetch_company_facts() called during offline replay")))
     monkeypatch.setattr(sea, "resolve_cik", lambda sym: (_ for _ in ()).throw(
         AssertionError("live resolve_cik() called during offline replay")))
 
-    lookup_b = store.get_facts_as_of_persisted("AAPL", 320193, date(2025, 12, 1))
+    # Replay via BOTH the store's own function and validation_engine's
+    # wrapper -- proves the whole call chain, not just one layer.
+    lookup_b = store.get_facts_as_of_replay("AAPL", date(2025, 12, 1))
     value_b = lookup_b["facts"]["us-gaap"]["NetIncomeLoss"]["units"]["USD"][0]["val"]
-
     assert value_a == value_b == 96995000000.0
-    assert lookup_a == lookup_b  # byte-identical, not just the one field
+    assert lookup_a == lookup_b
+
+    # Proves the whole call chain through validation_engine.py, not just
+    # the store layer -- net_income alone is present in this fixture (no
+    # equity/revenue), so _us_fund_score_as_of() legitimately reports
+    # "no usable ROE/margin inputs" -- that IS the correct, honest
+    # behavior (not a fabricated score), and it happens with zero network
+    # calls, which is what this test actually proves.
+    ve_result = ve._get_fundamentals_as_of_replay("AAPL", date(2025, 12, 1))
+    assert ve_result["available"] is True
+    assert ve_result["fields"]["net_income"]["value"] == 96995000000.0
+
+    score, available, reason = ve._us_fund_score_as_of("AAPL", date(2025, 12, 1))
+    assert available is False
+    assert "no usable" in reason
 
 
 @pytest.mark.unit
 def test_amendment_lifecycle_full_proof(isolated_store):
-    store.ingest_company_facts(320193, "AAPL", _companyfacts_v1())
+    store.ingest_symbol("AAPL", "run_1", "manifest_v1",
+                         resolve_cik_fn=lambda sym: 320193,
+                         fetch_company_facts_fn=lambda cik: _companyfacts_v1())
 
-    # A signal BEFORE the amendment exists at all -- baseline.
-    before_ingest_of_amendment = store.get_facts_as_of_persisted("AAPL", 320193, date(2026, 2, 1))
-    val_before = before_ingest_of_amendment["facts"]["us-gaap"]["NetIncomeLoss"]["units"]["USD"]
+    before_amendment = store.get_facts_as_of_replay("AAPL", date(2026, 2, 1))
+    val_before = before_amendment["facts"]["us-gaap"]["NetIncomeLoss"]["units"]["USD"]
     assert [e["val"] for e in val_before] == [96995000000.0]
 
-    # Now the amendment lands (a later, separate ingestion call -- exactly
-    # what a real periodic re-ingestion job would do).
-    store.ingest_company_facts(320193, "AAPL", _companyfacts_v2_amended())
+    store.ingest_symbol("AAPL", "run_2", "manifest_v1",
+                         resolve_cik_fn=lambda sym: 320193,
+                         fetch_company_facts_fn=lambda cik: _companyfacts_v2_amended())
 
-    # A signal dated BEFORE the amendment's own filed date (2026-03-02)
-    # must remain COMPLETELY UNCHANGED -- this is the reproducibility
-    # guarantee: a previously published validation run computed from this
-    # exact as-of date must still get the exact same answer today.
-    after_amendment_ingested_but_before_its_filed_date = store.get_facts_as_of_persisted(
-        "AAPL", 320193, date(2026, 2, 1))
-    assert after_amendment_ingested_but_before_its_filed_date == before_ingest_of_amendment
+    # A signal dated before the amendment's filed date is UNCHANGED --
+    # this IS the reproducibility guarantee.
+    still_before = store.get_facts_as_of_replay("AAPL", date(2026, 2, 1))
+    assert still_before == before_amendment
 
-    # A signal dated AFTER the amendment's filed date sees BOTH values
-    # (the original and the amendment) -- normalize_fields()'s existing
-    # recency-based picking logic (unchanged this session) resolves which
-    # one "wins" for a live score; this store's job is only to make both
-    # visible once eligible, never to hide the original.
-    after = store.get_facts_as_of_persisted("AAPL", 320193, date(2026, 3, 5))
+    after = store.get_facts_as_of_replay("AAPL", date(2026, 3, 5))
     vals_after = {e["val"] for e in after["facts"]["us-gaap"]["NetIncomeLoss"]["units"]["USD"]}
     assert vals_after == {96995000000.0, 91000000000.0}
