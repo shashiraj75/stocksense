@@ -91,19 +91,30 @@ _ticker_map_cache: tuple[float, dict[str, int]] | None = None
 _FACTS_TTL = 12 * 3600
 _facts_lock = threading.Lock()
 _facts_cache: dict[int, tuple[float, Optional[dict]]] = {}
-# Product Integrity #020 — this cache was unbounded (no cap, no eviction)
-# while every other cross-run cache in the prediction pipeline is capped
-# (prediction_engine.py's _CACHE_MAX = 300, "to prevent OOM on free-tier
-# 512MB Render" per its own comment). A single companyfacts payload can
-# span up to 17 years of full XBRL tag history per issuer — with the US
-# Daily Picks universe raised to 400 symbols (Sprint #014), this cache
-# could hold up to 400 uncapped payloads simultaneously by the end of one
-# run. Confirmed via direct production DB read: a US Daily Picks job
-# stalled for ~5 hours after a 2026-07-15 Railway OOM kill (and again
-# 2026-07-16), on the same day/pattern this cache would be filling up
-# fastest — matching the same 300-entry cap already proven safe elsewhere
-# in this exact pipeline, not a new/untested number.
-_FACTS_CACHE_MAX = 300
+# Product Integrity #020 (2026-07-1x) capped this cache at 300 entries —
+# the same number as prediction_engine.py's _pred_cache — reasoning that
+# "the same 300-entry cap [is] already proven safe elsewhere in this exact
+# pipeline." That reasoning was the actual mistake, found and corrected
+# during the 2026-07-22 US Daily Picks generation-reliability incident:
+# _pred_cache's entries are the SLIM, already-scored ~12 KB result dicts
+# _predict_stock returns — 300 of those is a few MB, genuinely safe. This
+# cache's entries are the RAW SEC XBRL companyfacts payload per issuer —
+# measured directly against live SEC EDGAR data at 4-8 MB of JSON text per
+# large-cap company (up to 17 years of full tag history), which becomes
+# roughly 15-25 MB once parsed into nested Python dict/list objects
+# (confirmed via tracemalloc: fetch_company_facts's json.loads() call site
+# alone accounted for 174 MiB / 2.8M retained objects across just 10
+# candidates in a reproduction run). 300 entries of THIS cache's actual
+# size is 4.5-7.5 GB — not "a few MB" — and is the dominant, previously
+# unidentified root cause of the memory aborts recurring since 2026-07-15
+# (the borrowed 300 number was never validated against this cache's own
+# payload size, only assumed equivalent because it fixed a *different*
+# cache in the same file's neighborhood). 25 keeps this cache's worst-case
+# footprint under ~625 MB even at the largest measured per-entry size,
+# while still giving same-run reuse (the same CIK looked up again within
+# the 12h TTL, e.g. by an overlapping premarket-finalizer run) a real
+# chance to hit.
+_FACTS_CACHE_MAX = 25
 
 
 def _facts_cache_set(cik: int, value: tuple[float, Optional[dict]]) -> None:
