@@ -1103,13 +1103,6 @@ export default function DailyPicksPage() {
           </span>
         </div>
         <div className="flex items-center gap-2 shrink-0 ml-auto flex-wrap justify-end">
-          {/* Market is now chosen once, globally, via the header's
-              GlobalMarketDropdown — this read-only label just shows what's
-              currently selected rather than offering a second, page-level
-              way to change it. */}
-          <span className="shrink-0 whitespace-nowrap text-xs px-3 py-1.5 rounded-lg bg-dark-card border border-dark-border text-gray-400">
-            Market: {marketCfg.short}
-          </span>
           {/* Original opt-in "Real Accuracy" control — withheld while
               INTEGRITY_HOLD_ACTIVE is true (see ValidationIntegrityHold.tsx),
               restored verbatim once it's false. */}

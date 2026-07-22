@@ -29,13 +29,6 @@ const CRYPTO_CARDS = [
 
 type DashMarket = "US" | "IN" | "CRYPTO" | "COMMODITY";
 
-const MARKET_TABS: { key: DashMarket; label: string }[] = [
-  { key: "IN",        label: "🇮🇳 IN" },
-  { key: "US",        label: "🇺🇸 US" },
-  { key: "CRYPTO",    label: "₿ Crypto" },
-  { key: "COMMODITY", label: "🥇 Commodities" },
-];
-
 // Tracking-only commodity ETFs — no AI signal, just live price (see
 // prediction_engine.py's TRACKING_ONLY_SYMBOLS for why).
 const COMMODITY_CARDS: { symbol: string; name: string; market: "US" | "IN" }[] = [
@@ -139,14 +132,6 @@ export default function Dashboard() {
                   : "Live"
             }
           </div>
-          {/* Market is now chosen once, globally, via the header's
-              GlobalMarketDropdown — this read-only label just shows what's
-              currently selected rather than offering a second, page-level
-              way to change it. Dashboard already supports all four global
-              contexts, so no "coming soon" notice is needed here. */}
-          <span className="shrink-0 whitespace-nowrap text-xs px-3 py-1.5 rounded-lg bg-dark-card border border-dark-border text-gray-400">
-            Market: {MARKET_TABS.find(t => t.key === market)?.label}
-          </span>
         </div>
       </div>
 
