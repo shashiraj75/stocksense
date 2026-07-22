@@ -253,9 +253,16 @@ _db_lock = threading.Lock()
 _initialized = False
 
 # NULL-safety sentinel for period_start (see _ingest_company_facts_rows'
-# comment) — never a value SEC would supply (dates are always
-# "YYYY-MM-DD"), so it cannot collide with a genuine period_start.
-_NO_PERIOD_START_SENTINEL = ""
+# comment) — never a value SEC would supply (no XBRL filer reports a
+# period starting in year 1 AD), so it cannot collide with a genuine
+# period_start. Must be a value PostgreSQL's DATE column type will
+# actually accept — "" (the original choice) is valid for SQLite's
+# dynamically-typed TEXT column but is rejected by Postgres with
+# InvalidDatetimeFormat, a real bug this session's own execution-verified
+# Postgres testing caught (SQLite's permissive typing had silently masked
+# it; this is exactly why SQLite results are not proof of Postgres
+# behavior).
+_NO_PERIOD_START_SENTINEL = "0001-01-01"
 
 
 def _period_start_or_none(value):
@@ -703,9 +710,12 @@ def get_facts_as_of_replay(symbol: str, as_of: date) -> dict:
         if next_us_trading_session(filed_date_obj) > as_of:
             continue
         concept = r["concept"]
+        period_start_normalized = _period_start_or_none(
+            str(r["period_start"]) if r["period_start"] is not None else None
+        )
         entry_row = {
             "end": str(r["period_end"]) if r["period_end"] else None,
-            "start": str(r["period_start"]) if r["period_start"] else None,
+            "start": period_start_normalized,
             "val": r["value"],
             "fy": r["fiscal_year"],
             "fp": r["fiscal_period"],
