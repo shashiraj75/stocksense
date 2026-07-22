@@ -199,8 +199,34 @@ CREATE TABLE IF NOT EXISTS daily_picks_cache (
     payload      JSONB NOT NULL
 );
 ALTER TABLE daily_picks_cache ADD COLUMN IF NOT EXISTS market TEXT NOT NULL DEFAULT 'IN';
+-- US Daily Picks generation-reliability incident (2026-07-22): a failed
+-- generation used to INSERT an empty, error-tagged payload here, which
+-- load_picks_from_db()'s "most recent row wins" read silently served to
+-- every user as if it were today's picks, shadowing the last genuinely
+-- successful payload (still in the table, just no longer "latest"). The
+-- generation code path that did this has been removed (generate_picks()
+-- no longer calls save_picks_to_db() on failure at all), but a `status`
+-- column is still required: a genuine zero-BUY-qualified successful day
+-- (a real, valid outcome — see get_track_record_summary-adjacent docs)
+-- also has an empty `picks` payload, so "picks is non-empty" cannot be
+-- used to distinguish "no real success" from "successful, zero picks".
+-- Defaults to 'success' for both new rows (matching the now-sole
+-- production insert path, save_picks_to_db(..., status="success")) and
+-- pre-existing historical rows — corrected immediately below for rows
+-- that carry the old failure marker.
+ALTER TABLE daily_picks_cache ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'success';
+-- One-time, idempotent backfill: any pre-existing row whose payload
+-- carries the old failure-path's "error" key is retroactively corrected
+-- to 'failed_attempt' so load_picks_from_db()'s WHERE status='success'
+-- filter looks straight past it to the last genuinely successful payload
+-- — this is what makes the fix self-healing for data already polluted by
+-- the incident, without a separate manual cleanup script. Safe to re-run
+-- (idempotent: rows already corrected no longer match the WHERE clause).
+UPDATE daily_picks_cache SET status = 'failed_attempt'
+    WHERE status = 'success' AND payload ? 'error';
 CREATE INDEX IF NOT EXISTS idx_daily_picks_cache_date ON daily_picks_cache(generated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_daily_picks_cache_market ON daily_picks_cache(market, generated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_daily_picks_cache_market_status ON daily_picks_cache(market, status, generated_at DESC);
 
 CREATE TABLE IF NOT EXISTS factor_ic_history (
     id            BIGSERIAL PRIMARY KEY,
@@ -1487,9 +1513,20 @@ def get_alpha_observations_coverage() -> list[dict]:
 
 # ── New: Daily picks performance (section 5) ────────────────────────────────
 
-def save_picks_to_db(payload: dict, market: str = "IN") -> bool:
+def save_picks_to_db(payload: dict, market: str = "IN", status: str = "success") -> bool:
     """
     Persist the full picks payload to Postgres so it survives Railway redeploys.
+
+    `status` MUST be "success" for any real Daily Picks outcome — including a
+    genuine, legitimate zero-BUY-qualified day (see get_track_record_summary
+    docs: an empty `picks` payload is a valid successful outcome, distinct
+    from a failed/incomplete run). US Daily Picks generation-reliability
+    incident (2026-07-22): this function must NEVER be called with a failed
+    or partial generation attempt's payload — a failed attempt is recorded
+    exclusively via mark_daily_picks_job_failed(daily_picks_jobs), which
+    never touches this "latest serving payload" table. Callers must not
+    invent a third status value without also updating load_picks_from_db's
+    filter below.
 
     Returns True on success, False on any failure (exception is logged, not raised).
     Callers must check the return value to determine whether durable persistence
@@ -1498,8 +1535,8 @@ def save_picks_to_db(payload: dict, market: str = "IN") -> bool:
     try:
         with _get_pool().connection() as conn:
             conn.execute(
-                "INSERT INTO daily_picks_cache (generated_at, payload, market) VALUES (%s, %s, %s)",
-                (datetime.now(timezone.utc), json.dumps(payload), market),
+                "INSERT INTO daily_picks_cache (generated_at, payload, market, status) VALUES (%s, %s, %s, %s)",
+                (datetime.now(timezone.utc), json.dumps(payload), market, status),
             )
             # Keep only last 10 rows per market to avoid bloat
             conn.execute("""
@@ -1519,11 +1556,20 @@ def save_picks_to_db(payload: dict, market: str = "IN") -> bool:
 
 
 def load_picks_from_db(market: str = "IN") -> dict | None:
-    """Load the most recently generated picks for a market from Postgres."""
+    """
+    Load the most recently generated SUCCESSFUL picks for a market from
+    Postgres. `status = 'success'` is the entire fix for the 2026-07-22 US
+    generation-reliability incident's "blank page" symptom: a row from a
+    failed/partial attempt (status='failed_attempt', either backfilled from
+    before the code fix, or — should some future code path ever regress —
+    freshly inserted) is never selected as "the latest picks", so the last
+    genuinely successful payload keeps being served, however old, instead of
+    an empty error stand-in. See save_picks_to_db's docstring.
+    """
     try:
         with _get_pool().connection() as conn:
             row = conn.execute(
-                "SELECT payload FROM daily_picks_cache WHERE market = %s "
+                "SELECT payload FROM daily_picks_cache WHERE market = %s AND status = 'success' "
                 "ORDER BY generated_at DESC LIMIT 1",
                 (market,),
             ).fetchone()
@@ -1820,6 +1866,29 @@ def get_active_daily_picks_job(market: str) -> dict | None:
         return dict(zip(cols, row))
     except Exception:
         return None
+
+
+def count_daily_picks_job_attempts_since(market: str, since) -> int:
+    """
+    Count daily_picks_jobs rows for a market started at/after `since` (a
+    tz-aware datetime — callers pass today's market-local midnight in UTC).
+    US Daily Picks generation-reliability incident (2026-07-22): used by the
+    bounded governed-recovery watchdog to cap retries per session date —
+    "at most a governed number of times" — instead of retrying indefinitely.
+    Returns 0 (not an error) on any lookup failure so a transient DB issue
+    fails toward "allow one more attempt", not toward "silently stop
+    retrying forever" — the watchdog's own outer failure handling still
+    bounds worst case behavior.
+    """
+    try:
+        with _get_pool().connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM daily_picks_jobs WHERE market = %s AND started_at >= %s",
+                (market, since),
+            ).fetchone()
+        return int(row[0]) if row else 0
+    except Exception:
+        return 0
 
 
 _MULTIBAGGER_ORPHAN_TIMEOUT_HOURS = 7  # longer than the ~5-6h US refresh; see Product Integrity #009 §9

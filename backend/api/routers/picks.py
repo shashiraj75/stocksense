@@ -55,22 +55,37 @@ def daily_picks(market: str = "IN"):
             pass
     generating = in_memory or db_active
 
+    # US Daily Picks generation-reliability incident (2026-07-22) — attempt
+    # status is computed regardless of whether a payload exists, so both
+    # branches below can report accurate stale/retry/failure metadata
+    # instead of an undifferentiated "not yet generated" message that looks
+    # identical whether nothing has ever run or today's run just failed.
+    attempt = _dp.get_generation_attempt_status(market)
+
     data = _dp.get_cached_picks(market)
     if not data:
         next_run = "2:07 AM IST" if market == "IN" else "06:00 UTC (10:00 AM Dubai / 11:30 AM IST)"
+        if generating:
+            message = "Picks are being generated now — check back in a few minutes."
+        elif attempt.get("last_attempt_status") == "failed":
+            message = (
+                "Today's generation attempt failed and is expected to retry automatically. "
+                "No previously successful picks are available yet for this market."
+            )
+        else:
+            message = (
+                f"Picks not yet generated. Generated at {next_run} daily"
+                + ("" if market == "IN" else "; US Premarket Review targets ~6:00 AM ET")
+                + " — check back then."
+            )
         return {
             "generated_at": None,
             "market": market,
             "picks": {"short": [], "medium": [], "long": []},
             "generating": generating,
             "historical_track_record": {},
-            "message": (
-                "Picks are being generated now — check back in a few minutes."
-                if generating else
-                f"Picks not yet generated. Generated at {next_run} daily"
-                + ("" if market == "IN" else "; US Premarket Review targets ~6:00 AM ET")
-                + " — check back then."
-            ),
+            "message": message,
+            **attempt,
         }
     # 2026-07-17: connects the confidence % shown on each pick to its
     # horizon's REAL walk-forward validated track record (beat-benchmark
@@ -87,7 +102,18 @@ def daily_picks(market: str = "IN"):
     except Exception:
         pass
 
-    return {**data, "generating": generating, "historical_track_record": historical_track_record}
+    # US Daily Picks generation-reliability incident (2026-07-22): `data`
+    # here is now ALWAYS the last genuinely successful payload (see
+    # load_picks_from_db's status='success' filter) — never an empty
+    # error stand-in. When it's not from today, `attempt` (spread last, so
+    # it cannot be shadowed by any stale key `data` happens to carry)
+    # tells the caller it's stale and gives the real session date, instead
+    # of silently presenting old picks as today's.
+    return {
+        **data, "generating": generating,
+        "historical_track_record": historical_track_record,
+        **attempt,
+    }
 
 
 @router.get("/status")
@@ -134,12 +160,27 @@ def picks_status(market: str = "IN"):
     except Exception:
         pass
 
+    # US Daily Picks generation-reliability incident (2026-07-22, Phase 7):
+    # last_error below is now a BOUNDED CATEGORY, never the raw traceback
+    # _dp._last_error held before — that in-memory field is (a) never
+    # publicly safe (can contain internal file paths/stack frames) and (b)
+    # doesn't survive a Railway restart, unlike attempt_status's durable
+    # daily_picks_jobs-backed fields, which is why those are preferred here.
+    attempt_status = _dp.get_generation_attempt_status(market)
+
     resp = {
         "market": market,
         "generating": generating,
         "has_today": _dp.picks_generated_today(market),
-        "last_error": _dp._last_error.get(market),
+        "last_error": attempt_status.get("last_attempt_error_category"),
         "last_trigger_received_at": _dp._last_trigger_received_at.get(market),
+        "last_successful_session_date": attempt_status.get("last_successful_session_date"),
+        "last_successful_generated_at": attempt_status.get("last_successful_generated_at"),
+        "last_attempt_status": attempt_status.get("last_attempt_status"),
+        "last_attempt_error_category": attempt_status.get("last_attempt_error_category"),
+        "last_attempt_started_at": attempt_status.get("last_attempt_started_at"),
+        "serving_stale_payload": attempt_status.get("serving_stale_payload"),
+        "stale": attempt_status.get("stale"),
         "containment": {
             "production_learning_enabled": is_production_learning_enabled(),
             "production_alpha_source": production_alpha_source(),

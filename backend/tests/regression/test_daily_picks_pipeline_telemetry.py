@@ -353,13 +353,23 @@ def test_ranking_written_before_score_snapshots_and_before_persisting():
     assert ("progress", "persisting") in events, "persisting was never written"
     assert "phase_1" in phases, "phase_1 was never written"
 
-    last_phase1_pos     = max(i for i, e in enumerate(events) if e == ("progress", "phase_1"))
+    # 2026-07-22 (US Daily Picks generation-reliability incident): Phase 1
+    # scoring is now horizon-bounded — it runs, then "ranking" fires, then
+    # score-snapshots write, per horizon, before moving to the next
+    # horizon's own Phase 1 (see _generate_picks_inner). With multiple
+    # horizons this interleaves phase_1/ranking/write_score_snapshots
+    # triples, so the LAST phase_1 event across ALL horizons can legitimately
+    # occur AFTER the FIRST horizon's "ranking" event — the old max()-based
+    # check assumed a single global Phase 1 pass, no longer true. The
+    # invariant this test protects (phase_1 work precedes its horizon's own
+    # ranking write) still holds using the first occurrence of each.
+    first_phase1_pos    = events.index(("progress", "phase_1"))
     pos_ranking         = events.index(("progress", "ranking"))
     pos_score_snapshots = events.index(("write_score_snapshots",))
     pos_persisting      = events.index(("progress", "persisting"))
 
-    assert last_phase1_pos < pos_ranking, (
-        f"ranking (pos {pos_ranking}) must come after last phase_1 (pos {last_phase1_pos})"
+    assert first_phase1_pos < pos_ranking, (
+        f"ranking (pos {pos_ranking}) must come after phase_1 starts (pos {first_phase1_pos})"
     )
     # Critical: ranking must precede score snapshots
     assert pos_ranking < pos_score_snapshots, (
@@ -639,7 +649,12 @@ def test_full_lifecycle_phase_order():
     assert pos("universe_selection") < pos("phase_0b_done"),       "universe_selection must precede phase_0b_done"
     assert pos("phase_0b_done")      < pos("shortlist_ready"),     "phase_0b_done must precede shortlist_ready"
     assert pos("shortlist_ready")    < pos("phase_1"),             "shortlist_ready must precede phase_1"
-    assert last_pos("phase_1")       < pos("ranking"),             "last phase_1 must precede ranking"
+    # 2026-07-22: per-horizon interleaving (see comment in
+    # test_ranking_written_before_score_snapshots_and_before_persisting)
+    # means the LAST phase_1 event overall can occur after the FIRST
+    # horizon's ranking event — use first-occurrence, still proving phase_1
+    # precedes ranking.
+    assert pos("phase_1")            < pos("ranking"),             "phase_1 must precede ranking"
     assert pos("ranking")            < pos("persisting"),          "ranking must precede persisting"
 
 

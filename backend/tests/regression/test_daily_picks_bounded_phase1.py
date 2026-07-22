@@ -1,20 +1,31 @@
 """
-Regression tests for the bounded Phase 1 processing fix (2026-07-21 memory-
-exhaustion postmortem).
+Regression tests for bounded, horizon-scoped Phase 1 processing.
 
-Prior structure: `{pool.submit(_predict_stock, sym, h, market): (sym, h)
-for sym, h in tasks}` submitted all ~1188 (candidate x horizon) tasks to a
-ThreadPoolExecutor(max_workers=1) up front, retaining every Future object
-— plus its args and, once resolved, its full result dict — simultaneously
-for the whole Phase 1 run, even though a single worker only ever processes
-one at a time. Fixed to a plain sequential loop: at most one task's
-result is ever alive at a time, with the identical call order/arguments to
-_predict_stock and the identical per-task progress-reporting contract.
+History:
+- 2026-07-21 memory-exhaustion postmortem: `{pool.submit(_predict_stock, sym,
+  h, market): (sym, h) for sym, h in tasks}` submitted all ~1188 (candidate x
+  horizon) tasks to a ThreadPoolExecutor(max_workers=1) up front, retaining
+  every Future object simultaneously for the whole Phase 1 run. Fixed to a
+  plain sequential loop over a pre-built `tasks` list covering all 3
+  horizons at once — bounded WITHIN Phase 1, but Phase 1 itself still built
+  and held all 3 horizons' full candidate pools (raw, ~1,191 rich dicts)
+  before Phases 3-6 released one horizon at a time.
+- 2026-07-22 US Daily Picks generation-reliability incident (recurring
+  failures 07-15 through 07-22, root-caused to this exact gap: today's
+  abort happened mid-Phase-1, before any per-horizon release logic could
+  run even once): Phase 1 itself is now horizon-bounded — each horizon's
+  candidates are scored, ranked, selected, persisted, and released BEFORE
+  the next horizon's Phase 1 scoring even begins. The `tasks`/`raw`
+  variables (a flat list of all 1,191 (symbol, horizon) pairs, and a dict
+  holding all three horizons' full result lists) no longer exist at all;
+  each horizon builds its own `items` list, used, and let go out of scope,
+  inside the same per-horizon loop that already ran Phases 3-6. Peak
+  retained Phase-1 memory drops from ~3 horizons' worth to 1.
 
 Deterministic — source-inspection tests are used for the parts of
 _generate_picks_inner that (like its ranking body) aren't practically
 mountable end-to-end in a unit test, consistent with this codebase's
-existing convention (see test_daily_picks_raw_memory_release.py).
+existing convention (see test_daily_picks_raw_memory_release.py's history).
 """
 import inspect
 
@@ -31,17 +42,17 @@ def test_phase1_does_not_submit_all_tasks_upfront():
 
 def test_phase1_uses_a_plain_sequential_loop_not_threadpoolexecutor():
     """max_workers=1 never provided real concurrency; ThreadPoolExecutor
-    must no longer be used for Phase 1 at all — a bounded sequential loop
-    replaces it, so at most one task's Future/result can ever be alive."""
+    must not be used for Phase 1 — a bounded sequential loop replaces it,
+    so at most one task's Future/result can ever be alive. 2026-07-22: the
+    loop is now `for sym in candidates:` inside the per-horizon loop, not
+    `for sym, h in tasks:` over a flat pre-built list of all three
+    horizons' tasks."""
     from services.daily_picks import _generate_picks_inner
     src = inspect.getsource(_generate_picks_inner)
-    # Checks actual usage (call syntax), not the bare word — this file's
-    # own explanatory comments legitimately mention "ThreadPoolExecutor" in
-    # prose describing what was removed.
     assert "ThreadPoolExecutor(" not in src
     assert "as_completed(" not in src
-    assert "for sym, h in tasks:" in src
-    assert "r = _predict_stock(sym, h, market)" in src
+    assert "for sym in candidates:" in src
+    assert "r = _predict_stock(sym, horizon, market)" in src
 
 
 def test_threadpoolexecutor_import_removed_module_wide():
@@ -54,37 +65,63 @@ def test_threadpoolexecutor_import_removed_module_wide():
     assert "as_completed(" not in src
 
 
+def test_phase1_no_flat_all_horizons_task_list_or_raw_dict():
+    """2026-07-22: the flat `tasks = [(sym, h) for sym in candidates for h
+    in (...)]` list and the `raw: dict[str, list] = {"short": [], ...}`
+    dict — which together caused Phase 1 to build and hold all three
+    horizons' full candidate pools before any per-horizon release could
+    run — must not exist any more. Each horizon builds its own `items`
+    list, used immediately, never assembled into a dict spanning multiple
+    horizons."""
+    from services.daily_picks import _generate_picks_inner
+    src = inspect.getsource(_generate_picks_inner)
+    assert 'tasks = [(sym, h) for sym in candidates for h in' not in src
+    assert 'raw: dict[str, list] = {"short": [], "medium": [], "long": []}' not in src
+    assert "items: list = []" in src
+
+
 def test_phase1_result_reference_is_dropped_immediately_each_iteration():
     """Each iteration's local `r` must be explicitly released before moving
     to the next task — nothing should accumulate a growing set of retained
     per-task result objects across the loop."""
     from services.daily_picks import _generate_picks_inner
     src = inspect.getsource(_generate_picks_inner)
-    loop_idx = src.index("for sym, h in tasks:")
+    loop_idx = src.index("for sym in candidates:")
     del_idx = src.index("del r", loop_idx)
     next_stage_idx = src.index('_try_job_progress(job_id, "ranking"', loop_idx)
     assert loop_idx < del_idx < next_stage_idx
 
 
 def test_phase1_call_order_and_arguments_to_predict_stock_unchanged():
-    """The fix must not change WHAT gets predicted or in what order — only
-    how results are retained. tasks is still built the same way, and
-    _predict_stock is still called with the same three positional args."""
+    """The fix must not change WHAT gets predicted — only when/how results
+    are retained. _predict_stock is still called with the same three
+    positional args, symbol-major within each horizon (candidates iterated
+    in the same order for every horizon); only the horizon-outer/symbol-
+    inner nesting is new, which cannot change the SET of (symbol, horizon)
+    calls or their individual arguments — see
+    test_daily_picks_horizon_bounded_memory.py for the full output-
+    equivalence proof."""
     from services.daily_picks import _generate_picks_inner
     src = inspect.getsource(_generate_picks_inner)
-    assert 'tasks = [(sym, h) for sym in candidates for h in ("short", "medium", "long")]' in src
-    assert "_predict_stock(sym, h, market)" in src
+    assert 'for horizon in ("short", "medium", "long"):' in src
+    assert "for sym in candidates:" in src
+    assert "_predict_stock(sym, horizon, market)" in src
 
 
 def test_memory_guard_checked_during_phase1_and_at_ranking_entry():
     """The circuit breaker must actually be wired into the loop and the
-    ranking-entry phase boundary — the exact instant the 2026-07-21
-    incident's process was killed — not merely imported and unused."""
+    per-horizon ranking-entry phase boundary — the exact instant the
+    2026-07-21/07-22 incidents' processes were killed/aborted — not merely
+    imported and unused. 2026-07-22: ranking_entry is now checked once per
+    horizon (inside the loop), not once globally after all Phase 1 work."""
     from services.daily_picks import _generate_picks_inner
     src = inspect.getsource(_generate_picks_inner)
     assert "_mem_guard.check(\"phase_1\"" in src
     assert "_mem_guard.check(\"ranking_entry\"" in src
     assert "_mem_guard.check(\"persisting\")" in src
+    loop_idx = src.index('for horizon in ("short", "medium", "long"):')
+    ranking_entry_idx = src.index('_mem_guard.check("ranking_entry"')
+    assert loop_idx < ranking_entry_idx, "ranking_entry check must be inside the per-horizon loop"
 
 
 # ─── per-horizon score-snapshot placement (mirrors the ranking-stall fix) ──
@@ -94,9 +131,17 @@ def test_score_snapshots_written_per_horizon_not_for_full_raw_dict_up_front():
     src = inspect.getsource(_generate_picks_inner)
     assert "_write_score_snapshots({horizon: items}, market)" in src
     assert "_write_score_snapshots(raw, market)" not in src
-    raw_none_pos = src.index("raw[horizon] = None")
+
+
+def test_score_snapshots_written_after_this_horizons_ranking_entry_check():
+    """2026-07-22: score snapshots for a horizon are written after that
+    horizon's own Phase-1 scoring AND ranking_entry memory check complete —
+    never before, and never using another horizon's items."""
+    from services.daily_picks import _generate_picks_inner
+    src = inspect.getsource(_generate_picks_inner)
+    ranking_entry_pos = src.index('_mem_guard.check("ranking_entry"')
     snapshot_call_pos = src.index("_write_score_snapshots({horizon: items}, market)")
-    assert raw_none_pos < snapshot_call_pos
+    assert ranking_entry_pos < snapshot_call_pos
 
 
 # ─── memory-failure lifecycle: same guarantees as any other exception ────
@@ -105,8 +150,15 @@ def test_generate_picks_marks_failed_when_memory_limit_error_raised():
     """A DailyPicksMemoryLimitError raised from the pipeline must flow
     through generate_picks()'s existing exception handling exactly like
     any other exception: job marked failed, last_error set, completed
-    never called, has_today never flipped (no save_picks_to_db success
-    path is reached)."""
+    never called, has_today never flipped.
+
+    2026-07-22 US Daily Picks generation-reliability incident: the
+    error-path payload is NO LONGER saved to disk or to
+    daily_picks_cache — that was the exact defect that let a failed run's
+    empty payload silently shadow the last genuinely successful one. The
+    failure is durably recorded exclusively via mark_daily_picks_job_failed
+    (daily_picks_jobs); save_picks_to_db must not be called at all on this
+    path."""
     import services.daily_picks as _dp
     from services.memory_guard import DailyPicksMemoryLimitError
 
@@ -130,7 +182,9 @@ def test_generate_picks_marks_failed_when_memory_limit_error_raised():
     mock_failed.assert_called_once()
     args, _ = mock_failed.call_args
     assert "memory usage 81.0%" in args[2]
-    # The error-path payload save is allowed (writes an empty "no signals"
-    # payload with generated_at + error, same as any other crash) but must
-    # never be treated as a successful base — mark_completed is the only
-    # thing that would make has_today true, and it was never called.
+    # 2026-07-22: unlike before, the error-path payload is NEVER saved —
+    # neither to disk nor to Postgres. mark_completed is the only thing
+    # that would make has_today true, and it was never called; save_picks_to_db
+    # must also never be called on this path (it used to be, "best-effort",
+    # which is exactly what silently overwrote the last successful payload).
+    mock_save.assert_not_called()
