@@ -1,13 +1,24 @@
 """
 Unit tests for sec_edgar_adapter.py's _facts_cache cap (Product Integrity
-#020) — a production investigation traced a 2026-07-15/16 Railway OOM
-(US Daily Picks job stalled ~5h, manually recovered) to this cache: it was
-unbounded (no cap, no eviction) while every other cross-run cache in the
-prediction pipeline (prediction_engine.py's _pred_cache/_regime_cache) is
-capped at 300 entries specifically "to prevent OOM on free-tier 512MB
-Render". With the US universe raised to 400 symbols (Sprint #014), this
-cache could grow to ~400 uncapped full companyfacts payloads (each
-spanning up to 17 years of XBRL history) per run.
+#020, corrected 2026-07-22).
+
+#020 (2026-07-15/16) first bounded this cache — previously unbounded — by
+reusing prediction_engine.py's _pred_cache cap value (300), reasoning it
+was "not a new/untested number... already proven safe elsewhere in this
+pipeline." That reasoning was itself the mistake, found during the
+2026-07-22 US Daily Picks generation-reliability incident:
+_pred_cache's entries are ~12 KB slim scored-result dicts (300 of those is
+a few MB); this cache's entries are RAW SEC XBRL companyfacts payloads,
+measured directly against live SEC EDGAR data at 4-8 MB of JSON text per
+large-cap issuer (up to 17 years of tag history), ~15-25 MB once parsed
+into Python objects (confirmed via tracemalloc — this single call site
+accounted for 174 MiB / 2.8M retained objects across just 10 candidates in
+a reproduction run). 300 entries of THIS cache's actual size is 4.5-7.5 GB
+— the dominant, previously unidentified root cause of the memory aborts
+recurring since 2026-07-15, including one that occurred AFTER #020's fix
+shipped (2026-07-22, mid-way through the very first horizon, before the
+cache even reached its old 300-entry cap). Re-capped at 25 — see
+sec_edgar_adapter.py's own comment for the sizing rationale.
 
 No live network calls — tests call the internal _facts_cache_set helper
 directly and inspect the module-level cache dict.
@@ -19,11 +30,22 @@ def _reset_cache():
     sea._facts_cache.clear()
 
 
-def test_facts_cache_max_matches_prediction_engines_established_cap():
-    """Not a new/untested number — reuses the exact cap value already
-    proven safe elsewhere in this pipeline."""
-    from services.prediction_engine import _CACHE_MAX
-    assert sea._FACTS_CACHE_MAX == _CACHE_MAX == 300
+def test_facts_cache_max_is_sized_for_its_own_payload_not_borrowed():
+    """2026-07-22: must NOT merely equal _pred_cache's cap again — that
+    was the bug. Must be small enough that even a worst-case-sized cache
+    (25 entries x ~25 MB measured worst case) stays a modest fraction of
+    a real container's memory budget, not gigabytes."""
+    from services.prediction_engine import _CACHE_MAX as _pred_cache_max
+    assert sea._FACTS_CACHE_MAX <= 50, (
+        "this cache's entries are measured at 15-25 MB each (full SEC "
+        "XBRL companyfacts payloads) — a cap anywhere near _pred_cache's "
+        "300 (12 KB entries) reintroduces the 2026-07-22 incident's root "
+        "cause (multi-GB cache footprint)"
+    )
+    assert sea._FACTS_CACHE_MAX > 0
+    # Explicitly must NOT equal the unrelated cache's cap — that equality
+    # is exactly what masked the real, much-larger-per-entry sizing need.
+    assert sea._FACTS_CACHE_MAX != _pred_cache_max
 
 
 def test_inserting_up_to_the_cap_keeps_every_entry():
