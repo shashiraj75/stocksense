@@ -108,6 +108,28 @@ def _us_fixed_holidays(year: int) -> set[datetime.date]:
     }
 
 
+def next_us_trading_session(d: datetime.date) -> datetime.date:
+    """
+    DP-033 (SEC EDGAR point-in-time remediation) — the next US trading
+    session strictly after `d` (weekends and _us_fixed_holidays excluded).
+    Used as the conservative eligibility rule for SEC EDGAR's date-only
+    `filed` timestamps: a fact filed on date D is never treated as
+    available before D's own market open, so its earliest eligible as-of
+    date is the NEXT trading session after D, not D itself. Shared by
+    services.sec_edgar_adapter and services.sec_pit_store so both the
+    ephemeral-cache and persisted-store as-of paths apply identical
+    temporal logic — not two independently-maintained rules.
+    """
+    cursor = d + datetime.timedelta(days=1)
+    holidays_cache: dict[int, set] = {}
+    while True:
+        if cursor.year not in holidays_cache:
+            holidays_cache[cursor.year] = _us_fixed_holidays(cursor.year)
+        if cursor.weekday() < 5 and cursor not in holidays_cache[cursor.year]:
+            return cursor
+        cursor += datetime.timedelta(days=1)
+
+
 def _is_nse_trading_day(d: datetime.date) -> bool:
     return (
         d.weekday() < 5

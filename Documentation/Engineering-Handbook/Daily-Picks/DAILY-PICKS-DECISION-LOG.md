@@ -155,6 +155,47 @@
 
 ---
 
+## DPD-011 — Genuine point-in-time fundamentals remediation, superseding disclosure-only containment where achievable
+
+- **Related findings:** `DP-026` (reopened), `DP-033` (new — US remediation record), `DP-031`, `DP-032` (unchanged, still separate)
+- **Status:** DECIDED
+- **Date:** 2026-07-22
+- **Decision owner:** Product owner (repository owner, `shashiraj75`), via explicit direct authorization in a chat prompt this session.
+- **Question:** `DPD-009`/`DPD-010` accepted disclosure-only containment as the correct response to DP-026 given the data available at the time. The product owner has now authorized engineering investment in a genuine fix. Does this supersede `DPD-009`/`DPD-010`, and under what conditions may the resulting warning be reduced or replaced?
+- **Options considered:**
+  1. Leave disclosure-only containment as final (rejected — explicitly superseded by this authorization).
+  2. Attempt genuine remediation for whichever markets have a legally/reliably accessible point-in-time source, keep disclosure for the rest (**decided**).
+  3. Require a single all-markets-or-nothing remediation before any warning changes (rejected — would block real US progress on an India data-access problem that may have no near-term solution).
+- **Decision:** Option 2. Genuine remediation is authorized wherever the underlying data supports it. **The existing DP-026 disclosure remains in force for any market/scope not proven to meet every acceptance criterion in this session's prompt** (temporal-integrity tests passing, controlled replay proving the corrected path is used, independent reviews passing, and — critically — merge, deployment, backfill, and production verification, none of which happened this session). Disclosure containment was correct for the previous data-availability state and is not retroactively wrong; this decision authorizes moving past it only where evidence now supports doing so.
+- **Rationale:** Product owner explicitly stated disclosure containment "is no longer the desired final product state" and authorized code/data/pipeline changes. This session found a real, evidence-based basis for US remediation (SEC EDGAR's `filed` timestamps, confirmed live) and a real, evidence-based basis for India remaining blocked (no equivalent free/reliable source found; NSE's official API returned bot-protection output on direct testing, not data).
+- **Consequences:** This decision does **not** pre-authorize arbitrary strategy-weight changes (`DP-032` remains separate and undecided) or bundling `DP-031`'s instrumentation work into this scope (it remains separately assigned, though `DP-033`'s revenue-growth/PE deferral now explicitly names it as the closing owner for that specific gap). It does not authorize a production backfill or migration — that remains a separate, later gate per the original prompt's Phase 6/Definition-of-Done requirements, not yet reached.
+- **Implementation:** See `DP-033`'s register entry for the full technical record.
+- **Reconsideration trigger:** For India specifically — a licensed point-in-time data vendor decision, or a legally/reliably accessible free structured source being found that this session's investigation missed.
+
+---
+
+## DPD-012 — DP-032 weight-safety decision, quantitative sensitivity analysis (2026-07-22)
+
+- Related findings: `DP-032`, `DP-026`, `DP-031`
+- Status: DECIDED
+- Date: 2026-07-22
+- Decision owner: Product owner (`shashiraj75`), via explicit direct authorization in a chat prompt this session, executed by the assistant under that authorization.
+- **Question:** Is it safe for production's existing 45% fundamentals composite weight (`_score_at()`) to consume the new `us_pit_roe_margin_v1` point-in-time score, or must the weight change / the score remain shadow-only?
+- **Method:** Ran a genuine full-`US_BASKET` (42 symbols) point-in-time ingestion into a local SQLite store (`store.ingest_symbol()` for every symbol), then an instrumented walk-forward replay (`_backtest_stock()` monkeypatched at `_score_at()`) capturing every signal's raw `tech`/`rs`/`obv`/`mfi` sub-scores, `fund_score_input`, `fund_pit_available`, `regime_adj`, and forward return, across all three horizons (short n=4,620; medium n=4,368; long n=3,008; 97.6% PIT coverage in all three). Recomputed the composite at a weight grid `{0, 0.10, 0.15, 0.20, 0.25, 0.30, 0.45}` against the SAME captured tech/regime inputs, and evaluated BUY-classification count, hit rate, beat-benchmark rate (>1% alpha), and composite-vs-forward-return IC at each weight, using production's actual `BUY_THRESHOLD = {"short": 60, "medium": 60, "long": 60}` (verified against `backend/services/validation_engine.py:211` — the earlier, invalid first-pass analysis had used an unverified `{60, 62, 65}` approximation and was discarded, not used for this decision).
+- **Result (all three horizons, consistent pattern):** Composite IC vs. forward return is negative at every weight tested and monotonically *worsens* (becomes more negative) as fundamental weight increases from 0% to 45% — short: -0.0220 → -0.0346; medium: -0.0375 → -0.0489; long: -0.0557 → -0.1107. Hit rate and beat-benchmark rate are roughly flat to mixed across the grid (short ~52-54%, medium ~54-55%, long ~54-56%), not meaningfully improved by including the fundamental factor, and BUY-count grows ~50% from weight 0 to 0.45 (more picks classified BUY without a corresponding accuracy gain). The isolated `us_pit_roe_margin_v1` factor IC (fundamental score alone vs. forward return) is itself negative at every horizon (-0.024 to -0.095, PIT-available signals only).
+- **Options considered:**
+  1. Increase the fundamental weight (rejected — directly contradicted by the evidence; IC strictly worsens with weight).
+  2. Keep the current 45% weight unchanged now that it is measured, not assumed safe (rejected as a "safe" characterization — 45% is the weight combination with the *worst* measured composite IC of everything tested, in all three horizons).
+  3. Reduce the fundamental weight toward 0% for `us_pit_roe_margin_v1` specifically (supported by the evidence, but a live weight change is explicitly out of scope for this DP-026/DP-033 PR per the standing authorization, which forbids broadening beyond point-in-time bias correction into live scoring changes).
+  4. Keep the new score shadow-only (not fed into any published/live composite or backtest headline number) until a deliberate, separately-scoped weight decision is made using this evidence (**decided**).
+- **Decision:** Option 4, superseding the prior session's Option C placeholder (which had deferred *because the analysis hadn't been run*; this analysis has now been run, and its result reinforces the same shadow-only outcome for a *stronger, evidence-based* reason: the current 45% weight is not merely unproven, it is measurably the worst-performing point on the tested grid). `us_pit_roe_margin_v1` remains shadow-only. No weight in `validation_engine.py` or production `prediction_engine.py` is changed by this decision or this PR.
+- **Rationale:** The analysis directly answers the weight-safety question the prior session's Option C left open, using real ingested SEC point-in-time data (not the 0%-coverage un-ingested run that a first, flawed attempt this session produced) and the actual production `BUY_THRESHOLD` values. The result argues *against* raising fundamental weight and raises a legitimate question about the *current* production weight's validity for this factor — but changing that weight is a separate, consequential decision (affects live Daily Picks and paper trading) explicitly forbidden from this PR's scope by this session's own authorization. Recording the evidence here, rather than silently shipping a weight change, is the correct application of "publish only when quantitatively justified."
+- **Consequences:** Publication of `us_pit_roe_margin_v1` results as a corrected/improved-composite-accuracy claim remains blocked — the evidence shows the opposite (weight increase degrades measured IC). `DP-032`'s underlying finding (production weights lack IC-based evidence) is now partially answered for the *new* PIT factor specifically, but the broader `_dynamic_weights()` regime table in `prediction_engine.py` is unaffected and remains ungoverned by this analysis. A future, separately-authorized DPD should evaluate whether to reduce or zero the fundamentals weight for US point-in-time scoring specifically, using this data as a starting point.
+- **Implementation:** No code change. Analysis script and raw captured signal data are local-only artifacts (`/tmp/dp032_raw2.json`, not committed — reproducible via the same ingest-then-instrumented-replay method against `US_BASKET`). See `DP-032`/`DP-033` register entries for cross-reference.
+- **Reconsideration trigger:** A deliberate, separately-scoped proposal to change `validation_engine.py`'s or `prediction_engine.py`'s fundamentals weight, backed by this or newer IC evidence, reviewed and approved on its own merits (not bundled into a bias-correction PR).
+
+---
+
 ## Decision template
 
 ```text

@@ -32,6 +32,8 @@ import yfinance as yf
 
 from services.safe_errors import safe_error_message
 from services.technical_indicators import compute_indicators
+from services import sec_edgar_adapter
+from services import sec_pit_store
 
 log = logging.getLogger(__name__)
 
@@ -536,6 +538,105 @@ def _resolve_yahoo_symbol(symbol: str, market: str) -> str:
     )
 
 
+# DP-026 remediation (US only — see module docstring note near
+# `_backtest_stock`'s fund_score computation for why India cannot receive
+# the same treatment). Genuine point-in-time fundamental score built from
+# `sec_edgar_adapter.get_fundamentals_as_of()` — SEC EDGAR XBRL facts
+# filed on or before the signal's own historical date, never a present-day
+# snapshot. Deliberately uses only single-period ratios (ROE, net margin)
+# that are computable from ONE as-of snapshot — a genuine revenue-growth
+# figure needs the prior fiscal year's revenue as of the SAME cutoff too
+# (two independent as-of lookups, correctly ordered), which
+# get_fundamentals_as_of()'s current single-snapshot contract does not yet
+# provide; DEFERRED, not silently dropped — see DP-031's register entry,
+# which now also owns this specific gap; PE was dropped rather than
+# approximated because it needs a point-in-time EPS-outstanding-shares
+# figure this adapter does not extract at all today.
+# DP-033 scoring-policy decision (Phase 6 of the readiness audit): the
+# point-in-time US fund_score is NOT a drop-in replacement computing the
+# "same" score with better inputs — it uses ROE + net margin only (2
+# ratios), while the pre-existing IN/legacy formula uses PE + ROE + revenue
+# growth (3 different ratios, none of which is "ROE" in exactly the same
+# bucketing). These are NOT semantically equivalent and must not be
+# presented as interchangeable historical continuations of one score.
+# Decision: Option B — a separately versioned point-in-time scoring
+# policy, not a silent replacement of the old one. The old (IN/legacy)
+# formula is completely unversioned and untouched; this new formula is
+# explicitly named and versioned so every US signal/result can be traced
+# to exactly which formula produced it, and so a future formula change
+# (e.g. adding revenue growth once a second as-of lookup exists, per
+# DP-031) bumps this version rather than silently altering the meaning of
+# already-published historical scores.
+US_PIT_SCORING_POLICY_VERSION = "us_pit_roe_margin_v1"
+
+def _get_fundamentals_as_of_replay(symbol: str, as_of) -> dict:
+    """
+    DP-033 architecture correction (2026-07-22, second readiness pass):
+    historical replay must NEVER perform acquisition, including on a
+    "cache miss" — the prior pass's `_get_fundamentals_as_of_persisted_
+    first()` still lazily called `fetch_company_facts()`/`resolve_cik()`
+    on first use per process, which is acquisition-during-replay in
+    everything but name. This function is genuinely acquisition-free: it
+    calls ONLY `sec_pit_store.get_facts_as_of_replay()` (itself backed by
+    the persisted `sec_pit_symbol_registry`, never a live CIK resolution)
+    — no code path here can reach `services.sec_edgar_adapter`'s live
+    functions under any circumstance, including a symbol that was never
+    ingested. A never-ingested symbol correctly returns `available:
+    False` with a distinct reason, not a lazy live fetch.
+
+    Ingestion is now an entirely separate, explicit, administrative
+    operation — see `sec_pit_store.ingest_symbol()`, invoked only by
+    dedicated ingestion tooling (scripts/sec_pit_ingest.py), never by
+    this module.
+    """
+    entry = sec_pit_store.get_symbol_registry_entry(symbol)
+    if entry is None:
+        return {"available": False, "reason": "symbol not ingested — no sec_pit_symbol_registry entry"}
+
+    cik = entry["cik"]
+    pruned = sec_pit_store.get_facts_as_of_replay(symbol, as_of)
+    fields = sec_edgar_adapter.normalize_fields(pruned)
+    has_any = any(v.get("value") is not None for v in fields.values())
+    return {
+        "available": has_any,
+        "fields": fields,
+        "reason": None if has_any else "ingested, but no eligible filing as of the signal date",
+    }
+
+
+def _us_fund_score_as_of(symbol: str, as_of) -> tuple[float | None, bool, str | None]:
+    """Returns (score, available, reason). `score` is None and `available`
+    is False — never a fabricated/neutral value — when the persisted SEC
+    EDGAR store has no eligible filing for `symbol` as of `as_of`, or when
+    the eligible filing(s) don't contain enough of (net_income,
+    shareholders_equity, revenue) to compute either ratio. Caller decides
+    the neutral-fallback policy for the unavailable case; this function
+    never applies one itself."""
+    result = _get_fundamentals_as_of_replay(symbol, as_of)
+    if not result.get("available"):
+        return None, False, result.get("reason", "unavailable")
+
+    fields = result["fields"]
+    net_income = fields.get("net_income", {}).get("value")
+    equity     = fields.get("shareholders_equity", {}).get("value")
+    revenue    = fields.get("revenue", {}).get("value")
+
+    score = 50.0
+    used_any = False
+    if net_income is not None and equity:
+        roe = net_income / equity
+        score += 10 if roe > 0.15 else (-10 if roe < 0 else 0)
+        used_any = True
+    if net_income is not None and revenue:
+        margin = net_income / revenue
+        score += 8 if margin > 0.10 else (-8 if margin < 0 else 0)
+        used_any = True
+
+    if not used_any:
+        return None, False, "eligible filing found but no usable ROE/margin inputs as of this date"
+    return max(0.0, min(100.0, score)), True, None
+
+
 def _backtest_stock(
     symbol: str,
     horizon: str,
@@ -582,69 +683,45 @@ def _backtest_stock(
         # Do NOT call compute_indicators on full df — that causes look-ahead bias.
         # Raw OHLCV df is kept clean; indicators are computed per window inside loop.
 
-        # DP-026 (VERIFIED; disclosed, not remediated — see data-availability
-        # investigation below): this is a SINGLE present-day snapshot
-        # (`yf.Ticker(yf_sym).info`, called once, at whatever moment this
-        # backtest happens to run), reused unchanged as `fund_score` for
-        # EVERY historical signal date produced for this symbol, across the
-        # entire HORIZON_PERIOD[horizon] lookback window — i.e. a signal
-        # dated years in the past is scored against fundamentals as they
-        # exist today, not as they were knowable at that date. This is a
-        # real look-ahead bias, not a cosmetic one, and this line of code is
-        # UNCHANGED by the DP-026 session — only disclosed (see
-        # `_compute_metrics()`'s `data_limitations` field below).
+        # DP-026 status by market, as of this session's remediation work:
         #
-        # Scope of this claim (2026-07-21 DP-026 session) — precise, not a
-        # market-wide claim: neither of StockSense360's currently integrated
-        # sources (yfinance's `.info`/`.financials`/`.balance_sheet`/
-        # `.cashflow` — trailing periods only, current-day query, no
-        # accepted/filed/publication timestamp, no historical vintage — a
-        # value for a 3-year-old fiscal period returned today reflects any
-        # restatements since, with no way to recover what was actually known
-        # then; screener.in; BSE) nor any data StockSense360 itself retains
-        # (`fundamentals_cache.py`'s `stock_fundamentals_cache` table is
-        # `ON CONFLICT ... DO UPDATE` — a pure overwrite with a single
-        # `updated_at`, not a versioned history) provide a point-in-time
-        # fundamentals vintage for any past date. This does NOT establish
-        # that no provider anywhere offers point-in-time historical
-        # fundamentals (e.g. a dedicated point-in-time/vintage financial
-        # data vendor) — no such market-wide vendor survey was performed,
-        # and doing one is out of scope for DP-026. The finding is: not
-        # obtainable from what this repository currently integrates or
-        # retains, without procuring and integrating a new data source.
-        # Backward-filling, approximating from fiscal-period-end dates, or
-        # otherwise fabricating a historical value was ruled out regardless.
+        # US: REMEDIATED. Every US signal below computes its own fund_score
+        # via `_us_fund_score_as_of()` — SEC EDGAR XBRL facts filed on or
+        # before that SPECIFIC signal's date — inside the per-signal loop,
+        # not once out here. No present-day snapshot is used for a US
+        # historical signal.
         #
-        # Separate, second ambiguity (not a DP-026 fix — informational only,
-        # owned by DP-031): `fund_score` below defaults to and can land back
-        # on exactly 50.0 through at least three distinct paths — (a) the
-        # `.info` call itself failing (network/exception, `info = {}`),
-        # (b) `.info` succeeding but the specific pe/roe/revenueGrowth
-        # fields being absent for this instrument (common for financials/
-        # REITs), and (c) `.info` succeeding with all three fields present
-        # but genuinely landing in the "no adjustment" band (e.g. PE between
-        # 20-40, ROE <=15%, revenue growth 0-10%). These are not currently
-        # distinguishable from one another — this comment and
-        # `data_limitations` below do not claim they are, and do not claim
-        # every signal reflects a failed/unavailable fetch; most likely the
-        # large majority successfully retrieve *some* current data, they are
-        # simply never the fundamentals that were knowable at the signal's
-        # actual historical date, which is the DP-026 finding itself.
-        try:
-            info = yf.Ticker(yf_sym).info
-        except Exception:
-            info = {}
+        # IN (India): STILL DISCLOSED, NOT REMEDIATED. No point-in-time
+        # fundamentals source is integrated for India (investigated
+        # 2026-07-21: neither yfinance/screener.in/BSE nor any internally
+        # retained data — `fundamentals_cache.py`'s `stock_fundamentals_
+        # cache` is overwrite-only, no history retained — provide a filed/
+        # accepted timestamp per fact; NSE's own corporate-financial-
+        # results API returned bot-protection challenge output, not
+        # structured data, on direct testing this session; this is a
+        # repository/market-scoped finding, not a market-wide claim that no
+        # provider anywhere could supply this for India). `fund_score`
+        # below is computed exactly as before DP-026 — a SINGLE present-day
+        # `yf.Ticker(yf_sym).info` snapshot reused across every India
+        # signal date. This is unchanged and remains contaminated; the
+        # `data_limitations` disclosure in `_compute_metrics()` reflects
+        # this per-market split, not a blanket claim.
         fund_score = 50.0
-        pe = info.get("trailingPE")
-        if pe:
-            fund_score += 10 if pe < 20 else (-10 if pe > 40 else 0)
-        roe = info.get("returnOnEquity")
-        if roe:
-            fund_score += 10 if roe > 0.15 else 0
-        rev_g = info.get("revenueGrowth")
-        if rev_g:
-            fund_score += 8 if rev_g > 0.10 else (-8 if rev_g < 0 else 0)
-        fund_score = max(0.0, min(100.0, fund_score))
+        if market == "IN":
+            try:
+                info = yf.Ticker(yf_sym).info
+            except Exception:
+                info = {}
+            pe = info.get("trailingPE")
+            if pe:
+                fund_score += 10 if pe < 20 else (-10 if pe > 40 else 0)
+            roe = info.get("returnOnEquity")
+            if roe:
+                fund_score += 10 if roe > 0.15 else 0
+            rev_g = info.get("revenueGrowth")
+            if rev_g:
+                fund_score += 8 if rev_g > 0.10 else (-8 if rev_g < 0 else 0)
+            fund_score = max(0.0, min(100.0, fund_score))
 
         # Align benchmark index to stock dates
         benchmark_close = None
@@ -690,8 +767,35 @@ def _backtest_stock(
                 # Slice only rows 0..i (inclusive) — no future data visible
                 window = df.iloc[:i + 1].copy()
                 window = compute_indicators(window)
+
+                # DP-026 remediation — US only: a genuine point-in-time
+                # fund_score for THIS signal's own date, not the per-symbol
+                # snapshot computed above. `signal_date` (an SEC-filing-
+                # comparable calendar date) is the as-of cutoff — no
+                # network call happens here beyond the first per-symbol
+                # fetch, which sec_edgar_adapter.fetch_company_facts()
+                # already 12h-caches by CIK.
+                signal_date_i = df.index[i].date() if hasattr(df.index[i], "date") else df.index[i]
+                if market == "US":
+                    fund_score_i, fund_pit_available_i, fund_pit_reason_i = _us_fund_score_as_of(symbol, signal_date_i)
+                    if not fund_pit_available_i:
+                        # Explicitly unavailable, not fabricated — falls
+                        # back to the same neutral 50.0 this codebase
+                        # already uses elsewhere for "no evidence" (e.g.
+                        # daily_picks.py's quality_score convention), but
+                        # UNLIKE the pre-remediation code, this is now
+                        # recorded per-signal (fund_pit_available=False)
+                        # rather than being indistinguishable from a
+                        # genuine neutral score — see DP-031's ownership of
+                        # this same distinction for the IN-side legacy path.
+                        fund_score_i = 50.0
+                else:
+                    fund_score_i = fund_score
+                    fund_pit_available_i = False   # IN: never point-in-time (see comment above the loop)
+                    fund_pit_reason_i = "point-in-time fundamentals not available for market=IN (DP-026)"
+
                 # Score uses the last row of the window (= day i)
-                sc = _score_at(window, len(window) - 1, benchmark_close, fund_score, regime_adjs[i])
+                sc = _score_at(window, len(window) - 1, benchmark_close, fund_score_i, regime_adjs[i])
                 composite = sc["composite"]
 
                 buy_thr  = BUY_THRESHOLD[horizon]
@@ -736,6 +840,21 @@ def _backtest_stock(
                     "alpha_pct":       round(alpha, 3),
                     "actual_direction": actual_dir,
                     "correct":         int(correct),
+                    # DP-026 remediation — additive-only, same non-persisted
+                    # pattern as "confidence" above (not a val_signals fixed
+                    # column; used solely for _compute_metrics()'s coverage
+                    # reporting). True only for a US signal whose fund_score
+                    # came from a genuine as-of SEC EDGAR lookup that found
+                    # eligible facts; always False for IN (no point-in-time
+                    # source exists) and for a US signal where the as-of
+                    # lookup itself came back unavailable.
+                    "fund_pit_available": bool(fund_pit_available_i),
+                    # DP-033 scoring-policy versioning (Option B) — None
+                    # for IN (the old, unversioned formula); the exact
+                    # policy string for a US signal, whether or not the
+                    # as-of lookup found eligible facts (fund_score_i still
+                    # went through this policy's neutral-fallback branch).
+                    "fund_score_policy_version": US_PIT_SCORING_POLICY_VERSION if market == "US" else None,
                 })
             except Exception:
                 continue
@@ -794,7 +913,105 @@ def _max_drawdown(rets: list[float]) -> float | None:
     return round(max_dd, 1)
 
 
-def _compute_metrics(signals: list[dict], benchmark_return_pct: float, horizon: str = "medium") -> dict:
+def _data_limitations_for_market(signals: list[dict], market: str | None) -> dict:
+    """
+    DP-026 disclosure, now genuinely market-dependent (2026-07-21
+    remediation session). US signals are computed from a real per-signal
+    SEC EDGAR as-of lookup (`_us_fund_score_as_of()`); `coverage_pct` below
+    is a REAL measured statistic from this run's own `fund_pit_available`
+    flags — never a guessed or fixed number. IN remains exactly the
+    pre-remediation disclosure: no point-in-time source exists for India,
+    so every India signal is still built from a single present-day
+    snapshot.
+    """
+    n = len(signals)
+    pit_available_n = sum(1 for s in signals if s.get("fund_pit_available")) if n else 0
+    coverage_pct = round(pit_available_n / n * 100, 1) if n else None
+
+    if market == "US":
+        return {
+            "fundamentals_point_in_time": True,
+            "fundamentals_point_in_time_coverage_pct": coverage_pct,
+            "fundamentals_availability_vs_neutral_distinguishable": True,
+            "dp_id": "DP-026",
+            "scoring_policy_version": US_PIT_SCORING_POLICY_VERSION,
+            "status": "remediated (US, methodology) — point-in-time via persisted SEC EDGAR facts; NOT YET deployed/backfilled/production-verified",
+            "reason": (
+                f"Every US signal's fund_score is computed from SEC EDGAR "
+                f"XBRL facts persisted in services.sec_pit_store's immutable "
+                f"table (services.validation_engine._get_fundamentals_as_of_"
+                f"persisted_first()), filtered to those filed — and eligible "
+                f"per the next-US-trading-session conservative rule for "
+                f"date-only SEC filing timestamps — on or before that "
+                f"signal's own historical date. Not a present-day snapshot, "
+                f"and not dependent on live network access after the "
+                f"one-time per-CIK ingestion. Scoring policy version "
+                f"'{US_PIT_SCORING_POLICY_VERSION}' — a SEPARATELY versioned "
+                f"formula (ROE + net margin only), not a drop-in replacement "
+                f"claiming equivalence with the pre-existing PE+ROE+revenue-"
+                f"growth formula IN/legacy results still use; every US "
+                f"signal records this exact version. "
+                f"{coverage_pct}% of signals in this run ({pit_available_n}"
+                f"/{n}) found an eligible SEC filing and usable ROE/margin "
+                f"inputs as of their date; the remainder ({n - pit_available_n}"
+                f"/{n}) explicitly had no eligible filing or insufficient "
+                f"fields as of that date and used a disclosed neutral 50.0 "
+                f"fallback (tracked per-signal via fund_pit_available, not "
+                f"silently indistinguishable from a genuine neutral score — "
+                f"resolving the prior DP-031-owned ambiguity for this "
+                f"market). Revenue-growth and PE ratios were deliberately "
+                f"NOT reconstructed point-in-time (revenue growth needs a "
+                f"second, correctly-ordered as-of lookup; PE needs point-in-"
+                f"time shares-outstanding data this adapter does not "
+                f"extract) — a documented reduction in factor richness, not "
+                f"a silent one. See DP-031 for closing this gap alongside "
+                f"its neutral-vs-unavailable instrumentation work."
+            ),
+        }
+
+    # IN (or an unknown/unset market — treated as the worst case, not
+    # silently assumed remediated).
+    return {
+        "fundamentals_point_in_time": False,
+        "fundamentals_affected_signals_pct": 100.0,
+        "fundamentals_availability_vs_neutral_distinguishable": False,
+        "dp_id": "DP-026",
+        "status": "disclosed, not remediated (India — no point-in-time source integrated)",
+        "reason": (
+            "fund_score is a single current-day fundamentals snapshot "
+            "(yfinance .info, fetched once per symbol at backtest run "
+            "time), reused unchanged for every historical signal date "
+            "produced for that symbol. It is NOT the fundamentals that "
+            "were knowable as of each signal's actual date, and "
+            "constitutes look-ahead bias on the fundamentals component "
+            "of composite_score for 100% of India signals in this run. "
+            "Investigated 2026-07-21 (remediation session): no point-in-"
+            "time fundamentals source is integrated for India — neither "
+            "yfinance/screener.in/BSE nor any internally retained data "
+            "(stock_fundamentals_cache is overwrite-only, no history "
+            "retained) provide a filed/accepted timestamp per fact; NSE's "
+            "own corporate-financial-results API returned bot-protection "
+            "challenge output (not structured data) on direct testing "
+            "this session. This does not establish that no such data "
+            "exists from any provider in the market — a full vendor "
+            "survey is out of scope for this finding — only that it is "
+            "not obtainable from what this repository currently "
+            "integrates or retains without procuring/building a new, "
+            "currently unintegrated data source. Separately (see DP-031, not "
+            "resolved here): whether a given India signal's fund_score "
+            "reflects successfully retrieved current data or an "
+            "unavailable-data fallback is not currently distinguishable "
+            "-- do not read '100% affected' above as '100% unavailable'; "
+            "it means 100% share this same non-point-in-time input, "
+            "regardless of whether that input was successfully retrieved. "
+            "US validation runs from this same codebase are, as of this "
+            "session, genuinely point-in-time — see this field's "
+            "US-market counterpart."
+        ),
+    }
+
+
+def _compute_metrics(signals: list[dict], benchmark_return_pct: float, horizon: str = "medium", market: str | None = None) -> dict:
     """Compute all aggregate validation metrics from raw signals."""
     if not signals:
         return {}
@@ -915,56 +1132,14 @@ def _compute_metrics(signals: list[dict], benchmark_return_pct: float, horizon: 
             "mfi":       _ic("mfi_score"),
             "composite": _ic("composite_score"),
         },
-        # DP-026 (DPD-009-authorized disclosure containment — NOT a fix; the
-        # underlying calculation below is unchanged — see
-        # _backtest_stock()'s fund_score comment for the full data-
-        # availability investigation and the separate, second ambiguity
-        # this does not resolve). `fund_score` — 45% of `composite` via
-        # `composite * 0.55 + fund_score * 0.45` in `_score_at()` — is a
-        # single present-day fundamentals snapshot reused unchanged across
-        # every historical signal in this run, for 100% of signals in every
-        # market/horizon/universe combination. This is disclosed rather than
-        # silently corrected, approximated, or excluded, because no
-        # point-in-time fundamentals vintage is obtainable from what this
-        # repository currently integrates or retains (see comment above —
-        # this does not claim no such data exists anywhere in the market).
-        # `composite`, `tech`/`rs`/`obv`/`mfi` factor_ic, and every
-        # BUY/SELL/HOLD threshold and weight in this run are UNCHANGED by
-        # this disclosure — it adds no new bias and removes none, and DOES
-        # NOT mean DP-026 is resolved.
-        "data_limitations": {
-            "fundamentals_point_in_time": False,
-            "fundamentals_affected_signals_pct": 100.0,
-            "fundamentals_availability_vs_neutral_distinguishable": False,
-            "dp_id": "DP-026",
-            "status": "disclosed, not remediated",
-            "reason": (
-                "fund_score is a single current-day fundamentals snapshot "
-                "(yfinance .info, fetched once per symbol at backtest run "
-                "time), reused unchanged for every historical signal date "
-                "produced for that symbol. It is NOT the fundamentals that "
-                "were knowable as of each signal's actual date, and "
-                "constitutes look-ahead bias on the fundamentals component "
-                "of composite_score for 100% of signals in this run. This "
-                "underlying calculation is unchanged by this disclosure — "
-                "only surfaced. No point-in-time fundamentals vintage is "
-                "obtainable from StockSense360's currently integrated "
-                "sources (yfinance, screener.in, BSE) or internally "
-                "retained data (stock_fundamentals_cache is overwrite-only, "
-                "no history retained); this does not establish that no "
-                "such data exists from any provider in the market, only "
-                "that fixing this would require procuring and integrating "
-                "a new, currently unintegrated point-in-time data source — "
-                "out of scope for this finding. Separately (see DP-031, "
-                "not resolved here): whether a given signal's fund_score "
-                "reflects successfully retrieved current data or an "
-                "unavailable-data fallback is not currently distinguishable "
-                "-- do not read '100% affected' above as '100% "
-                "unavailable'; it means 100% share this same non-point-in-"
-                "time input, regardless of whether that input was "
-                "successfully retrieved."
-            ),
-        },
+        # DP-026 status is now genuinely market-dependent — see
+        # _backtest_stock()'s market branch (US: `_us_fund_score_as_of()`
+        # per signal date via SEC EDGAR; IN: unchanged single-snapshot
+        # yfinance reuse, still contaminated). `market` is required so this
+        # dict can report the correct one; `None` (a caller that predates
+        # this parameter) is treated as unknown/worst-case (IN-equivalent),
+        # never silently reported as remediated.
+        "data_limitations": _data_limitations_for_market(signals, market),
     }
 
 
@@ -1055,7 +1230,7 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
                         _run_status["progress"] = done
                         _run_status["log"].append(f"[{done}/{n_stocks}] {sym}: ERROR {e}")
 
-        metrics = _compute_metrics(all_signals, benchmark_avg_ret, horizon)
+        metrics = _compute_metrics(all_signals, benchmark_avg_ret, horizon, market=market)
         metrics["horizon"]   = horizon
         metrics["universe"]  = universe
         metrics["n_stocks_tested"] = n_stocks  # kept unchanged for backward compat — see below
@@ -1211,9 +1386,17 @@ def get_track_record_summary(market: str, horizon: str) -> list[dict]:
     """Real, validated track record for every universe backtested for this
     market/horizon — one entry per universe with an available run, empty
     list if none exist yet. Each entry: universe, beat_benchmark_pct,
-    buy_hit_rate_pct, n_signals, run_at. Never raises — a lookup failure for
-    one universe is simply omitted, matching get_latest_results()'s own
-    fail-soft contract."""
+    buy_hit_rate_pct, n_signals, run_at, plus (DP-026 remediation) the
+    point-in-time disclosure fields the UI needs to distinguish a
+    genuinely-remediated result from a legacy/still-contaminated one:
+    fundamentals_point_in_time, fundamentals_point_in_time_coverage_pct
+    (US only — real measured value from that run, never a guess),
+    dp026_status. Never raises — a lookup failure for one universe is
+    simply omitted, matching get_latest_results()'s own fail-soft
+    contract. A legacy run persisted before this session (no
+    data_limitations at all) reports fundamentals_point_in_time=None —
+    distinct from both True and False — so the UI can render an accurate
+    third "legacy, pre-remediation result" state rather than guessing."""
     out = []
     for universe in _MARKET_UNIVERSES.get(market, ()):
         try:
@@ -1222,12 +1405,17 @@ def get_track_record_summary(market: str, horizon: str) -> list[dict]:
             continue
         if not res.get("available"):
             continue
+        dl = res.get("data_limitations")
         out.append({
             "universe": universe,
             "beat_benchmark_pct": res.get("beat_benchmark_pct"),
             "buy_hit_rate_pct": res.get("buy_hit_rate_pct"),
             "n_signals": res.get("buy_signals"),
             "run_at": res.get("run_at"),
+            "fundamentals_point_in_time": dl.get("fundamentals_point_in_time") if dl else None,
+            "fundamentals_point_in_time_coverage_pct": dl.get("fundamentals_point_in_time_coverage_pct") if dl else None,
+            "dp026_status": dl.get("status") if dl else None,
+            "scoring_policy_version": dl.get("scoring_policy_version") if dl else None,
         })
     return out
 

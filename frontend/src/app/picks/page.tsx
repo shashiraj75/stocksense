@@ -68,7 +68,11 @@ type DailyPicksResponse = {
   historical_track_record?: Record<
     "short" | "medium" | "long",
     { universe: string; beat_benchmark_pct: number | null; buy_hit_rate_pct: number | null;
-      n_signals: number | null; run_at: string | null }[]
+      n_signals: number | null; run_at: string | null;
+      // DP-026 remediation (2026-07-21) — undefined/null on any entry
+      // persisted before this session (genuinely legacy, not "false").
+      fundamentals_point_in_time?: boolean | null;
+      fundamentals_point_in_time_coverage_pct?: number | null }[]
   >;
 };
 
@@ -259,7 +263,9 @@ function HistoricalTrackRecordSummary({
 }: {
   horizon: "short" | "medium" | "long";
   entries?: { universe: string; beat_benchmark_pct: number | null; buy_hit_rate_pct: number | null;
-              n_signals: number | null; run_at: string | null }[];
+              n_signals: number | null; run_at: string | null;
+              fundamentals_point_in_time?: boolean | null;
+              fundamentals_point_in_time_coverage_pct?: number | null }[];
   benchmarkLabel: string;
 }) {
   if (!entries || entries.length === 0) return null;
@@ -275,12 +281,22 @@ function HistoricalTrackRecordSummary({
         <p className="text-sm font-semibold text-white">Historical accuracy — {horizon}-term</p>
         <span className="text-xs text-gray-500">from real walk-forward backtests, not this run's picks</span>
       </div>
-      <DataLimitationsNotice className="mb-3" />
+      {/* DP-026 (2026-07-21 remediation) — the blanket "not point-in-time"
+          notice is now shown only when at least one entry genuinely still
+          needs it (false or legacy/null). A fully-remediated entry
+          (fundamentals_point_in_time === true) gets its own per-entry
+          coverage badge below instead — see DataLimitationsNotice's
+          docstring: this must never claim remediation for an entry that
+          isn't. */}
+      {entries.some(e => e.fundamentals_point_in_time !== true) && (
+        <DataLimitationsNotice className="mb-3" />
+      )}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {entries.map((e) => {
           const beatBenchmark = e.beat_benchmark_pct;
           const lowSample = (e.n_signals ?? 0) < 200;
           const weak = beatBenchmark != null && beatBenchmark < 50;
+          const pit = e.fundamentals_point_in_time;
           return (
             <div key={e.universe} className="bg-dark-bg/60 border border-dark-border rounded-lg p-3">
               <div className="flex items-center justify-between mb-1.5">
@@ -310,6 +326,25 @@ function HistoricalTrackRecordSummary({
               )}
               {lowSample && (
                 <p className="text-[11px] text-gray-500 mt-1">Small sample — treat as directional, not conclusive.</p>
+              )}
+              {/* DP-026 remediation — per-entry provenance, replacing the
+                  blanket warning only for an entry proven genuinely
+                  point-in-time. `pit === false` (still contaminated) is
+                  already covered by the blanket notice above and gets no
+                  duplicate text here; `pit === undefined/null` (legacy,
+                  predates data_limitations entirely) gets its own distinct
+                  label rather than being silently lumped in with either
+                  "remediated" or "known contaminated". */}
+              {pit === true && (
+                <p className="text-[11px] text-emerald-400/80 mt-1.5">
+                  Point-in-time fundamentals coverage: {e.fundamentals_point_in_time_coverage_pct ?? "—"}%
+                  {" "}— reconstructed from SEC filings as of each signal's own date.
+                </p>
+              )}
+              {pit == null && (
+                <p className="text-[11px] text-gray-500 mt-1.5">
+                  Legacy result — predates point-in-time fundamentals tracking; treat as directional only.
+                </p>
               )}
             </div>
           );
