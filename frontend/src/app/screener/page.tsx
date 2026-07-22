@@ -64,13 +64,6 @@ export default function ScreenerPage() {
                   : "Live"
             }
           </div>
-          {/* Market is now chosen once, globally, via the header's
-              GlobalMarketDropdown — this read-only label just shows what's
-              currently selected rather than offering a second, page-level
-              way to change it. */}
-          <span className="px-4 py-2 rounded-xl text-sm font-medium border bg-dark-card border-dark-border text-gray-400">
-            Market: {market === "IN" ? "🇮🇳 India" : "🇺🇸 USA"}
-          </span>
         </div>
       </div>
 
