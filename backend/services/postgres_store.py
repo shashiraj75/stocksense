@@ -199,34 +199,23 @@ CREATE TABLE IF NOT EXISTS daily_picks_cache (
     payload      JSONB NOT NULL
 );
 ALTER TABLE daily_picks_cache ADD COLUMN IF NOT EXISTS market TEXT NOT NULL DEFAULT 'IN';
--- US Daily Picks generation-reliability incident (2026-07-22): a failed
--- generation used to INSERT an empty, error-tagged payload here, which
--- load_picks_from_db()'s "most recent row wins" read silently served to
--- every user as if it were today's picks, shadowing the last genuinely
--- successful payload (still in the table, just no longer "latest"). The
--- generation code path that did this has been removed (generate_picks()
--- no longer calls save_picks_to_db() on failure at all), but a `status`
--- column is still required: a genuine zero-BUY-qualified successful day
--- (a real, valid outcome — see get_track_record_summary-adjacent docs)
--- also has an empty `picks` payload, so "picks is non-empty" cannot be
--- used to distinguish "no real success" from "successful, zero picks".
--- Defaults to 'success' for both new rows (matching the now-sole
--- production insert path, save_picks_to_db(..., status="success")) and
--- pre-existing historical rows — corrected immediately below for rows
--- that carry the old failure marker.
-ALTER TABLE daily_picks_cache ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'success';
--- One-time, idempotent backfill: any pre-existing row whose payload
--- carries the old failure-path's "error" key is retroactively corrected
--- to 'failed_attempt' so load_picks_from_db()'s WHERE status='success'
--- filter looks straight past it to the last genuinely successful payload
--- — this is what makes the fix self-healing for data already polluted by
--- the incident, without a separate manual cleanup script. Safe to re-run
--- (idempotent: rows already corrected no longer match the WHERE clause).
-UPDATE daily_picks_cache SET status = 'failed_attempt'
-    WHERE status = 'success' AND payload ? 'error';
 CREATE INDEX IF NOT EXISTS idx_daily_picks_cache_date ON daily_picks_cache(generated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_daily_picks_cache_market ON daily_picks_cache(market, generated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_daily_picks_cache_market_status ON daily_picks_cache(market, status, generated_at DESC);
+-- The daily_picks_cache.status column and its migration are deliberately
+-- NOT here — see _migrate_daily_picks_cache_status_column() below and
+-- init_db()'s own comment for why: this whole SCHEMA_SQL string is
+-- executed as one autocommit multi-statement batch, and a genuinely
+-- pre-existing, unrelated statement earlier in this same string
+-- (score_snapshots' ADD CONSTRAINT, which is not re-run-safe — it
+-- succeeds once, then fails "already exists" on every subsequent
+-- startup) aborts execution of everything after it on most real
+-- deploys. Discovered 2026-07-22 when this incident's own status-column
+-- addition, placed inline here originally, silently never ran in
+-- production, which in turn made every save_picks_to_db() call fail
+-- outright (INSERT referencing a column that doesn't exist) — a strictly
+-- worse regression than the one this incident set out to fix. Running it
+-- as its own separately-invoked, independently-guarded function makes it
+-- unconditional on any earlier statement in this string succeeding.
 
 CREATE TABLE IF NOT EXISTS factor_ic_history (
     id            BIGSERIAL PRIMARY KEY,
@@ -710,8 +699,47 @@ def load_market_cache(key: str) -> dict | list | None:
 
 def init_db():
     with _get_pool().connection() as conn:
-        conn.execute(SCHEMA_SQL)
+        try:
+            conn.execute(SCHEMA_SQL)
+        except Exception as e:
+            # US Daily Picks generation-reliability incident (2026-07-22):
+            # SCHEMA_SQL is one big autocommit multi-statement batch — a
+            # single statement failing partway through (e.g. a pre-existing,
+            # unrelated non-idempotent ADD CONSTRAINT that succeeds once
+            # then fails "already exists" on every later startup) used to
+            # silently abort everything after it in the same batch,
+            # INCLUDING every guarded migration below this call, on every
+            # single deploy where it happens. Discovered when this exact
+            # failure mode prevented daily_picks_cache's new `status`
+            # column from ever being created, which made save_picks_to_db()
+            # fail outright for every future call. Logged, never raised —
+            # api/main.py's own startup wrapper already tolerates this
+            # (matches its prior behavior), but now the guarded per-table
+            # migrations below are no longer contingent on the earlier
+            # batch's success or failure.
+            log = __import__("logging").getLogger(__name__)
+            log.warning(f"[postgres_store] SCHEMA_SQL execution failed partway through: {e}")
         _migrate_outcomes_market_constraint(conn)
+        _migrate_daily_picks_cache_status_column(conn)
+
+
+def _migrate_daily_picks_cache_status_column(conn) -> None:
+    """
+    US Daily Picks generation-reliability incident (2026-07-22) — see
+    init_db()'s comment for why this must be its own independently-run,
+    independently-guarded migration rather than a few more lines in
+    SCHEMA_SQL. Adds daily_picks_cache.status ('success' | 'failed_attempt',
+    default 'success') and retroactively corrects any pre-existing row
+    whose payload carries the old failure-path's 'error' key to
+    'failed_attempt' — the actual fix that makes load_picks_from_db()'s
+    WHERE status='success' filter self-healing against data already
+    polluted by the incident, without a separate manual cleanup script.
+    Every statement here is independently idempotent (IF NOT EXISTS /
+    re-runnable UPDATE), so this is safe to call on every startup.
+    """
+    conn.execute("ALTER TABLE daily_picks_cache ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'success'")
+    conn.execute("UPDATE daily_picks_cache SET status = 'failed_attempt' WHERE status = 'success' AND payload ? 'error'")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_picks_cache_market_status ON daily_picks_cache(market, status, generated_at DESC)")
 
 
 def _migrate_outcomes_market_constraint(conn) -> None:
