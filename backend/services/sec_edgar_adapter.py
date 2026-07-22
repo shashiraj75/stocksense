@@ -225,15 +225,64 @@ def _fetch_ticker_map() -> dict[str, int]:
     return mapping
 
 
+# DP-033 readiness audit (2026-07-22) — governed CIK-mapping override,
+# distinct from _FALLBACK_CIK_MAP above (which only activates when the
+# live ticker-map DOWNLOAD fails entirely). This table instead corrects a
+# confirmed WRONG entry the live map itself returns successfully.
+#
+# Confirmed defect: SEC's own bulk ticker map (_TICKER_MAP_URL) currently
+# resolves "XOM" to CIK 2115436 ("ExxonMobil Holdings Corp"), an
+# apparently-empty reorganization/holding entity with an empty `tickers`
+# array in its own SEC submissions record and no meaningful companyfacts
+# data. The real operating company with actual XBRL filing history is CIK
+# 34088 ("EXXON MOBIL CORP"), confirmed live (2026-07-22) via
+# https://data.sec.gov/submissions/CIK0000034088.json returning
+# `"name": "EXXON MOBIL CORP", "tickers": ["XOM"], "exchanges": ["NYSE"]`
+# — an authoritative SEC record naming XOM as its own ticker, not a guess.
+#
+# Governance for any future addition to this table:
+#   1. The override CIK must be independently confirmed via a direct,
+#      documented SEC submissions/companyfacts lookup (as above) — never
+#      added on suspicion alone.
+#   2. The entry must record WHY the live map is wrong (not just that it
+#      "seemed off").
+#   3. It must be covered by a test asserting the override wins over
+#      whatever the live map returns for that ticker.
+#   4. This is a narrow, reviewed correction list — NOT a general silent
+#      fallback mechanism. A ticker with no entry here that the live map
+#      also fails to resolve still correctly returns None (fail-closed),
+#      exactly as before this table existed.
+_CIK_OVERRIDES: dict[str, int] = {
+    # XOM -> 2115436 ("ExxonMobil Holdings Corp", empty tickers array, no
+    # usable XBRL history) is SEC's own live map's current (wrong) answer.
+    # 34088 ("EXXON MOBIL CORP") is the real operating company. See
+    # test_sec_edgar_adapter_cik_resolution.py for the regression test.
+    "XOM": 34088,
+}
+
+
 def resolve_cik(symbol: str) -> Optional[int]:
     """
     Ticker → CIK resolution (Task 2), using a 24-hour-cached copy of SEC's
     own bulk ticker map, with the evidence-based fallback map as a last
     resort. Returns None — never a guessed CIK — if the symbol isn't
     found anywhere, per the "do not fabricate values" rule.
+
+    Resolution order (DP-033 governed hierarchy): (1) this repository has
+    no separate stable instrument-master CIK mapping to consult first —
+    confirmed by search, not assumed; (2) SEC's own live/cached bulk
+    ticker map is the authoritative source; (3) `_CIK_OVERRIDES` — a
+    narrow, evidence-documented, test-covered correction list — takes
+    precedence over the live map's answer ONLY for the specific tickers
+    listed there, applied AFTER the live map lookup so a symbol not in
+    this table is completely unaffected; (4) unresolved -> `None`, logged,
+    never guessed.
     """
     global _ticker_map_cache
     sym = symbol.upper().strip()
+
+    if sym in _CIK_OVERRIDES:
+        return _CIK_OVERRIDES[sym]
 
     with _ticker_map_lock:
         cached = _ticker_map_cache
@@ -271,7 +320,27 @@ def fetch_company_facts(cik: int) -> Optional[dict]:
             if isinstance(payload, dict) and "facts" in payload and "us-gaap" in payload.get("facts", {}):
                 result = payload
             else:
-                log.error("[sec_edgar] companyfacts response for CIK %010d did not match expected shape", cik)
+                # DP-033 readiness audit (2026-07-22): distinguish a
+                # genuinely malformed/unexpected response from a
+                # structurally out-of-scope one — a foreign private issuer
+                # reporting under IFRS (taxonomy "ifrs-full", no "us-gaap"
+                # at all) is not a data-quality defect, it is this
+                # adapter's own documented, governed scope boundary
+                # (confirmed live for TSM/CIK 1046179 this session:
+                # facts.keys() == ['dei', 'ifrs-full', 'srt']). Logged
+                # distinctly so this is auditable/observable, not silently
+                # indistinguishable from a real provider-side break.
+                taxonomies = list(payload.get("facts", {}).keys()) if isinstance(payload, dict) else []
+                if "ifrs-full" in taxonomies and "us-gaap" not in taxonomies:
+                    log.info(
+                        "[sec_edgar] CIK %010d reports under IFRS (ifrs-full), no us-gaap taxonomy "
+                        "— out of scope for this adapter's US-GAAP-only field extraction "
+                        "(foreign private issuer, governed exclusion, not a provider error)",
+                        cik,
+                    )
+                else:
+                    log.error("[sec_edgar] companyfacts response for CIK %010d did not match expected shape "
+                              "(taxonomies present: %s)", cik, taxonomies)
         except ValueError as e:
             log.error("[sec_edgar] companyfacts response for CIK %010d was not valid JSON: %s", cik, e)
     else:
