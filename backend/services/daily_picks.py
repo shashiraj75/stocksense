@@ -277,6 +277,23 @@ _US_DAILY_PICKS_HEURISTIC_FILTERED_SET: frozenset[str] = frozenset(_US_DAILY_PIC
 # limiting factor it was when Render's free tier made 50 the practical ceiling.
 _N_CANDIDATES = int(os.getenv("PICKS_CANDIDATES", 400))
 
+
+def _phase1_chunk_size() -> int:
+    """
+    Phase-1 candidate chunk size: never larger than the SEC facts cache's
+    entry capacity, so within one chunk a symbol's medium/long-horizon
+    predictions always find the companyfacts payload its short-horizon
+    prediction just cached (the 2026-07-23/24 incident's SEC-refetch churn
+    can't recur even if every symbol in the chunk touches a distinct CIK).
+    Reads the adapter's own cap so the two can't silently drift apart;
+    falls back to 25 (the cap's current value) if the import ever fails.
+    """
+    try:
+        from services.sec_edgar_adapter import _FACTS_CACHE_MAX
+        return max(1, int(_FACTS_CACHE_MAX))
+    except Exception:
+        return 25
+
 log.info(
     f"[picks] US heuristic-filtered common-equity universe: {len(_US_DAILY_PICKS_HEURISTIC_FILTERED)} "
     f"of {len(_ALL_US_SYMBOLS)} raw symbols "
@@ -1480,6 +1497,16 @@ def _generate_picks_inner(
     # limit is visible (e.g. local/dev), so this never behaves differently
     # in an environment where thresholds can't be safely evaluated.
     _mem_guard = MemoryCircuitBreaker(market, job_id=job_id)
+    # 2026-07-23/24 incident observability: the July 23 run was already at
+    # ~75% of the container limit BEFORE any Phase 1 work (baseline drift in
+    # the long-lived shared process). Record the starting point every run so
+    # that drift is visible in healthy runs too, and — for the US run, whose
+    # SEC/yfinance-heavy pipeline is the one that actually collides with the
+    # ceiling — start from the lowest achievable baseline by clearing the
+    # safe rebuildable caches and trimming the allocator up front.
+    _mem_guard.observe("run_start")
+    if market == "US":
+        _mem_guard.release_memory("run_start")
 
     # Learning Alpha Engine remediation, Phase 1: containment state is fixed
     # for the whole run — computed once, applied to every horizon below, and
@@ -1564,35 +1591,42 @@ def _generate_picks_inner(
     # No task count to report yet — phase_1 will report 0/total once tasks are built.
     _try_job_progress(job_id, "shortlist_ready", None, None)
 
-    # ── Phase 1: Deep-predict candidates, horizon-bounded ────────────────────
-    # max_workers=1 to avoid Yahoo Finance rate-limiting Render's IP.
+    # ── Phase 1: Deep-predict candidates, chunked candidate-major ────────────
+    # Sequential (no pools/gather) to avoid Yahoo Finance rate-limiting.
     #
-    # 2026-07-22 memory-exhaustion incident (recurring: 07-15, 07-16, 07-17
-    # x2, 07-20/21, 07-22): the 2026-07-21 fix (see below) made the Phase 1
-    # loop itself strictly bounded — at most one task's Future/result alive
-    # at a time — but it still built ALL THREE horizons' full candidate
-    # pools (deep_prediction_candidates x 3, ~1,191 rich result dicts) into
-    # `raw` before Phases 3-6 released each horizon one at a time. The peak
-    # was therefore "all 3 horizons resident, about to release one at a
-    # time" — not "at most 1 horizon resident", the design Phases 3-6
-    # already implement for everything AFTER Phase 1. Confirmed today's
-    # abort (memory_guard, 570/1191, 80.6%) happened mid-Phase-1, before any
-    # release logic below could even run once.
+    # Ordering history — this loop has now been restructured twice, in
+    # opposite directions, and the second time was evidence-driven:
     #
-    # Fix: score each horizon's candidates immediately before that horizon's
-    # own Phases 3-6 (ranking/selection/persistence/release), instead of
-    # scoring all three horizons up front. _predict_stock(symbol, horizon,
-    # market) is a pure function of its three arguments (verified: its only
-    # shared state is the bounded, TTL'd, horizon-keyed _pred_cache/
-    # _regime_cache in prediction_engine.py, which behaves identically
-    # regardless of call order) — the SET of (symbol, horizon) calls and
-    # their arguments is byte-identical to before, only the order changed
-    # from candidate-major to horizon-major, so this cannot change any
-    # score, rank, selection, or published field (see
-    # tests/regression/test_daily_picks_horizon_bounded_memory.py for the
-    # output-equivalence proof). Peak retained Phase-1 pool drops from ~3
-    # horizons' worth (~1,191 rich dicts) to 1 horizon's worth (~397),
-    # roughly a 3x reduction in the single largest driver of peak memory.
+    # - 2026-07-22: reordered candidate-major -> horizon-major so only one
+    #   horizon's result pool (~397 rich dicts) was resident at a time
+    #   instead of all three (~1,191). What that analysis missed: each
+    #   result dict is only ~12 KB (~15 MB for all three horizons — never
+    #   the dominant term), while the reorder made every symbol's SEC
+    #   companyfacts lookup miss the 25-entry _facts_cache (the symbol
+    #   comes around again ~400 tasks later, long since evicted) — tripling
+    #   SEC downloads (4-8 MB JSON text) and parses (15-25 MB of dicts)
+    #   from ~400 to ~1,200 per run.
+    #
+    # - 2026-07-23/24 incident (memory_guard aborts at 240/1188 and
+    #   990/1197, 80% of the 8 GB container): root cause was baseline RSS
+    #   ratchet from allocator fragmentation, which that tripled SEC churn
+    #   feeds directly. Fix: chunked candidate-major — process candidates
+    #   in chunks no larger than the SEC facts-cache capacity, and within a
+    #   chunk run each symbol's three horizons consecutively, so
+    #   companyfacts is fetched at most once per unique symbol per run
+    #   (horizons 2 and 3 hit the warm cache). The three horizons' slim
+    #   result pools are accumulated across chunks (the accepted ~15 MB),
+    #   then Phases 3-6 below run per horizon exactly as before, releasing
+    #   each horizon's pool after its own ranking/persistence completes.
+    #
+    # _predict_stock(symbol, horizon, market) remains a pure function of
+    # its three arguments (its only shared state is the bounded, TTL'd
+    # _pred_cache/_regime_cache in prediction_engine.py, order-independent),
+    # so the SET of (symbol, horizon) calls and their arguments is
+    # byte-identical to both previous orderings — this cannot change any
+    # score, rank, selection, or published field. See
+    # tests/regression/test_daily_picks_horizon_bounded_memory.py and
+    # test_daily_picks_sec_fetch_reuse.py for the executable proofs.
     _phase1_task_total = len(candidates) * 3  # deep_prediction_candidates × 3 horizons
     # Threaded through from _get_universe_by_mcap via _bulk_screen's
     # _selection_meta — lets Phase 5 apply a per-horizon tier rule (tier
@@ -1602,8 +1636,29 @@ def _generate_picks_inner(
 
     _try_job_progress(job_id, "phase_1", 0, _phase1_task_total)
     done = 0  # running total across all three horizons, for truthful phase_1 progress
+    _mem_guard.observe("phase_1_start", candidates=len(candidates), task_total=_phase1_task_total)
 
-    # ── Phases 1+3-6 per horizon ──────────────────────────────────────────────
+    # ── Phase 1: chunked candidate-major scoring (see block comment above) ───
+    # Chunk size is bounded by the SEC facts cache's own capacity so every
+    # symbol's horizons 2/3 are guaranteed a warm-cache window regardless of
+    # how many other symbols' facts the chunk touched in between.
+    _chunk_size = _phase1_chunk_size()
+    _horizon_items: dict[str, list] = {h: [] for h in ("short", "medium", "long")}
+    for _chunk_start in range(0, len(candidates), _chunk_size):
+        for sym in candidates[_chunk_start:_chunk_start + _chunk_size]:
+            for horizon in ("short", "medium", "long"):
+                r = _predict_stock(sym, horizon, market)
+                done += 1
+                if done % 30 == 0:
+                    log.info(f"[picks] [{market}] {done}/{_phase1_task_total} done …")
+                    _mem_guard.check("phase_1", done, _phase1_task_total)
+                if r:
+                    r["cap_tier"] = _tier_map.get(r["symbol"])
+                    _horizon_items[horizon].append(r)
+                _try_job_progress(job_id, "phase_1", done, _phase1_task_total)
+                del r
+
+    # ── Phases 3-6 per horizon ────────────────────────────────────────────────
     picks: dict[str, list] = {}
     alpha_engine_meta: dict[str, dict] = {}  # diagnostics for API
     _issuer_duplicates_suppressed = 0  # suppressed display entries across all horizons
@@ -1616,27 +1671,17 @@ def _generate_picks_inner(
     _portfolio_cash_pct: dict[str, float] = {}
 
     for horizon in ("short", "medium", "long"):
-        # Phase 1 for THIS horizon only — see the 2026-07-22 comment above
-        # the loop. Builds and retains only this horizon's candidate pool
-        # (~397 entries), never all three simultaneously.
-        items: list = []
-        for sym in candidates:
-            r = _predict_stock(sym, horizon, market)
-            done += 1
-            if done % 30 == 0:
-                log.info(f"[picks] [{market}] {done}/{_phase1_task_total} done …")
-                _mem_guard.check("phase_1", done, _phase1_task_total)
-            if r:
-                r["cap_tier"] = _tier_map.get(r["symbol"])
-                items.append(r)
-            _try_job_progress(job_id, "phase_1", done, _phase1_task_total)
-            del r
-        # State: this horizon's Phase-1 prediction tasks done; its own
-        # ranking/selection about to begin. Checked explicitly per horizon
-        # (not just once for the whole run) — this is the exact phase
-        # boundary the 2026-07-21 incident's process was killed at, and the
-        # earliest point it's now possible to reach without first building
-        # every horizon's pool.
+        # This horizon's Phase-1 pool, built by the chunked loop above.
+        # pop() releases the accumulator's own reference, so once this
+        # horizon's Phases 3-6 complete and `items` goes out of scope the
+        # pool is collectable — the same per-horizon release the previous
+        # structure had, just fed from the accumulator instead of scored
+        # inline.
+        items: list = _horizon_items.pop(horizon)
+        # State: this horizon's ranking/selection about to begin. Checked
+        # explicitly per horizon (not just once for the whole run) — this is
+        # the exact phase boundary the 2026-07-21 incident's process was
+        # killed at.
         _try_job_progress(job_id, "ranking", None, None)
         _mem_guard.check("ranking_entry", done, _phase1_task_total)
 
@@ -1947,6 +1992,10 @@ def _generate_picks_inner(
             log.info(f"[picks] [{market}] Saved to Postgres.")
         else:
             log.warning(f"[picks] [{market}] Postgres save returned False — picks not durably persisted.")
+
+    # Log-only memory provenance for the run: peak, ending, whether cleanup
+    # ran, and malloc_trim availability/invocation (2026-07-23/24 incident).
+    _mem_guard.log_summary()
 
     return payload, persisted_at
 

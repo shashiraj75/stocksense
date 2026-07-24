@@ -14,17 +14,18 @@ History:
   Phase 1 pass across ALL THREE horizons before this release loop even
   started, so the true peak (all 3 horizons resident, about to release one
   at a time) was unchanged by that fix.
-- 2026-07-22 US Daily Picks generation-reliability incident (recurring
-  failures 07-15 through 07-22; today's abort happened mid-Phase-1, before
-  the release loop below could run even once): Phase 1 itself became
-  horizon-bounded — each horizon's own candidates are scored, ranked,
-  selected, persisted, and let go out of scope BEFORE the next horizon's
-  Phase 1 scoring even begins. The `raw` dict (and the flat `tasks` list
-  that used to feed it) no longer exist at all — there is nothing to
-  release, because nothing ever holds more than one horizon's pool. This
-  is a strictly stronger guarantee than "release promptly after capture":
-  it removes the multi-horizon accumulation entirely rather than shortening
-  its lifetime.
+- 2026-07-22 US Daily Picks generation-reliability incident: Phase 1
+  became horizon-major so nothing held more than one horizon's pool.
+- 2026-07-23/24 incident: horizon-major ordering was found to have
+  TRIPLED SEC companyfacts download/parse churn (each symbol re-visited
+  ~400 tasks after its facts left the 25-entry cache) — the slim result
+  dicts it economized on are only ~12 KB each (~15 MB for all three
+  horizons), never the dominant memory term. Phase 1 is now chunked
+  candidate-major: the three horizons' slim pools accumulate in
+  `_horizon_items` (the explicit, measured, accepted trade), each popped
+  out and released after its own horizon's Phases 3-6 complete. The old
+  `raw` dict (rich pools built with no release path) and flat `tasks`
+  list must still never return.
 
 `generate_picks()` itself is a large, deeply-integrated function (screener
 calls, regime detection, DB writes, Telegram, multiple external services)
@@ -61,24 +62,24 @@ def test_raw_dict_and_flat_tasks_list_no_longer_exist():
     )
 
 
-def test_each_horizon_builds_its_own_items_list_inside_the_loop():
-    """Each horizon must build a fresh `items` list of its OWN candidates,
-    inside the per-horizon loop — never reading a shared, pre-built,
-    all-horizons structure."""
-    loop_start = _SOURCE.index('for horizon in ("short", "medium", "long"):')
-    tail = _SOURCE[loop_start:loop_start + 800]
-    assert "items: list = []" in tail
-    assert "for sym in candidates:" in tail
-    assert "_predict_stock(sym, horizon, market)" in tail
+def test_each_horizon_takes_ownership_of_its_own_pool_inside_the_loop():
+    """Each horizon's Phases 3-6 iteration must take exclusive ownership of
+    its OWN pool via `_horizon_items.pop(horizon)` — removing the
+    accumulator's reference so the pool is collectable as soon as this
+    iteration's `items` goes out of scope, never leaving a second live
+    reference behind in a structure that outlives the iteration."""
+    phases_idx = _SOURCE.index("Phases 3-6 per horizon")
+    tail = _SOURCE[phases_idx:phases_idx + 2000]
+    assert "items: list = _horizon_items.pop(horizon)" in tail
 
 
 def test_release_happens_before_the_empty_items_early_return():
     # Every horizon, including one with zero candidates, must reach the
     # same `if not items: picks[horizon] = []; continue` early-return path
-    # — the per-horizon items list must be built (however empty) and
+    # — the per-horizon pool must be taken (however empty) and
     # score-snapshotted before that check, for every horizon, every time.
-    loop_idx = _SOURCE.index('for horizon in ("short", "medium", "long"):')
-    idx_items_built = _SOURCE.index("items: list = []", loop_idx)
+    loop_idx = _SOURCE.index("Phases 3-6 per horizon")
+    idx_items_built = _SOURCE.index("items: list = _horizon_items.pop(horizon)", loop_idx)
     idx_snapshot_call = _SOURCE.index("_write_score_snapshots({horizon: items}, market)", loop_idx)
     idx_early_return = _SOURCE.index("if not items:\n            picks[horizon] = []", loop_idx)
     assert idx_items_built < idx_snapshot_call < idx_early_return
@@ -91,17 +92,17 @@ def test_write_score_snapshots_runs_per_horizon_not_for_a_shared_dict():
     assert "_write_score_snapshots({horizon: items}, market)" in _SOURCE
 
 
-def test_only_one_horizons_items_list_can_be_alive_at_a_time():
-    """`items` is declared fresh (`items: list = []`) at the top of every
-    iteration of the per-horizon loop and never assigned into any
-    structure that survives past that iteration (`picks[horizon]` stores
-    only the small top-6 published slice via `top_buy`, not `items`
-    itself) — so by construction at most one horizon's full candidate pool
-    can be reachable at any point during Phase 1 + ranking."""
-    loop_idx = _SOURCE.index('for horizon in ("short", "medium", "long"):')
+def test_horizon_pool_is_never_reassigned_into_a_surviving_structure():
+    """Once a horizon's pool is popped as `items`, it must never be
+    assigned back into any structure that survives the iteration
+    (`picks[horizon]` stores only the small top-6 published slice via
+    `top_buy`, not `items` itself) — so each horizon's full pool is
+    collectable as soon as its own Phases 3-6 complete, and the peak
+    multi-horizon retention is exactly the accumulator the Phase-1 loop
+    deliberately builds, never that plus stragglers."""
+    loop_idx = _SOURCE.index("Phases 3-6 per horizon")
     loop_body = _SOURCE[loop_idx:]
-    # `items` must never be assigned to a dict/list keyed or indexed by
-    # horizon (which would let it outlive one iteration) — e.g. no
-    # `all_items[horizon] = items` or `items_by_horizon.append(items)`.
     assert not re.search(r"\bitems_by_horizon\b", loop_body)
     assert not re.search(r"\[\s*horizon\s*\]\s*=\s*items\b", loop_body)
+    # And nothing may re-add to the accumulator after Phase 1 hands pools over.
+    assert "_horizon_items[" not in loop_body
