@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/utils/api";
+import { resolveActiveJobView } from "@/utils/validationJobView";
 import { DataLimitationsNotice } from "@/components/DataLimitationsNotice";
 import {
   FlaskConical, TrendingUp, TrendingDown, Target, Zap,
@@ -62,12 +63,31 @@ type StockResult = {
   buy_signal_count: number;
 };
 
+type ValidationJob = {
+  job_id: string;
+  market: string;
+  universe_id: string;
+  universe_version?: string;
+  benchmark?: string;
+  horizon: string;
+  status: string;
+  processed?: number;
+  total?: number;
+  current_symbol?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+};
+
 type RunStatus = {
   running: boolean;
   progress: number;
   total: number;
   started_at: string | null;
   log: string[];
+  // Immutable identity of the active (or last) run — the backend binds every
+  // job to exactly one market/universe/horizon so a US run can never be
+  // rendered as a Nifty 100 run (validation job-identity fix, 2026-07).
+  job?: ValidationJob | null;
 };
 
 const HORIZONS = [
@@ -185,6 +205,17 @@ export default function ValidationPage() {
   const benchmarkName = universe === "us" ? "S&P 500" : "Nifty";
   const universeLabel = UNIVERSES.find(u => u.key === universe)?.label ?? universe;
 
+  // Selected view vs active running job: only render live progress under this
+  // tab when the active job's identity actually matches the selection. A job
+  // from another universe/horizon gets an explicit banner instead — never
+  // relabeled as the selected view. Decision logic lives in
+  // utils/validationJobView.ts (single decision point, directly unit-tested).
+  const { showProgressForView, foreignJob } = resolveActiveJobView(status, universe, horizon);
+  const jobMatchesView = showProgressForView && status?.job != null;
+  const foreignJobLabel = foreignJob
+    ? `${UNIVERSES.find(u => u.key === foreignJob.universe_id)?.label ?? foreignJob.universe_id} · ${foreignJob.horizon}`
+    : null;
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -260,7 +291,9 @@ export default function ValidationPage() {
             className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-sm font-semibold transition-colors ml-auto"
           >
             {isRunning
-              ? <><Loader2 size={14} className="animate-spin" /> Running… {status?.progress}/{status?.total}</>
+              ? (showProgressForView
+                  ? <><Loader2 size={14} className="animate-spin" /> Running… {status?.progress}/{status?.total}</>
+                  : <><Loader2 size={14} className="animate-spin" /> Another validation is running</>)
               : <><Play size={14} /> Run Now ({universeLabel} · {horizon})</>
             }
           </button>
@@ -271,19 +304,35 @@ export default function ValidationPage() {
           Use "Run Now" to trigger on-demand — ~15 min for medium, ~25 min for long.
         </p>
 
-        {/* Live log */}
-        {(isRunning || (status?.log?.length ?? 0) > 0) && (
+        {/* Active job from another universe/horizon — never rendered as this view's run */}
+        {foreignJob && (
+          <div
+            data-testid="foreign-job-banner"
+            className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-3 flex items-start gap-2 text-sm text-blue-300"
+          >
+            <AlertCircle size={16} className="mt-0.5 shrink-0" />
+            <span>
+              A <strong>{foreignJobLabel}</strong> validation is currently running
+              ({foreignJob.processed ?? status?.progress}/{foreignJob.total ?? status?.total}).
+              You are viewing <strong>{universeLabel} · {horizon}</strong> — results below are from
+              the last completed run for this view.
+            </span>
+          </div>
+        )}
+
+        {/* Live log — only for a run that belongs to the selected view */}
+        {(showProgressForView || (!isRunning && (status?.log?.length ?? 0) > 0 && (status?.job == null || jobMatchesView))) && (
           <div className="bg-black/40 rounded-lg p-3 max-h-36 overflow-y-auto font-mono text-xs text-gray-400 space-y-0.5">
             {(status?.log ?? []).slice(-20).map((line, i) => (
               <div key={i} className={line.startsWith("✅") ? "text-green-400" : line.startsWith("❌") ? "text-red-400" : ""}>{line}</div>
             ))}
-            {isRunning && <div className="text-purple-400 animate-pulse">▋</div>}
+            {showProgressForView && <div className="text-purple-400 animate-pulse">▋</div>}
           </div>
         )}
       </div>
 
-      {/* No results yet */}
-      {!res && !resultsLoading && !isRunning && (
+      {/* No results yet — a foreign-universe run doesn't suppress this view's empty state */}
+      {!res && !resultsLoading && !showProgressForView && (
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <BarChart3 size={40} className="text-gray-600 mb-4" />
           <h3 className="text-lg font-semibold text-gray-300 mb-2">No validation results yet for {horizon} horizon · {universeLabel}</h3>
