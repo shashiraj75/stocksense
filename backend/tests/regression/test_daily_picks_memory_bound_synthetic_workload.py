@@ -8,13 +8,19 @@ test's wall-clock time reasonable; the peak-vs-horizon-count relationship
 being proven does not depend on the absolute candidate count) synthetic
 pipeline through
 _generate_picks_inner with _predict_stock mocked to return payloads
-carrying non-trivial `reasoning`/`summary`/`global_context` text (the
-fields the original incident's investigation identified as the largest
-per-candidate retained content), and gc-tracks the peak number of these
-synthetic result objects simultaneously reachable at any point during the
-run. Proves the horizon-bounded restructuring's core claim empirically,
-not just structurally: at most ~1 horizon's worth of rich candidate
-objects is ever alive at once, never ~3 horizons' worth.
+carrying non-trivial `reasoning`/`summary`/`global_context` text, and
+gc-tracks the peak number of these synthetic result objects simultaneously
+reachable at any point during the run.
+
+2026-07-23/24 incident update: the chunked candidate-major Phase 1
+deliberately accumulates all three horizons' slim result pools (~12 KB
+each, ~15 MB total in production — measured never to be the dominant
+memory term; the dominant term was the 3x SEC companyfacts churn the old
+horizon-major ordering caused). The empirically-proven bound is therefore:
+peak reachable result objects never exceeds ~3 x candidates (no hidden
+duplication of pools by ranking/persistence), and pools are actually
+RELEASED per horizon as Phases 3-6 complete (peak does not grow to 3 x
+candidates PLUS retained copies), and nothing accumulates across runs.
 """
 import gc
 from unittest.mock import MagicMock, patch
@@ -37,7 +43,7 @@ class _TrackedResult(dict):
     pass
 
 
-def test_peak_tracked_result_count_stays_near_one_horizon_not_three():
+def test_peak_tracked_result_count_bounded_by_three_slim_pools_no_duplication():
     import services.daily_picks as dp
 
     n_candidates = 60
@@ -87,26 +93,21 @@ def test_peak_tracked_result_count_stays_near_one_horizon_not_three():
         except Exception:
             pass  # only the peak live-object count matters for this test
 
-    # Under the OLD design, Phase 1 built all 3 horizons' pools before any
-    # release — peak would approach 3 x n_candidates (~1,200). Under the
-    # fix, at most one horizon's pool (plus whatever the ranking step for
-    # that horizon transiently retains, e.g. `universe`/`ranked` — a few
-    # extra references to the SAME objects, not new ones) should ever be
-    # simultaneously alive. Assert peak stays well under 2 horizons' worth
-    # — a generous bound that still clearly distinguishes "bounded to ~1
-    # horizon" from "grew to ~3 horizons".
-    two_horizons = 2 * n_candidates
-    assert peak_alive["count"] < two_horizons, (
+    # 2026-07-23/24 contract: the chunked candidate-major Phase 1 retains
+    # all three horizons' slim pools by design (3 x n_candidates), and the
+    # ranking step for one horizon only adds references to the SAME objects
+    # (`universe`/`ranked`), never copies. Peak must therefore stay at
+    # ~3 x n_candidates with only a small transient margin — anything
+    # approaching 4x would mean a horizon's pool was duplicated or retained
+    # past its own Phases 3-6, the exact regression this test exists to
+    # catch. (The peak is sampled inside fake_predict, so it directly
+    # observes the accumulator at its fullest — end of Phase 1.)
+    three_horizons = 3 * n_candidates
+    assert peak_alive["count"] <= three_horizons + 20, (
         f"peak simultaneously-alive rich candidate objects was "
-        f"{peak_alive['count']}, expected well under {two_horizons} "
-        f"(2 horizons' worth) — the horizon-bounded fix should keep this "
-        f"near {n_candidates} (1 horizon's worth)"
-    )
-    # And a tighter, positive assertion: peak should be close to one
-    # horizon's worth, not some intermediate accumulation.
-    assert peak_alive["count"] <= n_candidates + 50, (
-        f"peak {peak_alive['count']} exceeds one horizon's worth "
-        f"({n_candidates}) by more than a small transient margin"
+        f"{peak_alive['count']}, expected at most ~{three_horizons} "
+        f"(3 slim horizon pools) plus a small transient margin — a horizon "
+        f"pool is being duplicated or retained past its release point"
     )
 
 

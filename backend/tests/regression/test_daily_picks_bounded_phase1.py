@@ -10,17 +10,21 @@ History:
   horizons at once — bounded WITHIN Phase 1, but Phase 1 itself still built
   and held all 3 horizons' full candidate pools (raw, ~1,191 rich dicts)
   before Phases 3-6 released one horizon at a time.
-- 2026-07-22 US Daily Picks generation-reliability incident (recurring
-  failures 07-15 through 07-22, root-caused to this exact gap: today's
-  abort happened mid-Phase-1, before any per-horizon release logic could
-  run even once): Phase 1 itself is now horizon-bounded — each horizon's
-  candidates are scored, ranked, selected, persisted, and released BEFORE
-  the next horizon's Phase 1 scoring even begins. The `tasks`/`raw`
-  variables (a flat list of all 1,191 (symbol, horizon) pairs, and a dict
-  holding all three horizons' full result lists) no longer exist at all;
-  each horizon builds its own `items` list, used, and let go out of scope,
-  inside the same per-horizon loop that already ran Phases 3-6. Peak
-  retained Phase-1 memory drops from ~3 horizons' worth to 1.
+- 2026-07-22 US Daily Picks generation-reliability incident: Phase 1 was
+  made horizon-major so only one horizon's result pool was resident at a
+  time.
+- 2026-07-23/24 incident: the horizon-major ordering was found to have
+  tripled SEC companyfacts download/parse churn (each symbol re-visited
+  ~400 tasks after its facts were evicted from the 25-entry cache),
+  feeding the allocator-fragmentation RSS ratchet that aborted both runs.
+  Phase 1 is now CHUNKED CANDIDATE-MAJOR: candidates are processed in
+  chunks no larger than the SEC facts-cache capacity, each symbol's three
+  horizons run consecutively (facts fetched once per symbol, warm for
+  horizons 2/3), and the three horizons' slim result pools (~12 KB each,
+  ~15 MB total — measured never to be the dominant memory term) accumulate
+  across chunks before Phases 3-6 run per horizon exactly as before,
+  releasing each pool after its horizon's ranking/persistence completes.
+  Still strictly sequential — no pools, no gather, no futures.
 
 Deterministic — source-inspection tests are used for the parts of
 _generate_picks_inner that (like its ranking body) aren't practically
@@ -43,15 +47,16 @@ def test_phase1_does_not_submit_all_tasks_upfront():
 def test_phase1_uses_a_plain_sequential_loop_not_threadpoolexecutor():
     """max_workers=1 never provided real concurrency; ThreadPoolExecutor
     must not be used for Phase 1 — a bounded sequential loop replaces it,
-    so at most one task's Future/result can ever be alive. 2026-07-22: the
-    loop is now `for sym in candidates:` inside the per-horizon loop, not
-    `for sym, h in tasks:` over a flat pre-built list of all three
-    horizons' tasks."""
+    so at most one task's Future/result can ever be alive. 2026-07-23/24:
+    the loop is chunked candidate-major — an outer chunk loop, a symbol
+    loop over the chunk's slice, and an innermost consecutive-horizons
+    loop."""
     from services.daily_picks import _generate_picks_inner
     src = inspect.getsource(_generate_picks_inner)
     assert "ThreadPoolExecutor(" not in src
     assert "as_completed(" not in src
-    assert "for sym in candidates:" in src
+    assert "asyncio.gather(" not in src
+    assert "for sym in candidates[_chunk_start:_chunk_start + _chunk_size]:" in src
     assert "r = _predict_stock(sym, horizon, market)" in src
 
 
@@ -66,45 +71,46 @@ def test_threadpoolexecutor_import_removed_module_wide():
 
 
 def test_phase1_no_flat_all_horizons_task_list_or_raw_dict():
-    """2026-07-22: the flat `tasks = [(sym, h) for sym in candidates for h
-    in (...)]` list and the `raw: dict[str, list] = {"short": [], ...}`
-    dict — which together caused Phase 1 to build and hold all three
-    horizons' full candidate pools before any per-horizon release could
-    run — must not exist any more. Each horizon builds its own `items`
-    list, used immediately, never assembled into a dict spanning multiple
-    horizons."""
+    """The flat `tasks = [(sym, h) for sym in candidates for h in (...)]`
+    list and the `raw: dict[str, list] = {"short": [], ...}` dict must not
+    return. 2026-07-23/24: the chunked candidate-major loop accumulates
+    into `_horizon_items` (slim ~12 KB result dicts only — an explicit,
+    measured, accepted ~15 MB trade documented at the loop), and each
+    horizon's pool is popped out and released after that horizon's own
+    Phases 3-6."""
     from services.daily_picks import _generate_picks_inner
     src = inspect.getsource(_generate_picks_inner)
     assert 'tasks = [(sym, h) for sym in candidates for h in' not in src
     assert 'raw: dict[str, list] = {"short": [], "medium": [], "long": []}' not in src
-    assert "items: list = []" in src
+    assert "_horizon_items: dict[str, list]" in src
+    assert "items: list = _horizon_items.pop(horizon)" in src
 
 
 def test_phase1_result_reference_is_dropped_immediately_each_iteration():
     """Each iteration's local `r` must be explicitly released before moving
     to the next task — nothing should accumulate a growing set of retained
-    per-task result objects across the loop."""
+    per-task result objects across the loop (beyond the slim accepted
+    _horizon_items accumulator itself)."""
     from services.daily_picks import _generate_picks_inner
     src = inspect.getsource(_generate_picks_inner)
-    loop_idx = src.index("for sym in candidates:")
+    loop_idx = src.index("for sym in candidates[_chunk_start:")
     del_idx = src.index("del r", loop_idx)
     next_stage_idx = src.index('_try_job_progress(job_id, "ranking"', loop_idx)
     assert loop_idx < del_idx < next_stage_idx
 
 
 def test_phase1_call_order_and_arguments_to_predict_stock_unchanged():
-    """The fix must not change WHAT gets predicted — only when/how results
-    are retained. _predict_stock is still called with the same three
-    positional args, symbol-major within each horizon (candidates iterated
-    in the same order for every horizon); only the horizon-outer/symbol-
-    inner nesting is new, which cannot change the SET of (symbol, horizon)
-    calls or their individual arguments — see
+    """The fix must not change WHAT gets predicted — only the order results
+    are computed and how long provider payloads stay cached.
+    _predict_stock is still called with the same three positional args;
+    the chunked candidate-major nesting cannot change the SET of
+    (symbol, horizon) calls or their individual arguments — see
     test_daily_picks_horizon_bounded_memory.py for the full output-
     equivalence proof."""
     from services.daily_picks import _generate_picks_inner
     src = inspect.getsource(_generate_picks_inner)
     assert 'for horizon in ("short", "medium", "long"):' in src
-    assert "for sym in candidates:" in src
+    assert "for sym in candidates[_chunk_start:_chunk_start + _chunk_size]:" in src
     assert "_predict_stock(sym, horizon, market)" in src
 
 
