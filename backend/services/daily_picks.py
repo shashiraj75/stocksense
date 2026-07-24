@@ -1507,6 +1507,13 @@ def _generate_picks_inner(
     _mem_guard.observe("run_start")
     if market == "US":
         _mem_guard.release_memory("run_start")
+        # Fail fast if cleanup couldn't bring the container back under the
+        # abort threshold: without this, the next threshold evaluation is
+        # check() at Phase-1 task 30 — i.e. 30 expensive prediction tasks
+        # executed by a process already past its abort limit. Abort-only
+        # (never re-runs the cleanup that just executed); no-op when no
+        # container limit is visible.
+        _mem_guard.enforce_abort_threshold("run_start_post_cleanup")
 
     # Learning Alpha Engine remediation, Phase 1: containment state is fixed
     # for the whole run — computed once, applied to every horizon below, and

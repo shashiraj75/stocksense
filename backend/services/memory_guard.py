@@ -276,6 +276,7 @@ class MemoryCircuitBreaker:
         self.cleanup_invoked = False
         self.malloc_trim_available = False
         self.malloc_trim_invoked = False
+        self._abort_summary_logged = False
 
     def _read(self) -> tuple[int | None, int | None]:
         used, limit = self._reader()
@@ -341,6 +342,60 @@ class MemoryCircuitBreaker:
             log.warning(f"[memory_guard] release_memory failed (non-fatal): {e}")
         return summary
 
+    def _log_abort_summary(self, stage: str, processed=None, total=None) -> None:
+        """Best-effort memory summary at the moment of a controlled abort —
+        memory failures are the main reason this observability exists, so
+        the summary must not be skipped just because the run is about to
+        raise. Logged at most once per run; never raises (a logging failure
+        must never suppress or replace the DailyPicksMemoryLimitError the
+        caller is about to raise); never clears caches, collects, trims, or
+        touches job/payload state."""
+        if self._abort_summary_logged:
+            return
+        try:
+            log.info(
+                f"[memory_guard] [{self.market}] abort summary at stage={stage}: "
+                f"peak_used={self.peak_used} ending_used={self.last_used} "
+                f"limit={self.limit} cleanup_invoked={self.cleanup_invoked} "
+                f"malloc_trim_available={self.malloc_trim_available} "
+                f"malloc_trim_invoked={self.malloc_trim_invoked} "
+                f"job_id={self.job_id} processed={processed} total={total}"
+            )
+            self._abort_summary_logged = True
+        except Exception:
+            pass
+
+    def enforce_abort_threshold(self, stage: str, processed=None, total=None) -> None:
+        """
+        Abort-ONLY threshold enforcement — no warning tier, no cleanup tier,
+        no cache clearing, no gc, no trim. Exists for the boundary right
+        after the US run-start cleanup: if safe-cache clearing + gc +
+        malloc_trim could not bring usage back under the abort threshold,
+        the run must fail fast HERE — before universe screening, Phase 1
+        construction, or a single _predict_stock call — instead of burning
+        ~30 expensive prediction tasks before check()'s next evaluation.
+        check() is deliberately not reused for this: between 72% and 80% it
+        would re-run the full cleanup tier that just executed.
+
+        No-op when no reliable container-wide limit is visible, exactly
+        like check().
+        """
+        used, limit = self._read()
+        if used is None or limit is None or limit <= 0:
+            return
+        pct = 100.0 * used / limit
+        if pct >= self.abort_pct:
+            log.error(
+                f"[memory_guard] [{self.market}] ABORT threshold still exceeded "
+                f"after cleanup: {pct:.1f}% ({used}/{limit} bytes) at stage={stage} "
+                f"job_id={self.job_id} processed={processed} total={total}"
+            )
+            self._log_abort_summary(stage, processed=processed, total=total)
+            raise DailyPicksMemoryLimitError(
+                f"memory usage {pct:.1f}% >= abort threshold {self.abort_pct:.0f}% "
+                f"at phase={stage} processed={processed} total={total}"
+            )
+
     def log_summary(self, stage: str = "run_end") -> None:
         """Log peak/ending memory and cleanup/trim provenance for the run.
         Log-only observability — never raises, never persists."""
@@ -372,6 +427,7 @@ class MemoryCircuitBreaker:
                 f"{pct:.1f}% ({used}/{limit} bytes) at phase={phase} "
                 f"processed={processed} total={total}"
             )
+            self._log_abort_summary(phase, processed=processed, total=total)
             raise DailyPicksMemoryLimitError(
                 f"memory usage {pct:.1f}% >= abort threshold {self.abort_pct:.0f}% "
                 f"at phase={phase} processed={processed} total={total}"

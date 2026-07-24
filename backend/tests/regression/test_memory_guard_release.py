@@ -195,6 +195,102 @@ def test_one_failing_clearer_does_not_stop_the_others():
     assert calls == ["good"]
 
 
+# ── Pre-merge hardening (PR #20 review): abort-only enforcement and the
+# abort-path memory summary ──────────────────────────────────────────────
+
+
+def test_enforce_abort_threshold_raises_at_81_without_any_cleanup():
+    from services.memory_guard import MemoryCircuitBreaker, DailyPicksMemoryLimitError
+
+    breaker = MemoryCircuitBreaker("US", job_id="job-x", reader=_fake_reader(81))
+    with patch("services.memory_guard.clear_safe_caches") as mock_clear, \
+         patch("services.memory_guard.gc") as mock_gc, \
+         patch("services.memory_guard.malloc_trim") as mock_trim:
+        with pytest.raises(DailyPicksMemoryLimitError) as exc_info:
+            breaker.enforce_abort_threshold("run_start_post_cleanup")
+    # Abort-only: absolutely no cleanup machinery on this path.
+    mock_clear.assert_not_called()
+    mock_gc.collect.assert_not_called()
+    mock_trim.assert_not_called()
+    # Same bounded error category/message shape as check()'s abort.
+    msg = str(exc_info.value)
+    assert "81.0%" in msg and "abort threshold 80%" in msg
+    assert "run_start_post_cleanup" in msg
+    # Observability updated by the read.
+    assert breaker.peak_used == 81 and breaker.last_used == 81 and breaker.limit == 100
+
+
+def test_enforce_abort_threshold_is_silent_at_79_and_never_cleans():
+    """Between the cleanup (72%) and abort (80%) thresholds the abort-only
+    check must do nothing — in particular it must NOT re-run the cleanup
+    tier that just executed at run start."""
+    from services.memory_guard import MemoryCircuitBreaker
+
+    breaker = MemoryCircuitBreaker("US", reader=_fake_reader(79))
+    with patch("services.memory_guard.clear_safe_caches") as mock_clear, \
+         patch("services.memory_guard.gc") as mock_gc, \
+         patch("services.memory_guard.malloc_trim") as mock_trim:
+        breaker.enforce_abort_threshold("run_start_post_cleanup")  # no raise
+    mock_clear.assert_not_called()
+    mock_gc.collect.assert_not_called()
+    mock_trim.assert_not_called()
+
+
+def test_enforce_abort_threshold_is_a_no_op_without_a_visible_limit():
+    from services.memory_guard import MemoryCircuitBreaker
+
+    breaker = MemoryCircuitBreaker("US", reader=lambda: (500_000_000, None))
+    breaker.enforce_abort_threshold("run_start_post_cleanup")  # must not raise
+    breaker2 = MemoryCircuitBreaker("US", reader=lambda: (None, None))
+    breaker2.enforce_abort_threshold("run_start_post_cleanup")  # must not raise
+
+
+def test_abort_summary_logged_exactly_once_before_exception_escapes():
+    from services.memory_guard import MemoryCircuitBreaker, DailyPicksMemoryLimitError
+
+    breaker = MemoryCircuitBreaker("US", job_id="job-y", reader=_fake_reader(81))
+    with patch("services.memory_guard.log") as mock_log:
+        with pytest.raises(DailyPicksMemoryLimitError):
+            breaker.check("phase_1", 240, 1188)
+    summary_lines = [
+        c for c in mock_log.info.call_args_list if "abort summary" in str(c)
+    ]
+    assert len(summary_lines) == 1
+    text = str(summary_lines[0])
+    for fragment in ("peak_used=81", "ending_used=81", "limit=100",
+                     "cleanup_invoked=False", "malloc_trim_available=False",
+                     "malloc_trim_invoked=False", "job_id=job-y",
+                     "processed=240", "total=1188", "phase_1"):
+        assert fragment in text, f"abort summary missing {fragment}: {text}"
+
+
+def test_abort_summary_logging_failure_never_suppresses_the_abort_error():
+    from services.memory_guard import MemoryCircuitBreaker, DailyPicksMemoryLimitError
+
+    breaker = MemoryCircuitBreaker("US", reader=_fake_reader(81))
+    with patch("services.memory_guard.log") as mock_log:
+        mock_log.info.side_effect = RuntimeError("logging backend down")
+        with pytest.raises(DailyPicksMemoryLimitError) as exc_info:
+            breaker.check("phase_1", 240, 1188)
+    # Original bounded message preserved, not replaced by the logging error.
+    assert "81.0%" in str(exc_info.value)
+    assert "logging backend down" not in str(exc_info.value)
+
+
+def test_abort_path_never_invokes_cleanup_machinery():
+    from services.memory_guard import MemoryCircuitBreaker, DailyPicksMemoryLimitError
+
+    breaker = MemoryCircuitBreaker("US", reader=_fake_reader(81))
+    with patch("services.memory_guard.clear_safe_caches") as mock_clear, \
+         patch("services.memory_guard.gc") as mock_gc, \
+         patch("services.memory_guard.malloc_trim") as mock_trim:
+        with pytest.raises(DailyPicksMemoryLimitError):
+            breaker.check("phase_1", 990, 1197)
+    mock_clear.assert_not_called()
+    mock_gc.collect.assert_not_called()
+    mock_trim.assert_not_called()
+
+
 def test_hardened_evictors_survive_concurrent_clear_race():
     """The lock-less allowlisted caches' evictors must tolerate the cache
     being emptied between their len() check and min() eviction — the exact
