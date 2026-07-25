@@ -6,6 +6,7 @@ import type { Market } from "@/utils/api";
 import {
   MarketLeadershipContext as LeadershipContextData,
   getValidLeadershipContext,
+  isMarketLeadershipUiEnabled,
 } from "@/utils/marketLeadership";
 
 // Market Leadership and Trend Context Layer — experimental, shadow-only
@@ -14,6 +15,16 @@ import {
 // and MARKET_LEADERSHIP_ENGINE_ENABLED — both default OFF). Never implies a
 // BUY/HOLD/SELL recommendation: RS/Trend/Breadth are informational context
 // only, always shown with a permanent "Experimental" label per Section 14.
+//
+// Three independent gates must all permit operation for any visible UI or
+// even a browser request: this frontend's own NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED
+// (checked below via isMarketLeadershipUiEnabled(), gating the query itself
+// so a disabled frontend never calls the API at all — found and fixed
+// during a pre-publication audit: previously useQuery() always ran,
+// issuing a browser request even with both backend flags off), plus the
+// two backend gates (MARKET_LEADERSHIP_ENGINE_ENABLED,
+// MARKET_LEADERSHIP_UI_ENABLED), which remain the authoritative source of
+// truth for whether real data may ever be returned.
 
 const TREND_LABEL: Record<string, string> = {
   BASE_FORMING: "Base Forming",
@@ -39,6 +50,10 @@ function RsTrendIcon({ trend }: { trend: string }) {
 }
 
 export function MarketLeadershipContext({ symbol, market }: { symbol: string; market: Market }) {
+  // Hooks are never called conditionally — the gate lives inside
+  // useQuery's own `enabled` option, not around the hook call itself.
+  const frontendGateOpen = isMarketLeadershipUiEnabled();
+
   const { data, isLoading } = useQuery<LeadershipContextData>({
     queryKey: ["leadership-context", symbol, market],
     queryFn: () =>
@@ -48,8 +63,10 @@ export function MarketLeadershipContext({ symbol, market }: { symbol: string; ma
         .catch(() => ({ status: "error" }) as LeadershipContextData),
     staleTime: 5 * 60 * 1000,
     retry: false,
+    enabled: frontendGateOpen,
   });
 
+  if (!frontendGateOpen) return null;
   if (isLoading) return null;
   const ctx = getValidLeadershipContext(data);
   if (!ctx || !ctx.rs || !ctx.trend || !ctx.why_now) return null;

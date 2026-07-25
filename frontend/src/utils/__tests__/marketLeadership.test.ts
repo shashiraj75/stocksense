@@ -1,5 +1,9 @@
-import { describe, it, expect } from "vitest";
-import { getValidLeadershipContext, MarketLeadershipContext } from "@/utils/marketLeadership";
+import { describe, it, expect, afterEach } from "vitest";
+import {
+  getValidLeadershipContext,
+  isMarketLeadershipUiEnabled,
+  MarketLeadershipContext,
+} from "@/utils/marketLeadership";
 
 function ok(overrides: Partial<MarketLeadershipContext> = {}): MarketLeadershipContext {
   return {
@@ -52,5 +56,52 @@ describe("getValidLeadershipContext — single decision point", () => {
     const data = ok();
     delete (data as any).market;
     expect(getValidLeadershipContext(data)).toBeNull();
+  });
+});
+
+describe("isMarketLeadershipUiEnabled — fail-closed frontend presentation gate", () => {
+  const ORIGINAL = process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED;
+
+  afterEach(() => {
+    if (ORIGINAL === undefined) {
+      delete process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED;
+    } else {
+      process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED = ORIGINAL;
+    }
+  });
+
+  it("is false when the variable is absent", () => {
+    delete process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED;
+    expect(isMarketLeadershipUiEnabled()).toBe(false);
+  });
+
+  it("is false for an empty string", () => {
+    process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED = "";
+    expect(isMarketLeadershipUiEnabled()).toBe(false);
+  });
+
+  it('is false for "0"', () => {
+    process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED = "0";
+    expect(isMarketLeadershipUiEnabled()).toBe(false);
+  });
+
+  it('is false for "true" (only the literal "1" enables it)', () => {
+    process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED = "true";
+    expect(isMarketLeadershipUiEnabled()).toBe(false);
+  });
+
+  it("is false for malformed/arbitrary text", () => {
+    process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED = "yes-please-enable";
+    expect(isMarketLeadershipUiEnabled()).toBe(false);
+  });
+
+  it('is false for "1 " (trailing whitespace) — exact match only, no trimming', () => {
+    process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED = "1 ";
+    expect(isMarketLeadershipUiEnabled()).toBe(false);
+  });
+
+  it('is true only for the exact string "1"', () => {
+    process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED = "1";
+    expect(isMarketLeadershipUiEnabled()).toBe(true);
   });
 });

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, cleanup } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -15,9 +15,29 @@ function renderWithClient(ui: React.ReactElement) {
   return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
 }
 
+const ORIGINAL_UI_FLAG = process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED;
+
+function restoreUiFlag() {
+  if (ORIGINAL_UI_FLAG === undefined) {
+    delete process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED;
+  } else {
+    process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED = ORIGINAL_UI_FLAG;
+  }
+}
+
+// Every test in the main describe block below exercises BACKEND-gated
+// behavior (disabled response, market mismatch, rendered content, etc.) —
+// those all require the frontend presentation gate itself to be open, so
+// it's enabled by default here and the frontend-gate tests (further down)
+// explicitly override it per case.
+beforeEach(() => {
+  process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED = "1";
+});
+
 afterEach(() => {
   cleanup();
   mockGet.mockReset();
+  restoreUiFlag();
 });
 
 const OK_RESPONSE = {
@@ -40,7 +60,14 @@ const OK_RESPONSE = {
   },
 };
 
-describe("MarketLeadershipContext", () => {
+const OK_RESPONSE_US = {
+  ...OK_RESPONSE,
+  market: "US",
+  symbol: "AAPL",
+  rs: { ...OK_RESPONSE.rs, market: "US", symbol: "AAPL" },
+};
+
+describe("MarketLeadershipContext (frontend gate enabled — backend-gated behavior)", () => {
   it("renders nothing when the backend returns disabled", async () => {
     mockGet.mockResolvedValue({ data: { status: "disabled" } });
     renderWithClient(<MarketLeadershipContext symbol="TCS" market="IN" />);
@@ -78,6 +105,20 @@ describe("MarketLeadershipContext", () => {
     expect(screen.queryByTestId("market-leadership-context")).toBeNull();
   });
 
+  it("renders correctly for a valid IN result", async () => {
+    mockGet.mockResolvedValue({ data: OK_RESPONSE });
+    renderWithClient(<MarketLeadershipContext symbol="TCS" market="IN" />);
+    await waitFor(() => expect(screen.getByTestId("market-leadership-context")).toBeTruthy());
+    expect(screen.getByText("Experimental")).toBeTruthy();
+  });
+
+  it("renders correctly for a valid US result", async () => {
+    mockGet.mockResolvedValue({ data: OK_RESPONSE_US });
+    renderWithClient(<MarketLeadershipContext symbol="AAPL" market="US" />);
+    await waitFor(() => expect(screen.getByTestId("market-leadership-context")).toBeTruthy());
+    expect(screen.getByText("Experimental")).toBeTruthy();
+  });
+
   it("requests the exact symbol and market via the API", async () => {
     mockGet.mockResolvedValue({ data: { status: "disabled" } });
     renderWithClient(<MarketLeadershipContext symbol="AAPL" market="US" />);
@@ -99,5 +140,94 @@ describe("MarketLeadershipContext", () => {
     // No standalone recommendation badge (e.g. a bare "BUY" pill) exists.
     expect(screen.queryByText(/^BUY$/)).toBeNull();
     expect(screen.queryByText(/^SELL$/)).toBeNull();
+  });
+});
+
+describe("MarketLeadershipContext — frontend presentation gate (pre-publication audit fix)", () => {
+  // This block deliberately overrides the module-level beforeEach's
+  // NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED="1" default per case, since
+  // the whole point here is exercising the gate itself.
+
+  it("issues zero API calls when the flag is absent", async () => {
+    delete process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED;
+    mockGet.mockResolvedValue({ data: OK_RESPONSE });
+    renderWithClient(<MarketLeadershipContext symbol="TCS" market="IN" />);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mockGet).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("market-leadership-context")).toBeNull();
+  });
+
+  it('issues zero API calls when the flag is "0"', async () => {
+    process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED = "0";
+    mockGet.mockResolvedValue({ data: OK_RESPONSE });
+    renderWithClient(<MarketLeadershipContext symbol="TCS" market="IN" />);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mockGet).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("market-leadership-context")).toBeNull();
+  });
+
+  it('issues zero API calls when the flag is "true"', async () => {
+    process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED = "true";
+    mockGet.mockResolvedValue({ data: OK_RESPONSE });
+    renderWithClient(<MarketLeadershipContext symbol="TCS" market="IN" />);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mockGet).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("market-leadership-context")).toBeNull();
+  });
+
+  it("issues zero API calls for malformed flag text", async () => {
+    process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED = "enabled-please";
+    mockGet.mockResolvedValue({ data: OK_RESPONSE });
+    renderWithClient(<MarketLeadershipContext symbol="TCS" market="IN" />);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mockGet).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("market-leadership-context")).toBeNull();
+  });
+
+  it("shows no loading state while the frontend gate is closed", () => {
+    delete process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED;
+    mockGet.mockResolvedValue({ data: OK_RESPONSE });
+    const { container } = renderWithClient(<MarketLeadershipContext symbol="TCS" market="IN" />);
+    expect(container.textContent).toBe("");
+  });
+
+  it('permits the query when the flag is the exact string "1"', async () => {
+    process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED = "1";
+    mockGet.mockResolvedValue({ data: OK_RESPONSE });
+    renderWithClient(<MarketLeadershipContext symbol="TCS" market="IN" />);
+    await waitFor(() => expect(mockGet).toHaveBeenCalled());
+    expect(mockGet).toHaveBeenCalledWith("/api/leadership/context?symbol=TCS&market=IN");
+  });
+
+  it("frontend enabled + backend disabled renders nothing", async () => {
+    process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED = "1";
+    mockGet.mockResolvedValue({ data: { status: "disabled" } });
+    renderWithClient(<MarketLeadershipContext symbol="TCS" market="IN" />);
+    await waitFor(() => expect(mockGet).toHaveBeenCalled());
+    expect(screen.queryByTestId("market-leadership-context")).toBeNull();
+  });
+
+  it("frontend enabled + valid IN result renders correctly", async () => {
+    process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED = "1";
+    mockGet.mockResolvedValue({ data: OK_RESPONSE });
+    renderWithClient(<MarketLeadershipContext symbol="TCS" market="IN" />);
+    await waitFor(() => expect(screen.getByTestId("market-leadership-context")).toBeTruthy());
+    expect(screen.getByText("Experimental")).toBeTruthy();
+  });
+
+  it("frontend enabled + valid US result renders correctly", async () => {
+    process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED = "1";
+    mockGet.mockResolvedValue({ data: OK_RESPONSE_US });
+    renderWithClient(<MarketLeadershipContext symbol="AAPL" market="US" />);
+    await waitFor(() => expect(screen.getByTestId("market-leadership-context")).toBeTruthy());
+    expect(screen.getByText("Experimental")).toBeTruthy();
+  });
+
+  it("frontend enabled + market mismatch still renders nothing", async () => {
+    process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED = "1";
+    mockGet.mockResolvedValue({ data: { ...OK_RESPONSE, market: "US" } });
+    renderWithClient(<MarketLeadershipContext symbol="TCS" market="IN" />);
+    await waitFor(() => expect(mockGet).toHaveBeenCalled());
+    expect(screen.queryByTestId("market-leadership-context")).toBeNull();
   });
 });

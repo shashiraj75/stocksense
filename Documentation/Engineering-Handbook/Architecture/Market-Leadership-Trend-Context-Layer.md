@@ -266,7 +266,7 @@ are never returned by read paths (`WHERE status='COMPLETE'`) — a partial calcu
 publish as complete. Duplicate insert = upsert only while `PARTIAL`; a `COMPLETE` snapshot is
 immutable (insert-or-ignore).
 
-### 4.7 Feature flags (all default OFF)
+### 4.7 Feature flags — five backend capability flags, all default OFF
 
 | Flag | Effect when `"1"` |
 |---|---|
@@ -277,8 +277,35 @@ immutable (insert-or-ignore).
 | `MARKET_LEADERSHIP_SCORING_ENABLED` | **reserved — no code path consumes it in this release**; scoring influence requires Gate 7 |
 
 With every flag OFF: no new imports execute in Daily Picks/Multibagger/Portfolio/Alerts/Paper
-Trading paths, the API endpoint answers `{"status": "disabled"}`, and the UI renders nothing —
-each property locked by regression tests.
+Trading paths, and the API endpoint answers `{"status": "disabled"}` with zero acquisition,
+calculation, or persistence — each property locked by regression tests.
+
+### 4.7a Frontend presentation gate — one fail-closed public flag, separate from the five above
+
+`NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED` is a **sixth, frontend-only** gate — the browser-side
+mirror of the backend's `MARKET_LEADERSHIP_UI_ENABLED`, not a duplicate or a replacement for it.
+Found necessary during a pre-publication audit: the component's `useQuery()` previously always ran,
+so every eligible Stock Detail page view issued a real browser request to
+`GET /api/leadership/context` even with all five backend flags OFF — the backend safely answered
+`{"status":"disabled"}` with no backend-side work, but the request itself still happened on every
+page view. `isMarketLeadershipUiEnabled()` (`frontend/src/utils/marketLeadership.ts`) now gates the
+query's own `enabled` option, so with the flag off the browser makes **no request at all**, not just
+an empty-handed one.
+
+- Fail-closed: only the exact string `"1"` enables it — absent, empty, `"0"`, `"true"`, or any other
+  value (including trailing whitespace) is treated as disabled.
+- Contains no secret — `NEXT_PUBLIC_*` variables are inlined into the client bundle by Next.js and
+  are visible to anyone regardless of this flag's own logic; it exists purely to suppress an
+  unnecessary request, not to hide anything.
+- **Three independent gates** must all permit operation before any leadership data is ever visible
+  to a user: (1) this frontend flag, (2) `MARKET_LEADERSHIP_ENGINE_ENABLED`, (3)
+  `MARKET_LEADERSHIP_UI_ENABLED` (backend). Enabling only the frontend flag still produces zero
+  visible data, since the backend gates remain the authoritative source of truth and still answer
+  `{"status":"disabled"}`. Enabling only the backend flags still produces zero browser request and
+  zero rendered component, since the frontend gate is checked first and the query never fires.
+  Merging this PR with no environment variable changed anywhere adds **zero** new leadership browser
+  requests to any existing page view — the flag is not set in any `.env` file committed to this
+  repository, local, preview, or production environment.
 
 ### 4.8 API (additive)
 

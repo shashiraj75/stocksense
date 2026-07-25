@@ -7,10 +7,19 @@ PRODUCTION SCORING INFLUENCE. NOT ENABLED in any environment. No production syst
 published signal was touched.
 
 **PR split note:** this document was originally written against the full local development branch
-(`feat/market-leadership-trend-context`, 9 commits, including a separate, file-disjoint validation
-job-identity fix). A pre-publication audit confirmed the two changes share zero files and zero
-runtime dependency (the market-leadership code only reads a pre-existing, unmodified function from
-`validation_engine.py`), so they ship as two independent draft PRs:
+(`feat/market-leadership-trend-context`, 9 commits, including a separate validation job-identity
+fix). A pre-publication audit found the original "zero file overlap" claim was false and corrected
+it: **the two PRs share one file, `backend/api/main.py`, but modify separate, non-overlapping
+hunks** — PR #21 changes validation-scheduler and catch-up call sites (`_validation_schedule_loop`,
+the startup catch-up block); PR #22 adds the leadership-router import and `include_router()`
+registration. The hunks touch different line ranges, apply cleanly independently, and were
+confirmed to merge without conflict. All other functional files are scope-separated (confirmed via
+`git diff --name-only`, zero overlap outside `api/main.py`), and the market-leadership code has zero
+*runtime* dependency on the job-identity patch — it only reads a pre-existing, unmodified function
+(`_resolve_yahoo_symbol`) from `validation_engine.py` that predates both PRs. Each branch was
+independently tested in its own isolated worktree. On this evidence, they ship as two independent
+draft PRs — not because they are literally file-disjoint, but because they are functionally
+independent and neither PR's tests or behavior depend on the other:
 
 - **This PR** (`feat/shadow-market-leadership-context`) carries only the Market Leadership and Trend
   Context Layer — 8 of the 9 original commits, cherry-picked verbatim, plus one additional commit
@@ -59,7 +68,7 @@ methodology, contracts, PIT controls, rollback plan).
 |---|---|---|
 | Backend (`pytest`) | 3553 passed, 0 failed, 88s | **3727 passed, 0 failed** |
 | Frontend typecheck (`tsc --noEmit`) | clean | clean |
-| Frontend tests (`vitest`) | 410 passed | **423 passed** (410 baseline + 13 new: `marketLeadership.test.ts`, `MarketLeadershipContext.test.tsx`) |
+| Frontend tests (`vitest`) | 410 passed | **444 passed** (410 baseline + 34 new: `marketLeadership.test.ts`, `MarketLeadershipContext.test.tsx`, `marketLeadershipCryptoExclusion.test.ts`) |
 | Frontend production build (`next build`) | clean, all routes | clean, all routes, `/api/leadership/context` in `openapi.json`, no existing route removed |
 
 Verified by checking out this exact branch into its own worktree, installing dependencies fresh, and
@@ -131,6 +140,29 @@ not. 3 new regression tests lock this in (`test_caller_mutating_a_cache_hit_resp
 `test_caller_mutating_the_first_fresh_response_does_not_corrupt_the_cache`,
 `test_repeated_calls_return_equal_but_independent_objects`). Full backend suite re-run green after
 the fix: 3727/3727.
+
+### 4.6 Frontend was not actually "flags-off" — always issued a browser request (found via a second, narrower pre-publication review)
+
+The component's `useQuery()` had no `enabled` gate — every eligible Stock Detail page view issued a
+real browser request to `GET /api/leadership/context` regardless of any backend flag state. The
+backend answered `{"status":"disabled"}` safely with zero backend-side work, so no data ever leaked
+and no user-visible effect existed — but the claim that the feature was fully "off" with no
+committed environment change was incomplete: a request still left the browser on every page view.
+
+**Fixed**: a new, frontend-only, fail-closed public flag,
+`NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED` (only the exact string `"1"` enables it), gates the
+query's own `enabled` option (`frontend/src/utils/marketLeadership.ts`'s
+`isMarketLeadershipUiEnabled()`). With the flag absent — its state in every environment as of this
+PR, since it is not set in any committed `.env` file — `api.get()` is never called, proven directly
+(not inferred) via a mocked `api.get` spy asserted `not.toHaveBeenCalled()` across four distinct
+disabled-value cases (absent, `"0"`, `"true"`, malformed text) plus a no-loading-state / empty-render
+case. Full detail and the three-gate model (frontend presentation gate + two backend gates, all
+three required for any visible UI): Architecture doc §4.7a. 21 new frontend tests (7 unit for the
+gate helper itself, 10 component-level covering both the closed and open states plus backend-disabled/
+IN/US/market-mismatch combinations, 2 IN/US rendering cases in the existing suite, 2 page-level
+wiring cases proving crypto pages never invoke or render the component). Full frontend suite re-run
+green after the fix: 444/444, clean typecheck, clean production build (verified with the flag absent,
+matching real deployment state).
 
 ## 5. Mutation-testing sanity checks (Section 16.C)
 
@@ -261,9 +293,13 @@ separately; its only persisted-schema change is additive JSON-summary metadata.
 
 **Gate 4 (Shadow-Validation Readiness) criteria met**: point-in-time tests pass, offline replay is
 reproducible, experiment contracts/telemetry exist, no scoring influence anywhere in the code path.
-A final independent pre-publication audit found and fixed one additional defect (§4.5) and confirmed
-this PR's scope is file-disjoint from the separately-shipped validation fix, with all five feature
-flags verified default OFF both statically and behaviorally.
+A final independent pre-publication audit found and fixed one additional backend defect (§4.5),
+corrected an inaccurate "zero file overlap" claim against the separately-shipped validation fix (the
+two PRs share `backend/api/main.py` at separate, non-overlapping hunks — see the PR split note above
+— everything else is scope-separated), and added a fail-closed frontend presentation gate
+(`NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED`, §4.7a) so a disabled frontend issues zero browser
+requests to the leadership API, not just an empty-handed one. All five backend flags plus the new
+frontend gate are verified default OFF, both statically and behaviorally.
 
 This branch is published as a **draft pull request only** — draft status and a branch push are not
 approval for anything beyond code review. **Not** proceeding past Gate 4 without separate, explicit

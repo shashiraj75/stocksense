@@ -66,3 +66,21 @@ export function getValidLeadershipContext(
   if (!data.market || !data.symbol) return null;
   return data;
 }
+
+/**
+ * Fail-closed frontend presentation gate — the browser-side mirror of the
+ * backend's MARKET_LEADERSHIP_UI_ENABLED flag. This does NOT replace either
+ * backend gate (MARKET_LEADERSHIP_ENGINE_ENABLED, MARKET_LEADERSHIP_UI_ENABLED);
+ * it is a THIRD, independent gate so that with no environment configured,
+ * the browser never even issues a request to /api/leadership/context —
+ * previously the component always called useQuery(), so every eligible
+ * Stock Detail page view made that request regardless of any backend flag
+ * state (the backend safely answered {"status":"disabled"}, but the
+ * request itself still happened). Only the exact string "1" enables it —
+ * absent, empty, "0", "true", or any other value fails closed. Contains no
+ * secret: NEXT_PUBLIC_* variables are inlined into the client bundle by
+ * Next.js and are visible to anyone regardless of this function's logic.
+ */
+export function isMarketLeadershipUiEnabled(): boolean {
+  return process.env.NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED === "1";
+}
