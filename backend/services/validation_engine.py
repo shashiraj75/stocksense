@@ -23,6 +23,7 @@ import os
 import json
 import sqlite3
 import threading
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
@@ -43,8 +44,106 @@ _DB_PATH      = os.path.join(os.path.dirname(__file__), "../../validation_result
 _db_lock      = threading.Lock()
 
 # ── Progress tracking (in-memory, for API polling) ────────────────────────────
+# Backward-compatible top-level keys (running/progress/total/started_at/log)
+# plus, since the 2026-07 job-identity fix, a "job" dict binding the active
+# run immutably to exactly one market, universe and horizon — see
+# _new_job_identity() and tests/regression/test_validation_job_identity.py
+# for the production defect (a US run rendered under the Nifty 100 tab)
+# this contract exists to prevent.
+#
+# In-memory only, module-level — a process restart between claim_validation_job()
+# and run_validation() completing resets this to the clean default below
+# rather than leaving a stale "running" state (the safe direction: a lost
+# claim is recoverable by simply starting a new run; a permanently stuck
+# "running=True" would not be). No durable/distributed job recovery exists
+# or is required by this contract.
 _run_status: dict = {"running": False, "progress": 0, "total": 0, "started_at": None, "log": []}
 _status_lock = threading.Lock()
+
+# Versions locked into every job identity and persisted run summary.
+VALIDATION_METHODOLOGY_VERSION = "walk-forward-v1"
+VALIDATION_MODEL_VERSION = "composite-technical-v1"
+# The universe lists in this module are static code constants (last revised
+# June 2026) — not point-in-time membership. The version tag makes any
+# future list revision visible in persisted results.
+UNIVERSE_VERSION = {"nifty100": "static-2026.06", "midcap": "static-2026.06", "us": "static-2026.06"}
+
+
+def _new_job_identity(*, market: str, universe_id: str, horizon: str,
+                      benchmark: str, total: int, trigger_type: str,
+                      requested_by: str | None = None) -> dict:
+    """Build the immutable identity record for one validation job.
+
+    Created exactly once per run (under _status_lock, at claim time) and
+    never relabeled afterwards — progress fields (processed/current_symbol/
+    status/updated_at/completed_at/failure_*) are the only mutable fields.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    return {
+        "job_id": str(uuid.uuid4()),
+        "market": market,
+        "universe_id": universe_id,
+        "universe_version": UNIVERSE_VERSION.get(universe_id, "unknown"),
+        "benchmark": benchmark,
+        "horizon": horizon,
+        "started_at": now,
+        "completed_at": None,
+        "status": "running",
+        "processed": 0,
+        "total": total,
+        "current_symbol": None,
+        "source_commit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
+        "model_version": VALIDATION_MODEL_VERSION,
+        "methodology_version": VALIDATION_METHODOLOGY_VERSION,
+        # `data_cutoff` is deliberately None at claim time — `now` here is
+        # the claim/run-start timestamp, not an observed market-data
+        # cutoff, and reporting it as one would be false: this job pulls
+        # each symbol's own history independently over the run's
+        # lifetime, so no single instant is "the" data cutoff for every
+        # symbol. `data_cutoff_basis` states plainly that no real cutoff
+        # was captured, rather than silently fabricating one from a
+        # nearby but unrelated timestamp (e.g. the benchmark fetch time).
+        # Kept as an explicit (not omitted) key for any existing consumer
+        # that already reads it.
+        "data_cutoff": None,
+        "data_cutoff_basis": "not_captured",
+        "requested_by": requested_by,
+        "trigger_type": trigger_type,
+        "created_at": now,
+        "updated_at": now,
+        "failure_code": None,
+        "failure_message": None,
+    }
+
+
+def claim_validation_job(horizon: str, universe: str, trigger_type: str = "api",
+                         requested_by: str | None = None) -> dict | None:
+    """Atomically claim the single validation-run slot.
+
+    Returns the new job identity, or None if a run is already active. The
+    identity is created under _status_lock so there is no window in which
+    a run exists without its market/universe/horizon binding.
+    """
+    _require_known_universe(universe)
+    universe_map = {"nifty100": NIFTY_100, "midcap": NSE_MIDCAP, "us": US_BASKET}
+    n_stocks = len(universe_map[universe])
+    benchmark = "^GSPC" if universe == "us" else "^NSEI"
+    market = UNIVERSE_MARKET[universe]
+    with _status_lock:
+        if _run_status["running"]:
+            return None
+        job = _new_job_identity(
+            market=market, universe_id=universe, horizon=horizon,
+            benchmark=benchmark, total=n_stocks, trigger_type=trigger_type,
+            requested_by=requested_by,
+        )
+        _run_status.update({
+            "running": True, "progress": 0, "total": n_stocks,
+            "started_at": job["started_at"],
+            "log": [f"Starting {horizon}-term validation on {universe} ({n_stocks} stocks)…"],
+            "job": job,
+        })
+        return job
 
 
 # ── Postgres helpers ──────────────────────────────────────────────────────────
@@ -1145,7 +1244,8 @@ def _compute_metrics(signals: list[dict], benchmark_return_pct: float, horizon: 
 
 # ── Main runner ───────────────────────────────────────────────────────────────
 
-def run_validation(horizon: str = "medium", universe: str = "nifty100", max_workers: int = 6) -> dict:
+def run_validation(horizon: str = "medium", universe: str = "nifty100", max_workers: int = 6,
+                   trigger_type: str = "internal", _claimed_job: dict | None = None) -> dict:
     """
     Run a full walk-forward validation.
 
@@ -1172,23 +1272,75 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
     n_stocks = len(stocks)
     label    = f"{horizon}-{universe}"
 
-    with _status_lock:
-        if _run_status["running"]:
-            return {"error": "A validation run is already in progress"}
-        _run_status.update({
-            "running": True, "progress": 0, "total": n_stocks,
-            "started_at": datetime.now(timezone.utc).isoformat(),
-            "log": [f"Starting {horizon}-term validation on {universe} ({n_stocks} stocks)…"]
-        })
+    if _claimed_job is None:
+        _claimed_job = claim_validation_job(horizon, universe, trigger_type=trigger_type)
+        if _claimed_job is None:
+            with _status_lock:
+                active = dict(_run_status.get("job") or {})
+            return {"error": "A validation run is already in progress", "job": active or None}
+    else:
+        # Fail-closed identity invariant: a caller-supplied _claimed_job must
+        # match this exact call's universe/horizon. The one current caller
+        # (api/routers/validation.py's /run) always satisfies this by
+        # construction (job comes from claim_validation_job(horizon,
+        # universe, ...) using the same closure variables), so this can
+        # never fire today — it exists so a future caller or refactor can
+        # never silently use a mismatched job's benchmark/market for this
+        # universe's stock list, which would corrupt both the computed
+        # results and the persisted job identity attached to them.
+        if _claimed_job["universe_id"] != universe or _claimed_job["horizon"] != horizon:
+            with _status_lock:
+                if _run_status.get("job") is _claimed_job:
+                    _run_status.update({
+                        "running": False,
+                        "log": _run_status["log"] + ["❌ Failed: claimed job identity mismatch"],
+                    })
+                    _claimed_job.update({
+                        "status": "failed",
+                        "failure_code": "CLAIMED_JOB_MISMATCH",
+                        "failure_message": (
+                            f"claimed job (universe={_claimed_job['universe_id']!r}, "
+                            f"horizon={_claimed_job['horizon']!r}) does not match the "
+                            f"requested run (universe={universe!r}, horizon={horizon!r})"
+                        ),
+                        "completed_at": datetime.now(timezone.utc).isoformat(),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    })
+            raise ValueError(
+                f"run_validation: _claimed_job identity (universe={_claimed_job['universe_id']!r}, "
+                f"horizon={_claimed_job['horizon']!r}) does not match the requested "
+                f"universe={universe!r}, horizon={horizon!r} — refusing to run with mismatched identity"
+            )
+    job = _claimed_job
 
     # Benchmark ticker: Nifty 50 for India universes, S&P 500 for US
-    benchmark_ticker = "^GSPC" if universe == "us" else "^NSEI"
+    benchmark_ticker = job["benchmark"]
     market = UNIVERSE_MARKET[universe]  # safe — _require_known_universe already validated this
 
     try:
         _init_db()
 
-        # Fetch benchmark once
+        # Fetch benchmark once. `benchmark_avg_ret` always stays a plain
+        # float (0.0 on failure) so it keeps flowing into _compute_metrics/
+        # _backtest_stock's existing, widely-tested numeric pathways
+        # unchanged — but benchmark_data_available/benchmark_unavailable_reason
+        # (below) are the truthful disclosure: a failed or insufficient
+        # fetch must never let benchmark_avg_fwd_return_pct/
+        # nifty_avg_fwd_return_pct be read as a genuine "benchmark was
+        # flat" observation. Found via pre-publication review: previously
+        # these fields silently reported 0.0% with no way to tell a real
+        # flat benchmark apart from "we don't know."
+        #
+        # Known, disclosed, PRE-EXISTING limitation (not introduced or
+        # fixed by this change, out of this PR's safe scope): when
+        # benchmark_df ends up empty, _backtest_stock's own per-signal
+        # benchmark_fwd_ret/regime_adj calculations independently default
+        # to 0.0/neutral for every signal in the run — that deeper,
+        # per-signal fabrication predates this PR and touches a separate,
+        # unmodified, heavily-tested function; correcting it requires its
+        # own properly-scoped change.
+        benchmark_data_available = False
+        benchmark_unavailable_reason = None
         try:
             bench_df  = yf.Ticker(benchmark_ticker).history(period=HORIZON_PERIOD[horizon])
             fwd_days  = HORIZON_DAYS[horizon]
@@ -1198,11 +1350,17 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
                 x = float(bench_df["Close"].iloc[i + fwd_days])
                 if e != 0:
                     bench_rets.append((x - e) / e * 100)
-            benchmark_avg_ret = float(np.mean(bench_rets)) if bench_rets else 0.0
+            if bench_rets:
+                benchmark_avg_ret = float(np.mean(bench_rets))
+                benchmark_data_available = True
+            else:
+                benchmark_avg_ret = 0.0
+                benchmark_unavailable_reason = "insufficient_benchmark_history_for_horizon"
             benchmark_df = bench_df
-        except Exception:
+        except Exception as e:
             benchmark_df = pd.DataFrame()
             benchmark_avg_ret = 0.0
+            benchmark_unavailable_reason = f"benchmark_fetch_failed: {e}"
 
         all_signals: list[dict] = []
         symbols_with_signals: set[str] = set()
@@ -1224,11 +1382,19 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
                     with _status_lock:
                         _run_status["progress"] = done
                         _run_status["log"].append(f"[{done}/{n_stocks}] {sym}: {len(sigs)} signals")
+                        if _run_status.get("job") is not None:
+                            _run_status["job"]["processed"] = done
+                            _run_status["job"]["current_symbol"] = sym
+                            _run_status["job"]["updated_at"] = datetime.now(timezone.utc).isoformat()
                 except Exception as e:
                     done += 1
                     with _status_lock:
                         _run_status["progress"] = done
                         _run_status["log"].append(f"[{done}/{n_stocks}] {sym}: ERROR {e}")
+                        if _run_status.get("job") is not None:
+                            _run_status["job"]["processed"] = done
+                            _run_status["job"]["current_symbol"] = sym
+                            _run_status["job"]["updated_at"] = datetime.now(timezone.utc).isoformat()
 
         metrics = _compute_metrics(all_signals, benchmark_avg_ret, horizon, market=market)
         metrics["horizon"]   = horizon
@@ -1242,8 +1408,27 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
         metrics["n_stocks_requested"]     = n_stocks
         metrics["n_stocks_with_signals"]  = len(symbols_with_signals)
         metrics["run_at"] = datetime.now(timezone.utc).isoformat()
-        metrics["benchmark_avg_fwd_return_pct"] = round(benchmark_avg_ret, 2)
-        metrics["nifty_avg_fwd_return_pct"]     = round(benchmark_avg_ret, 2)  # backward compat
+        # A genuinely unavailable benchmark must never be reported as a
+        # verified 0.0% return (the frontend's own type contract already
+        # accepts `number | null` here and renders "—" for null, so this
+        # is a safe, already-supported change, not a new consumer
+        # requirement). `benchmark_data_available`/`benchmark_unavailable_reason`
+        # are the explicit disclosure for any consumer that wants the
+        # detail rather than just the null.
+        metrics["benchmark_data_available"] = benchmark_data_available
+        metrics["benchmark_unavailable_reason"] = benchmark_unavailable_reason
+        metrics["benchmark_avg_fwd_return_pct"] = round(benchmark_avg_ret, 2) if benchmark_data_available else None
+        metrics["nifty_avg_fwd_return_pct"]     = round(benchmark_avg_ret, 2) if benchmark_data_available else None  # backward compat
+
+        # Persist the full job identity in the run summary (additive JSON —
+        # no schema change) so a stored result is permanently bound to its
+        # exact market/universe/horizon/model/methodology versions.
+        job_snapshot = dict(job)
+        job_snapshot["status"] = "completed"
+        job_snapshot["completed_at"] = metrics["run_at"]
+        job_snapshot["processed"] = done
+        metrics["job"] = job_snapshot
+        metrics["market"] = market
 
         # Persist — convert numpy scalars to native Python first
         def _jsonify(obj):
@@ -1308,12 +1493,27 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
 
         with _status_lock:
             _run_status.update({"running": False, "log": _run_status["log"] + ["✅ Validation complete"]})
+            if _run_status.get("job") is not None:
+                _run_status["job"].update({
+                    "status": "completed",
+                    "completed_at": job_snapshot["completed_at"],
+                    "processed": done,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                })
 
         return metrics
 
     except Exception as e:
         with _status_lock:
             _run_status.update({"running": False, "log": _run_status["log"] + [f"❌ Failed: {e}"]})
+            if _run_status.get("job") is not None:
+                _run_status["job"].update({
+                    "status": "failed",
+                    "failure_code": "RUN_EXCEPTION",
+                    "failure_message": str(e),
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                })
         raise
 
 
@@ -1479,19 +1679,38 @@ def get_per_stock_results(run_id: int | None = None, horizon: str = "medium", un
 
 def get_run_status() -> dict:
     with _status_lock:
-        return dict(_run_status)
+        snapshot = dict(_run_status)
+        # Copy mutable members — a status snapshot must be immutable once
+        # returned; the live job/log must not mutate under a caller's feet.
+        if snapshot.get("job") is not None:
+            snapshot["job"] = dict(snapshot["job"])
+        if isinstance(snapshot.get("log"), list):
+            snapshot["log"] = list(snapshot["log"])
+        return snapshot
 
 
-def get_last_run_time(horizon: str = "medium"):
-    """Return the datetime of the most recent completed run for this horizon, or None."""
+def get_last_run_time(horizon: str = "medium", universe: str | None = None):
+    """Return the datetime of the most recent completed run for this horizon, or None.
+
+    `universe=None` preserves the legacy any-universe behavior (used by the
+    startup catch-up check); pass an explicit universe to scope the lookup —
+    a US run must never satisfy a "when did nifty100 last run?" query.
+    """
     from datetime import datetime, timezone
     try:
         _init_db()
-        rows = _fetchall(
-            "SELECT run_at FROM val_runs WHERE horizon = %s ORDER BY id DESC LIMIT 1",
-            "SELECT run_at FROM val_runs WHERE horizon = ? ORDER BY id DESC LIMIT 1",
-            (horizon,),
-        )
+        if universe is not None:
+            rows = _fetchall(
+                "SELECT run_at FROM val_runs WHERE horizon = %s AND universe = %s ORDER BY id DESC LIMIT 1",
+                "SELECT run_at FROM val_runs WHERE horizon = ? AND universe = ? ORDER BY id DESC LIMIT 1",
+                (horizon, universe),
+            )
+        else:
+            rows = _fetchall(
+                "SELECT run_at FROM val_runs WHERE horizon = %s ORDER BY id DESC LIMIT 1",
+                "SELECT run_at FROM val_runs WHERE horizon = ? ORDER BY id DESC LIMIT 1",
+                (horizon,),
+            )
         if not rows:
             return None
         run_at_raw = rows[0][0] if _USE_POSTGRES else rows[0]["run_at"]
@@ -1511,19 +1730,21 @@ def get_all_run_summaries() -> list[dict]:
     try:
         _init_db()
         rows = _fetchall(
-            "SELECT id, run_at, horizon, n_stocks, n_signals, summary FROM val_runs ORDER BY id DESC LIMIT 20",
-            "SELECT id, run_at, horizon, n_stocks, n_signals, summary FROM val_runs ORDER BY id DESC LIMIT 20",
+            "SELECT id, run_at, horizon, n_stocks, n_signals, summary, universe FROM val_runs ORDER BY id DESC LIMIT 20",
+            "SELECT id, run_at, horizon, n_stocks, n_signals, summary, universe FROM val_runs ORDER BY id DESC LIMIT 20",
         )
         results = []
         for r in rows:
             if _USE_POSTGRES:
-                rid, rat, hor, ns, nsig, summ = r
+                rid, rat, hor, ns, nsig, summ, univ = r
                 s = summ if isinstance(summ, dict) else json.loads(summ)
             else:
-                rid, rat, hor, ns, nsig = r["id"], r["run_at"], r["horizon"], r["n_stocks"], r["n_signals"]
+                rid, rat, hor, ns, nsig, univ = r["id"], r["run_at"], r["horizon"], r["n_stocks"], r["n_signals"], r["universe"]
                 s = json.loads(r["summary"])
             results.append({
                 "run_id": rid, "run_at": str(rat), "horizon": hor,
+                "universe": univ,
+                "market": UNIVERSE_MARKET.get(univ),
                 "n_stocks": ns, "n_signals": nsig,
                 "buy_hit_rate_pct":      s.get("buy_hit_rate_pct"),
                 "avg_return_on_buy_pct": s.get("avg_return_on_buy_pct"),
