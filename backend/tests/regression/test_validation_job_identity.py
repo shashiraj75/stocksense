@@ -23,6 +23,7 @@ import sqlite3
 import threading
 from unittest.mock import MagicMock
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -381,3 +382,168 @@ class TestStatusApiSurfacesIdentity:
             with ve._status_lock:
                 ve._run_status.clear()
                 ve._run_status.update(saved)
+
+
+@pytest.mark.regression
+class TestClaimedJobIdentityInvariant:
+    """Pre-publication independent review finding: run_validation() accepted
+    a caller-supplied _claimed_job with no validation that it matched the
+    universe/horizon arguments of the SAME call. Unexploitable through the
+    one current caller (api/routers/validation.py's /run, which always
+    passes a job claimed for the exact same universe/horizon via shared
+    closure variables) but structurally unsafe for any future caller or
+    refactor — a mismatched job could silently misattribute a run's
+    benchmark, market and persisted identity. Now fails closed."""
+
+    def test_mismatched_universe_raises_before_any_io(self, monkeypatch):
+        mismatched_job = ve._new_job_identity(
+            market="US", universe_id="us", horizon="short",
+            benchmark="^GSPC", total=10, trigger_type="api",
+        )
+
+        def _boom_init_db():
+            raise AssertionError("_init_db was called — mismatch check did not fire first")
+
+        monkeypatch.setattr(ve, "_init_db", _boom_init_db)
+        with ve._status_lock:
+            ve._run_status.clear()
+            ve._run_status.update({
+                "running": True, "progress": 0, "total": 10,
+                "started_at": mismatched_job["started_at"], "log": [],
+                "job": mismatched_job,
+            })
+
+        with pytest.raises(ValueError, match="does not match"):
+            ve.run_validation(horizon="medium", universe="nifty100", _claimed_job=mismatched_job)
+
+    def test_mismatched_horizon_raises(self, monkeypatch):
+        mismatched_job = ve._new_job_identity(
+            market="US", universe_id="us", horizon="short",
+            benchmark="^GSPC", total=10, trigger_type="api",
+        )
+        monkeypatch.setattr(ve, "_init_db", lambda: None)
+        with ve._status_lock:
+            ve._run_status.clear()
+            ve._run_status.update({
+                "running": True, "progress": 0, "total": 10,
+                "started_at": mismatched_job["started_at"], "log": [],
+                "job": mismatched_job,
+            })
+
+        with pytest.raises(ValueError, match="does not match"):
+            ve.run_validation(horizon="long", universe="us", _claimed_job=mismatched_job)
+
+    def test_mismatch_leaves_running_state_truthfully_terminal_not_stuck(self, monkeypatch):
+        """The mismatch guard must release `running`, not leave the slot
+        permanently stuck True — a real caller must be able to try again."""
+        mismatched_job = ve._new_job_identity(
+            market="US", universe_id="us", horizon="short",
+            benchmark="^GSPC", total=10, trigger_type="api",
+        )
+        monkeypatch.setattr(ve, "_init_db", lambda: None)
+        with ve._status_lock:
+            ve._run_status.clear()
+            ve._run_status.update({
+                "running": True, "progress": 0, "total": 10,
+                "started_at": mismatched_job["started_at"], "log": [],
+                "job": mismatched_job,
+            })
+
+        with pytest.raises(ValueError):
+            ve.run_validation(horizon="medium", universe="nifty100", _claimed_job=mismatched_job)
+
+        status = ve.get_run_status()
+        assert status["running"] is False
+        job = status.get("job")
+        assert job is not None
+        assert job["status"] == "failed"
+        assert job["failure_code"] == "CLAIMED_JOB_MISMATCH"
+        assert "does not match" in job["failure_message"]
+
+    def test_matching_job_is_unaffected_by_the_new_check(self, monkeypatch):
+        """The one real caller (API /run) always supplies a matching job —
+        this must keep working exactly as before."""
+        _mock_io(monkeypatch, lambda *a, **k: [])
+        job = ve.claim_validation_job("short", "us", trigger_type="api")
+        assert job is not None
+        metrics = ve.run_validation(horizon="short", universe="us", _claimed_job=job)
+        assert metrics["job"]["status"] == "completed"
+
+
+@pytest.mark.regression
+class TestBenchmarkUnavailabilityDisclosure:
+    """Pre-publication independent review finding: a benchmark fetch
+    failure (or insufficient history for the horizon) silently reported
+    benchmark_avg_fwd_return_pct/nifty_avg_fwd_return_pct as a verified
+    0.0% return — indistinguishable from a genuinely flat benchmark, and
+    misleading for every alpha/beat-benchmark figure derived from it. Now
+    explicitly disclosed via benchmark_data_available/
+    benchmark_unavailable_reason, and the two percentage fields become
+    None (not a fabricated 0.0) when unavailable — a change already
+    compatible with the frontend's existing `number | null` type contract
+    for nifty_avg_fwd_return_pct."""
+
+    def test_benchmark_fetch_exception_is_disclosed_not_fabricated(self, monkeypatch):
+        _mock_io(monkeypatch, lambda *a, **k: [])
+
+        class _BoomTicker:
+            def __init__(self, *a, **k):
+                pass
+
+            def history(self, **kw):
+                raise RuntimeError("synthetic provider failure")
+
+        mock_yf = MagicMock()
+        mock_yf.Ticker.side_effect = _BoomTicker
+        monkeypatch.setattr(ve, "yf", mock_yf)
+
+        metrics = ve.run_validation(horizon="short", universe="us")
+        assert metrics["benchmark_data_available"] is False
+        assert "benchmark_fetch_failed" in metrics["benchmark_unavailable_reason"]
+        assert metrics["benchmark_avg_fwd_return_pct"] is None
+        assert metrics["nifty_avg_fwd_return_pct"] is None
+
+    def test_insufficient_benchmark_history_is_disclosed(self, monkeypatch):
+        """The shared _mock_io helper's yf mock returns an empty
+        DataFrame (not an exception) — the exact 'fetch succeeded but
+        there's no usable history' case."""
+        _mock_io(monkeypatch, lambda *a, **k: [])
+        metrics = ve.run_validation(horizon="short", universe="us")
+        assert metrics["benchmark_data_available"] is False
+        assert metrics["benchmark_unavailable_reason"] == "insufficient_benchmark_history_for_horizon"
+        assert metrics["benchmark_avg_fwd_return_pct"] is None
+        assert metrics["nifty_avg_fwd_return_pct"] is None
+
+    def test_successful_benchmark_fetch_is_marked_available_with_real_numbers(self, monkeypatch):
+        _mock_io(monkeypatch, lambda *a, **k: [])
+
+        idx = pd.bdate_range("2020-01-01", periods=800, tz="UTC")
+        closes = np.linspace(100, 150, 800)
+        real_bench_df = pd.DataFrame({"Close": closes}, index=idx)
+
+        class _RealTicker:
+            def __init__(self, *a, **k):
+                pass
+
+            def history(self, **kw):
+                return real_bench_df
+
+        mock_yf = MagicMock()
+        mock_yf.Ticker.side_effect = _RealTicker
+        monkeypatch.setattr(ve, "yf", mock_yf)
+
+        metrics = ve.run_validation(horizon="short", universe="us")
+        assert metrics["benchmark_data_available"] is True
+        assert metrics["benchmark_unavailable_reason"] is None
+        assert isinstance(metrics["benchmark_avg_fwd_return_pct"], float)
+        assert isinstance(metrics["nifty_avg_fwd_return_pct"], float)
+
+
+@pytest.mark.regression
+class TestDeadCodeRemoved:
+    """_update_job had zero callers repo-wide and an unvalidated **fields
+    signature that could silently violate job-identity immutability if
+    ever invoked — removed rather than left as a latent footgun."""
+
+    def test_update_job_no_longer_exists(self):
+        assert not hasattr(ve, "_update_job")
