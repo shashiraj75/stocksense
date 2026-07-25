@@ -8,6 +8,34 @@
 
 ---
 
+## Validation Public Diagnostic Sanitization
+
+**Status:** PR [#24](https://github.com/shashiraj75/stocksense/pull/24)
+(`fix/validation-public-error-sanitization`) **MERGED** to `main` (merge commit `d83488f`,
+2026-07-25) and **automatically deployed** — confirmed via GitHub's commit-status/deployment API
+(Railway `success`, Vercel `success` on the merge commit) and a direct, read-only production smoke
+check: `GET /health` returns `{"status":"ok",...}` and `GET /api/validation/status` returns the
+clean, expected shape with no error content. No `/api/validation/run` was triggered to force this
+evidence — **failure-path production evidence remains naturally pending**, consistent with this
+release's own operational safety boundaries; the failure path is test-backed (20 new regression
+tests using hostile fixture exception text) rather than production-observed.
+
+Closes the residual risk named in the Market Leadership entry below: four write sites in
+`validation_engine.py` previously embedded a live exception object directly into a field reachable
+from a public Validation API response — `benchmark_unavailable_reason` (persisted + returned by
+`/api/validation/results`), `job.failure_message` and the per-symbol/run-level progress log (both
+returned by `/api/validation/status`). All four now return a stable failure code / fixed message
+from a centralized `VALIDATION_PUBLIC_FAILURE_MESSAGES` contract; the real exception is always
+logged server-side (`log.exception`/`log.warning`, with symbol/market/universe/horizon context
+where applicable) and never crosses into a public field. Older `val_runs.summary` rows persisted
+before this fix (which may already contain raw exception text) are sanitized on read by a pure,
+deterministic helper — **the stored row itself is never rewritten or backfilled**. No scoring,
+benchmark methodology, alpha/hit-rate calculation, universe/horizon definition, or scheduler
+behavior changed; `benchmark_avg_fwd_return_pct`/`nifty_avg_fwd_return_pct` remain `None` (never a
+fabricated `0.0`) when unavailable, unchanged from the pre-existing behavior. 20 new regression
+tests plus 2 existing tests corrected (they previously asserted the *old, unsafe* behavior). Final
+test evidence: backend 3780/3780, frontend 454/454, clean typecheck.
+
 ## Validation Job-Identity Fix
 
 **Status:** PR [#21](https://github.com/shashiraj75/stocksense/pull/21)
@@ -82,11 +110,10 @@ are unmodified by this work.
   well beyond what any single implementation session can produce. The 300-observation floor is a
   presentation minimum, not proof of statistical adequacy — no accuracy, win-rate, or profitability
   claim is made or implied anywhere in this release.
-- **Known, disclosed, out-of-scope residual risk**: a raw exception string is persisted into a
-  public-reachable field in `validation_engine.py` (inconsistent with this codebase's own
-  `safe_error_message` convention of never exposing `str(exc)` to any consumer-facing surface) —
-  found during PR #22's review but outside both PRs' merged scope; flagged separately for a
-  dedicated future fix, not blocking this release.
+- **Residual risk closed**: the raw-exception-string disclosure flagged during PR #22's review
+  (outside both PRs' merged scope at the time) was fixed and merged separately as PR #24 — see the
+  "Validation Public Diagnostic Sanitization" entry above. Public Validation responses no longer
+  carry any raw exception text; full diagnostic detail remains in server-side logs only.
 - **Next gates required before this layer can affect a user or a score**: separate, explicit
   approval for (1) production shadow enablement (`MARKET_LEADERSHIP_SHADOW_ENABLED`), (2)
   user-visible UI enablement (both `MARKET_LEADERSHIP_UI_ENABLED` and
