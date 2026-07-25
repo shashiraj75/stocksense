@@ -44,6 +44,34 @@ log = logging.getLogger(__name__)
 
 BENCHMARK_TICKER = {"IN": "^NSEI", "US": "^GSPC"}
 
+# ── In-process TTL cache for compute_stock_context (Section 17 #10: "prevent
+# expensive recalculation on every page request") ───────────────────────────
+# Mirrors the established bounded-eviction pattern (market_data.py /
+# prediction_engine.py's _cache_set) after that exact "unbounded until an
+# OOM incident" class of bug was found twice already in this codebase.
+# Key includes methodology/contract versions so a version bump naturally
+# invalidates every cached entry without a manual cache-clear.
+_STOCK_CONTEXT_CACHE: dict[str, tuple[float, dict]] = {}
+_STOCK_CONTEXT_CACHE_MAX = 300
+_STOCK_CONTEXT_TTL = 4 * 3600  # 4 hours — RS/trend are computed per completed session, not intraday
+
+
+def _cache_set(cache: dict, key: str, value: tuple) -> None:
+    if key not in cache and len(cache) >= _STOCK_CONTEXT_CACHE_MAX:
+        try:
+            oldest = min(cache, key=lambda k: cache[k][0])
+            del cache[oldest]
+        except (ValueError, KeyError):
+            pass
+    cache[key] = value
+
+
+def _stock_context_cache_key(symbol: str, market: str, as_of: date) -> str:
+    return (
+        f"{symbol}:{market}:{as_of.isoformat()}:"
+        f"{cfg.RS_METHODOLOGY_VERSION}:{cfg.TREND_METHODOLOGY_VERSION}:{cfg.EXPLANATION_CONTRACT_VERSION}"
+    )
+
 
 def _resolve_yahoo_symbol(symbol: str, market: str) -> str:
     """Reuses validation_engine's already-proven, tested symbol resolution
@@ -260,6 +288,9 @@ def compute_stock_context(symbol: str, market: str, as_of: date | None = None) -
     already-persisted group/breadth snapshot for context (falls back to
     None fields if none exist yet — never recomputes the whole market on a
     per-symbol request). Returns {"status": "disabled"} if flags are off.
+
+    TTL-cached (4h, bounded 300 entries) — a completed-session-scoped
+    calculation does not need re-fetching yfinance on every page view.
     """
     if not cfg.engine_enabled():
         return {"status": "disabled"}
@@ -268,10 +299,20 @@ def compute_stock_context(symbol: str, market: str, as_of: date | None = None) -
         if as_of is None:
             return {"status": "unavailable", "reason": "could_not_determine_expected_session"}
 
+    cache_key = _stock_context_cache_key(symbol, market, as_of)
+    cached = _STOCK_CONTEXT_CACHE.get(cache_key)
+    if cached and (time.time() - cached[0]) < _STOCK_CONTEXT_TTL:
+        return cached[1]
+
     try:
         price_df = fetch_price_history(symbol, market)
     except Exception as e:
-        return {"status": "error", "reason": str(e)}
+        error_result = {"status": "error", "reason": str(e)}
+        # Short TTL for errors (2 min) — mirrors prediction_engine.py's
+        # _SHORT_TTL_TS convention: don't hammer a failing provider on
+        # every page view, but recover quickly once it's healthy again.
+        _cache_set(_STOCK_CONTEXT_CACHE, cache_key, (time.time() - (_STOCK_CONTEXT_TTL - 120), error_result))
+        return error_result
 
     try:
         benchmark_df = yf.Ticker(BENCHMARK_TICKER[market]).history(period="2y")
@@ -280,7 +321,6 @@ def compute_stock_context(symbol: str, market: str, as_of: date | None = None) -
 
     universe_id = f"stocksense_heatmap_v1_{market.lower()}"
     calc = compute_relative_return_windows(price_df, benchmark_df, as_of)
-    composite = composite_relative_return(calc["windows"])
     trend_rs = RsTrend.INSUFFICIENT_DATA
     windows = calc["windows"]
     if windows.get("rs_1m") is not None and windows.get("rs_3m") is not None:
@@ -296,10 +336,13 @@ def compute_stock_context(symbol: str, market: str, as_of: date | None = None) -
         symbol, market, price_df, as_of, rs_trend_improving=(trend_rs == RsTrend.IMPROVING),
     )
 
-    group_snapshot = persistence.get_latest_rs_snapshot(market, symbol, universe_id)
+    # No persisted group/breadth snapshot is read here — v1's single-symbol
+    # endpoint has no group/breadth context (see the docstring above); an
+    # unconditional persistence read on every call would be pure waste,
+    # working against this function's own caching goal.
     why_now = build_why_now_explanation(rs_contract, None, trend_contract, None)
 
-    return {
+    result = {
         "status": "ok",
         "market": market,
         "symbol": symbol,
@@ -308,3 +351,5 @@ def compute_stock_context(symbol: str, market: str, as_of: date | None = None) -
         "trend": trend_contract.to_dict(),
         "why_now": why_now.to_dict(),
     }
+    _cache_set(_STOCK_CONTEXT_CACHE, cache_key, (time.time(), result))
+    return result

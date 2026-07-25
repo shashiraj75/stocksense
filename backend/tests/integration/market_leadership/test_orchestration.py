@@ -24,6 +24,10 @@ def _fake_universe(market):
 def _engine_on(monkeypatch):
     monkeypatch.setenv("MARKET_LEADERSHIP_ENGINE_ENABLED", "1")
     monkeypatch.delenv("MARKET_LEADERSHIP_SHADOW_ENABLED", raising=False)
+    # compute_stock_context is TTL-cached at module level (Section 17 #10)
+    # — clear it so one test's cached result can't leak into another via
+    # a shared (symbol, market, as_of) key.
+    orch._STOCK_CONTEXT_CACHE.clear()
 
 
 @pytest.fixture
@@ -129,6 +133,57 @@ class TestComputeStockContext:
         monkeypatch.setattr(orch, "fetch_price_history", boom)
         result = orch.compute_stock_context("AAA", "IN", as_of=AS_OF)
         assert result["status"] == "error"
+
+    def test_second_call_is_served_from_cache_no_second_fetch(self, monkeypatch, mocked_market):
+        """Section 17 #10: prevent expensive recalculation on every page
+        request. A second call for the same (symbol, market, as_of) must
+        not re-invoke fetch_price_history."""
+        call_count = {"n": 0}
+        price_data, benchmark = mocked_market
+
+        def counting_fetch(symbol, market, period="2y"):
+            call_count["n"] += 1
+            return price_data.get(symbol, pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"]))
+
+        monkeypatch.setattr(orch, "fetch_price_history", counting_fetch)
+
+        first = orch.compute_stock_context("AAA", "IN", as_of=AS_OF)
+        second = orch.compute_stock_context("AAA", "IN", as_of=AS_OF)
+
+        assert call_count["n"] == 1
+        assert first == second
+
+    def test_different_symbols_are_cached_independently(self, monkeypatch, mocked_market):
+        orch.compute_stock_context("AAA", "IN", as_of=AS_OF)
+        orch.compute_stock_context("BBB", "IN", as_of=AS_OF)
+        assert orch._stock_context_cache_key("AAA", "IN", AS_OF) in orch._STOCK_CONTEXT_CACHE
+        assert orch._stock_context_cache_key("BBB", "IN", AS_OF) in orch._STOCK_CONTEXT_CACHE
+
+    def test_market_isolation_in_cache_key(self, mocked_market):
+        """The same symbol in two markets must never share a cache entry."""
+        key_in = orch._stock_context_cache_key("V", "IN", AS_OF)
+        key_us = orch._stock_context_cache_key("V", "US", AS_OF)
+        assert key_in != key_us
+
+    def test_expired_cache_entry_triggers_a_fresh_fetch(self, monkeypatch, mocked_market):
+        call_count = {"n": 0}
+        price_data, benchmark = mocked_market
+
+        def counting_fetch(symbol, market, period="2y"):
+            call_count["n"] += 1
+            return price_data.get(symbol, pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"]))
+
+        monkeypatch.setattr(orch, "fetch_price_history", counting_fetch)
+        orch.compute_stock_context("AAA", "IN", as_of=AS_OF)
+        assert call_count["n"] == 1
+
+        # Force the cached entry to look expired.
+        key = orch._stock_context_cache_key("AAA", "IN", AS_OF)
+        stale_ts, cached_value = orch._STOCK_CONTEXT_CACHE[key]
+        orch._STOCK_CONTEXT_CACHE[key] = (stale_ts - orch._STOCK_CONTEXT_TTL - 1, cached_value)
+
+        orch.compute_stock_context("AAA", "IN", as_of=AS_OF)
+        assert call_count["n"] == 2
 
 
 @pytest.mark.integration

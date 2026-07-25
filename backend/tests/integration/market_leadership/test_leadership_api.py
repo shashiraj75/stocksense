@@ -7,6 +7,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+@pytest.fixture(autouse=True)
+def _clear_stock_context_cache():
+    # compute_stock_context is TTL-cached at module level (Section 17
+    # #10) — clear it so one test's cached result can't leak into another
+    # via a shared (symbol, market, as_of) key.
+    from services.market_leadership import orchestration as orch
+    orch._STOCK_CONTEXT_CACHE.clear()
+
+
 @pytest.fixture
 def client():
     from api.main import app
