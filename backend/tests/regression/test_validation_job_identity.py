@@ -34,8 +34,8 @@ REQUIRED_JOB_FIELDS = {
     "job_id", "market", "universe_id", "universe_version", "benchmark",
     "horizon", "started_at", "completed_at", "status", "processed", "total",
     "current_symbol", "source_commit", "model_version", "methodology_version",
-    "data_cutoff", "requested_by", "trigger_type", "created_at", "updated_at",
-    "failure_code", "failure_message",
+    "data_cutoff", "data_cutoff_basis", "requested_by", "trigger_type",
+    "created_at", "updated_at", "failure_code", "failure_message",
 }
 
 
@@ -182,6 +182,94 @@ class TestActiveJobCarriesImmutableIdentity:
         assert job["universe_id"] == "us"
         assert job["horizon"] == "short"
         assert job["status"] == "completed"
+
+
+@pytest.mark.regression
+class TestDataCutoffProvenanceIsTruthful:
+    """`data_cutoff` previously held the claim/run-start timestamp, which is
+    not an observed market-data cutoff (this job pulls each symbol's own
+    history independently over the run's lifetime — no single instant is
+    "the" cutoff for every symbol). Fixed to be explicitly None with a
+    `data_cutoff_basis: "not_captured"` companion field, rather than
+    silently presenting an unrelated timestamp as if it were verified
+    market-data provenance."""
+
+    def _run_and_capture_mid_run_status(self, monkeypatch, universe, horizon):
+        captured = {}
+
+        def fake_backtest(sym, hor, benchmark_df, market, universe=None):
+            if not captured:
+                captured.update(ve.get_run_status())
+            return []
+
+        _mock_io(monkeypatch, fake_backtest)
+        ve.run_validation(horizon=horizon, universe=universe)
+        return captured
+
+    def test_data_cutoff_is_none_at_claim_time(self, monkeypatch):
+        status = self._run_and_capture_mid_run_status(monkeypatch, "us", "short")
+        job = status.get("job")
+        assert job is not None
+        assert job["data_cutoff"] is None
+
+    def test_data_cutoff_basis_states_not_captured(self, monkeypatch):
+        status = self._run_and_capture_mid_run_status(monkeypatch, "us", "short")
+        job = status.get("job")
+        assert job["data_cutoff_basis"] == "not_captured"
+
+    def test_started_at_and_created_at_remain_populated(self, monkeypatch):
+        """The claim/run-start timestamps themselves are still honest and
+        present — only the mislabeled 'data cutoff' framing was removed."""
+        status = self._run_and_capture_mid_run_status(monkeypatch, "us", "short")
+        job = status.get("job")
+        assert job["started_at"] is not None
+        assert job["created_at"] is not None
+
+    def test_job_identity_still_fixed_market_universe_horizon(self, monkeypatch):
+        """This narrow correction must not disturb the original
+        immutable-identity fix."""
+        status = self._run_and_capture_mid_run_status(monkeypatch, "us", "short")
+        job = status.get("job")
+        assert job["market"] == "US"
+        assert job["universe_id"] == "us"
+        assert job["horizon"] == "short"
+
+    def test_completion_does_not_fabricate_a_data_cutoff(self, monkeypatch):
+        """Completion must not silently replace the honest None with the
+        run-completion timestamp — that would just move the same
+        fabrication to a different instant."""
+        _mock_io(monkeypatch, lambda *a, **k: [])
+        ve.run_validation(horizon="short", universe="us")
+        job = ve.get_run_status().get("job")
+        assert job["status"] == "completed"
+        assert job["data_cutoff"] is None
+        assert job["data_cutoff_basis"] == "not_captured"
+
+    def test_persisted_summary_retains_truthful_null_cutoff(self, monkeypatch):
+        _mock_io(monkeypatch, lambda *a, **k: [])
+        metrics = ve.run_validation(horizon="short", universe="us")
+        job = metrics.get("job")
+        assert job is not None
+        assert job["data_cutoff"] is None
+        assert job["data_cutoff_basis"] == "not_captured"
+
+    def test_existing_backward_compatible_keys_still_present(self, monkeypatch):
+        status = self._run_and_capture_mid_run_status(monkeypatch, "us", "short")
+        job = status.get("job")
+        missing = REQUIRED_JOB_FIELDS - set(job)
+        assert not missing, f"job identity missing required fields: {sorted(missing)}"
+        for key in ("running", "progress", "total", "started_at", "log"):
+            assert key in status
+
+    def test_original_cross_universe_defect_remains_fixed(self, monkeypatch):
+        """This narrow correction must not regress the original bug this
+        file exists to prevent: a US run must still identify as US, never
+        be attributable to Nifty 100 by omission."""
+        status = self._run_and_capture_mid_run_status(monkeypatch, "us", "short")
+        job = status.get("job")
+        assert job["market"] == "US"
+        assert job["universe_id"] == "us"
+        assert job["benchmark"] == "^GSPC"
 
 
 @pytest.mark.regression

@@ -88,7 +88,18 @@ def _new_job_identity(*, market: str, universe_id: str, horizon: str,
         "source_commit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
         "model_version": VALIDATION_MODEL_VERSION,
         "methodology_version": VALIDATION_METHODOLOGY_VERSION,
-        "data_cutoff": now,
+        # `data_cutoff` is deliberately None at claim time — `now` here is
+        # the claim/run-start timestamp, not an observed market-data
+        # cutoff, and reporting it as one would be false: this job pulls
+        # each symbol's own history independently over the run's
+        # lifetime, so no single instant is "the" data cutoff for every
+        # symbol. `data_cutoff_basis` states plainly that no real cutoff
+        # was captured, rather than silently fabricating one from a
+        # nearby but unrelated timestamp (e.g. the benchmark fetch time).
+        # Kept as an explicit (not omitted) key for any existing consumer
+        # that already reads it.
+        "data_cutoff": None,
+        "data_cutoff_basis": "not_captured",
         "requested_by": requested_by,
         "trigger_type": trigger_type,
         "created_at": now,
