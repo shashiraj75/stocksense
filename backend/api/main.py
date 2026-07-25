@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
 from slowapi import _rate_limit_exceeded_handler
-from api.routers import stocks, predictions, news, screener, watchlist, backtest, picks, validation, paper_trading, alerts, auth, feedback, portfolio, multibagger
+from api.routers import stocks, predictions, news, screener, watchlist, backtest, picks, validation, paper_trading, alerts, auth, feedback, portfolio, multibagger, leadership
 from services.rate_limit import limiter
 
 log = logging.getLogger(__name__)
@@ -634,6 +634,7 @@ app.include_router(auth.router,           tags=["Auth"])
 app.include_router(feedback.router)
 app.include_router(portfolio.router)
 app.include_router(multibagger.router)
+app.include_router(leadership.router)
 
 
 @app.get("/health")
