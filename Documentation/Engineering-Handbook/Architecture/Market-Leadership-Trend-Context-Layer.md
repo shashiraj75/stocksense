@@ -1,6 +1,10 @@
 # Market Leadership and Trend Context Layer — Current-State Investigation and Architecture
 
-**Status:** IMPLEMENTED LOCALLY (shadow-only, all flags default OFF, no scoring influence)
+**Status:** PR [#22](https://github.com/shashiraj75/stocksense/pull/22) MERGED to `main` (merge
+commit `67a1f13`) and automatically deployed DORMANT — all six flags OFF, no scoring influence,
+UI not exposed. See [Current-Release-Status.md](../Operations/Current-Release-Status.md) for the
+authoritative, up-to-date lifecycle status; this document's own narrative sections below describe
+the investigation and design as originally authored and are not re-edited for lifecycle state.
 **Branch:** `feat/market-leadership-trend-context` (from `origin/main` @ `29539d6`)
 **Date:** 2026-07-24
 

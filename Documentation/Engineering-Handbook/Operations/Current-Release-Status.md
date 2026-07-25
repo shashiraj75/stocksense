@@ -8,61 +8,90 @@
 
 ---
 
+## Validation Job-Identity Fix
+
+**Status:** PR [#21](https://github.com/shashiraj75/stocksense/pull/21)
+(`fix/validation-job-universe-identity`) **MERGED** to `main` (merge commit `37bfe39`, 2026-07-25) and
+**automatically deployed** — confirmed via GitHub's commit-status API (Railway and Vercel both
+`success` on the merge commit) and a direct, natural, unmanufactured observation: the production
+`/api/validation/status` endpoint transitioned from its pre-merge shape (no `job` field) through a
+502 during the Railway restart to its fresh post-merge default (`{"running": false, "progress": 0,
+"total": 0, "started_at": null, "log": []}`), proving the new code is live. **Natural behavioural
+verification of the cross-universe fix itself is PENDING** — no scheduled or manually-triggered
+validation run has occurred since deploy, so the original defect (a US run rendering under the Nifty
+100 tab) has not yet been observed corrected under real, naturally-occurring traffic. No validation
+run was manually triggered to force this evidence, consistent with this repository's operational
+safety boundaries.
+
+Fixed via a fresh independent pre-merge review (not just the original implementation): jobs are now
+bound to an immutable identity (market/universe/horizon/timestamps) at claim time; a caller-supplied
+mismatched job identity now fails closed instead of silently misattributing a run; a benchmark fetch
+failure is now explicitly disclosed (`benchmark_data_available`/`benchmark_unavailable_reason`)
+rather than silently reported as a fabricated 0.0% return; `data_cutoff` is honestly `None` (with
+`data_cutoff_basis: "not_captured"`) rather than presenting a claim/run-start timestamp as a verified
+market-data cutoff. 29 regression tests. Final test evidence: backend 3582/3582, frontend 420/420,
+clean typecheck, clean production build.
+
 ## Market Leadership and Trend Context Layer
 
-**Status:** IMPLEMENTED LOCALLY, TESTED LOCALLY, SHADOW-VALIDATION READY — published as **draft**
-PR [#22](https://github.com/shashiraj75/stocksense/pull/22) (`feat/shadow-market-leadership-context`).
-**Not merged, not deployed, not enabled.** A related, separately-shipped fix is draft PR
-[#21](https://github.com/shashiraj75/stocksense/pull/21) (`fix/validation-job-universe-identity`) —
-the two PRs share one file, `backend/api/main.py`, at separate non-overlapping hunks (PR #21 changes
-validation-scheduler/catch-up call sites; PR #22 adds the leadership-router registration); all other
-functional files are scope-separated, and each PR was independently tested. See
+**Status:** PR [#22](https://github.com/shashiraj75/stocksense/pull/22)
+(`feat/shadow-market-leadership-context`) **MERGED** to `main` (merge commit `67a1f13`, 2026-07-25)
+and **automatically deployed DORMANT** — confirmed via GitHub's commit-status API (Railway and
+Vercel both `success`) and a direct, natural observation of the live production endpoint:
+`GET /api/leadership/context?symbol=AAPL&market=US` returns exactly `{"status":"disabled"}`, proven
+by watching the endpoint transition from a pre-deploy 404 (route didn't exist yet) through a 502
+during the Railway restart to this live disabled response — genuine evidence, not a manufactured
+test. See
 [Market Leadership and Trend Context Layer — Local Implementation and Release Evidence](../Releases/Market-Leadership-Trend-Context-Layer-Local-Implementation.md)
 and its companion
 [Architecture](../Architecture/Market-Leadership-Trend-Context-Layer.md).
 
+**ALL SIX FEATURE FLAGS REMAIN OFF** — five backend capability flags
+(`MARKET_LEADERSHIP_ENGINE_ENABLED`/`_SHADOW_ENABLED`/`_UI_ENABLED`/`_VALIDATION_ENABLED`/`_SCORING_ENABLED`)
+plus one fail-closed public frontend presentation gate (`NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED`,
+only the exact string `"1"` enables it). None was set in any Railway/Vercel environment during this
+release. **UI NOT EXPOSED. SHADOW PERSISTENCE NOT ENABLED. SCORING INFLUENCE ZERO** —
+`MARKET_LEADERSHIP_SCORING_ENABLED` is statically proven unconsumed by any scoring/ranking code
+path. Daily Picks, Multibagger, Portfolio, Paper Trading, Alerts, Validation, Heatmap, and Screener
+are unmodified by this work.
+
 - New, isolated `backend/services/market_leadership/` package: Stock Relative Strength Rank,
   Sector/Industry Group Leadership, Trend Lifecycle classification, Market Breadth, "Why Now?"
   explanation contract, plus an additive `GET /api/leadership/context` endpoint and an experimental
-  Stock Detail page component. **Five backend capability flags**
-  (`MARKET_LEADERSHIP_ENGINE_ENABLED`/`_SHADOW_ENABLED`/`_UI_ENABLED`/`_VALIDATION_ENABLED`/`_SCORING_ENABLED`)
-  plus **one fail-closed public frontend presentation gate**
-  (`NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED`, only the exact string `"1"` enables it) — **all six
-  default OFF**; `_SCORING_ENABLED` is reserved and statically proven unconsumed by any scoring
-  path; the frontend gate is not set in any committed `.env` file, so merging with no environment
-  change adds zero leadership browser requests to any page view. Daily Picks, Multibagger,
-  Portfolio, Paper Trading, Alerts, Validation, Heatmap, and Screener are unmodified by this work.
-- Also fixes a separate, pre-existing defect found during this investigation: the Validation UI
-  could display an active run from one market/universe/horizon under a different, selected tab
-  (module-global run state carried no job identity). Runs are now bound to an immutable job
-  identity created once at claim time. **Ships in PR #21, not PR #22.**
-- Two genuine defects were found and fixed via live manual verification against real yfinance data
-  (running the actual backend locally, not hypothetical): a provider-incomplete last bar (NaN
-  Close) could crash the new endpoint's JSON serialization outright, and — once fixed — a second,
-  real correctness bug surfaced (an honest "no universe percentile" case was mis-worded as "insufficient price history"). A third defect (unbounded per-request recomputation cost) was found and
-  fixed during the mandatory four-hat adversarial review before this status entry was written.
-- 3727/3727 backend tests passing (3553 baseline + 174 new, this branch's scope only — excludes the
-  separately-tracked validation job-identity fix), 444/444 frontend tests passing, clean typecheck,
-  clean production build (built with the frontend gate absent, matching real deployment state).
-  Quantitative shadow validation (Section 15) status: **VALIDATION PENDING** — the walk-forward
-  harness is built, functional, and smoke-tested against real data, but no statistically adequate
-  evidence base exists yet; full validation requires a data-collection period outside a single
-  session's scope.
-- A fourth defect (a cache-mutation hazard — `compute_stock_context` could hand a caller a live
-  reference into the shared TTL cache, letting an in-place mutation corrupt every subsequent cache
-  hit) was found and fixed during a final independent pre-publication audit, reproduced live before
-  the fix and reproduced-absent after it.
-- A fifth issue (not a data-safety defect, but an incomplete "flags-off" claim) was found in a
-  second, narrower pre-publication review: the frontend component always issued a browser request
-  to the leadership API regardless of backend flag state — the backend safely answered
-  `{"status":"disabled"}`, but the request itself still happened. Fixed with the new frontend
-  presentation gate described above, proven via a mocked API spy asserted `not.toHaveBeenCalled()`
-  across every disabled-value case.
-- All flags remain **default OFF**; **ZERO PRODUCTION SCORING INFLUENCE**; **NOT DEPLOYED**; **NOT
-  ENABLED** in any environment.
-- **Recommendation: Gate 4 (Shadow-Validation Readiness) criteria met. Both PRs remain draft.
-  Awaiting explicit user approval before merge, deploy, or any production flag enablement
-  (Gates 5–7).**
+  Stock Detail page component.
+- Six genuine defects were found and fixed across this release's review passes — three via live
+  manual verification against real yfinance data (a provider-incomplete-bar JSON crash; a misleading
+  "insufficient history" explanation for a case where data was actually fine; an unbounded
+  per-request recomputation cost), one cache-mutation hazard (a caller could corrupt the shared TTL
+  cache via in-place mutation of its own response), one incomplete "flags-off" claim (the frontend
+  issued a browser request regardless of backend flag state — fixed with the new frontend
+  presentation gate), and two found via a final fresh adversarial pre-merge review using more
+  extreme inputs than the original test suite: a group cap-weight redistribution algorithm that
+  could silently violate its own 20% ceiling under extreme concentration, and a NaN composite value
+  that could be sorted as if it were a genuine top-percentile relative-strength extreme. All six are
+  fixed, tested, and — where practical — sanity-checked by deliberately reverting the fix, confirming
+  the regression test fails, and restoring.
+- Final test evidence (this repository's own venv, real exit codes checked): backend **3762/3762**
+  passed, frontend **454/454** passed, clean typecheck, clean production build (built with the
+  frontend gate absent, matching real deployment state).
+- **Quantitative shadow validation (Section 15) status: VALIDATION PENDING.** The walk-forward
+  harness is built, functional, and smoke-tested against real data (225 real observations, correctly
+  self-suppressed below its own 300-observation floor), but **no statistically adequate evidence
+  base exists yet** — a genuine evidence base (India + US separately, multiple horizons, multiple
+  regimes, walk-forward splits, bootstrap confidence intervals) requires a data-collection period
+  well beyond what any single implementation session can produce. The 300-observation floor is a
+  presentation minimum, not proof of statistical adequacy — no accuracy, win-rate, or profitability
+  claim is made or implied anywhere in this release.
+- **Known, disclosed, out-of-scope residual risk**: a raw exception string is persisted into a
+  public-reachable field in `validation_engine.py` (inconsistent with this codebase's own
+  `safe_error_message` convention of never exposing `str(exc)` to any consumer-facing surface) —
+  found during PR #22's review but outside both PRs' merged scope; flagged separately for a
+  dedicated future fix, not blocking this release.
+- **Next gates required before this layer can affect a user or a score**: separate, explicit
+  approval for (1) production shadow enablement (`MARKET_LEADERSHIP_SHADOW_ENABLED`), (2)
+  user-visible UI enablement (both `MARKET_LEADERSHIP_UI_ENABLED` and
+  `NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED`), and (3) any recommendation-scoring influence
+  (`MARKET_LEADERSHIP_SCORING_ENABLED`) — none of which is requested or implied by this entry.
 
 ---
 

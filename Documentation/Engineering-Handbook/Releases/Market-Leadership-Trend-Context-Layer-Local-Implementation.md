@@ -1,10 +1,14 @@
 # Market Leadership and Trend Context Layer — Local Implementation and Release Evidence
 
-**Status:** IMPLEMENTED LOCALLY, TESTED LOCALLY, SHADOW-VALIDATION READY. Not pushed, not merged,
-not deployed. All five feature flags default OFF; scoring influence
-(`MARKET_LEADERSHIP_SCORING_ENABLED`) is reserved and consumed by no production code path — ZERO
-PRODUCTION SCORING INFLUENCE. NOT ENABLED in any environment. No production system, database, or
-published signal was touched.
+**Status:** PR [#22](https://github.com/shashiraj75/stocksense/pull/22) **MERGED** to `main` (merge
+commit `67a1f13`, 2026-07-25) and **automatically deployed DORMANT**. All six feature flags remain
+OFF; scoring influence (`MARKET_LEADERSHIP_SCORING_ENABLED`) is reserved and consumed by no
+production code path — ZERO PRODUCTION SCORING INFLUENCE. UI NOT EXPOSED, shadow persistence NOT
+enabled, in any environment. See
+[Current-Release-Status.md](../Operations/Current-Release-Status.md) for the authoritative,
+up-to-date lifecycle status and final merged test evidence; everything below in this document is
+the original local-implementation evidence record as authored pre-merge and is not rewritten for
+lifecycle state.
 
 **PR split note:** this document was originally written against the full local development branch
 (`feat/market-leadership-trend-context`, 9 commits, including a separate validation job-identity
@@ -17,9 +21,10 @@ confirmed to merge without conflict. All other functional files are scope-separa
 `git diff --name-only`, zero overlap outside `api/main.py`), and the market-leadership code has zero
 *runtime* dependency on the job-identity patch — it only reads a pre-existing, unmodified function
 (`_resolve_yahoo_symbol`) from `validation_engine.py` that predates both PRs. Each branch was
-independently tested in its own isolated worktree. On this evidence, they ship as two independent
-draft PRs — not because they are literally file-disjoint, but because they are functionally
-independent and neither PR's tests or behavior depend on the other:
+independently tested in its own isolated worktree. On this evidence, they shipped as two independent
+PRs — not because they are literally file-disjoint, but because they are functionally
+independent and neither PR's tests or behavior depend on the other. Both have since merged to
+`main` (PR #21 as `37bfe39`, PR #22 as `67a1f13`) and deployed automatically, in that order:
 
 - **This PR** (`feat/shadow-market-leadership-context`) carries only the Market Leadership and Trend
   Context Layer — 8 of the 9 original commits, cherry-picked verbatim, plus one additional commit
@@ -35,7 +40,8 @@ methodology, contracts, PIT controls, rollback plan).
 ## 1. Scope delivered this session
 
 1. **Validation job-identity defect** (Section 3 of the governing brief) — root-caused and fixed.
-   **Ships in the separate `fix/validation-job-universe-identity` PR, not this one.**
+   **Shipped in the separate `fix/validation-job-universe-identity` PR (#21), not this one — merged
+   to `main` and deployed; see [Current-Release-Status.md](../Operations/Current-Release-Status.md).**
 2. **Market Leadership and Trend Context Layer** (Sections 4–9) — new `backend/services/market_leadership/`
    package: Stock Relative Strength Rank, Sector/Industry Group Leadership, Trend Lifecycle,
    Market Breadth, "Why Now?" explanation contract.
