@@ -150,22 +150,38 @@ class TestActiveJobCarriesImmutableIdentity:
         assert job["completed_at"] is not None
         assert job["failure_code"] is None
 
-    def test_failed_job_records_failure_not_silent_reset(self, monkeypatch):
+    def test_failed_job_records_failure_not_silent_reset(self, monkeypatch, caplog):
+        """Public-diagnostic sanitization regression: the raw exception
+        message must never reach the public job.failure_message (or the
+        public log) — only a stable failure_code/fixed message. The real
+        exception must still be logged server-side (caplog), so an
+        operator can actually diagnose the failure."""
+        import logging
         _mock_io(monkeypatch, lambda *a, **k: [])
 
         def _boom(*a, **k):
-            raise RuntimeError("synthetic metrics failure")
+            raise RuntimeError("synthetic metrics failure — password=SECRET host=db.internal")
 
         monkeypatch.setattr(ve, "_compute_metrics", _boom)
-        with pytest.raises(RuntimeError):
-            ve.run_validation(horizon="short", universe="us")
+        with caplog.at_level(logging.ERROR, logger="services.validation_engine"):
+            with pytest.raises(RuntimeError):
+                ve.run_validation(horizon="short", universe="us")
         status = ve.get_run_status()
         assert status["running"] is False
         job = status.get("job")
         assert job is not None
         assert job["status"] == "failed"
-        assert job["failure_code"] is not None
-        assert "synthetic metrics failure" in (job["failure_message"] or "")
+        assert job["failure_code"] == "RUN_EXCEPTION"
+        assert job["failure_message"] == ve.VALIDATION_PUBLIC_FAILURE_MESSAGES["RUN_EXCEPTION"]
+        assert "synthetic metrics failure" not in job["failure_message"]
+        assert "password" not in job["failure_message"]
+        # Public progress log must not carry the raw exception either.
+        assert not any("synthetic metrics failure" in line for line in status["log"])
+        assert not any("password" in line for line in status["log"])
+        # The real exception must still be diagnosable server-side — the
+        # traceback (exc_info=True via log.exception) is captured in the
+        # formatted log output.
+        assert "synthetic metrics failure" in caplog.text
 
     def test_backward_compatible_top_level_keys_preserved(self, monkeypatch):
         """Existing consumers read running/progress/total/started_at/log —
@@ -458,7 +474,11 @@ class TestClaimedJobIdentityInvariant:
         assert job is not None
         assert job["status"] == "failed"
         assert job["failure_code"] == "CLAIMED_JOB_MISMATCH"
-        assert "does not match" in job["failure_message"]
+        # Public-diagnostic sanitization: the public failure_message is the
+        # fixed, stable string — never the dynamic universe/horizon detail
+        # (that detail is safe in itself, but the public contract stays
+        # deterministic regardless of what the internal message says).
+        assert job["failure_message"] == ve.VALIDATION_PUBLIC_FAILURE_MESSAGES["CLAIMED_JOB_MISMATCH"]
 
     def test_matching_job_is_unaffected_by_the_new_check(self, monkeypatch):
         """The one real caller (API /run) always supplies a matching job —

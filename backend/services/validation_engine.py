@@ -69,6 +69,50 @@ VALIDATION_MODEL_VERSION = "composite-technical-v1"
 UNIVERSE_VERSION = {"nifty100": "static-2026.06", "midcap": "static-2026.06", "us": "static-2026.06"}
 
 
+# ── Public diagnostic sanitization ────────────────────────────────────────────
+# Every Validation payload reachable from a public API response — GET /status
+# (get_run_status), GET /results (get_latest_results, including older
+# persisted val_runs.summary rows) — must never carry a raw exception
+# (str(e)/repr(e)), a traceback, a Python exception class name, or provider/
+# SQL/filesystem detail. The real exception is always logged server-side
+# (log.exception) at the point it occurs; only one of these fixed, stable
+# values ever crosses into a public field. Mirrors the repository-wide
+# safe_error_message() convention (services/safe_errors.py), centralized
+# here for Validation's specific diagnostic fields.
+VALIDATION_PUBLIC_FAILURE_MESSAGES = {
+    "RUN_EXCEPTION": "Validation run failed.",
+    "BENCHMARK_FETCH_FAILED": "Benchmark data is temporarily unavailable.",
+    "SYMBOL_VALIDATION_FAILED": "Validation failed for this symbol.",
+    "CLAIMED_JOB_MISMATCH": "Validation job identity mismatch.",
+}
+
+# benchmark_unavailable_reason's two possible stable public values. The
+# genuine "not enough bars for this horizon" condition
+# (BENCHMARK_UNAVAILABLE_INSUFFICIENT_HISTORY) must never be collapsed into
+# the provider-failure code, and vice versa — they are different conditions
+# with different operational meaning and must stay distinguishable.
+BENCHMARK_UNAVAILABLE_INSUFFICIENT_HISTORY = "insufficient_benchmark_history_for_horizon"
+BENCHMARK_UNAVAILABLE_FETCH_FAILED = "benchmark_fetch_failed"
+
+
+def _sanitize_benchmark_unavailable_reason(reason: str | None) -> str | None:
+    """Map a benchmark_unavailable_reason value to a stable public code.
+
+    Pure and deterministic — safe to apply both to a freshly computed
+    reason and to an older persisted val_runs.summary row written before
+    this sanitization existed (whose reason may still literally be the
+    legacy "benchmark_fetch_failed: <raw exception text>" string). Never
+    mutates the stored row; only sanitizes the value being returned.
+    """
+    if reason is None or reason == BENCHMARK_UNAVAILABLE_INSUFFICIENT_HISTORY:
+        return reason
+    # Any other value — a freshly written stable code, or a legacy raw
+    # "benchmark_fetch_failed: <exception>" string — is a provider-fetch
+    # failure of some kind. The exact historical exception text is never
+    # reconstructable as safe, so it always collapses to the one stable code.
+    return BENCHMARK_UNAVAILABLE_FETCH_FAILED
+
+
 def _new_job_identity(*, market: str, universe_id: str, horizon: str,
                       benchmark: str, total: int, trigger_type: str,
                       requested_by: str | None = None) -> dict:
@@ -1289,20 +1333,29 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
         # universe's stock list, which would corrupt both the computed
         # results and the persisted job identity attached to them.
         if _claimed_job["universe_id"] != universe or _claimed_job["horizon"] != horizon:
+            log.warning(
+                "[validation] claimed job identity mismatch — claimed universe=%s "
+                "horizon=%s, requested universe=%s horizon=%s",
+                _claimed_job["universe_id"], _claimed_job["horizon"], universe, horizon,
+            )
             with _status_lock:
                 if _run_status.get("job") is _claimed_job:
                     _run_status.update({
                         "running": False,
-                        "log": _run_status["log"] + ["❌ Failed: claimed job identity mismatch"],
+                        "log": _run_status["log"] + [
+                            f"❌ Failed: {VALIDATION_PUBLIC_FAILURE_MESSAGES['CLAIMED_JOB_MISMATCH']}"
+                        ],
                     })
                     _claimed_job.update({
                         "status": "failed",
                         "failure_code": "CLAIMED_JOB_MISMATCH",
-                        "failure_message": (
-                            f"claimed job (universe={_claimed_job['universe_id']!r}, "
-                            f"horizon={_claimed_job['horizon']!r}) does not match the "
-                            f"requested run (universe={universe!r}, horizon={horizon!r})"
-                        ),
+                        # Public field — stable and fixed, never the dynamic
+                        # universe/horizon detail above (that detail is safe
+                        # in itself, being constrained enum values not
+                        # exception text, but the public contract stays
+                        # deterministic regardless — see VALIDATION_PUBLIC_
+                        # FAILURE_MESSAGES).
+                        "failure_message": VALIDATION_PUBLIC_FAILURE_MESSAGES["CLAIMED_JOB_MISMATCH"],
                         "completed_at": datetime.now(timezone.utc).isoformat(),
                         "updated_at": datetime.now(timezone.utc).isoformat(),
                     })
@@ -1357,10 +1410,14 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
                 benchmark_avg_ret = 0.0
                 benchmark_unavailable_reason = "insufficient_benchmark_history_for_horizon"
             benchmark_df = bench_df
-        except Exception as e:
+        except Exception:
+            log.exception(
+                "[validation] benchmark fetch failed — ticker=%s horizon=%s universe=%s",
+                benchmark_ticker, horizon, universe,
+            )
             benchmark_df = pd.DataFrame()
             benchmark_avg_ret = 0.0
-            benchmark_unavailable_reason = f"benchmark_fetch_failed: {e}"
+            benchmark_unavailable_reason = BENCHMARK_UNAVAILABLE_FETCH_FAILED
 
         all_signals: list[dict] = []
         symbols_with_signals: set[str] = set()
@@ -1386,11 +1443,18 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
                             _run_status["job"]["processed"] = done
                             _run_status["job"]["current_symbol"] = sym
                             _run_status["job"]["updated_at"] = datetime.now(timezone.utc).isoformat()
-                except Exception as e:
+                except Exception:
+                    log.exception(
+                        "[validation] symbol backtest raised — symbol=%s market=%s "
+                        "universe=%s horizon=%s",
+                        sym, market, universe, horizon,
+                    )
                     done += 1
                     with _status_lock:
                         _run_status["progress"] = done
-                        _run_status["log"].append(f"[{done}/{n_stocks}] {sym}: ERROR {e}")
+                        _run_status["log"].append(
+                            f"[{done}/{n_stocks}] {sym}: ERROR SYMBOL_VALIDATION_FAILED"
+                        )
                         if _run_status.get("job") is not None:
                             _run_status["job"]["processed"] = done
                             _run_status["job"]["current_symbol"] = sym
@@ -1503,14 +1567,23 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
 
         return metrics
 
-    except Exception as e:
+    except Exception:
+        log.exception(
+            "[validation] run_validation failed — horizon=%s universe=%s market=%s",
+            horizon, universe, market,
+        )
         with _status_lock:
-            _run_status.update({"running": False, "log": _run_status["log"] + [f"❌ Failed: {e}"]})
+            _run_status.update({
+                "running": False,
+                "log": _run_status["log"] + [
+                    f"❌ Failed: {VALIDATION_PUBLIC_FAILURE_MESSAGES['RUN_EXCEPTION']}"
+                ],
+            })
             if _run_status.get("job") is not None:
                 _run_status["job"].update({
                     "status": "failed",
                     "failure_code": "RUN_EXCEPTION",
-                    "failure_message": str(e),
+                    "failure_message": VALIDATION_PUBLIC_FAILURE_MESSAGES["RUN_EXCEPTION"],
                     "completed_at": datetime.now(timezone.utc).isoformat(),
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 })
@@ -1561,6 +1634,14 @@ def get_latest_results(horizon: str | None = None, universe: str = "nifty100") -
             return {"available": False, "message": "No validation run found. Run /api/validation/run first."}
         summary = row[0] if _USE_POSTGRES else row["summary"]
         data = summary if isinstance(summary, dict) else json.loads(summary)
+        # Defense-in-depth for rows persisted before public diagnostic
+        # sanitization existed — never rewrites the stored row (`data` is a
+        # freshly deserialized copy for this call only), only sanitizes the
+        # value about to be returned. See _sanitize_benchmark_unavailable_reason.
+        if "benchmark_unavailable_reason" in data:
+            data["benchmark_unavailable_reason"] = _sanitize_benchmark_unavailable_reason(
+                data["benchmark_unavailable_reason"]
+            )
         return {"available": True, **data}
     except Exception as e:
         return {"available": False, "error": safe_error_message(
@@ -1684,6 +1765,18 @@ def get_run_status() -> dict:
         # returned; the live job/log must not mutate under a caller's feet.
         if snapshot.get("job") is not None:
             snapshot["job"] = dict(snapshot["job"])
+            # Defense-in-depth at the public API boundary: failure_code is
+            # the source of truth for what's safe to expose publicly — a
+            # future internal caller that (incorrectly) writes a raw
+            # exception into failure_message directly, without going
+            # through VALIDATION_PUBLIC_FAILURE_MESSAGES, can never leak it
+            # here, since this always re-derives the public message from
+            # the code rather than trusting whatever failure_message holds.
+            code = snapshot["job"].get("failure_code")
+            if code is not None:
+                snapshot["job"]["failure_message"] = VALIDATION_PUBLIC_FAILURE_MESSAGES.get(
+                    code, VALIDATION_PUBLIC_FAILURE_MESSAGES["RUN_EXCEPTION"]
+                )
         if isinstance(snapshot.get("log"), list):
             snapshot["log"] = list(snapshot["log"])
         return snapshot
