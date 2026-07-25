@@ -253,7 +253,7 @@ async def _validation_schedule_loop():
             for univ in ("nifty100", "midcap", "us"):
                 try:
                     log.info(f"[validation_scheduler] starting medium/{univ} run…")
-                    await loop.run_in_executor(None, lambda u=univ: run_validation(horizon="medium", universe=u))
+                    await loop.run_in_executor(None, lambda u=univ: run_validation(horizon="medium", universe=u, trigger_type="scheduler"))
                     log.info(f"[validation_scheduler] medium/{univ} complete")
                 except Exception as e:
                     log.warning(f"[validation_scheduler] medium/{univ} error: {e}")
@@ -264,7 +264,7 @@ async def _validation_schedule_loop():
                 for univ in ("nifty100", "midcap", "us"):
                     try:
                         log.info(f"[validation_scheduler] Sunday — starting long/{univ} run…")
-                        await loop.run_in_executor(None, lambda u=univ: run_validation(horizon="long", universe=u))
+                        await loop.run_in_executor(None, lambda u=univ: run_validation(horizon="long", universe=u, trigger_type="scheduler"))
                         log.info(f"[validation_scheduler] long/{univ} complete")
                     except Exception as e:
                         log.warning(f"[validation_scheduler] long/{univ} error: {e}")
@@ -505,7 +505,7 @@ async def lifespan(app: FastAPI):
             from services.validation_engine import run_validation
             log.info("[catchup] missed today's 6 AM validation — running now…")
             loop2 = asyncio.get_running_loop()
-            await loop2.run_in_executor(None, lambda: run_validation(horizon="medium"))
+            await loop2.run_in_executor(None, lambda: run_validation(horizon="medium", trigger_type="scheduler"))
             log.info("[catchup] catch-up validation complete")
         except Exception as e:
             log.warning(f"[catchup] validation catch-up error: {e}")
