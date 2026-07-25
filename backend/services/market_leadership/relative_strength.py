@@ -111,11 +111,26 @@ def composite_relative_return(windows: dict[str, float | None]) -> float | None:
 
 def rank_universe(composites: dict[str, float]) -> dict[str, dict]:
     """Percentile rank (0-100, average-rank tie handling) and integer rank
-    (1 = strongest) for every symbol with a non-None composite. Symbols not
-    present in `composites` are the caller's INSUFFICIENT_DATA cases and are
-    never assigned a synthetic neutral score here."""
-    if not composites:
+    (1 = strongest) for every symbol with a non-None, finite composite.
+    Symbols not present in `composites`, plus any symbol whose composite is
+    NaN/Inf, are the caller's INSUFFICIENT_DATA cases and are never
+    assigned a synthetic neutral score here.
+
+    Defensive fix (found via fresh adversarial pre-merge review): under the
+    current pipeline `compute_relative_return_windows`/
+    `composite_relative_return` never actually produce NaN (they return
+    None instead), so this can't fire today — but this function has no
+    contract preventing a future caller from passing one, and without this
+    guard a NaN composite was silently sorted by numpy as if it were a
+    real, comparable value (numpy's argsort places NaN at the extreme end
+    of the order), which could hand a completely missing/invalid signal a
+    top-percentile rank — exactly the "NaN masquerading as a genuine
+    market extreme" this layer must never allow anywhere.
+    """
+    finite_composites = {s: v for s, v in composites.items() if np.isfinite(v)}
+    if not finite_composites:
         return {}
+    composites = finite_composites
     symbols = list(composites)
     values = np.array([composites[s] for s in symbols], dtype=float)
     n = len(values)

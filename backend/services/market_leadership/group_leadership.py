@@ -46,29 +46,64 @@ class MemberFact:
 
 def _capped_weights(members: list[MemberFact]) -> dict[str, float]:
     """Cap-proxy weights from market cap, capped at GROUP_MAX_MEMBER_WEIGHT
-    per member; falls back to equal weight when no cap data exists."""
+    per member; falls back to equal weight when no cap data exists.
+
+    Correctness fix (found via fresh adversarial pre-merge review, using a
+    more extreme concentration ratio than any existing test fixture — one
+    member's raw market cap ~1e9x the smallest, reproducing a real
+    violation): the previous iterative redistribution recomputed the
+    "over"/"under" split from scratch every pass, so a member already
+    capped to exactly GROUP_MAX_MEMBER_WEIGHT in an earlier round was
+    `not in over` (its weight sat AT, not ABOVE, the cap) and so was
+    incorrectly re-classified as "under" — eligible to receive further
+    redistributed excess and get pushed back OVER the cap, requiring
+    additional iterations to re-converge. Under sufficiently extreme
+    concentration this genuinely failed to converge within the fixed
+    10-iteration budget, silently violating the exact "no single mega-cap
+    can dominate a group score" guarantee this function exists to
+    enforce. Fixed with a permanently-growing `locked` set: once a member
+    is capped it is excluded from ALL future redistribution rounds, never
+    just the current one — this guarantees monotonic progress (each round
+    either locks at least one new member or the loop is done) and exact
+    convergence in at most len(members) rounds, with no oscillation.
+    """
     caps = {m.symbol: m.market_cap for m in members if m.market_cap and m.market_cap > 0}
     if not caps:
         n = len(members)
         return {m.symbol: 1.0 / n for m in members} if n else {}
     total = sum(caps.values())
     raw = {sym: cap / total for sym, cap in caps.items()}
-    # Iteratively redistribute weight above the cap to uncapped members —
-    # standard capped-weight renormalization.
-    weights = dict(raw)
-    for _ in range(10):
-        over = {s: w for s, w in weights.items() if w > GROUP_MAX_MEMBER_WEIGHT}
-        if not over:
-            break
-        excess = sum(w - GROUP_MAX_MEMBER_WEIGHT for w in over.values())
-        for s in over:
-            weights[s] = GROUP_MAX_MEMBER_WEIGHT
-        under = {s: w for s, w in weights.items() if s not in over}
-        under_total = sum(under.values())
-        if under_total <= 0:
-            break
-        for s in under:
-            weights[s] += excess * (under[s] / under_total)
+
+    # Cap is mathematically infeasible for this many members (e.g. cap=20%
+    # with < 5 members: N * cap < 1.0 means no assignment can both respect
+    # every individual cap and sum to 1.0) — fall back to equal weight
+    # rather than either violating the cap or looping forever.
+    n_capped_group = len(raw)
+    if n_capped_group * GROUP_MAX_MEMBER_WEIGHT < 1.0 - 1e-9:
+        weights = {sym: 1.0 / n_capped_group for sym in raw}
+    else:
+        weights = dict(raw)
+        locked: set[str] = set()
+        for _ in range(len(raw)):
+            newly_over = {
+                s for s, w in weights.items()
+                if s not in locked and w > GROUP_MAX_MEMBER_WEIGHT
+            }
+            if not newly_over:
+                break
+            excess = sum(weights[s] - GROUP_MAX_MEMBER_WEIGHT for s in newly_over)
+            for s in newly_over:
+                weights[s] = GROUP_MAX_MEMBER_WEIGHT
+            locked |= newly_over
+            unlocked = {s: w for s, w in weights.items() if s not in locked}
+            unlocked_total = sum(unlocked.values())
+            if unlocked_total <= 0:
+                # Every member is locked at the cap — only possible when
+                # n * cap == 1.0 exactly; nothing left to redistribute to.
+                break
+            for s in unlocked:
+                weights[s] += excess * (unlocked[s] / unlocked_total)
+
     # Members without cap data share equal weight from any residual.
     missing = [m.symbol for m in members if m.symbol not in weights]
     if missing:

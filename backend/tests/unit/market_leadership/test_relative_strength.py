@@ -116,6 +116,30 @@ class TestRankUniverse:
         composites = {f"S{i}": float(np.sin(i)) for i in range(15)}
         assert rank_universe(composites) == rank_universe(dict(composites))
 
+    def test_nan_composite_never_masquerades_as_a_genuine_extreme(self):
+        """Regression: fresh pre-merge adversarial review found a NaN
+        composite was silently sorted by numpy as if it were a real,
+        comparable value — numpy's argsort places NaN at the extreme end
+        of the ordering, so a completely missing/invalid signal could be
+        handed a top-percentile rank (confirmed live: NaN landed at
+        rank=3/percentile=83.33 among 3 members before the fix). NaN must
+        be excluded entirely, exactly like a missing (None) composite."""
+        composites = {"A": 5.0, "B": float("nan"), "C": 3.0}
+        ranked = rank_universe(composites)
+        assert "B" not in ranked
+        assert set(ranked) == {"A", "C"}
+        assert ranked["A"]["universe_size"] == 2  # denominator excludes the NaN entry
+
+    def test_positive_and_negative_infinity_are_excluded(self):
+        composites = {"A": 5.0, "INF": float("inf"), "NEGINF": float("-inf"), "C": 3.0}
+        ranked = rank_universe(composites)
+        assert "INF" not in ranked
+        assert "NEGINF" not in ranked
+        assert set(ranked) == {"A", "C"}
+
+    def test_all_nan_input_returns_empty_not_a_crash(self):
+        assert rank_universe({"X": float("nan"), "Y": float("nan")}) == {}
+
 
 @pytest.mark.unit
 class TestClassifyRsTrend:

@@ -64,6 +64,52 @@ class TestCappedWeights:
         weights = _capped_weights(members)
         assert all(w == pytest.approx(0.2) for w in weights.values())
 
+    def test_extreme_concentration_never_violates_the_cap_even_after_redistribution(self):
+        """Regression: fresh pre-merge adversarial review found the previous
+        iterative algorithm could push an ALREADY-capped member back over
+        the ceiling in a later redistribution round (it re-classified any
+        member sitting exactly AT the cap as 'under', eligible to receive
+        further excess), failing to converge within the fixed iteration
+        budget under sufficiently extreme concentration. This exact
+        7-member, ~1e9x concentration-ratio scenario reproduced a real
+        violation (MEGA and C both ended up at 0.2023, over the 0.20 cap)
+        before the fix — every member must be <= the cap after the fix,
+        with no member permanently re-inflated once locked."""
+        members = [
+            MemberFact("MEGA", 90.0, RsTrend.FLAT, 1e15, True, False),
+            MemberFact("A", 50.0, RsTrend.FLAT, 1e9, True, False),
+            MemberFact("B", 60.0, RsTrend.FLAT, 5e8, True, False),
+            MemberFact("C", 40.0, RsTrend.FLAT, 2e8, True, False),
+            MemberFact("D", 70.0, RsTrend.FLAT, 1e8, True, False),
+            MemberFact("E", 30.0, RsTrend.FLAT, 5e7, True, False),
+            MemberFact("F", 55.0, RsTrend.FLAT, 1e6, True, False),
+        ]
+        weights = _capped_weights(members)
+        assert all(w <= 0.20 + 1e-6 for w in weights.values()), weights
+        assert sum(weights.values()) == pytest.approx(1.0, abs=1e-6)
+
+    def test_even_more_extreme_ten_member_concentration_still_converges(self):
+        members = [MemberFact("ULTRA", 90.0, RsTrend.FLAT, 1e18, True, False)] + [
+            MemberFact(f"S{i}", 50.0, RsTrend.FLAT, 1e6 * (i + 1), True, False) for i in range(9)
+        ]
+        weights = _capped_weights(members)
+        assert all(w <= 0.20 + 1e-6 for w in weights.values())
+        assert sum(weights.values()) == pytest.approx(1.0, abs=1e-6)
+
+    def test_mathematically_infeasible_cap_falls_back_to_equal_weight(self):
+        """3 members with a 20% per-member cap cannot both respect every
+        cap and sum to 1.0 (3 * 0.20 = 0.60 < 1.0) — must gracefully fall
+        back to equal weight rather than silently violating the cap or
+        looping without converging."""
+        members = [
+            MemberFact("X", 50.0, RsTrend.FLAT, 1e12, True, False),
+            MemberFact("Y", 50.0, RsTrend.FLAT, 1e6, True, False),
+            MemberFact("Z", 50.0, RsTrend.FLAT, 1e6, True, False),
+        ]
+        weights = _capped_weights(members)
+        assert all(w == pytest.approx(1 / 3) for w in weights.values())
+        assert sum(weights.values()) == pytest.approx(1.0, abs=1e-9)
+
 
 @pytest.mark.unit
 class TestClassifyGroupState:
