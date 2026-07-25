@@ -4,7 +4,42 @@
 
 **Use this document for current state.** Historical sprint reports, Epic closures, SSDS documents, and audit reports remain authoritative evidence for their own completed scope, but they do not automatically describe the current production operating state.
 
-**As of:** 2026-07-16 — maintained as a live operational register
+**As of:** 2026-07-25 — maintained as a live operational register
+
+---
+
+## Market Leadership and Trend Context Layer
+
+**Status:** IMPLEMENTED LOCALLY, TESTED LOCALLY (2026-07-25) — **not pushed, not merged, not
+deployed.** Branch `feat/market-leadership-trend-context`. See
+[Market Leadership and Trend Context Layer — Local Implementation and Release Evidence](../Releases/Market-Leadership-Trend-Context-Layer-Local-Implementation.md)
+and its companion
+[Architecture](../Architecture/Market-Leadership-Trend-Context-Layer.md).
+
+- New, isolated `backend/services/market_leadership/` package: Stock Relative Strength Rank,
+  Sector/Industry Group Leadership, Trend Lifecycle classification, Market Breadth, "Why Now?"
+  explanation contract, plus an additive `GET /api/leadership/context` endpoint and an experimental
+  Stock Detail page component. All five feature flags
+  (`MARKET_LEADERSHIP_ENGINE_ENABLED`/`_SHADOW_ENABLED`/`_UI_ENABLED`/`_VALIDATION_ENABLED`/`_SCORING_ENABLED`)
+  **default OFF**; `_SCORING_ENABLED` is reserved and statically proven unconsumed by any scoring
+  path. Daily Picks, Multibagger, Portfolio, Paper Trading, Alerts, Validation, Heatmap, and
+  Screener are unmodified by this work.
+- Also fixes a separate, pre-existing defect found during this investigation: the Validation UI
+  could display an active run from one market/universe/horizon under a different, selected tab
+  (module-global run state carried no job identity). Runs are now bound to an immutable job
+  identity created once at claim time.
+- Two genuine defects were found and fixed via live manual verification against real yfinance data
+  (running the actual backend locally, not hypothetical): a provider-incomplete last bar (NaN
+  Close) could crash the new endpoint's JSON serialization outright, and — once fixed — a second,
+  real correctness bug surfaced (an honest "no universe percentile" case was mis-worded as "insufficient price history"). A third defect (unbounded per-request recomputation cost) was found and
+  fixed during the mandatory four-hat adversarial review before this status entry was written.
+- 3737/3737 backend tests passing (3553 baseline + 184 new), 433/433 frontend tests passing, clean
+  typecheck, clean production build. Quantitative shadow validation (Section 15) status: **VALIDATION
+  PENDING** — the walk-forward harness is built, functional, and smoke-tested against real data, but
+  no statistically adequate evidence base exists yet; full validation requires a data-collection
+  period outside a single session's scope.
+- **Recommendation: Gate 4 (Shadow-Validation Readiness) criteria met. Awaiting explicit user
+  approval before push, PR, deploy, or any production flag enablement (Gates 5–7).**
 
 ---
 
