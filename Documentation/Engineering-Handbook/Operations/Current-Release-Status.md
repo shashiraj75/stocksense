@@ -4,7 +4,65 @@
 
 **Use this document for current state.** Historical sprint reports, Epic closures, SSDS documents, and audit reports remain authoritative evidence for their own completed scope, but they do not automatically describe the current production operating state.
 
-**As of:** 2026-07-16 — maintained as a live operational register
+**As of:** 2026-07-25 — maintained as a live operational register
+
+---
+
+## Market Leadership and Trend Context Layer
+
+**Status:** IMPLEMENTED LOCALLY, TESTED LOCALLY, SHADOW-VALIDATION READY — published as **draft**
+PR [#22](https://github.com/shashiraj75/stocksense/pull/22) (`feat/shadow-market-leadership-context`).
+**Not merged, not deployed, not enabled.** A related, separately-shipped fix is draft PR
+[#21](https://github.com/shashiraj75/stocksense/pull/21) (`fix/validation-job-universe-identity`) —
+the two PRs share one file, `backend/api/main.py`, at separate non-overlapping hunks (PR #21 changes
+validation-scheduler/catch-up call sites; PR #22 adds the leadership-router registration); all other
+functional files are scope-separated, and each PR was independently tested. See
+[Market Leadership and Trend Context Layer — Local Implementation and Release Evidence](../Releases/Market-Leadership-Trend-Context-Layer-Local-Implementation.md)
+and its companion
+[Architecture](../Architecture/Market-Leadership-Trend-Context-Layer.md).
+
+- New, isolated `backend/services/market_leadership/` package: Stock Relative Strength Rank,
+  Sector/Industry Group Leadership, Trend Lifecycle classification, Market Breadth, "Why Now?"
+  explanation contract, plus an additive `GET /api/leadership/context` endpoint and an experimental
+  Stock Detail page component. **Five backend capability flags**
+  (`MARKET_LEADERSHIP_ENGINE_ENABLED`/`_SHADOW_ENABLED`/`_UI_ENABLED`/`_VALIDATION_ENABLED`/`_SCORING_ENABLED`)
+  plus **one fail-closed public frontend presentation gate**
+  (`NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED`, only the exact string `"1"` enables it) — **all six
+  default OFF**; `_SCORING_ENABLED` is reserved and statically proven unconsumed by any scoring
+  path; the frontend gate is not set in any committed `.env` file, so merging with no environment
+  change adds zero leadership browser requests to any page view. Daily Picks, Multibagger,
+  Portfolio, Paper Trading, Alerts, Validation, Heatmap, and Screener are unmodified by this work.
+- Also fixes a separate, pre-existing defect found during this investigation: the Validation UI
+  could display an active run from one market/universe/horizon under a different, selected tab
+  (module-global run state carried no job identity). Runs are now bound to an immutable job
+  identity created once at claim time. **Ships in PR #21, not PR #22.**
+- Two genuine defects were found and fixed via live manual verification against real yfinance data
+  (running the actual backend locally, not hypothetical): a provider-incomplete last bar (NaN
+  Close) could crash the new endpoint's JSON serialization outright, and — once fixed — a second,
+  real correctness bug surfaced (an honest "no universe percentile" case was mis-worded as "insufficient price history"). A third defect (unbounded per-request recomputation cost) was found and
+  fixed during the mandatory four-hat adversarial review before this status entry was written.
+- 3727/3727 backend tests passing (3553 baseline + 174 new, this branch's scope only — excludes the
+  separately-tracked validation job-identity fix), 444/444 frontend tests passing, clean typecheck,
+  clean production build (built with the frontend gate absent, matching real deployment state).
+  Quantitative shadow validation (Section 15) status: **VALIDATION PENDING** — the walk-forward
+  harness is built, functional, and smoke-tested against real data, but no statistically adequate
+  evidence base exists yet; full validation requires a data-collection period outside a single
+  session's scope.
+- A fourth defect (a cache-mutation hazard — `compute_stock_context` could hand a caller a live
+  reference into the shared TTL cache, letting an in-place mutation corrupt every subsequent cache
+  hit) was found and fixed during a final independent pre-publication audit, reproduced live before
+  the fix and reproduced-absent after it.
+- A fifth issue (not a data-safety defect, but an incomplete "flags-off" claim) was found in a
+  second, narrower pre-publication review: the frontend component always issued a browser request
+  to the leadership API regardless of backend flag state — the backend safely answered
+  `{"status":"disabled"}`, but the request itself still happened. Fixed with the new frontend
+  presentation gate described above, proven via a mocked API spy asserted `not.toHaveBeenCalled()`
+  across every disabled-value case.
+- All flags remain **default OFF**; **ZERO PRODUCTION SCORING INFLUENCE**; **NOT DEPLOYED**; **NOT
+  ENABLED** in any environment.
+- **Recommendation: Gate 4 (Shadow-Validation Readiness) criteria met. Both PRs remain draft.
+  Awaiting explicit user approval before merge, deploy, or any production flag enablement
+  (Gates 5–7).**
 
 ---
 

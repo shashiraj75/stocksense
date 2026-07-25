@@ -21,6 +21,7 @@ import { MarketDisclaimer } from "@/components/MarketDisclaimer";
 import { TradeLevelVisualizer } from "@/components/TradeLevelVisualizer";
 import { EvidenceSummary } from "@/components/EvidenceSummary";
 import { ResearchSummary } from "@/components/ResearchSummary";
+import { MarketLeadershipContext } from "@/components/MarketLeadershipContext";
 import { DataLimitationsMark } from "@/components/DataLimitationsNotice";
 
 // Kill switch — set back to true to restore the "Was this signal useful?"
@@ -871,6 +872,16 @@ export default function StockPage() {
                   research_report on the prediction object. Same tab gating
                   as EvidenceSummary above. */}
               {tab !== "backtest" && tab !== "history" && tab !== "fundamentals" && !predLoading && <ResearchSummary prediction={prediction} />}
+
+              {/* Market Leadership & Trend Context — shadow-only, experimental.
+                  Renders nothing unless MARKET_LEADERSHIP_UI_ENABLED and
+                  MARKET_LEADERSHIP_ENGINE_ENABLED are both on (default OFF)
+                  and the backend returns a fully-formed context — same
+                  render-nothing-by-default pattern as EvidenceSummary above.
+                  Not shown for crypto (RS/Trend Lifecycle are equity-only). */}
+              {tab !== "backtest" && tab !== "history" && tab !== "fundamentals" && !predLoading && !isCrypto && (
+                <MarketLeadershipContext symbol={symbol} market={market} />
+              )}
 
               {/* Tabs row */}
               <div className="flex gap-2 flex-wrap mt-4 pt-4 border-t border-white/[0.06]">
