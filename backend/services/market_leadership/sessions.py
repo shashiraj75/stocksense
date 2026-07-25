@@ -67,6 +67,27 @@ def expected_latest_completed_session(market: str, now_utc: datetime) -> date | 
     raise ValueError(f"unsupported market {market!r} — must be 'IN' or 'US'")
 
 
+def drop_incomplete_bars(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop any row with a NaN Close — a provider-incomplete bar.
+
+    Confirmed via live data (2026-07-25, real yfinance AAPL history):
+    the technically most-recent row in a `period="2y"` fetch can carry a
+    genuine NaN Close even though its session date has already closed —
+    Yahoo had not finished backfilling that day's close yet. Such a row
+    must never be treated as an available session: it would otherwise
+    propagate NaN into every downstream return/moving-average/drawdown
+    calculation and — confirmed live — break JSON serialization of the
+    API response entirely. Dropping it is equivalent to treating that
+    session as "not yet available," the same conservative posture used
+    everywhere else in this module for missing data.
+    """
+    if df is None or len(df) == 0:
+        return df
+    if "Close" not in df.columns:
+        return df
+    return df[df["Close"].notna()]
+
+
 def window_coverage(bars: pd.Series | pd.DataFrame, window_sessions: int) -> float:
     """Fraction of the expected trailing window actually covered by bars.
 

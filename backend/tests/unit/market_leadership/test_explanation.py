@@ -106,8 +106,22 @@ class TestBuildWhyNowExplanation:
 
     def test_insufficient_rs_data_produces_caution_not_silence(self):
         rs = _rs(score=None, pctl=None, quality=DataQualityStatus.FAILED)
+        rs.benchmark_relative_return = None
         exp = build_why_now_explanation(rs, None, None, None)
         assert any("insufficient" in c.lower() or "could not" in c.lower() for c in exp.caution_factors)
+
+    def test_no_universe_percentile_but_valid_data_never_claims_insufficient_history(self):
+        """Regression: found live (2026-07-25, real AAPL data via the
+        single-symbol on-demand endpoint) — percentile is honestly None
+        (no cross-sectional universe was computed for this request), but
+        the underlying calculation succeeded (benchmark_relative_return
+        present, data_quality_status OK). The explanation must not claim
+        'insufficient price history' in this case — that claim is false."""
+        rs = _rs(score=None, pctl=None, quality=DataQualityStatus.OK)
+        exp = build_why_now_explanation(rs, None, None, None)
+        assert "insufficient price history" not in exp.summary.lower()
+        assert not any("insufficient price history" in c.lower() for c in exp.caution_factors)
+        assert "not available for this view" in exp.stock_rs_context.lower()
 
     def test_methodology_version_always_stamped(self):
         exp = build_why_now_explanation(_rs(), _group(), _trend(), _breadth())

@@ -22,7 +22,7 @@ from services.market_leadership.configuration import (
 from services.market_leadership.contracts import (
     StockRelativeStrength, RsTrend, DataQualityStatus, ReasonCode,
 )
-from services.market_leadership.sessions import slice_as_of, window_coverage
+from services.market_leadership.sessions import slice_as_of, window_coverage, drop_incomplete_bars
 
 
 def _total_return(closes: pd.Series, window: int) -> float | None:
@@ -43,8 +43,11 @@ def compute_relative_return_windows(
     and a data-quality verdict. Both inputs are as-of sliced here (callers
     must not pre-slice differently) so the leakage guarantee is centralized.
     """
-    stock = slice_as_of(price_df, as_of) if price_df is not None else None
-    bench = slice_as_of(benchmark_df, as_of) if benchmark_df is not None else None
+    stock = drop_incomplete_bars(slice_as_of(price_df, as_of)) if price_df is not None else None
+    bench = (
+        drop_incomplete_bars(slice_as_of(benchmark_df, as_of))
+        if benchmark_df is not None and len(benchmark_df) > 0 else None
+    )
 
     if stock is None or len(stock) == 0:
         return {

@@ -11,6 +11,7 @@ work — the master ENGINE_ENABLED gate inside orchestration.py provides a
 second, independent layer of the same protection.
 """
 import logging
+import math
 
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
@@ -22,6 +23,27 @@ from services.safe_errors import safe_error_message
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/leadership", tags=["Market Leadership"])
+
+
+def _safe_json(obj):
+    """Recursively replace non-finite floats (NaN/Inf) with None.
+
+    Defense in depth, mirroring validation.py's own `_safe_json`: the
+    calculation layer already guards against provider-incomplete bars
+    (services.market_leadership.sessions.drop_incomplete_bars — added
+    after a live-data check found yfinance can return a NaN Close for
+    the technically most-recent session), but this boundary must never
+    depend on every future calculation path remembering that discipline.
+    A raw NaN/Inf reaching json.dumps() raises ValueError and breaks the
+    whole response — confirmed live before this guard existed.
+    """
+    if isinstance(obj, dict):
+        return {k: _safe_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_safe_json(v) for v in obj]
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
+    return obj
 
 
 @router.get("/context")
@@ -38,7 +60,7 @@ def get_stock_context(
 
     try:
         result = compute_stock_context(symbol.upper(), market)
-        return JSONResponse(content=result)
+        return JSONResponse(content=_safe_json(result))
     except Exception as e:
         return JSONResponse(content={
             "status": "error",

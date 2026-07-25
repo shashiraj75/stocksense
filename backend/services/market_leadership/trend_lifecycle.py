@@ -23,7 +23,7 @@ from services.market_leadership.configuration import (
 from services.market_leadership.contracts import (
     TrendLifecycle, TrendLifecycleState, ExtensionRisk, ReasonCode,
 )
-from services.market_leadership.sessions import slice_as_of
+from services.market_leadership.sessions import slice_as_of, drop_incomplete_bars
 
 
 def _slope_pct_per_day(ma: pd.Series, lookback: int = 10) -> float | None:
@@ -86,7 +86,7 @@ def _volume_confirmation_ratio(df: pd.DataFrame, lookback: int = 21) -> float | 
 def compute_trend_inputs(price_df: pd.DataFrame, as_of: date) -> dict:
     """All rule inputs, each independently None-able so evidence_completeness
     reflects exactly what was computable."""
-    df = slice_as_of(price_df, as_of) if price_df is not None else None
+    df = drop_incomplete_bars(slice_as_of(price_df, as_of)) if price_df is not None else None
     if df is None or len(df) < TREND_MIN_SESSIONS:
         return {"insufficient_history": True, "sessions": 0 if df is None else len(df)}
 

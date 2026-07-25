@@ -74,6 +74,22 @@ def build_why_now_explanation(
                 supporting.append(f"Stock RS is {rs.stock_rs_score} and {rs.rs_trend.value.lower()}.")
             elif rs.stock_rs_percentile <= 30:
                 caution.append(f"Stock RS is weak at {rs.stock_rs_score}.")
+        elif rs.benchmark_relative_return is not None:
+            # Percentile is None but the underlying calculation succeeded
+            # (data_quality_status is not FAILED) — this is a universe-
+            # ranking-context gap (e.g. a single-symbol on-demand request
+            # with no cross-sectional universe computed), NOT insufficient
+            # data. Confirmed live (2026-07-25, real AAPL data): the prior
+            # wording here unconditionally said "insufficient price
+            # history" whenever percentile was None, which was factually
+            # wrong in exactly this case — rs_1m/rs_3m/rs_6m/rs_12m and
+            # benchmark_relative_return were all present and valid.
+            sign = "outperforming" if rs.benchmark_relative_return >= 0 else "underperforming"
+            rs_context = (
+                f"Relative Strength: {sign} its benchmark by "
+                f"{abs(rs.benchmark_relative_return):.1f}pp (composite); universe percentile "
+                f"not available for this view."
+            )
         else:
             rs_context = "Relative Strength: insufficient data."
             caution.append("Relative Strength could not be computed (insufficient price history).")
