@@ -1,9 +1,22 @@
 # Market Leadership and Trend Context Layer — Local Implementation and Release Evidence
 
-**Status:** IMPLEMENTED LOCALLY, TESTED LOCALLY. Not pushed, not merged, not deployed. All five
-feature flags default OFF; scoring influence (`MARKET_LEADERSHIP_SCORING_ENABLED`) is reserved and
-consumed by no production code path. No production system, database, or published signal was
-touched. Branch `feat/market-leadership-trend-context`, built from `origin/main` @ `29539d6`.
+**Status:** IMPLEMENTED LOCALLY, TESTED LOCALLY, SHADOW-VALIDATION READY. Not pushed, not merged,
+not deployed. All five feature flags default OFF; scoring influence
+(`MARKET_LEADERSHIP_SCORING_ENABLED`) is reserved and consumed by no production code path — ZERO
+PRODUCTION SCORING INFLUENCE. NOT ENABLED in any environment. No production system, database, or
+published signal was touched.
+
+**PR split note:** this document was originally written against the full local development branch
+(`feat/market-leadership-trend-context`, 9 commits, including a separate, file-disjoint validation
+job-identity fix). A pre-publication audit confirmed the two changes share zero files and zero
+runtime dependency (the market-leadership code only reads a pre-existing, unmodified function from
+`validation_engine.py`), so they ship as two independent draft PRs:
+
+- **This PR** (`feat/shadow-market-leadership-context`) carries only the Market Leadership and Trend
+  Context Layer — 8 of the 9 original commits, cherry-picked verbatim, plus one additional commit
+  (`fix(leadership): defensive-copy compute_stock_context cache reads/writes`) added during the
+  pre-publication audit itself (§4.5 below).
+- The validation job-identity fix ships separately as `fix/validation-job-universe-identity`.
 
 Companion document: [Architecture](../Architecture/Market-Leadership-Trend-Context-Layer.md) (full
 methodology, contracts, PIT controls, rollback plan).
@@ -13,6 +26,7 @@ methodology, contracts, PIT controls, rollback plan).
 ## 1. Scope delivered this session
 
 1. **Validation job-identity defect** (Section 3 of the governing brief) — root-caused and fixed.
+   **Ships in the separate `fix/validation-job-universe-identity` PR, not this one.**
 2. **Market Leadership and Trend Context Layer** (Sections 4–9) — new `backend/services/market_leadership/`
    package: Stock Relative Strength Rank, Sector/Industry Group Leadership, Trend Lifecycle,
    Market Breadth, "Why Now?" explanation contract.
@@ -21,28 +35,35 @@ methodology, contracts, PIT controls, rollback plan).
 5. **Shadow-experiment harness, mutation-testing sanity checks, performance regression guards**
    (Sections 15–17).
 6. **Four-hat adversarial review** (Section 19) with fixes applied and re-tested (this document).
+7. **Final independent pre-publication audit** — one additional defect found and fixed (§4.5).
 
-## 2. Commits (chronological, all on the feature branch, none pushed)
+## 2. Commits on this PR (chronological, cherry-picked from the original 9-commit branch plus one new commit; none pushed to `main`, only to this feature branch)
 
-| Commit | Summary |
-|---|---|
-| `c239a55` | docs: current-state investigation + architecture |
-| `8f0d8ed` | fix(validation): immutable job identity (market/universe/horizon) |
-| `c3fb9f8` | feat(leadership): RS, group leadership, trend lifecycle, breadth, explanation — pure core |
-| `719510c` | feat(persistence): snapshot storage, telemetry, orchestration; PIT + flag regression tests |
-| `78432a2` | feat(api): shadow context endpoint; feat(frontend): experimental UI |
-| `cb718bf` | fix(leadership): incomplete last-bar handling + misleading explanation text (live-verified defects) |
-| `ff2b353` | test: shadow-experiment harness, mutation checks, performance guards |
-| `cb6c3f4` | fix(leadership): TTL cache for `compute_stock_context` (adversarial-review finding) |
-
-## 3. Baseline and final test evidence
-
-| Suite | Baseline (before any change) | Final (after all commits) |
+| Commit (this branch) | Origin | Summary |
 |---|---|---|
-| Backend (`pytest`) | 3553 passed, 0 failed, 88s | **3737 passed, 0 failed** |
+| `0d84284` | cherry-picked from `c239a55` | docs: current-state investigation + architecture |
+| `165521e` | cherry-picked from `c3fb9f8` | feat(leadership): RS, group leadership, trend lifecycle, breadth, explanation — pure core |
+| `2532de2` | cherry-picked from `719510c` | feat(persistence): snapshot storage, telemetry, orchestration; PIT + flag regression tests |
+| `f90f259` | cherry-picked from `78432a2` | feat(api): shadow context endpoint; feat(frontend): experimental UI |
+| `a3c14c4` | cherry-picked from `cb718bf` | fix(leadership): incomplete last-bar handling + misleading explanation text (live-verified defects) |
+| `9622f9a` | cherry-picked from `ff2b353` | test: shadow-experiment harness, mutation checks, performance guards |
+| `f46a6de` | cherry-picked from `cb6c3f4` | fix(leadership): TTL cache for `compute_stock_context` (adversarial-review finding) |
+| `cc311d7` | cherry-picked from `f4b7024` | docs: add release evidence and rollout gates |
+| *(new)* | pre-publication audit | fix(leadership): defensive-copy cache reads/writes (§4.5) |
+
+(The excluded 9th original commit, `8f0d8ed` fix(validation), ships in the separate PR.)
+
+## 3. Baseline and final test evidence (this PR's isolated scope, verified independently)
+
+| Suite | Baseline (`origin/main`) | This PR, isolated |
+|---|---|---|
+| Backend (`pytest`) | 3553 passed, 0 failed, 88s | **3727 passed, 0 failed** |
 | Frontend typecheck (`tsc --noEmit`) | clean | clean |
-| Frontend tests (`vitest`) | 410 passed | **433 passed** (410 baseline + 23 new: `jobIdentityView.test.ts`, `marketLeadership.test.ts`, `MarketLeadershipContext.test.tsx`) |
+| Frontend tests (`vitest`) | 410 passed | **423 passed** (410 baseline + 13 new: `marketLeadership.test.ts`, `MarketLeadershipContext.test.tsx`) |
 | Frontend production build (`next build`) | clean, all routes | clean, all routes, `/api/leadership/context` in `openapi.json`, no existing route removed |
+
+Verified by checking out this exact branch into its own worktree, installing dependencies fresh, and
+running the full suite in isolation — not inferred from the combined development branch's numbers.
 
 No pre-existing test was modified to make it pass; two pre-existing tests were extended (§4).
 
@@ -91,6 +112,25 @@ dead weight (an unused local, an unconditional-but-unused DB read) removed in th
 
 All four fixes are covered by dedicated regression/integration tests (34 new tests across 4.2–4.4)
 and the full backend suite was re-run green after each.
+
+### 4.5 Cache-mutation hazard (found via final independent pre-publication audit)
+
+The §4.4 TTL cache fix returned the exact dict object stored in `_STOCK_CONTEXT_CACHE` — on both the
+cache-hit path and the fresh-computation path. **Reproduced live**: a caller mutating its own
+response (`result["rs"]["stock_rs_score"] = 999999`) silently corrupted every subsequent cache hit
+for that `(symbol, market, as_of)` key. This is the exact cache-mutation hazard class this
+codebase's own Recommendation Consolidation Sprint #007 previously found and explicitly designed
+around for `prediction_engine.py`'s `_pred_cache` (documented in that sprint's own release notes as
+the reason a dedicated, always-freshly-assembled response composer was required instead of building
+directly inside the cached `predict()` path).
+
+**Fixed**: every return path in `compute_stock_context` now hands the caller `copy.deepcopy(...)` of
+the cached/fresh value — never the object stored in the cache itself. Verified live, before and
+after: before the fix, a mutated field leaked into the next call's result; after the fix, it did
+not. 3 new regression tests lock this in (`test_caller_mutating_a_cache_hit_response_does_not_corrupt_the_cache`,
+`test_caller_mutating_the_first_fresh_response_does_not_corrupt_the_cache`,
+`test_repeated_calls_return_equal_but_independent_objects`). Full backend suite re-run green after
+the fix: 3727/3727.
 
 ## 5. Mutation-testing sanity checks (Section 16.C)
 
@@ -221,6 +261,12 @@ separately; its only persisted-schema change is additive JSON-summary metadata.
 
 **Gate 4 (Shadow-Validation Readiness) criteria met**: point-in-time tests pass, offline replay is
 reproducible, experiment contracts/telemetry exist, no scoring influence anywhere in the code path.
-**Not** proceeding past Gate 4 without explicit user approval — no push, no PR, no deploy, no
-production shadow enablement, no production validation run, no production data alteration, and the
-UI/scoring flags remain OFF pending separate approval per Gates 5–7.
+A final independent pre-publication audit found and fixed one additional defect (§4.5) and confirmed
+this PR's scope is file-disjoint from the separately-shipped validation fix, with all five feature
+flags verified default OFF both statically and behaviorally.
+
+This branch is published as a **draft pull request only** — draft status and a branch push are not
+approval for anything beyond code review. **Not** proceeding past Gate 4 without separate, explicit
+user approval for: merge, production deployment, production shadow enablement, user-visible UI
+enablement, or any recommendation-scoring influence (Gates 5–7, tracked as explicit unchecked
+approval-gate checkboxes in the PR description itself).

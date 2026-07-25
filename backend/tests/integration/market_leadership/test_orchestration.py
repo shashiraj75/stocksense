@@ -185,6 +185,39 @@ class TestComputeStockContext:
         orch.compute_stock_context("AAA", "IN", as_of=AS_OF)
         assert call_count["n"] == 2
 
+    def test_caller_mutating_a_cache_hit_response_does_not_corrupt_the_cache(self, mocked_market):
+        """Pre-publication audit finding: compute_stock_context previously
+        returned the exact object stored in _STOCK_CONTEXT_CACHE — a
+        caller mutating its own response (e.g. building a modified copy
+        for a different consumer) silently corrupted every subsequent
+        cache hit for that symbol/market/date. The same hazard class this
+        codebase's own Recommendation Consolidation Sprint #007 found and
+        designed around for prediction_engine.py's _pred_cache."""
+        first = orch.compute_stock_context("AAA", "IN", as_of=AS_OF)
+        first["rs"]["stock_rs_score"] = 999999
+        first["status"] = "tampered"
+
+        second = orch.compute_stock_context("AAA", "IN", as_of=AS_OF)
+        assert second["rs"]["stock_rs_score"] != 999999
+        assert second["status"] == "ok"
+
+    def test_caller_mutating_the_first_fresh_response_does_not_corrupt_the_cache(self, mocked_market):
+        """Same hazard, but on the cache-MISS (first-computation) path —
+        the object handed back on a fresh calculation must also be
+        independent from what was just stored in the cache."""
+        first = orch.compute_stock_context("CCC", "IN", as_of=AS_OF)
+        first["why_now"]["summary"] = "TAMPERED"
+
+        second = orch.compute_stock_context("CCC", "IN", as_of=AS_OF)
+        assert second["why_now"]["summary"] != "TAMPERED"
+
+    def test_repeated_calls_return_equal_but_independent_objects(self, mocked_market):
+        first = orch.compute_stock_context("AAA", "IN", as_of=AS_OF)
+        second = orch.compute_stock_context("AAA", "IN", as_of=AS_OF)
+        assert first == second
+        assert first is not second
+        assert first["rs"] is not second["rs"]
+
 
 @pytest.mark.integration
 class TestUniverseSymbols:

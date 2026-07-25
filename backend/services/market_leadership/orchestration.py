@@ -17,6 +17,7 @@ market/universe wiring reuse validation_engine's existing conventions.
 """
 from __future__ import annotations
 
+import copy
 import logging
 import os
 import time
@@ -291,6 +292,16 @@ def compute_stock_context(symbol: str, market: str, as_of: date | None = None) -
 
     TTL-cached (4h, bounded 300 entries) — a completed-session-scoped
     calculation does not need re-fetching yfinance on every page view.
+
+    Cache-mutation safety: every return path hands the caller a fresh
+    `copy.deepcopy` of the cached/fresh value, never the object stored in
+    `_STOCK_CONTEXT_CACHE` itself. Found via adversarial pre-publication
+    audit (reproduced live: without this, a caller mutating its own
+    response — e.g. `result["rs"]["stock_rs_score"] = 999` — silently
+    corrupted every subsequent cache hit for that symbol/market/date) —
+    the exact cache-mutation hazard class this codebase's own
+    Recommendation Consolidation Sprint #007 previously found and
+    designed around in `prediction_engine.py`'s `_pred_cache`.
     """
     if not cfg.engine_enabled():
         return {"status": "disabled"}
@@ -302,7 +313,7 @@ def compute_stock_context(symbol: str, market: str, as_of: date | None = None) -
     cache_key = _stock_context_cache_key(symbol, market, as_of)
     cached = _STOCK_CONTEXT_CACHE.get(cache_key)
     if cached and (time.time() - cached[0]) < _STOCK_CONTEXT_TTL:
-        return cached[1]
+        return copy.deepcopy(cached[1])
 
     try:
         price_df = fetch_price_history(symbol, market)
@@ -312,7 +323,7 @@ def compute_stock_context(symbol: str, market: str, as_of: date | None = None) -
         # _SHORT_TTL_TS convention: don't hammer a failing provider on
         # every page view, but recover quickly once it's healthy again.
         _cache_set(_STOCK_CONTEXT_CACHE, cache_key, (time.time() - (_STOCK_CONTEXT_TTL - 120), error_result))
-        return error_result
+        return copy.deepcopy(error_result)
 
     try:
         benchmark_df = yf.Ticker(BENCHMARK_TICKER[market]).history(period="2y")
@@ -352,4 +363,4 @@ def compute_stock_context(symbol: str, market: str, as_of: date | None = None) -
         "why_now": why_now.to_dict(),
     }
     _cache_set(_STOCK_CONTEXT_CACHE, cache_key, (time.time(), result))
-    return result
+    return copy.deepcopy(result)

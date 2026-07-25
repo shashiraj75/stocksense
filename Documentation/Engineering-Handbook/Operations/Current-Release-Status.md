@@ -33,11 +33,17 @@ and its companion
   Close) could crash the new endpoint's JSON serialization outright, and — once fixed — a second,
   real correctness bug surfaced (an honest "no universe percentile" case was mis-worded as "insufficient price history"). A third defect (unbounded per-request recomputation cost) was found and
   fixed during the mandatory four-hat adversarial review before this status entry was written.
-- 3737/3737 backend tests passing (3553 baseline + 184 new), 433/433 frontend tests passing, clean
-  typecheck, clean production build. Quantitative shadow validation (Section 15) status: **VALIDATION
-  PENDING** — the walk-forward harness is built, functional, and smoke-tested against real data, but
-  no statistically adequate evidence base exists yet; full validation requires a data-collection
-  period outside a single session's scope.
+- 3727/3727 backend tests passing (3553 baseline + 174 new, this branch's scope only — excludes the
+  separately-tracked validation job-identity fix), 423/423 frontend tests passing, clean typecheck,
+  clean production build. Quantitative shadow validation (Section 15) status: **VALIDATION PENDING**
+  — the walk-forward harness is built, functional, and smoke-tested against real data, but no
+  statistically adequate evidence base exists yet; full validation requires a data-collection period
+  outside a single session's scope.
+- A fourth defect (a cache-mutation hazard — `compute_stock_context` could hand a caller a live
+  reference into the shared TTL cache, letting an in-place mutation corrupt every subsequent cache
+  hit) was found and fixed during a final independent pre-publication audit, reproduced live before
+  the fix and reproduced-absent after it. All flags remain **default OFF**; **ZERO PRODUCTION
+  SCORING INFLUENCE**; **NOT DEPLOYED**; **NOT ENABLED** in any environment.
 - **Recommendation: Gate 4 (Shadow-Validation Readiness) criteria met. Awaiting explicit user
   approval before push, PR, deploy, or any production flag enablement (Gates 5–7).**
 
