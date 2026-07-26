@@ -4,9 +4,53 @@
 
 **Use this document for current state.** Historical sprint reports, Epic closures, SSDS documents, and audit reports remain authoritative evidence for their own completed scope, but they do not automatically describe the current production operating state.
 
-**As of:** 2026-07-25 — maintained as a live operational register
+**As of:** 2026-07-26 — maintained as a live operational register
 
 ---
+
+## Validation Benchmark Evidence Integrity
+
+**Status:** PR [#26](https://github.com/shashiraj75/stocksense/pull/26)
+(`fix/validation-benchmark-evidence-integrity`) **MERGED** to `main` (merge commit `0c3926c`,
+2026-07-26) and **automatically deployed** — confirmed via GitHub's commit-status/deployment API
+(Railway `success`, Vercel `success` on the merge commit) and a direct, read-only production smoke
+check: `GET /health` returns `{"status":"ok",...}` and `GET /api/validation/status` returns the
+clean, expected shape. No `/api/validation/run` was triggered to force this evidence —
+**failure-path production evidence remains naturally pending**; the failure path is fully
+test-backed (50 new tests using deterministic fault injection: empty/malformed/non-finite/
+non-positive/unsorted/duplicate benchmark data, a simulated provider exception, and a bounded-retry
+exhaustion) rather than production-observed.
+
+Closes a class of defect where unavailable or invalid benchmark evidence was silently treated as
+genuine flat/neutral evidence: a benchmark alignment step that could backward-fill a *future*
+observation into an earlier stock date (a real look-ahead violation); a missing benchmark making
+the market-regime adjustment default to a genuine-looking neutral `0.0` for every signal; a missing
+benchmark forward return defaulting to `0.0` and fabricating `alpha_pct`/`actual_direction`/
+`correct` for signals that never had real benchmark evidence; `avg_return_benchmark_pct` using a
+truthy check that collapsed a genuine `0.0%` benchmark return to `None`; a missing-BUY-signals case
+fabricating a `0%` model return instead of `None`, producing a misleading outperformance figure; and
+a degraded-but-completed run persisting a contaminated result built on this fabricated evidence.
+
+New centralized, versioned contract (`BenchmarkEvidence`, `validation_benchmark_evidence_v1`):
+a pure run-level preflight validates the fetched benchmark (non-empty, has `Close`, sorted,
+duplicate-free, finite, positive, at least one valid forward-return window) **before any stock
+backtest is submitted** — invalid evidence now **fails the whole run closed** (no stock work, no
+`_compute_metrics` call, no `val_runs`/`val_signals` write, run slot released, job marked terminal
+with a stable `BENCHMARK_EVIDENCE_UNAVAILABLE` code — never `RUN_EXCEPTION`, never raw exception
+text) rather than silently completing with fabricated evidence, as it did before. A bounded retry
+(2 attempts, same ticker) precedes the fail-closed gate, matching this codebase's existing
+provider-retry convention. Per-signal alignment is forward-fill-only with a bounded 5-calendar-day
+staleness tolerance — never backward-fills — applied both at the run level and as defense-in-depth
+inside the per-stock backtest function for any future direct caller. A signal date without genuine
+benchmark and regime evidence is now skipped entirely (never assigned a fabricated substitute) and
+disclosed via a new `signals_excluded_benchmark` count. Legacy persisted results lacking the new
+contract are labelled `benchmark_evidence.status = "legacy_unknown"` on read — **never rewritten**.
+
+No scoring, benchmark methodology, alpha/hit-rate calculation, universe/horizon definition, or
+scheduler behavior changed for a healthy benchmark — every pre-existing signal-computation test's
+expected numeric values are unchanged. No production data rewritten. No accuracy, win-rate, or
+profitability claim made or implied. 70 new/updated tests. Final test evidence: backend
+3830/3830, frontend 454/454, clean typecheck, clean production build.
 
 ## Validation Public Diagnostic Sanitization
 
