@@ -70,12 +70,24 @@ class _NoWriteConn:
         pass
 
 
+def _valid_benchmark_df(n=300, seed=99):
+    """A benchmark DataFrame that passes _validate_benchmark_acquisition
+    for every horizon (matches test_validation_job_identity.py's own
+    copy, duplicated here so this file stays self-contained)."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    dates = pd.bdate_range("2019-01-01", periods=n)
+    rets = rng.normal(0.0003, 0.008, n)
+    close = 100.0 * np.cumprod(1 + rets)
+    return pd.DataFrame({"Close": close}, index=dates)
+
+
 def _mock_io(monkeypatch, backtest_fake):
     """Mock every I/O boundary run_validation() touches — no live network,
     no real DB read/write (matches test_validation_job_identity.py's
     _mock_io exactly, duplicated here so this file stays self-contained)."""
     mock_yf = MagicMock()
-    mock_yf.Ticker.return_value.history.return_value = pd.DataFrame()
+    mock_yf.Ticker.return_value.history.return_value = _valid_benchmark_df()
     monkeypatch.setattr(ve, "_backtest_stock", backtest_fake)
     monkeypatch.setattr(ve, "yf", mock_yf)
     monkeypatch.setattr(ve, "_init_db", lambda: None)
@@ -107,56 +119,68 @@ class TestBenchmarkHostileExceptionSanitization:
         mock_yf.Ticker.side_effect = _BoomTicker
         monkeypatch.setattr(ve, "yf", mock_yf)
 
-    def test_hostile_benchmark_exception_never_reaches_metrics(self, monkeypatch, caplog):
+    def test_hostile_benchmark_exception_never_reaches_status(self, monkeypatch, caplog):
+        """Benchmark evidence integrity closure (separate, later fix): a
+        provider exception now fails the whole run closed before any
+        metrics dict is even produced (see test_validation_benchmark_
+        evidence.py for the full contract) — so this sanitization
+        regression now checks the public job status instead of a
+        completed metrics dict, but the core guarantee is unchanged: the
+        hostile exception text must never cross the public boundary,
+        while remaining fully diagnosable server-side."""
         _mock_io(monkeypatch, lambda *a, **k: [])
+        monkeypatch.setattr(ve.time, "sleep", lambda *a, **k: None)
         self._boom_yf(monkeypatch)
 
         with caplog.at_level(logging.ERROR, logger="services.validation_engine"):
-            metrics = ve.run_validation(horizon="short", universe="us")
+            with pytest.raises(ValueError):
+                ve.run_validation(horizon="short", universe="us")
 
-        assert metrics["benchmark_data_available"] is False
-        assert metrics["benchmark_unavailable_reason"] == "benchmark_fetch_failed"
-        _assert_no_hostile_text(metrics)
-        # Benchmark percentages stay null, never a fabricated 0.0 (Phase 5).
-        assert metrics["benchmark_avg_fwd_return_pct"] is None
-        assert metrics["nifty_avg_fwd_return_pct"] is None
+        status = ve.get_run_status()
+        _assert_no_hostile_text(status)
+        job = status.get("job")
+        assert job is not None
+        assert job["failure_code"] == "BENCHMARK_EVIDENCE_UNAVAILABLE"
         # Real exception is fully diagnosable server-side.
         assert "password=SECRET" in caplog.text
         assert "db.internal" in caplog.text
 
-    def test_hostile_benchmark_exception_never_reaches_persisted_json(self, monkeypatch):
-        """Item 2: what would actually be written to val_runs.summary
-        (via json.dumps of the jsonify'd metrics) must be equally clean —
-        not just the in-memory `metrics` object."""
+    def test_hostile_benchmark_exception_prevents_any_persistence(self, monkeypatch):
+        """A provider exception must persist nothing at all — no val_runs
+        row, no val_signals rows — rather than merely sanitizing a row
+        that gets written anyway. Proven by a DB connection stand-in whose
+        execute()/executemany() raise if ever called."""
+        class _BoomIfWrittenConn:
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                return False
+            def execute(self, *a, **k):
+                raise AssertionError("val_runs write attempted despite unavailable benchmark evidence")
+            def executemany(self, *a, **k):
+                raise AssertionError("val_signals write attempted despite unavailable benchmark evidence")
+
         _mock_io(monkeypatch, lambda *a, **k: [])
+        monkeypatch.setattr(ve, "_get_sqlite_conn", lambda: _BoomIfWrittenConn())
+        monkeypatch.setattr(ve.time, "sleep", lambda *a, **k: None)
         self._boom_yf(monkeypatch)
-        metrics = ve.run_validation(horizon="short", universe="us")
 
-        # Mirrors run_validation's own _jsonify + json.dumps step exactly.
-        def _jsonify(obj):
-            import numpy as np
-            if isinstance(obj, dict):
-                return {k: _jsonify(v) for k, v in obj.items()}
-            if isinstance(obj, list):
-                return [_jsonify(v) for v in obj]
-            if isinstance(obj, np.integer):
-                return int(obj)
-            if isinstance(obj, np.floating):
-                return None if np.isnan(obj) or np.isinf(obj) else float(obj)
-            return obj
-
-        persisted_json = json.dumps(_jsonify(metrics))
-        for forbidden in FORBIDDEN_SUBSTRINGS:
-            assert forbidden not in persisted_json
+        with pytest.raises(ValueError):
+            ve.run_validation(horizon="short", universe="us")
 
     def test_distinct_from_insufficient_history(self, monkeypatch):
-        """Item 5: a genuine 'not enough bars' condition (empty history,
-        no exception) must keep its own distinct stable reason — never
-        collapsed into the provider-failure code."""
-        _mock_io(monkeypatch, lambda *a, **k: [])  # yf mock returns empty DataFrame, no exception
-        metrics = ve.run_validation(horizon="short", universe="us")
-        assert metrics["benchmark_unavailable_reason"] == "insufficient_benchmark_history_for_horizon"
-        assert metrics["benchmark_unavailable_reason"] != "benchmark_fetch_failed"
+        """Item 5: a genuine 'not enough bars' condition must keep its own
+        distinct stable evidence status ('insufficient_history') — never
+        collapsed into the provider-failure/empty-fetch status. Exercised
+        directly against the pure validator, which both run_validation
+        code paths funnel through."""
+        too_few_rows = _valid_benchmark_df(n=10)  # long horizon needs 64 rows
+        insufficient_evidence = ve._validate_benchmark_acquisition(too_few_rows, "^GSPC", "US", "long")
+        assert insufficient_evidence.status == "insufficient_history"
+
+        fetch_failed_evidence = ve._validate_benchmark_acquisition(None, "^GSPC", "US", "long")
+        assert fetch_failed_evidence.status == "empty"
+        assert fetch_failed_evidence.status != insufficient_evidence.status
 
 
 @pytest.mark.regression
@@ -166,7 +190,7 @@ class TestPerSymbolHostileExceptionSanitization:
     in the server-side log, and other symbols must keep processing."""
 
     def test_hostile_symbol_exception_never_reaches_public_log(self, monkeypatch, caplog):
-        def fake_backtest(sym, hor, benchmark_df, market, universe=None):
+        def fake_backtest(sym, hor, benchmark_df, market, universe=None, **kwargs):
             if sym == "AAPL":
                 raise RuntimeError(HOSTILE_MESSAGE)
             return []
@@ -180,7 +204,7 @@ class TestPerSymbolHostileExceptionSanitization:
         assert any("SYMBOL_VALIDATION_FAILED" in line for line in status["log"])
 
     def test_server_log_retains_symbol_and_exception_context(self, monkeypatch, caplog):
-        def fake_backtest(sym, hor, benchmark_df, market, universe=None):
+        def fake_backtest(sym, hor, benchmark_df, market, universe=None, **kwargs):
             if sym == "AAPL":
                 raise RuntimeError(HOSTILE_MESSAGE)
             return []
@@ -197,7 +221,7 @@ class TestPerSymbolHostileExceptionSanitization:
         the run for every other symbol."""
         processed = []
 
-        def fake_backtest(sym, hor, benchmark_df, market, universe=None):
+        def fake_backtest(sym, hor, benchmark_df, market, universe=None, **kwargs):
             processed.append(sym)
             if sym == ve.US_BASKET[0]:
                 raise RuntimeError(HOSTILE_MESSAGE)
@@ -308,7 +332,7 @@ class TestPublicAPIBoundary:
         return TestClient(app)
 
     def test_status_endpoint_has_no_raw_exception(self, client, monkeypatch, caplog):
-        def fake_backtest(sym, hor, benchmark_df, market, universe=None):
+        def fake_backtest(sym, hor, benchmark_df, market, universe=None, **kwargs):
             if sym == "AAPL":
                 raise RuntimeError(HOSTILE_MESSAGE)
             return []
@@ -348,7 +372,7 @@ class TestGenuineFieldsAndBehaviorUnaffected:
     behavior is unchanged."""
 
     def test_genuine_fields_unchanged_on_a_failing_run(self, monkeypatch):
-        def fake_backtest(sym, hor, benchmark_df, market, universe=None):
+        def fake_backtest(sym, hor, benchmark_df, market, universe=None, **kwargs):
             if sym == "AAPL":
                 raise RuntimeError(HOSTILE_MESSAGE)
             return []
