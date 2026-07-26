@@ -10,47 +10,72 @@
 
 ## Validation Benchmark Evidence Integrity
 
-**Status:** PR [#26](https://github.com/shashiraj75/stocksense/pull/26)
-(`fix/validation-benchmark-evidence-integrity`) **MERGED** to `main` (merge commit `0c3926c`,
-2026-07-26) and **automatically deployed** — confirmed via GitHub's commit-status/deployment API
-(Railway `success`, Vercel `success` on the merge commit) and a direct, read-only production smoke
-check: `GET /health` returns `{"status":"ok",...}` and `GET /api/validation/status` returns the
-clean, expected shape. No `/api/validation/run` was triggered to force this evidence —
-**failure-path production evidence remains naturally pending**; the failure path is fully
-test-backed (50 new tests using deterministic fault injection: empty/malformed/non-finite/
-non-positive/unsorted/duplicate benchmark data, a simulated provider exception, and a bounded-retry
-exhaustion) rather than production-observed.
+**Status:** two PRs, both merged and automatically deployed:
 
-Closes a class of defect where unavailable or invalid benchmark evidence was silently treated as
-genuine flat/neutral evidence: a benchmark alignment step that could backward-fill a *future*
-observation into an earlier stock date (a real look-ahead violation); a missing benchmark making
-the market-regime adjustment default to a genuine-looking neutral `0.0` for every signal; a missing
-benchmark forward return defaulting to `0.0` and fabricating `alpha_pct`/`actual_direction`/
-`correct` for signals that never had real benchmark evidence; `avg_return_benchmark_pct` using a
-truthy check that collapsed a genuine `0.0%` benchmark return to `None`; a missing-BUY-signals case
-fabricating a `0%` model return instead of `None`, producing a misleading outperformance figure; and
-a degraded-but-completed run persisting a contaminated result built on this fabricated evidence.
+- **PR [#26](https://github.com/shashiraj75/stocksense/pull/26)** (`fix/validation-benchmark-evidence-integrity`)
+  — **major benchmark-evidence integrity remediation**, merge commit `0c3926c`, 2026-07-26.
+- **PR [#28](https://github.com/shashiraj75/stocksense/pull/28)** (`fix/validation-benchmark-evidence-final-hardening`)
+  — **follow-up hardening**: malformed-type, positive-exit, coverage, retry and observability
+  closure, merge commit `2247384`, 2026-07-26.
 
-New centralized, versioned contract (`BenchmarkEvidence`, `validation_benchmark_evidence_v1`):
-a pure run-level preflight validates the fetched benchmark (non-empty, has `Close`, sorted,
-duplicate-free, finite, positive, at least one valid forward-return window) **before any stock
-backtest is submitted** — invalid evidence now **fails the whole run closed** (no stock work, no
-`_compute_metrics` call, no `val_runs`/`val_signals` write, run slot released, job marked terminal
-with a stable `BENCHMARK_EVIDENCE_UNAVAILABLE` code — never `RUN_EXCEPTION`, never raw exception
-text) rather than silently completing with fabricated evidence, as it did before. A bounded retry
-(2 attempts, same ticker) precedes the fail-closed gate, matching this codebase's existing
-provider-retry convention. Per-signal alignment is forward-fill-only with a bounded 5-calendar-day
-staleness tolerance — never backward-fills — applied both at the run level and as defense-in-depth
-inside the per-stock backtest function for any future direct caller. A signal date without genuine
-benchmark and regime evidence is now skipped entirely (never assigned a fabricated substitute) and
-disclosed via a new `signals_excluded_benchmark` count. Legacy persisted results lacking the new
-contract are labelled `benchmark_evidence.status = "legacy_unknown"` on read — **never rewritten**.
+**Automatic deployment successful** for both — confirmed via GitHub's commit-status/deployment API
+(Railway `success`, Vercel `success` on both merge commits) and a direct, read-only production smoke
+check after each merge: `GET /health` returns `{"status":"ok",...}` and `GET /api/validation/status`
+returns the clean, expected shape. **No `/api/validation/run` was triggered** to force this evidence
+for either PR — **natural production failure-path verification remains pending**; the failure path
+is fully test-backed instead (PR #26: 50 tests; PR #28: 36 additional tests using deterministic
+fault injection — string/mixed/malformed `Close` columns, negative/zero exit values, hand-computed
+exact coverage boundaries, timezone/intraday-timestamp mismatches, non-`DatetimeIndex` input) rather
+than production-observed. **No win-rate or accuracy claim** is made or implied by either PR.
 
-No scoring, benchmark methodology, alpha/hit-rate calculation, universe/horizon definition, or
-scheduler behavior changed for a healthy benchmark — every pre-existing signal-computation test's
-expected numeric values are unchanged. No production data rewritten. No accuracy, win-rate, or
-profitability claim made or implied. 70 new/updated tests. Final test evidence: backend
-3830/3830, frontend 454/454, clean typecheck, clean production build.
+**PR #26 — major remediation.** Closed a class of defect where unavailable or invalid benchmark
+evidence was silently treated as genuine flat/neutral evidence: a benchmark alignment step that
+could backward-fill a *future* observation into an earlier stock date (a real look-ahead
+violation); a missing benchmark making the market-regime adjustment default to a genuine-looking
+neutral `0.0` for every signal; a missing benchmark forward return defaulting to `0.0` and
+fabricating `alpha_pct`/`actual_direction`/`correct`; `avg_return_benchmark_pct` using a truthy
+check that collapsed a genuine `0.0%` to `None`; a missing-BUY-signals case fabricating a `0%`
+model return instead of `None`; and a degraded-but-completed run persisting a contaminated result.
+Introduced the centralized, versioned `BenchmarkEvidence` contract (`validation_benchmark_evidence_v1`)
+and the run-level fail-closed gate (`BENCHMARK_EVIDENCE_UNAVAILABLE`). 70 new/updated tests. Test
+evidence at merge: backend 3830/3830, frontend 454/454.
+
+**PR #28 — follow-up hardening**, closing edge cases found on fresh adversarial review of PR #26's
+own implementation (none of PR #26's protections repeated or weakened — its full test suite remains
+green):
+- **Total, exception-safe validator** — `_validate_benchmark_acquisition` now never raises for any
+  DataFrame shape/dtype (an escaping exception previously risked stranding the active job slot,
+  since this function runs deliberately outside the main try/except). New `non_numeric`,
+  `invalid_index_type`, `validation_error` states; deterministic numeric coercion with disclosed
+  invalid counts; original frame never mutated.
+- **Positive entry AND exit** — the prior condition only checked `entry > 0`; a zero/negative
+  `exit` could silently reach the forward-return division. Fixed at all three layers (acquisition,
+  aggregate return, per-signal alignment), which now provably share one coerced series.
+- **Coverage-based acquisition adequacy** — a single valid forward-return window among hundreds of
+  invalid rows is no longer accepted; requires >= 95% window coverage
+  (`BENCHMARK_MIN_ACQUISITION_WINDOW_COVERAGE_PCT`), with real, disclosed coverage counts. New
+  `insufficient_window_coverage` status.
+- **Post-alignment, whole-run signal coverage gate** — new `signal_windows_considered`/
+  `benchmark_valid_signal_windows`/`benchmark_signal_coverage_pct`, gated at >= 95%
+  (`BENCHMARK_MIN_SIGNAL_COVERAGE_PCT`) after the stock backtests run but before
+  `_compute_metrics()`/persistence — zero benchmark-valid signals, or below-threshold coverage,
+  fails closed (`BENCHMARK_ALIGNMENT_COVERAGE_INSUFFICIENT`) and persists nothing; the latest
+  previously completed valid result remains unchanged.
+- **Retry extended** to non-exception acquisition failures (empty/malformed frame returned without
+  raising) for plausibly-transient states — still capped at 2 attempts, same ticker, no new
+  provider; structural states are explicitly not retried.
+- **Failed-job evidence** — a failed job's status snapshot now carries the full, safe
+  `BenchmarkEvidence` contract (never raw provider/exception text).
+- **Timezone/index robustness** — `_align_benchmark_close` normalizes tz-aware/naive and intraday
+  timestamps safely (never via a UTC-shifting conversion that could move a date across midnight);
+  a non-`DatetimeIndex` fails safe rather than raising.
+
+**Healthy-path parity preserved** for both PRs — every pre-existing signal-computation test's
+expected numeric values are unchanged; dedicated India/US parity tests confirm both markets
+complete unaffected. No scoring, benchmark methodology, alpha/hit-rate calculation, universe/
+horizon definition, or scheduler behavior changed. No production data rewritten at any point.
+36 new tests plus 5 existing test-file corrections in PR #28. Final combined test evidence:
+backend 3866/3866, frontend 454/454, clean typecheck, clean production build.
 
 ## Validation Public Diagnostic Sanitization
 
