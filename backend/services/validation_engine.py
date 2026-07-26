@@ -87,6 +87,9 @@ VALIDATION_PUBLIC_FAILURE_MESSAGES = {
     "SYMBOL_VALIDATION_FAILED": "Validation failed for this symbol.",
     "CLAIMED_JOB_MISMATCH": "Validation job identity mismatch.",
     "BENCHMARK_EVIDENCE_UNAVAILABLE": "Benchmark evidence is currently unavailable for this run.",
+    "BENCHMARK_ALIGNMENT_COVERAGE_INSUFFICIENT": (
+        "Benchmark evidence coverage across this run was insufficient to publish a result."
+    ),
 }
 
 # benchmark_unavailable_reason's two possible stable public values. The
@@ -147,6 +150,33 @@ BENCHMARK_ALIGNMENT_MAX_STALE_DAYS = 5
 BENCHMARK_FETCH_MAX_ATTEMPTS = 2
 BENCHMARK_FETCH_RETRY_BACKOFF_SECONDS = 2
 
+# Acquisition-level coverage gate (Finding C, 2026-07-26 hardening): a
+# single valid forward-return window amid hundreds of invalid rows is not
+# adequate evidence to back an entire universe's walk-forward run. 95% is
+# the preferred conservative default — a genuinely healthy same-market
+# benchmark history is expected to clear this comfortably; this has not
+# been lowered to accommodate any test's prior, now-corrected expectation.
+BENCHMARK_MIN_ACQUISITION_WINDOW_COVERAGE_PCT = 95.0
+
+# Post-alignment, whole-run coverage gate (Finding D): the real fraction of
+# candidate per-symbol signal windows (across the whole universe) that had
+# genuine benchmark+regime evidence. Distinct from the acquisition-level
+# gate above — this can only be known after every symbol's backtest has
+# actually run, so it is checked after the ThreadPoolExecutor loop but
+# strictly before _compute_metrics()/persistence.
+BENCHMARK_MIN_SIGNAL_COVERAGE_PCT = 95.0
+
+# Acquisition states worth a bounded retry — plausibly transient (a
+# provider hiccup can return an empty/malformed frame without raising).
+# Deliberately excludes structural states (unsorted/duplicate/non-positive
+# index, invalid index type, insufficient window coverage, an unexpected
+# validator exception) where a second identical call to the same ticker
+# cannot reasonably be expected to fix a schema-level problem — see
+# run_validation's retry loop for where this set is consulted.
+_BENCHMARK_RETRIABLE_ACQUISITION_STATUSES = frozenset({
+    "empty", "missing_close_column", "non_numeric", "non_finite", "insufficient_history",
+})
+
 
 @dataclass(frozen=True)
 class BenchmarkEvidence:
@@ -155,7 +185,9 @@ class BenchmarkEvidence:
     the only status under which run_validation proceeds to submit any
     stock backtest — every other status is a distinct, stable, non-
     exception reason a caller (public API, log line, or test) can rely on
-    without ever seeing raw provider/exception text."""
+    without ever seeing raw provider/exception text. Every field is safe
+    to expose in a public API response or a failed job's status snapshot —
+    none is ever derived from str(exc)/repr(exc)."""
     status: str
     reason: str | None
     ticker: str
@@ -166,70 +198,214 @@ class BenchmarkEvidence:
     first_observation_at: str | None
     last_observation_at: str | None
     methodology_version: str
+    # Coverage disclosure (Finding C, 2026-07-26 hardening) — real counts,
+    # never fabricated denominators. total_rows is the raw fetched row
+    # count; numeric_rows is how many parsed as numeric (see
+    # _coerce_benchmark_close); finite_positive_rows counts genuinely
+    # usable closes; invalid_rows counts values that were present but
+    # could not be parsed as numeric.
+    total_rows: int = 0
+    numeric_rows: int = 0
+    finite_positive_rows: int = 0
+    invalid_rows: int = 0
+    total_forward_windows: int = 0
+    valid_forward_windows: int = 0
+    forward_window_coverage_pct: float | None = None
+
+
+def _coerce_benchmark_close(bench_df: pd.DataFrame) -> tuple[pd.Series, int, int]:
+    """Deterministically coerce a benchmark DataFrame's Close column to a
+    numeric Series, without mutating the original frame. This is THE one
+    effective series shared by acquisition validation
+    (_validate_benchmark_acquisition), the run-level aggregate benchmark
+    return, and per-signal alignment (_align_benchmark_close) — the same
+    validated series must never be swapped for the raw, unfiltered column
+    partway through a run (Finding B).
+
+    Returns (numeric_close, numeric_rows, invalid_rows). If Close is
+    already a numeric dtype, this is a no-op (zero-copy) pass-through — no
+    row is ever reported invalid on dtype grounds alone. Otherwise
+    `pd.to_numeric(..., errors="coerce")` is used: deterministic, and any
+    originally-non-null value that fails to parse becomes NaN — a
+    converted/missing value is NEVER later treated as valid evidence
+    (every downstream consumer already requires np.isfinite()).
+    """
+    close = bench_df["Close"]
+    if pd.api.types.is_numeric_dtype(close):
+        return close, int(close.notna().sum()), 0
+    original_non_null = int(close.notna().sum())
+    coerced = pd.to_numeric(close, errors="coerce")
+    numeric_rows = int(coerced.notna().sum())
+    invalid_rows = max(0, original_non_null - numeric_rows)
+    return coerced, numeric_rows, invalid_rows
 
 
 def _validate_benchmark_acquisition(
     bench_df: pd.DataFrame | None, ticker: str, market: str, horizon: str,
 ) -> BenchmarkEvidence:
-    """Pure validation of a freshly fetched benchmark DataFrame — no I/O,
-    no mutation. Called once per run, before any stock backtest future is
-    submitted, so a bad benchmark fails the whole run fast rather than
-    letting every stock in the universe silently compute alpha/
-    correctness against fabricated zero/neutral evidence.
+    """Pure(-ish — logs on the exceptional path only) validation of a
+    freshly fetched benchmark DataFrame. Called once per attempt, before
+    any stock backtest future is submitted, so a bad benchmark fails the
+    whole run fast rather than letting every stock in the universe
+    silently compute alpha/correctness against fabricated zero/neutral
+    evidence.
+
+    TOTAL FUNCTION CONTRACT (Finding A, 2026-07-26 hardening): this
+    function must never raise for any DataFrame shape or dtype — it
+    always returns a BenchmarkEvidence. Any unexpected internal error
+    (a pathological object-dtype value even pd.to_numeric chokes on, a
+    non-standard index type breaking .date(), etc.) is caught, logged
+    server-side with full detail, and reported as the fixed, safe
+    "validation_error" status — never raw exception text. This matters
+    because run_validation calls this OUTSIDE its own try/except (so a
+    raised failure here is never re-caught and relabeled RUN_EXCEPTION —
+    see run_validation's own comment) — an exception escaping this
+    function would bypass the BENCHMARK_EVIDENCE_UNAVAILABLE transition
+    entirely and could strand the active job slot.
 
     `status == "available"` guarantees: the frame is non-empty, has a
-    `Close` column, a strictly sorted and duplicate-free index, at least
-    one finite positive close, and at least one horizon-aligned
-    (entry, exit) pair of finite positive closes — exactly the pair
-    run_validation's own benchmark_avg_ret computation depends on, so
-    "available" can never be followed by an empty-mean edge case.
+    `Close` column, a DatetimeIndex, a strictly sorted and duplicate-free
+    index, a numerically parseable Close column, and forward-return-window
+    coverage (both entry AND exit finite and strictly positive — Finding
+    B) at or above BENCHMARK_MIN_ACQUISITION_WINDOW_COVERAGE_PCT — never
+    just "at least one" valid window (Finding C).
     """
     fwd_days = HORIZON_DAYS[horizon]
     step = HORIZON_STEP[horizon]
     rows_required = fwd_days + 1
 
-    def _evidence(status: str, reason: str | None, rows_available: int = 0,
-                  first: str | None = None, last: str | None = None) -> BenchmarkEvidence:
+    def _evidence(
+        status: str, reason: str | None, *, rows_available: int = 0,
+        first: str | None = None, last: str | None = None,
+        total_rows: int = 0, numeric_rows: int = 0, finite_positive_rows: int = 0,
+        invalid_rows: int = 0, total_forward_windows: int = 0, valid_forward_windows: int = 0,
+        forward_window_coverage_pct: float | None = None,
+    ) -> BenchmarkEvidence:
         return BenchmarkEvidence(
             status=status, reason=reason, ticker=ticker, market=market, horizon=horizon,
             rows_available=rows_available, rows_required=rows_required,
             first_observation_at=first, last_observation_at=last,
             methodology_version=BENCHMARK_EVIDENCE_VERSION,
+            total_rows=total_rows, numeric_rows=numeric_rows,
+            finite_positive_rows=finite_positive_rows, invalid_rows=invalid_rows,
+            total_forward_windows=total_forward_windows, valid_forward_windows=valid_forward_windows,
+            forward_window_coverage_pct=forward_window_coverage_pct,
         )
 
-    if bench_df is None or bench_df.empty:
-        return _evidence("empty", "benchmark fetch returned no rows")
-    if "Close" not in bench_df.columns:
-        return _evidence("missing_close_column", "benchmark data has no Close column", len(bench_df))
-    if not bench_df.index.is_monotonic_increasing:
-        return _evidence("unsorted_index", "benchmark index is not sorted ascending", len(bench_df))
-    if bench_df.index.has_duplicates:
-        return _evidence("duplicate_index", "benchmark index has duplicate dates", len(bench_df))
+    try:
+        if bench_df is None or bench_df.empty:
+            return _evidence("empty", "benchmark fetch returned no rows")
+        if "Close" not in bench_df.columns:
+            return _evidence(
+                "missing_close_column", "benchmark data has no Close column",
+                rows_available=len(bench_df), total_rows=len(bench_df),
+            )
+        if not isinstance(bench_df.index, pd.DatetimeIndex):
+            return _evidence(
+                "invalid_index_type", "benchmark index is not a DatetimeIndex",
+                rows_available=len(bench_df), total_rows=len(bench_df),
+            )
+        if not bench_df.index.is_monotonic_increasing:
+            return _evidence(
+                "unsorted_index", "benchmark index is not sorted ascending",
+                rows_available=len(bench_df), total_rows=len(bench_df),
+            )
+        if bench_df.index.has_duplicates:
+            return _evidence(
+                "duplicate_index", "benchmark index has duplicate dates",
+                rows_available=len(bench_df), total_rows=len(bench_df),
+            )
 
-    close = bench_df["Close"]
-    first_obs = str(bench_df.index[0].date()) if hasattr(bench_df.index[0], "date") else str(bench_df.index[0])
-    last_obs = str(bench_df.index[-1].date()) if hasattr(bench_df.index[-1], "date") else str(bench_df.index[-1])
-    finite = close[np.isfinite(close)]
-    if len(finite) == 0:
-        return _evidence("non_finite", "benchmark Close has no finite values", len(bench_df), first_obs, last_obs)
-    if not (finite > 0).any():
-        return _evidence("non_positive", "benchmark Close has no positive values", len(bench_df), first_obs, last_obs)
+        total_rows = len(bench_df)
+        first_obs = str(bench_df.index[0].date())
+        last_obs = str(bench_df.index[-1].date())
 
-    has_valid_window = False
-    for i in range(0, len(bench_df) - fwd_days, step):
-        e = float(close.iloc[i])
-        x = float(close.iloc[i + fwd_days])
-        if np.isfinite(e) and np.isfinite(x) and e > 0:
-            has_valid_window = True
-            break
-    if not has_valid_window:
-        return _evidence(
-            "insufficient_history",
-            f"no valid finite/positive forward-return window found for horizon={horizon!r}",
-            len(bench_df), first_obs, last_obs,
+        # Deterministic numeric coercion (Finding A) — a string-only Close
+        # column is reported as a distinct, safe status rather than
+        # raising; a mixed numeric/string column proceeds using only the
+        # values that genuinely parsed, with the invalid count disclosed.
+        # "non_numeric" is reserved for a genuinely non-numeric dtype with
+        # zero parseable values — an already-numeric (float/int) column
+        # that happens to be entirely NaN is a distinct, existing
+        # "non_finite" condition, not a dtype/parsing problem.
+        was_numeric_dtype = pd.api.types.is_numeric_dtype(bench_df["Close"])
+        numeric_close, numeric_rows, invalid_rows = _coerce_benchmark_close(bench_df)
+        if not was_numeric_dtype and numeric_rows == 0:
+            return _evidence(
+                "non_numeric", "benchmark Close column contains no parseable numeric values",
+                rows_available=total_rows, first=first_obs, last=last_obs,
+                total_rows=total_rows, numeric_rows=0, invalid_rows=invalid_rows,
+            )
+
+        finite = numeric_close[np.isfinite(numeric_close)]
+        if len(finite) == 0:
+            return _evidence(
+                "non_finite", "benchmark Close has no finite values",
+                rows_available=total_rows, first=first_obs, last=last_obs,
+                total_rows=total_rows, numeric_rows=numeric_rows, invalid_rows=invalid_rows,
+            )
+        finite_positive = finite[finite > 0]
+        if len(finite_positive) == 0:
+            return _evidence(
+                "non_positive", "benchmark Close has no positive values",
+                rows_available=total_rows, first=first_obs, last=last_obs,
+                total_rows=total_rows, numeric_rows=numeric_rows, invalid_rows=invalid_rows,
+            )
+
+        # Forward-window coverage (Finding B: BOTH entry and exit must be
+        # finite and strictly positive; Finding C: count every candidate
+        # window, not just whether one happens to exist).
+        total_forward_windows = 0
+        valid_forward_windows = 0
+        for i in range(0, total_rows - fwd_days, step):
+            total_forward_windows += 1
+            e = numeric_close.iloc[i]
+            x = numeric_close.iloc[i + fwd_days]
+            if np.isfinite(e) and np.isfinite(x) and e > 0 and x > 0:
+                valid_forward_windows += 1
+
+        common = dict(
+            rows_available=total_rows, first=first_obs, last=last_obs,
+            total_rows=total_rows, numeric_rows=numeric_rows,
+            finite_positive_rows=len(finite_positive), invalid_rows=invalid_rows,
+            total_forward_windows=total_forward_windows, valid_forward_windows=valid_forward_windows,
         )
 
-    return _evidence("available", None, len(bench_df), first_obs, last_obs)
+        if total_forward_windows == 0:
+            # Too few rows to form even one candidate window — a distinct,
+            # row-count-based condition from "plenty of windows, most
+            # invalid" (insufficient_window_coverage, below).
+            return _evidence(
+                "insufficient_history",
+                f"fewer than {rows_required} rows — cannot form any forward-return "
+                f"window for horizon={horizon!r}",
+                **common, forward_window_coverage_pct=None,
+            )
+
+        coverage_pct = round(valid_forward_windows / total_forward_windows * 100, 2)
+        if coverage_pct < BENCHMARK_MIN_ACQUISITION_WINDOW_COVERAGE_PCT:
+            return _evidence(
+                "insufficient_window_coverage",
+                f"only {coverage_pct}% of {total_forward_windows} candidate forward-return "
+                f"windows are valid (need >= {BENCHMARK_MIN_ACQUISITION_WINDOW_COVERAGE_PCT}%)",
+                **common, forward_window_coverage_pct=coverage_pct,
+            )
+
+        return _evidence("available", None, **common, forward_window_coverage_pct=coverage_pct)
+
+    except Exception:
+        # Total-function guarantee: never let an unexpected internal error
+        # escape as a raised exception — the caller (run_validation) does
+        # not wrap this call in its own try/except, by design (see this
+        # function's own docstring), so an escaping exception here would
+        # bypass the fail-closed transition entirely. Full detail logged
+        # server-side only; the public status is the fixed, safe code.
+        log.exception(
+            "[validation] unexpected internal error validating benchmark acquisition — "
+            "ticker=%s market=%s horizon=%s",
+            ticker, market, horizon,
+        )
+        return _evidence("validation_error", "unexpected error validating benchmark data")
 
 
 def _align_benchmark_close(
@@ -247,39 +423,90 @@ def _align_benchmark_close(
     be forward-filled — an ordinary same-market holiday gap is bridged;
     a genuine multi-session data gap is not silently presented as current.
 
+    Timezone/index robustness (Finding G, 2026-07-26 hardening): both
+    indexes are normalized to tz-naive, midnight-normalized calendar dates
+    before comparison — via tz_localize(None) (strips a timezone while
+    PRESERVING the displayed wall-clock date/time; never tz_convert, which
+    would shift the instant through UTC and could move a date across a
+    midnight boundary) followed by .normalize() (drops any intraday
+    time-of-day). This makes a tz-aware-vs-naive mismatch, or an intraday
+    timestamp, compare safely without ever fabricating a future
+    observation or moving a value to an earlier trading date. A
+    non-DatetimeIndex on either side fails safe (returns all-unavailable)
+    rather than raising.
+
+    Uses the SAME coerced/validated Close series as acquisition validation
+    and the run-level aggregate return (_coerce_benchmark_close) — never a
+    different, unfiltered series (Finding B).
+
     Returns (aligned_close, available) — both indexed by `stock_index`.
     `available[i]` is True only when `aligned_close[i]` is a genuine,
     non-stale, forward-filled-at-most benchmark observation; callers must
     never trust `aligned_close[i]` when `available[i]` is False, even
     though pandas may still show a (stale or NaN) numeric value there.
     """
-    close = benchmark_df["Close"]
-    finite_close = close[np.isfinite(close) & (close > 0)]
+    aligned = pd.Series(np.nan, index=stock_index, dtype=float)
+    available = pd.Series(False, index=stock_index, dtype=bool)
+    if not isinstance(stock_index, pd.DatetimeIndex) or not isinstance(benchmark_df.index, pd.DatetimeIndex):
+        return aligned, available
+
+    numeric_close, _, _ = _coerce_benchmark_close(benchmark_df)
+    finite_close = numeric_close[np.isfinite(numeric_close) & (numeric_close > 0)]
     # Dedupe in the ORIGINAL row order first (keep="last" == the last row
     # for a given date as the provider returned it), THEN sort — sorting
     # first and deduping after would make the kept value depend on
     # pandas' sort-stability for tied keys, which is not guaranteed.
     finite_close = finite_close[~finite_close.index.duplicated(keep="last")].sort_index()
-
-    aligned = pd.Series(np.nan, index=stock_index, dtype=float)
-    available = pd.Series(False, index=stock_index, dtype=bool)
     if finite_close.empty:
         return aligned, available
 
-    # searchsorted(..., side="right") - 1 finds, for each stock date, the
-    # position of the latest benchmark date <= it — forward-fill only, by
-    # construction; a stock date before finite_close's first entry gets -1
-    # (no source position), never a later (future) one.
-    positions = finite_close.index.searchsorted(stock_index, side="right") - 1
+    norm_bench_index = _normalize_trading_dates(finite_close.index)
+    norm_stock_index = _normalize_trading_dates(stock_index)
+    # Re-dedupe/re-sort AFTER normalizing — stripping tz/intraday
+    # components can newly collapse two distinct raw timestamps onto the
+    # same calendar date; keep the same deterministic "last wins" rule,
+    # applied again in normalized-index order.
+    normalized_bench = pd.Series(finite_close.to_numpy(), index=norm_bench_index)
+    normalized_bench = normalized_bench[~normalized_bench.index.duplicated(keep="last")].sort_index()
+
+    # searchsorted(..., side="right") - 1 finds, for each (normalized)
+    # stock date, the position of the latest (normalized) benchmark date
+    # <= it — forward-fill only, by construction; a stock date before
+    # normalized_bench's first entry gets -1 (no source position), never
+    # a later (future) one.
+    positions = normalized_bench.index.searchsorted(norm_stock_index, side="right") - 1
     valid_pos = positions >= 0
     if not valid_pos.any():
         return aligned, available
 
-    src_dates = finite_close.index[positions[valid_pos]]
-    aligned.iloc[valid_pos] = finite_close.iloc[positions[valid_pos]].to_numpy()
-    gap_days = (stock_index[valid_pos] - src_dates).days
+    src_dates = normalized_bench.index[positions[valid_pos]]
+    aligned.iloc[valid_pos] = normalized_bench.iloc[positions[valid_pos]].to_numpy()
+    gap_days = (norm_stock_index[valid_pos] - src_dates).days
     available.iloc[valid_pos] = gap_days <= BENCHMARK_ALIGNMENT_MAX_STALE_DAYS
     return aligned, available
+
+
+def _normalize_trading_dates(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """Normalize a DatetimeIndex to tz-naive, midnight-normalized calendar
+    dates — a safe common comparison basis for cross-market/cross-tz
+    alignment (Finding G). Both a stock's and a benchmark's trading dates
+    represent a calendar day, not a precise instant, so:
+
+    - tz_localize(None) strips a timezone while PRESERVING the displayed
+      wall-clock date/time exactly as-is — never tz_convert(None), which
+      would first convert through UTC and could shift the displayed date
+      across a midnight boundary (that would corrupt the calendar-date
+      comparison this function exists to make safe).
+    - .normalize() drops any intraday time-of-day component (sets it to
+      midnight), so an intraday timestamp compares purely by date.
+
+    A tz-naive, midnight-only index is returned unchanged (both are
+    already no-ops in that case).
+    """
+    idx = index
+    if idx.tz is not None:
+        idx = idx.tz_localize(None)
+    return idx.normalize()
 
 
 def _new_job_identity(*, market: str, universe_id: str, horizon: str,
@@ -957,6 +1184,7 @@ def _backtest_stock(
     *,
     universe: str | None = None,
     _exclusions: list | None = None,
+    _window_stats: dict | None = None,
 ) -> list[dict]:
     """
     Walk-forward backtest for one stock over HORIZON_PERIOD[horizon].
@@ -984,6 +1212,14 @@ def _backtest_stock(
     is safe to call concurrently from ThreadPoolExecutor workers under
     CPython's GIL; the caller only needs len() on it afterwards).
 
+    `_window_stats` (Finding D, 2026-07-26 hardening) — an optional dict
+    this call populates with `{"considered": int, "benchmark_valid": int}`.
+    Unlike `_exclusions`, this is deliberately a PER-CALL, per-worker
+    result — run_validation gives each stock its own fresh dict and sums
+    them after every future resolves, rather than sharing one mutable
+    counter across threads, for a clearer and more portable long-term
+    count contract than a single shared append-only list.
+
     Returns list of signal dicts, empty list on error, insufficient data, or
     an entirely benchmark-unavailable date range (all logged with full
     symbol/market/universe/horizon context so a caller reviewing effective
@@ -991,6 +1227,9 @@ def _backtest_stock(
     see run_validation's n_stocks_with_signals).
     """
     exclusions = _exclusions if _exclusions is not None else []
+    window_stats = _window_stats if _window_stats is not None else {}
+    window_stats.setdefault("considered", 0)
+    window_stats.setdefault("benchmark_valid", 0)
     yf_sym = _resolve_yahoo_symbol(symbol, market)
     fwd_days  = HORIZON_DAYS[horizon]
     step      = HORIZON_STEP[horizon]
@@ -1100,6 +1339,7 @@ def _backtest_stock(
         signals = []
         for i in range(MIN_WARMUP, len(df) - fwd_days, step):
             try:
+                window_stats["considered"] += 1
                 entry = float(df["Close"].iloc[i])
                 exit_ = float(df["Close"].iloc[i + fwd_days])
                 if entry == 0:
@@ -1126,9 +1366,15 @@ def _backtest_stock(
                     continue
                 b_entry = float(benchmark_close.iloc[i])
                 b_exit  = float(benchmark_close.iloc[i + fwd_days])
-                if not (np.isfinite(b_entry) and np.isfinite(b_exit)) or b_entry <= 0:
+                # Finding B (2026-07-26 hardening): BOTH sides of the
+                # window must be finite and strictly positive — the
+                # original condition only checked b_entry, letting a
+                # zero/negative b_exit silently through to the forward-
+                # return division below.
+                if not (np.isfinite(b_entry) and np.isfinite(b_exit)) or b_entry <= 0 or b_exit <= 0:
                     exclusions.append(1)
                     continue
+                window_stats["benchmark_valid"] += 1
                 benchmark_fwd_ret = (b_exit - b_entry) / b_entry * 100
 
                 # ── Look-ahead-free indicator computation ──────────────────────
@@ -1637,33 +1883,52 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
     # flat-zero/neutral substitute (the pre-existing defect this replaces —
     # see BENCHMARK_EVIDENCE_UNAVAILABLE below and _align_benchmark_close's
     # per-signal defense-in-depth for direct/future callers).
+    # Finding E (2026-07-26 hardening): a single loop covers BOTH a thrown
+    # provider exception AND a non-exception acquisition failure (an
+    # empty/malformed frame returned without raising) — after every
+    # attempt, `_validate_benchmark_acquisition` (now a total function,
+    # Finding A) always yields a real BenchmarkEvidence, and retry
+    # continues only while its status is one of the plausibly-transient
+    # states in `_BENCHMARK_RETRIABLE_ACQUISITION_STATUSES`. A structural
+    # status (e.g. unsorted_index, invalid_index_type,
+    # insufficient_window_coverage, validation_error) stops immediately —
+    # a second identical call to the same ticker cannot reasonably fix a
+    # schema-level problem.
     bench_df = None
-    fetch_exc: Exception | None = None
+    evidence: BenchmarkEvidence | None = None
     for attempt in range(BENCHMARK_FETCH_MAX_ATTEMPTS):
         try:
             bench_df = yf.Ticker(benchmark_ticker).history(period=HORIZON_PERIOD[horizon])
-            fetch_exc = None
-            break
-        except Exception as e:
-            fetch_exc = e
+        except Exception:
             bench_df = None
             log.exception(
-                "[validation] benchmark fetch attempt %d/%d failed — ticker=%s "
+                "[validation] benchmark fetch attempt %d/%d raised — ticker=%s "
                 "horizon=%s universe=%s",
                 attempt + 1, BENCHMARK_FETCH_MAX_ATTEMPTS, benchmark_ticker, horizon, universe,
             )
-            if attempt < BENCHMARK_FETCH_MAX_ATTEMPTS - 1:
-                time.sleep(BENCHMARK_FETCH_RETRY_BACKOFF_SECONDS * (attempt + 1))
 
-    evidence = _validate_benchmark_acquisition(bench_df, benchmark_ticker, market, horizon)
+        evidence = _validate_benchmark_acquisition(bench_df, benchmark_ticker, market, horizon)
+        if evidence.status == "available":
+            break
+
+        is_last_attempt = attempt == BENCHMARK_FETCH_MAX_ATTEMPTS - 1
+        is_retriable = evidence.status in _BENCHMARK_RETRIABLE_ACQUISITION_STATUSES
+        if is_last_attempt or not is_retriable:
+            break
+        log.warning(
+            "[validation] retriable benchmark evidence status on attempt %d/%d — "
+            "status=%s ticker=%s horizon=%s universe=%s",
+            attempt + 1, BENCHMARK_FETCH_MAX_ATTEMPTS, evidence.status, benchmark_ticker, horizon, universe,
+        )
+        time.sleep(BENCHMARK_FETCH_RETRY_BACKOFF_SECONDS * (attempt + 1))
 
     if evidence.status != "available":
         log.warning(
             "[validation] benchmark evidence unavailable, failing run closed — "
             "status=%s reason=%s ticker=%s market=%s horizon=%s universe=%s "
-            "rows_available=%d rows_required=%d",
+            "rows_available=%d rows_required=%d coverage_pct=%s",
             evidence.status, evidence.reason, benchmark_ticker, market, horizon, universe,
-            evidence.rows_available, evidence.rows_required,
+            evidence.rows_available, evidence.rows_required, evidence.forward_window_coverage_pct,
         )
         with _status_lock:
             _run_status.update({
@@ -1677,6 +1942,12 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
                     "status": "failed",
                     "failure_code": "BENCHMARK_EVIDENCE_UNAVAILABLE",
                     "failure_message": VALIDATION_PUBLIC_FAILURE_MESSAGES["BENCHMARK_EVIDENCE_UNAVAILABLE"],
+                    # Finding F (2026-07-26 hardening): the full stable,
+                    # non-exception evidence contract is safe to expose on
+                    # the failed job/status snapshot — every field is a
+                    # constrained enum, a count, a date string, or a fixed
+                    # per-status message; never raw provider/exception text.
+                    "benchmark_evidence": asdict(evidence),
                     "completed_at": datetime.now(timezone.utc).isoformat(),
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 })
@@ -1690,15 +1961,20 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
         )
 
     # evidence.status == "available" guarantees at least one finite,
-    # positive (entry, exit) pair exists — this loop can never end up with
-    # an empty bench_rets here (see _validate_benchmark_acquisition's own
-    # has_valid_window check, which uses the exact same loop shape).
+    # positive (entry, exit) pair exists at or above the acquisition
+    # coverage threshold — this loop can never end up with an empty
+    # bench_rets here. Uses the SAME coerced/validated Close series as
+    # acquisition validation and per-signal alignment (Finding B) — never
+    # a different, unfiltered series — and requires BOTH entry and exit
+    # to be finite and strictly positive (the original condition only
+    # checked entry, letting a zero/negative exit silently through).
     fwd_days = HORIZON_DAYS[horizon]
+    numeric_bench_close, _, _ = _coerce_benchmark_close(bench_df)
     bench_rets = []
     for i in range(0, len(bench_df) - fwd_days, HORIZON_STEP[horizon]):
-        e = float(bench_df["Close"].iloc[i])
-        x = float(bench_df["Close"].iloc[i + fwd_days])
-        if np.isfinite(e) and np.isfinite(x) and e > 0:
+        e = numeric_bench_close.iloc[i]
+        x = numeric_bench_close.iloc[i + fwd_days]
+        if np.isfinite(e) and np.isfinite(x) and e > 0 and x > 0:
             bench_rets.append((x - e) / e * 100)
     benchmark_avg_ret = float(np.mean(bench_rets))
     benchmark_data_available = True
@@ -1710,16 +1986,24 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
         all_signals: list[dict] = []
         symbols_with_signals: set[str] = set()
         excluded_benchmark: list = []
+        # Finding D (2026-07-26 hardening): each stock gets its OWN fresh
+        # per-worker stats dict (never a single dict shared/mutated across
+        # threads) — aggregated by the main thread once every future has
+        # resolved. Deliberately not another shared append-only list, for
+        # a clearer, more portable long-term count contract than
+        # `excluded_benchmark` above.
+        window_stats_by_symbol: dict[str, dict] = {}
         done = 0
 
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {
-                pool.submit(
+            futures = {}
+            for sym in stocks:
+                stats = {"considered": 0, "benchmark_valid": 0}
+                window_stats_by_symbol[sym] = stats
+                futures[pool.submit(
                     _backtest_stock, sym, horizon, bench_df, market,
-                    universe=universe, _exclusions=excluded_benchmark,
-                ): sym
-                for sym in stocks
-            }
+                    universe=universe, _exclusions=excluded_benchmark, _window_stats=stats,
+                )] = sym
             for future in as_completed(futures):
                 sym = futures[future]
                 try:
@@ -1752,10 +2036,83 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
                             _run_status["job"]["current_symbol"] = sym
                             _run_status["job"]["updated_at"] = datetime.now(timezone.utc).isoformat()
 
+        signal_windows_considered = sum(s["considered"] for s in window_stats_by_symbol.values())
+        benchmark_valid_signal_windows = sum(s["benchmark_valid"] for s in window_stats_by_symbol.values())
+        benchmark_signal_coverage_pct = (
+            round(benchmark_valid_signal_windows / signal_windows_considered * 100, 2)
+            if signal_windows_considered > 0 else None
+        )
+
+        # Finding D — post-alignment, whole-run coverage gate. This can
+        # only be evaluated after every symbol's backtest has actually
+        # run (unlike the acquisition-level gate above, which prevents
+        # the stock work from starting at all). Zero benchmark-valid
+        # signal windows, or coverage below the documented minimum, must
+        # never be persisted as a completed successful run — the failed
+        # attempt must not overwrite the latest previously completed
+        # valid result (get_latest_results only ever reads committed
+        # val_runs rows, so simply writing nothing here already
+        # guarantees that).
+        insufficient_signal_coverage = (
+            benchmark_valid_signal_windows == 0
+            or benchmark_signal_coverage_pct is None
+            or benchmark_signal_coverage_pct < BENCHMARK_MIN_SIGNAL_COVERAGE_PCT
+        )
+        if insufficient_signal_coverage:
+            log.warning(
+                "[validation] benchmark alignment coverage insufficient, failing run closed — "
+                "considered=%d benchmark_valid=%d coverage_pct=%s min_required=%s "
+                "ticker=%s market=%s horizon=%s universe=%s",
+                signal_windows_considered, benchmark_valid_signal_windows,
+                benchmark_signal_coverage_pct, BENCHMARK_MIN_SIGNAL_COVERAGE_PCT,
+                benchmark_ticker, market, horizon, universe,
+            )
+            with _status_lock:
+                _run_status.update({
+                    "running": False,
+                    "log": _run_status["log"] + [
+                        f"❌ Failed: "
+                        f"{VALIDATION_PUBLIC_FAILURE_MESSAGES['BENCHMARK_ALIGNMENT_COVERAGE_INSUFFICIENT']}"
+                    ],
+                })
+                if _run_status.get("job") is not None:
+                    _run_status["job"].update({
+                        "status": "failed",
+                        "failure_code": "BENCHMARK_ALIGNMENT_COVERAGE_INSUFFICIENT",
+                        "failure_message":
+                            VALIDATION_PUBLIC_FAILURE_MESSAGES["BENCHMARK_ALIGNMENT_COVERAGE_INSUFFICIENT"],
+                        "benchmark_evidence": {
+                            **asdict(evidence),
+                            "signal_windows_considered": signal_windows_considered,
+                            "benchmark_valid_signal_windows": benchmark_valid_signal_windows,
+                            "benchmark_signal_coverage_pct": benchmark_signal_coverage_pct,
+                            "min_benchmark_signal_coverage_pct": BENCHMARK_MIN_SIGNAL_COVERAGE_PCT,
+                        },
+                        "completed_at": datetime.now(timezone.utc).isoformat(),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    })
+            # No _compute_metrics call, no val_runs/val_signals write — the
+            # run slot is already released and the job marked terminal
+            # above. Raised INSIDE this try/except deliberately (unlike
+            # the acquisition-level gate, this can only be evaluated after
+            # the stock work above has run) — the outer except below
+            # recognizes failure_code is already set and does not
+            # overwrite it with RUN_EXCEPTION.
+            raise ValueError(
+                f"run_validation: benchmark alignment coverage insufficient — "
+                f"considered={signal_windows_considered} valid={benchmark_valid_signal_windows} "
+                f"coverage_pct={benchmark_signal_coverage_pct} "
+                f"min_required={BENCHMARK_MIN_SIGNAL_COVERAGE_PCT} — "
+                f"refusing to persist a result built on inadequate benchmark evidence"
+            )
+
         metrics = _compute_metrics(
             all_signals, benchmark_avg_ret, horizon, market=market,
             signals_excluded_benchmark=len(excluded_benchmark),
         )
+        metrics["signal_windows_considered"] = signal_windows_considered
+        metrics["benchmark_valid_signal_windows"] = benchmark_valid_signal_windows
+        metrics["benchmark_signal_coverage_pct"] = benchmark_signal_coverage_pct
         metrics["horizon"]   = horizon
         metrics["universe"]  = universe
         metrics["n_stocks_tested"] = n_stocks  # kept unchanged for backward compat — see below
@@ -1868,20 +2225,39 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
             horizon, universe, market,
         )
         with _status_lock:
-            _run_status.update({
-                "running": False,
-                "log": _run_status["log"] + [
-                    f"❌ Failed: {VALIDATION_PUBLIC_FAILURE_MESSAGES['RUN_EXCEPTION']}"
-                ],
-            })
-            if _run_status.get("job") is not None:
-                _run_status["job"].update({
-                    "status": "failed",
-                    "failure_code": "RUN_EXCEPTION",
-                    "failure_message": VALIDATION_PUBLIC_FAILURE_MESSAGES["RUN_EXCEPTION"],
-                    "completed_at": datetime.now(timezone.utc).isoformat(),
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
+            # Idempotence guard (2026-07-26 hardening): the post-alignment
+            # coverage gate above deliberately raises INSIDE this same
+            # try/except (it can only be evaluated after the stock work
+            # has run) after already marking the job failed with a more
+            # specific code (BENCHMARK_ALIGNMENT_COVERAGE_INSUFFICIENT).
+            # Without this guard, this generic handler would unconditionally
+            # overwrite that specific code with RUN_EXCEPTION on its way
+            # back up — exactly the bug already fixed once for the
+            # acquisition-level gate (by moving it outside this try/except
+            # entirely); this guard covers any future inner code that
+            # follows the same "mark specific, then raise" pattern from
+            # inside the try.
+            already_marked_failed = (
+                _run_status.get("job") is not None
+                and _run_status["job"].get("failure_code") is not None
+            )
+            if already_marked_failed:
+                _run_status["running"] = False
+            else:
+                _run_status.update({
+                    "running": False,
+                    "log": _run_status["log"] + [
+                        f"❌ Failed: {VALIDATION_PUBLIC_FAILURE_MESSAGES['RUN_EXCEPTION']}"
+                    ],
                 })
+                if _run_status.get("job") is not None:
+                    _run_status["job"].update({
+                        "status": "failed",
+                        "failure_code": "RUN_EXCEPTION",
+                        "failure_message": VALIDATION_PUBLIC_FAILURE_MESSAGES["RUN_EXCEPTION"],
+                        "completed_at": datetime.now(timezone.utc).isoformat(),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    })
         raise
 
 

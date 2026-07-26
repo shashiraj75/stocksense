@@ -118,12 +118,29 @@ class _BoomIfWrittenConn:
         raise AssertionError("val_signals write attempted on an invalid-benchmark run")
 
 
-def _mock_io(monkeypatch, backtest_fake, bench_df=None):
+def _mock_io(monkeypatch, backtest_fake, bench_df=None, auto_window_stats=True):
+    """`auto_window_stats=True` (default) makes every _backtest_stock call
+    report one genuinely benchmark-valid window before delegating to
+    `backtest_fake` — most tests using this helper are about job
+    identity/sanitization/routing, not benchmark signal-coverage itself,
+    so without this every one of them would spuriously trip the new
+    post-alignment coverage gate (Finding D) just because their stub
+    backtest returns `[]`. Tests that specifically exercise insufficient
+    signal-level coverage pass `auto_window_stats=False` and populate
+    `_window_stats` themselves via a custom fake."""
+    def _wrapped_backtest(*args, **kwargs):
+        if auto_window_stats:
+            window_stats = kwargs.get("_window_stats")
+            if window_stats is not None:
+                window_stats["considered"] = window_stats.get("considered", 0) + 1
+                window_stats["benchmark_valid"] = window_stats.get("benchmark_valid", 0) + 1
+        return backtest_fake(*args, **kwargs)
+
     mock_yf = MagicMock()
     mock_yf.Ticker.return_value.history.return_value = (
         bench_df if bench_df is not None else _valid_benchmark_df()
     )
-    monkeypatch.setattr(ve, "_backtest_stock", backtest_fake)
+    monkeypatch.setattr(ve, "_backtest_stock", _wrapped_backtest)
     monkeypatch.setattr(ve, "yf", mock_yf)
     monkeypatch.setattr(ve, "_init_db", lambda: None)
     monkeypatch.setattr(ve, "_get_sqlite_conn", lambda: _NoWriteConn())
@@ -208,17 +225,24 @@ class TestBenchmarkEvidenceContract:
         assert ev.market == "US"
         assert ev.horizon == "short"
 
-    def test_a_single_valid_window_amid_mostly_invalid_data_is_still_available(self):
-        """The horizon-window check, not just a raw row count, is the real
-        gate — enough rows with mostly-NaN closes but at least one genuine
-        finite/positive (entry, exit) pair must still be usable."""
+    def test_a_single_valid_window_amid_mostly_invalid_data_fails_coverage(self):
+        """2026-07-26 hardening (Finding C): a single valid forward-return
+        window amid hundreds of invalid rows is NOT adequate evidence to
+        back an entire universe's walk-forward run — this used to be
+        (incorrectly) treated as 'available'; it must now fail with the
+        distinct insufficient_window_coverage status, with real, non-
+        fabricated coverage counts disclosed."""
         n = 300
         closes = np.full(n, np.nan)
         closes[0] = 100.0
         closes[ve.HORIZON_DAYS["short"]] = 101.0
         df = pd.DataFrame({"Close": closes}, index=pd.bdate_range("2020-01-01", periods=n))
         ev = _validate_benchmark_acquisition(df, "^GSPC", "US", "short")
-        assert ev.status == "available"
+        assert ev.status == "insufficient_window_coverage"
+        assert ev.valid_forward_windows == 1
+        assert ev.total_forward_windows > 1
+        assert ev.forward_window_coverage_pct is not None
+        assert ev.forward_window_coverage_pct < ve.BENCHMARK_MIN_ACQUISITION_WINDOW_COVERAGE_PCT
 
     def test_wrong_market_ticker_is_reported_verbatim_never_inferred(self):
         """This function trusts the caller's own ticker/market — it never
