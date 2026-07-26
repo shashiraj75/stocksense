@@ -137,7 +137,7 @@ def _valid_benchmark_df(n=300, seed=99):
     return pd.DataFrame({"Close": close}, index=dates)
 
 
-def _mock_validation_io_boundaries(monkeypatch, backtest_stock_fake):
+def _mock_validation_io_boundaries(monkeypatch, backtest_stock_fake, auto_window_stats=True):
     """
     Mocks every I/O boundary run_validation() touches — yfinance, DB init,
     and the SQLite connection — so a call to run_validation() in a test
@@ -145,15 +145,31 @@ def _mock_validation_io_boundaries(monkeypatch, backtest_stock_fake):
     validation_results.db, no alpha_engine.db, no Postgres). Also resets
     the module's shared _run_status so a prior failed test can't leave a
     stuck "running" flag behind.
+
+    `auto_window_stats=True` (default) makes every _backtest_stock call
+    report one genuinely benchmark-valid window before delegating to
+    `backtest_stock_fake` — these tests are about symbol routing/run
+    wiring, not benchmark signal-coverage itself, so without this every
+    test whose stub backtest returns `[]` would spuriously trip the
+    post-alignment coverage gate (2026-07-26 hardening, Finding D).
     """
+    def _wrapped_backtest(*args, **kwargs):
+        if auto_window_stats:
+            window_stats = kwargs.get("_window_stats")
+            if window_stats is not None:
+                window_stats["considered"] = window_stats.get("considered", 0) + 1
+                window_stats["benchmark_valid"] = window_stats.get("benchmark_valid", 0) + 1
+        return backtest_stock_fake(*args, **kwargs)
+
     mock_yf = MagicMock()
     mock_yf.Ticker.return_value.history.return_value = _valid_benchmark_df()
 
-    monkeypatch.setattr(ve, "_backtest_stock", backtest_stock_fake)
+    monkeypatch.setattr(ve, "_backtest_stock", _wrapped_backtest)
     monkeypatch.setattr(ve, "yf", mock_yf)
     monkeypatch.setattr(ve, "_init_db", lambda: None)
     monkeypatch.setattr(ve, "_get_sqlite_conn", lambda: _NoWriteConn())
     monkeypatch.setattr(ve, "_USE_POSTGRES", False)
+    monkeypatch.setattr(ve.time, "sleep", lambda *a, **k: None)  # bounded retry — never slow a test
 
     with ve._status_lock:
         ve._run_status["running"] = False
@@ -511,6 +527,10 @@ class TestRunValidationWiringFullyMocked:
 
         def _fake_backtest_stock(symbol, horizon, benchmark_df, market, universe=None, **kwargs):
             captured_markets.append(market)
+            window_stats = kwargs.get("_window_stats")
+            if window_stats is not None:
+                window_stats["considered"] = window_stats.get("considered", 0) + 1
+                window_stats["benchmark_valid"] = window_stats.get("benchmark_valid", 0) + 1
             return []
 
         mock_yf = MagicMock()
@@ -521,6 +541,7 @@ class TestRunValidationWiringFullyMocked:
         monkeypatch.setattr(ve, "_init_db", lambda: None)
         monkeypatch.setattr(ve, "_get_sqlite_conn", lambda: self._NullConn())
         monkeypatch.setattr(ve, "_USE_POSTGRES", False)
+        monkeypatch.setattr(ve.time, "sleep", lambda *a, **k: None)
 
         with ve._status_lock:
             ve._run_status["running"] = False

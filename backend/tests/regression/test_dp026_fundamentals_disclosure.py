@@ -302,6 +302,13 @@ class TestRunValidationPersistsDisclosure:
         signals = _synthetic_signals(n=25, seed=5)
 
         def fake_backtest_stock(symbol, horizon, benchmark_df, market, *, universe=None, **kwargs):
+            window_stats = kwargs.get("_window_stats")
+            if window_stats is not None:
+                # Matches the 5 signals actually returned below — this
+                # test's own concern is DP-026 disclosure, not benchmark
+                # signal-coverage (2026-07-26 hardening, Finding D).
+                window_stats["considered"] = 5
+                window_stats["benchmark_valid"] = 5
             return [dict(s, symbol=symbol) for s in signals[:5]]
 
         mock_yf = MagicMock()
