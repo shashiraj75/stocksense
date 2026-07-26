@@ -2,3 +2,7 @@
 pytest>=8.0.0
 pytest-asyncio>=0.24.0
 httpx2>=2.0.0
+# Real PostgreSQL Verification, CI Execution phase — explicit per-test
+# timeouts for the postgres_integration suite (Part 18: no indefinite lock
+# waits). Dev-only, same as every other test dependency in this file.
+pytest-timeout>=2.3.0

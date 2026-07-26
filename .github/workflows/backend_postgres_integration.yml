@@ -1,0 +1,131 @@
+name: Backend PostgreSQL Integration Tests
+
+# Real PostgreSQL Verification, CI Execution phase.
+#
+# Separate workflow, not an extension of backend_tests.yml — a real
+# Postgres service container, a synthetic-only connection string, a
+# distinct test marker/directory, and dedicated artifact uploads are
+# materially different concerns from the existing mocked-connection unit/
+# regression suite, and folding them into backend_tests.yml would make
+# that workflow's fast, dependency-free job harder to reason about. This
+# workflow reuses backend_tests.yml's exact Python version, dependency-
+# install, and working-directory conventions — nothing here is a
+# parallel, competing CI structure.
+#
+# The database exists only for the duration of this job (a GitHub Actions
+# service container, torn down automatically when the job ends) and is
+# never anything but a synthetic, disposable instance — see Part 2/3 of
+# the governing program for the full rationale.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "backend/services/postgres_store.py"
+      - "backend/services/postmortem/**"
+      - "backend/api/routers/paper_trading.py"
+      - "backend/tests/postgres_integration/**"
+      - ".github/workflows/backend_postgres_integration.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+
+    services:
+      postgres:
+        # Explicit pinned major version — never `latest`. PostgreSQL 15 is
+        # assumed compatible with the current Supabase-managed Postgres
+        # version at the time this workflow was authored; this assumption
+        # has NOT been independently re-verified against the live
+        # Supabase project's actual server version from this environment
+        # (no network access to Supabase's dashboard/API here) — that
+        # confirmation is a required, cheap check before treating this
+        # workflow's results as fully representative of production
+        # behavior, and is called out explicitly in this phase's report.
+        image: postgres:15
+        env:
+          # Synthetic, CI-only, job-scoped credentials — never a repository
+          # secret (disposable test credentials need none), never printed
+          # in full anywhere in this workflow.
+          POSTGRES_DB: stocksense_ci_test
+          POSTGRES_USER: stocksense_ci_user
+          POSTGRES_PASSWORD: stocksense_ci_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U stocksense_ci_user -d stocksense_ci_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Wait for PostgreSQL readiness
+        run: |
+          for i in $(seq 1 20); do
+            if pg_isready -h localhost -p 5432 -U stocksense_ci_user -d stocksense_ci_test; then
+              echo "PostgreSQL is ready."
+              exit 0
+            fi
+            echo "Waiting for PostgreSQL... attempt $i"
+            sleep 2
+          done
+          echo "PostgreSQL did not become ready in time."
+          exit 1
+
+      - name: Capture safe PostgreSQL metadata
+        env:
+          PGPASSWORD: stocksense_ci_password
+        run: |
+          echo "PostgreSQL version:"
+          psql -h localhost -U stocksense_ci_user -d stocksense_ci_test -c "SELECT version();"
+          echo "Database: stocksense_ci_test (ephemeral, job-scoped)"
+          echo "Environment: GitHub Actions service container (disposable)"
+          # Deliberately never echoes the connection string or password.
+
+      - name: Confirm postgres_integration tests are actually collected
+        env:
+          POSTGRES_INTEGRATION_TEST_DATABASE_URL: "postgresql://stocksense_ci_user:stocksense_ci_password@localhost:5432/stocksense_ci_test"
+        run: |
+          COUNT=$(python -m pytest tests/postgres_integration -m postgres_integration --collect-only -q | grep -c "::" || true)
+          echo "Collected $COUNT postgres_integration test items."
+          if [ "$COUNT" -eq 0 ]; then
+            echo "No postgres_integration tests were collected — this must never silently pass."
+            exit 1
+          fi
+
+      - name: Run real PostgreSQL integration tests
+        env:
+          POSTGRES_INTEGRATION_TEST_DATABASE_URL: "postgresql://stocksense_ci_user:stocksense_ci_password@localhost:5432/stocksense_ci_test"
+        run: |
+          python -m pytest tests/postgres_integration -m postgres_integration -v \
+            --junit-xml=postgres_integration_report.xml \
+            2>&1 | tee postgres_integration_output.log
+
+      - name: Upload PostgreSQL integration test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-integration-results
+          path: |
+            backend/postgres_integration_report.xml
+            backend/postgres_integration_output.log
+          retention-days: 14
