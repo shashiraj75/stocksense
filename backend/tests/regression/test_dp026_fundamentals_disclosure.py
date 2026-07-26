@@ -213,9 +213,16 @@ class TestDataLimitationsIsPurelyAdditive:
         metrics = _compute_metrics(_synthetic_signals(), benchmark_return_pct=1.0, horizon="medium")
         assert self.EXPECTED_PRE_EXISTING_KEYS.issubset(metrics.keys())
 
-    def test_only_one_new_key_added(self):
+    def test_only_disclosure_keys_added(self):
+        """DP-026 added data_limitations; the later benchmark-evidence-
+        integrity fix additively disclosed signals_excluded_benchmark
+        (a real, caller-supplied exclusion count — see _compute_metrics'
+        own docstring) — both are pure disclosure, nothing else in the
+        summary changes."""
         metrics = _compute_metrics(_synthetic_signals(), benchmark_return_pct=1.0, horizon="medium")
-        assert set(metrics.keys()) - self.EXPECTED_PRE_EXISTING_KEYS == {"data_limitations"}
+        assert set(metrics.keys()) - self.EXPECTED_PRE_EXISTING_KEYS == {
+            "data_limitations", "signals_excluded_benchmark",
+        }
 
     def test_factor_ic_values_unaffected(self):
         signals = _synthetic_signals(n=60, seed=11)
@@ -234,12 +241,24 @@ class TestDataLimitationsIsPurelyAdditive:
 
 # ── End-to-end: run_validation() persists data_limitations in summary JSON ──
 
+def _valid_bench_df(n=300, seed=99):
+    """A benchmark DataFrame that passes _validate_benchmark_acquisition —
+    this file's own concern is DP-026 fundamentals disclosure, not
+    benchmark evidence, so run_validation() needs real benchmark evidence
+    to reach the persistence step this test actually exercises."""
+    rng = np.random.default_rng(seed)
+    dates = pd.bdate_range("2019-01-01", periods=n)
+    rets = rng.normal(0.0003, 0.008, n)
+    close = 100.0 * np.cumprod(1 + rets)
+    return pd.DataFrame({"Close": close}, index=dates)
+
+
 class _FakeTicker:
     def __init__(self, symbol):
         self.symbol = symbol
 
     def history(self, period=None):
-        return pd.DataFrame()
+        return _valid_bench_df()
 
     @property
     def info(self):
@@ -282,7 +301,7 @@ class TestRunValidationPersistsDisclosure:
         sink = {}
         signals = _synthetic_signals(n=25, seed=5)
 
-        def fake_backtest_stock(symbol, horizon, benchmark_df, market, *, universe=None):
+        def fake_backtest_stock(symbol, horizon, benchmark_df, market, *, universe=None, **kwargs):
             return [dict(s, symbol=symbol) for s in signals[:5]]
 
         mock_yf = MagicMock()

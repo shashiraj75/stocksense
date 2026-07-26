@@ -58,11 +58,27 @@ class _NoWriteConn:
         pass
 
 
+def _valid_benchmark_df(n=300, seed=99):
+    """A benchmark DataFrame that passes _validate_benchmark_acquisition
+    for every horizon — sorted, unique, finite, positive Close, enough
+    rows. Used as the default mocked yfinance response so tests whose real
+    concern is job identity/lifecycle (not benchmark evidence itself)
+    exercise run_validation's normal completing path, exactly as they did
+    before the benchmark-evidence-integrity fix. Tests that specifically
+    exercise invalid-benchmark behavior build their own deliberately-bad
+    DataFrame instead — see test_validation_benchmark_evidence.py."""
+    rng = np.random.default_rng(seed)
+    dates = pd.bdate_range("2019-01-01", periods=n)
+    rets = rng.normal(0.0003, 0.008, n)
+    close = 100.0 * np.cumprod(1 + rets)
+    return pd.DataFrame({"Close": close}, index=dates)
+
+
 def _mock_io(monkeypatch, backtest_fake):
     """Mock every I/O boundary run_validation() touches (same pattern as
     tests/unit/test_validation_engine_market_routing.py)."""
     mock_yf = MagicMock()
-    mock_yf.Ticker.return_value.history.return_value = pd.DataFrame()
+    mock_yf.Ticker.return_value.history.return_value = _valid_benchmark_df()
     monkeypatch.setattr(ve, "_backtest_stock", backtest_fake)
     monkeypatch.setattr(ve, "yf", mock_yf)
     monkeypatch.setattr(ve, "_init_db", lambda: None)
@@ -83,7 +99,7 @@ class TestActiveJobCarriesImmutableIdentity:
     def _run_and_capture_mid_run_status(self, monkeypatch, universe, horizon):
         captured = {}
 
-        def fake_backtest(sym, hor, benchmark_df, market, universe=None):
+        def fake_backtest(sym, hor, benchmark_df, market, universe=None, **kwargs):
             # First symbol captures the live status snapshot mid-run —
             # exactly what /api/validation/status serves the frontend.
             if not captured:
@@ -126,7 +142,7 @@ class TestActiveJobCarriesImmutableIdentity:
         the same job_id/market/universe — a running job is never relabeled."""
         snapshots = []
 
-        def fake_backtest(sym, hor, benchmark_df, market, universe=None):
+        def fake_backtest(sym, hor, benchmark_df, market, universe=None, **kwargs):
             snapshots.append(ve.get_run_status().get("job"))
             return []
 
@@ -214,7 +230,7 @@ class TestDataCutoffProvenanceIsTruthful:
     def _run_and_capture_mid_run_status(self, monkeypatch, universe, horizon):
         captured = {}
 
-        def fake_backtest(sym, hor, benchmark_df, market, universe=None):
+        def fake_backtest(sym, hor, benchmark_df, market, universe=None, **kwargs):
             if not captured:
                 captured.update(ve.get_run_status())
             return []
@@ -503,8 +519,16 @@ class TestBenchmarkUnavailabilityDisclosure:
     compatible with the frontend's existing `number | null` type contract
     for nifty_avg_fwd_return_pct."""
 
-    def test_benchmark_fetch_exception_is_disclosed_not_fabricated(self, monkeypatch):
+    def test_benchmark_fetch_exception_fails_the_run_closed(self, monkeypatch):
+        """Benchmark evidence integrity closure: a provider exception no
+        longer produces a completed, degraded run with a fabricated
+        disclosure — it fails the whole run closed before any stock work
+        happens (see TestBenchmarkEvidenceRunLevelFailClosed in
+        test_validation_benchmark_evidence.py for the full contract; this
+        test proves the exact regression scenario this class was
+        originally written against)."""
         _mock_io(monkeypatch, lambda *a, **k: [])
+        monkeypatch.setattr(ve.time, "sleep", lambda *a, **k: None)  # bounded retry — don't slow the test
 
         class _BoomTicker:
             def __init__(self, *a, **k):
@@ -517,22 +541,31 @@ class TestBenchmarkUnavailabilityDisclosure:
         mock_yf.Ticker.side_effect = _BoomTicker
         monkeypatch.setattr(ve, "yf", mock_yf)
 
-        metrics = ve.run_validation(horizon="short", universe="us")
-        assert metrics["benchmark_data_available"] is False
-        assert "benchmark_fetch_failed" in metrics["benchmark_unavailable_reason"]
-        assert metrics["benchmark_avg_fwd_return_pct"] is None
-        assert metrics["nifty_avg_fwd_return_pct"] is None
+        with pytest.raises(ValueError, match="benchmark evidence unavailable"):
+            ve.run_validation(horizon="short", universe="us")
+        status = ve.get_run_status()
+        assert status["running"] is False
+        job = status.get("job")
+        assert job is not None
+        assert job["failure_code"] == "BENCHMARK_EVIDENCE_UNAVAILABLE"
+        assert job["failure_message"] == ve.VALIDATION_PUBLIC_FAILURE_MESSAGES["BENCHMARK_EVIDENCE_UNAVAILABLE"]
+        assert "synthetic provider failure" not in job["failure_message"]
 
-    def test_insufficient_benchmark_history_is_disclosed(self, monkeypatch):
-        """The shared _mock_io helper's yf mock returns an empty
-        DataFrame (not an exception) — the exact 'fetch succeeded but
-        there's no usable history' case."""
+    def test_insufficient_benchmark_history_fails_the_run_closed(self, monkeypatch):
+        """An empty benchmark fetch ('succeeded' but unusable) — the exact
+        'fetch succeeded but there's no usable history' case — must also
+        fail the run closed, not silently proceed with a degraded/
+        fabricated disclosure."""
         _mock_io(monkeypatch, lambda *a, **k: [])
-        metrics = ve.run_validation(horizon="short", universe="us")
-        assert metrics["benchmark_data_available"] is False
-        assert metrics["benchmark_unavailable_reason"] == "insufficient_benchmark_history_for_horizon"
-        assert metrics["benchmark_avg_fwd_return_pct"] is None
-        assert metrics["nifty_avg_fwd_return_pct"] is None
+        mock_yf = MagicMock()
+        mock_yf.Ticker.return_value.history.return_value = pd.DataFrame()  # deliberately empty
+        monkeypatch.setattr(ve, "yf", mock_yf)
+
+        with pytest.raises(ValueError, match="benchmark evidence unavailable"):
+            ve.run_validation(horizon="short", universe="us")
+        job = ve.get_run_status().get("job")
+        assert job is not None
+        assert job["failure_code"] == "BENCHMARK_EVIDENCE_UNAVAILABLE"
 
     def test_successful_benchmark_fetch_is_marked_available_with_real_numbers(self, monkeypatch):
         _mock_io(monkeypatch, lambda *a, **k: [])

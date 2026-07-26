@@ -44,6 +44,16 @@ def _synthetic_ohlcv(n=260, seed=42):
     )
 
 
+def _valid_bench_df(seed=7):
+    """A benchmark DataFrame that passes _validate_benchmark_acquisition —
+    this file's own concern is DP-026 point-in-time fundamentals, not
+    benchmark evidence, so every _backtest_stock() call below needs real
+    benchmark evidence to produce any signals at all (post benchmark-
+    evidence-integrity fix). Same date index as _synthetic_ohlcv (both use
+    pd.bdate_range("2023-01-02", ...)) so alignment has no leading gap."""
+    return _synthetic_ohlcv(seed=seed)
+
+
 class _FakeTicker:
     def __init__(self, symbol):
         self.symbol = symbol
@@ -140,7 +150,7 @@ class TestBacktestStockUsPointInTime:
             }}
 
         monkeypatch.setattr(ve, "_get_fundamentals_as_of_replay", fake_as_of)
-        signals = _backtest_stock("AAPL", "medium", None, "US", universe="us")
+        signals = _backtest_stock("AAPL", "medium", _valid_bench_df(), "US", universe="us")
         assert len(signals) > 1
         assert len(set(seen_as_of_dates)) > 1  # genuinely different cutoffs, not one repeated
 
@@ -151,7 +161,7 @@ class TestBacktestStockUsPointInTime:
                 "net_income": {"value": 10.0}, "shareholders_equity": {"value": 100.0}, "revenue": {"value": 100.0},
             },
         })
-        signals = _backtest_stock("AAPL", "short", None, "US", universe="us")
+        signals = _backtest_stock("AAPL", "short", _valid_bench_df(), "US", universe="us")
         assert len(signals) > 0
         assert all(s["fund_pit_available"] is True for s in signals)
 
@@ -160,7 +170,7 @@ class TestBacktestStockUsPointInTime:
         monkeypatch.setattr(ve, "_get_fundamentals_as_of_replay", lambda symbol, as_of: {
             "available": False, "reason": "no eligible filing as of the signal date",
         })
-        signals = _backtest_stock("AAPL", "short", None, "US", universe="us")
+        signals = _backtest_stock("AAPL", "short", _valid_bench_df(), "US", universe="us")
         assert len(signals) > 0
         assert all(s["fund_pit_available"] is False for s in signals)
 
@@ -169,7 +179,7 @@ class TestBacktestStockUsPointInTime:
         monkeypatch.setattr(ve, "_get_fundamentals_as_of_replay", lambda symbol, as_of: {"available": False, "reason": "x"})
         live_fn = MagicMock(side_effect=AssertionError("must not be called during backtest replay"))
         monkeypatch.setattr(ve.sec_edgar_adapter, "fetch_us_fundamentals_sec_edgar", live_fn)
-        _backtest_stock("AAPL", "short", None, "US", universe="us")
+        _backtest_stock("AAPL", "short", _valid_bench_df(), "US", universe="us")
         live_fn.assert_not_called()
 
     def test_never_reads_yfinance_info_for_us_fund_score(self, monkeypatch):
@@ -186,7 +196,7 @@ class TestBacktestStockUsPointInTime:
 
         monkeypatch.setattr(ve.yf, "Ticker", _TrackedTicker)
         monkeypatch.setattr(ve, "_get_fundamentals_as_of_replay", lambda symbol, as_of: {"available": False, "reason": "x"})
-        _backtest_stock("AAPL", "short", None, "US", universe="us")
+        _backtest_stock("AAPL", "short", _valid_bench_df(), "US", universe="us")
         assert info_accessed == []
 
 
@@ -208,14 +218,14 @@ class TestBacktestStockIndiaUnaffected:
         edgar_fn = MagicMock(side_effect=AssertionError("India must never call SEC EDGAR"))
         monkeypatch.setattr(ve, "_get_fundamentals_as_of_replay", edgar_fn)
 
-        signals = _backtest_stock("INFY", "short", None, "IN", universe="nifty100")
+        signals = _backtest_stock("INFY", "short", _valid_bench_df(), "IN", universe="nifty100")
         assert len(signals) > 0
         edgar_fn.assert_not_called()
         assert len(info_call_count) == 1  # exactly one .info call, not one per signal
 
     def test_india_fund_pit_available_always_false(self, monkeypatch):
         monkeypatch.setattr(ve.yf, "Ticker", _FakeTicker)
-        signals = _backtest_stock("INFY", "short", None, "IN", universe="nifty100")
+        signals = _backtest_stock("INFY", "short", _valid_bench_df(), "IN", universe="nifty100")
         assert len(signals) > 0
         assert all(s["fund_pit_available"] is False for s in signals)
 

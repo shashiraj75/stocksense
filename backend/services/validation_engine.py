@@ -23,8 +23,10 @@ import os
 import json
 import sqlite3
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
 import numpy as np
@@ -84,6 +86,7 @@ VALIDATION_PUBLIC_FAILURE_MESSAGES = {
     "BENCHMARK_FETCH_FAILED": "Benchmark data is temporarily unavailable.",
     "SYMBOL_VALIDATION_FAILED": "Validation failed for this symbol.",
     "CLAIMED_JOB_MISMATCH": "Validation job identity mismatch.",
+    "BENCHMARK_EVIDENCE_UNAVAILABLE": "Benchmark evidence is currently unavailable for this run.",
 }
 
 # benchmark_unavailable_reason's two possible stable public values. The
@@ -111,6 +114,172 @@ def _sanitize_benchmark_unavailable_reason(reason: str | None) -> str | None:
     # failure of some kind. The exact historical exception text is never
     # reconstructable as safe, so it always collapses to the one stable code.
     return BENCHMARK_UNAVAILABLE_FETCH_FAILED
+
+
+# ── Benchmark evidence integrity ──────────────────────────────────────────────
+# Closes a distinct, deeper class of defect than the sanitization above:
+# unavailable or invalid benchmark evidence being silently treated as a
+# genuine flat 0.0% return or a genuine neutral (0.0) market regime,
+# fabricating alpha/correctness/regime input for signals that never had
+# real benchmark evidence behind them. See BenchmarkEvidence,
+# _validate_benchmark_acquisition (run-level preflight, before any stock
+# work is submitted) and _align_benchmark_close (per-signal alignment,
+# forward-fill only, bounded staleness, no look-ahead).
+BENCHMARK_EVIDENCE_VERSION = "validation_benchmark_evidence_v1"
+
+# Forward-fill is permitted only to bridge an ordinary same-market
+# holiday/weekend gap between the benchmark's own trading calendar and the
+# stock's — never to manufacture an observation for a date meaningfully
+# newer than the benchmark's last real one. 5 calendar days comfortably
+# covers a long weekend or single-day holiday in either the NSE or NYSE
+# calendar without accepting a genuine multi-session data gap as current.
+BENCHMARK_ALIGNMENT_MAX_STALE_DAYS = 5
+
+# Bounded retry for a transient benchmark-fetch failure, matching this
+# codebase's existing provider-retry convention (see e.g.
+# sec_edgar_adapter.py's _RETRY_COUNT/_RETRY_BACKOFF_SECONDS,
+# nse_bhavcopy.py's _MAX_ATTEMPTS) — same ticker only, capped attempts,
+# capped total wait, no new provider. After the last attempt fails, the
+# run fails closed (see run_validation's benchmark preflight gate) rather
+# than silently proceeding or falling back to a stale cached value (this
+# module retains no such cache with the provenance a safe fallback would
+# require).
+BENCHMARK_FETCH_MAX_ATTEMPTS = 2
+BENCHMARK_FETCH_RETRY_BACKOFF_SECONDS = 2
+
+
+@dataclass(frozen=True)
+class BenchmarkEvidence:
+    """Typed, versioned verdict on one fetched benchmark DataFrame's
+    fitness to back an entire Validation run. `status == "available"` is
+    the only status under which run_validation proceeds to submit any
+    stock backtest — every other status is a distinct, stable, non-
+    exception reason a caller (public API, log line, or test) can rely on
+    without ever seeing raw provider/exception text."""
+    status: str
+    reason: str | None
+    ticker: str
+    market: str
+    horizon: str
+    rows_available: int
+    rows_required: int
+    first_observation_at: str | None
+    last_observation_at: str | None
+    methodology_version: str
+
+
+def _validate_benchmark_acquisition(
+    bench_df: pd.DataFrame | None, ticker: str, market: str, horizon: str,
+) -> BenchmarkEvidence:
+    """Pure validation of a freshly fetched benchmark DataFrame — no I/O,
+    no mutation. Called once per run, before any stock backtest future is
+    submitted, so a bad benchmark fails the whole run fast rather than
+    letting every stock in the universe silently compute alpha/
+    correctness against fabricated zero/neutral evidence.
+
+    `status == "available"` guarantees: the frame is non-empty, has a
+    `Close` column, a strictly sorted and duplicate-free index, at least
+    one finite positive close, and at least one horizon-aligned
+    (entry, exit) pair of finite positive closes — exactly the pair
+    run_validation's own benchmark_avg_ret computation depends on, so
+    "available" can never be followed by an empty-mean edge case.
+    """
+    fwd_days = HORIZON_DAYS[horizon]
+    step = HORIZON_STEP[horizon]
+    rows_required = fwd_days + 1
+
+    def _evidence(status: str, reason: str | None, rows_available: int = 0,
+                  first: str | None = None, last: str | None = None) -> BenchmarkEvidence:
+        return BenchmarkEvidence(
+            status=status, reason=reason, ticker=ticker, market=market, horizon=horizon,
+            rows_available=rows_available, rows_required=rows_required,
+            first_observation_at=first, last_observation_at=last,
+            methodology_version=BENCHMARK_EVIDENCE_VERSION,
+        )
+
+    if bench_df is None or bench_df.empty:
+        return _evidence("empty", "benchmark fetch returned no rows")
+    if "Close" not in bench_df.columns:
+        return _evidence("missing_close_column", "benchmark data has no Close column", len(bench_df))
+    if not bench_df.index.is_monotonic_increasing:
+        return _evidence("unsorted_index", "benchmark index is not sorted ascending", len(bench_df))
+    if bench_df.index.has_duplicates:
+        return _evidence("duplicate_index", "benchmark index has duplicate dates", len(bench_df))
+
+    close = bench_df["Close"]
+    first_obs = str(bench_df.index[0].date()) if hasattr(bench_df.index[0], "date") else str(bench_df.index[0])
+    last_obs = str(bench_df.index[-1].date()) if hasattr(bench_df.index[-1], "date") else str(bench_df.index[-1])
+    finite = close[np.isfinite(close)]
+    if len(finite) == 0:
+        return _evidence("non_finite", "benchmark Close has no finite values", len(bench_df), first_obs, last_obs)
+    if not (finite > 0).any():
+        return _evidence("non_positive", "benchmark Close has no positive values", len(bench_df), first_obs, last_obs)
+
+    has_valid_window = False
+    for i in range(0, len(bench_df) - fwd_days, step):
+        e = float(close.iloc[i])
+        x = float(close.iloc[i + fwd_days])
+        if np.isfinite(e) and np.isfinite(x) and e > 0:
+            has_valid_window = True
+            break
+    if not has_valid_window:
+        return _evidence(
+            "insufficient_history",
+            f"no valid finite/positive forward-return window found for horizon={horizon!r}",
+            len(bench_df), first_obs, last_obs,
+        )
+
+    return _evidence("available", None, len(bench_df), first_obs, last_obs)
+
+
+def _align_benchmark_close(
+    benchmark_df: pd.DataFrame, stock_index: pd.DatetimeIndex,
+) -> tuple[pd.Series, pd.Series]:
+    """Forward-fill-only alignment of benchmark closes onto a stock's own
+    trading dates, with a bounded staleness tolerance — the point-in-time
+    integrity contract for benchmark alignment.
+
+    Never backward-fills: a stock date before the benchmark's first real
+    observation gets no value, regardless of what a later observation
+    might say. A stock date whose most recent real benchmark observation
+    is more than BENCHMARK_ALIGNMENT_MAX_STALE_DAYS calendar days in the
+    past is marked unavailable too, even though a value could technically
+    be forward-filled — an ordinary same-market holiday gap is bridged;
+    a genuine multi-session data gap is not silently presented as current.
+
+    Returns (aligned_close, available) — both indexed by `stock_index`.
+    `available[i]` is True only when `aligned_close[i]` is a genuine,
+    non-stale, forward-filled-at-most benchmark observation; callers must
+    never trust `aligned_close[i]` when `available[i]` is False, even
+    though pandas may still show a (stale or NaN) numeric value there.
+    """
+    close = benchmark_df["Close"]
+    finite_close = close[np.isfinite(close) & (close > 0)]
+    # Dedupe in the ORIGINAL row order first (keep="last" == the last row
+    # for a given date as the provider returned it), THEN sort — sorting
+    # first and deduping after would make the kept value depend on
+    # pandas' sort-stability for tied keys, which is not guaranteed.
+    finite_close = finite_close[~finite_close.index.duplicated(keep="last")].sort_index()
+
+    aligned = pd.Series(np.nan, index=stock_index, dtype=float)
+    available = pd.Series(False, index=stock_index, dtype=bool)
+    if finite_close.empty:
+        return aligned, available
+
+    # searchsorted(..., side="right") - 1 finds, for each stock date, the
+    # position of the latest benchmark date <= it — forward-fill only, by
+    # construction; a stock date before finite_close's first entry gets -1
+    # (no source position), never a later (future) one.
+    positions = finite_close.index.searchsorted(stock_index, side="right") - 1
+    valid_pos = positions >= 0
+    if not valid_pos.any():
+        return aligned, available
+
+    src_dates = finite_close.index[positions[valid_pos]]
+    aligned.iloc[valid_pos] = finite_close.iloc[positions[valid_pos]].to_numpy()
+    gap_days = (stock_index[valid_pos] - src_dates).days
+    available.iloc[valid_pos] = gap_days <= BENCHMARK_ALIGNMENT_MAX_STALE_DAYS
+    return aligned, available
 
 
 def _new_job_identity(*, market: str, universe_id: str, horizon: str,
@@ -787,6 +956,7 @@ def _backtest_stock(
     market: str,
     *,
     universe: str | None = None,
+    _exclusions: list | None = None,
 ) -> list[dict]:
     """
     Walk-forward backtest for one stock over HORIZON_PERIOD[horizon].
@@ -800,12 +970,27 @@ def _backtest_stock(
     inference. `universe` is optional, carried only for failure-diagnostic
     logging (which universe/run this symbol belonged to), not for routing.
 
-    Returns list of signal dicts, empty list on error or insufficient data
-    (both cases are logged with full symbol/market/universe/horizon context
-    so a caller reviewing effective sample size can see WHY a requested
-    symbol contributed zero signals — see run_validation's
-    n_stocks_with_signals).
+    Benchmark evidence integrity (defense-in-depth): run_validation's own
+    preflight (_validate_benchmark_acquisition) already fails the whole run
+    closed before this function is ever called with unusable benchmark_df —
+    but this function does not trust that guarantee for a future/direct
+    caller. Every signal date's regime input and benchmark-relative fields
+    (nifty_fwd_ret_pct/alpha_pct/actual_direction/correct) require genuine,
+    non-stale, non-backward-filled benchmark evidence at that exact date
+    (see _align_benchmark_close) — a date without it is skipped entirely
+    (never assigned a fabricated flat-0.0/neutral-regime substitute) and
+    counted in `_exclusions` (a shared, append-only list the caller may pass
+    to aggregate an exclusion count across every backtest call — list.append
+    is safe to call concurrently from ThreadPoolExecutor workers under
+    CPython's GIL; the caller only needs len() on it afterwards).
+
+    Returns list of signal dicts, empty list on error, insufficient data, or
+    an entirely benchmark-unavailable date range (all logged with full
+    symbol/market/universe/horizon context so a caller reviewing effective
+    sample size can see WHY a requested symbol contributed zero signals —
+    see run_validation's n_stocks_with_signals).
     """
+    exclusions = _exclusions if _exclusions is not None else []
     yf_sym = _resolve_yahoo_symbol(symbol, market)
     fwd_days  = HORIZON_DAYS[horizon]
     step      = HORIZON_STEP[horizon]
@@ -866,28 +1051,51 @@ def _backtest_stock(
                 fund_score += 8 if rev_g > 0.10 else (-8 if rev_g < 0 else 0)
             fund_score = max(0.0, min(100.0, fund_score))
 
-        # Align benchmark index to stock dates
+        # Align benchmark index to stock dates — forward-fill only, bounded
+        # staleness, never backward-fill (see _align_benchmark_close). A
+        # position with `benchmark_available[idx] is False` must never be
+        # treated as evidence, even though `benchmark_close` may still hold
+        # a (stale-beyond-tolerance or pre-first-observation) NaN/number there.
         benchmark_close = None
-        if benchmark_df is not None and not benchmark_df.empty:
-            benchmark_close = benchmark_df["Close"].reindex(df.index).ffill().bfill()
+        benchmark_available = None
+        if benchmark_df is not None and not benchmark_df.empty and "Close" in benchmark_df.columns:
+            benchmark_close, benchmark_available = _align_benchmark_close(benchmark_df, df.index)
 
-        # Precompute regime adjustments from benchmark only (no stock data → no bias)
+        # Precompute regime adjustments from benchmark only (no stock data →
+        # no bias). regime_available[idx] distinguishes a genuinely
+        # calculated neutral regime (0.0, real evidence, no directional
+        # signal) from unavailable regime evidence (also stored as 0.0 in
+        # regime_adjs for arithmetic convenience, but NEVER used — the
+        # per-signal loop below checks regime_available, not the value).
         regime_adjs = []
+        regime_available = []
         if benchmark_close is not None:
             ema50_bench = benchmark_close.ewm(span=50).mean()
             for idx in range(len(df)):
+                base_idx = max(0, idx - 63)
+                if not (bool(benchmark_available.iloc[idx]) and bool(benchmark_available.iloc[base_idx])):
+                    regime_adjs.append(0.0)
+                    regime_available.append(False)
+                    continue
                 try:
                     cur  = float(benchmark_close.iloc[idx])
                     e50  = float(ema50_bench.iloc[idx])
-                    base = float(benchmark_close.iloc[max(0, idx - 63)])
-                    r3m  = (cur - base) / base if base != 0 else 0
+                    base = float(benchmark_close.iloc[base_idx])
+                    if not (np.isfinite(cur) and np.isfinite(e50) and np.isfinite(base)) or base <= 0:
+                        regime_adjs.append(0.0)
+                        regime_available.append(False)
+                        continue
+                    r3m = (cur - base) / base
                     if cur > e50 and r3m > 0.03:    regime_adjs.append(5.0)
                     elif cur < e50 and r3m < -0.03: regime_adjs.append(-5.0)
                     else:                            regime_adjs.append(0.0)
+                    regime_available.append(True)
                 except Exception:
                     regime_adjs.append(0.0)
+                    regime_available.append(False)
         else:
             regime_adjs = [0.0] * len(df)
+            regime_available = [False] * len(df)
 
         signals = []
         for i in range(MIN_WARMUP, len(df) - fwd_days, step):
@@ -898,13 +1106,30 @@ def _backtest_stock(
                     continue
                 fwd_ret = (exit_ - entry) / entry * 100
 
-                # Benchmark forward return over same window (for alpha calculation)
-                benchmark_fwd_ret = 0.0
-                if benchmark_close is not None and i + fwd_days < len(benchmark_close):
-                    b_entry = float(benchmark_close.iloc[i])
-                    b_exit  = float(benchmark_close.iloc[i + fwd_days])
-                    if b_entry != 0:
-                        benchmark_fwd_ret = (b_exit - b_entry) / b_entry * 100
+                # Benchmark forward return over same window (for alpha
+                # calculation) — genuine evidence required at BOTH the
+                # entry and exit dates, plus regime evidence at entry
+                # (regime_adjs[i] already fed the composite score below, so
+                # a signal whose regime input was unavailable must not be
+                # published at all, not just have its alpha/correctness
+                # fields blanked — see this function's own docstring).
+                # Never initialized to 0.0 as a missing-value fallback: if
+                # evidence is unavailable, the signal is skipped entirely.
+                benchmark_ok = (
+                    benchmark_close is not None
+                    and bool(regime_available[i])
+                    and bool(benchmark_available.iloc[i])
+                    and bool(benchmark_available.iloc[i + fwd_days])
+                )
+                if not benchmark_ok:
+                    exclusions.append(1)
+                    continue
+                b_entry = float(benchmark_close.iloc[i])
+                b_exit  = float(benchmark_close.iloc[i + fwd_days])
+                if not (np.isfinite(b_entry) and np.isfinite(b_exit)) or b_entry <= 0:
+                    exclusions.append(1)
+                    continue
+                benchmark_fwd_ret = (b_exit - b_entry) / b_entry * 100
 
                 # ── Look-ahead-free indicator computation ──────────────────────
                 # Slice only rows 0..i (inclusive) — no future data visible
@@ -1154,8 +1379,18 @@ def _data_limitations_for_market(signals: list[dict], market: str | None) -> dic
     }
 
 
-def _compute_metrics(signals: list[dict], benchmark_return_pct: float, horizon: str = "medium", market: str | None = None) -> dict:
-    """Compute all aggregate validation metrics from raw signals."""
+def _compute_metrics(
+    signals: list[dict], benchmark_return_pct: float | None, horizon: str = "medium",
+    market: str | None = None, signals_excluded_benchmark: int = 0,
+) -> dict:
+    """Compute all aggregate validation metrics from raw signals.
+
+    `signals_excluded_benchmark` — count of stock-date windows that were
+    skipped entirely because genuine benchmark/regime evidence was
+    unavailable at that date (see _backtest_stock's `_exclusions`) — is
+    purely disclosive here, never used in any calculation below; every
+    signal actually reaching this function already has real
+    benchmark-relative fields (no fabricated 0.0/neutral survivors)."""
     if not signals:
         return {}
 
@@ -1232,11 +1467,21 @@ def _compute_metrics(signals: list[dict], benchmark_return_pct: float, horizon: 
         vals, rets = zip(*pairs)
         return round(float(np.corrcoef(vals, rets)[0,1]), 4)
 
-    # Portfolio simulation: equal-weight all BUY signals, measure vs benchmark
+    # Portfolio simulation: equal-weight all BUY signals, measure vs benchmark.
+    # model_avg must stay None (never a fabricated 0.0 "model return") when
+    # there are zero BUY signals — a missing average is not a genuine zero
+    # average, and comparing a phantom 0% model return against a real
+    # benchmark would misleadingly imply the model produced flat signals
+    # rather than no signals at all. outperformance requires BOTH sides to
+    # be genuinely available.
     buy_rets   = [s["fwd_return_pct"] for s in buys]
     buy_alphas = [s["alpha_pct"] for s in buys if s.get("alpha_pct") is not None]
-    model_avg  = _avg_ret(buys) or 0.0
-    outperformance = round(model_avg - benchmark_return_pct, 2) if benchmark_return_pct is not None else None
+    model_avg  = _avg_ret(buys)
+    outperformance = (
+        round(model_avg - benchmark_return_pct, 2)
+        if model_avg is not None and benchmark_return_pct is not None
+        else None
+    )
 
     def _avg(lst):
         return round(float(np.mean(lst)), 2) if lst else None
@@ -1254,7 +1499,10 @@ def _compute_metrics(signals: list[dict], benchmark_return_pct: float, horizon: 
         "avg_return_on_buy_pct":      _avg_ret(buys),
         "avg_alpha_on_buy_pct":       _avg(buy_alphas),
         "avg_return_on_sell_pct":     _avg_ret(sells),
-        "avg_return_benchmark_pct":   round(benchmark_return_pct, 2) if benchmark_return_pct else None,
+        # Genuine zero vs missing: a real benchmark_return_pct of exactly
+        # 0.0 must survive as 0.0, never collapse to None via a truthy
+        # check (`if benchmark_return_pct` treats 0.0 as falsy — fixed).
+        "avg_return_benchmark_pct":   round(benchmark_return_pct, 2) if benchmark_return_pct is not None else None,
         "buy_outperformance_pct":     outperformance,
         "sharpe_on_buys":             _sharpe(buy_rets) if buy_rets else None,
         "sharpe_on_alphas":           _sharpe(buy_alphas) if buy_alphas else None,
@@ -1283,6 +1531,12 @@ def _compute_metrics(signals: list[dict], benchmark_return_pct: float, horizon: 
         # this parameter) is treated as unknown/worst-case (IN-equivalent),
         # never silently reported as remediated.
         "data_limitations": _data_limitations_for_market(signals, market),
+        # Benchmark evidence integrity disclosure (never fabricated —
+        # signals_excluded_benchmark is the caller-supplied real count of
+        # stock-date windows skipped for missing/stale/non-finite benchmark
+        # or regime evidence; every signal counted above already has real,
+        # non-fabricated benchmark-relative fields).
+        "signals_excluded_benchmark": signals_excluded_benchmark,
     }
 
 
@@ -1370,62 +1624,100 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
     benchmark_ticker = job["benchmark"]
     market = UNIVERSE_MARKET[universe]  # safe — _require_known_universe already validated this
 
+    # Fetch benchmark with a bounded retry (same ticker, capped attempts and
+    # total wait — this codebase's existing provider-retry convention, e.g.
+    # sec_edgar_adapter.py/nse_bhavcopy.py), then run a single centralized
+    # preflight (_validate_benchmark_acquisition) BEFORE any stock backtest
+    # is submitted, before _init_db(), and — deliberately, like the
+    # CLAIMED_JOB_MISMATCH guard above — OUTSIDE the try/except below, so a
+    # raised failure here is never re-caught and relabeled RUN_EXCEPTION by
+    # that handler. Benchmark evidence integrity closure: a bad benchmark
+    # must fail the whole run closed, never let every stock in the universe
+    # silently compute alpha/correctness/regime input against a fabricated
+    # flat-zero/neutral substitute (the pre-existing defect this replaces —
+    # see BENCHMARK_EVIDENCE_UNAVAILABLE below and _align_benchmark_close's
+    # per-signal defense-in-depth for direct/future callers).
+    bench_df = None
+    fetch_exc: Exception | None = None
+    for attempt in range(BENCHMARK_FETCH_MAX_ATTEMPTS):
+        try:
+            bench_df = yf.Ticker(benchmark_ticker).history(period=HORIZON_PERIOD[horizon])
+            fetch_exc = None
+            break
+        except Exception as e:
+            fetch_exc = e
+            bench_df = None
+            log.exception(
+                "[validation] benchmark fetch attempt %d/%d failed — ticker=%s "
+                "horizon=%s universe=%s",
+                attempt + 1, BENCHMARK_FETCH_MAX_ATTEMPTS, benchmark_ticker, horizon, universe,
+            )
+            if attempt < BENCHMARK_FETCH_MAX_ATTEMPTS - 1:
+                time.sleep(BENCHMARK_FETCH_RETRY_BACKOFF_SECONDS * (attempt + 1))
+
+    evidence = _validate_benchmark_acquisition(bench_df, benchmark_ticker, market, horizon)
+
+    if evidence.status != "available":
+        log.warning(
+            "[validation] benchmark evidence unavailable, failing run closed — "
+            "status=%s reason=%s ticker=%s market=%s horizon=%s universe=%s "
+            "rows_available=%d rows_required=%d",
+            evidence.status, evidence.reason, benchmark_ticker, market, horizon, universe,
+            evidence.rows_available, evidence.rows_required,
+        )
+        with _status_lock:
+            _run_status.update({
+                "running": False,
+                "log": _run_status["log"] + [
+                    f"❌ Failed: {VALIDATION_PUBLIC_FAILURE_MESSAGES['BENCHMARK_EVIDENCE_UNAVAILABLE']}"
+                ],
+            })
+            if _run_status.get("job") is not None:
+                _run_status["job"].update({
+                    "status": "failed",
+                    "failure_code": "BENCHMARK_EVIDENCE_UNAVAILABLE",
+                    "failure_message": VALIDATION_PUBLIC_FAILURE_MESSAGES["BENCHMARK_EVIDENCE_UNAVAILABLE"],
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                })
+        # No DB init, no stock backtest submitted, no _compute_metrics call,
+        # no val_runs/val_signals write — the run slot is already released
+        # (running: False) and the job marked terminal above.
+        raise ValueError(
+            f"run_validation: benchmark evidence unavailable for ticker={benchmark_ticker!r} "
+            f"market={market!r} horizon={horizon!r} — status={evidence.status!r} "
+            f"reason={evidence.reason!r} — refusing to run without valid benchmark evidence"
+        )
+
+    # evidence.status == "available" guarantees at least one finite,
+    # positive (entry, exit) pair exists — this loop can never end up with
+    # an empty bench_rets here (see _validate_benchmark_acquisition's own
+    # has_valid_window check, which uses the exact same loop shape).
+    fwd_days = HORIZON_DAYS[horizon]
+    bench_rets = []
+    for i in range(0, len(bench_df) - fwd_days, HORIZON_STEP[horizon]):
+        e = float(bench_df["Close"].iloc[i])
+        x = float(bench_df["Close"].iloc[i + fwd_days])
+        if np.isfinite(e) and np.isfinite(x) and e > 0:
+            bench_rets.append((x - e) / e * 100)
+    benchmark_avg_ret = float(np.mean(bench_rets))
+    benchmark_data_available = True
+    benchmark_unavailable_reason = None
+
     try:
         _init_db()
 
-        # Fetch benchmark once. `benchmark_avg_ret` always stays a plain
-        # float (0.0 on failure) so it keeps flowing into _compute_metrics/
-        # _backtest_stock's existing, widely-tested numeric pathways
-        # unchanged — but benchmark_data_available/benchmark_unavailable_reason
-        # (below) are the truthful disclosure: a failed or insufficient
-        # fetch must never let benchmark_avg_fwd_return_pct/
-        # nifty_avg_fwd_return_pct be read as a genuine "benchmark was
-        # flat" observation. Found via pre-publication review: previously
-        # these fields silently reported 0.0% with no way to tell a real
-        # flat benchmark apart from "we don't know."
-        #
-        # Known, disclosed, PRE-EXISTING limitation (not introduced or
-        # fixed by this change, out of this PR's safe scope): when
-        # benchmark_df ends up empty, _backtest_stock's own per-signal
-        # benchmark_fwd_ret/regime_adj calculations independently default
-        # to 0.0/neutral for every signal in the run — that deeper,
-        # per-signal fabrication predates this PR and touches a separate,
-        # unmodified, heavily-tested function; correcting it requires its
-        # own properly-scoped change.
-        benchmark_data_available = False
-        benchmark_unavailable_reason = None
-        try:
-            bench_df  = yf.Ticker(benchmark_ticker).history(period=HORIZON_PERIOD[horizon])
-            fwd_days  = HORIZON_DAYS[horizon]
-            bench_rets = []
-            for i in range(0, len(bench_df) - fwd_days, HORIZON_STEP[horizon]):
-                e = float(bench_df["Close"].iloc[i])
-                x = float(bench_df["Close"].iloc[i + fwd_days])
-                if e != 0:
-                    bench_rets.append((x - e) / e * 100)
-            if bench_rets:
-                benchmark_avg_ret = float(np.mean(bench_rets))
-                benchmark_data_available = True
-            else:
-                benchmark_avg_ret = 0.0
-                benchmark_unavailable_reason = "insufficient_benchmark_history_for_horizon"
-            benchmark_df = bench_df
-        except Exception:
-            log.exception(
-                "[validation] benchmark fetch failed — ticker=%s horizon=%s universe=%s",
-                benchmark_ticker, horizon, universe,
-            )
-            benchmark_df = pd.DataFrame()
-            benchmark_avg_ret = 0.0
-            benchmark_unavailable_reason = BENCHMARK_UNAVAILABLE_FETCH_FAILED
-
         all_signals: list[dict] = []
         symbols_with_signals: set[str] = set()
+        excluded_benchmark: list = []
         done = 0
 
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {
-                pool.submit(_backtest_stock, sym, horizon, benchmark_df, market, universe=universe): sym
+                pool.submit(
+                    _backtest_stock, sym, horizon, bench_df, market,
+                    universe=universe, _exclusions=excluded_benchmark,
+                ): sym
                 for sym in stocks
             }
             for future in as_completed(futures):
@@ -1460,7 +1752,10 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
                             _run_status["job"]["current_symbol"] = sym
                             _run_status["job"]["updated_at"] = datetime.now(timezone.utc).isoformat()
 
-        metrics = _compute_metrics(all_signals, benchmark_avg_ret, horizon, market=market)
+        metrics = _compute_metrics(
+            all_signals, benchmark_avg_ret, horizon, market=market,
+            signals_excluded_benchmark=len(excluded_benchmark),
+        )
         metrics["horizon"]   = horizon
         metrics["universe"]  = universe
         metrics["n_stocks_tested"] = n_stocks  # kept unchanged for backward compat — see below
@@ -1472,17 +1767,17 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
         metrics["n_stocks_requested"]     = n_stocks
         metrics["n_stocks_with_signals"]  = len(symbols_with_signals)
         metrics["run_at"] = datetime.now(timezone.utc).isoformat()
-        # A genuinely unavailable benchmark must never be reported as a
-        # verified 0.0% return (the frontend's own type contract already
-        # accepts `number | null` here and renders "—" for null, so this
-        # is a safe, already-supported change, not a new consumer
-        # requirement). `benchmark_data_available`/`benchmark_unavailable_reason`
-        # are the explicit disclosure for any consumer that wants the
-        # detail rather than just the null.
+        # benchmark_data_available/benchmark_unavailable_reason are always
+        # True/None on this path now — an unavailable/invalid benchmark
+        # already failed the run closed above, before any of this code
+        # runs. Kept as explicit keys for backward-compatible consumers
+        # that read them directly; `benchmark_evidence` below is the new,
+        # versioned, fuller provenance record for this same fact.
         metrics["benchmark_data_available"] = benchmark_data_available
         metrics["benchmark_unavailable_reason"] = benchmark_unavailable_reason
         metrics["benchmark_avg_fwd_return_pct"] = round(benchmark_avg_ret, 2) if benchmark_data_available else None
         metrics["nifty_avg_fwd_return_pct"]     = round(benchmark_avg_ret, 2) if benchmark_data_available else None  # backward compat
+        metrics["benchmark_evidence"] = asdict(evidence)
 
         # Persist the full job identity in the run summary (additive JSON —
         # no schema change) so a stored result is permanently bound to its
@@ -1642,6 +1937,17 @@ def get_latest_results(horizon: str | None = None, universe: str = "nifty100") -
             data["benchmark_unavailable_reason"] = _sanitize_benchmark_unavailable_reason(
                 data["benchmark_unavailable_reason"]
             )
+        # Legacy provenance: a row persisted before the benchmark-evidence
+        # contract existed carries no `benchmark_evidence` key at all — it
+        # must never be presented as if it had passed today's checks.
+        # Truthfully labelled `legacy_unknown` with no version, not
+        # retroactively upgraded and not hidden from consumers.
+        if "benchmark_evidence" not in data:
+            data["benchmark_evidence"] = {
+                "status": "legacy_unknown",
+                "reason": "persisted before the benchmark evidence contract existed",
+                "methodology_version": None,
+            }
         return {"available": True, **data}
     except Exception as e:
         return {"available": False, "error": safe_error_message(
