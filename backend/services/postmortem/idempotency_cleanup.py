@@ -150,12 +150,20 @@ def run_cleanup(conn, *, batch_size: int | None = None) -> CleanupResult:
     result = CleanupResult(batch_size=size)
     started_at = time.monotonic()
 
-    for status, retention, attr in (
-        ("COMPLETED", get_completed_retention(), "completed_deleted"),
-        ("FAILED", get_failed_retention(), "failed_deleted"),
-        ("PENDING", get_stale_pending_retention(), "stale_pending_deleted"),
+    for status, get_retention, attr in (
+        ("COMPLETED", get_completed_retention, "completed_deleted"),
+        ("FAILED", get_failed_retention, "failed_deleted"),
+        ("PENDING", get_stale_pending_retention, "stale_pending_deleted"),
     ):
         try:
+            # get_retention() must be called INSIDE this try block, not in
+            # the for-loop's target tuple above — a tuple literal evaluates
+            # every element eagerly before the loop body (and its
+            # try/except) ever runs, so a broken retention getter for one
+            # category would previously raise before this except clause
+            # existed to catch it, crashing the whole pass instead of being
+            # isolated to that one category (see the docstring above).
+            retention = get_retention()
             count = _delete_batch(conn, status, retention, size)
             setattr(result, attr, count)
             log.info("[idempotency_cleanup] deleted %d %s row(s) (batch_size=%d)", count, status, size)

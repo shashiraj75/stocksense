@@ -182,14 +182,18 @@ CREATE INDEX IF NOT EXISTS idx_score_snapshots_symbol ON score_snapshots(symbol,
 -- honestly represent it as unknown. New writes (daily_picks.py) always
 -- pass a real market going forward.
 ALTER TABLE score_snapshots ADD COLUMN IF NOT EXISTS market TEXT;
--- DROP-then-ADD rather than relying on IF NOT EXISTS for the constraint/
--- index shape itself — IF NOT EXISTS is a pure name check in Postgres and
--- would silently no-op if an object of the same name already existed with
--- the old (market-less) definition, exactly the #009/#010 pitfall from the
--- Multibagger schema repair earlier this project.
-ALTER TABLE score_snapshots DROP CONSTRAINT IF EXISTS score_snapshots_symbol_horizon_snapshot_date_key;
-ALTER TABLE score_snapshots ADD CONSTRAINT score_snapshots_symbol_market_horizon_snapshot_date_key
-    UNIQUE (symbol, market, horizon, snapshot_date);
+-- The DROP+ADD CONSTRAINT pair that used to live here has been moved to
+-- _migrate_score_snapshots_market_constraint() below, guarded by an
+-- information_schema existence check (same pattern as
+-- _migrate_outcomes_market_constraint) — Postgres has no
+-- `ADD CONSTRAINT IF NOT EXISTS`, so a bare unguarded ADD CONSTRAINT
+-- fails with "already exists" on every init_db() call after the first
+-- one that created it. Real PostgreSQL Verification, CI Execution phase:
+-- this failure aborted the entire single-statement SCHEMA_SQL execute()
+-- transaction on every subsequent call, silently preventing every
+-- statement positioned after it (including unrelated later migrations)
+-- from ever re-applying — see Documentation/Engineering-Handbook for the
+-- full incident writeup this fix is drawn from.
 DROP INDEX IF EXISTS idx_score_snapshots_symbol;
 CREATE INDEX IF NOT EXISTS idx_score_snapshots_symbol_market ON score_snapshots(symbol, market, horizon, snapshot_date);
 
@@ -841,6 +845,37 @@ def init_db():
     with _get_pool().connection() as conn:
         conn.execute(SCHEMA_SQL)
         _migrate_outcomes_market_constraint(conn)
+        _migrate_score_snapshots_market_constraint(conn)
+
+
+def _migrate_score_snapshots_market_constraint(conn) -> None:
+    """
+    One-time migration, guarded so it only runs once even though init_db()
+    runs on every startup — same pattern and same underlying Postgres
+    limitation as _migrate_outcomes_market_constraint above (no
+    `ADD CONSTRAINT IF NOT EXISTS`). This used to be two bare ALTER TABLE
+    statements inline in SCHEMA_SQL; on any init_db() call after the one
+    that first created the constraint, the unguarded ADD CONSTRAINT raised
+    "already exists", which aborted the entire single-statement SCHEMA_SQL
+    execute() and silently skipped every statement positioned after it —
+    including, once discovered, the unrelated Trade Postmortem Engine
+    schema. Moved here and guarded exactly like the outcomes migration so
+    init_db() is genuinely safe to call on every restart.
+    """
+    exists = conn.execute("""
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE table_name = 'score_snapshots' AND constraint_type = 'UNIQUE'
+          AND constraint_name = 'score_snapshots_symbol_market_horizon_snapshot_date_key'
+    """).fetchone()
+    if exists:
+        return
+    conn.execute(
+        "ALTER TABLE score_snapshots DROP CONSTRAINT IF EXISTS score_snapshots_symbol_horizon_snapshot_date_key"
+    )
+    conn.execute(
+        "ALTER TABLE score_snapshots ADD CONSTRAINT score_snapshots_symbol_market_horizon_snapshot_date_key "
+        "UNIQUE (symbol, market, horizon, snapshot_date)"
+    )
 
 
 def _migrate_outcomes_market_constraint(conn) -> None:

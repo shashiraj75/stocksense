@@ -109,7 +109,11 @@ class TestRealConcurrency:
         ).fetchone()[0] == 1
 
         cash = get_portfolio_cash(pg_conn, unique_user_id, "US")
-        assert cash == pytest.approx(1_000_000.0 - 101.0)  # exactly one debit, not zero or negative/inconsistent
+        # market="US" debits cash_usd (default 100_000.0 per ensure_portfolio),
+        # never cash (the IN-market ledger, default 1_000_000.0) — a wrong
+        # ledger constant here would have masked a real debit-to-wrong-column
+        # bug instead of proving the correct one.
+        assert cash == pytest.approx(100_000.0 - 101.0)  # exactly one debit, not zero or negative/inconsistent
 
 
 @pytest.mark.timeout(30)
@@ -180,7 +184,7 @@ class TestCrossUserAndDifferentKeys:
         assert pg_conn.execute(
             "SELECT count(*) FROM paper_trade_entry_snapshot WHERE user_id = %s", (unique_user_id,)
         ).fetchone()[0] == 2
-        assert get_portfolio_cash(pg_conn, unique_user_id, "US") == pytest.approx(1_000_000.0 - 202.0)
+        assert get_portfolio_cash(pg_conn, unique_user_id, "US") == pytest.approx(100_000.0 - 202.0)
 
 
 @pytest.mark.timeout(30)

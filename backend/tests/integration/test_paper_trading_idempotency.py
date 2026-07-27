@@ -139,10 +139,19 @@ class _FakeConn:
             return None
 
         if "SET status = 'PENDING', created_at = now()" in sql:
-            row_id, expected_status = params
+            # Real CAS now pins all three of id/status/created_at (Real
+            # PostgreSQL Verification, CI Execution phase — a status-only
+            # match is a no-op compare for the stale-PENDING case, since
+            # the reclaimed-to value is the same as the reclaimed-from
+            # value, letting two concurrent reclaimers both win).
+            row_id, expected_status, expected_created_at = params
             with shared["lock"]:
                 for row in shared["idem_rows"]:
-                    if row["id"] == row_id and row["status"] == expected_status:
+                    if (
+                        row["id"] == row_id
+                        and row["status"] == expected_status
+                        and row["created_at"] == expected_created_at
+                    ):
                         row["status"] = "PENDING"
                         row["created_at"] = dt.datetime.now(dt.timezone.utc)
                         return (row_id,)

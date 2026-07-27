@@ -44,18 +44,29 @@ def test_old_unique_constraint_dropped_by_name():
     """DROP-then-ADD, not IF NOT EXISTS alone — IF NOT EXISTS is a pure
     name check in Postgres and would silently no-op against an
     already-existing, wrongly-shaped constraint (the #009/#010 pitfall
-    this project already hit once with the Multibagger schema)."""
+    this project already hit once with the Multibagger schema).
+
+    Real PostgreSQL Verification, CI Execution phase: this pair of
+    statements moved out of the bare SCHEMA_SQL string into
+    _migrate_score_snapshots_market_constraint(), guarded by an
+    information_schema existence check — Postgres has no
+    `ADD CONSTRAINT IF NOT EXISTS`, so the unguarded version failed with
+    "already exists" on every init_db() call after the first, aborting the
+    rest of that single-statement SCHEMA_SQL execute() silently. Same
+    DROP-then-ADD text, same behavior, now actually idempotent."""
+    import inspect
+    src = inspect.getsource(pg._migrate_score_snapshots_market_constraint)
     assert (
         "ALTER TABLE score_snapshots DROP CONSTRAINT IF EXISTS "
-        "score_snapshots_symbol_horizon_snapshot_date_key;"
-    ) in pg.SCHEMA_SQL
+        "score_snapshots_symbol_horizon_snapshot_date_key"
+    ) in src
 
 
 def test_new_unique_constraint_includes_market():
-    assert (
-        "ADD CONSTRAINT score_snapshots_symbol_market_horizon_snapshot_date_key\n"
-        "    UNIQUE (symbol, market, horizon, snapshot_date);"
-    ) in pg.SCHEMA_SQL
+    import inspect
+    src = inspect.getsource(pg._migrate_score_snapshots_market_constraint)
+    assert "ADD CONSTRAINT score_snapshots_symbol_market_horizon_snapshot_date_key" in src
+    assert "UNIQUE (symbol, market, horizon, snapshot_date)" in src
 
 
 def test_old_index_dropped_and_new_one_includes_market():

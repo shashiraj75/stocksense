@@ -946,17 +946,27 @@ def _resolve_idempotency_reservation(
                 _metrics.increment(_metrics.COUNTER_DUPLICATE_TRADE_PREVENTED)
                 return _IdempotencyReservation(action.value, row_id, existing.response_body)
             if action == IdempotencyAction.PROCEED_RECLAIMED:
-                # Compare-and-swap on the status we just read: only one
-                # concurrent reclaimer can win this UPDATE for a given prior
-                # status value, so two requests racing to reclaim the same
-                # abandoned row can never both proceed to the financial
-                # transaction.
+                # Compare-and-swap on the exact row version we just read
+                # (status AND created_at): a stale-PENDING reclaim writes
+                # status='PENDING' — the SAME value it started from — so a
+                # WHERE clause matching on status alone is not a real CAS
+                # for that case: after one thread wins and refreshes
+                # created_at, the row's status is still 'PENDING', so a
+                # second thread whose local `status` variable was also
+                # read as 'PENDING' would match the same WHERE clause and
+                # incorrectly win too, letting two requests both proceed to
+                # the financial transaction. created_at always changes on a
+                # successful reclaim (SET created_at = now()), so pinning
+                # the WHERE clause to the created_at value this thread
+                # actually read makes the row version comparison exact —
+                # a second thread's now-stale created_at can never match
+                # after the first thread's UPDATE has already run.
                 reclaimed = conn.execute(
                     """UPDATE paper_trade_idempotency_key
                        SET status = 'PENDING', created_at = now(), failure_reason = NULL
-                       WHERE id = %s AND status = %s
+                       WHERE id = %s AND status = %s AND created_at = %s
                        RETURNING id""",
-                    (row_id, status)
+                    (row_id, status, created_at)
                 ).fetchone()
                 if reclaimed is not None:
                     if status == "FAILED":
