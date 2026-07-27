@@ -127,7 +127,16 @@ class TestEntrySnapshotSchemaExecutionIsAttempted:
     def test_init_db_executes_the_schema_sql_containing_the_new_table(self, monkeypatch):
         """Mocked-executor proof that init_db() actually runs SCHEMA_SQL
         (and therefore this stage's DDL) — not just that the string exists
-        somewhere in the module."""
+        somewhere in the module.
+
+        Schema Initialization Hardening phase: init_db() now opens its own
+        connection via psycopg.connect() directly (a fresh, non-pooled
+        connection per attempt — see _attempt_schema_initialization) rather
+        than through _get_pool().connection(), so the fake is patched onto
+        psycopg.connect instead. fetchone() returns a generically truthy
+        row for every call — the advisory-lock acquisition, every guarded
+        migration's existence check, and postcondition verification all
+        only need *some* truthy/falsy signal, never real data here."""
         executed = []
 
         class _FakeConn:
@@ -136,16 +145,11 @@ class TestEntrySnapshotSchemaExecutionIsAttempted:
                 return self
 
             def fetchone(self):
-                return None
+                return (True,)
 
-            def __enter__(self):
-                return self
+            def close(self):
+                pass
 
-            def __exit__(self, *a):
-                return False
-
-        monkeypatch.setattr(postgres_store, "_get_pool", lambda: type(
-            "P", (), {"connection": lambda self: _FakeConn()}
-        )())
+        monkeypatch.setattr(postgres_store.psycopg, "connect", lambda *a, **k: _FakeConn())
         postgres_store.init_db()
         assert any("paper_trade_entry_snapshot" in sql for sql in executed)

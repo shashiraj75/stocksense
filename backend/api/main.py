@@ -323,7 +323,23 @@ async def lifespan(app: FastAPI):
             init_db()
             log.info("[startup] Postgres schema initialized")
         except Exception as e:
-            log.warning(f"[startup] Postgres init failed: {e}")
+            # Schema Initialization Hardening phase — deliberately NOT
+            # log-and-continue. init_db() itself is now fail-closed and
+            # concurrency-safe (session-level advisory lock, bounded
+            # retry only for approved transient SQLSTATEs, metadata-only
+            # postcondition verification); an exception reaching this
+            # point means initialization could not be safely completed
+            # even after retrying. Re-raising here prevents FastAPI
+            # startup from completing at all, so /health can never report
+            # ready against unverified schema state — never DATABASE_URL,
+            # hostname, credentials, raw SQL or row content, only the
+            # sanitized exception class/SQLSTATE.
+            sqlstate = getattr(e, "sqlstate", None) or getattr(getattr(e, "__cause__", None), "sqlstate", None)
+            log.critical(
+                f"[startup] Postgres schema initialization failed terminally "
+                f"(sqlstate={sqlstate} {type(e).__name__}) — refusing to start with unverified schema"
+            )
+            raise
         try:
             from services.validation_engine import init_db as init_validation_db
             init_validation_db()

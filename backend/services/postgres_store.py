@@ -18,6 +18,7 @@ the direct Postgres port.
 import logging
 import os
 import json
+import time
 from datetime import datetime, timezone
 
 import psycopg
@@ -856,31 +857,224 @@ def load_market_cache(key: str) -> dict | list | None:
         return None
 
 
+# ── Schema initialization: fail-closed, concurrency-safe, retried ──────────
+#
+# Real PostgreSQL Verification, Schema-Init Hardening phase. Replaces the
+# prior log-and-continue design (which existed only because a specific,
+# now-eliminated statement — score_snapshots' old unguarded ADD
+# CONSTRAINT — used to fail "already exists" on every restart after the
+# first; see _migrate_score_snapshots_market_constraint's docstring).
+# With that statement removed from SCHEMA_SQL, nothing left in the bulk
+# batch is known to legitimately need tolerating, so failures now
+# propagate and prevent application startup instead of being swallowed.
+#
+# Sequential idempotency (every individual statement being safe to
+# re-run) does NOT by itself prove this is safe when multiple backend
+# instances start at the same time — a session-level PostgreSQL advisory
+# lock serializes the whole attempt across instances.
+
+# Two-int advisory-lock identity (pg_try_advisory_lock(key1, key2)),
+# namespaced so it can never collide with any other lock this
+# application might take in the future. Fixed and deterministic —
+# never derived from Python's randomized hash() — so every instance and
+# every CI run computes the identical identity.
+_SCHEMA_INIT_LOCK_NAMESPACE = 0x53544B53  # 'STKS' — StockSense360 app namespace
+_SCHEMA_INIT_LOCK_ID = 1  # sub-id: schema initialization specifically
+
+_SCHEMA_INIT_LOCK_POLL_INTERVAL_SECONDS = 0.5
+_SCHEMA_INIT_LOCK_MAX_WAIT_SECONDS = 30
+_SCHEMA_INIT_MAX_ATTEMPTS = 3
+_SCHEMA_INIT_RETRY_BACKOFF_SECONDS = 1.0
+
+# SQLSTATEs safe to retry the ENTIRE initialization attempt for, always
+# on a fresh connection — never used to retry a single statement in
+# place, and never applied to anything not in this explicit set.
+# lock_not_available, deadlock_detected and serialization_failure are
+# the standard PostgreSQL classes for "this exact attempt collided with
+# something transient; a clean retry is expected to succeed."
+_RETRYABLE_SQLSTATES = frozenset({"55P03", "40P01", "40001"})
+
+
+class SchemaInitializationError(RuntimeError):
+    """Raised when schema initialization cannot be safely completed.
+    Never caught silently — must propagate out of init_db() and out of
+    the FastAPI lifespan handler, deliberately failing application
+    startup rather than serving traffic against unknown schema state."""
+
+
+def _sqlstate_of(exc: BaseException) -> str | None:
+    return getattr(exc, "sqlstate", None) or getattr(getattr(exc, "diag", None), "sqlstate", None)
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    return _sqlstate_of(exc) in _RETRYABLE_SQLSTATES
+
+
+def _verify_schema_postconditions(conn) -> None:
+    """
+    Metadata-only contract check proving the critical subsystems this
+    application depends on are actually usable — one representative
+    check per critical subsystem (Learning Alpha Engine, Daily Picks,
+    Trade Postmortem, Buy idempotency), not a re-verification of every
+    one of SCHEMA_SQL's ~114 statements. Any failure here raises
+    SchemaInitializationError and fails startup.
+    """
+    required_tables = [
+        "predictions", "outcomes", "score_snapshots",
+        "daily_picks_cache", "paper_trades", "paper_portfolio",
+        "paper_trade_entry_snapshot", "paper_trade_idempotency_key",
+    ]
+    for table in required_tables:
+        row = conn.execute("SELECT to_regclass(%s) IS NOT NULL", (f"public.{table}",)).fetchone()
+        if not row or not row[0]:
+            raise SchemaInitializationError(f"required table missing after init: {table}")
+
+    for table, constraint in [
+        ("outcomes", "outcomes_symbol_horizon_pred_date_market_key"),
+        ("score_snapshots", "score_snapshots_symbol_market_horizon_snapshot_date_key"),
+    ]:
+        row = conn.execute(
+            """SELECT 1 FROM information_schema.table_constraints
+               WHERE table_name = %s AND constraint_type = 'UNIQUE' AND constraint_name = %s""",
+            (table, constraint),
+        ).fetchone()
+        if not row:
+            raise SchemaInitializationError(f"required market-scoped constraint missing: {table}.{constraint}")
+
+    row = conn.execute(
+        """SELECT 1 FROM information_schema.columns
+           WHERE table_name = 'daily_picks_cache' AND column_name = 'status'"""
+    ).fetchone()
+    if not row:
+        raise SchemaInitializationError("required column missing: daily_picks_cache.status")
+
+    row = conn.execute(
+        """SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+           WHERE c.relname = 'paper_trade_entry_snapshot'
+             AND t.tgname = 'trg_paper_trade_entry_snapshot_immutable' AND NOT t.tgisinternal"""
+    ).fetchone()
+    if not row:
+        raise SchemaInitializationError("required trigger missing: trg_paper_trade_entry_snapshot_immutable")
+
+    row = conn.execute(
+        """SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+           WHERE n.nspname = 'public' AND p.proname = 'reject_paper_trade_entry_snapshot_update'"""
+    ).fetchone()
+    if not row:
+        raise SchemaInitializationError("required function missing: reject_paper_trade_entry_snapshot_update")
+
+
+def _acquire_schema_init_lock(conn) -> None:
+    """
+    Bounded acquisition of a SESSION-level advisory lock
+    (pg_try_advisory_lock, not the transaction-scoped
+    pg_advisory_xact_lock). Session-level is deliberate: initialization
+    spans several independent autocommit statements — the bulk
+    SCHEMA_SQL execute, then three separate guarded-migration calls, then
+    postcondition verification — not one explicit transaction, so a
+    transaction-scoped lock would release after the very first statement
+    and provide no real serialization across the rest of init_db().
+    Released explicitly by the caller in a finally block; connection
+    close is the secondary release guarantee PostgreSQL itself provides
+    for session-level advisory locks.
+    """
+    deadline = time.monotonic() + _SCHEMA_INIT_LOCK_MAX_WAIT_SECONDS
+    while True:
+        got = conn.execute(
+            "SELECT pg_try_advisory_lock(%s, %s)",
+            (_SCHEMA_INIT_LOCK_NAMESPACE, _SCHEMA_INIT_LOCK_ID),
+        ).fetchone()[0]
+        if got:
+            return
+        if time.monotonic() >= deadline:
+            raise SchemaInitializationError(
+                f"could not acquire schema-init advisory lock within {_SCHEMA_INIT_LOCK_MAX_WAIT_SECONDS}s "
+                "— another instance appears to be initializing"
+            )
+        time.sleep(_SCHEMA_INIT_LOCK_POLL_INTERVAL_SECONDS)
+
+
+def _release_schema_init_lock(conn) -> None:
+    try:
+        conn.execute("SELECT pg_advisory_unlock(%s, %s)", (_SCHEMA_INIT_LOCK_NAMESPACE, _SCHEMA_INIT_LOCK_ID))
+    except Exception:
+        # The connection is closed immediately after this regardless (see
+        # _attempt_schema_initialization) — PostgreSQL releases every
+        # session-level advisory lock a connection holds when that
+        # connection closes, which is the secondary guarantee here.
+        pass
+
+
+def _attempt_schema_initialization(attempt: int) -> None:
+    started = time.monotonic()
+    log.info(f"[schema_init] attempt {attempt}/{_SCHEMA_INIT_MAX_ATTEMPTS}: starting")
+    # A fresh, non-pooled connection for the whole attempt — deliberately
+    # not one of _get_pool()'s recycled connections, so a prior attempt's
+    # uncertain connection-level failure can never be reused here, and
+    # this connection is never returned to the pool while it might still
+    # hold the advisory lock.
+    conn = psycopg.connect(DATABASE_URL, autocommit=True, prepare_threshold=None)
+    try:
+        _acquire_schema_init_lock(conn)
+        log.info(f"[schema_init] attempt {attempt}: advisory lock acquired")
+
+        conn.execute(SCHEMA_SQL)
+        log.info(f"[schema_init] attempt {attempt}: bulk baseline schema succeeded")
+
+        for migration in (
+            _migrate_outcomes_market_constraint,
+            _migrate_score_snapshots_market_constraint,
+            _migrate_daily_picks_cache_status_column,
+        ):
+            migration(conn)
+            log.info(f"[schema_init] attempt {attempt}: migration {migration.__name__} succeeded")
+
+        _verify_schema_postconditions(conn)
+        log.info(f"[schema_init] attempt {attempt}: postcondition verification succeeded")
+    finally:
+        _release_schema_init_lock(conn)
+        conn.close()
+
+    elapsed = time.monotonic() - started
+    log.info(f"[schema_init] attempt {attempt}: complete initialization succeeded (elapsed={elapsed:.2f}s)")
+
+
 def init_db():
-    with _get_pool().connection() as conn:
+    """
+    Fail-closed, concurrency-safe schema initialization. Runs on every
+    backend startup. No broad exception swallowing anywhere in this path
+    — an unexpected failure propagates out of this function (and, in
+    api/main.py's lifespan handler, prevents application startup)
+    instead of being logged and tolerated.
+
+    See _acquire_schema_init_lock for why concurrent backend instances
+    are serialized, and the module comment above for the retry contract:
+    only lock_not_available/deadlock_detected/serialization_failure are
+    retryable, a retry always restarts the COMPLETE attempt on a brand
+    new connection, and every other failure is raised immediately.
+    """
+    for attempt in range(1, _SCHEMA_INIT_MAX_ATTEMPTS + 1):
         try:
-            conn.execute(SCHEMA_SQL)
-        except Exception as e:
-            # US Daily Picks generation-reliability incident (2026-07-22):
-            # SCHEMA_SQL is one big autocommit multi-statement batch — a
-            # single statement failing partway through (e.g. a pre-existing,
-            # unrelated non-idempotent ADD CONSTRAINT that succeeds once
-            # then fails "already exists" on every later startup) used to
-            # silently abort everything after it in the same batch,
-            # INCLUDING every guarded migration below this call, on every
-            # single deploy where it happens. Discovered when this exact
-            # failure mode prevented daily_picks_cache's new `status`
-            # column from ever being created, which made save_picks_to_db()
-            # fail outright for every future call. Logged, never raised —
-            # api/main.py's own startup wrapper already tolerates this
-            # (matches its prior behavior), but now the guarded per-table
-            # migrations below are no longer contingent on the earlier
-            # batch's success or failure.
-            log = __import__("logging").getLogger(__name__)
-            log.warning(f"[postgres_store] SCHEMA_SQL execution failed partway through: {e}")
-        _migrate_outcomes_market_constraint(conn)
-        _migrate_score_snapshots_market_constraint(conn)
-        _migrate_daily_picks_cache_status_column(conn)
+            _attempt_schema_initialization(attempt)
+            return
+        except SchemaInitializationError:
+            raise
+        except Exception as exc:
+            sqlstate = _sqlstate_of(exc)
+            if _is_retryable(exc) and attempt < _SCHEMA_INIT_MAX_ATTEMPTS:
+                log.warning(
+                    f"[schema_init] attempt {attempt} hit a retryable condition "
+                    f"(sqlstate={sqlstate} {type(exc).__name__}) — retrying with a fresh connection"
+                )
+                time.sleep(_SCHEMA_INIT_RETRY_BACKOFF_SECONDS)
+                continue
+            log.critical(
+                f"[schema_init] attempt {attempt} failed terminally "
+                f"(sqlstate={sqlstate} {type(exc).__name__}) — schema initialization cannot proceed"
+            )
+            raise SchemaInitializationError(
+                f"schema initialization failed after {attempt} attempt(s): {type(exc).__name__} (sqlstate={sqlstate})"
+            ) from exc
 
 
 def _migrate_score_snapshots_market_constraint(conn) -> None:
