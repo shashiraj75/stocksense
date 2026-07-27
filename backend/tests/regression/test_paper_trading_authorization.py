@@ -62,6 +62,16 @@ class _RecordingConn:
     def fetchone(self):
         return self._fetchone_results.pop(0) if self._fetchone_results else None
 
+    @contextmanager
+    def transaction(self):
+        """Trade Postmortem Engine, Stage 2 — paper_buy now wraps the trade
+        + entry-snapshot INSERTs in `with conn.transaction():` for real
+        atomicity. This fake has no actual transaction semantics to
+        simulate (no rollback needed for these authorization-focused
+        tests), so it's a no-op context — the real behavior is exercised
+        by services/postmortem tests that assert on rollback-on-exception."""
+        yield self
+
     def fetchall(self):
         return self._fetchall_results.pop(0) if self._fetchall_results else []
 

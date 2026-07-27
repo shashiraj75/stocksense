@@ -318,6 +318,161 @@ ALTER TABLE intelligence_engine_shadow_runs ADD COLUMN IF NOT EXISTS data_confid
 ALTER TABLE intelligence_engine_shadow_runs ADD COLUMN IF NOT EXISTS top_failure_reasons JSONB;
 ALTER TABLE intelligence_engine_shadow_runs ADD COLUMN IF NOT EXISTS sample_liquidity_rejections JSONB;
 
+-- Trade Postmortem Engine, Stage 2 — immutable entry-evidence snapshot.
+-- One row per newly created paper trade, inserted once inside the same
+-- database transaction as the paper_trades INSERT (see
+-- api/routers/paper_trading.py's paper_buy) and never UPDATEd by any
+-- application code path afterward — see
+-- services/postmortem/entry_snapshot.py for the field-by-field rationale
+-- and Documentation/Engineering-Handbook for the Stage 2 ADR.
+--
+-- paper_trade_id is UNIQUE (not a FOREIGN KEY — this schema has no FK
+-- constraints anywhere; adding the first one here would mean POST /reset's
+-- removal of a paper_trades row starts failing with a constraint violation
+-- once a trade has a snapshot, unless paired with ON DELETE CASCADE or an
+-- explicit companion removal. Chosen instead: reset_portfolio explicitly
+-- removes the matching snapshot rows itself — see paper_trading.py). The
+-- UNIQUE constraint is still the real duplicate-snapshot guard: a second
+-- insert attempt for the same paper_trade_id fails loudly rather than
+-- silently overwriting or duplicating evidence.
+--
+-- Historical trades (opened before this table existed) simply have no
+-- matching row here — never backfilled, never reconstructed from today's
+-- data. Phase 1's deterministic evidence-completeness logic reads this
+-- table by LEFT JOIN and correctly reports LIMITED for any trade with no
+-- snapshot row, exactly as it already did for a trade whose (now-legacy)
+-- paper_trades provenance columns were all NULL.
+CREATE TABLE IF NOT EXISTS paper_trade_entry_snapshot (
+    id                              BIGSERIAL PRIMARY KEY,
+    paper_trade_id                  BIGINT NOT NULL UNIQUE,
+    user_id                         TEXT NOT NULL,
+    symbol                          TEXT NOT NULL,
+    market                          TEXT NOT NULL,
+    snapshot_schema_version         TEXT NOT NULL,
+    captured_at                     TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    evidence_source                 TEXT NOT NULL,
+    daily_pick_run_id               TEXT,
+    daily_pick_rank                 SMALLINT,
+    recommendation_signal           TEXT,
+    recommendation_generated_at     TIMESTAMPTZ,
+    recommendation_reference_price  DOUBLE PRECISION,
+    recommendation_entry_low        DOUBLE PRECISION,
+    recommendation_entry_high       DOUBLE PRECISION,
+
+    simulated_execution_price       DOUBLE PRECISION NOT NULL,
+    execution_slippage_pct          DOUBLE PRECISION,
+    execution_range_position        TEXT NOT NULL,
+
+    recommended_stop_loss           DOUBLE PRECISION,
+    recommended_target_price        DOUBLE PRECISION,
+    user_selected_stop_loss         DOUBLE PRECISION,
+    user_selected_target_price      DOUBLE PRECISION,
+    user_overrode_recommendation    BOOLEAN,
+    reward_to_risk_ratio            DOUBLE PRECISION,
+
+    confidence_score                DOUBLE PRECISION,
+    technical_signal                TEXT,
+    technical_rsi                   DOUBLE PRECISION,
+    technical_macd_diff             DOUBLE PRECISION,
+    fundamental_score               DOUBLE PRECISION,
+    sentiment_score                 DOUBLE PRECISION,
+    sentiment_label                 TEXT,
+    market_regime_trend             TEXT,
+    market_regime_score_adj         DOUBLE PRECISION,
+    market_regime_reason            TEXT,
+    recommendation_reasoning        JSONB,
+
+    -- Phase-1 provenance concepts carried forward for schema continuity —
+    -- always NULL today: no current caller ever generates a stable
+    -- recommendation ID (Daily Picks run ID/rank) or a model/strategy
+    -- version anywhere in the live data flow. Documented here, not
+    -- silently dropped, so a future stage that wires these through needs
+    -- no further migration.
+    model_version                   TEXT,
+
+    -- {field_name: "SERVER_VERIFIED"|"CLIENT_REPORTED"|"UNAVAILABLE"} for
+    -- every recommendation-evidence field above — never SERVER_VERIFIED in
+    -- this stage (see entry_snapshot.py's module docstring).
+    verification_levels             JSONB NOT NULL,
+
+    created_at                      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trade_entry_snapshot_trade ON paper_trade_entry_snapshot(paper_trade_id);
+CREATE INDEX IF NOT EXISTS idx_paper_trade_entry_snapshot_user ON paper_trade_entry_snapshot(user_id, symbol, market);
+
+-- Migration-verification hardening gate — database-level immutability.
+-- Application code never issues an UPDATE against this table (verified:
+-- no such statement exists anywhere in api/routers/paper_trading.py), but
+-- "no code path happens to do it today" is not the same claim as "the
+-- database itself refuses it" — this trigger makes that the latter, a
+-- real, independent enforcement layer rather than a convention. INSERT and
+-- DELETE are untouched (reset_portfolio must still be able to delete
+-- snapshot rows; see its own explicit DELETE statements).
+--
+-- CREATE OR REPLACE FUNCTION is naturally idempotent. The trigger itself
+-- uses this schema's established DROP-then-CREATE idempotency pattern
+-- (see score_snapshots'/multibagger_refresh_jobs' constraint migrations
+-- above) rather than a bare CREATE TRIGGER, which has no IF NOT EXISTS
+-- form in PostgreSQL.
+--
+-- NOT independently verified against a live PostgreSQL server — no
+-- disposable/staging Postgres instance was available in this environment
+-- (confirmed: no docker, no local postgres/psql/initdb binary, nothing
+-- listening on 5432). Downloading and executing a third-party Postgres
+-- binary to manufacture one was declined as out of bounds for an
+-- unsupervised action. This trigger is syntactically reviewed and follows
+-- standard, well-established PL/pgSQL BEFORE UPDATE trigger semantics, but
+-- until it is actually exercised against a real server, database-enforced
+-- immutability for this table must be reported as PARTIAL, not PASS — see
+-- the Stage 2 Migration Verification Gate report.
+CREATE OR REPLACE FUNCTION reject_paper_trade_entry_snapshot_update() RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'paper_trade_entry_snapshot rows are immutable — UPDATE is not permitted (paper_trade_id=%)', OLD.paper_trade_id;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_paper_trade_entry_snapshot_immutable ON paper_trade_entry_snapshot;
+CREATE TRIGGER trg_paper_trade_entry_snapshot_immutable
+    BEFORE UPDATE ON paper_trade_entry_snapshot
+    FOR EACH ROW EXECUTE FUNCTION reject_paper_trade_entry_snapshot_update();
+
+-- Trade Postmortem Engine — Buy idempotency (Part 7 of the migration-
+-- verification hardening gate). One row per (user_id, operation_type,
+-- idempotency_key) — that triple is the uniqueness boundary a duplicate
+-- Buy submission is detected against, never symbol/quantity/timestamp
+-- matching (see services/postmortem/idempotency.py for the full state
+-- machine this table backs: reservation via INSERT ... ON CONFLICT DO
+-- NOTHING, fingerprint-mismatch conflict detection, stale-PENDING/FAILED
+-- reclaim, and replay of a COMPLETED row's stored response).
+--
+-- response_body stores the exact successful response so a replayed
+-- request returns byte-identical output to the original — never
+-- recomputed, which could drift if the trade's own row were ever read
+-- back differently later.
+--
+-- No FK to paper_trades (same rationale as paper_trade_entry_snapshot —
+-- this schema has none, and POST /reset's cleanup is explicit application
+-- code, not a DB constraint).
+CREATE TABLE IF NOT EXISTS paper_trade_idempotency_key (
+    id                       BIGSERIAL PRIMARY KEY,
+    user_id                  TEXT NOT NULL,
+    operation_type           TEXT NOT NULL,
+    idempotency_key          TEXT NOT NULL,
+    request_fingerprint      TEXT NOT NULL,
+    status                   TEXT NOT NULL DEFAULT 'PENDING',
+    paper_trade_id           BIGINT,
+    response_schema_version  TEXT,
+    response_body            JSONB,
+    failure_reason           TEXT,
+    created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at             TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trade_idem_key_unique
+    ON paper_trade_idempotency_key(user_id, operation_type, idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_paper_trade_idem_key_created_at
+    ON paper_trade_idempotency_key(created_at);
+
 -- Learning Alpha Engine remediation, Phase 2A — shadow-only canonical
 -- cross-sectional alpha observation store. Additive, standalone table:
 -- nothing reads from it in production yet (get_training_data/ic_engine/
