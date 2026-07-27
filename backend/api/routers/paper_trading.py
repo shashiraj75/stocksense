@@ -24,6 +24,9 @@ from services.postmortem.entry_snapshot import (
     build_entry_snapshot,
     classify_evidence_completeness,
 )
+from services.postmortem.causal_analysis import build_causal_analysis
+from services.postmortem.daily_report import DailyTradePostmortem, build_daily_report
+from services.market_hours import IST, ET
 from services.postmortem.idempotency import (
     OPERATION_TYPE_PAPER_BUY,
     POLL_ATTEMPTS,
@@ -1671,6 +1674,274 @@ def reset_portfolio(user_id: str = Depends(get_current_user_id), market: Literal
         return {"message": f"{market} portfolio reset", cash_col: starting}
 
 
+# Trade Postmortem Engine, Stage 3 — response schema for
+# GET /postmortem/daily. `schema_version` tracks this JSON *shape*;
+# `calculation_version` fields nested per-trade (from
+# causal_analysis.CAUSAL_CALCULATION_VERSION / daily_report.
+# DAILY_REPORT_CALCULATION_VERSION) track the *rules*, independently.
+DAILY_POSTMORTEM_SCHEMA_VERSION = "1.0.0"
+
+# Market-local calendar-day timezone per market — the trading day a trade
+# "belongs to" is always the market's own local day, never UTC. Reuses
+# services/market_hours.py's IST/ET constants (the same timezones the
+# market-open/close logic itself uses) rather than defining a second,
+# potentially-drifting copy.
+_REPORT_TIMEZONE = {"IN": IST, "US": ET}
+
+
+class SignalFactorAssessmentResponse(BaseModel):
+    factor: str
+    agreement: str
+    reason: str
+
+
+class MarketContextAssessmentResponse(BaseModel):
+    regime: SignalFactorAssessmentResponse
+    timing: SignalFactorAssessmentResponse
+    sector: SignalFactorAssessmentResponse
+    news: SignalFactorAssessmentResponse
+    volatility: SignalFactorAssessmentResponse
+    liquidity: SignalFactorAssessmentResponse
+
+
+class TradePostmortemNarrativeResponse(BaseModel):
+    entry_conditions: list[str]
+    entry_conditions_reason: str | None
+    signal_factors: list[SignalFactorAssessmentResponse]
+    price_move_cause: SignalFactorAssessmentResponse
+    market_context: MarketContextAssessmentResponse
+    exit_mechanism_summary: str
+    thesis_assessment: str
+    thesis_reason: str
+    root_cause: str
+    root_cause_reason: str
+    takeaway: str
+    calculation_version: str
+    warnings: list[str]
+
+
+class DailyTradePostmortemResponse(BaseModel):
+    trade_id: int
+    symbol: str
+    market: str
+    postmortem: PostmortemResponse
+    narrative: TradePostmortemNarrativeResponse
+
+
+class DailyPostmortemSummaryResponse(BaseModel):
+    date: str
+    market: str
+    trade_count: int
+    win_count: int
+    loss_count: int
+    breakeven_count: int
+    indeterminate_count: int
+    total_realized_pnl_abs: float | None
+    pnl_excluded_trade_count: int
+    root_cause_breakdown: dict[str, int]
+
+
+class DailyPostmortemReportResponse(BaseModel):
+    schema_version: str
+    summary: DailyPostmortemSummaryResponse
+    trades: list[DailyTradePostmortemResponse]
+    calculation_version: str
+    warnings: list[str]
+
+
+def _signal_factor_to_response(assessment) -> SignalFactorAssessmentResponse:
+    return SignalFactorAssessmentResponse(
+        factor=assessment.factor, agreement=assessment.agreement.value, reason=assessment.reason
+    )
+
+
+def _narrative_to_response(narrative) -> TradePostmortemNarrativeResponse:
+    ctx = narrative.market_context
+    return TradePostmortemNarrativeResponse(
+        entry_conditions=narrative.entry_conditions,
+        entry_conditions_reason=narrative.entry_conditions_reason,
+        signal_factors=[_signal_factor_to_response(s) for s in narrative.signal_factors],
+        price_move_cause=_signal_factor_to_response(narrative.price_move_cause),
+        market_context=MarketContextAssessmentResponse(
+            regime=_signal_factor_to_response(ctx.regime),
+            timing=_signal_factor_to_response(ctx.timing),
+            sector=_signal_factor_to_response(ctx.sector),
+            news=_signal_factor_to_response(ctx.news),
+            volatility=_signal_factor_to_response(ctx.volatility),
+            liquidity=_signal_factor_to_response(ctx.liquidity),
+        ),
+        exit_mechanism_summary=narrative.exit_mechanism_summary,
+        thesis_assessment=narrative.thesis_assessment.value,
+        thesis_reason=narrative.thesis_reason,
+        root_cause=narrative.root_cause.value,
+        root_cause_reason=narrative.root_cause_reason,
+        takeaway=narrative.takeaway,
+        calculation_version=narrative.calculation_version,
+        warnings=narrative.warnings,
+    )
+
+
+def _postmortem_to_response(result, snapshot: EntrySnapshot | None) -> PostmortemResponse:
+    return PostmortemResponse(
+        schema_version=POSTMORTEM_SCHEMA_VERSION,
+        trade_id=result.trade_id,
+        status=result.status,
+        outcome=result.outcome.value,
+        realized_pnl_abs=result.realized_pnl_abs,
+        realized_pnl_pct=result.realized_pnl_pct,
+        holding_duration_seconds=result.holding_duration_seconds,
+        exit_mechanism=result.exit_mechanism.value,
+        exit_mechanism_raw=result.exit_mechanism_raw,
+        trade_management_mode=result.trade_management_mode,
+        auto_close_timing_evidence=result.auto_close_timing_evidence.value,
+        evidence_completeness=result.evidence_completeness.value,
+        available_evidence_fields=result.available_evidence_fields,
+        missing_evidence_fields=result.missing_evidence_fields,
+        target_distance_at_exit_pct=result.target_distance_at_exit_pct,
+        stop_distance_at_exit_pct=result.stop_distance_at_exit_pct,
+        calculation_version=result.calculation_version,
+        warnings=result.warnings,
+        snapshot_schema_version=snapshot.snapshot_schema_version if snapshot else None,
+        evidence_source=snapshot.evidence_source if snapshot else None,
+        verification_levels=snapshot.verification_levels if snapshot else None,
+    )
+
+
+def _row_to_closed_trade_record(row) -> ClosedTradeRecord:
+    (tid, owner, status, sym, mkt, qty, ep, xp, sl, tp, opened, closed, mgmt_mode, exit_reason,
+     rec_source, pick_run_id, pick_rank, rec_gen_at, rec_ref_price, rec_entry_low, rec_entry_high,
+     rec_orig_stop, rec_orig_target, model_version, exec_slippage_pct) = row
+    return ClosedTradeRecord(
+        trade_id=tid,
+        status=status,
+        symbol=sym,
+        market=mkt,
+        quantity=qty,
+        entry_price=ep,
+        exit_price=xp,
+        stop_loss=sl,
+        target_price=tp,
+        opened_at=opened,
+        closed_at=closed,
+        trade_management_mode=mgmt_mode,
+        exit_reason=exit_reason,
+        recommendation_source=rec_source,
+        daily_pick_run_id=pick_run_id,
+        daily_pick_rank=pick_rank,
+        recommendation_generated_at=rec_gen_at,
+        recommendation_reference_price=rec_ref_price,
+        recommendation_entry_low=rec_entry_low,
+        recommendation_entry_high=rec_entry_high,
+        recommendation_original_stop_loss=rec_orig_stop,
+        recommendation_original_target=rec_orig_target,
+        model_version=model_version,
+        execution_slippage_pct=exec_slippage_pct,
+    ), owner
+
+
+@router.get("/postmortem/daily", response_model=DailyPostmortemReportResponse)
+def get_daily_postmortem(
+    date: str = Query(..., description="Market-local calendar day, YYYY-MM-DD"),
+    market: Literal["IN", "US", "ALL"] = Query("ALL"),
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    Trade Postmortem Engine, Stage 3 — the Daily Trade Postmortem Report.
+    For every trade this user closed on `date` (each trade's own MARKET-LOCAL
+    calendar day — IST for IN, ET for US — never UTC), returns the
+    deterministic Phase 1 postmortem plus the Stage 3 causal narrative
+    (services/postmortem/causal_analysis.py), aggregated into one day-level
+    report (services/postmortem/daily_report.py).
+
+    A day with zero matching trades returns 200 with an empty `trades` list
+    — a quiet trading day is a valid result, not an error.
+    """
+    try:
+        target_date = datetime.strptime(date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date must be in YYYY-MM-DD format")
+
+    # Bounded UTC fetch window wide enough to contain `target_date`'s local
+    # midnight-to-midnight span in EITHER timezone this endpoint ever
+    # converts to (IST is UTC+5:30, ET is UTC-4/-5) — the precise per-row
+    # market-local-day match happens in Python below, never as a single
+    # ambiguous SQL date cast (see the plan's rationale: IN and US need
+    # different tz conversions within the same query).
+    window_start = datetime.combine(target_date, datetime.min.time(), tzinfo=timezone.utc) - timedelta(days=1)
+    window_end = datetime.combine(target_date, datetime.min.time(), tzinfo=timezone.utc) + timedelta(days=2)
+
+    market_filter_sql = "" if market == "ALL" else " AND market = %s"
+    params: tuple = (user_id, window_start, window_end)
+    if market != "ALL":
+        params = params + (market,)
+
+    with _conn() as conn:
+        rows = conn.execute(
+            f"""SELECT {_POSTMORTEM_ROW_COLUMNS} FROM paper_trades
+                WHERE user_id = %s AND status = 'CLOSED' AND closed_at >= %s AND closed_at < %s{market_filter_sql}
+                ORDER BY closed_at ASC""",
+            params,
+        ).fetchall()
+
+    daily_trades: list[DailyTradePostmortem] = []
+    response_trades: list[DailyTradePostmortemResponse] = []
+    for row in rows:
+        record, owner = _row_to_closed_trade_record(row)
+        if owner != user_id:
+            continue
+        tz = _REPORT_TIMEZONE.get(record.market)
+        if tz is None or record.closed_at is None:
+            continue
+        local_date = record.closed_at.astimezone(tz).date()
+        if local_date != target_date:
+            continue
+
+        with _conn() as snapshot_conn:
+            snapshot = _fetch_entry_snapshot(snapshot_conn, record.trade_id)
+        postmortem = compute_postmortem(record, snapshot=snapshot)
+        narrative = build_causal_analysis(postmortem, snapshot)
+
+        daily_trades.append(
+            DailyTradePostmortem(
+                trade_id=record.trade_id,
+                symbol=record.symbol,
+                market=record.market,
+                postmortem=postmortem,
+                narrative=narrative,
+            )
+        )
+        response_trades.append(
+            DailyTradePostmortemResponse(
+                trade_id=record.trade_id,
+                symbol=record.symbol,
+                market=record.market,
+                postmortem=_postmortem_to_response(postmortem, snapshot),
+                narrative=_narrative_to_response(narrative),
+            )
+        )
+
+    report = build_daily_report(date, market, daily_trades)
+
+    return DailyPostmortemReportResponse(
+        schema_version=DAILY_POSTMORTEM_SCHEMA_VERSION,
+        summary=DailyPostmortemSummaryResponse(
+            date=report.summary.date,
+            market=report.summary.market,
+            trade_count=report.summary.trade_count,
+            win_count=report.summary.win_count,
+            loss_count=report.summary.loss_count,
+            breakeven_count=report.summary.breakeven_count,
+            indeterminate_count=report.summary.indeterminate_count,
+            total_realized_pnl_abs=report.summary.total_realized_pnl_abs,
+            pnl_excluded_trade_count=report.summary.pnl_excluded_trade_count,
+            root_cause_breakdown=report.summary.root_cause_breakdown,
+        ),
+        trades=response_trades,
+        calculation_version=report.calculation_version,
+        warnings=report.warnings,
+    )
+
+
 @router.get("/postmortem/{trade_id}", response_model=PostmortemResponse)
 def get_trade_postmortem(trade_id: int, user_id: str = Depends(get_current_user_id)):
     """
@@ -1767,3 +2038,5 @@ def get_trade_postmortem(trade_id: int, user_id: str = Depends(get_current_user_
         evidence_source=snapshot.evidence_source if snapshot else None,
         verification_levels=snapshot.verification_levels if snapshot else None,
     )
+
+

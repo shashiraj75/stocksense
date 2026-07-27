@@ -165,6 +165,11 @@ export interface Prediction {
   fundamental_score: { score: number; reasons: string[] };
   sentiment_score: { score: number; label: string; bullish: number; bearish: number };
   market_regime?: { trend: string; score_adj: number; reason: string };
+  // AI-suggested stop-loss/take-profit/entry-range levels — present on the
+  // live /api/predictions response but not previously declared here (every
+  // call site read it via an `as any` cast). Typed properly since Stage 2
+  // needs it to build entry-evidence payloads without an unsafe cast.
+  trade_levels?: { stop_loss?: number | null; take_profit?: number | null; entry_low?: number | null; entry_high?: number | null };
   // Optional per Sprint #011 §3A — absent today in every production response
   // since RCI_LIVE_STOCK_ANALYSIS_ENABLED is disabled in Railway.
   recommendation_consolidation?: RecommendationConsolidation;
@@ -688,12 +693,95 @@ export const fetchOlderClosedTrades = (
     },
   }).then((r) => r.data);
 
+// Trade Postmortem Engine, Stage 2 — matches backend's EvidenceSource enum
+// exactly (services/postmortem/entry_snapshot.py). "MANUAL" is the safe
+// default when the caller doesn't know why a trade was opened; a real
+// trade with no recommendation behind it is a legitimate MANUAL trade, not
+// an error.
+export type EvidenceSource = "MANUAL" | "SCREENER" | "DAILY_PICK" | "RESEARCH";
+
+// Mirrors backend's EntryEvidenceRequest field-for-field — every field is
+// CLIENT_REPORTED evidence (see entry_snapshot.py's module docstring), not
+// SERVER_VERIFIED. Omitting a field (or the whole object) is fully
+// supported; only send what's actually known, never a fabricated default.
+export interface EntryEvidencePayload {
+  recommendation_signal?: string | null;
+  recommendation_generated_at?: string | null;
+  recommendation_reference_price?: number | null;
+  recommendation_entry_low?: number | null;
+  recommendation_entry_high?: number | null;
+  recommended_stop_loss?: number | null;
+  recommended_target_price?: number | null;
+  confidence_score?: number | null;
+  technical_signal?: string | null;
+  technical_rsi?: number | null;
+  technical_macd_diff?: number | null;
+  fundamental_score?: number | null;
+  sentiment_score?: number | null;
+  sentiment_label?: string | null;
+  market_regime_trend?: string | null;
+  market_regime_score_adj?: number | null;
+  market_regime_reason?: string | null;
+  recommendation_reasoning?: { indicator: string; signal: string; reason: string }[] | null;
+  daily_pick_run_id?: string | null;
+  daily_pick_rank?: number | null;
+  model_version?: string | null;
+}
+
+export interface PlacePaperBuyResponse {
+  message: string;
+  trade_id: number;
+  symbol: string;
+  market: Market;
+  quantity: number;
+  entry_price: number;
+  cost: number;
+  remaining_cash: number;
+  entry_evidence_captured: boolean;
+  snapshot_schema_version: string;
+  evidence_source: EvidenceSource;
+  evidence_completeness: "LIMITED" | "PARTIAL" | "COMPLETE";
+  available_evidence_fields: string[];
+  missing_evidence_fields: string[];
+  // Migration-verification hardening gate, Part 7 — whether the backend's
+  // durable exactly-once guarantee actually applied to this request (false
+  // when idempotency_key was omitted).
+  idempotency_enforced: boolean;
+}
+
+// Migration-verification hardening gate, Part 7 — thrown by placePaperBuy
+// for the two idempotency-specific 409 responses, so callers can
+// distinguish them from an ordinary API error without re-parsing
+// `error.response.data.detail` themselves.
+export class BuyIdempotencyConflictError extends Error {
+  errorCode: "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST" | "BUY_ALREADY_IN_PROGRESS";
+  constructor(errorCode: "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST" | "BUY_ALREADY_IN_PROGRESS", message: string) {
+    super(message);
+    this.name = "BuyIdempotencyConflictError";
+    this.errorCode = errorCode;
+  }
+}
+
 export const placePaperBuy = (data: {
   user_id: string; symbol: string; market: Market;
   quantity: number; price: number; signal?: string; horizon?: string;
   stop_loss?: number | null; target_price?: number | null; email?: string | null;
   trade_management_mode?: TradeManagementMode;
-}) => api.post("/api/paper-trading/buy", data).then((r) => r.data);
+  evidence_source?: EvidenceSource;
+  entry_evidence?: EntryEvidencePayload | null;
+  // Migration-verification hardening gate, Part 7 — client-generated,
+  // reused verbatim for every retry of the SAME logical Buy decision (see
+  // PaperTradeModal's useRef-based generation). Omit entirely for the
+  // pre-idempotency backward-compatible path (no exactly-once guarantee).
+  idempotency_key?: string;
+}): Promise<PlacePaperBuyResponse> =>
+  api.post("/api/paper-trading/buy", data).then((r) => r.data).catch((error) => {
+    const detail = error?.response?.data?.detail;
+    if (error?.response?.status === 409 && detail?.error_code) {
+      throw new BuyIdempotencyConflictError(detail.error_code, detail.message ?? "This Buy request could not be completed.");
+    }
+    throw error;
+  });
 
 export const closePaperTrade = (tradeId: number, userId: string, price: number, exitReason?: Exclude<ExitReason, null>) =>
   api.post(`/api/paper-trading/sell/${tradeId}`, { user_id: userId, price, exit_reason: exitReason ?? null }).then((r) => r.data);
@@ -711,6 +799,120 @@ export const updatePaperTradeManagementMode = (tradeId: number, userId: string, 
 
 export const updatePaperTradeNotificationPreference = (userId: string, enabled: boolean) =>
   api.patch("/api/paper-trading/notifications", { user_id: userId, email_notifications_enabled: enabled }).then((r) => r.data);
+
+// Trade Postmortem Engine, Phase 1 — GET /postmortem/{trade_id}'s response
+// shape (backend/api/routers/paper_trading.py's PostmortemResponse). Never
+// previously typed here since no frontend caller existed until the Daily
+// Trade Postmortem Report; the daily response embeds one of these per trade.
+export interface PostmortemResponse {
+  schema_version: string;
+  trade_id: number;
+  status: string;
+  outcome: "WIN" | "LOSS" | "BREAKEVEN" | "INDETERMINATE";
+  realized_pnl_abs: number | null;
+  realized_pnl_pct: number | null;
+  holding_duration_seconds: number | null;
+  exit_mechanism: "TARGET_HIT" | "STOP_LOSS" | "MANUAL" | "UNKNOWN";
+  exit_mechanism_raw: string | null;
+  trade_management_mode: string;
+  auto_close_timing_evidence: "NOT_APPLICABLE" | "CLIENT_REPORTED_UNVERIFIED" | "SERVER_VERIFIED";
+  evidence_completeness: "LIMITED" | "PARTIAL" | "COMPLETE";
+  available_evidence_fields: string[];
+  missing_evidence_fields: string[];
+  target_distance_at_exit_pct: number | null;
+  stop_distance_at_exit_pct: number | null;
+  calculation_version: string;
+  warnings: string[];
+  snapshot_schema_version: string | null;
+  evidence_source: string | null;
+  verification_levels: Record<string, string> | null;
+}
+
+// Trade Postmortem Engine, Stage 3 — mirrors backend's
+// services/postmortem/causal_analysis.py SignalDirectionAgreement values.
+// "INSUFFICIENT_EVIDENCE" is expected to appear often — see that module's
+// docstring for why (most manually-opened trades carry almost no entry-time
+// signal evidence, and no market/sector/news/volatility/liquidity data is
+// ever stored for any trade in this codebase).
+export type SignalDirectionAgreement = "AGREED" | "CONTRADICTED" | "INSUFFICIENT_EVIDENCE";
+
+export interface SignalFactorAssessment {
+  factor: string;
+  agreement: SignalDirectionAgreement;
+  reason: string;
+}
+
+export interface MarketContextAssessment {
+  regime: SignalFactorAssessment;
+  timing: SignalFactorAssessment;
+  sector: SignalFactorAssessment;
+  news: SignalFactorAssessment;
+  volatility: SignalFactorAssessment;
+  liquidity: SignalFactorAssessment;
+}
+
+export type ThesisAssessment =
+  | "CORRECT" | "PARTIALLY_CORRECT" | "UNSUPPORTED" | "TOO_EARLY" | "TOO_LATE" | "INSUFFICIENT_EVIDENCE";
+
+export type RootCauseCategory =
+  | "POSITION_MANAGEMENT" | "MARKET_CONDITIONS" | "SELECTION" | "TIMING"
+  | "EXIT_LOGIC" | "NOISE_UNEXPLAINED" | "INSUFFICIENT_EVIDENCE";
+
+export interface TradePostmortemNarrative {
+  entry_conditions: string[];
+  entry_conditions_reason: string | null;
+  signal_factors: SignalFactorAssessment[];
+  price_move_cause: SignalFactorAssessment;
+  market_context: MarketContextAssessment;
+  exit_mechanism_summary: string;
+  thesis_assessment: ThesisAssessment;
+  thesis_reason: string;
+  root_cause: RootCauseCategory;
+  root_cause_reason: string;
+  takeaway: string;
+  calculation_version: string;
+  warnings: string[];
+}
+
+export interface DailyTradePostmortem {
+  trade_id: number;
+  symbol: string;
+  market: Market;
+  postmortem: PostmortemResponse;
+  narrative: TradePostmortemNarrative;
+}
+
+export interface DailyPostmortemSummary {
+  date: string;
+  market: Market | "ALL";
+  trade_count: number;
+  win_count: number;
+  loss_count: number;
+  breakeven_count: number;
+  indeterminate_count: number;
+  // `null` only when EVERY trade that day lacks a valid realized P&L
+  // (never coerced to 0 — see pnl_excluded_trade_count for how many were
+  // excluded from this sum).
+  total_realized_pnl_abs: number | null;
+  pnl_excluded_trade_count: number;
+  root_cause_breakdown: Record<string, number>;
+}
+
+export interface DailyPostmortemReport {
+  schema_version: string;
+  summary: DailyPostmortemSummary;
+  trades: DailyTradePostmortem[];
+  calculation_version: string;
+  warnings: string[];
+}
+
+// `date` is the MARKET-LOCAL calendar day (IST for IN, ET for US) — the
+// backend resolves each trade to its own market's local day, never UTC; the
+// caller just supplies the plain YYYY-MM-DD the user picked.
+export const fetchDailyPostmortem = (date: string, market: Market | "ALL" = "ALL") =>
+  api.get<DailyPostmortemReport>("/api/paper-trading/postmortem/daily", {
+    params: { date, market },
+  }).then((r) => r.data);
 
 export const acceptTerms = (
   userId: string, email: string,
