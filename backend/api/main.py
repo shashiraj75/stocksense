@@ -1,3 +1,4 @@
+import math
 import os
 import sys
 import asyncio
@@ -8,8 +9,11 @@ from contextlib import asynccontextmanager
 from services.logging_config import configure_logging
 configure_logging()
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
 from slowapi import _rate_limit_exceeded_handler
 from api.routers import stocks, predictions, news, screener, watchlist, backtest, picks, validation, paper_trading, alerts, auth, feedback, portfolio, multibagger, leadership
@@ -619,6 +623,50 @@ app.add_middleware(
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+def _sanitize_non_finite_json(value):
+    """Recursively replaces a non-finite float (NaN/Infinity/-Infinity)
+    with a safe string placeholder — everything else passes through
+    unchanged. Used only to make validation-error bodies JSON-safe; never
+    called anywhere near a successful response or persistence path."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return "<rejected: non-finite number>"
+    if isinstance(value, dict):
+        return {k: _sanitize_non_finite_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_non_finite_json(v) for v in value]
+    return value
+
+
+@app.exception_handler(RequestValidationError)
+async def _stable_validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """
+    Stage 2 migration-verification gate — fixes a real, reachable path to
+    an unhandled 500. FastAPI's default RequestValidationError handler
+    echoes each rejected field's raw `input` value back in the error body.
+    Starlette's JSONResponse renders with `json.dumps(..., allow_nan=False)`
+    (strict, spec-compliant JSON) — which raises `ValueError` (an unhandled
+    500, not a clean 4xx) if that echoed input is NaN/Infinity/-Infinity.
+
+    This is trivially reachable: Python's own `json.loads` accepts bare
+    `NaN`/`Infinity`/`-Infinity` tokens as a well-known non-standard
+    extension by default, so any client (not just a browser bound by
+    JSON.stringify's stricter behavior) can send a request body containing
+    one to ANY endpoint with a Pydantic `float` field — not specific to
+    paper trading or Stage 2.
+
+    Narrowly scoped to `RequestValidationError` only (the single, specific
+    exception FastAPI itself raises for body/query/path validation
+    failures) — this does not catch, hide, or alter behavior for any other
+    exception type; an unrelated bug elsewhere still propagates and 500s
+    exactly as before. `jsonable_encoder` first reproduces FastAPI's normal
+    error-body shape (including its usual ctx/exception-to-string handling)
+    so ordinary validation errors are byte-for-byte unchanged; only a
+    non-finite float's `input` value is ever replaced.
+    """
+    sanitized = _sanitize_non_finite_json(jsonable_encoder(exc.errors()))
+    return JSONResponse(status_code=422, content={"detail": sanitized})
 
 app.include_router(stocks.router,      prefix="/api/stocks",      tags=["Stocks"])
 app.include_router(predictions.router, prefix="/api/predictions", tags=["Predictions"])

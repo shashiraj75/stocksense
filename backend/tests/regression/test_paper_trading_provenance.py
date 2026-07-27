@@ -86,6 +86,15 @@ class _RecordingConn:
     def __exit__(self, *a):
         return False
 
+    @contextmanager
+    def transaction(self):
+        """Trade Postmortem Engine, Stage 2 — paper_buy now wraps the trade
+        + entry-snapshot INSERTs in `with conn.transaction():`. No-op here
+        (this fake has no real rollback semantics); the parametrized
+        provenance assertions below only inspect recorded SQL/params, which
+        are unaffected by the transaction wrapper."""
+        yield self
+
 
 @contextmanager
 def _fake_conn(fetchone_results=None):
