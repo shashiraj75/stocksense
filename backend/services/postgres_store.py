@@ -886,6 +886,22 @@ _SCHEMA_INIT_LOCK_MAX_WAIT_SECONDS = 30
 _SCHEMA_INIT_MAX_ATTEMPTS = 3
 _SCHEMA_INIT_RETRY_BACKOFF_SECONDS = 1.0
 
+# PR #31 review correction — the schema-init connection previously had no
+# bound on connection time, DDL lock waits, or statement execution time,
+# so a hung network handshake or an ordinary table-lock conflict (a
+# ROW/ACCESS EXCLUSIVE lock held by some unrelated long-running query on
+# a table SCHEMA_SQL also touches) could stall startup indefinitely
+# instead of failing cleanly. These are conservative initial values,
+# intentionally documented here for future tuning against real Railway
+# deploy timing, not derived from measured production behavior yet.
+# lock_timeout is what actually turns an ordinary DDL lock wait into a
+# real PostgreSQL SQLSTATE 55P03 (lock_not_available) — without it, a
+# blocked ALTER/CREATE would simply wait forever, never reaching the
+# retryable-SQLSTATE path at all.
+_SCHEMA_INIT_CONNECT_TIMEOUT_SECONDS = 10
+_SCHEMA_INIT_LOCK_TIMEOUT_MS = 5_000
+_SCHEMA_INIT_STATEMENT_TIMEOUT_MS = 120_000
+
 # SQLSTATEs safe to retry the ENTIRE initialization attempt for, always
 # on a fresh connection — never used to retry a single statement in
 # place, and never applied to anything not in this explicit set.
@@ -910,6 +926,18 @@ def _is_retryable(exc: BaseException) -> bool:
     return _sqlstate_of(exc) in _RETRYABLE_SQLSTATES
 
 
+_REQUIRED_SCHEMA_TABLES = [
+    "predictions", "outcomes", "score_snapshots",
+    "daily_picks_cache", "paper_trades", "paper_portfolio",
+    "paper_trade_entry_snapshot", "paper_trade_idempotency_key",
+]
+
+_REQUIRED_SCHEMA_CONSTRAINTS = [
+    ("outcomes", "outcomes_symbol_horizon_pred_date_market_key"),
+    ("score_snapshots", "score_snapshots_symbol_market_horizon_snapshot_date_key"),
+]
+
+
 def _verify_schema_postconditions(conn) -> None:
     """
     Metadata-only contract check proving the critical subsystems this
@@ -918,50 +946,123 @@ def _verify_schema_postconditions(conn) -> None:
     Trade Postmortem, Buy idempotency), not a re-verification of every
     one of SCHEMA_SQL's ~114 statements. Any failure here raises
     SchemaInitializationError and fails startup.
+
+    PR #31 review correction — every check here is now explicitly
+    schema-qualified to `public`. A same-named object in a different
+    schema (a decoy, a leftover from manual debugging, a future
+    unrelated extension) must never satisfy a postcondition meant to
+    prove the application's own `public` schema is correct; `to_regclass`
+    was already schema-qualified via the `public.<table>` argument, but
+    the constraint/column/trigger/function checks previously were not.
+
+    The three lists above (_REQUIRED_SCHEMA_TABLES,
+    _REQUIRED_SCHEMA_CONSTRAINTS, and the trigger contract below) are
+    module-level so a test can monkeypatch them to exercise a
+    deliberately-impossible postcondition through the real init_db()
+    path rather than only by calling this function directly.
     """
-    required_tables = [
-        "predictions", "outcomes", "score_snapshots",
-        "daily_picks_cache", "paper_trades", "paper_portfolio",
-        "paper_trade_entry_snapshot", "paper_trade_idempotency_key",
-    ]
-    for table in required_tables:
+    for table in _REQUIRED_SCHEMA_TABLES:
         row = conn.execute("SELECT to_regclass(%s) IS NOT NULL", (f"public.{table}",)).fetchone()
         if not row or not row[0]:
-            raise SchemaInitializationError(f"required table missing after init: {table}")
+            raise SchemaInitializationError(f"required table missing after init: public.{table}")
 
-    for table, constraint in [
-        ("outcomes", "outcomes_symbol_horizon_pred_date_market_key"),
-        ("score_snapshots", "score_snapshots_symbol_market_horizon_snapshot_date_key"),
-    ]:
+    for table, constraint in _REQUIRED_SCHEMA_CONSTRAINTS:
         row = conn.execute(
             """SELECT 1 FROM information_schema.table_constraints
-               WHERE table_name = %s AND constraint_type = 'UNIQUE' AND constraint_name = %s""",
+               WHERE table_schema = 'public' AND table_name = %s
+                 AND constraint_type = 'UNIQUE' AND constraint_name = %s""",
             (table, constraint),
         ).fetchone()
         if not row:
-            raise SchemaInitializationError(f"required market-scoped constraint missing: {table}.{constraint}")
+            raise SchemaInitializationError(f"required market-scoped constraint missing: public.{table}.{constraint}")
 
     row = conn.execute(
         """SELECT 1 FROM information_schema.columns
-           WHERE table_name = 'daily_picks_cache' AND column_name = 'status'"""
+           WHERE table_schema = 'public' AND table_name = 'daily_picks_cache' AND column_name = 'status'"""
     ).fetchone()
     if not row:
-        raise SchemaInitializationError("required column missing: daily_picks_cache.status")
+        raise SchemaInitializationError("required column missing: public.daily_picks_cache.status")
+
+    _verify_snapshot_immutability_trigger_contract(conn)
+
+
+# BEFORE (2) | ROW (1) | UPDATE (16) — see PostgreSQL's pg_trigger.tgtype
+# bit layout (src/include/catalog/pg_trigger.h). Exactly this combination
+# means "fires once per row, before the row is written, on UPDATE only"
+# — not INSERT, not DELETE, not AFTER, not INSTEAD OF, not statement-level.
+_EXPECTED_SNAPSHOT_TRIGGER_TGTYPE = 19
+_EXPECTED_SNAPSHOT_TRIGGER_ENABLED = "O"  # origin/normal — fires for ordinary sessions
+
+
+def _verify_snapshot_immutability_trigger_contract(conn) -> None:
+    """
+    PR #31 review correction — a trigger's mere existence (or even its
+    name) proves nothing about its actual behavior: it could be
+    disabled, bound to the wrong function, firing on the wrong event, or
+    living in the wrong schema entirely. This checks the complete
+    contract in one query: schema, table, trigger name, non-internal,
+    enabled state, exact BEFORE/ROW/UPDATE-only tgtype, the bound
+    function's identity (by schema-qualified name, not name alone),
+    that the function returns `trigger`, and that it takes no arguments
+    (the expected no-argument PL/pgSQL trigger-function signature).
+    """
+    row = conn.execute(
+        """SELECT t.tgenabled, t.tgtype, p.pronamespace::regnamespace::text,
+                  p.prorettype::regtype::text, p.pronargs
+           FROM pg_trigger t
+           JOIN pg_class c ON c.oid = t.tgrelid
+           JOIN pg_namespace tn ON tn.oid = c.relnamespace
+           JOIN pg_proc p ON p.oid = t.tgfoid
+           WHERE tn.nspname = 'public'
+             AND c.relname = 'paper_trade_entry_snapshot'
+             AND t.tgname = 'trg_paper_trade_entry_snapshot_immutable'
+             AND NOT t.tgisinternal""",
+        None,
+    ).fetchone()
+    if not row:
+        raise SchemaInitializationError(
+            "required trigger missing: public.paper_trade_entry_snapshot.trg_paper_trade_entry_snapshot_immutable"
+        )
+
+    tgenabled, tgtype, func_schema, func_rettype, func_nargs = row
+
+    if tgenabled != _EXPECTED_SNAPSHOT_TRIGGER_ENABLED:
+        raise SchemaInitializationError(
+            f"snapshot immutability trigger is not in the normal enabled state (tgenabled={tgenabled!r})"
+        )
+    if tgtype != _EXPECTED_SNAPSHOT_TRIGGER_TGTYPE:
+        raise SchemaInitializationError(
+            f"snapshot immutability trigger has unexpected timing/event (tgtype={tgtype}, "
+            f"expected {_EXPECTED_SNAPSHOT_TRIGGER_TGTYPE} = BEFORE|ROW|UPDATE only)"
+        )
+    if func_schema != "public":
+        raise SchemaInitializationError(
+            f"snapshot immutability trigger is bound to a function outside public schema: {func_schema}"
+        )
+    if func_rettype != "trigger":
+        raise SchemaInitializationError(
+            f"snapshot immutability trigger function does not return trigger (returns {func_rettype!r})"
+        )
+    if func_nargs != 0:
+        raise SchemaInitializationError(
+            f"snapshot immutability trigger function has unexpected argument count ({func_nargs}, expected 0)"
+        )
 
     row = conn.execute(
-        """SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
-           WHERE c.relname = 'paper_trade_entry_snapshot'
-             AND t.tgname = 'trg_paper_trade_entry_snapshot_immutable' AND NOT t.tgisinternal"""
+        """SELECT p.proname FROM pg_trigger t
+           JOIN pg_class c ON c.oid = t.tgrelid
+           JOIN pg_namespace tn ON tn.oid = c.relnamespace
+           JOIN pg_proc p ON p.oid = t.tgfoid
+           WHERE tn.nspname = 'public'
+             AND c.relname = 'paper_trade_entry_snapshot'
+             AND t.tgname = 'trg_paper_trade_entry_snapshot_immutable'
+             AND NOT t.tgisinternal"""
     ).fetchone()
-    if not row:
-        raise SchemaInitializationError("required trigger missing: trg_paper_trade_entry_snapshot_immutable")
-
-    row = conn.execute(
-        """SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-           WHERE n.nspname = 'public' AND p.proname = 'reject_paper_trade_entry_snapshot_update'"""
-    ).fetchone()
-    if not row:
-        raise SchemaInitializationError("required function missing: reject_paper_trade_entry_snapshot_update")
+    if not row or row[0] != "reject_paper_trade_entry_snapshot_update":
+        raise SchemaInitializationError(
+            f"snapshot immutability trigger is bound to an unexpected function: {row[0] if row else None!r} "
+            "(expected reject_paper_trade_entry_snapshot_update)"
+        )
 
 
 def _acquire_schema_init_lock(conn) -> None:
@@ -1013,8 +1114,27 @@ def _attempt_schema_initialization(attempt: int) -> None:
     # uncertain connection-level failure can never be reused here, and
     # this connection is never returned to the pool while it might still
     # hold the advisory lock.
-    conn = psycopg.connect(DATABASE_URL, autocommit=True, prepare_threshold=None)
+    conn = psycopg.connect(
+        DATABASE_URL,
+        autocommit=True,
+        prepare_threshold=None,
+        connect_timeout=_SCHEMA_INIT_CONNECT_TIMEOUT_SECONDS,
+        application_name="stocksense_schema_init",
+    )
     try:
+        # lock_timeout bounds ordinary DDL table-lock waits (e.g. an
+        # ALTER TABLE blocked behind an unrelated long-running query) —
+        # without it such a wait would block forever rather than raising
+        # SQLSTATE 55P03 into the retryable path below. statement_timeout
+        # is a broader backstop against any single statement (including
+        # the pg_try_advisory_lock polling SELECTs and SCHEMA_SQL itself)
+        # hanging indefinitely. Neither bounds the advisory-lock
+        # ACQUISITION loop itself — pg_try_advisory_lock never blocks by
+        # design, so that's governed entirely by
+        # _SCHEMA_INIT_LOCK_MAX_WAIT_SECONDS instead.
+        conn.execute(f"SET lock_timeout = '{_SCHEMA_INIT_LOCK_TIMEOUT_MS}ms'")
+        conn.execute(f"SET statement_timeout = '{_SCHEMA_INIT_STATEMENT_TIMEOUT_MS}ms'")
+
         _acquire_schema_init_lock(conn)
         log.info(f"[schema_init] attempt {attempt}: advisory lock acquired")
 

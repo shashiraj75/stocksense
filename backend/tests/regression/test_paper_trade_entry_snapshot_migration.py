@@ -133,18 +133,28 @@ class TestEntrySnapshotSchemaExecutionIsAttempted:
         connection via psycopg.connect() directly (a fresh, non-pooled
         connection per attempt — see _attempt_schema_initialization) rather
         than through _get_pool().connection(), so the fake is patched onto
-        psycopg.connect instead. fetchone() returns a generically truthy
-        row for every call — the advisory-lock acquisition, every guarded
-        migration's existence check, and postcondition verification all
-        only need *some* truthy/falsy signal, never real data here."""
+        psycopg.connect instead. fetchone() returns a row shaped for
+        whichever query was last executed — the advisory-lock
+        acquisition, every guarded migration's existence check, and
+        postcondition verification (including the strengthened trigger-
+        contract query, which unpacks 5 columns) each need a plausibly-
+        shaped truthy row, never real data here."""
         executed = []
 
         class _FakeConn:
+            def __init__(self):
+                self._last_sql = ""
+
             def execute(self, sql, params=None):
                 executed.append(sql)
+                self._last_sql = sql
                 return self
 
             def fetchone(self):
+                if "pronargs" in self._last_sql:
+                    return ("O", 19, "public", "trigger", 0)
+                if "proname" in self._last_sql and "tgname" in self._last_sql:
+                    return ("reject_paper_trade_entry_snapshot_update",)
                 return (True,)
 
             def close(self):

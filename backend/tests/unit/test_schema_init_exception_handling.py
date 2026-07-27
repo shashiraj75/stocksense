@@ -24,6 +24,19 @@ def _pg_error(sqlstate: str, message: str = "simulated") -> psycopg.Error:
     return exc
 
 
+def _generic_fetchone_for(sql: str):
+    """Shared fake-row generator for tests that only care about
+    connection/lock lifecycle, not postcondition content — returns a
+    row shaped correctly for whichever query is being asked, so the
+    strengthened trigger-contract check (which unpacks 5 columns) does
+    not break tests that predate it and aren't testing it."""
+    if "pronargs" in sql:
+        return ("O", 19, "public", "trigger", 0)
+    if "proname" in sql and "tgname" in sql:
+        return ("reject_paper_trade_entry_snapshot_update",)
+    return (True,)
+
+
 class TestSqlstateClassification:
     @pytest.mark.parametrize("sqlstate", ["55P03", "40P01", "40001"])
     def test_approved_transient_sqlstates_are_retryable(self, sqlstate):
@@ -132,7 +145,7 @@ class TestFreshConnectionPerAttempt:
                 self.executed.append(sql)
                 if "pg_try_advisory_lock" in sql:
                     return MagicMock(fetchone=lambda: (True,))
-                return MagicMock(fetchone=lambda: (True,))
+                return MagicMock(fetchone=lambda: _generic_fetchone_for(sql))
 
             def close(self):
                 self.closed = True
@@ -142,6 +155,56 @@ class TestFreshConnectionPerAttempt:
 
         assert len(made_connections) == 1  # single successful attempt = one connection
         assert made_connections[0].closed is True
+
+    def test_a_genuine_retry_opens_a_second_distinct_connection_and_closes_the_first(self, monkeypatch):
+        """PR #31 review correction — the previous version of this test
+        only ever exercised a single successful attempt, which cannot
+        distinguish 'opens a fresh connection per attempt' from 'opens
+        one connection and reuses it.' This test forces connection A's
+        first attempt to fail with an approved-retryable SQLSTATE mid-way
+        through (after the advisory lock, during SCHEMA_SQL), confirms A
+        is closed, confirms a SECOND, DISTINCT connection object B is
+        opened for the retry, and confirms B succeeds and is itself
+        closed — proving both the fresh-connection-per-attempt contract
+        and that the complete attempt genuinely restarts, not just a
+        single statement."""
+        made_connections = []
+
+        class _FakeConn:
+            def __init__(self, should_fail):
+                self._should_fail = should_fail
+                made_connections.append(self)
+                self.closed = False
+
+            def execute(self, sql, params=None):
+                if "pg_try_advisory_lock" in sql:
+                    return MagicMock(fetchone=lambda: (True,))
+                if self._should_fail and "CREATE TABLE" in sql:
+                    raise _pg_error("40001", "serialization failure")
+                return MagicMock(fetchone=lambda: _generic_fetchone_for(sql))
+
+            def close(self):
+                self.closed = True
+
+        connect_calls = []
+
+        def _fake_connect(*a, **k):
+            n = len(connect_calls)
+            connect_calls.append(1)
+            return _FakeConn(should_fail=(n == 0))  # first connection fails, second succeeds
+
+        monkeypatch.setattr(postgres_store.psycopg, "connect", _fake_connect)
+        monkeypatch.setattr(postgres_store, "_SCHEMA_INIT_MAX_ATTEMPTS", 3)
+        monkeypatch.setattr(postgres_store.time, "sleep", lambda *_: None)
+
+        postgres_store.init_db()
+
+        assert len(connect_calls) == 2, "expected exactly two psycopg.connect() calls (one per attempt)"
+        assert len(made_connections) == 2
+        conn_a, conn_b = made_connections
+        assert conn_a is not conn_b, "the retry must use a distinct connection object, not the same one"
+        assert conn_a.closed is True, "the failed first connection must be closed before retrying"
+        assert conn_b.closed is True, "the successful second connection must be closed after completing"
 
 
 class TestAdvisoryLockReleaseOnEveryPath:
@@ -155,7 +218,7 @@ class TestAdvisoryLockReleaseOnEveryPath:
                 if "pg_advisory_unlock" in sql:
                     released.append(True)
                     return MagicMock(fetchone=lambda: (True,))
-                return MagicMock(fetchone=lambda: (True,))
+                return MagicMock(fetchone=lambda: _generic_fetchone_for(sql))
 
             def close(self):
                 pass
@@ -176,7 +239,7 @@ class TestAdvisoryLockReleaseOnEveryPath:
                     return MagicMock(fetchone=lambda: (True,))
                 if sql.strip().startswith("CREATE TABLE"):
                     raise _pg_error("42601", "syntax error")
-                return MagicMock(fetchone=lambda: (True,))
+                return MagicMock(fetchone=lambda: _generic_fetchone_for(sql))
 
             def close(self):
                 pass
@@ -196,7 +259,7 @@ class TestAdvisoryLockReleaseOnEveryPath:
 
         class _FakeConn:
             def execute(self, sql, params=None):
-                return MagicMock(fetchone=lambda: (True,))
+                return MagicMock(fetchone=lambda: _generic_fetchone_for(sql))
 
             def close(self):
                 pass
@@ -216,7 +279,7 @@ class TestMigrationOrderingAndPostconditionPropagation:
 
         class _FakeConn:
             def execute(self, sql, params=None):
-                return MagicMock(fetchone=lambda: (True,))
+                return MagicMock(fetchone=lambda: _generic_fetchone_for(sql))
 
             def close(self):
                 pass
@@ -237,7 +300,7 @@ class TestMigrationOrderingAndPostconditionPropagation:
 
         class _FakeConn:
             def execute(self, sql, params=None):
-                return MagicMock(fetchone=lambda: (True,))
+                return MagicMock(fetchone=lambda: _generic_fetchone_for(sql))
 
             def close(self):
                 pass
