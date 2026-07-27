@@ -4,8 +4,8 @@ import clsx from "clsx";
 
 /**
  * Daily Trade Postmortem Report — accessible inline marker for a factor the
- * backend explicitly could not assess (services/postmortem/causal_analysis.py
- * returns SignalDirectionAgreement.INSUFFICIENT_EVIDENCE, never a guess).
+ * backend explicitly could not assess (services/postmortem/evidence_attribution.py
+ * / evidence.py return EvidenceClass.INSUFFICIENT_EVIDENCE, never a guess).
  *
  * A new, generic sibling to DataLimitationsMark (frontend/src/components/
  * DataLimitationsNotice.tsx) — deliberately not reused directly, since that

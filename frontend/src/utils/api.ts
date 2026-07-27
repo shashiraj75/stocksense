@@ -828,48 +828,106 @@ export interface PostmortemResponse {
   verification_levels: Record<string, string> | null;
 }
 
-// Trade Postmortem Engine, Stage 3 — mirrors backend's
-// services/postmortem/causal_analysis.py SignalDirectionAgreement values.
-// "INSUFFICIENT_EVIDENCE" is expected to appear often — see that module's
-// docstring for why (most manually-opened trades carry almost no entry-time
-// signal evidence, and no market/sector/news/volatility/liquidity data is
-// ever stored for any trade in this codebase).
-export type SignalDirectionAgreement = "AGREED" | "CONTRADICTED" | "INSUFFICIENT_EVIDENCE";
+// Trade Postmortem Engine, Sprint 1 — mirrors backend's
+// services/postmortem/evidence.py. Replaces the Stage 0 prototype's
+// SignalDirectionAgreement/RootCauseCategory model outright: that model
+// derived "the signal worked/failed" from the trade's own final P&L sign
+// (outcome-circular reasoning) and always forced exactly one root cause.
+// Neither survives Sprint 1 — see evidence_attribution.py's module
+// docstring for the full audit finding. INSUFFICIENT_EVIDENCE is expected
+// to appear often; that is this module working as designed, not a gap to
+// paper over.
+export type EvidenceClass =
+  | "MECHANICALLY_VERIFIED" | "DIRECTLY_OBSERVED" | "EVIDENCE_SUPPORTED"
+  | "CONFLICTING_EVIDENCE" | "INSUFFICIENT_EVIDENCE";
 
-export interface SignalFactorAssessment {
+// Not a statistical probability — a qualitative label for how much the
+// cited evidence supports the claim text. Never render this as a percent.
+export type ConfidenceBand = "HIGH" | "MODERATE" | "LOW" | "NOT_ASSESSABLE";
+
+export interface EvidenceItem {
+  evidence_id: string;
+  category: string;
+  name: string;
+  value: unknown;
+  units: string | null;
+  observation_timestamp: string | null;
+  source: string;
+  source_type: "SERVER_STORED" | "SERVER_DERIVED" | "CLIENT_REPORTED" | "APPROVED_EXTERNAL_SOURCE" | "UNAVAILABLE";
+  verification_level: "MECHANICALLY_VERIFIED" | "DIRECTLY_OBSERVED" | "CLIENT_REPORTED" | "UNVERIFIED" | "UNAVAILABLE";
+  freshness_status: "POINT_IN_TIME_VALID" | "STALE" | "NOT_APPLICABLE" | "UNKNOWN";
+  limitations: string[];
+}
+
+export interface PostmortemClaim {
+  claim_id: string;
+  report_section: string;
   factor: string;
-  agreement: SignalDirectionAgreement;
-  reason: string;
+  claim_text: string;
+  evidence_class: EvidenceClass;
+  confidence_band: ConfidenceBand;
+  supporting_evidence_ids: string[];
+  opposing_evidence_ids: string[];
+  missing_evidence: string[];
+  contradiction_flags: string[];
+  rule_id: string;
+  rule_version: string;
+  limitations: string[];
 }
 
-export interface MarketContextAssessment {
-  regime: SignalFactorAssessment;
-  timing: SignalFactorAssessment;
-  sector: SignalFactorAssessment;
-  news: SignalFactorAssessment;
-  volatility: SignalFactorAssessment;
-  liquidity: SignalFactorAssessment;
+export type SignalStatus =
+  | "WORKED_AS_EXPECTED" | "PARTIALLY_WORKED" | "WEAKENED" | "REVERSED" | "INVALIDATED"
+  | "NOT_TESTABLE" | "INSUFFICIENT_EVIDENCE";
+
+export interface SignalEvaluation {
+  signal_id: string;
+  signal_name: string;
+  expected_interpretation: string | null;
+  entry_evidence_id: string | null;
+  comparison_evidence_ids: string[];
+  status: SignalStatus;
+  evidence_class: EvidenceClass;
+  confidence_band: ConfidenceBand;
+  explanation_claim_id: string;
+  limitations: string[];
 }
 
-export type ThesisAssessment =
-  | "CORRECT" | "PARTIALLY_CORRECT" | "UNSUPPORTED" | "TOO_EARLY" | "TOO_LATE" | "INSUFFICIENT_EVIDENCE";
+export type ContributorCategory =
+  | "STOCK_SELECTION" | "ENTRY_TIMING" | "POSITION_MANAGEMENT" | "EXIT_LOGIC" | "MARKET_CONDITIONS"
+  | "SECTOR_CONDITIONS" | "VOLATILITY" | "LIQUIDITY" | "NEWS_OR_EVENT" | "PRICE_NOISE" | "ADMINISTRATIVE_ACTION";
 
-export type RootCauseCategory =
-  | "POSITION_MANAGEMENT" | "MARKET_CONDITIONS" | "SELECTION" | "TIMING"
-  | "EXIT_LOGIC" | "NOISE_UNEXPLAINED" | "INSUFFICIENT_EVIDENCE";
+export type SupportLevel =
+  | "STRONGLY_SUPPORTED" | "SUPPORTED" | "WEAKLY_SUPPORTED" | "CONFLICTED" | "NOT_SUPPORTED" | "NOT_ASSESSABLE";
 
-export interface TradePostmortemNarrative {
-  entry_conditions: string[];
-  entry_conditions_reason: string | null;
-  signal_factors: SignalFactorAssessment[];
-  price_move_cause: SignalFactorAssessment;
-  market_context: MarketContextAssessment;
-  exit_mechanism_summary: string;
-  thesis_assessment: ThesisAssessment;
-  thesis_reason: string;
-  root_cause: RootCauseCategory;
-  root_cause_reason: string;
-  takeaway: string;
+export interface ContributorAssessment {
+  category: ContributorCategory;
+  support_level: SupportLevel;
+  evidence_class: EvidenceClass;
+  confidence_band: ConfidenceBand;
+  supporting_evidence_ids: string[];
+  opposing_evidence_ids: string[];
+  claim_id: string;
+  limitations: string[];
+}
+
+export type ThesisVerdict =
+  | "CORRECT" | "PARTIALLY_CORRECT" | "EARLY" | "LATE" | "POORLY_TIMED"
+  | "INVALIDATED" | "UNSUPPORTED" | "NOT_ASSESSABLE";
+
+export interface EvidenceAttribution {
+  evidence_items: EvidenceItem[];
+  claims: PostmortemClaim[];
+  signal_scorecard: SignalEvaluation[];
+  contributor_assessments: ContributorAssessment[];
+  // Null whenever no single category clears the "strongly supported, no
+  // competing category" bar — an expected, honest result. Always check
+  // primary_contributor_claim_id for the claim explaining why, even when
+  // primary_contributor itself is null.
+  primary_contributor: ContributorCategory | null;
+  primary_contributor_claim_id: string | null;
+  thesis_verdict: ThesisVerdict;
+  thesis_verdict_claim_id: string;
+  rule_registry_version: string;
   calculation_version: string;
   warnings: string[];
 }
@@ -879,7 +937,7 @@ export interface DailyTradePostmortem {
   symbol: string;
   market: Market;
   postmortem: PostmortemResponse;
-  narrative: TradePostmortemNarrative;
+  attribution: EvidenceAttribution;
 }
 
 export interface DailyPostmortemSummary {
@@ -895,7 +953,12 @@ export interface DailyPostmortemSummary {
   // excluded from this sum).
   total_realized_pnl_abs: number | null;
   pnl_excluded_trade_count: number;
-  root_cause_breakdown: Record<string, number>;
+  // Only STRONGLY_SUPPORTED/SUPPORTED contributor occurrences — labeled
+  // "most frequently supported," never "root cause" (Sprint 1, Stage 13).
+  recurring_supported_contributors: Record<string, number>;
+  recurring_conflicting_contributors: Record<string, number>;
+  recurring_not_assessable_count: Record<string, number>;
+  trades_with_no_supported_contributor: number;
 }
 
 export interface DailyPostmortemReport {

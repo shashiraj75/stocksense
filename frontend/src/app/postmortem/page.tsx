@@ -3,9 +3,12 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import clsx from "clsx";
 import {
-  ChevronDown, ChevronUp, TrendingUp, TrendingDown, Minus, HelpCircle,
+  ChevronDown, ChevronUp, TrendingUp, TrendingDown, Minus, HelpCircle, Info,
 } from "lucide-react";
-import { fetchDailyPostmortem, type DailyTradePostmortem, type SignalFactorAssessment, type Market } from "@/utils/api";
+import {
+  fetchDailyPostmortem, type DailyTradePostmortem, type PostmortemClaim,
+  type EvidenceItem, type Market,
+} from "@/utils/api";
 import { useAuth } from "@/lib/AuthContext";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
 import { InsufficientEvidenceMark } from "@/components/InsufficientEvidenceMark";
@@ -31,6 +34,27 @@ const OUTCOME_STYLE: Record<string, string> = {
   INDETERMINATE: "text-gray-500",
 };
 
+// Trust-model color coding — a report section must visibly distinguish
+// verified fact / direct observation / supported interpretation /
+// conflicting evidence / insufficient evidence (Sprint 1, Stage 12).
+// Deliberately NOT a confidence percentage anywhere — see ConfidenceBand's
+// own comment in utils/api.ts.
+const EVIDENCE_CLASS_STYLE: Record<string, string> = {
+  MECHANICALLY_VERIFIED: "text-bull",
+  DIRECTLY_OBSERVED: "text-gray-200",
+  EVIDENCE_SUPPORTED: "text-brand-500",
+  CONFLICTING_EVIDENCE: "text-neutral",
+  INSUFFICIENT_EVIDENCE: "text-gray-500",
+};
+
+const EVIDENCE_CLASS_LABEL: Record<string, string> = {
+  MECHANICALLY_VERIFIED: "Verified fact",
+  DIRECTLY_OBSERVED: "Direct observation",
+  EVIDENCE_SUPPORTED: "Supported interpretation",
+  CONFLICTING_EVIDENCE: "Conflicting evidence",
+  INSUFFICIENT_EVIDENCE: "Insufficient evidence",
+};
+
 function OutcomeIcon({ outcome }: { outcome: string }) {
   if (outcome === "WIN") return <TrendingUp size={14} className="text-bull" />;
   if (outcome === "LOSS") return <TrendingDown size={14} className="text-bear" />;
@@ -38,21 +62,76 @@ function OutcomeIcon({ outcome }: { outcome: string }) {
   return <HelpCircle size={14} className="text-gray-500" />;
 }
 
-function SignalRow({ assessment }: { assessment: SignalFactorAssessment }) {
-  const label = assessment.factor.replace(/_/g, " ");
-  if (assessment.agreement === "INSUFFICIENT_EVIDENCE") {
-    return (
-      <div className="flex items-center gap-1.5 text-xs text-gray-500">
-        <span className="capitalize">{label}</span>
-        <InsufficientEvidenceMark reason={assessment.reason} />
-      </div>
-    );
-  }
-  const agreed = assessment.agreement === "AGREED";
+// The "Why this conclusion?" expandable area (Stage 12): rule ID/version,
+// supporting/opposing evidence, missing evidence, limitations, confidence
+// band — everything a caller would need to independently check the claim.
+function WhyThisConclusion({ claim, evidenceById }: { claim: PostmortemClaim; evidenceById: Map<string, EvidenceItem> }) {
+  const [open, setOpen] = useState(false);
   return (
-    <div className="flex items-center gap-1.5 text-xs" title={assessment.reason}>
-      <span className="capitalize text-gray-300">{label}</span>
-      <span className={agreed ? "text-bull" : "text-bear"}>{agreed ? "Agreed" : "Contradicted"}</span>
+    <div className="mt-1">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-1 text-[11px] text-gray-500 hover:text-gray-300"
+      >
+        <Info size={11} aria-hidden="true" />
+        Why this conclusion?
+      </button>
+      {open && (
+        <div className="mt-1.5 rounded-md border border-dark-border bg-black/20 p-2.5 text-[11px] space-y-1.5">
+          <div className="text-gray-500">
+            Rule <span className="text-gray-300">{claim.rule_id}</span> v{claim.rule_version} · confidence{" "}
+            <span className="text-gray-300">{claim.confidence_band.replace(/_/g, " ")}</span>
+          </div>
+          {claim.supporting_evidence_ids.length > 0 && (
+            <div>
+              <span className="text-gray-500">Supporting: </span>
+              {claim.supporting_evidence_ids.map((id) => {
+                const ev = evidenceById.get(id);
+                return <span key={id} className="text-gray-300 mr-2">{ev ? `${ev.name}=${String(ev.value)}` : id}</span>;
+              })}
+            </div>
+          )}
+          {claim.opposing_evidence_ids.length > 0 && (
+            <div>
+              <span className="text-gray-500">Opposing: </span>
+              {claim.opposing_evidence_ids.map((id) => {
+                const ev = evidenceById.get(id);
+                return <span key={id} className="text-bear mr-2">{ev ? `${ev.name}=${String(ev.value)}` : id}</span>;
+              })}
+            </div>
+          )}
+          {claim.missing_evidence.length > 0 && (
+            <div>
+              <span className="text-gray-500">Missing: </span>
+              <span className="text-gray-400">{claim.missing_evidence.join("; ")}</span>
+            </div>
+          )}
+          {claim.limitations.length > 0 && (
+            <div>
+              <span className="text-gray-500">Limitations: </span>
+              <span className="text-gray-400">{claim.limitations.join("; ")}</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ClaimRow({ claim, evidenceById }: { claim: PostmortemClaim; evidenceById: Map<string, EvidenceItem> }) {
+  return (
+    <div className="py-1.5 border-b border-dark-border/50 last:border-0">
+      <div className="flex items-start gap-1.5">
+        <span className={clsx("text-[10px] font-semibold uppercase shrink-0 mt-0.5", EVIDENCE_CLASS_STYLE[claim.evidence_class])}>
+          {EVIDENCE_CLASS_LABEL[claim.evidence_class]}
+        </span>
+        {claim.evidence_class === "INSUFFICIENT_EVIDENCE" && (
+          <InsufficientEvidenceMark reason={claim.missing_evidence.join("; ") || claim.claim_text} />
+        )}
+      </div>
+      <div className="text-xs text-gray-300 mt-0.5">{claim.claim_text}</div>
+      <WhyThisConclusion claim={claim} evidenceById={evidenceById} />
     </div>
   );
 }
@@ -60,8 +139,15 @@ function SignalRow({ assessment }: { assessment: SignalFactorAssessment }) {
 function TradeCard({ trade }: { trade: DailyTradePostmortem }) {
   const [expanded, setExpanded] = useState(false);
   const pm = trade.postmortem;
-  const narrative = trade.narrative;
+  const attribution = trade.attribution;
   const pnl = pm.realized_pnl_abs;
+  const evidenceById = new Map(attribution.evidence_items.map((e) => [e.evidence_id, e]));
+
+  const primaryClaim = attribution.claims.find((c) => c.claim_id === attribution.primary_contributor_claim_id);
+  const thesisClaim = attribution.claims.find((c) => c.claim_id === attribution.thesis_verdict_claim_id);
+  const supportedContributors = attribution.contributor_assessments.filter(
+    (c) => c.support_level === "STRONGLY_SUPPORTED" || c.support_level === "SUPPORTED"
+  );
 
   return (
     <div className="rounded-lg border border-dark-border bg-dark-card overflow-hidden">
@@ -113,55 +199,68 @@ function TradeCard({ trade }: { trade: DailyTradePostmortem }) {
             </div>
           </div>
 
-          {/* Q4: entry conditions */}
+          {/* Signal scorecard — never derives a status from the trade's
+              own P&L; see evidence_attribution.py's module docstring. */}
           <div>
-            <div className="text-xs font-semibold text-gray-400 mb-1">Entry conditions</div>
-            {narrative.entry_conditions.length > 0 ? (
-              <ul className="text-xs text-gray-300 space-y-0.5 list-disc list-inside">
-                {narrative.entry_conditions.map((fact, i) => <li key={i}>{fact}</li>)}
-              </ul>
-            ) : (
-              <div className="flex items-center gap-1.5 text-xs text-gray-500">
-                <span>No entry evidence recorded</span>
-                {narrative.entry_conditions_reason && <InsufficientEvidenceMark reason={narrative.entry_conditions_reason} />}
-              </div>
-            )}
-          </div>
-
-          {/* Q5/6/7: signal effectiveness + price-move cause */}
-          <div>
-            <div className="text-xs font-semibold text-gray-400 mb-1">Signal effectiveness</div>
-            <div className="flex flex-wrap gap-x-4 gap-y-1">
-              {narrative.signal_factors.map((s) => <SignalRow key={s.factor} assessment={s} />)}
-            </div>
-          </div>
-
-          {/* Q8: market context */}
-          <div>
-            <div className="text-xs font-semibold text-gray-400 mb-1">Market &amp; timing context</div>
-            <div className="flex flex-wrap gap-x-4 gap-y-1">
-              {Object.entries(narrative.market_context).map(([key, assessment]) => (
-                <SignalRow key={key} assessment={assessment as SignalFactorAssessment} />
+            <div className="text-xs font-semibold text-gray-400 mb-1">Signal scorecard</div>
+            <div className="space-y-1">
+              {attribution.signal_scorecard.map((s) => (
+                <div key={s.signal_id} className="flex items-center gap-1.5 text-xs">
+                  <span className="capitalize text-gray-300">{s.signal_name}</span>
+                  <span className="text-gray-500">{s.status.replace(/_/g, " ").toLowerCase()}</span>
+                  {s.status === "INSUFFICIENT_EVIDENCE" && (
+                    <InsufficientEvidenceMark reason={s.limitations.join("; ")} />
+                  )}
+                </div>
               ))}
             </div>
           </div>
 
-          {/* Q10/11/12: thesis, root cause, takeaway */}
-          <div className="space-y-1.5">
-            <div className="text-xs">
-              <span className="text-gray-400">Thesis: </span>
-              <span className="font-medium">{narrative.thesis_assessment.replace(/_/g, " ")}</span>
-              <span className="text-gray-500"> — {narrative.thesis_reason}</span>
-            </div>
-            <div className="text-xs">
-              <span className="text-gray-400">Root cause: </span>
-              <span className="font-medium">{narrative.root_cause.replace(/_/g, " ")}</span>
-              <span className="text-gray-500"> — {narrative.root_cause_reason}</span>
-            </div>
-            <div className="text-xs italic text-gray-300 border-l-2 border-brand-500/50 pl-2">
-              {narrative.takeaway}
-            </div>
+          {/* Thesis verdict */}
+          <div>
+            <div className="text-xs font-semibold text-gray-400 mb-1">Thesis verdict</div>
+            <div className="text-xs text-gray-300 mb-1">{attribution.thesis_verdict.replace(/_/g, " ")}</div>
+            {thesisClaim && <ClaimRow claim={thesisClaim} evidenceById={evidenceById} />}
           </div>
+
+          {/* Contributor assessments — zero, one, or many; never forced */}
+          <div>
+            <div className="text-xs font-semibold text-gray-400 mb-1">Contributor assessments</div>
+            {supportedContributors.length === 0 ? (
+              <div className="text-xs text-gray-500">
+                No contributor category is supported by the available evidence for this trade.
+              </div>
+            ) : (
+              <div className="space-y-1">
+                {supportedContributors.map((c) => (
+                  <div key={c.category} className="text-xs">
+                    <span className="text-gray-300 capitalize">{c.category.replace(/_/g, " ").toLowerCase()}</span>
+                    <span className="text-gray-500"> — {c.support_level.replace(/_/g, " ").toLowerCase()}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Primary contributor — nullable; the fallback sentence is
+              shown, never a guessed single cause (Stage 9). */}
+          <div>
+            <div className="text-xs font-semibold text-gray-400 mb-1">Primary contributor</div>
+            {attribution.primary_contributor ? (
+              <div className="text-xs text-gray-300 capitalize">{attribution.primary_contributor.replace(/_/g, " ").toLowerCase()}</div>
+            ) : (
+              primaryClaim && <ClaimRow claim={primaryClaim} evidenceById={evidenceById} />
+            )}
+          </div>
+
+          {/* Every remaining claim (entry-fact, contradiction, market-context
+              placeholders, etc.) — full transparency, not a curated subset. */}
+          <details className="text-xs">
+            <summary className="text-gray-400 cursor-pointer">All claims ({attribution.claims.length})</summary>
+            <div className="mt-1 max-h-96 overflow-y-auto">
+              {attribution.claims.map((c) => <ClaimRow key={c.claim_id} claim={c} evidenceById={evidenceById} />)}
+            </div>
+          </details>
         </div>
       )}
     </div>
@@ -189,8 +288,9 @@ export default function PostmortemPage() {
       <div>
         <h1 className="text-xl font-bold">Daily Trade Postmortem Report</h1>
         <p className="text-sm text-gray-400 mt-1">
-          Deterministic, evidence-based analysis of every paper trade closed on the selected day. Where evidence
-          doesn&apos;t support a claim, this report says so explicitly rather than guessing.
+          Evidence-based analysis of every paper trade closed on the selected day. Every conclusion cites the
+          evidence behind it; where evidence doesn&apos;t support a claim, this report says so explicitly rather
+          than guessing.
         </p>
       </div>
 
@@ -263,6 +363,15 @@ export default function PostmortemPage() {
               <div className="font-semibold text-sm">{data.summary.indeterminate_count}</div>
             </div>
           </div>
+
+          {Object.keys(data.summary.recurring_supported_contributors).length > 0 && (
+            <div className="text-xs text-gray-400">
+              Most frequently supported contributor(s):{" "}
+              {Object.entries(data.summary.recurring_supported_contributors)
+                .map(([k, v]) => `${k.replace(/_/g, " ").toLowerCase()} (${v})`)
+                .join(", ")}
+            </div>
+          )}
 
           {data.trades.length === 0 ? (
             <div className="text-sm text-gray-500 py-10 text-center">No closed trades on this day.</div>
