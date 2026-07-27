@@ -37,6 +37,7 @@ Per this sprint's explicit scope:
 import logging
 import threading
 import time
+from datetime import date
 from typing import Optional
 
 import requests
@@ -90,19 +91,30 @@ _ticker_map_cache: tuple[float, dict[str, int]] | None = None
 _FACTS_TTL = 12 * 3600
 _facts_lock = threading.Lock()
 _facts_cache: dict[int, tuple[float, Optional[dict]]] = {}
-# Product Integrity #020 — this cache was unbounded (no cap, no eviction)
-# while every other cross-run cache in the prediction pipeline is capped
-# (prediction_engine.py's _CACHE_MAX = 300, "to prevent OOM on free-tier
-# 512MB Render" per its own comment). A single companyfacts payload can
-# span up to 17 years of full XBRL tag history per issuer — with the US
-# Daily Picks universe raised to 400 symbols (Sprint #014), this cache
-# could hold up to 400 uncapped payloads simultaneously by the end of one
-# run. Confirmed via direct production DB read: a US Daily Picks job
-# stalled for ~5 hours after a 2026-07-15 Railway OOM kill (and again
-# 2026-07-16), on the same day/pattern this cache would be filling up
-# fastest — matching the same 300-entry cap already proven safe elsewhere
-# in this exact pipeline, not a new/untested number.
-_FACTS_CACHE_MAX = 300
+# Product Integrity #020 (2026-07-1x) capped this cache at 300 entries —
+# the same number as prediction_engine.py's _pred_cache — reasoning that
+# "the same 300-entry cap [is] already proven safe elsewhere in this exact
+# pipeline." That reasoning was the actual mistake, found and corrected
+# during the 2026-07-22 US Daily Picks generation-reliability incident:
+# _pred_cache's entries are the SLIM, already-scored ~12 KB result dicts
+# _predict_stock returns — 300 of those is a few MB, genuinely safe. This
+# cache's entries are the RAW SEC XBRL companyfacts payload per issuer —
+# measured directly against live SEC EDGAR data at 4-8 MB of JSON text per
+# large-cap company (up to 17 years of full tag history), which becomes
+# roughly 15-25 MB once parsed into nested Python dict/list objects
+# (confirmed via tracemalloc: fetch_company_facts's json.loads() call site
+# alone accounted for 174 MiB / 2.8M retained objects across just 10
+# candidates in a reproduction run). 300 entries of THIS cache's actual
+# size is 4.5-7.5 GB — not "a few MB" — and is the dominant, previously
+# unidentified root cause of the memory aborts recurring since 2026-07-15
+# (the borrowed 300 number was never validated against this cache's own
+# payload size, only assumed equivalent because it fixed a *different*
+# cache in the same file's neighborhood). 25 keeps this cache's worst-case
+# footprint under ~625 MB even at the largest measured per-entry size,
+# while still giving same-run reuse (the same CIK looked up again within
+# the 12h TTL, e.g. by an overlapping premarket-finalizer run) a real
+# chance to hit.
+_FACTS_CACHE_MAX = 25
 
 
 def _facts_cache_set(cik: int, value: tuple[float, Optional[dict]]) -> None:
@@ -224,15 +236,64 @@ def _fetch_ticker_map() -> dict[str, int]:
     return mapping
 
 
+# DP-033 readiness audit (2026-07-22) — governed CIK-mapping override,
+# distinct from _FALLBACK_CIK_MAP above (which only activates when the
+# live ticker-map DOWNLOAD fails entirely). This table instead corrects a
+# confirmed WRONG entry the live map itself returns successfully.
+#
+# Confirmed defect: SEC's own bulk ticker map (_TICKER_MAP_URL) currently
+# resolves "XOM" to CIK 2115436 ("ExxonMobil Holdings Corp"), an
+# apparently-empty reorganization/holding entity with an empty `tickers`
+# array in its own SEC submissions record and no meaningful companyfacts
+# data. The real operating company with actual XBRL filing history is CIK
+# 34088 ("EXXON MOBIL CORP"), confirmed live (2026-07-22) via
+# https://data.sec.gov/submissions/CIK0000034088.json returning
+# `"name": "EXXON MOBIL CORP", "tickers": ["XOM"], "exchanges": ["NYSE"]`
+# — an authoritative SEC record naming XOM as its own ticker, not a guess.
+#
+# Governance for any future addition to this table:
+#   1. The override CIK must be independently confirmed via a direct,
+#      documented SEC submissions/companyfacts lookup (as above) — never
+#      added on suspicion alone.
+#   2. The entry must record WHY the live map is wrong (not just that it
+#      "seemed off").
+#   3. It must be covered by a test asserting the override wins over
+#      whatever the live map returns for that ticker.
+#   4. This is a narrow, reviewed correction list — NOT a general silent
+#      fallback mechanism. A ticker with no entry here that the live map
+#      also fails to resolve still correctly returns None (fail-closed),
+#      exactly as before this table existed.
+_CIK_OVERRIDES: dict[str, int] = {
+    # XOM -> 2115436 ("ExxonMobil Holdings Corp", empty tickers array, no
+    # usable XBRL history) is SEC's own live map's current (wrong) answer.
+    # 34088 ("EXXON MOBIL CORP") is the real operating company. See
+    # test_sec_edgar_adapter_cik_resolution.py for the regression test.
+    "XOM": 34088,
+}
+
+
 def resolve_cik(symbol: str) -> Optional[int]:
     """
     Ticker → CIK resolution (Task 2), using a 24-hour-cached copy of SEC's
     own bulk ticker map, with the evidence-based fallback map as a last
     resort. Returns None — never a guessed CIK — if the symbol isn't
     found anywhere, per the "do not fabricate values" rule.
+
+    Resolution order (DP-033 governed hierarchy): (1) this repository has
+    no separate stable instrument-master CIK mapping to consult first —
+    confirmed by search, not assumed; (2) SEC's own live/cached bulk
+    ticker map is the authoritative source; (3) `_CIK_OVERRIDES` — a
+    narrow, evidence-documented, test-covered correction list — takes
+    precedence over the live map's answer ONLY for the specific tickers
+    listed there, applied AFTER the live map lookup so a symbol not in
+    this table is completely unaffected; (4) unresolved -> `None`, logged,
+    never guessed.
     """
     global _ticker_map_cache
     sym = symbol.upper().strip()
+
+    if sym in _CIK_OVERRIDES:
+        return _CIK_OVERRIDES[sym]
 
     with _ticker_map_lock:
         cached = _ticker_map_cache
@@ -270,7 +331,27 @@ def fetch_company_facts(cik: int) -> Optional[dict]:
             if isinstance(payload, dict) and "facts" in payload and "us-gaap" in payload.get("facts", {}):
                 result = payload
             else:
-                log.error("[sec_edgar] companyfacts response for CIK %010d did not match expected shape", cik)
+                # DP-033 readiness audit (2026-07-22): distinguish a
+                # genuinely malformed/unexpected response from a
+                # structurally out-of-scope one — a foreign private issuer
+                # reporting under IFRS (taxonomy "ifrs-full", no "us-gaap"
+                # at all) is not a data-quality defect, it is this
+                # adapter's own documented, governed scope boundary
+                # (confirmed live for TSM/CIK 1046179 this session:
+                # facts.keys() == ['dei', 'ifrs-full', 'srt']). Logged
+                # distinctly so this is auditable/observable, not silently
+                # indistinguishable from a real provider-side break.
+                taxonomies = list(payload.get("facts", {}).keys()) if isinstance(payload, dict) else []
+                if "ifrs-full" in taxonomies and "us-gaap" not in taxonomies:
+                    log.info(
+                        "[sec_edgar] CIK %010d reports under IFRS (ifrs-full), no us-gaap taxonomy "
+                        "— out of scope for this adapter's US-GAAP-only field extraction "
+                        "(foreign private issuer, governed exclusion, not a provider error)",
+                        cik,
+                    )
+                else:
+                    log.error("[sec_edgar] companyfacts response for CIK %010d did not match expected shape "
+                              "(taxonomies present: %s)", cik, taxonomies)
         except ValueError as e:
             log.error("[sec_edgar] companyfacts response for CIK %010d was not valid JSON: %s", cik, e)
     else:
@@ -573,6 +654,151 @@ def build_info_projection(fields: dict[str, dict]) -> dict:
         if record and record.get("value") is not None:
             info[info_key] = record["value"]
     return info
+
+
+# ── Point-in-time (as-of) filtering — DP-026 remediation ────────────────────
+#
+# Everything above this point answers "what does SEC EDGAR say NOW" — the
+# correct question for live Daily Picks scoring (us_financial_strength_
+# adapter.py's existing call site) and unrelated to DP-026's finding.
+#
+# DP-026's finding was specifically about services/validation_engine.py's
+# walk-forward BACKTEST reusing one present-day fundamentals snapshot across
+# every historical signal date. `fetch_company_facts()` already returns the
+# company's ENTIRE XBRL history in one call (each fact carries its own real
+# `filed` date, confirmed live for AAPL/JPM during the original SSDS-006
+# sprint) — the raw data needed for a genuine as-of answer was already being
+# fetched, just never filtered by date before being handed to
+# `normalize_fields()`, which always resolves to the single most-recent
+# value regardless of caller intent.
+#
+# `filter_facts_as_of()` below prunes a raw companyfacts payload down to
+# only the fact entries whose `filed` date is on or before a cutoff, in the
+# same shape `normalize_fields()` already expects — so `normalize_fields()`
+# itself needed NO change at all: given a pruned payload, its existing
+# recency-based `_best_entry()`/`_extract_direct()` logic already returns
+# the correct "most recent value AS OF the cutoff" answer for free.
+#
+# A `filed` date is used as the availability-timestamp proxy — SEC's own
+# submissions API additionally exposes an `acceptanceDateTime` (to-the-
+# second) per accession number, confirmed live during this session's
+# investigation; `filed` (date-only) is used here as the conservative,
+# already-present-in-companyfacts choice (no second API call per lookup),
+# and per the conservative-when-precision-is-incomplete rule, a fact filed
+# ON the same calendar date as the cutoff is treated as available only if
+# the cutoff time itself is end-of-day UTC-safe — callers pass a `date`
+# (not a `datetime`), and comparison is `filed <= as_of` (date <= date),
+# which is deliberately conservative: a filing accepted at 23:59 on the
+# cutoff date is included exactly as a filing accepted at 00:01 would be,
+# since date-only precision cannot distinguish intraday timing — the same
+# "conservative when timestamp precision is incomplete" rule this repo's
+# own temporal-integrity requirements call for elsewhere.
+
+
+def filter_facts_as_of(facts: dict, as_of: date) -> dict:
+    """
+    Prunes a raw companyfacts payload to only fact entries eligible as of
+    `as_of` (a `datetime.date`). Instant and duration facts alike are
+    filtered purely on their own `filed` date — never on `end`/`start`
+    (fiscal period dates are never sufficient proof of public availability,
+    per this repository's own temporal-integrity rule). A concept with zero
+    eligible entries as of the cutoff is dropped entirely (not replaced
+    with a stale or current value) — this is exactly how "no eligible
+    filing as of the signal date" must surface as UNAVAILABLE once the
+    pruned payload reaches `normalize_fields()`.
+
+    Eligibility is `next_us_trading_session(filed_date) <= as_of`, NOT a
+    bare `filed_date <= as_of` — SEC EDGAR's `filed` value is date-only
+    (confirmed live, no intraday timestamp in companyfacts), so a fact
+    filed on day D is never treated as available before D's own market
+    open; it becomes eligible starting the next trading session after D.
+    Shared with services.sec_pit_store's persisted-store lookup — the
+    identical rule, not two independently-maintained ones.
+
+    Never mutates `facts` — returns a new dict; `fetch_company_facts()`'s
+    cached payload must remain shared and untouched across every caller
+    and every as-of cutoff.
+    """
+    from services.market_hours import next_us_trading_session
+
+    us_gaap_in = facts.get("facts", {}).get("us-gaap", {})
+    us_gaap_out: dict = {}
+    for concept, concept_data in us_gaap_in.items():
+        usd_in = concept_data.get("units", {}).get("USD", [])
+        usd_out = []
+        for entry in usd_in:
+            filed = entry.get("filed")
+            filed_date = _parse_date(filed) if filed else None
+            if filed_date is not None and next_us_trading_session(filed_date) <= as_of:
+                usd_out.append(entry)
+        if usd_out:
+            us_gaap_out[concept] = {"units": {"USD": usd_out}}
+    return {
+        "cik": facts.get("cik"),
+        "entityName": facts.get("entityName"),
+        "facts": {"us-gaap": us_gaap_out},
+    }
+
+
+def _parse_date(value: str) -> Optional[date]:
+    try:
+        return date.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def get_fundamentals_as_of(symbol: str, as_of: date) -> dict:
+    """
+    The point-in-time counterpart to `fetch_us_fundamentals_sec_edgar()`,
+    for historical validation/backtesting ONLY — never called by any live
+    Daily Picks path. Resolves CIK and fetches the company's full,
+    already-12h-cached XBRL history exactly as the live path does (one
+    fetch covers every historical as-of cutoff a backtest will ever ask
+    for — no per-signal-date network call, so a walk-forward backtest
+    iterating hundreds of signal dates for one symbol makes exactly one
+    companyfacts request for that symbol, not hundreds), then prunes it to
+    `as_of` before normalizing.
+
+    Returns the same shape as `fetch_us_fundamentals_sec_edgar()` plus
+    `"as_of"` and `"point_in_time": True`, so callers can distinguish a
+    genuine as-of result from a live/current one. `available: False` (never
+    a fabricated/neutral value) when CIK resolution fails, the companyfacts
+    fetch fails, or every concept is pruned away by the as-of cutoff.
+    """
+    sym = symbol.upper().strip()
+    cik = resolve_cik(sym)
+    if cik is None:
+        return {
+            "available": False, "symbol": sym, "source": PROVIDER_NAME,
+            "adapter_version": ADAPTER_VERSION, "as_of": as_of.isoformat(),
+            "point_in_time": True, "reason": "CIK not found",
+        }
+
+    facts = fetch_company_facts(cik)
+    if facts is None:
+        return {
+            "available": False, "symbol": sym, "source": PROVIDER_NAME,
+            "adapter_version": ADAPTER_VERSION, "cik": cik,
+            "as_of": as_of.isoformat(), "point_in_time": True,
+            "reason": "companyfacts fetch failed or returned an unexpected shape",
+        }
+
+    pruned = filter_facts_as_of(facts, as_of)
+    fields = normalize_fields(pruned)
+    has_any = any(v.get("value") is not None for v in fields.values())
+    return {
+        "available": has_any,
+        "symbol": sym,
+        "source": PROVIDER_NAME,
+        "adapter_version": ADAPTER_VERSION,
+        "cik": cik,
+        "company_name": facts.get("entityName"),
+        "as_of": as_of.isoformat(),
+        "point_in_time": True,
+        "fields": fields,
+        "info": build_info_projection(fields),
+        "reason": None if has_any else "no eligible filing as of the signal date",
+    }
 
 
 def fetch_us_fundamentals_sec_edgar(symbol: str) -> dict:

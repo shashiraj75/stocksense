@@ -44,20 +44,37 @@ async def trigger_validation(
     universe: nifty100 (default) | midcap | us
     Returns immediately — poll /status for progress, /results for output.
     """
-    from services.validation_engine import run_validation, get_run_status
+    from services.validation_engine import run_validation, get_run_status, claim_validation_job
 
-    status = get_run_status()
-    if status.get("running"):
-        return _json_response({"status": "already_running", "progress": status.get("progress"), "total": status.get("total")})
+    # Claim the run slot synchronously so the response can carry the real,
+    # immutable job identity (market/universe/horizon) — the /status payload
+    # is bound to this identity for the whole run. Never infer market or
+    # universe from frontend tab state.
+    job = claim_validation_job(horizon, universe, trigger_type="api")
+    if job is None:
+        status = get_run_status()
+        return _json_response({
+            "status": "already_running",
+            "progress": status.get("progress"),
+            "total": status.get("total"),
+            "job": status.get("job"),
+        })
+
+    universe_labels = {"nifty100": "Nifty 100", "midcap": "NSE Midcap", "us": "US S&P 500 basket"}
 
     def _run():
-        run_validation(horizon=horizon, universe=universe)
+        run_validation(horizon=horizon, universe=universe, _claimed_job=job)
 
     background_tasks.add_task(_run)
     return _json_response({
         "status": "started",
         "horizon": horizon,
-        "message": f"Walk-forward validation started across all Nifty 100 stocks ({horizon} horizon). Poll /api/validation/status for progress.",
+        "universe": universe,
+        "job": job,
+        "message": (
+            f"Walk-forward validation started across all {universe_labels.get(universe, universe)} "
+            f"stocks ({horizon} horizon). Poll /api/validation/status for progress."
+        ),
     })
 
 

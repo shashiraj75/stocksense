@@ -1048,13 +1048,6 @@ export default function PaperTradingPage() {
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {/* IN and US are separate cash ledgers. Market is now chosen once,
-              globally, via the header's GlobalMarketDropdown — this
-              read-only label just shows which ledger is currently in view
-              rather than offering a second, page-level way to change it. */}
-          <span className="shrink-0 whitespace-nowrap text-xs px-3 py-1.5 rounded-lg bg-dark-card border border-dark-border text-gray-400">
-            Market: {marketCfg.label}
-          </span>
           {notifPermission !== "unsupported" && (() => {
             // The persisted backend preference is the single source of
             // truth for "on" — browser permission is layered on top only to

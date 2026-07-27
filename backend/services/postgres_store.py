@@ -205,6 +205,21 @@ CREATE TABLE IF NOT EXISTS daily_picks_cache (
 ALTER TABLE daily_picks_cache ADD COLUMN IF NOT EXISTS market TEXT NOT NULL DEFAULT 'IN';
 CREATE INDEX IF NOT EXISTS idx_daily_picks_cache_date ON daily_picks_cache(generated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_daily_picks_cache_market ON daily_picks_cache(market, generated_at DESC);
+-- The daily_picks_cache.status column and its migration are deliberately
+-- NOT here — see _migrate_daily_picks_cache_status_column() below and
+-- init_db()'s own comment for why: this whole SCHEMA_SQL string is
+-- executed as one autocommit multi-statement batch, and a genuinely
+-- pre-existing, unrelated statement earlier in this same string
+-- (score_snapshots' ADD CONSTRAINT, which is not re-run-safe — it
+-- succeeds once, then fails "already exists" on every subsequent
+-- startup) aborts execution of everything after it on most real
+-- deploys. Discovered 2026-07-22 when this incident's own status-column
+-- addition, placed inline here originally, silently never ran in
+-- production, which in turn made every save_picks_to_db() call fail
+-- outright (INSERT referencing a column that doesn't exist) — a strictly
+-- worse regression than the one this incident set out to fix. Running it
+-- as its own separately-invoked, independently-guarded function makes it
+-- unconditional on any earlier statement in this string succeeding.
 
 CREATE TABLE IF NOT EXISTS factor_ic_history (
     id            BIGSERIAL PRIMARY KEY,
@@ -843,9 +858,29 @@ def load_market_cache(key: str) -> dict | list | None:
 
 def init_db():
     with _get_pool().connection() as conn:
-        conn.execute(SCHEMA_SQL)
+        try:
+            conn.execute(SCHEMA_SQL)
+        except Exception as e:
+            # US Daily Picks generation-reliability incident (2026-07-22):
+            # SCHEMA_SQL is one big autocommit multi-statement batch — a
+            # single statement failing partway through (e.g. a pre-existing,
+            # unrelated non-idempotent ADD CONSTRAINT that succeeds once
+            # then fails "already exists" on every later startup) used to
+            # silently abort everything after it in the same batch,
+            # INCLUDING every guarded migration below this call, on every
+            # single deploy where it happens. Discovered when this exact
+            # failure mode prevented daily_picks_cache's new `status`
+            # column from ever being created, which made save_picks_to_db()
+            # fail outright for every future call. Logged, never raised —
+            # api/main.py's own startup wrapper already tolerates this
+            # (matches its prior behavior), but now the guarded per-table
+            # migrations below are no longer contingent on the earlier
+            # batch's success or failure.
+            log = __import__("logging").getLogger(__name__)
+            log.warning(f"[postgres_store] SCHEMA_SQL execution failed partway through: {e}")
         _migrate_outcomes_market_constraint(conn)
         _migrate_score_snapshots_market_constraint(conn)
+        _migrate_daily_picks_cache_status_column(conn)
 
 
 def _migrate_score_snapshots_market_constraint(conn) -> None:
@@ -861,6 +896,14 @@ def _migrate_score_snapshots_market_constraint(conn) -> None:
     including, once discovered, the unrelated Trade Postmortem Engine
     schema. Moved here and guarded exactly like the outcomes migration so
     init_db() is genuinely safe to call on every restart.
+
+    This is the root-cause fix for the same defect that
+    _migrate_daily_picks_cache_status_column below was, independently,
+    already forced to work around (2026-07-22) for daily_picks_cache
+    specifically — that incident fix left the score_snapshots statement
+    itself untouched, deliberately out of its scope. Both guarded
+    migrations are unconditional on each other and on SCHEMA_SQL's own
+    try/except above.
     """
     exists = conn.execute("""
         SELECT 1 FROM information_schema.table_constraints
@@ -876,6 +919,25 @@ def _migrate_score_snapshots_market_constraint(conn) -> None:
         "ALTER TABLE score_snapshots ADD CONSTRAINT score_snapshots_symbol_market_horizon_snapshot_date_key "
         "UNIQUE (symbol, market, horizon, snapshot_date)"
     )
+
+
+def _migrate_daily_picks_cache_status_column(conn) -> None:
+    """
+    US Daily Picks generation-reliability incident (2026-07-22) — see
+    init_db()'s comment for why this must be its own independently-run,
+    independently-guarded migration rather than a few more lines in
+    SCHEMA_SQL. Adds daily_picks_cache.status ('success' | 'failed_attempt',
+    default 'success') and retroactively corrects any pre-existing row
+    whose payload carries the old failure-path's 'error' key to
+    'failed_attempt' — the actual fix that makes load_picks_from_db()'s
+    WHERE status='success' filter self-healing against data already
+    polluted by the incident, without a separate manual cleanup script.
+    Every statement here is independently idempotent (IF NOT EXISTS /
+    re-runnable UPDATE), so this is safe to call on every startup.
+    """
+    conn.execute("ALTER TABLE daily_picks_cache ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'success'")
+    conn.execute("UPDATE daily_picks_cache SET status = 'failed_attempt' WHERE status = 'success' AND payload ? 'error'")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_picks_cache_market_status ON daily_picks_cache(market, status, generated_at DESC)")
 
 
 def _migrate_outcomes_market_constraint(conn) -> None:
@@ -1677,9 +1739,20 @@ def get_alpha_observations_coverage() -> list[dict]:
 
 # ── New: Daily picks performance (section 5) ────────────────────────────────
 
-def save_picks_to_db(payload: dict, market: str = "IN") -> bool:
+def save_picks_to_db(payload: dict, market: str = "IN", status: str = "success") -> bool:
     """
     Persist the full picks payload to Postgres so it survives Railway redeploys.
+
+    `status` MUST be "success" for any real Daily Picks outcome — including a
+    genuine, legitimate zero-BUY-qualified day (see get_track_record_summary
+    docs: an empty `picks` payload is a valid successful outcome, distinct
+    from a failed/incomplete run). US Daily Picks generation-reliability
+    incident (2026-07-22): this function must NEVER be called with a failed
+    or partial generation attempt's payload — a failed attempt is recorded
+    exclusively via mark_daily_picks_job_failed(daily_picks_jobs), which
+    never touches this "latest serving payload" table. Callers must not
+    invent a third status value without also updating load_picks_from_db's
+    filter below.
 
     Returns True on success, False on any failure (exception is logged, not raised).
     Callers must check the return value to determine whether durable persistence
@@ -1688,8 +1761,8 @@ def save_picks_to_db(payload: dict, market: str = "IN") -> bool:
     try:
         with _get_pool().connection() as conn:
             conn.execute(
-                "INSERT INTO daily_picks_cache (generated_at, payload, market) VALUES (%s, %s, %s)",
-                (datetime.now(timezone.utc), json.dumps(payload), market),
+                "INSERT INTO daily_picks_cache (generated_at, payload, market, status) VALUES (%s, %s, %s, %s)",
+                (datetime.now(timezone.utc), json.dumps(payload), market, status),
             )
             # Keep only last 10 rows per market to avoid bloat
             conn.execute("""
@@ -1709,11 +1782,20 @@ def save_picks_to_db(payload: dict, market: str = "IN") -> bool:
 
 
 def load_picks_from_db(market: str = "IN") -> dict | None:
-    """Load the most recently generated picks for a market from Postgres."""
+    """
+    Load the most recently generated SUCCESSFUL picks for a market from
+    Postgres. `status = 'success'` is the entire fix for the 2026-07-22 US
+    generation-reliability incident's "blank page" symptom: a row from a
+    failed/partial attempt (status='failed_attempt', either backfilled from
+    before the code fix, or — should some future code path ever regress —
+    freshly inserted) is never selected as "the latest picks", so the last
+    genuinely successful payload keeps being served, however old, instead of
+    an empty error stand-in. See save_picks_to_db's docstring.
+    """
     try:
         with _get_pool().connection() as conn:
             row = conn.execute(
-                "SELECT payload FROM daily_picks_cache WHERE market = %s "
+                "SELECT payload FROM daily_picks_cache WHERE market = %s AND status = 'success' "
                 "ORDER BY generated_at DESC LIMIT 1",
                 (market,),
             ).fetchone()
@@ -2012,6 +2094,29 @@ def get_active_daily_picks_job(market: str) -> dict | None:
         return None
 
 
+def count_daily_picks_job_attempts_since(market: str, since) -> int:
+    """
+    Count daily_picks_jobs rows for a market started at/after `since` (a
+    tz-aware datetime — callers pass today's market-local midnight in UTC).
+    US Daily Picks generation-reliability incident (2026-07-22): used by the
+    bounded governed-recovery watchdog to cap retries per session date —
+    "at most a governed number of times" — instead of retrying indefinitely.
+    Returns 0 (not an error) on any lookup failure so a transient DB issue
+    fails toward "allow one more attempt", not toward "silently stop
+    retrying forever" — the watchdog's own outer failure handling still
+    bounds worst case behavior.
+    """
+    try:
+        with _get_pool().connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM daily_picks_jobs WHERE market = %s AND started_at >= %s",
+                (market, since),
+            ).fetchone()
+        return int(row[0]) if row else 0
+    except Exception:
+        return 0
+
+
 _MULTIBAGGER_ORPHAN_TIMEOUT_HOURS = 7  # longer than the ~5-6h US refresh; see Product Integrity #009 §9
 
 # 2026-07-17 production incident: a US Daily Picks base-generation job died
@@ -2035,6 +2140,24 @@ _MULTIBAGGER_ORPHAN_TIMEOUT_HOURS = 7  # longer than the ~5-6h US refresh; see P
 # stuck indefinitely on the next crash.
 _DAILY_PICKS_ORPHAN_TIMEOUT_HOURS = 6
 
+# Periodic (not just startup-only) sweep threshold — added after the
+# 2026-07-21 US incidents: a deployment orphaned one run mid phase_1, and
+# its replacement was itself killed (OOM-consistent signature) ~30-45s
+# after entering the ranking phase. Both times the row sat 'running' far
+# short of 6h when the next process booted, so the existing startup-only
+# pass never touched it — the row would have waited up to 6h regardless of
+# how many more restarts happened in between. This threshold is for
+# api.main's periodic reconciliation loop, which runs the sweep every few
+# minutes instead of once at boot. It must stay far above one heartbeat
+# cadence (30s, written by services.daily_picks._heartbeat_loop) so a
+# genuinely healthy job — which keeps writing a heartbeat every 30s no
+# matter how long its overall run takes — is never touched; 10 minutes is a
+# ~20x margin over that cadence, and comfortably above the existing
+# 180s "unresponsive" presentation threshold in api/routers/picks.py's
+# _derive_job_health, so this never fires on transient slowness the UI
+# itself only flags as "slow".
+_DAILY_PICKS_PERIODIC_STALE_INTERVAL = "10 minutes"
+
 
 def mark_multibagger_job_running(job_id: str) -> None:
     with _get_pool().connection() as conn:
@@ -2057,23 +2180,38 @@ def try_claim_queued_multibagger_job(job_id: str) -> bool:
     currently runs as a single Railway instance, so this is a forward-
     looking safety property, not a currently-exercised multi-instance path
     — but it costs nothing and closes the gap if that ever changes.
+
+    LEASE-TX-B1 (2026-07-20): the pool this module uses is configured with
+    autocommit=True (see _get_pool()'s own comment), which means a bare
+    conn.execute() commits and releases any row lock the instant that
+    statement returns. The SELECT ... FOR UPDATE SKIP LOCKED below only
+    holds its lock for the lifetime of the transaction it runs in — under
+    autocommit=True with no explicit transaction, that transaction ended
+    (and the lock released) before the following UPDATE ever ran, so a
+    second concurrent claimant's own SELECT could observe the row as still
+    'queued' and lock it too. Wrapping both statements in one
+    `with conn.transaction():` block (psycopg3's documented way to get a
+    real BEGIN/COMMIT on an autocommit connection — same fix as
+    _reserve_job_with_lease() above) keeps the row lock held across both
+    statements, closing that window.
     """
     with _get_pool().connection() as conn:
-        row = conn.execute(
-            """SELECT job_id FROM multibagger_refresh_jobs
-               WHERE job_id = %s AND status = 'queued'
-               FOR UPDATE SKIP LOCKED""",
-            (job_id,),
-        ).fetchone()
-        if row is None:
-            return False
-        conn.execute(
-            """UPDATE multibagger_refresh_jobs
-               SET status = 'running', last_runner_heartbeat_at = now()
-               WHERE job_id = %s""",
-            (job_id,),
-        )
-        return True
+        with conn.transaction():
+            row = conn.execute(
+                """SELECT job_id FROM multibagger_refresh_jobs
+                   WHERE job_id = %s AND status = 'queued'
+                   FOR UPDATE SKIP LOCKED""",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            conn.execute(
+                """UPDATE multibagger_refresh_jobs
+                   SET status = 'running', last_runner_heartbeat_at = now()
+                   WHERE job_id = %s""",
+                (job_id,),
+            )
+            return True
 
 
 def get_staged_symbols(job_id: str) -> set:
@@ -2298,48 +2436,72 @@ def reconcile_stale_multibagger_jobs() -> int:
     Returns the number of rows reclassified. Swallows DB errors (best-effort;
     a failed reconciliation pass just tries again next time, same as Daily
     Picks' own restart-catchup pattern).
+
+    LEASE-TX-B1 (2026-07-20): under this module's autocommit=True pool, the
+    stale-job UPDATE above and the lease-release UPDATE below were each
+    committed the instant they ran, with no transaction spanning both — a
+    crash or process exit between the two could leave a job marked
+    'interrupted' with its lease still active. Both statements now run
+    inside one `with conn.transaction():` block (same fix as
+    _reserve_job_with_lease() and try_claim_queued_multibagger_job() above),
+    so they commit together or not at all.
     """
     try:
         with _get_pool().connection() as conn:
-            stale = conn.execute(
-                f"""UPDATE multibagger_refresh_jobs
-                    SET status = 'interrupted', completed_at = now(),
-                        last_error = 'reconciled: no heartbeat for over {_MULTIBAGGER_ORPHAN_TIMEOUT_HOURS}h'
-                    WHERE status IN ('queued', 'running')
-                      AND COALESCE(last_runner_heartbeat_at, started_at)
-                          < now() - interval '{_MULTIBAGGER_ORPHAN_TIMEOUT_HOURS} hours'
-                    RETURNING job_id"""
-            )
-            stale_job_ids = [r[0] for r in stale.fetchall()]
-            if stale_job_ids:
-                conn.execute(
-                    """UPDATE heavy_workload_leases
-                       SET released_at = now()
-                       WHERE released_at IS NULL AND owner_job_id = ANY(%s)""",
-                    (stale_job_ids,),
+            with conn.transaction():
+                stale = conn.execute(
+                    f"""UPDATE multibagger_refresh_jobs
+                        SET status = 'interrupted', completed_at = now(),
+                            last_error = 'reconciled: no heartbeat for over {_MULTIBAGGER_ORPHAN_TIMEOUT_HOURS}h'
+                        WHERE status IN ('queued', 'running')
+                          AND COALESCE(last_runner_heartbeat_at, started_at)
+                              < now() - interval '{_MULTIBAGGER_ORPHAN_TIMEOUT_HOURS} hours'
+                        RETURNING job_id"""
                 )
+                stale_job_ids = [r[0] for r in stale.fetchall()]
+                if stale_job_ids:
+                    conn.execute(
+                        """UPDATE heavy_workload_leases
+                           SET released_at = now()
+                           WHERE released_at IS NULL AND owner_job_id = ANY(%s)""",
+                        (stale_job_ids,),
+                    )
         return len(stale_job_ids)
     except Exception:
         log.error("[multibagger] stale-job reconciliation pass failed")
         return 0
 
 
-def reconcile_stale_daily_picks_jobs() -> int:
+def reconcile_stale_daily_picks_jobs(stale_interval: str | None = None) -> int:
     """
     Orphan/restart recovery for Daily Picks jobs, mirroring
     reconcile_stale_multibagger_jobs() above (2026-07-17, after a US base
     run died mid-run to an OOM-kill and sat stuck at 'running' for hours —
     daily_picks_jobs had no automatic recovery, only the documented
     manual-only path, see this table's own CREATE TABLE comment). A
-    queued/running row whose heartbeat has gone silent for longer than a
-    credible full run (see _DAILY_PICKS_ORPHAN_TIMEOUT_HOURS) is
-    reclassified 'interrupted' — never deleted, never touched while
-    genuinely active. 'interrupted' is already a fully anticipated terminal
-    state elsewhere in the codebase (services/premarket_finalizer.py's
+    queued/running row whose heartbeat has gone silent for longer than
+    `stale_interval` (a Postgres INTERVAL literal, e.g. "10 minutes"; see
+    _DAILY_PICKS_ORPHAN_TIMEOUT_HOURS when omitted) is reclassified
+    'interrupted' — never deleted, never touched while genuinely active.
+    'interrupted' is already a fully anticipated terminal state elsewhere in
+    the codebase (services/premarket_finalizer.py's
     _JOB_STATUS_TERMINAL_FAILURE), so this doesn't introduce a new status
     value or a new code path for consumers to handle — it only makes an
     already-supported status reachable automatically instead of requiring
     a human to write it by hand.
+
+    stale_interval: optional override of the default
+    "{_DAILY_PICKS_ORPHAN_TIMEOUT_HOURS} hours" threshold, as a Postgres
+    INTERVAL literal string. Always a hardcoded constant supplied by our own
+    call sites (api.main's startup hook passes nothing / the periodic sweep
+    passes _DAILY_PICKS_PERIODIC_STALE_INTERVAL) — never user input, so
+    direct string interpolation here carries no injection risk, consistent
+    with how the default hour-based interval was already embedded before
+    this parameter existed. Added 2026-07-21 so a short-interval periodic
+    sweep (api.main's reconciliation loop) can reuse this exact function and
+    its transactional lease-release semantics instead of duplicating them,
+    while the original startup-only 6h call keeps its exact prior behavior
+    unchanged when called with no argument.
 
     Clearing the row also releases the (market) WHERE status IN ('queued',
     'running') partial unique index slot the crashed job was holding,
@@ -2348,29 +2510,49 @@ def reconcile_stale_daily_picks_jobs() -> int:
     in the same statement set, exactly like Multibagger's version.
 
     Read-only GET endpoints must never call this — only an explicit
-    reconciliation path (e.g. startup) may, same constraint as Multibagger.
-    Returns the number of rows reclassified. Swallows DB errors (best-effort;
-    a failed reconciliation pass just tries again next restart).
+    reconciliation path (startup, or the periodic sweep) may, same
+    constraint as Multibagger. Returns the number of rows reclassified.
+    Swallows DB errors (best-effort; a failed pass just tries again next
+    time this runs).
+
+    LEASE-TX-B1 (2026-07-20): same autocommit=True atomicity gap and fix as
+    reconcile_stale_multibagger_jobs() above — both statements now run
+    inside one `with conn.transaction():` block so they commit together or
+    not at all.
     """
+    interval_literal = stale_interval or f"{_DAILY_PICKS_ORPHAN_TIMEOUT_HOURS} hours"
+    # Default (no override) keeps the exact pre-2026-07-21 last_error text
+    # ("...over 6h") byte-for-byte, since nothing about the startup-only 6h
+    # call site's behavior or output should change. Only the new periodic
+    # override gets a distinctly-worded reason, both so it's identifiable
+    # in logs/DB and so it doesn't need to match the hour-suffix format
+    # ("6h") that only ever made sense for a whole-number-of-hours value.
+    reason = (
+        f"reconciled: no heartbeat for over {_DAILY_PICKS_ORPHAN_TIMEOUT_HOURS}h"
+        if stale_interval is None
+        else f"reconciled: no heartbeat for over {stale_interval}"
+    )
     try:
         with _get_pool().connection() as conn:
-            stale = conn.execute(
-                f"""UPDATE daily_picks_jobs
-                    SET status = 'interrupted', completed_at = now(),
-                        last_error = 'reconciled: no heartbeat for over {_DAILY_PICKS_ORPHAN_TIMEOUT_HOURS}h'
-                    WHERE status IN ('queued', 'running')
-                      AND COALESCE(last_runner_heartbeat_at, started_at)
-                          < now() - interval '{_DAILY_PICKS_ORPHAN_TIMEOUT_HOURS} hours'
-                    RETURNING job_id"""
-            )
-            stale_job_ids = [r[0] for r in stale.fetchall()]
-            if stale_job_ids:
-                conn.execute(
-                    """UPDATE heavy_workload_leases
-                       SET released_at = now()
-                       WHERE released_at IS NULL AND owner_job_id = ANY(%s)""",
-                    (stale_job_ids,),
+            with conn.transaction():
+                stale = conn.execute(
+                    f"""UPDATE daily_picks_jobs
+                        SET status = 'interrupted', completed_at = now(),
+                            last_error = %s
+                        WHERE status IN ('queued', 'running')
+                          AND COALESCE(last_runner_heartbeat_at, started_at)
+                              < now() - interval '{interval_literal}'
+                        RETURNING job_id""",
+                    (reason,),
                 )
+                stale_job_ids = [r[0] for r in stale.fetchall()]
+                if stale_job_ids:
+                    conn.execute(
+                        """UPDATE heavy_workload_leases
+                           SET released_at = now()
+                           WHERE released_at IS NULL AND owner_job_id = ANY(%s)""",
+                        (stale_job_ids,),
+                    )
         return len(stale_job_ids)
     except Exception:
         log.error("[daily_picks] stale-job reconciliation pass failed")
@@ -2418,16 +2600,74 @@ def has_active_heavy_workload_lease(resource: str) -> bool:
         return True
 
 
+class _ReservationOutcome(Exception):
+    """
+    Internal control-flow signal only — never escapes this module. Raised
+    from inside a `conn.transaction()` block to force a real ROLLBACK of
+    everything done in that block (including an already-inserted job row)
+    before unwinding to the plain outcome string the public functions
+    return. See _reserve_job_with_lease()'s docstring for why this exists.
+    """
+    def __init__(self, outcome: str):
+        self.outcome = outcome
+
+
+def _reserve_job_with_lease(conn, job_insert_sql, job_insert_params,
+                             conflict_outcome, lease_insert_sql, lease_insert_params):
+    """
+    Shared atomic job+lease reservation body for both
+    try_reserve_multibagger_job_with_lease() and
+    try_reserve_daily_picks_job_with_lease().
+
+    The pool this module uses is configured with autocommit=True (see
+    _get_pool()'s own comment) — every conn.execute() call commits itself
+    the instant it runs. That made the previous single `with
+    _get_pool().connection() as conn:` block only LOOK transactional: the
+    job-row INSERT was already durably committed before the lease INSERT
+    ever ran, so a later conn.rollback() had nothing left to undo. In
+    production this left an orphaned 'queued' daily_picks_jobs row with no
+    lease behind it whenever the lease INSERT lost the race (see job
+    e49d84bf-c19e-4c1c-9a2e-5c1da3f676c3, 2026-07-20).
+
+    conn.transaction() is psycopg3's documented way to get a real
+    transaction on an autocommit connection: it issues an explicit
+    BEGIN on entry and COMMIT/ROLLBACK on exit (COMMIT on a clean exit,
+    ROLLBACK if an exception propagates out of the block) — regardless of
+    the connection's autocommit setting. Raising _ReservationOutcome from
+    inside the block is what forces the ROLLBACK for every "did not start"
+    outcome, including the case where the job INSERT itself already
+    succeeded; catching it just outside the `with conn.transaction():`
+    block converts it back to the plain string callers expect. A normal
+    (non-exception) return of "started" from inside the block lets
+    conn.transaction() commit as usual.
+    """
+    try:
+        with conn.transaction():
+            job_result = conn.execute(job_insert_sql, job_insert_params)
+            if job_result.rowcount != 1:
+                raise _ReservationOutcome(conflict_outcome)
+
+            lease_result = conn.execute(lease_insert_sql, lease_insert_params)
+            if lease_result.rowcount != 1:
+                raise _ReservationOutcome("resource_busy")
+
+            return "started"
+    except _ReservationOutcome as outcome:
+        return outcome.outcome
+
+
 def try_reserve_multibagger_job_with_lease(
     job_id: str, market: str, runner_instance_id: str,
     trigger_source: str, scheduled_period_key: str | None, resource: str,
 ) -> str:
     """
     Product Integrity #010 §9 — atomic job+lease reservation. Both INSERTs
-    happen inside the SAME connection/transaction (one `with` block); a
-    lease-acquisition failure explicitly rolls back the job-row insert too,
-    so a caller never sees an orphaned queued row with no lease behind it —
-    the previous #009 design acquired these in two separate calls/
+    happen inside the same real database transaction (see
+    _reserve_job_with_lease()'s docstring — plain conn.rollback() alone
+    does not achieve this under this module's autocommit=True pool); a
+    lease-acquisition failure rolls back the job-row insert too, so a
+    caller never sees an orphaned queued row with no lease behind it — the
+    previous #009 design acquired these in two separate calls/
     transactions, leaving a real (if narrow) window where a job could be
     reserved and then never actually run because the lease step failed
     independently.
@@ -2438,30 +2678,20 @@ def try_reserve_multibagger_job_with_lease(
     Raises on genuine DB error — caller treats that as durable_state_unavailable.
     """
     with _get_pool().connection() as conn:
-        job_result = conn.execute(
+        return _reserve_job_with_lease(
+            conn,
             """INSERT INTO multibagger_refresh_jobs
                    (job_id, market, status, runner_instance_id, started_at,
                     trigger_source, scheduled_period_key, last_runner_heartbeat_at)
                VALUES (%s, %s, 'queued', %s, now(), %s, %s, now())
                ON CONFLICT DO NOTHING""",
             (job_id, market, runner_instance_id, trigger_source, scheduled_period_key),
-        )
-        if job_result.rowcount != 1:
-            conn.rollback()
-            return "already_completed_for_period" if trigger_source == "scheduled" else "already_running"
-
-        lease_result = conn.execute(
+            "already_completed_for_period" if trigger_source == "scheduled" else "already_running",
             """INSERT INTO heavy_workload_leases (resource, owner_type, owner_job_id, market, acquired_at)
                VALUES (%s, 'multibagger', %s, %s, now())
                ON CONFLICT DO NOTHING""",
             (resource, job_id, market),
         )
-        if lease_result.rowcount != 1:
-            conn.rollback()
-            return "resource_busy"
-
-        conn.commit()
-        return "started"
 
 
 def try_reserve_daily_picks_job_with_lease(
@@ -2472,35 +2702,26 @@ def try_reserve_daily_picks_job_with_lease(
     for Daily Picks (Product Integrity #010 §10). Uses daily_picks_jobs'
     existing (market) WHERE status IN ('queued','running') gate — unchanged,
     same table/constraint Daily Picks has always used; only the lease
-    acquisition is now folded into the same transaction.
+    acquisition is now folded into the same real transaction (see
+    _reserve_job_with_lease()).
 
     Returns one of: 'started', 'already_running', 'resource_busy'.
     Raises on genuine DB error.
     """
     with _get_pool().connection() as conn:
-        job_result = conn.execute(
+        return _reserve_job_with_lease(
+            conn,
             """INSERT INTO daily_picks_jobs
                    (job_id, market, status, runner_instance_id, started_at)
                VALUES (%s, %s, 'queued', %s, now())
                ON CONFLICT DO NOTHING""",
             (job_id, market, runner_instance_id),
-        )
-        if job_result.rowcount != 1:
-            conn.rollback()
-            return "already_running"
-
-        lease_result = conn.execute(
+            "already_running",
             """INSERT INTO heavy_workload_leases (resource, owner_type, owner_job_id, market, acquired_at)
                VALUES (%s, 'daily_picks', %s, %s, now())
                ON CONFLICT DO NOTHING""",
             (resource, job_id, market),
         )
-        if lease_result.rowcount != 1:
-            conn.rollback()
-            return "resource_busy"
-
-        conn.commit()
-        return "started"
 
 
 def get_latest_daily_picks_job(market: str) -> dict | None:
