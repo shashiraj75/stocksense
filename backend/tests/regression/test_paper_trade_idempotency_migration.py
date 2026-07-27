@@ -55,24 +55,37 @@ class TestIdempotencyKeyMigrationIsIdempotent:
 @pytest.mark.regression
 class TestIdempotencyKeySchemaExecutionIsAttempted:
     def test_init_db_executes_schema_sql_containing_the_new_table(self, monkeypatch):
+        """Schema Initialization Hardening phase: init_db() now opens its
+        own connection via psycopg.connect() directly (see
+        _attempt_schema_initialization) rather than through
+        _get_pool().connection(), so the fake is patched onto
+        psycopg.connect instead. fetchone() returns a row shaped for
+        whichever query was last executed — the advisory-lock
+        acquisition, every guarded migration's existence check, and
+        postcondition verification (including the strengthened trigger-
+        contract query, which unpacks 5 columns) each need a plausibly-
+        shaped truthy row, never real data here."""
         executed = []
 
         class _FakeConn:
+            def __init__(self):
+                self._last_sql = ""
+
             def execute(self, sql, params=None):
                 executed.append(sql)
+                self._last_sql = sql
                 return self
 
             def fetchone(self):
-                return None
+                if "pronargs" in self._last_sql:
+                    return ("O", 19, "public", "trigger", 0)
+                if "proname" in self._last_sql and "tgname" in self._last_sql:
+                    return ("reject_paper_trade_entry_snapshot_update",)
+                return (True,)
 
-            def __enter__(self):
-                return self
+            def close(self):
+                pass
 
-            def __exit__(self, *a):
-                return False
-
-        monkeypatch.setattr(postgres_store, "_get_pool", lambda: type(
-            "P", (), {"connection": lambda self: _FakeConn()}
-        )())
+        monkeypatch.setattr(postgres_store.psycopg, "connect", lambda *a, **k: _FakeConn())
         postgres_store.init_db()
         assert any("paper_trade_idempotency_key" in sql for sql in executed)
