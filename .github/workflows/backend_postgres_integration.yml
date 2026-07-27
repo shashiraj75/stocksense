@@ -116,6 +116,7 @@ jobs:
         env:
           POSTGRES_INTEGRATION_TEST_DATABASE_URL: "postgresql://stocksense_ci_user:stocksense_ci_password@localhost:5432/stocksense_ci_test"
         run: |
+          set -o pipefail
           python -m pytest tests/postgres_integration -m postgres_integration -v \
             --junit-xml=postgres_integration_report.xml \
             2>&1 | tee postgres_integration_output.log
