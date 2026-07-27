@@ -24,7 +24,7 @@ from services.postmortem.entry_snapshot import (
     build_entry_snapshot,
     classify_evidence_completeness,
 )
-from services.postmortem.causal_analysis import build_causal_analysis
+from services.postmortem.evidence_attribution import build_evidence_attribution
 from services.postmortem.daily_report import DailyTradePostmortem, build_daily_report
 from services.market_hours import IST, ET
 from services.postmortem.idempotency import (
@@ -1674,12 +1674,18 @@ def reset_portfolio(user_id: str = Depends(get_current_user_id), market: Literal
         return {"message": f"{market} portfolio reset", cash_col: starting}
 
 
-# Trade Postmortem Engine, Stage 3 — response schema for
-# GET /postmortem/daily. `schema_version` tracks this JSON *shape*;
-# `calculation_version` fields nested per-trade (from
-# causal_analysis.CAUSAL_CALCULATION_VERSION / daily_report.
+# Trade Postmortem Engine, Stage 3 (Sprint 1 evidence-provenance rewrite)
+# — response schema for GET /postmortem/daily. `schema_version` tracks
+# this JSON *shape*; `calculation_version` fields nested per-trade (from
+# evidence_attribution.ATTRIBUTION_RULES_VERSION / daily_report.
 # DAILY_REPORT_CALCULATION_VERSION) track the *rules*, independently.
-DAILY_POSTMORTEM_SCHEMA_VERSION = "1.0.0"
+# Bumped from 1.0.0 -> 2.0.0: the prototype's narrative/root_cause fields
+# are replaced outright (not additively) by the claim/evidence/
+# contributor-assessment model — a 1.0.0 client reading a 2.0.0 response
+# would find `narrative`/`root_cause` gone, so this is a genuine breaking
+# shape change, not an additive one. No production client exists yet
+# (this feature has never shipped), so no deprecation shim is needed.
+DAILY_POSTMORTEM_SCHEMA_VERSION = "2.0.0"
 
 # Market-local calendar-day timezone per market — the trading day a trade
 # "belongs to" is always the market's own local day, never UTC. Reuses
@@ -1689,33 +1695,76 @@ DAILY_POSTMORTEM_SCHEMA_VERSION = "1.0.0"
 _REPORT_TIMEZONE = {"IN": IST, "US": ET}
 
 
-class SignalFactorAssessmentResponse(BaseModel):
+class EvidenceItemResponse(BaseModel):
+    evidence_id: str
+    category: str
+    name: str
+    value: object
+    units: str | None
+    observation_timestamp: datetime | None
+    source: str
+    source_type: str
+    verification_level: str
+    freshness_status: str
+    limitations: list[str]
+
+
+class PostmortemClaimResponse(BaseModel):
+    claim_id: str
+    report_section: str
     factor: str
-    agreement: str
-    reason: str
+    claim_text: str
+    evidence_class: str
+    confidence_band: str
+    supporting_evidence_ids: list[str]
+    opposing_evidence_ids: list[str]
+    missing_evidence: list[str]
+    contradiction_flags: list[str]
+    rule_id: str
+    rule_version: str
+    limitations: list[str]
 
 
-class MarketContextAssessmentResponse(BaseModel):
-    regime: SignalFactorAssessmentResponse
-    timing: SignalFactorAssessmentResponse
-    sector: SignalFactorAssessmentResponse
-    news: SignalFactorAssessmentResponse
-    volatility: SignalFactorAssessmentResponse
-    liquidity: SignalFactorAssessmentResponse
+class SignalEvaluationResponse(BaseModel):
+    signal_id: str
+    signal_name: str
+    expected_interpretation: str | None
+    entry_evidence_id: str | None
+    comparison_evidence_ids: list[str]
+    status: str
+    evidence_class: str
+    confidence_band: str
+    explanation_claim_id: str
+    limitations: list[str]
 
 
-class TradePostmortemNarrativeResponse(BaseModel):
-    entry_conditions: list[str]
-    entry_conditions_reason: str | None
-    signal_factors: list[SignalFactorAssessmentResponse]
-    price_move_cause: SignalFactorAssessmentResponse
-    market_context: MarketContextAssessmentResponse
-    exit_mechanism_summary: str
-    thesis_assessment: str
-    thesis_reason: str
-    root_cause: str
-    root_cause_reason: str
-    takeaway: str
+class ContributorAssessmentResponse(BaseModel):
+    category: str
+    support_level: str
+    evidence_class: str
+    confidence_band: str
+    supporting_evidence_ids: list[str]
+    opposing_evidence_ids: list[str]
+    claim_id: str
+    limitations: list[str]
+
+
+class EvidenceAttributionResponse(BaseModel):
+    evidence_items: list[EvidenceItemResponse]
+    claims: list[PostmortemClaimResponse]
+    signal_scorecard: list[SignalEvaluationResponse]
+    contributor_assessments: list[ContributorAssessmentResponse]
+    # Null whenever no single category clears the STRONGLY_SUPPORTED,
+    # no-competing-category bar — see evidence_attribution.py's
+    # _select_primary_contributor. A null value is an expected, honest
+    # result, not a missing-data bug; primary_contributor_claim_id always
+    # points at a claim explaining why (either the winning claim, or an
+    # INSUFFICIENT_EVIDENCE claim when null).
+    primary_contributor: str | None
+    primary_contributor_claim_id: str | None
+    thesis_verdict: str
+    thesis_verdict_claim_id: str
+    rule_registry_version: str
     calculation_version: str
     warnings: list[str]
 
@@ -1725,7 +1774,7 @@ class DailyTradePostmortemResponse(BaseModel):
     symbol: str
     market: str
     postmortem: PostmortemResponse
-    narrative: TradePostmortemNarrativeResponse
+    attribution: EvidenceAttributionResponse
 
 
 class DailyPostmortemSummaryResponse(BaseModel):
@@ -1738,7 +1787,10 @@ class DailyPostmortemSummaryResponse(BaseModel):
     indeterminate_count: int
     total_realized_pnl_abs: float | None
     pnl_excluded_trade_count: int
-    root_cause_breakdown: dict[str, int]
+    recurring_supported_contributors: dict[str, int]
+    recurring_conflicting_contributors: dict[str, int]
+    recurring_not_assessable_count: dict[str, int]
+    trades_with_no_supported_contributor: int
 
 
 class DailyPostmortemReportResponse(BaseModel):
@@ -1749,35 +1801,55 @@ class DailyPostmortemReportResponse(BaseModel):
     warnings: list[str]
 
 
-def _signal_factor_to_response(assessment) -> SignalFactorAssessmentResponse:
-    return SignalFactorAssessmentResponse(
-        factor=assessment.factor, agreement=assessment.agreement.value, reason=assessment.reason
+def _evidence_item_to_response(item) -> EvidenceItemResponse:
+    return EvidenceItemResponse(
+        evidence_id=item.evidence_id, category=item.category, name=item.name, value=item.value,
+        units=item.units, observation_timestamp=item.observation_timestamp, source=item.source,
+        source_type=item.source_type, verification_level=item.verification_level,
+        freshness_status=item.freshness_status, limitations=item.limitations,
     )
 
 
-def _narrative_to_response(narrative) -> TradePostmortemNarrativeResponse:
-    ctx = narrative.market_context
-    return TradePostmortemNarrativeResponse(
-        entry_conditions=narrative.entry_conditions,
-        entry_conditions_reason=narrative.entry_conditions_reason,
-        signal_factors=[_signal_factor_to_response(s) for s in narrative.signal_factors],
-        price_move_cause=_signal_factor_to_response(narrative.price_move_cause),
-        market_context=MarketContextAssessmentResponse(
-            regime=_signal_factor_to_response(ctx.regime),
-            timing=_signal_factor_to_response(ctx.timing),
-            sector=_signal_factor_to_response(ctx.sector),
-            news=_signal_factor_to_response(ctx.news),
-            volatility=_signal_factor_to_response(ctx.volatility),
-            liquidity=_signal_factor_to_response(ctx.liquidity),
-        ),
-        exit_mechanism_summary=narrative.exit_mechanism_summary,
-        thesis_assessment=narrative.thesis_assessment.value,
-        thesis_reason=narrative.thesis_reason,
-        root_cause=narrative.root_cause.value,
-        root_cause_reason=narrative.root_cause_reason,
-        takeaway=narrative.takeaway,
-        calculation_version=narrative.calculation_version,
-        warnings=narrative.warnings,
+def _claim_to_response(claim) -> PostmortemClaimResponse:
+    return PostmortemClaimResponse(
+        claim_id=claim.claim_id, report_section=claim.report_section, factor=claim.factor,
+        claim_text=claim.claim_text, evidence_class=claim.evidence_class, confidence_band=claim.confidence_band,
+        supporting_evidence_ids=claim.supporting_evidence_ids, opposing_evidence_ids=claim.opposing_evidence_ids,
+        missing_evidence=claim.missing_evidence, contradiction_flags=claim.contradiction_flags,
+        rule_id=claim.rule_id, rule_version=claim.rule_version, limitations=claim.limitations,
+    )
+
+
+def _signal_evaluation_to_response(sig) -> SignalEvaluationResponse:
+    return SignalEvaluationResponse(
+        signal_id=sig.signal_id, signal_name=sig.signal_name, expected_interpretation=sig.expected_interpretation,
+        entry_evidence_id=sig.entry_evidence_id, comparison_evidence_ids=sig.comparison_evidence_ids,
+        status=sig.status, evidence_class=sig.evidence_class, confidence_band=sig.confidence_band,
+        explanation_claim_id=sig.explanation_claim_id, limitations=sig.limitations,
+    )
+
+
+def _contributor_to_response(c) -> ContributorAssessmentResponse:
+    return ContributorAssessmentResponse(
+        category=c.category, support_level=c.support_level, evidence_class=c.evidence_class,
+        confidence_band=c.confidence_band, supporting_evidence_ids=c.supporting_evidence_ids,
+        opposing_evidence_ids=c.opposing_evidence_ids, claim_id=c.claim_id, limitations=c.limitations,
+    )
+
+
+def _attribution_to_response(attribution) -> EvidenceAttributionResponse:
+    return EvidenceAttributionResponse(
+        evidence_items=[_evidence_item_to_response(e) for e in attribution.evidence_items],
+        claims=[_claim_to_response(c) for c in attribution.claims],
+        signal_scorecard=[_signal_evaluation_to_response(s) for s in attribution.signal_scorecard],
+        contributor_assessments=[_contributor_to_response(c) for c in attribution.contributor_assessments],
+        primary_contributor=attribution.primary_contributor,
+        primary_contributor_claim_id=attribution.primary_contributor_claim_id,
+        thesis_verdict=attribution.thesis_verdict,
+        thesis_verdict_claim_id=attribution.thesis_verdict_claim_id,
+        rule_registry_version=attribution.rule_registry_version,
+        calculation_version=attribution.calculation_version,
+        warnings=attribution.warnings,
     )
 
 
@@ -1846,11 +1918,13 @@ def get_daily_postmortem(
     user_id: str = Depends(get_current_user_id),
 ):
     """
-    Trade Postmortem Engine, Stage 3 — the Daily Trade Postmortem Report.
-    For every trade this user closed on `date` (each trade's own MARKET-LOCAL
-    calendar day — IST for IN, ET for US — never UTC), returns the
-    deterministic Phase 1 postmortem plus the Stage 3 causal narrative
-    (services/postmortem/causal_analysis.py), aggregated into one day-level
+    Trade Postmortem Engine, Stage 3 (Sprint 1 evidence-provenance rewrite)
+    — the Daily Trade Postmortem Report. For every trade this user closed
+    on `date` (each trade's own MARKET-LOCAL calendar day — IST for IN,
+    ET for US — never UTC), returns the deterministic Phase 1 postmortem
+    plus the Sprint 1 evidence attribution (services/postmortem/
+    evidence_attribution.py — claim-level provenance, non-circular signal
+    scorecard, multi-contributor model), aggregated into one day-level
     report (services/postmortem/daily_report.py).
 
     A day with zero matching trades returns 200 with an empty `trades` list
@@ -1899,7 +1973,7 @@ def get_daily_postmortem(
         with _conn() as snapshot_conn:
             snapshot = _fetch_entry_snapshot(snapshot_conn, record.trade_id)
         postmortem = compute_postmortem(record, snapshot=snapshot)
-        narrative = build_causal_analysis(postmortem, snapshot)
+        attribution = build_evidence_attribution(postmortem, snapshot)
 
         daily_trades.append(
             DailyTradePostmortem(
@@ -1907,7 +1981,7 @@ def get_daily_postmortem(
                 symbol=record.symbol,
                 market=record.market,
                 postmortem=postmortem,
-                narrative=narrative,
+                attribution=attribution,
             )
         )
         response_trades.append(
@@ -1916,7 +1990,7 @@ def get_daily_postmortem(
                 symbol=record.symbol,
                 market=record.market,
                 postmortem=_postmortem_to_response(postmortem, snapshot),
-                narrative=_narrative_to_response(narrative),
+                attribution=_attribution_to_response(attribution),
             )
         )
 
@@ -1934,7 +2008,10 @@ def get_daily_postmortem(
             indeterminate_count=report.summary.indeterminate_count,
             total_realized_pnl_abs=report.summary.total_realized_pnl_abs,
             pnl_excluded_trade_count=report.summary.pnl_excluded_trade_count,
-            root_cause_breakdown=report.summary.root_cause_breakdown,
+            recurring_supported_contributors=report.summary.recurring_supported_contributors,
+            recurring_conflicting_contributors=report.summary.recurring_conflicting_contributors,
+            recurring_not_assessable_count=report.summary.recurring_not_assessable_count,
+            trades_with_no_supported_contributor=report.summary.trades_with_no_supported_contributor,
         ),
         trades=response_trades,
         calculation_version=report.calculation_version,

@@ -1,6 +1,6 @@
 """
-Trade Postmortem Engine, Stage 3 — regression tests for
-GET /api/paper-trading/postmortem/daily.
+Trade Postmortem Engine, Stage 3 (Sprint 1 evidence-provenance rewrite) —
+regression tests for GET /api/paper-trading/postmortem/daily.
 
 Follows the exact fake-connection mocking pattern established in
 test_paper_trading_postmortem_endpoint.py: no real database, no network.
@@ -45,9 +45,7 @@ def _auth(sub: str = "user-aaa") -> dict:
 class _RecordingConn:
     """Supports both `.fetchall()` (the daily trade-list query) and
     `.fetchone()` (the per-trade entry-snapshot lookup) against the same
-    patched connection, matching the daily endpoint's actual query
-    sequence: one fetchall, then zero-or-more fetchone calls keyed by the
-    trade_id passed as the snapshot query's own parameter."""
+    patched connection."""
 
     def __init__(self, main_rows, snapshot_rows_by_trade_id=None):
         self.calls = []
@@ -87,7 +85,7 @@ def _row(
     stop_loss=90.0,
     target_price=130.0,
     opened_at=dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc),
-    closed_at=dt.datetime(2026, 6, 2, 15, 0, tzinfo=dt.timezone.utc),  # 11:00 ET / 20:30 IST next day
+    closed_at=dt.datetime(2026, 6, 2, 15, 0, tzinfo=dt.timezone.utc),
     trade_management_mode="manual",
     exit_reason="MANUAL",
 ):
@@ -114,7 +112,7 @@ def _get_daily(client, params, main_rows, snapshot_rows=None, auth_sub="user-aaa
 
 @pytest.mark.regression
 class TestDailyPostmortemEndpoint:
-    def test_multi_trade_day_returns_200_with_all_trades(self, client):
+    def test_multi_trade_day_returns_200_with_evidence_attribution(self, client):
         rows = [
             _row(trade_id=1, exit_price=120.0, closed_at=dt.datetime(2026, 6, 2, 15, 0, tzinfo=dt.timezone.utc)),
             _row(trade_id=2, exit_price=80.0, closed_at=dt.datetime(2026, 6, 2, 16, 0, tzinfo=dt.timezone.utc)),
@@ -122,15 +120,30 @@ class TestDailyPostmortemEndpoint:
         resp, _ = _get_daily(client, {"date": "2026-06-02", "market": "US"}, rows)
         assert resp.status_code == 200
         body = resp.json()
+        assert body["schema_version"] == "2.0.0"
         assert body["summary"]["trade_count"] == 2
         assert body["summary"]["win_count"] == 1
         assert body["summary"]["loss_count"] == 1
         assert len(body["trades"]) == 2
-        assert body["schema_version"]
-        assert body["calculation_version"]
         for t in body["trades"]:
-            assert "narrative" in t
-            assert "takeaway" in t["narrative"]
+            attribution = t["attribution"]
+            assert "claims" in attribution
+            assert "signal_scorecard" in attribution
+            assert "contributor_assessments" in attribution
+            assert "primary_contributor" in attribution
+            assert "thesis_verdict" in attribution
+            # Every claim, per Sprint 1 contract, must have a rule ID.
+            for claim in attribution["claims"]:
+                assert claim["rule_id"]
+                assert claim["rule_version"]
+
+    def test_response_no_longer_has_narrative_or_root_cause_fields(self, client):
+        rows = [_row(trade_id=1, exit_price=120.0)]
+        resp, _ = _get_daily(client, {"date": "2026-06-02", "market": "US"}, rows)
+        body = resp.json()
+        t = body["trades"][0]
+        assert "narrative" not in t
+        assert "root_cause_breakdown" not in body["summary"]
 
     def test_empty_day_returns_200_not_404(self, client):
         resp, _ = _get_daily(client, {"date": "2026-06-02", "market": "US"}, [])
@@ -144,16 +157,18 @@ class TestDailyPostmortemEndpoint:
         assert resp.status_code == 400
 
     def test_cross_user_isolation_filters_by_authenticated_user(self, client):
-        """The SQL WHERE clause is parameterized on the authenticated
-        user_id — verified here via the recorded query params, since the
-        fake connection doesn't itself enforce row-level filtering."""
         rows = [_row(trade_id=1, owner="user-aaa", exit_price=120.0)]
         resp, recorder = _get_daily(client, {"date": "2026-06-02", "market": "US"}, rows, auth_sub="user-aaa")
         assert resp.status_code == 200
-        main_call = recorder.calls[0]
-        sql, params = main_call
+        sql, params = recorder.calls[0]
         assert "user_id = %s" in sql
         assert params[0] == "user-aaa"
+
+    def test_other_users_trade_excluded_even_within_window(self, client):
+        rows = [_row(trade_id=1, owner="someone-else", exit_price=120.0)]
+        resp, _ = _get_daily(client, {"date": "2026-06-02", "market": "US"}, rows)
+        assert resp.status_code == 200
+        assert resp.json()["trades"] == []
 
     def test_market_filter_adds_sql_predicate(self, client):
         resp, recorder = _get_daily(client, {"date": "2026-06-02", "market": "IN"}, [])
@@ -169,29 +184,23 @@ class TestDailyPostmortemEndpoint:
         assert "market = %s" not in sql
 
     def test_market_local_day_boundary_us_trade_after_local_midnight_excluded(self, client):
-        """A US trade closed at 2026-06-03 03:00 UTC is 2026-06-02 23:00 ET
-        (still June 2 in ET) — included when querying for June 2. A trade
-        closed at 2026-06-03 05:30 UTC is 2026-06-03 01:30 ET — excluded
-        from a June 2 query, included in a June 3 query."""
         still_june2_et = _row(trade_id=1, market="US", closed_at=dt.datetime(2026, 6, 3, 3, 0, tzinfo=dt.timezone.utc))
         already_june3_et = _row(trade_id=2, market="US", closed_at=dt.datetime(2026, 6, 3, 5, 30, tzinfo=dt.timezone.utc))
 
         resp_june2, _ = _get_daily(client, {"date": "2026-06-02", "market": "US"}, [still_june2_et, already_june3_et])
-        assert resp_june2.status_code == 200
-        june2_trade_ids = {t["trade_id"] for t in resp_june2.json()["trades"]}
-        assert june2_trade_ids == {1}
+        assert {t["trade_id"] for t in resp_june2.json()["trades"]} == {1}
 
         resp_june3, _ = _get_daily(client, {"date": "2026-06-03", "market": "US"}, [still_june2_et, already_june3_et])
-        assert resp_june3.status_code == 200
-        june3_trade_ids = {t["trade_id"] for t in resp_june3.json()["trades"]}
-        assert june3_trade_ids == {2}
+        assert {t["trade_id"] for t in resp_june3.json()["trades"]} == {2}
 
     def test_missing_auth_header_returns_401(self, client):
         resp = client.get("/api/paper-trading/postmortem/daily", params={"date": "2026-06-02"})
         assert resp.status_code == 401
 
-    def test_other_users_trade_excluded_even_within_window(self, client):
-        rows = [_row(trade_id=1, owner="someone-else", exit_price=120.0)]
+    def test_daily_summary_uses_recurring_supported_contributors_not_root_cause(self, client):
+        rows = [_row(trade_id=1, exit_price=95.0, stop_loss=10.0, target_price=101.0, exit_reason="MANUAL")]
         resp, _ = _get_daily(client, {"date": "2026-06-02", "market": "US"}, rows)
-        assert resp.status_code == 200
-        assert resp.json()["trades"] == []
+        body = resp.json()
+        assert "recurring_supported_contributors" in body["summary"]
+        assert "recurring_conflicting_contributors" in body["summary"]
+        assert "recurring_not_assessable_count" in body["summary"]
