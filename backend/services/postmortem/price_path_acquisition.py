@@ -149,7 +149,16 @@ ACQUISITION_AUTO_ADJUST = False
 ACQUISITION_BACK_ADJUST = False
 ACQUISITION_ACTIONS = True
 ACQUISITION_REPAIR = False
+ACQUISITION_PREPOST = False  # regular session only — no pre/post-market bars
 ACQUISITION_TIMEZONE_BEHAVIOR = "provider_local_exchange_timezone_normalized_to_date_only"
+
+# Stage 1 hardening: yf.Ticker.history() has no threads/progress/ignore_tz
+# parameters — those belong to yf.download(), which this module does not
+# use (Ticker.history() is a single-symbol call by construction, so the
+# MultiIndex-column concern yf.download() can introduce for multi-symbol
+# requests does not arise here either). Documented explicitly rather than
+# passed as no-op arguments that would silently do nothing.
+_NOT_APPLICABLE_TO_TICKER_HISTORY = ("threads", "progress", "ignore_tz")
 
 
 def _provider_library_version() -> str:
@@ -177,19 +186,40 @@ def fetch_raw_daily_bars(
 
     try:
         ticker = yf.Ticker(provider_symbol)
-        # end is exclusive in yfinance's own convention — widen by one day
-        # so the exit session itself is included.
+        # yfinance's own convention: start is inclusive, end is EXCLUSIVE.
+        # Widening by one day here is only how the exit session gets INTO
+        # the provider response at all — it is never allowed to let a
+        # LATER session leak into the persisted evidence. That exact
+        # exclusion is enforced downstream in build_price_path_evidence's
+        # `if d < entry_date or d > exit_date: continue` filter, which
+        # runs against the ORIGINAL (non-widened) exit date — this
+        # function's own [start, end] widening is purely a provider-call
+        # convenience the caller must never mistake for the persisted
+        # window itself.
         df = ticker.history(
             start=start.isoformat(), end=(end + timedelta(days=1)).isoformat(),
             interval="1d", auto_adjust=ACQUISITION_AUTO_ADJUST, back_adjust=ACQUISITION_BACK_ADJUST,
-            actions=ACQUISITION_ACTIONS, repair=ACQUISITION_REPAIR, timeout=timeout,
+            actions=ACQUISITION_ACTIONS, repair=ACQUISITION_REPAIR, prepost=ACQUISITION_PREPOST,
+            timeout=timeout,
         )
+        if hasattr(df.columns, "nlevels") and df.columns.nlevels > 1:
+            # Defensive: yf.Ticker.history() is single-symbol by
+            # construction and should never return a MultiIndex, but if a
+            # future yfinance version changes that, fail loudly rather
+            # than silently misreading columns.
+            raise PriceProviderAcquisitionError(
+                "PROVIDER_UNEXPECTED_COLUMN_SHAPE",
+                f"expected a single-symbol flat column index for {provider_symbol}, got a MultiIndex",
+            )
         bars = []
         for idx, row in df.iterrows():
+            bar_date = idx.tz_localize(None).date() if hasattr(idx, "tz_localize") and idx.tzinfo is not None else (
+                idx.date() if hasattr(idx, "date") else idx
+            )
             adj_close = float(row["Adj Close"]) if "Adj Close" in row and row["Adj Close"] == row["Adj Close"] else None
             dividend = float(row["Dividends"]) if "Dividends" in row and row["Dividends"] == row["Dividends"] else 0.0
             bars.append({
-                "date": idx.date() if hasattr(idx, "date") else idx,
+                "date": bar_date,
                 "open": float(row["Open"]),
                 "high": float(row["High"]),
                 "low": float(row["Low"]),
@@ -198,6 +228,8 @@ def fetch_raw_daily_bars(
                 "adj_close": adj_close,
                 "dividend": dividend,
             })
+    except PriceProviderAcquisitionError:
+        raise
     except Exception as exc:
         raise PriceProviderAcquisitionError(
             "PROVIDER_FETCH_FAILED", f"daily bar acquisition failed for {provider_symbol}"
@@ -353,7 +385,13 @@ def build_price_path_evidence(
         "actions": ACQUISITION_ACTIONS,
         "repair": ACQUISITION_REPAIR,
         "timezone_behavior": ACQUISITION_TIMEZONE_BEHAVIOR,
-        "raw_ohlc_basis_claim": "UNADJUSTED_PROVIDER_OHLC",
+        # PROVIDER_RETURNED_UNADJUSTED_OHLC, not "raw exchange-authoritative
+        # prices" — this codebase does not claim yfinance IS the exchange
+        # of record, only that it was ASKED for and RETURNED data under
+        # the auto_adjust=False contract (see SOURCE_TYPE/SOURCE_SCOPE
+        # above for the separate, already-explicit non-authoritative
+        # disclosure).
+        "raw_ohlc_basis_claim": "PROVIDER_RETURNED_UNADJUSTED_OHLC",
         "adjusted_close_available": any_adj_close,
         "split_event_manifest": [d.isoformat() for d in split_events],
         "dividend_event_manifest": [d.isoformat() for d in dividend_events],

@@ -57,7 +57,7 @@ class TestPinnedAcquisitionArgumentsPersisted:
         assert m["interval"] == "1d"
         assert m["provider"] == "yfinance"
         assert "provider_library_version" in m
-        assert m["raw_ohlc_basis_claim"] == "UNADJUSTED_PROVIDER_OHLC"
+        assert m["raw_ohlc_basis_claim"] == "PROVIDER_RETURNED_UNADJUSTED_OHLC"
 
 
 @pytest.mark.unit
