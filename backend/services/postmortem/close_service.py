@@ -153,36 +153,69 @@ def _is_finite_positive(value) -> bool:
     return value is not None and isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value > 0
 
 
+# Trade Postmortem Engine, Sprint 2 correction phase — PR #33 CI (real
+# PostgreSQL 15/17) failed because this list had 24 columns while the
+# hand-written VALUES clause had only 23 `%s` placeholders (a manually
+# miscounted literal that no local test caught, since no mocked-conn test
+# actually counts placeholders against bound parameters the way a real
+# server does). Column names and the corresponding values are now
+# generated from ONE ordered list of (column, value) pairs in
+# `_build_exit_snapshot_insert` below, with placeholders derived from
+# `len(values)` and an explicit assertion that column/value/placeholder
+# counts all agree — a future field addition that only updates one side
+# now fails immediately (in-process, before ever reaching the database),
+# not only under real PostgreSQL.
 _EXIT_SNAPSHOT_COLUMNS = (
-    "paper_trade_id, user_id, symbol, market, exit_snapshot_schema_version, "
-    "financial_outcome, closure_classification, exit_mechanism, exit_mechanism_raw, "
-    "exit_price, exit_quantity, closed_at, "
-    "final_stop_loss, final_target_price, trailing_stop_level, time_exit_rule, market_close_rule, "
-    "management_mode, levels_modified_after_entry, "
-    "source_request_id, trigger_observation_timestamp, trigger_observation_price, "
-    "trigger_timing_verification, source_metadata"
+    "paper_trade_id", "user_id", "symbol", "market", "exit_snapshot_schema_version",
+    "financial_outcome", "closure_classification", "exit_mechanism", "exit_mechanism_raw",
+    "exit_price", "exit_quantity", "closed_at",
+    "final_stop_loss", "final_target_price", "trailing_stop_level", "time_exit_rule", "market_close_rule",
+    "management_mode", "levels_modified_after_entry",
+    "source_request_id", "trigger_observation_timestamp", "trigger_observation_price",
+    "trigger_timing_verification", "source_metadata",
 )
 
 
-def _insert_exit_snapshot(conn, snapshot: ExitSnapshot) -> None:
+def _exit_snapshot_values(snapshot: ExitSnapshot) -> tuple:
     import json as _json
-    conn.execute(
-        f"""INSERT INTO paper_trade_exit_snapshot ({_EXIT_SNAPSHOT_COLUMNS})
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-        (
-            snapshot.paper_trade_id, snapshot.user_id, snapshot.symbol, snapshot.market,
-            snapshot.exit_snapshot_schema_version,
-            snapshot.financial_outcome, snapshot.closure_classification,
-            snapshot.exit_mechanism, snapshot.exit_mechanism_raw,
-            snapshot.exit_price, snapshot.exit_quantity, snapshot.closed_at,
-            snapshot.final_stop_loss, snapshot.final_target_price, snapshot.trailing_stop_level,
-            snapshot.time_exit_rule, snapshot.market_close_rule,
-            snapshot.management_mode, snapshot.levels_modified_after_entry,
-            snapshot.source_request_id, snapshot.trigger_observation_timestamp,
-            snapshot.trigger_observation_price, snapshot.trigger_timing_verification,
-            _json.dumps(snapshot.source_metadata) if snapshot.source_metadata is not None else None,
-        ),
+    values = (
+        snapshot.paper_trade_id, snapshot.user_id, snapshot.symbol, snapshot.market,
+        snapshot.exit_snapshot_schema_version,
+        snapshot.financial_outcome, snapshot.closure_classification,
+        snapshot.exit_mechanism, snapshot.exit_mechanism_raw,
+        snapshot.exit_price, snapshot.exit_quantity, snapshot.closed_at,
+        snapshot.final_stop_loss, snapshot.final_target_price, snapshot.trailing_stop_level,
+        snapshot.time_exit_rule, snapshot.market_close_rule,
+        snapshot.management_mode, snapshot.levels_modified_after_entry,
+        snapshot.source_request_id, snapshot.trigger_observation_timestamp,
+        snapshot.trigger_observation_price, snapshot.trigger_timing_verification,
+        _json.dumps(snapshot.source_metadata) if snapshot.source_metadata is not None else None,
     )
+    assert len(values) == len(_EXIT_SNAPSHOT_COLUMNS), (
+        f"_exit_snapshot_values produced {len(values)} values for "
+        f"{len(_EXIT_SNAPSHOT_COLUMNS)} columns — column list and value tuple have drifted apart"
+    )
+    return values
+
+
+def _build_exit_snapshot_insert(snapshot: ExitSnapshot) -> tuple[str, tuple]:
+    """Single source of truth for the exit-snapshot INSERT: column names,
+    the corresponding value tuple, and the placeholder count are all
+    derived from the same two sequences, with an explicit parity
+    assertion before the SQL string is ever built. See the module-level
+    comment above `_EXIT_SNAPSHOT_COLUMNS` for why this exists."""
+    values = _exit_snapshot_values(snapshot)
+    placeholders = ", ".join(["%s"] * len(values))
+    sql = (
+        f"INSERT INTO paper_trade_exit_snapshot ({', '.join(_EXIT_SNAPSHOT_COLUMNS)}) "
+        f"VALUES ({placeholders})"
+    )
+    return sql, values
+
+
+def _insert_exit_snapshot(conn, snapshot: ExitSnapshot) -> None:
+    sql, values = _build_exit_snapshot_insert(snapshot)
+    conn.execute(sql, values)
 
 
 def _insert_outbox_record(conn, *, trade_id: int, user_id: str, source_request_id: str | None) -> tuple[int, bool]:
@@ -277,8 +310,31 @@ def close_paper_trade(
             raise CloseValidationError(f"trade {trade_id} has an invalid stored quantity: {qty!r}")
 
         log.info("[trade_close_started] trade_id=%s", trade_id)
-        realized_pnl_abs = compute_realized_pnl_abs(entry_price, exit_price, qty)
-        realized_pnl_pct = compute_realized_pnl_pct(entry_price, exit_price)
+        # Trade Postmortem Engine, Sprint 2 correction phase — a legacy or
+        # corrupt stored entry_price (None, NaN, +/-Infinity) must never
+        # reach compute_realized_pnl_abs/_pct: None raises TypeError
+        # (crashing the close for data this trade already has, which
+        # would leave it permanently unclosable), and NaN/Infinity would
+        # silently produce a NaN/Infinity "P&L" that classify_financial_
+        # outcome (a NaN is neither >0 nor <0) would then misclassify as
+        # BREAKEVEN — a fabricated, wrong evidence value. entry_price <= 0
+        # is left to paper_trade_math's own existing guards (compute_
+        # realized_pnl_pct already returns None for it; compute_
+        # realized_pnl_abs still computes a real, if extreme, number for
+        # it — not indeterminate, just based on bad legacy data, which is
+        # the honest thing to surface rather than hiding it).
+        entry_price_finite = (
+            entry_price is not None
+            and isinstance(entry_price, (int, float))
+            and not isinstance(entry_price, bool)
+            and math.isfinite(entry_price)
+        )
+        if entry_price_finite:
+            realized_pnl_abs = compute_realized_pnl_abs(entry_price, exit_price, qty)
+            realized_pnl_pct = compute_realized_pnl_pct(entry_price, exit_price)
+        else:
+            realized_pnl_abs = None
+            realized_pnl_pct = None
         actual_closed_at = closed_at or datetime.now(timezone.utc)
         proceeds = round(exit_price * qty, 2)
 
@@ -332,7 +388,17 @@ def close_paper_trade(
         entry_price=entry_price,
         exit_price=exit_price,
         realized_pnl_abs=realized_pnl_abs,
-        realized_pnl_pct=realized_pnl_pct if realized_pnl_pct is not None else 0,
+        # Trade Postmortem Engine, Sprint 2 correction phase — CloseResult
+        # is the authoritative, internal representation of what happened
+        # at close time; it must preserve compute_realized_pnl_pct's own
+        # None ("not reliably computable" — e.g. a legacy/corrupt
+        # non-positive entry_price) rather than silently substituting 0,
+        # which would misrepresent a genuinely indeterminate percentage as
+        # a real computed zero (breakeven). The pre-existing "legacy 0"
+        # fallback for /sell's JSON response contract is applied only at
+        # the HTTP boundary in paper_sell, never inside this service —
+        # see paper_trading.py's own comment at that call site.
+        realized_pnl_pct=realized_pnl_pct,
         proceeds=proceeds,
         closed_at=actual_closed_at,
         exit_snapshot=snapshot,

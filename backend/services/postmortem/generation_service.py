@@ -38,7 +38,14 @@ from services.postmortem.deterministic import (
     EvidenceCompleteness,
 )
 from services.postmortem.entry_snapshot import EntrySnapshot
-from services.postmortem.evidence_attribution import ATTRIBUTION_RULES_VERSION, EvidenceAttributionResult, build_evidence_attribution
+from services.postmortem.evidence_attribution import (
+    ATTRIBUTION_RULES_VERSION,
+    EvidenceAttributionResult,
+    ReportIntegrityError,
+    build_evidence_attribution,
+)
+from services.postmortem.exit_evidence import EXIT_EVIDENCE_RULES_VERSION, build_exit_evidence
+from services.postmortem.exit_snapshot import ExitSnapshot
 from services.postmortem import outbox as outbox_ops
 from services.postmortem import report_store
 from services.postmortem.report_store import PersistedReport
@@ -65,17 +72,38 @@ def _asdict(obj):
     return dataclasses.asdict(obj) if dataclasses.is_dataclass(obj) else obj
 
 
+def _validate_merged_evidence_integrity(evidence_items: list[dict], claims: list[dict]) -> None:
+    """Sprint 1's own build_evidence_attribution already validates ITS
+    claims against ITS evidence internally (evidence_attribution.
+    validate_report_integrity) — but that check runs before this
+    module merges in the exit-evidence claims/items built separately by
+    exit_evidence.build_exit_evidence. This is the equivalent check
+    across the FULL merged set that actually gets persisted: every
+    claim's supporting/opposing evidence_id must resolve to an item
+    genuinely present in evidence_items — never a dangling reference,
+    regardless of which sub-module produced it."""
+    known_ids = {item["evidence_id"] for item in evidence_items}
+    for claim in claims:
+        for ref in list(claim.get("supporting_evidence_ids") or []) + list(claim.get("opposing_evidence_ids") or []):
+            if ref not in known_ids:
+                raise ReportIntegrityError(
+                    f"claim {claim.get('claim_id')!r} references evidence_id {ref!r} "
+                    "which is not present in the merged evidence_items list"
+                )
+
+
 def build_report_payload(
     postmortem: DeterministicPostmortem,
     entry_snapshot: EntrySnapshot | None,
     *,
-    exit_snapshot_present: bool,
+    exit_snapshot: ExitSnapshot | None,
 ) -> ReportPayload:
     """Pure: no database access. Raises services.postmortem.
-    evidence_attribution.ReportIntegrityError (propagated from
-    build_evidence_attribution) if the computed attribution ever fails
-    its own referential-integrity check — this function never persists
-    or returns a broken report; it simply doesn't complete.
+    evidence_attribution.ReportIntegrityError if the computed attribution
+    (Sprint 1's own internal check, or this function's own merged-set
+    check covering the exit-evidence claims added here) ever fails its
+    referential-integrity check — this function never persists or
+    returns a broken report; it simply doesn't complete.
 
     Status determination (Sprint 2, Stage 7/12): LIMITED_EVIDENCE when
     either half of the evidence this report depends on is missing (no
@@ -84,9 +112,20 @@ def build_report_payload(
     existed). COMPLETE means both halves exist; it does NOT claim every
     individual claim inside the report is itself EVIDENCE_SUPPORTED —
     Sprint 1's per-claim evidence classes remain the fine-grained truth,
-    this is only the coarse top-level status."""
+    this is only the coarse top-level status.
+
+    Sprint 2 correction phase: `exit_snapshot` is now the actual typed
+    snapshot (or None), not a bare presence Boolean — exit_evidence.
+    build_exit_evidence turns it into claim-level provenance (deterministic
+    evidence IDs, source type, verification level, limitations) exactly
+    like every other factor in the report, merged into the SAME
+    evidence_items/claims lists Sprint 1's attribution engine produced.
+    Browser-reported stop/target trigger timing is represented with
+    CLIENT_REPORTED/UNVERIFIED trust — never upgraded (see exit_evidence.py
+    and exit_snapshot.py's own trust-boundary notes)."""
     attribution: EvidenceAttributionResult = build_evidence_attribution(postmortem, entry_snapshot)
 
+    exit_snapshot_present = exit_snapshot is not None
     status = _STATUS_COMPLETE
     evidence_gaps: list[str] = []
     if entry_snapshot is None:
@@ -122,9 +161,22 @@ def build_report_payload(
     }
     evidence_items = [_asdict(e) for e in attribution.evidence_items]
     claims = [_asdict(c) for c in attribution.claims]
+
+    exit_evidence_items, exit_claims = build_exit_evidence(postmortem.trade_id, exit_snapshot)
+    evidence_items += [_asdict(e) for e in exit_evidence_items]
+    claims += [_asdict(c) for c in exit_claims]
+    _validate_merged_evidence_integrity(evidence_items, claims)
+
     source_manifest = {
         "has_entry_snapshot": entry_snapshot is not None,
         "has_exit_snapshot": exit_snapshot_present,
+        # Sprint 2 correction phase — beyond the bare Boolean above, the
+        # actual schema version and trigger-timing trust level of the
+        # exit evidence consumed, so a caller doesn't have to reverse-
+        # engineer it from the claims list.
+        "exit_snapshot_schema_version": exit_snapshot.exit_snapshot_schema_version if exit_snapshot else None,
+        "exit_trigger_timing_verification": exit_snapshot.trigger_timing_verification if exit_snapshot else None,
+        "exit_evidence_rules_version": EXIT_EVIDENCE_RULES_VERSION,
         "phase1_calculation_version": CALCULATION_VERSION,
         "attribution_rules_version": ATTRIBUTION_RULES_VERSION,
     }
@@ -140,6 +192,22 @@ def build_report_payload(
     )
 
 
+class StaleLeaseError(Exception):
+    """Raised by generate_and_persist when `outbox_id`/`claimed_by` are
+    supplied but the outbox row's lease no longer matches `claimed_by` at
+    mark-terminal time — meaning another claimer reclaimed this row
+    (this caller's own lease expired) while this attempt was computing.
+    Callers MUST let this exception propagate out of their own
+    `with conn.transaction():` block so the report INSERT rolls back too
+    — persisting a report whose corresponding outbox row was never
+    (by this attempt) marked terminal would violate the report/outbox
+    consistency invariant (Sprint 2 correction phase, Stage 3/8): a
+    completed report must never exist without a terminal outbox row, and
+    vice versa. Abandoning this attempt's work is correct here — a
+    fresher claimer already owns the row and either already produced (or
+    will produce) the authoritative result."""
+
+
 def generate_and_persist(
     conn,
     *,
@@ -150,17 +218,26 @@ def generate_and_persist(
     market_timezone: str,
     postmortem: DeterministicPostmortem,
     entry_snapshot: EntrySnapshot | None,
-    exit_snapshot_present: bool,
+    exit_snapshot: ExitSnapshot | None,
     outbox_id: int | None = None,
+    claimed_by: str | None = None,
 ) -> tuple[PersistedReport, bool]:
     """The only function in this module that touches `conn`. Computes the
     payload via the pure `build_report_payload` above, persists it
     (idempotently — see report_store.persist_report), and — when
-    `outbox_id` is supplied — marks that outbox row terminal with the
-    resulting status in the SAME call. Callers that already hold an open
-    transaction should call this within it; callers recovering a PENDING
-    row on a GET request may call it in its own short transaction."""
-    payload = build_report_payload(postmortem, entry_snapshot, exit_snapshot_present=exit_snapshot_present)
+    `outbox_id` is supplied (which requires `claimed_by`, the lease token
+    the caller was issued by `outbox.claim_next_attempt`) — marks that
+    outbox row terminal with the resulting status in the SAME call,
+    inside the SAME transaction the caller already opened, so the report
+    row and the terminal outbox row commit or roll back together.
+
+    Raises StaleLeaseError if the outbox mark-terminal doesn't match
+    (lease lost to a reclaimer) — see that exception's own docstring for
+    why callers must let it propagate rather than swallowing it."""
+    if outbox_id is not None and not claimed_by:
+        raise ValueError("generate_and_persist: claimed_by is required whenever outbox_id is supplied")
+
+    payload = build_report_payload(postmortem, entry_snapshot, exit_snapshot=exit_snapshot)
 
     report, created = report_store.persist_report(
         conn,
@@ -183,6 +260,10 @@ def generate_and_persist(
     )
 
     if outbox_id is not None:
-        outbox_ops.mark_terminal(conn, outbox_id=outbox_id, status=report.status)
+        marked = outbox_ops.mark_terminal(conn, outbox_id=outbox_id, status=report.status, claimed_by=claimed_by)
+        if not marked:
+            raise StaleLeaseError(
+                f"outbox row {outbox_id} lease no longer held by this attempt at mark-terminal time"
+            )
 
     return report, created

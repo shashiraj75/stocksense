@@ -554,6 +554,20 @@ CREATE TABLE IF NOT EXISTS paper_trade_postmortem_outbox (
     attempt_count                      INTEGER NOT NULL DEFAULT 0,
     next_attempt_at                    TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_attempt_at                    TIMESTAMPTZ,
+    -- Trade Postmortem Engine, Sprint 2 correction phase — genuine
+    -- database-backed lease fields, replacing the prior design's
+    -- unbounded GENERATING window (a process kill between claim and
+    -- terminal-mark left a row permanently stuck, unclaimable, since the
+    -- claim UPDATE only matched PENDING/FAILED_RETRYABLE). claimed_by is
+    -- a privacy-safe, per-attempt opaque token (never a raw hostname,
+    -- IP, or user identifier) — mark_terminal/mark_retryable_failure/
+    -- mark_terminal_failure all require it to match the CURRENT lease
+    -- holder before writing, so a stale worker whose lease already
+    -- expired and was reclaimed by someone else can never overwrite the
+    -- new claimant's result.
+    claimed_at                         TIMESTAMPTZ,
+    lease_expires_at                   TIMESTAMPTZ,
+    claimed_by                         TEXT,
     -- Stable machine-readable code only (e.g. "GENERATION_ERROR") — never
     -- a raw exception message, secret, connection string or report
     -- narrative (Sprint 2, Stage 5/18 privacy requirement).
@@ -627,6 +641,31 @@ CREATE INDEX IF NOT EXISTS idx_paper_trade_pm_report_status
     ON paper_trade_postmortem_report(status);
 CREATE INDEX IF NOT EXISTS idx_paper_trade_pm_report_market_date
     ON paper_trade_postmortem_report(market, report_trading_date);
+
+-- Trade Postmortem Engine, Sprint 2 correction phase (Stage 8) —
+-- database-level immutability for completed reports, identical pattern
+-- to trg_paper_trade_entry_snapshot_immutable /
+-- trg_paper_trade_exit_snapshot_immutable above. Application code
+-- (services/postmortem/report_store.py's persist_report) already never
+-- issues an UPDATE against this table — a completed report is INSERTed
+-- once per version triple and read back via ON CONFLICT DO NOTHING for
+-- every later request; this trigger makes that contract a database
+-- guarantee, not only an application convention. INSERT and DELETE are
+-- untouched (reset_portfolio must still be able to delete report rows
+-- for a reset trade). Same accurate wording as the snapshot triggers:
+-- immutable-by-UPDATE during normal application lifecycle, not
+-- absolutely immutable — an authorized portfolio reset may still DELETE
+-- a row.
+CREATE OR REPLACE FUNCTION reject_paper_trade_postmortem_report_update() RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'paper_trade_postmortem_report rows are immutable — UPDATE is not permitted (paper_trade_id=%)', OLD.paper_trade_id;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_paper_trade_postmortem_report_immutable ON paper_trade_postmortem_report;
+CREATE TRIGGER trg_paper_trade_postmortem_report_immutable
+    BEFORE UPDATE ON paper_trade_postmortem_report
+    FOR EACH ROW EXECUTE FUNCTION reject_paper_trade_postmortem_report_update();
 
 -- Trade Postmortem Engine — Buy idempotency (Part 7 of the migration-
 -- verification hardening gate). One row per (user_id, operation_type,
@@ -1177,6 +1216,13 @@ def _verify_schema_postconditions(conn) -> None:
         conn, table="paper_trade_exit_snapshot",
         trigger="trg_paper_trade_exit_snapshot_immutable",
         function="reject_paper_trade_exit_snapshot_update",
+    )
+    # Sprint 2 correction phase (Stage 8) — same contract for the
+    # persisted report store.
+    _verify_immutability_trigger_contract(
+        conn, table="paper_trade_postmortem_report",
+        trigger="trg_paper_trade_postmortem_report_immutable",
+        function="reject_paper_trade_postmortem_report_update",
     )
 
 
