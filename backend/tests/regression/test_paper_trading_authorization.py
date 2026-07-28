@@ -166,11 +166,19 @@ class TestPaperTradingAuth:
         assert found_attacker
 
     def test_sell_cross_user_blocked(self, client):
+        # Trade Postmortem Engine, Sprint 2 — paper_sell now issues the
+        # market-open probe (SELECT market FROM paper_trades) BEFORE
+        # delegating to close_service.close_paper_trade, which does its
+        # own row-locked ownership-check SELECT. Two queued fetchone
+        # results, matching that order.
         with patch.object(
             __import__("api.routers.paper_trading", fromlist=["_conn"]),
             "_conn",
-            lambda: _fake_conn(fetchone_results=[("user-victim", "AAPL", 1, 100.0, "OPEN", "US")]),
-        ):
+            lambda: _fake_conn(fetchone_results=[
+                ("US",),
+                ("user-victim", "AAPL", 1, 100.0, "OPEN", "US", None, None, "manual"),
+            ]),
+        ), patch("api.routers.paper_trading._is_market_open", return_value=True):
             resp = client.post(
                 "/api/paper-trading/sell/1", json={"price": 110.0}, headers=_auth("user-attacker")
             )

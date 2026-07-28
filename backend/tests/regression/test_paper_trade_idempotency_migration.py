@@ -70,17 +70,25 @@ class TestIdempotencyKeySchemaExecutionIsAttempted:
         class _FakeConn:
             def __init__(self):
                 self._last_sql = ""
+                self._last_params = None
 
             def execute(self, sql, params=None):
                 executed.append(sql)
                 self._last_sql = sql
+                self._last_params = params
                 return self
 
             def fetchone(self):
                 if "pronargs" in self._last_sql:
                     return ("O", 19, "public", "trigger", 0)
                 if "proname" in self._last_sql and "tgname" in self._last_sql:
-                    return ("reject_paper_trade_entry_snapshot_update",)
+                    # Trade Postmortem Engine, Sprint 2 — this postcondition
+                    # query now also runs for paper_trade_exit_snapshot, not
+                    # only paper_trade_entry_snapshot; derive the expected
+                    # function name from the query's own table parameter
+                    # (params[0]) rather than a single hardcoded string.
+                    table = self._last_params[0] if self._last_params else "paper_trade_entry_snapshot"
+                    return (f"reject_{table}_update",)
                 return (True,)
 
             def close(self):
