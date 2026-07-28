@@ -179,7 +179,7 @@ class _FakeConn:
 
         if stripped.startswith("INSERT INTO paper_trade_postmortem_report"):
             (paper_trade_id, user_id, market, trading_date, tz, schema_v, calc_v, rules_v, bundle_v,
-             ev_hash, status, structured, ev_items, claims, manifest, gaps, warnings) = params
+             ev_hash, status, structured, ev_items, claims, manifest, gaps, warnings, supersedes_id) = params
             key = (paper_trade_id, schema_v, calc_v, rules_v)
             for row in shared["report_rows"].values():
                 if (row[1], row[6], row[7], row[8]) == key:
@@ -188,7 +188,7 @@ class _FakeConn:
             shared["next_report_id"] += 1
             row = (new_id, paper_trade_id, user_id, market, trading_date, tz, schema_v, calc_v, rules_v,
                    bundle_v, ev_hash, status, _json.loads(structured), _json.loads(ev_items),
-                   _json.loads(claims), _json.loads(manifest), _json.loads(gaps), _json.loads(warnings))
+                   _json.loads(claims), _json.loads(manifest), _json.loads(gaps), _json.loads(warnings), supersedes_id)
             shared["report_rows"][new_id] = row
             return row
 

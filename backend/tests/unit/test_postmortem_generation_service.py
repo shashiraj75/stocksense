@@ -169,7 +169,7 @@ class _FakeConn:
         stripped = sql.strip()
         if stripped.startswith("INSERT INTO paper_trade_postmortem_report"):
             (paper_trade_id, user_id, market, trading_date, tz, schema_v, calc_v, rules_v, bundle_v,
-             ev_hash, status, structured, ev_items, claims, manifest, gaps, warnings) = params
+             ev_hash, status, structured, ev_items, claims, manifest, gaps, warnings, supersedes_id) = params
             key = (paper_trade_id, schema_v, calc_v, rules_v)
             for row in self.report_rows.values():
                 if (row[1], row[6], row[7], row[8]) == key:
@@ -179,7 +179,7 @@ class _FakeConn:
             self.next_id += 1
             row = (new_id, paper_trade_id, user_id, market, trading_date, tz, schema_v, calc_v, rules_v,
                    bundle_v, ev_hash, status, json.loads(structured), json.loads(ev_items),
-                   json.loads(claims), json.loads(manifest), json.loads(gaps), json.loads(warnings))
+                   json.loads(claims), json.loads(manifest), json.loads(gaps), json.loads(warnings), supersedes_id)
             self.report_rows[new_id] = row
             self._pending = row
             return self
