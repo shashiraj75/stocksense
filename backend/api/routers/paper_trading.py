@@ -24,6 +24,9 @@ from services.postmortem.entry_snapshot import (
     build_entry_snapshot,
     classify_evidence_completeness,
 )
+from services.postmortem.evidence_attribution import build_evidence_attribution
+from services.postmortem.daily_report import DailyTradePostmortem, build_daily_report
+from services.market_hours import IST, ET
 from services.postmortem.idempotency import (
     OPERATION_TYPE_PAPER_BUY,
     POLL_ATTEMPTS,
@@ -1671,6 +1674,381 @@ def reset_portfolio(user_id: str = Depends(get_current_user_id), market: Literal
         return {"message": f"{market} portfolio reset", cash_col: starting}
 
 
+# Trade Postmortem Engine, Stage 3 (Sprint 1 evidence-provenance rewrite)
+# — response schema for GET /postmortem/daily. `schema_version` tracks
+# this JSON *shape*; `calculation_version` fields nested per-trade (from
+# evidence_attribution.ATTRIBUTION_RULES_VERSION / daily_report.
+# DAILY_REPORT_CALCULATION_VERSION) track the *rules*, independently.
+# Bumped from 1.0.0 -> 2.0.0: the prototype's narrative/root_cause fields
+# are replaced outright (not additively) by the claim/evidence/
+# contributor-assessment model — a 1.0.0 client reading a 2.0.0 response
+# would find `narrative`/`root_cause` gone, so this is a genuine breaking
+# shape change, not an additive one. No production client exists yet
+# (this feature has never shipped), so no deprecation shim is needed.
+DAILY_POSTMORTEM_SCHEMA_VERSION = "2.0.0"
+
+# Market-local calendar-day timezone per market — the trading day a trade
+# "belongs to" is always the market's own local day, never UTC. Reuses
+# services/market_hours.py's IST/ET constants (the same timezones the
+# market-open/close logic itself uses) rather than defining a second,
+# potentially-drifting copy.
+_REPORT_TIMEZONE = {"IN": IST, "US": ET}
+
+# Feature gate — PR #32 pre-merge correction. Sprint 1's daily Postmortem
+# surface is an evidence-governance foundation, not the complete
+# investor-facing product (no close-to-report orchestration, no exit
+# snapshots, no persisted reports, no price-path/market/sector/news
+# evidence, no export yet — see services/postmortem/evidence_attribution.py's
+# module docstring). Most trades today correctly resolve to NOT_TESTABLE/
+# INSUFFICIENT_EVIDENCE, which is honest but not yet what a public surface
+# should default to showing. Deployed dormant: this endpoint 404s until
+# explicitly enabled. Mirrors the exact fail-safe kill-switch pattern
+# already proven in this codebase (services/recommendation_consolidation_
+# api_composer.py's RCI_LIVE_STOCK_ANALYSIS_ENABLED, services/
+# finnhub_client.py's ENABLE_FINNHUB_FOR_IN) — missing, empty, or any
+# unrecognized value resolves to disabled; only an explicit accepted true
+# value enables it. This function reads os.getenv ONLY for its own flag —
+# no other environment access, no logging of user data or evidence.
+_TRADE_POSTMORTEM_DAILY_ENV_VAR = "TRADE_POSTMORTEM_DAILY_ENABLED"
+
+
+def _trade_postmortem_daily_enabled() -> bool:
+    raw = os.getenv(_TRADE_POSTMORTEM_DAILY_ENV_VAR, "0").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+class EvidenceItemResponse(BaseModel):
+    evidence_id: str
+    category: str
+    name: str
+    value: object
+    units: str | None
+    observation_timestamp: datetime | None
+    source: str
+    source_type: str
+    verification_level: str
+    freshness_status: str
+    limitations: list[str]
+
+
+class PostmortemClaimResponse(BaseModel):
+    claim_id: str
+    report_section: str
+    factor: str
+    claim_text: str
+    evidence_class: str
+    confidence_band: str
+    supporting_evidence_ids: list[str]
+    opposing_evidence_ids: list[str]
+    missing_evidence: list[str]
+    contradiction_flags: list[str]
+    rule_id: str
+    rule_version: str
+    limitations: list[str]
+
+
+class SignalEvaluationResponse(BaseModel):
+    signal_id: str
+    signal_name: str
+    expected_interpretation: str | None
+    entry_evidence_id: str | None
+    comparison_evidence_ids: list[str]
+    status: str
+    evidence_class: str
+    confidence_band: str
+    explanation_claim_id: str
+    limitations: list[str]
+
+
+class ContributorAssessmentResponse(BaseModel):
+    category: str
+    support_level: str
+    evidence_class: str
+    confidence_band: str
+    supporting_evidence_ids: list[str]
+    opposing_evidence_ids: list[str]
+    claim_id: str
+    limitations: list[str]
+
+
+class EvidenceAttributionResponse(BaseModel):
+    evidence_items: list[EvidenceItemResponse]
+    claims: list[PostmortemClaimResponse]
+    signal_scorecard: list[SignalEvaluationResponse]
+    contributor_assessments: list[ContributorAssessmentResponse]
+    # Null whenever no single category clears the STRONGLY_SUPPORTED,
+    # no-competing-category bar — see evidence_attribution.py's
+    # _select_primary_contributor. A null value is an expected, honest
+    # result, not a missing-data bug; primary_contributor_claim_id always
+    # points at a claim explaining why (either the winning claim, or an
+    # INSUFFICIENT_EVIDENCE claim when null).
+    primary_contributor: str | None
+    primary_contributor_claim_id: str | None
+    thesis_verdict: str
+    thesis_verdict_claim_id: str
+    rule_registry_version: str
+    calculation_version: str
+    warnings: list[str]
+
+
+class DailyTradePostmortemResponse(BaseModel):
+    trade_id: int
+    symbol: str
+    market: str
+    postmortem: PostmortemResponse
+    attribution: EvidenceAttributionResponse
+
+
+class DailyPostmortemSummaryResponse(BaseModel):
+    date: str
+    market: str
+    trade_count: int
+    win_count: int
+    loss_count: int
+    breakeven_count: int
+    indeterminate_count: int
+    total_realized_pnl_abs: float | None
+    pnl_excluded_trade_count: int
+    recurring_supported_contributors: dict[str, int]
+    recurring_conflicting_contributors: dict[str, int]
+    recurring_not_assessable_count: dict[str, int]
+    trades_with_no_supported_contributor: int
+
+
+class DailyPostmortemReportResponse(BaseModel):
+    schema_version: str
+    summary: DailyPostmortemSummaryResponse
+    trades: list[DailyTradePostmortemResponse]
+    calculation_version: str
+    warnings: list[str]
+
+
+def _evidence_item_to_response(item) -> EvidenceItemResponse:
+    return EvidenceItemResponse(
+        evidence_id=item.evidence_id, category=item.category, name=item.name, value=item.value,
+        units=item.units, observation_timestamp=item.observation_timestamp, source=item.source,
+        source_type=item.source_type, verification_level=item.verification_level,
+        freshness_status=item.freshness_status, limitations=item.limitations,
+    )
+
+
+def _claim_to_response(claim) -> PostmortemClaimResponse:
+    return PostmortemClaimResponse(
+        claim_id=claim.claim_id, report_section=claim.report_section, factor=claim.factor,
+        claim_text=claim.claim_text, evidence_class=claim.evidence_class, confidence_band=claim.confidence_band,
+        supporting_evidence_ids=claim.supporting_evidence_ids, opposing_evidence_ids=claim.opposing_evidence_ids,
+        missing_evidence=claim.missing_evidence, contradiction_flags=claim.contradiction_flags,
+        rule_id=claim.rule_id, rule_version=claim.rule_version, limitations=claim.limitations,
+    )
+
+
+def _signal_evaluation_to_response(sig) -> SignalEvaluationResponse:
+    return SignalEvaluationResponse(
+        signal_id=sig.signal_id, signal_name=sig.signal_name, expected_interpretation=sig.expected_interpretation,
+        entry_evidence_id=sig.entry_evidence_id, comparison_evidence_ids=sig.comparison_evidence_ids,
+        status=sig.status, evidence_class=sig.evidence_class, confidence_band=sig.confidence_band,
+        explanation_claim_id=sig.explanation_claim_id, limitations=sig.limitations,
+    )
+
+
+def _contributor_to_response(c) -> ContributorAssessmentResponse:
+    return ContributorAssessmentResponse(
+        category=c.category, support_level=c.support_level, evidence_class=c.evidence_class,
+        confidence_band=c.confidence_band, supporting_evidence_ids=c.supporting_evidence_ids,
+        opposing_evidence_ids=c.opposing_evidence_ids, claim_id=c.claim_id, limitations=c.limitations,
+    )
+
+
+def _attribution_to_response(attribution) -> EvidenceAttributionResponse:
+    return EvidenceAttributionResponse(
+        evidence_items=[_evidence_item_to_response(e) for e in attribution.evidence_items],
+        claims=[_claim_to_response(c) for c in attribution.claims],
+        signal_scorecard=[_signal_evaluation_to_response(s) for s in attribution.signal_scorecard],
+        contributor_assessments=[_contributor_to_response(c) for c in attribution.contributor_assessments],
+        primary_contributor=attribution.primary_contributor,
+        primary_contributor_claim_id=attribution.primary_contributor_claim_id,
+        thesis_verdict=attribution.thesis_verdict,
+        thesis_verdict_claim_id=attribution.thesis_verdict_claim_id,
+        rule_registry_version=attribution.rule_registry_version,
+        calculation_version=attribution.calculation_version,
+        warnings=attribution.warnings,
+    )
+
+
+def _postmortem_to_response(result, snapshot: EntrySnapshot | None) -> PostmortemResponse:
+    return PostmortemResponse(
+        schema_version=POSTMORTEM_SCHEMA_VERSION,
+        trade_id=result.trade_id,
+        status=result.status,
+        outcome=result.outcome.value,
+        realized_pnl_abs=result.realized_pnl_abs,
+        realized_pnl_pct=result.realized_pnl_pct,
+        holding_duration_seconds=result.holding_duration_seconds,
+        exit_mechanism=result.exit_mechanism.value,
+        exit_mechanism_raw=result.exit_mechanism_raw,
+        trade_management_mode=result.trade_management_mode,
+        auto_close_timing_evidence=result.auto_close_timing_evidence.value,
+        evidence_completeness=result.evidence_completeness.value,
+        available_evidence_fields=result.available_evidence_fields,
+        missing_evidence_fields=result.missing_evidence_fields,
+        target_distance_at_exit_pct=result.target_distance_at_exit_pct,
+        stop_distance_at_exit_pct=result.stop_distance_at_exit_pct,
+        calculation_version=result.calculation_version,
+        warnings=result.warnings,
+        snapshot_schema_version=snapshot.snapshot_schema_version if snapshot else None,
+        evidence_source=snapshot.evidence_source if snapshot else None,
+        verification_levels=snapshot.verification_levels if snapshot else None,
+    )
+
+
+def _row_to_closed_trade_record(row) -> ClosedTradeRecord:
+    (tid, owner, status, sym, mkt, qty, ep, xp, sl, tp, opened, closed, mgmt_mode, exit_reason,
+     rec_source, pick_run_id, pick_rank, rec_gen_at, rec_ref_price, rec_entry_low, rec_entry_high,
+     rec_orig_stop, rec_orig_target, model_version, exec_slippage_pct) = row
+    return ClosedTradeRecord(
+        trade_id=tid,
+        status=status,
+        symbol=sym,
+        market=mkt,
+        quantity=qty,
+        entry_price=ep,
+        exit_price=xp,
+        stop_loss=sl,
+        target_price=tp,
+        opened_at=opened,
+        closed_at=closed,
+        trade_management_mode=mgmt_mode,
+        exit_reason=exit_reason,
+        recommendation_source=rec_source,
+        daily_pick_run_id=pick_run_id,
+        daily_pick_rank=pick_rank,
+        recommendation_generated_at=rec_gen_at,
+        recommendation_reference_price=rec_ref_price,
+        recommendation_entry_low=rec_entry_low,
+        recommendation_entry_high=rec_entry_high,
+        recommendation_original_stop_loss=rec_orig_stop,
+        recommendation_original_target=rec_orig_target,
+        model_version=model_version,
+        execution_slippage_pct=exec_slippage_pct,
+    ), owner
+
+
+@router.get("/postmortem/daily", response_model=DailyPostmortemReportResponse)
+def get_daily_postmortem(
+    date: str = Query(..., description="Market-local calendar day, YYYY-MM-DD"),
+    market: Literal["IN", "US", "ALL"] = Query("ALL"),
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    Trade Postmortem Engine, Stage 3 (Sprint 1 evidence-provenance rewrite)
+    — the Daily Trade Postmortem Report. For every trade this user closed
+    on `date` (each trade's own MARKET-LOCAL calendar day — IST for IN,
+    ET for US — never UTC), returns the deterministic Phase 1 postmortem
+    plus the Sprint 1 evidence attribution (services/postmortem/
+    evidence_attribution.py — claim-level provenance, non-circular signal
+    scorecard, multi-contributor model), aggregated into one day-level
+    report (services/postmortem/daily_report.py).
+
+    A day with zero matching trades returns 200 with an empty `trades` list
+    — a quiet trading day is a valid result, not an error.
+
+    Feature-gated (see _trade_postmortem_daily_enabled above) — disabled
+    by default. When disabled, returns 404 immediately: no date parsing,
+    no database query, no attribution computed, no internal configuration
+    detail exposed.
+    """
+    if not _trade_postmortem_daily_enabled():
+        raise HTTPException(status_code=404, detail={"error_code": "FEATURE_NOT_ENABLED"})
+
+    try:
+        target_date = datetime.strptime(date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date must be in YYYY-MM-DD format")
+
+    # Bounded UTC fetch window wide enough to contain `target_date`'s local
+    # midnight-to-midnight span in EITHER timezone this endpoint ever
+    # converts to (IST is UTC+5:30, ET is UTC-4/-5) — the precise per-row
+    # market-local-day match happens in Python below, never as a single
+    # ambiguous SQL date cast (see the plan's rationale: IN and US need
+    # different tz conversions within the same query).
+    window_start = datetime.combine(target_date, datetime.min.time(), tzinfo=timezone.utc) - timedelta(days=1)
+    window_end = datetime.combine(target_date, datetime.min.time(), tzinfo=timezone.utc) + timedelta(days=2)
+
+    market_filter_sql = "" if market == "ALL" else " AND market = %s"
+    params: tuple = (user_id, window_start, window_end)
+    if market != "ALL":
+        params = params + (market,)
+
+    with _conn() as conn:
+        rows = conn.execute(
+            f"""SELECT {_POSTMORTEM_ROW_COLUMNS} FROM paper_trades
+                WHERE user_id = %s AND status = 'CLOSED' AND closed_at >= %s AND closed_at < %s{market_filter_sql}
+                ORDER BY closed_at ASC""",
+            params,
+        ).fetchall()
+
+    daily_trades: list[DailyTradePostmortem] = []
+    response_trades: list[DailyTradePostmortemResponse] = []
+    for row in rows:
+        record, owner = _row_to_closed_trade_record(row)
+        if owner != user_id:
+            continue
+        tz = _REPORT_TIMEZONE.get(record.market)
+        if tz is None or record.closed_at is None:
+            continue
+        local_date = record.closed_at.astimezone(tz).date()
+        if local_date != target_date:
+            continue
+
+        with _conn() as snapshot_conn:
+            snapshot = _fetch_entry_snapshot(snapshot_conn, record.trade_id)
+        postmortem = compute_postmortem(record, snapshot=snapshot)
+        attribution = build_evidence_attribution(postmortem, snapshot)
+
+        daily_trades.append(
+            DailyTradePostmortem(
+                trade_id=record.trade_id,
+                symbol=record.symbol,
+                market=record.market,
+                postmortem=postmortem,
+                attribution=attribution,
+            )
+        )
+        response_trades.append(
+            DailyTradePostmortemResponse(
+                trade_id=record.trade_id,
+                symbol=record.symbol,
+                market=record.market,
+                postmortem=_postmortem_to_response(postmortem, snapshot),
+                attribution=_attribution_to_response(attribution),
+            )
+        )
+
+    report = build_daily_report(date, market, daily_trades)
+
+    return DailyPostmortemReportResponse(
+        schema_version=DAILY_POSTMORTEM_SCHEMA_VERSION,
+        summary=DailyPostmortemSummaryResponse(
+            date=report.summary.date,
+            market=report.summary.market,
+            trade_count=report.summary.trade_count,
+            win_count=report.summary.win_count,
+            loss_count=report.summary.loss_count,
+            breakeven_count=report.summary.breakeven_count,
+            indeterminate_count=report.summary.indeterminate_count,
+            total_realized_pnl_abs=report.summary.total_realized_pnl_abs,
+            pnl_excluded_trade_count=report.summary.pnl_excluded_trade_count,
+            recurring_supported_contributors=report.summary.recurring_supported_contributors,
+            recurring_conflicting_contributors=report.summary.recurring_conflicting_contributors,
+            recurring_not_assessable_count=report.summary.recurring_not_assessable_count,
+            trades_with_no_supported_contributor=report.summary.trades_with_no_supported_contributor,
+        ),
+        trades=response_trades,
+        calculation_version=report.calculation_version,
+        warnings=report.warnings,
+    )
+
+
 @router.get("/postmortem/{trade_id}", response_model=PostmortemResponse)
 def get_trade_postmortem(trade_id: int, user_id: str = Depends(get_current_user_id)):
     """
@@ -1767,3 +2145,5 @@ def get_trade_postmortem(trade_id: int, user_id: str = Depends(get_current_user_
         evidence_source=snapshot.evidence_source if snapshot else None,
         verification_levels=snapshot.verification_levels if snapshot else None,
     )
+
+
