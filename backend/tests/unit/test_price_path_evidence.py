@@ -69,7 +69,7 @@ class TestPricePathBarValidation:
 def _bundle(bars=(), **overrides):
     kwargs = dict(
         evidence_bundle_version="1.0.0", paper_trade_id=1, user_id="user-aaa",
-        symbol="TCS", market="IN", source_id="yfinance_daily", source_type="APPROVED_EXTERNAL_SOURCE",
+        symbol="TCS", market="IN", source_id="yfinance_daily", source_type="EXTERNAL_UNOFFICIAL_DAILY",
         source_version="1.0.0", provider_symbol="TCS.NS", price_adjustment_basis=UNADJUSTED,
         bar_interval="1d", market_timezone="Asia/Kolkata",
         entry_timestamp=dt.datetime(2026, 6, 1, tzinfo=IST),

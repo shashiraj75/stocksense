@@ -52,6 +52,36 @@ EXCURSION_NO_INTERIOR_BARS = "NO_INTERIOR_BARS"
 EXCURSION_BASIS_INCOMPATIBLE = "BASIS_INCOMPATIBLE"
 EXCURSION_INDETERMINATE_PNL = "INDETERMINATE_PNL"
 
+# --- Stage G level-history inventory finding ---
+# Three possible factual findings about whether this codebase can prove
+# what stop/target value applied at each point in a trade's holding
+# period:
+#   A. LEVEL_HISTORY_COMPLETE   — a full timestamped edit history exists.
+#   B. LEVEL_HISTORY_ENDPOINTS_ONLY — only the entry-time value
+#      (paper_trade_entry_snapshot.user_selected_stop_loss/
+#      target_price) and the final value at close
+#      (paper_trade_exit_snapshot.final_stop_loss/final_target_price)
+#      are known; any edits in between, and exactly when they took
+#      effect, are not recorded.
+#   C. LEVEL_HISTORY_UNAVAILABLE — neither endpoint is known.
+#
+# Inspection of entry_snapshot.py and exit_snapshot.py (both already
+# built in Sprint 2) confirms finding B is this codebase's actual,
+# current state: paper_trades.stop_loss/target_price are live-mutable
+# columns with no edit log, so only the entry-time and final-at-close
+# values are durably knowable — never a full history. Concretely, this
+# means a real trade calling classify_touch_order MUST pass
+# level_history_complete=False (finding B, not A) unless the stop and
+# target were verified never to have changed between entry and exit —
+# LEVEL_HISTORY_INCOMPLETE will be the near-universal real-world outcome
+# for any trade whose levels were ever edited, exactly as flagged in the
+# Sprint 3A checkpoint.
+LEVEL_HISTORY_COMPLETE = "LEVEL_HISTORY_COMPLETE"
+LEVEL_HISTORY_ENDPOINTS_ONLY = "LEVEL_HISTORY_ENDPOINTS_ONLY"
+LEVEL_HISTORY_UNAVAILABLE = "LEVEL_HISTORY_UNAVAILABLE"
+
+CURRENT_LEVEL_HISTORY_FINDING = LEVEL_HISTORY_ENDPOINTS_ONLY
+
 
 def _interior_bars(bundle: PricePathEvidenceBundle) -> tuple[PricePathBar, ...]:
     """Bars strictly between the entry-date bar and the exit-date bar —

@@ -160,7 +160,7 @@ def _bar_evidence_item(trade_id: int, bar, name: str) -> EvidenceItem:
         evidence_id=make_evidence_id(trade_id, "PRICE_PATH", name),
         category="PRICE_PATH", name=name, value={"high": bar.high, "low": bar.low, "session_date": bar.session_date.isoformat()},
         units=None, observation_timestamp=bar.timestamp, source=bar.source_id,
-        source_type=SourceType.APPROVED_EXTERNAL_SOURCE.value,
+        source_type=SourceType.EXTERNAL_UNOFFICIAL_DAILY.value,
         verification_level=EvidenceVerificationLevel.DIRECTLY_OBSERVED.value,
         freshness_status=FreshnessStatus.POINT_IN_TIME_VALID.value, limitations=[],
     )
@@ -177,7 +177,7 @@ def build_mfe_claim(trade_id: int, excursion: ExcursionResult) -> tuple[list[Evi
     item = EvidenceItem(
         evidence_id=make_evidence_id(trade_id, "PRICE_PATH", "mfe"), category="PRICE_PATH", name="mfe",
         value=excursion.mfe_price, units="price", observation_timestamp=excursion.mfe_timestamp_first_observed,
-        source="price_path_evidence", source_type=SourceType.APPROVED_EXTERNAL_SOURCE.value,
+        source="price_path_evidence", source_type=SourceType.EXTERNAL_UNOFFICIAL_DAILY.value,
         verification_level=EvidenceVerificationLevel.DIRECTLY_OBSERVED.value,
         freshness_status=FreshnessStatus.POINT_IN_TIME_VALID.value, limitations=[],
     )
@@ -202,7 +202,7 @@ def build_mae_claim(trade_id: int, excursion: ExcursionResult) -> tuple[list[Evi
     item = EvidenceItem(
         evidence_id=make_evidence_id(trade_id, "PRICE_PATH", "mae"), category="PRICE_PATH", name="mae",
         value=excursion.mae_price, units="price", observation_timestamp=excursion.mae_timestamp_first_observed,
-        source="price_path_evidence", source_type=SourceType.APPROVED_EXTERNAL_SOURCE.value,
+        source="price_path_evidence", source_type=SourceType.EXTERNAL_UNOFFICIAL_DAILY.value,
         verification_level=EvidenceVerificationLevel.DIRECTLY_OBSERVED.value,
         freshness_status=FreshnessStatus.POINT_IN_TIME_VALID.value, limitations=[],
     )

@@ -39,7 +39,17 @@ from services.postmortem.price_path_evidence import (
 )
 
 SOURCE_ID_YFINANCE_DAILY = "yfinance_daily"
-SOURCE_TYPE = "APPROVED_EXTERNAL_SOURCE"
+
+# Stage D0 terminology correction: yfinance is an unofficial, unlicensed
+# third-party dependency this codebase has never run a production-
+# authority or licensing review on. Calling it APPROVED_EXTERNAL_SOURCE
+# would falsely imply that review happened. EXTERNAL_UNOFFICIAL_DAILY
+# states plainly what it is; SOURCE_SCOPE states plainly what it is
+# permitted to be used for here — bounded, replayable evidence
+# acquisition only, never as a production-authoritative price feed for
+# any other part of this codebase (P&L, execution, portfolio valuation).
+SOURCE_TYPE = "EXTERNAL_UNOFFICIAL_DAILY"
+SOURCE_SCOPE = "BOUNDED_EVIDENCE_ACQUISITION_ONLY"
 # Bumped whenever this module's acquisition/window-construction RULES
 # change (not the underlying provider's own data) — independent of
 # EVIDENCE_BUNDLE_SCHEMA_VERSION, which tracks the persisted shape.
@@ -47,57 +57,117 @@ SOURCE_VERSION = "1.0.0"
 
 _MARKET_SUFFIX = {"US": "", "IN": ".NS"}
 
+# Stage D bounding: a single acquisition call must never request an
+# unbounded window or return an unbounded number of bars. These are
+# evidence-acquisition bounds only — they do not limit how long a paper
+# trade may be held; a longer hold is simply evidence-unavailable beyond
+# this window rather than silently fetched in full.
+MAX_ACQUISITION_WINDOW_DAYS = 1500  # ~4 calendar years of daily sessions
+MAX_ACQUISITION_BARS = 1100         # generous upper bound for ~4 years of trading days
+FETCH_TIMEOUT_SECONDS = 10
+
+
+class AcquisitionWindowTooLargeError(ValueError):
+    """Raised BEFORE any provider call is attempted — an oversized window
+    is rejected at the boundary, never silently truncated or fetched in
+    full and truncated after the fact."""
+
+
+class PriceProviderAcquisitionError(RuntimeError):
+    """Sanitized failure envelope (Stage D item 7) — the underlying
+    provider exception's raw message/stack (which may embed HTTP
+    internals, provider-specific error text, or transient infrastructure
+    detail) is never propagated verbatim to callers. `code` is a stable,
+    small vocabulary the generation pipeline can branch on (e.g. to mark
+    an outbox row retryable) without string-matching provider text."""
+
+    def __init__(self, code: str, message: str):
+        self.code = code
+        super().__init__(message)
+
 
 def _provider_symbol(symbol: str, market: str) -> str:
     return f"{symbol.upper()}{_MARKET_SUFFIX.get(market, '')}"
 
 
-def fetch_raw_daily_bars(provider_symbol: str, start: date, end: date) -> list[dict]:
+def _check_bounded_window(start: date, end: date) -> None:
+    if end < start:
+        raise AcquisitionWindowTooLargeError(f"end date {end} precedes start date {start}")
+    window_days = (end - start).days + 1
+    if window_days > MAX_ACQUISITION_WINDOW_DAYS:
+        raise AcquisitionWindowTooLargeError(
+            f"requested acquisition window is {window_days} days, exceeding the "
+            f"{MAX_ACQUISITION_WINDOW_DAYS}-day bound — evidence acquisition is refused, not truncated"
+        )
+
+
+def fetch_raw_daily_bars(
+    provider_symbol: str, start: date, end: date, *, timeout: int = FETCH_TIMEOUT_SECONDS,
+) -> list[dict]:
     """The one function in this module that calls yfinance. Returns a
     list of {date, open, high, low, close, volume} dicts, raw and
     unvalidated — build_price_path_evidence does all validation.
-    Network/provider errors propagate to the caller uncaught; the
-    generation pipeline is responsible for catching them and marking the
-    outbox row retryable rather than fabricating evidence."""
+    Provider/network errors are caught here and re-raised as a sanitized
+    PriceProviderAcquisitionError (Stage D item 7/8) — the caller never
+    sees raw provider exception internals, and this function never
+    returns a partially-built or fabricated bar list on failure."""
     import yfinance as yf
 
-    ticker = yf.Ticker(provider_symbol)
-    # end is exclusive in yfinance's own convention — widen by one day so
-    # the exit session itself is included.
-    df = ticker.history(
-        start=start.isoformat(), end=(end + timedelta(days=1)).isoformat(),
-        interval="1d", auto_adjust=True,
-    )
-    bars = []
-    for idx, row in df.iterrows():
-        bars.append({
-            "date": idx.date() if hasattr(idx, "date") else idx,
-            "open": float(row["Open"]),
-            "high": float(row["High"]),
-            "low": float(row["Low"]),
-            "close": float(row["Close"]),
-            "volume": float(row["Volume"]) if "Volume" in row and row["Volume"] == row["Volume"] else None,
-        })
+    try:
+        ticker = yf.Ticker(provider_symbol)
+        # end is exclusive in yfinance's own convention — widen by one day
+        # so the exit session itself is included.
+        df = ticker.history(
+            start=start.isoformat(), end=(end + timedelta(days=1)).isoformat(),
+            interval="1d", auto_adjust=True, timeout=timeout,
+        )
+        bars = []
+        for idx, row in df.iterrows():
+            bars.append({
+                "date": idx.date() if hasattr(idx, "date") else idx,
+                "open": float(row["Open"]),
+                "high": float(row["High"]),
+                "low": float(row["Low"]),
+                "close": float(row["Close"]),
+                "volume": float(row["Volume"]) if "Volume" in row and row["Volume"] == row["Volume"] else None,
+            })
+    except Exception as exc:
+        raise PriceProviderAcquisitionError(
+            "PROVIDER_FETCH_FAILED", f"daily bar acquisition failed for {provider_symbol}"
+        ) from exc
+    if len(bars) > MAX_ACQUISITION_BARS:
+        raise PriceProviderAcquisitionError(
+            "PROVIDER_RESPONSE_TOO_LARGE",
+            f"provider returned {len(bars)} bars, exceeding the {MAX_ACQUISITION_BARS}-bar bound",
+        )
     return bars
 
 
-def fetch_split_events(provider_symbol: str, start: date, end: date) -> list[date]:
+def fetch_split_events(
+    provider_symbol: str, start: date, end: date, *, timeout: int = FETCH_TIMEOUT_SECONDS,
+) -> list[date]:
     """Returns session dates on which a stock split occurred within
     [start, end], per yfinance's own corporate-action history. Used only
     to decide whether SPLIT_ADJUSTED bars remain safely comparable to
     this codebase's own UNADJUSTED paper-trade execution prices — never
     to adjust prices itself (this module never invents a split ratio
     reconciliation; a split in-window means the safe, honest answer is
-    LIMITED/UNAVAILABLE evidence, not a "corrected" number)."""
+    LIMITED/UNAVAILABLE evidence, not a "corrected" number). Errors are
+    sanitized identically to fetch_raw_daily_bars."""
     import yfinance as yf
 
-    ticker = yf.Ticker(provider_symbol)
-    splits = ticker.splits
-    events = []
-    for ts, ratio in splits.items():
-        d = ts.date() if hasattr(ts, "date") else ts
-        if start <= d <= end and ratio and ratio != 1.0:
-            events.append(d)
+    try:
+        ticker = yf.Ticker(provider_symbol)
+        splits = ticker.splits
+        events = []
+        for ts, ratio in splits.items():
+            d = ts.date() if hasattr(ts, "date") else ts
+            if start <= d <= end and ratio and ratio != 1.0:
+                events.append(d)
+    except Exception as exc:
+        raise PriceProviderAcquisitionError(
+            "PROVIDER_FETCH_FAILED", f"split-event acquisition failed for {provider_symbol}"
+        ) from exc
     return events
 
 
@@ -166,6 +236,9 @@ def build_price_path_evidence(
     limitations: list[str] = []
     source_manifest = {
         "source_id": SOURCE_ID_YFINANCE_DAILY,
+        "source_type": SOURCE_TYPE,
+        "source_scope": SOURCE_SCOPE,
+        "production_authoritative": False,
         "source_version": SOURCE_VERSION,
         "provider_symbol": _provider_symbol(symbol, market),
         "acquisition_mode": "auto_adjust_true",
@@ -293,6 +366,8 @@ def acquire_price_path_evidence(
     entry_date = entry_timestamp.astimezone(market_tzinfo).date()
     exit_date = exit_timestamp.astimezone(market_tzinfo).date()
 
+    _check_bounded_window(entry_date, exit_date)
+
     raw_bars = fetch_bars_fn(provider_symbol, entry_date, exit_date)
     split_events = fetch_splits_fn(provider_symbol, entry_date, exit_date)
 
@@ -302,3 +377,57 @@ def acquire_price_path_evidence(
         entry_timestamp=entry_timestamp, exit_timestamp=exit_timestamp,
         raw_bars=raw_bars, split_events=split_events,
     )
+
+
+# --- Stage F: price-basis / corporate-action compatibility classification ---
+# A separate, explicit classification layer on top of the bundle's own
+# coarser price_adjustment_basis field (UNADJUSTED/UNKNOWN_ADJUSTMENT).
+# This does not change bundle construction — it gives callers (report
+# rendering, docs, tests) a documented, six-state vocabulary for exactly
+# why a given evidence bundle's prices are or are not safely comparable
+# to the paper trade's own unadjusted execution prices.
+COMPATIBLE_UNADJUSTED = "COMPATIBLE_UNADJUSTED"
+COMPATIBLE_SPLIT_ADJUSTED = "COMPATIBLE_SPLIT_ADJUSTED"
+BASIS_MISMATCH = "BASIS_MISMATCH"
+SPLIT_IN_WINDOW = "SPLIT_IN_WINDOW"
+BASIS_UNKNOWN_ADJUSTMENT = "UNKNOWN_ADJUSTMENT"
+BASIS_INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
+
+
+def evaluate_basis_compatibility(
+    *, acquisition_mode: str | None, split_events: list[date], bars_observed: int,
+) -> str:
+    """Stage F — never assumes no split occurred. A split anywhere in the
+    requested window is the single most important fact and takes priority
+    over every other consideration, since this codebase has no reconciled
+    split-ratio adjustment logic (see build_price_path_evidence's own
+    docstring — a split in-window already forces UNKNOWN_ADJUSTMENT at
+    the bundle level; this function names that same fact under the
+    Stage F vocabulary for reporting purposes).
+
+    acquisition_mode is read from the persisted source_manifest — never
+    re-derived — so replay of an already-persisted evidence bundle
+    reproduces the identical compatibility result without any new
+    provider call (Stage D item 5 / Stage F's own "same persisted
+    evidence reproduces the same result" requirement)."""
+    if split_events:
+        return SPLIT_IN_WINDOW
+    if bars_observed <= 0:
+        return BASIS_INSUFFICIENT_EVIDENCE
+    if acquisition_mode == "auto_adjust_true":
+        # yfinance's auto_adjust=True history is split-adjusted, but
+        # absent any split in-window (checked above), split-adjusted and
+        # raw/unadjusted values are numerically identical for this
+        # window — safely comparable to this codebase's own unadjusted
+        # paper-trade execution prices.
+        return COMPATIBLE_UNADJUSTED
+    if acquisition_mode == "auto_adjust_false":
+        return COMPATIBLE_UNADJUSTED
+    if acquisition_mode == "total_return_adjusted":
+        # Never used for trade-path execution analysis (Stage F's own
+        # explicit prohibition) — always a mismatch against unadjusted
+        # execution prices, split or no split.
+        return BASIS_MISMATCH
+    if acquisition_mode is None:
+        return BASIS_INSUFFICIENT_EVIDENCE
+    return BASIS_UNKNOWN_ADJUSTMENT

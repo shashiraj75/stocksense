@@ -45,6 +45,12 @@ class SourceType(str, Enum):
     SERVER_DERIVED = "SERVER_DERIVED"
     CLIENT_REPORTED = "CLIENT_REPORTED"
     APPROVED_EXTERNAL_SOURCE = "APPROVED_EXTERNAL_SOURCE"
+    # A third-party market-data dependency used only for bounded,
+    # replayable evidence acquisition — NOT a vetted/licensed/production-
+    # authoritative source. Distinct from APPROVED_EXTERNAL_SOURCE, which
+    # implies an actual approval review this codebase has not performed
+    # for any provider. See price_path_acquisition.py's module docstring.
+    EXTERNAL_UNOFFICIAL_DAILY = "EXTERNAL_UNOFFICIAL_DAILY"
     UNAVAILABLE = "UNAVAILABLE"
 
 
