@@ -24,16 +24,25 @@ def _pg_error(sqlstate: str, message: str = "simulated") -> psycopg.Error:
     return exc
 
 
-def _generic_fetchone_for(sql: str):
+def _generic_fetchone_for(sql: str, params=None):
     """Shared fake-row generator for tests that only care about
     connection/lock lifecycle, not postcondition content — returns a
     row shaped correctly for whichever query is being asked, so the
     strengthened trigger-contract check (which unpacks 5 columns) does
-    not break tests that predate it and aren't testing it."""
+    not break tests that predate it and aren't testing it.
+
+    Trade Postmortem Engine, Sprint 2 — _verify_schema_postconditions now
+    calls the parameterized trigger-contract check TWICE (once for
+    paper_trade_entry_snapshot, once for paper_trade_exit_snapshot), each
+    expecting its OWN function name back. Deriving the expected name from
+    `params[0]` (the table name, always the query's first bound
+    parameter) rather than a single hardcoded string keeps this fake
+    correct for both calls instead of only the first one."""
     if "pronargs" in sql:
         return ("O", 19, "public", "trigger", 0)
     if "proname" in sql and "tgname" in sql:
-        return ("reject_paper_trade_entry_snapshot_update",)
+        table = params[0] if params else "paper_trade_entry_snapshot"
+        return (f"reject_{table}_update",)
     return (True,)
 
 
@@ -145,7 +154,7 @@ class TestFreshConnectionPerAttempt:
                 self.executed.append(sql)
                 if "pg_try_advisory_lock" in sql:
                     return MagicMock(fetchone=lambda: (True,))
-                return MagicMock(fetchone=lambda: _generic_fetchone_for(sql))
+                return MagicMock(fetchone=lambda: _generic_fetchone_for(sql, params))
 
             def close(self):
                 self.closed = True
@@ -181,7 +190,7 @@ class TestFreshConnectionPerAttempt:
                     return MagicMock(fetchone=lambda: (True,))
                 if self._should_fail and "CREATE TABLE" in sql:
                     raise _pg_error("40001", "serialization failure")
-                return MagicMock(fetchone=lambda: _generic_fetchone_for(sql))
+                return MagicMock(fetchone=lambda: _generic_fetchone_for(sql, params))
 
             def close(self):
                 self.closed = True
@@ -218,7 +227,7 @@ class TestAdvisoryLockReleaseOnEveryPath:
                 if "pg_advisory_unlock" in sql:
                     released.append(True)
                     return MagicMock(fetchone=lambda: (True,))
-                return MagicMock(fetchone=lambda: _generic_fetchone_for(sql))
+                return MagicMock(fetchone=lambda: _generic_fetchone_for(sql, params))
 
             def close(self):
                 pass
@@ -239,7 +248,7 @@ class TestAdvisoryLockReleaseOnEveryPath:
                     return MagicMock(fetchone=lambda: (True,))
                 if sql.strip().startswith("CREATE TABLE"):
                     raise _pg_error("42601", "syntax error")
-                return MagicMock(fetchone=lambda: _generic_fetchone_for(sql))
+                return MagicMock(fetchone=lambda: _generic_fetchone_for(sql, params))
 
             def close(self):
                 pass
@@ -259,7 +268,7 @@ class TestAdvisoryLockReleaseOnEveryPath:
 
         class _FakeConn:
             def execute(self, sql, params=None):
-                return MagicMock(fetchone=lambda: _generic_fetchone_for(sql))
+                return MagicMock(fetchone=lambda: _generic_fetchone_for(sql, params))
 
             def close(self):
                 pass
@@ -279,7 +288,7 @@ class TestMigrationOrderingAndPostconditionPropagation:
 
         class _FakeConn:
             def execute(self, sql, params=None):
-                return MagicMock(fetchone=lambda: _generic_fetchone_for(sql))
+                return MagicMock(fetchone=lambda: _generic_fetchone_for(sql, params))
 
             def close(self):
                 pass
@@ -300,7 +309,7 @@ class TestMigrationOrderingAndPostconditionPropagation:
 
         class _FakeConn:
             def execute(self, sql, params=None):
-                return MagicMock(fetchone=lambda: _generic_fetchone_for(sql))
+                return MagicMock(fetchone=lambda: _generic_fetchone_for(sql, params))
 
             def close(self):
                 pass

@@ -166,15 +166,30 @@ class TestPaperTradingAuth:
         assert found_attacker
 
     def test_sell_cross_user_blocked(self, client):
+        # Trade Postmortem Engine, Sprint 2 correction phase — the
+        # market-open probe is now user-scoped ("WHERE id = %s AND
+        # user_id = %s"), so a real database returns NO row for a trade
+        # owned by another user — indistinguishable from a nonexistent
+        # trade_id. The single queued fetchone result of None simulates
+        # exactly that real-database behavior (a naive queue-based fake
+        # can't itself evaluate the WHERE clause, so the queued value
+        # must match what the real, corrected query would return).
+        # close_service.close_paper_trade's own ownership check is never
+        # reached in this path — the leak-proof preflight is now the
+        # primary authorization boundary here, per the privacy
+        # correction; its own TradeNotOwnedError->403 mapping remains
+        # only as defense-in-depth for a same-request race, covered
+        # separately (not by this test).
         with patch.object(
             __import__("api.routers.paper_trading", fromlist=["_conn"]),
             "_conn",
-            lambda: _fake_conn(fetchone_results=[("user-victim", "AAPL", 1, 100.0, "OPEN", "US")]),
-        ):
+            lambda: _fake_conn(fetchone_results=[None]),
+        ), patch("api.routers.paper_trading._is_market_open", return_value=True):
             resp = client.post(
                 "/api/paper-trading/sell/1", json={"price": 110.0}, headers=_auth("user-attacker")
             )
-        assert resp.status_code == 403
+        assert resp.status_code == 404
+        assert "not found" in resp.json()["detail"].lower()
 
     def test_edit_cross_user_blocked(self, client):
         with patch.object(

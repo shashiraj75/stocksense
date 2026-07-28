@@ -457,6 +457,216 @@ CREATE TRIGGER trg_paper_trade_entry_snapshot_immutable
     BEFORE UPDATE ON paper_trade_entry_snapshot
     FOR EACH ROW EXECUTE FUNCTION reject_paper_trade_entry_snapshot_update();
 
+-- Trade Postmortem Engine, Sprint 2 — immutable exit-evidence snapshot.
+-- Mirrors paper_trade_entry_snapshot's exact pattern: one row per close
+-- event, inserted once inside the same transaction as the paper_trades
+-- close UPDATE (see services/postmortem/close_service.py), never UPDATEd
+-- afterward. paper_trade_id is UNIQUE (not a FOREIGN KEY, same rationale
+-- as the entry snapshot — this schema has no FK constraints anywhere;
+-- POST /reset explicitly removes matching rows itself).
+--
+-- trigger_timing_verification defaults to CLIENT_REPORTED_UNVERIFIED —
+-- see services/postmortem/deterministic.py's AutoCloseTimingEvidence:
+-- auto-close is browser-triggered, never backend-observed, so this value
+-- must never be promoted to SERVER_VERIFIED by any code path today.
+CREATE TABLE IF NOT EXISTS paper_trade_exit_snapshot (
+    id                              BIGSERIAL PRIMARY KEY,
+    paper_trade_id                  BIGINT NOT NULL UNIQUE,
+    user_id                         TEXT NOT NULL,
+    symbol                          TEXT NOT NULL,
+    market                          TEXT NOT NULL,
+    exit_snapshot_schema_version    TEXT NOT NULL,
+
+    financial_outcome               TEXT NOT NULL,
+    closure_classification          TEXT NOT NULL,
+    exit_mechanism                  TEXT NOT NULL,
+    exit_mechanism_raw              TEXT,
+
+    exit_price                      DOUBLE PRECISION NOT NULL CHECK (exit_price > 0 AND exit_price < 'Infinity'),
+    exit_quantity                   INTEGER NOT NULL CHECK (exit_quantity > 0),
+    closed_at                       TIMESTAMPTZ NOT NULL,
+    recorded_at                     TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    final_stop_loss                 DOUBLE PRECISION,
+    final_target_price              DOUBLE PRECISION,
+    trailing_stop_level             DOUBLE PRECISION,
+    time_exit_rule                  TEXT,
+    market_close_rule               TEXT,
+    management_mode                 TEXT NOT NULL,
+    levels_modified_after_entry     BOOLEAN,
+
+    source_request_id               TEXT,
+    trigger_observation_timestamp   TIMESTAMPTZ,
+    trigger_observation_price       DOUBLE PRECISION,
+    -- NOT_APPLICABLE | CLIENT_REPORTED_UNVERIFIED | SERVER_VERIFIED
+    trigger_timing_verification     TEXT NOT NULL DEFAULT 'CLIENT_REPORTED_UNVERIFIED',
+
+    source_metadata                 JSONB,
+    created_at                      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trade_exit_snapshot_trade ON paper_trade_exit_snapshot(paper_trade_id);
+CREATE INDEX IF NOT EXISTS idx_paper_trade_exit_snapshot_user ON paper_trade_exit_snapshot(user_id, symbol, market);
+
+-- Database-level immutability — identical pattern to
+-- trg_paper_trade_entry_snapshot_immutable above. INSERT and DELETE are
+-- untouched (reset_portfolio must still be able to delete snapshot rows
+-- for a reset trade; see its own explicit DELETE statements). Accurate
+-- wording: this table is immutable-by-UPDATE during normal application
+-- lifecycle, not absolutely immutable — an authorized portfolio reset may
+-- still DELETE a row, which is a documented, deliberate exception, not a
+-- gap in this trigger.
+CREATE OR REPLACE FUNCTION reject_paper_trade_exit_snapshot_update() RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'paper_trade_exit_snapshot rows are immutable — UPDATE is not permitted (paper_trade_id=%)', OLD.paper_trade_id;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_paper_trade_exit_snapshot_immutable ON paper_trade_exit_snapshot;
+CREATE TRIGGER trg_paper_trade_exit_snapshot_immutable
+    BEFORE UPDATE ON paper_trade_exit_snapshot
+    FOR EACH ROW EXECUTE FUNCTION reject_paper_trade_exit_snapshot_update();
+
+-- Trade Postmortem Engine, Sprint 2 — durable report-generation outbox.
+-- One row per (paper_trade_id, requested_report_schema_version,
+-- requested_calculation_version, requested_rules_version) — that
+-- quadruple is the idempotent-insertion boundary (INSERT ... ON CONFLICT
+-- DO NOTHING), so a duplicate close-commit-triggered generation attempt
+-- or a duplicate POST /generate call can never create a second row for
+-- the same logical generation request. A future rules/calculation-version
+-- bump creates a NEW row (and eventually a new report version), never
+-- mutates this one.
+--
+-- Claiming for processing is a single atomic UPDATE ... WHERE status IN
+-- ('PENDING','FAILED_RETRYABLE') ... RETURNING id (see
+-- services/postmortem/generation_service.py) — PostgreSQL's own row-level
+-- locking during that UPDATE is the concurrency guarantee, never a
+-- process-local lock, so two workers (or two request handlers) racing to
+-- claim the same row can never both succeed.
+CREATE TABLE IF NOT EXISTS paper_trade_postmortem_outbox (
+    id                                 BIGSERIAL PRIMARY KEY,
+    paper_trade_id                     BIGINT NOT NULL,
+    user_id                            TEXT NOT NULL,
+    requested_report_schema_version    TEXT NOT NULL,
+    requested_calculation_version      TEXT NOT NULL,
+    requested_rules_version            TEXT NOT NULL,
+    -- PENDING | GENERATING | COMPLETE | LIMITED_EVIDENCE | FAILED_RETRYABLE | FAILED_TERMINAL
+    status                             TEXT NOT NULL DEFAULT 'PENDING',
+    attempt_count                      INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at                    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_attempt_at                    TIMESTAMPTZ,
+    -- Trade Postmortem Engine, Sprint 2 correction phase — genuine
+    -- database-backed lease fields, replacing the prior design's
+    -- unbounded GENERATING window (a process kill between claim and
+    -- terminal-mark left a row permanently stuck, unclaimable, since the
+    -- claim UPDATE only matched PENDING/FAILED_RETRYABLE). claimed_by is
+    -- a privacy-safe, per-attempt opaque token (never a raw hostname,
+    -- IP, or user identifier) — mark_terminal/mark_retryable_failure/
+    -- mark_terminal_failure all require it to match the CURRENT lease
+    -- holder before writing, so a stale worker whose lease already
+    -- expired and was reclaimed by someone else can never overwrite the
+    -- new claimant's result.
+    claimed_at                         TIMESTAMPTZ,
+    lease_expires_at                   TIMESTAMPTZ,
+    claimed_by                         TEXT,
+    -- Stable machine-readable code only (e.g. "GENERATION_ERROR") — never
+    -- a raw exception message, secret, connection string or report
+    -- narrative (Sprint 2, Stage 5/18 privacy requirement).
+    last_error_code                    TEXT,
+    last_error_summary                 TEXT,
+    source_request_id                  TEXT,
+    created_at                         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at                       TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trade_pm_outbox_unique
+    ON paper_trade_postmortem_outbox(
+        paper_trade_id, requested_report_schema_version,
+        requested_calculation_version, requested_rules_version
+    );
+CREATE INDEX IF NOT EXISTS idx_paper_trade_pm_outbox_claim
+    ON paper_trade_postmortem_outbox(status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_paper_trade_pm_outbox_user
+    ON paper_trade_postmortem_outbox(user_id, paper_trade_id);
+
+-- Trade Postmortem Engine, Sprint 2 — versioned, persisted structured
+-- report store. structured_report/evidence_items/claims are the
+-- authoritative JSON representation (never only an unstructured
+-- paragraph) — field-for-field the same shape
+-- services/postmortem/evidence_attribution.py's EvidenceAttributionResult
+-- already produces, serialized once at generation time rather than
+-- recomputed on every read.
+--
+-- Current-version identity is the UNIQUE(paper_trade_id,
+-- report_schema_version, calculation_version, attribution_rules_version)
+-- quadruple below — deliberately NOT a separate "is_current" boolean
+-- column (which would need its own concurrency-safe flip-on-insert
+-- logic); "the current report for this trade" is simply the row matching
+-- today's live version constants, found by that same unique key. A
+-- completed row is NEVER UPDATEd or overwritten by a later generation
+-- attempt for the identical version triple — INSERT ... ON CONFLICT DO
+-- NOTHING lets the loser of a concurrent-generation race safely no-op and
+-- read back the winner's row instead. A genuinely new rules or
+-- calculation version naturally creates a new row under a new key,
+-- optionally linked via supersedes_report_id for audit trail.
+CREATE TABLE IF NOT EXISTS paper_trade_postmortem_report (
+    id                              BIGSERIAL PRIMARY KEY,
+    paper_trade_id                  BIGINT NOT NULL,
+    user_id                         TEXT NOT NULL,
+    market                          TEXT NOT NULL,
+    report_trading_date             DATE NOT NULL,
+    market_timezone                 TEXT NOT NULL,
+    report_schema_version           TEXT NOT NULL,
+    calculation_version             TEXT NOT NULL,
+    attribution_rules_version       TEXT NOT NULL,
+    evidence_bundle_version         TEXT NOT NULL,
+    evidence_hash                   TEXT NOT NULL,
+    -- COMPLETE | LIMITED_EVIDENCE | FAILED_TERMINAL
+    status                          TEXT NOT NULL,
+    structured_report               JSONB NOT NULL,
+    evidence_items                  JSONB NOT NULL,
+    claims                          JSONB NOT NULL,
+    source_manifest                 JSONB NOT NULL,
+    evidence_gaps                   JSONB NOT NULL DEFAULT '[]'::jsonb,
+    warnings                        JSONB NOT NULL DEFAULT '[]'::jsonb,
+    generated_at                    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    supersedes_report_id            BIGINT,
+    created_at                      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trade_pm_report_current_version
+    ON paper_trade_postmortem_report(
+        paper_trade_id, report_schema_version, calculation_version, attribution_rules_version
+    );
+CREATE INDEX IF NOT EXISTS idx_paper_trade_pm_report_user
+    ON paper_trade_postmortem_report(user_id, paper_trade_id);
+CREATE INDEX IF NOT EXISTS idx_paper_trade_pm_report_status
+    ON paper_trade_postmortem_report(status);
+CREATE INDEX IF NOT EXISTS idx_paper_trade_pm_report_market_date
+    ON paper_trade_postmortem_report(market, report_trading_date);
+
+-- Trade Postmortem Engine, Sprint 2 correction phase (Stage 8) —
+-- database-level immutability for completed reports, identical pattern
+-- to trg_paper_trade_entry_snapshot_immutable /
+-- trg_paper_trade_exit_snapshot_immutable above. Application code
+-- (services/postmortem/report_store.py's persist_report) already never
+-- issues an UPDATE against this table — a completed report is INSERTed
+-- once per version triple and read back via ON CONFLICT DO NOTHING for
+-- every later request; this trigger makes that contract a database
+-- guarantee, not only an application convention. INSERT and DELETE are
+-- untouched (reset_portfolio must still be able to delete report rows
+-- for a reset trade). Same accurate wording as the snapshot triggers:
+-- immutable-by-UPDATE during normal application lifecycle, not
+-- absolutely immutable — an authorized portfolio reset may still DELETE
+-- a row.
+CREATE OR REPLACE FUNCTION reject_paper_trade_postmortem_report_update() RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'paper_trade_postmortem_report rows are immutable — UPDATE is not permitted (paper_trade_id=%)', OLD.paper_trade_id;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_paper_trade_postmortem_report_immutable ON paper_trade_postmortem_report;
+CREATE TRIGGER trg_paper_trade_postmortem_report_immutable
+    BEFORE UPDATE ON paper_trade_postmortem_report
+    FOR EACH ROW EXECUTE FUNCTION reject_paper_trade_postmortem_report_update();
+
 -- Trade Postmortem Engine — Buy idempotency (Part 7 of the migration-
 -- verification hardening gate). One row per (user_id, operation_type,
 -- idempotency_key) — that triple is the uniqueness boundary a duplicate
@@ -827,6 +1037,17 @@ ALTER TABLE market_cache         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE signal_feedback      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE nps_responses        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE daily_picks_jobs     ENABLE ROW LEVEL SECURITY;
+
+-- Trade Postmortem Engine, Sprint 2 — same rationale as above, applied to
+-- the three new tables this sprint introduces. Blocks the public
+-- PostgREST API from ever reading/writing exit evidence, outbox state or
+-- persisted reports directly; this backend's own `postgres`-role
+-- connection (BYPASSRLS) is unaffected, and every application-level
+-- read/write already enforces user_id-scoped authorization independently
+-- (see services/postmortem/close_service.py, report_store.py).
+ALTER TABLE paper_trade_exit_snapshot     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE paper_trade_postmortem_outbox ENABLE ROW LEVEL SECURITY;
+ALTER TABLE paper_trade_postmortem_report ENABLE ROW LEVEL SECURITY;
 """
 
 
@@ -930,6 +1151,8 @@ _REQUIRED_SCHEMA_TABLES = [
     "predictions", "outcomes", "score_snapshots",
     "daily_picks_cache", "paper_trades", "paper_portfolio",
     "paper_trade_entry_snapshot", "paper_trade_idempotency_key",
+    "paper_trade_exit_snapshot", "paper_trade_postmortem_outbox",
+    "paper_trade_postmortem_report",
 ]
 
 _REQUIRED_SCHEMA_CONSTRAINTS = [
@@ -983,7 +1206,24 @@ def _verify_schema_postconditions(conn) -> None:
     if not row:
         raise SchemaInitializationError("required column missing: public.daily_picks_cache.status")
 
-    _verify_snapshot_immutability_trigger_contract(conn)
+    _verify_immutability_trigger_contract(
+        conn, table="paper_trade_entry_snapshot",
+        trigger="trg_paper_trade_entry_snapshot_immutable",
+        function="reject_paper_trade_entry_snapshot_update",
+    )
+    # Sprint 2 — same contract, same rigor, for the new exit snapshot.
+    _verify_immutability_trigger_contract(
+        conn, table="paper_trade_exit_snapshot",
+        trigger="trg_paper_trade_exit_snapshot_immutable",
+        function="reject_paper_trade_exit_snapshot_update",
+    )
+    # Sprint 2 correction phase (Stage 8) — same contract for the
+    # persisted report store.
+    _verify_immutability_trigger_contract(
+        conn, table="paper_trade_postmortem_report",
+        trigger="trg_paper_trade_postmortem_report_immutable",
+        function="reject_paper_trade_postmortem_report_update",
+    )
 
 
 # BEFORE (2) | ROW (1) | UPDATE (16) — see PostgreSQL's pg_trigger.tgtype
@@ -994,7 +1234,7 @@ _EXPECTED_SNAPSHOT_TRIGGER_TGTYPE = 19
 _EXPECTED_SNAPSHOT_TRIGGER_ENABLED = "O"  # origin/normal — fires for ordinary sessions
 
 
-def _verify_snapshot_immutability_trigger_contract(conn) -> None:
+def _verify_immutability_trigger_contract(conn, *, table: str, trigger: str, function: str) -> None:
     """
     PR #31 review correction — a trigger's mere existence (or even its
     name) proves nothing about its actual behavior: it could be
@@ -1005,6 +1245,10 @@ def _verify_snapshot_immutability_trigger_contract(conn) -> None:
     function's identity (by schema-qualified name, not name alone),
     that the function returns `trigger`, and that it takes no arguments
     (the expected no-argument PL/pgSQL trigger-function signature).
+
+    Sprint 2 — parameterized (table/trigger/function) so the identical
+    rigor applies to both paper_trade_entry_snapshot (Stage 2) and
+    paper_trade_exit_snapshot (Sprint 2) without duplicating this logic.
     """
     row = conn.execute(
         """SELECT t.tgenabled, t.tgtype, p.pronamespace::regnamespace::text,
@@ -1014,38 +1258,36 @@ def _verify_snapshot_immutability_trigger_contract(conn) -> None:
            JOIN pg_namespace tn ON tn.oid = c.relnamespace
            JOIN pg_proc p ON p.oid = t.tgfoid
            WHERE tn.nspname = 'public'
-             AND c.relname = 'paper_trade_entry_snapshot'
-             AND t.tgname = 'trg_paper_trade_entry_snapshot_immutable'
+             AND c.relname = %s
+             AND t.tgname = %s
              AND NOT t.tgisinternal""",
-        None,
+        (table, trigger),
     ).fetchone()
     if not row:
-        raise SchemaInitializationError(
-            "required trigger missing: public.paper_trade_entry_snapshot.trg_paper_trade_entry_snapshot_immutable"
-        )
+        raise SchemaInitializationError(f"required trigger missing: public.{table}.{trigger}")
 
     tgenabled, tgtype, func_schema, func_rettype, func_nargs = row
 
     if tgenabled != _EXPECTED_SNAPSHOT_TRIGGER_ENABLED:
         raise SchemaInitializationError(
-            f"snapshot immutability trigger is not in the normal enabled state (tgenabled={tgenabled!r})"
+            f"{table} immutability trigger is not in the normal enabled state (tgenabled={tgenabled!r})"
         )
     if tgtype != _EXPECTED_SNAPSHOT_TRIGGER_TGTYPE:
         raise SchemaInitializationError(
-            f"snapshot immutability trigger has unexpected timing/event (tgtype={tgtype}, "
+            f"{table} immutability trigger has unexpected timing/event (tgtype={tgtype}, "
             f"expected {_EXPECTED_SNAPSHOT_TRIGGER_TGTYPE} = BEFORE|ROW|UPDATE only)"
         )
     if func_schema != "public":
         raise SchemaInitializationError(
-            f"snapshot immutability trigger is bound to a function outside public schema: {func_schema}"
+            f"{table} immutability trigger is bound to a function outside public schema: {func_schema}"
         )
     if func_rettype != "trigger":
         raise SchemaInitializationError(
-            f"snapshot immutability trigger function does not return trigger (returns {func_rettype!r})"
+            f"{table} immutability trigger function does not return trigger (returns {func_rettype!r})"
         )
     if func_nargs != 0:
         raise SchemaInitializationError(
-            f"snapshot immutability trigger function has unexpected argument count ({func_nargs}, expected 0)"
+            f"{table} immutability trigger function has unexpected argument count ({func_nargs}, expected 0)"
         )
 
     row = conn.execute(
@@ -1054,14 +1296,15 @@ def _verify_snapshot_immutability_trigger_contract(conn) -> None:
            JOIN pg_namespace tn ON tn.oid = c.relnamespace
            JOIN pg_proc p ON p.oid = t.tgfoid
            WHERE tn.nspname = 'public'
-             AND c.relname = 'paper_trade_entry_snapshot'
-             AND t.tgname = 'trg_paper_trade_entry_snapshot_immutable'
-             AND NOT t.tgisinternal"""
+             AND c.relname = %s
+             AND t.tgname = %s
+             AND NOT t.tgisinternal""",
+        (table, trigger),
     ).fetchone()
-    if not row or row[0] != "reject_paper_trade_entry_snapshot_update":
+    if not row or row[0] != function:
         raise SchemaInitializationError(
-            f"snapshot immutability trigger is bound to an unexpected function: {row[0] if row else None!r} "
-            "(expected reject_paper_trade_entry_snapshot_update)"
+            f"{table} immutability trigger is bound to an unexpected function: {row[0] if row else None!r} "
+            f"(expected {function})"
         )
 
 

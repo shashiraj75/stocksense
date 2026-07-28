@@ -125,6 +125,21 @@ def _cleanup_synthetic_rows(pg_database_url, initialized_schema):
     yield
     with psycopg.connect(pg_database_url, autocommit=True) as conn:
         with conn.transaction():
+            # Sprint 2 tables first — same ordering rationale as the
+            # pre-existing entry-snapshot cleanup (no FK, so deleting
+            # child-ish rows slightly ahead of paper_trades is always safe).
+            conn.execute(
+                "DELETE FROM paper_trade_postmortem_report WHERE user_id LIKE %s",
+                (f"{SYNTHETIC_USER_PREFIX}%",)
+            )
+            conn.execute(
+                "DELETE FROM paper_trade_postmortem_outbox WHERE user_id LIKE %s",
+                (f"{SYNTHETIC_USER_PREFIX}%",)
+            )
+            conn.execute(
+                "DELETE FROM paper_trade_exit_snapshot WHERE user_id LIKE %s",
+                (f"{SYNTHETIC_USER_PREFIX}%",)
+            )
             conn.execute(
                 "DELETE FROM paper_trade_entry_snapshot WHERE user_id LIKE %s",
                 (f"{SYNTHETIC_USER_PREFIX}%",)

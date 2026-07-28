@@ -14,6 +14,7 @@ from services.market_hours import is_market_open as _is_market_open
 from services.paper_trade_math import compute_realized_pnl_abs, compute_realized_pnl_pct
 from services.rate_limit import limiter, USER_DATA_RATE_LIMIT
 from services.postmortem.deterministic import (
+    CALCULATION_VERSION,
     ClosedTradeRecord,
     compute_postmortem,
 )
@@ -24,15 +25,33 @@ from services.postmortem.entry_snapshot import (
     build_entry_snapshot,
     classify_evidence_completeness,
 )
-from services.postmortem.evidence_attribution import build_evidence_attribution
+from services.postmortem.evidence_attribution import ATTRIBUTION_RULES_VERSION, build_evidence_attribution
 from services.postmortem.daily_report import DailyTradePostmortem, build_daily_report
 from services.market_hours import IST, ET
+from services.postmortem.close_service import (
+    CloseServiceError,
+    CloseValidationError,
+    TradeAlreadyClosedError,
+    TradeNotFoundError,
+    TradeNotOwnedError,
+    UnsupportedMarketError,
+    close_paper_trade,
+    sell_exit_reason_to_mechanism,
+)
+from services.postmortem.close_service import _EXIT_SNAPSHOT_COLUMNS as _EXIT_SNAPSHOT_DB_COLUMNS
+from services.postmortem.close_service import _insert_outbox_record
+from services.postmortem.exit_snapshot import CloseExitMechanism, ExitSnapshot
+from services.postmortem import generation_service
+from services.postmortem import outbox as outbox_ops
+from services.postmortem import report_store
 from services.postmortem.idempotency import (
     OPERATION_TYPE_PAPER_BUY,
+    OPERATION_TYPE_PAPER_SELL,
     POLL_ATTEMPTS,
     POLL_INTERVAL_SECONDS,
     ExistingIdempotencyRow,
     IdempotencyAction,
+    compute_close_request_fingerprint,
     compute_request_fingerprint,
     decide_action,
     validate_idempotency_key_format,
@@ -49,6 +68,9 @@ router = APIRouter()
 # this version so a future shape change can tell old stored responses
 # apart from new ones.
 BUY_RESPONSE_SCHEMA_VERSION = "1.0.0"
+# Trade Postmortem Engine, Sprint 2 correction phase (Stage 6) — same
+# convention, for the /sell (close) idempotent-response contract.
+SELL_RESPONSE_SCHEMA_VERSION = "1.0.0"
 
 STARTING_CASH_IN = 1_000_000.0  # ₹10,00,000 virtual cash
 STARTING_CASH_US = 100_000.0    # $100,000 virtual cash — separate ledger, not a currency conversion of the above
@@ -642,10 +664,30 @@ class SellRequest(BaseModel):
     # (None) for an ordinary manual close.
     exit_reason: Literal["STOP_LOSS", "TARGET_HIT", "MANUAL"] | None = None
 
+    # Trade Postmortem Engine, Sprint 2 correction phase (Stage 6) — close
+    # idempotency, additive and backward compatible: an old client that
+    # omits this gets exactly today's behavior (no response-loss dedup
+    # guarantee, same as before this field existed — see paper_sell's own
+    # `idempotency_enforced` flag in its response). Mirrors BuyRequest's
+    # own idempotency_key field/validator exactly (same format rules, same
+    # (user_id, operation_type, idempotency_key) uniqueness contract, a
+    # DISTINCT operation_type so a Buy key and a Sell key never collide).
+    idempotency_key: str | None = None
+
     @field_validator("price")
     @classmethod
     def _validate_finite(cls, v):
         return _reject_non_finite(v)
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def _validate_idempotency_key(cls, v):
+        if v is not None:
+            try:
+                validate_idempotency_key_format(v)
+            except ValueError as e:
+                raise ValueError(str(e))
+        return v
 
 
 class EditRequest(BaseModel):
@@ -877,6 +919,169 @@ def _insert_entry_snapshot(conn, snapshot: EntrySnapshot) -> None:
     )
 
 
+def _exit_snapshot_exists(conn, trade_id: int) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM paper_trade_exit_snapshot WHERE paper_trade_id = %s", (trade_id,)
+    ).fetchone()
+    return row is not None
+
+
+def _fetch_exit_snapshot(conn, trade_id: int) -> ExitSnapshot | None:
+    """Trade Postmortem Engine, Sprint 2 correction phase, Stage 4 — the
+    typed counterpart to _exit_snapshot_exists (kept, still used where
+    only presence matters). Column order reuses close_service's own
+    _EXIT_SNAPSHOT_COLUMNS as the single source of truth (the same list
+    the INSERT is built from — see that module's Stage 1 correction
+    comment), so this SELECT and that INSERT can never drift apart."""
+    row = conn.execute(
+        f"SELECT {', '.join(_EXIT_SNAPSHOT_DB_COLUMNS)} FROM paper_trade_exit_snapshot WHERE paper_trade_id = %s",
+        (trade_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    values = list(row)
+    values[_EXIT_SNAPSHOT_DB_COLUMNS.index("source_metadata")] = _json_field(
+        values[_EXIT_SNAPSHOT_DB_COLUMNS.index("source_metadata")]
+    )
+    return ExitSnapshot(*values)
+
+
+# Trade Postmortem Engine, Sprint 2 correction phase — Stage 8/3
+# close-to-report behavior, rewritten around outbox.py's lease-based
+# claim/mark contract (see that module's docstring for the full design).
+_GENERATION_ERROR_CODE = "GENERATION_ERROR"
+
+# Stable, machine-readable status returned by POST /generate when another
+# valid (non-expired) lease currently owns the outbox row — never runs a
+# concurrent duplicate generation attempt.
+REPORT_GENERATION_IN_PROGRESS = "GENERATION_IN_PROGRESS"
+
+
+def _run_claimed_generation(conn, *, user_id: str, trade_id: int, outbox_id: int, claimed_by: str):
+    """Runs generation for an outbox row THIS caller has already claimed
+    (status = GENERATING, claimed_by = `claimed_by`). Returns the
+    PersistedReport on success. Any exception raised here (including
+    generation_service.StaleLeaseError) is caught by the caller and
+    turned into a FAILED_RETRYABLE mark using a FRESH connection and the
+    SAME claimed_by token — this function itself never swallows an
+    exception, so its caller always knows whether the attempt truly
+    reached a terminal/retryable state before returning."""
+    log.info("[postmortem_generation_started] trade_id=%s outbox_id=%s", trade_id, outbox_id)
+    row = conn.execute(
+        f"SELECT {_POSTMORTEM_ROW_COLUMNS} FROM paper_trades WHERE id = %s", (trade_id,)
+    ).fetchone()
+    if row is None:
+        log.warning("[postmortem_generation_terminal_failure] trade_id=%s outbox_id=%s error_code=%s",
+                    trade_id, outbox_id, "TRADE_MISSING")
+        outbox_ops.mark_terminal_failure(
+            conn, outbox_id=outbox_id, error_code="TRADE_MISSING",
+            error_summary="trade row not found at generation time", claimed_by=claimed_by,
+        )
+        return None
+    record, _owner = _row_to_closed_trade_record(row)
+    snapshot = _fetch_entry_snapshot(conn, trade_id)
+    exit_snapshot = _fetch_exit_snapshot(conn, trade_id)
+    postmortem = compute_postmortem(record, snapshot=snapshot)
+    tz = _REPORT_TIMEZONE.get(record.market)
+    trading_date = record.closed_at.astimezone(tz).date() if (tz and record.closed_at) else None
+    if trading_date is None:
+        log.warning("[postmortem_generation_retryable_failure] trade_id=%s outbox_id=%s error_code=%s",
+                    trade_id, outbox_id, "NO_TRADING_DATE")
+        outbox_ops.mark_retryable_failure(
+            conn, outbox_id=outbox_id, error_code="NO_TRADING_DATE",
+            error_summary="could not resolve a market-local trading date", claimed_by=claimed_by,
+        )
+        return None
+    market_timezone = "Asia/Kolkata" if record.market == "IN" else "America/New_York"
+    with conn.transaction():
+        report, _created = generation_service.generate_and_persist(
+            conn, trade_id=trade_id, user_id=user_id, market=record.market,
+            report_trading_date=trading_date, market_timezone=market_timezone,
+            postmortem=postmortem, entry_snapshot=snapshot, exit_snapshot=exit_snapshot,
+            outbox_id=outbox_id, claimed_by=claimed_by,
+        )
+    event = "[postmortem_generation_limited]" if report.status == "LIMITED_EVIDENCE" else "[postmortem_generation_completed]"
+    log.info("%s trade_id=%s outbox_id=%s status=%s", event, trade_id, outbox_id, report.status)
+    return report
+
+
+def _claim_and_run_generation(conn, *, user_id: str, trade_id: int, outbox_id: int):
+    """Claims `outbox_id` (lease-safe — reclaims a PENDING, eligible
+    FAILED_RETRYABLE, or expired-lease GENERATING row) and, if the claim
+    actually put THIS caller in GENERATING (as opposed to settling the
+    row FAILED_TERMINAL for exceeding the attempt limit, or matching
+    nothing because another valid lease already owns it), runs
+    generation. Returns one of:
+
+    - (PersistedReport, "GENERATED") — a report was produced this call.
+    - (None, "IN_PROGRESS") — another valid, non-expired lease currently
+      owns the row; the caller must not attempt concurrent generation.
+    - (None, "TERMINAL_NO_REPORT") — the claim itself settled the row
+      FAILED_TERMINAL (attempt limit exceeded) without ever generating.
+    - (None, "NOTHING_TO_DO") — the row is already COMPLETE/LIMITED_
+      EVIDENCE (a caller should have already checked for and returned
+      the persisted report before calling this — reaching here is a
+      benign race, not an error).
+
+    On any exception during generation, marks the row FAILED_RETRYABLE
+    (using the SAME claimed_by token, so a lease already lost to a
+    reclaimer safely no-ops rather than overwriting the new claimant) and
+    re-raises nothing — the caller only ever sees the tuple contract
+    above; a generation failure surfaces as (None, "IN_PROGRESS"-shaped
+    retry state), never an unhandled exception."""
+    claimant = outbox_ops.new_claimant_token()
+    claimed = outbox_ops.claim_next_attempt(conn, outbox_id=outbox_id, user_id=user_id, claimant=claimant)
+    if claimed is None:
+        return None, "IN_PROGRESS"
+    if claimed.status == "FAILED_TERMINAL":
+        return None, "TERMINAL_NO_REPORT"
+    if claimed.status != "GENERATING":
+        return None, "NOTHING_TO_DO"
+
+    try:
+        report = _run_claimed_generation(
+            conn, user_id=user_id, trade_id=trade_id, outbox_id=outbox_id, claimed_by=claimant
+        )
+    except Exception as exc:
+        # Privacy-safe: logs only the exception's class name, never its
+        # message, user data, evidence values, or report narrative.
+        log.warning("[postmortem_generation_retryable_failure] trade_id=%s outbox_id=%s error_code=%s",
+                    trade_id, outbox_id, type(exc).__name__)
+        outbox_ops.mark_retryable_failure(
+            conn, outbox_id=outbox_id, error_code=_GENERATION_ERROR_CODE,
+            error_summary=type(exc).__name__, claimed_by=claimant,
+        )
+        return None, "IN_PROGRESS"
+    if report is None:
+        return None, "IN_PROGRESS"
+    return report, "GENERATED"
+
+
+def _attempt_best_effort_generation(*, user_id: str, trade_id: int, outbox_id: int) -> None:
+    """Best-effort immediate post-commit generation, per Stage 8's own
+    explicit rule: 'a generation failure must never undo a valid trade
+    close' and 'do not block trade close on external network services'.
+    Called strictly AFTER the close transaction has already committed —
+    never allowed to turn this endpoint's response into an error, never a
+    500 for what is otherwise a successful sell.
+
+    Crash-safety: the lease-based claim in `_claim_and_run_generation`
+    means even a hard process kill between claim and mark no longer
+    leaves this row stuck forever — it becomes reclaimable again once its
+    lease (outbox.LEASE_DURATION_SECONDS) expires, via a later best-effort
+    attempt on a subsequent close, or via POST /postmortem/{trade_id}/
+    generate. The claim UPDATE itself is a single autocommitted statement
+    (this pool's connections default to autocommit — never wrapped in the
+    same `with conn.transaction():` block as generation/persistence), so
+    it is durably visible to any other connection the instant it commits,
+    independent of whether generation afterward ever completes."""
+    try:
+        with _conn() as conn:
+            _claim_and_run_generation(conn, user_id=user_id, trade_id=trade_id, outbox_id=outbox_id)
+    except Exception:
+        log.warning("[postmortem_generation] best-effort generation attempt failed: %s", "unexpected_error")
+
+
 @dataclass
 class _IdempotencyReservation:
     """Outcome of `_resolve_idempotency_reservation` — what the caller
@@ -891,13 +1096,22 @@ class _IdempotencyReservation:
 
 
 def _resolve_idempotency_reservation(
-    conn, user_id: str, idempotency_key: str, fingerprint: str
+    conn, user_id: str, idempotency_key: str, fingerprint: str, operation_type: str = OPERATION_TYPE_PAPER_BUY
 ) -> _IdempotencyReservation:
-    """Durable Buy-idempotency reservation — see
+    """Durable idempotency reservation — see
     services/postmortem/idempotency.py's module docstring for the full
     design rationale. Each iteration is its own read/decide/act step
     against fresh database state (never cached across iterations), so a
     concurrent request's progress is always correctly observed.
+
+    Trade Postmortem Engine, Sprint 2 correction phase (Stage 6):
+    `operation_type` is now a parameter (defaulting to
+    OPERATION_TYPE_PAPER_BUY, so every existing Buy call site is
+    unaffected) — paper_sell passes OPERATION_TYPE_PAPER_SELL, reusing
+    this exact same engine and the same `paper_trade_idempotency_key`
+    table. The (user_id, operation_type, idempotency_key) unique index
+    means a Buy key and a Sell key sharing the same string value for the
+    same user never collide.
 
     The reservation INSERT is a standalone statement (this pool's
     connections are autocommit=True outside an explicit
@@ -916,7 +1130,7 @@ def _resolve_idempotency_reservation(
                    VALUES (%s, %s, %s, %s, 'PENDING')
                    ON CONFLICT (user_id, operation_type, idempotency_key) DO NOTHING
                    RETURNING id""",
-                (user_id, OPERATION_TYPE_PAPER_BUY, idempotency_key, fingerprint)
+                (user_id, operation_type, idempotency_key, fingerprint)
             ).fetchone()
             if inserted is not None:
                 _metrics.increment(_metrics.COUNTER_FRESH_RESERVATION)
@@ -926,7 +1140,7 @@ def _resolve_idempotency_reservation(
                 """SELECT id, status, request_fingerprint, response_body, created_at
                    FROM paper_trade_idempotency_key
                    WHERE user_id = %s AND operation_type = %s AND idempotency_key = %s""",
-                (user_id, OPERATION_TYPE_PAPER_BUY, idempotency_key)
+                (user_id, operation_type, idempotency_key)
             ).fetchone()
             if row is None:
                 # Extremely unlikely race (e.g. a reset deleted it between our
@@ -992,6 +1206,30 @@ def _resolve_idempotency_reservation(
         _metrics.increment(_metrics.COUNTER_ALREADY_IN_PROGRESS)
         log.info("[idempotency] poll exhausted, still in progress for key_ref=%s user=%s", key_ref, user_id)
         return _IdempotencyReservation(IdempotencyAction.STILL_IN_PROGRESS.value, None, None)
+
+
+def _mark_close_idempotency_failed(conn, enforced: bool, reservation, reason: str) -> None:
+    """Trade Postmortem Engine, Sprint 2 correction phase (Stage 6) —
+    marks a Sell idempotency reservation FAILED so it becomes immediately
+    reclaimable on the next attempt with the same key, mirroring
+    paper_buy's own identical failure-marking pattern. A business-rule
+    failure (trade not found, not owned, already closed, validation) or a
+    genuine crash both leave zero financial effect here (the transaction
+    rolled back), so there is nothing unsafe about allowing an immediate
+    retry. `reason` is a short, fixed, non-sensitive label — never a raw
+    exception message or request payload (Part 10's same no-sensitive-
+    data-in-this-column discipline Buy's own failure path already
+    follows)."""
+    if not enforced or reservation is None or reservation.row_id is None:
+        return
+    try:
+        conn.execute(
+            "UPDATE paper_trade_idempotency_key SET status = 'FAILED', failure_reason = %s "
+            "WHERE id = %s AND status = 'PENDING'",
+            (reason[:500], reservation.row_id)
+        )
+    except Exception:
+        pass
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -1392,66 +1630,176 @@ def paper_buy(request: Request, req: BuyRequest, user_id: str = Depends(get_curr
 
 @router.post("/sell/{trade_id}")
 def paper_sell(trade_id: int, req: SellRequest, user_id: str = Depends(get_current_user_id)):
+    """
+    Trade Postmortem Engine, Sprint 2 — the sole manual/stop-loss/target
+    close path now delegates to services.postmortem.close_service.
+    close_paper_trade for the trade UPDATE, immutable exit snapshot, and
+    outbox record, all inside one transaction; this endpoint's own
+    responsibilities are limited to the market-open business rule (not
+    the close service's concern) and crediting cash to the correct
+    market's portfolio column inside that SAME transaction.
+    """
     if req.price <= 0:
         raise HTTPException(status_code=400, detail="Price must be > 0")
 
-    with _conn() as conn:
-        trade = conn.execute(
-            "SELECT user_id, symbol, quantity, entry_price, status, market FROM paper_trades WHERE id = %s",
-            (trade_id,)
-        ).fetchone()
+    exit_mechanism = sell_exit_reason_to_mechanism(req.exit_reason)
 
-        if trade is None:
-            raise HTTPException(status_code=404, detail="Trade not found")
-
-        owner, sym, qty, ep, status, trade_market = trade
-        if owner != user_id:
-            raise HTTPException(status_code=403, detail="Not your trade")
-        if status != "OPEN":
-            raise HTTPException(status_code=400, detail="Trade already closed")
-        if not _is_market_open(trade_market):
-            raise HTTPException(status_code=400, detail=f"{trade_market} market is closed — orders are paused until it reopens")
-
-        cash_col = _CASH_COL[trade_market]
-        proceeds = req.price * qty
-        # Trade Postmortem Engine, Phase 1 — same shared function as
-        # _trade_row_to_dict above; single authoritative P&L calculation
-        # path. pnl_pct preserves this endpoint's pre-existing `0` fallback
-        # for the (practically unreachable, since /buy and /sell both
-        # reject price <= 0) ep <= 0 case, rather than switching this
-        # response to `None`.
-        pnl = compute_realized_pnl_abs(ep, req.price, qty)
-        pnl_pct = compute_realized_pnl_pct(ep, req.price)
-        pnl_pct = pnl_pct if pnl_pct is not None else 0
-
-        # WHERE ... AND status = 'OPEN' makes this close idempotent at the
-        # database level: a duplicate/racing close request (e.g. an auto-close
-        # firing twice from two browser tabs) updates zero rows the second
-        # time instead of double-crediting cash or overwriting the exit price.
-        closed = conn.execute(
-            "UPDATE paper_trades SET exit_price = %s, status = 'CLOSED', closed_at = now(), exit_reason = %s "
-            "WHERE id = %s AND status = 'OPEN' RETURNING id",
-            (req.price, req.exit_reason, trade_id)
-        ).fetchone()
-        if closed is None:
-            raise HTTPException(status_code=400, detail="Trade already closed")
-        conn.execute(
-            f"UPDATE paper_portfolio SET {cash_col} = {cash_col} + %s, updated_at = now() WHERE user_id = %s",
-            (proceeds, user_id)
+    # Trade Postmortem Engine, Sprint 2 correction phase (Stage 6) —
+    # additive, backward-compatible close idempotency. A client that
+    # omits idempotency_key gets exactly today's behavior (no
+    # response-loss dedup guarantee — the honest, documented limitation
+    # until the frontend's own auto-close callers begin supplying stable
+    # keys). Mirrors paper_buy's own idempotency wiring exactly, reusing
+    # the SAME engine (services.postmortem.idempotency) with a DISTINCT
+    # operation_type so a Buy key and a Sell key never collide.
+    close_idempotency_enforced = req.idempotency_key is not None
+    close_fingerprint = None
+    if close_idempotency_enforced:
+        close_fingerprint = compute_close_request_fingerprint(
+            trade_id=trade_id, exit_price=req.price, exit_reason=req.exit_reason,
         )
 
-    return {
-        "message": "Paper sell placed",
-        "trade_id": trade_id,
-        "symbol": sym,
-        "market": trade_market,
-        "quantity": qty,
-        "entry_price": ep,
-        "exit_price": req.price,
-        "pnl": pnl,
-        "pnl_pct": pnl_pct,
-        "proceeds": round(proceeds, 2),
-    }
+    with _conn() as conn:
+        close_reservation = None
+        if close_idempotency_enforced:
+            close_reservation = _resolve_idempotency_reservation(
+                conn, user_id, req.idempotency_key, close_fingerprint, operation_type=OPERATION_TYPE_PAPER_SELL,
+            )
+            if close_reservation.action == IdempotencyAction.REPLAY_COMPLETED.value:
+                return close_reservation.response_body
+            if close_reservation.action == IdempotencyAction.CONFLICT_FINGERPRINT_MISMATCH.value:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error_code": "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST",
+                        "message": "This idempotency_key was already used for a Sell request with different terms. Use a new key for a genuinely new Sell decision.",
+                    },
+                )
+            if close_reservation.action == IdempotencyAction.STILL_IN_PROGRESS.value:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error_code": "SELL_ALREADY_IN_PROGRESS",
+                        "message": "A Sell request with this idempotency_key is still being processed. Retry shortly with the same key.",
+                    },
+                )
+            # else PROCEED_FRESH or PROCEED_RECLAIMED — close_reservation.row_id is set, continue below.
+
+        # Trade Postmortem Engine, Sprint 2 correction phase — this probe
+        # previously queried by trade_id ALONE ("SELECT market FROM
+        # paper_trades WHERE id = %s"), so any authenticated user could
+        # learn whether an arbitrary trade_id exists, which market it's
+        # in, and whether that market is currently open — all before
+        # close_paper_trade's own ownership check ever ran. Now
+        # user-scoped (WHERE id = %s AND user_id = %s): a nonexistent
+        # trade and a trade owned by another user are indistinguishable
+        # here, both simply return no row, and both get the identical 404
+        # below — never leaking existence, market, or open/closed state
+        # for a trade the caller doesn't own. close_paper_trade's own
+        # ownership check (TradeNotOwnedError -> 403 further down) is
+        # retained as defense in depth for a same-request race (this
+        # probe and the close read the database at two different points
+        # in time), not as the primary authorization boundary.
+        trade_market_probe = conn.execute(
+            "SELECT market FROM paper_trades WHERE id = %s AND user_id = %s", (trade_id, user_id)
+        ).fetchone()
+        if trade_market_probe is None:
+            raise HTTPException(status_code=404, detail="Trade not found")
+        if not _is_market_open(trade_market_probe[0]):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{trade_market_probe[0]} market is closed — orders are paused until it reopens",
+            )
+
+        try:
+            with conn.transaction():
+                result = close_paper_trade(
+                    conn,
+                    user_id=user_id,
+                    trade_id=trade_id,
+                    exit_price=req.price,
+                    exit_mechanism=exit_mechanism,
+                    exit_mechanism_raw=req.exit_reason,
+                    # source_request_id is a caller-supplied, non-secret
+                    # correlation token stored on the exit snapshot's own
+                    # dedicated column — it is NOT the raw idempotency key
+                    # (never store that anywhere outside
+                    # paper_trade_idempotency_key itself, and never log it
+                    # — _metrics.hash_key_prefix below is the only
+                    # logged representation).
+                    source_request_id=(
+                        _metrics.hash_key_prefix(req.idempotency_key) if close_idempotency_enforced else None
+                    ),
+                )
+                cash_col = _CASH_COL[result.market]
+                conn.execute(
+                    f"UPDATE paper_portfolio SET {cash_col} = {cash_col} + %s, updated_at = now() WHERE user_id = %s",
+                    (result.proceeds, user_id),
+                )
+
+                response = {
+                    "message": "Paper sell placed",
+                    "trade_id": trade_id,
+                    "symbol": result.symbol,
+                    "market": result.market,
+                    "quantity": result.quantity,
+                    "entry_price": result.entry_price,
+                    "exit_price": result.exit_price,
+                    "pnl": result.realized_pnl_abs,
+                    # Trade Postmortem Engine, Sprint 2 correction phase —
+                    # CloseResult.realized_pnl_pct now preserves a genuine
+                    # None (an indeterminate percentage, e.g. a legacy/
+                    # corrupt non-positive entry_price) rather than
+                    # close_service coercing it to 0. The "0" fallback
+                    # below reproduces this endpoint's own pre-refactor
+                    # response contract exactly (see
+                    # test_paper_trading_postmortem_pnl_parity.py's
+                    # locked-in old formula: `... if ep and ep > 0 else
+                    # 0`) — applied ONLY here, at the JSON boundary, never
+                    # inside the authoritative close service, so an
+                    # indeterminate percentage is never misrepresented as
+                    # a computed zero anywhere else that consumes
+                    # CloseResult (e.g. the report/evidence integration).
+                    "pnl_pct": result.realized_pnl_pct if result.realized_pnl_pct is not None else 0,
+                    "proceeds": result.proceeds,
+                    # Trade Postmortem Engine, Sprint 2 correction phase —
+                    # mirrors paper_buy's own idempotency_enforced flag:
+                    # lets a caller/monitoring tell whether the
+                    # response-loss-safe replay guarantee actually applied
+                    # to this specific request.
+                    "idempotency_enforced": close_idempotency_enforced,
+                }
+
+                if close_idempotency_enforced:
+                    conn.execute(
+                        """UPDATE paper_trade_idempotency_key
+                           SET status = 'COMPLETED', paper_trade_id = %s, response_body = %s,
+                               response_schema_version = %s, completed_at = now()
+                           WHERE id = %s""",
+                        (trade_id, json.dumps(response), SELL_RESPONSE_SCHEMA_VERSION, close_reservation.row_id)
+                    )
+        except TradeNotFoundError:
+            _mark_close_idempotency_failed(conn, close_idempotency_enforced, close_reservation, "trade not found")
+            raise HTTPException(status_code=404, detail="Trade not found")
+        except TradeNotOwnedError:
+            _mark_close_idempotency_failed(conn, close_idempotency_enforced, close_reservation, "not owned")
+            raise HTTPException(status_code=403, detail="Not your trade")
+        except TradeAlreadyClosedError:
+            _mark_close_idempotency_failed(conn, close_idempotency_enforced, close_reservation, "already closed")
+            raise HTTPException(status_code=400, detail="Trade already closed")
+        except (CloseValidationError, UnsupportedMarketError) as exc:
+            _mark_close_idempotency_failed(conn, close_idempotency_enforced, close_reservation, "validation error")
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    # Stage 8 — best-effort immediate post-commit report generation. The
+    # close transaction has ALREADY committed successfully by this point
+    # (we're past the `with _conn()` block) — a failure here can only
+    # ever leave the outbox row in its already-durable PENDING state for
+    # later on-request recovery; it can never undo the trade close, and
+    # is never allowed to turn this endpoint's response into an error.
+    _attempt_best_effort_generation(user_id=user_id, trade_id=trade_id, outbox_id=result.outbox_id)
+
+    return response
 
 
 @router.patch("/trade/{trade_id}")
@@ -1617,6 +1965,22 @@ def reset_portfolio(user_id: str = Depends(get_current_user_id), market: Literal
                 # still-existing trade_id are harmless to delete slightly
                 # ahead of the trade itself; the reverse order would risk a
                 # moment where a snapshot row is gone but its trade isn't).
+                #
+                # Trade Postmortem Engine, Sprint 2, Stage 11 — reset's
+                # EXISTING contract (established above, unchanged by this
+                # sprint) is DELETION of a user's trades and their
+                # evidence, not administrative closure. The three Sprint 2
+                # durability tables (exit snapshot, generation outbox,
+                # persisted report) each carry their own user_id column
+                # and are deleted the same way, before paper_trades, so a
+                # reset never leaves an orphaned outbox/report row behind.
+                # This means a persisted report or exit snapshot is
+                # immutable-by-UPDATE during normal lifecycle, but not
+                # absolutely immutable — an authorized reset may delete
+                # it, exactly like the entry snapshot already does.
+                conn.execute("DELETE FROM paper_trade_postmortem_report WHERE user_id = %s", (user_id,))
+                conn.execute("DELETE FROM paper_trade_postmortem_outbox WHERE user_id = %s", (user_id,))
+                conn.execute("DELETE FROM paper_trade_exit_snapshot WHERE user_id = %s", (user_id,))
                 conn.execute("DELETE FROM paper_trade_entry_snapshot WHERE user_id = %s", (user_id,))
                 conn.execute("DELETE FROM paper_trades WHERE user_id = %s", (user_id,))
                 # Migration-verification hardening gate, Part 7 — a full
@@ -1637,6 +2001,31 @@ def reset_portfolio(user_id: str = Depends(get_current_user_id), market: Literal
                 )
                 return {"message": "Portfolio reset", "cash": STARTING_CASH_IN, "cash_usd": STARTING_CASH_US}
 
+            # Trade Postmortem Engine, Sprint 2, Stage 11 — same orphan
+            # prevention as the ALL-markets branch above, scoped to this
+            # one market. paper_trade_postmortem_report and
+            # paper_trade_exit_snapshot both carry their own `market`
+            # column and can be filtered directly. paper_trade_postmortem_
+            # outbox does NOT carry a market column (it is scoped only by
+            # paper_trade_id/user_id — see postgres_store.py), so its rows
+            # are identified via a subquery against paper_trades, and MUST
+            # run before the paper_trades DELETE below removes the rows
+            # that subquery depends on.
+            conn.execute(
+                "DELETE FROM paper_trade_postmortem_report WHERE user_id = %s AND market = %s",
+                (user_id, market)
+            )
+            conn.execute(
+                """DELETE FROM paper_trade_postmortem_outbox
+                   WHERE user_id = %s AND paper_trade_id IN (
+                       SELECT id FROM paper_trades WHERE user_id = %s AND market = %s
+                   )""",
+                (user_id, user_id, market)
+            )
+            conn.execute(
+                "DELETE FROM paper_trade_exit_snapshot WHERE user_id = %s AND market = %s",
+                (user_id, market)
+            )
             conn.execute(
                 "DELETE FROM paper_trade_entry_snapshot WHERE user_id = %s AND market = %s",
                 (user_id, market)
@@ -2147,3 +2536,168 @@ def get_trade_postmortem(trade_id: int, user_id: str = Depends(get_current_user_
     )
 
 
+
+
+class GenerateReportResponse(BaseModel):
+    trade_id: int
+    # GENERATED (this call produced a new/first report row) |
+    # ALREADY_COMPLETE (a persisted report for the current version triple
+    # already existed — returned idempotently, nothing generated) |
+    # IN_PROGRESS (another valid, non-expired lease currently owns this
+    # trade's outbox row — no concurrent duplicate generation was
+    # attempted; retry later).
+    generation_status: str
+    status: str | None = None
+    report_schema_version: str | None = None
+    calculation_version: str | None = None
+    attribution_rules_version: str | None = None
+    generated: bool
+    evidence_gap_count: int | None = None
+
+
+@router.post("/postmortem/{trade_id}/generate", response_model=GenerateReportResponse)
+def generate_trade_postmortem_endpoint(trade_id: int, user_id: str = Depends(get_current_user_id)):
+    """
+    Trade Postmortem Engine, Sprint 2 — safe, idempotent, user-scoped
+    generation trigger, and (correction phase, Stage 3) THE explicit
+    recovery mechanism for a PENDING/FAILED_RETRYABLE/stale-GENERATING
+    outbox row — GET /postmortem/{trade_id} above remains completely
+    read-only and unchanged by this sprint; it never claims, generates,
+    or writes anything. Callers that want a trade's report durably
+    persisted (as opposed to Phase 1's own always-fresh computation) call
+    this endpoint, not GET.
+
+    This endpoint:
+    - derives the user strictly from the authenticated session, never a
+      request parameter;
+    - never alters the trade itself (no UPDATE to paper_trades anywhere
+      in this call path);
+    - never accepts or injects evidence from the request body — the only
+      input is `trade_id`, evidence comes exclusively from already-
+      stored trade/entry-snapshot/exit-snapshot rows;
+    - is idempotent for a genuinely already-COMPLETE/LIMITED_EVIDENCE
+      report (returns it verbatim, `generation_status="ALREADY_COMPLETE"`,
+      `generated=false`) and never runs a concurrent duplicate generation
+      attempt against a row another valid lease currently owns
+      (`generation_status="IN_PROGRESS"`);
+    - for a historical trade with no outbox row yet (closed before this
+      sprint's durability layer existed), creates one for the CURRENT
+      version triple (idempotent — `close_service._insert_outbox_record`'s
+      own ON CONFLICT DO NOTHING) before claiming/generating.
+
+    Not gated by TRADE_POSTMORTEM_DAILY_ENABLED — that flag governs only
+    the daily, multi-trade aggregate surface (GET /postmortem/daily and
+    the /postmortem frontend page), which remains dormant. This
+    single-trade generation endpoint is part of the same durability
+    layer Phase 1's own single-trade GET endpoint already belongs to.
+    """
+    with _conn() as conn:
+        row = conn.execute(
+            f"SELECT {_POSTMORTEM_ROW_COLUMNS} FROM paper_trades WHERE id = %s", (trade_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Trade not found")
+
+        record, owner = _row_to_closed_trade_record(row)
+        if owner != user_id:
+            # Same "identical 404" convention as GET /postmortem/{trade_id}
+            # — never lets a caller distinguish "doesn't exist" from
+            # "exists but isn't yours".
+            raise HTTPException(status_code=404, detail="Trade not found")
+        if record.status != "CLOSED":
+            raise HTTPException(
+                status_code=409,
+                detail={"error_code": "TRADE_NOT_CLOSED", "message": "Postmortem reports are only available for closed trades"},
+            )
+
+        # Idempotent, current-version-triple outbox row — creates one for
+        # a historical trade that predates this sprint's durability layer,
+        # or returns the existing id if this trade already has one for
+        # these exact versions (a prior close, or a prior /generate call).
+        outbox_id, _outbox_created = _insert_outbox_record(
+            conn, trade_id=trade_id, user_id=user_id, source_request_id=None
+        )
+
+        # Already-settled report for the CURRENT version triple: return it
+        # idempotently, never re-generate. This is the primary idempotency
+        # path (Sprint 1/2's own "same versions -> same report" contract),
+        # checked BEFORE ever attempting a claim.
+        existing_report = report_store.get_current_report(
+            conn, paper_trade_id=trade_id, user_id=user_id,
+            report_schema_version=generation_service.REPORT_SCHEMA_VERSION,
+            calculation_version=CALCULATION_VERSION, attribution_rules_version=ATTRIBUTION_RULES_VERSION,
+        )
+        if existing_report is not None:
+            return GenerateReportResponse(
+                trade_id=trade_id, generation_status="ALREADY_COMPLETE", status=existing_report.status,
+                report_schema_version=existing_report.report_schema_version,
+                calculation_version=existing_report.calculation_version,
+                attribution_rules_version=existing_report.attribution_rules_version,
+                generated=False, evidence_gap_count=len(existing_report.evidence_gaps),
+            )
+
+        report, status_tag = _claim_and_run_generation(
+            conn, user_id=user_id, trade_id=trade_id, outbox_id=outbox_id
+        )
+
+        if status_tag == "GENERATED":
+            return GenerateReportResponse(
+                trade_id=trade_id, generation_status="GENERATED", status=report.status,
+                report_schema_version=report.report_schema_version,
+                calculation_version=report.calculation_version,
+                attribution_rules_version=report.attribution_rules_version,
+                generated=True, evidence_gap_count=len(report.evidence_gaps),
+            )
+
+        if status_tag == "TERMINAL_NO_REPORT":
+            # Attempt limit exceeded (MAX_ATTEMPTS_BEFORE_TERMINAL) — a
+            # stable, honest terminal failure, never an infinite retry
+            # loop and never a fabricated report.
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error_code": "GENERATION_ATTEMPTS_EXHAUSTED",
+                    "message": "report generation failed repeatedly for this trade and will not be retried automatically",
+                },
+            )
+
+        if status_tag == "NOTHING_TO_DO":
+            # Benign race: the row settled COMPLETE/LIMITED_EVIDENCE
+            # between our existing_report check above and the claim
+            # attempt (e.g. a concurrent best-effort generation from a
+            # /sell call finished in between). Re-check once — the
+            # report/outbox consistency invariant (Stage 3/8) guarantees
+            # it must exist now if the outbox truly settled terminal.
+            settled_report = report_store.get_current_report(
+                conn, paper_trade_id=trade_id, user_id=user_id,
+                report_schema_version=generation_service.REPORT_SCHEMA_VERSION,
+                calculation_version=CALCULATION_VERSION, attribution_rules_version=ATTRIBUTION_RULES_VERSION,
+            )
+            if settled_report is not None:
+                return GenerateReportResponse(
+                    trade_id=trade_id, generation_status="ALREADY_COMPLETE", status=settled_report.status,
+                    report_schema_version=settled_report.report_schema_version,
+                    calculation_version=settled_report.calculation_version,
+                    attribution_rules_version=settled_report.attribution_rules_version,
+                    generated=False, evidence_gap_count=len(settled_report.evidence_gaps),
+                )
+            # Genuinely unexpected: outbox says terminal-complete but no
+            # report row exists for these versions — the exact
+            # report/outbox contradiction Stage 3/8 requires never
+            # silently accepting. Surfaced as a 500 with a stable error
+            # code rather than papered over with an IN_PROGRESS response.
+            log.warning("[postmortem_generation_terminal_failure] trade_id=%s outbox_id=%s error_code=%s",
+                        trade_id, outbox_id, "REPORT_OUTBOX_INCONSISTENCY")
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error_code": "REPORT_OUTBOX_INCONSISTENCY",
+                    "message": "outbox settled without a corresponding persisted report",
+                },
+            )
+
+        # status_tag == "IN_PROGRESS" — another valid, non-expired lease
+        # currently owns this row; never run concurrent duplicate work.
+        return GenerateReportResponse(
+            trade_id=trade_id, generation_status=REPORT_GENERATION_IN_PROGRESS, generated=False,
+        )

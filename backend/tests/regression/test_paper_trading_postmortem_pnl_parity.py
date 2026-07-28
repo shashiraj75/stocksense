@@ -78,6 +78,10 @@ class _RecordingConn:
     def __exit__(self, *a):
         return False
 
+    @contextmanager
+    def transaction(self):
+        yield self
+
 
 @pytest.mark.regression
 class TestPaperSellPnlParity:
@@ -103,10 +107,18 @@ class TestPaperSellPnlParity:
                 secret, algorithm="HS256",
             )
 
-            # sell fetches (user_id, symbol, quantity, entry_price, status, market),
-            # then closes (RETURNING id).
+            # Trade Postmortem Engine, Sprint 2 — paper_sell now issues the
+            # market-open probe first, then delegates to close_service.
+            # close_paper_trade for the row-locked ownership/status SELECT,
+            # the closing UPDATE (RETURNING id), the exit-snapshot INSERT,
+            # and the outbox INSERT — none of the latter three need a
+            # fetchone result (INSERT ... RETURNING id is consumed too,
+            # but only the outbox one is; the exit-snapshot INSERT has no
+            # RETURNING clause and never calls fetchone()).
             recorder = _RecordingConn(fetchone_results=[
-                ("user-aaa", "AAPL", qty, ep, "OPEN", "US"),
+                ("US",),
+                ("user-aaa", "AAPL", qty, ep, "OPEN", "US", 90.0, 130.0, "manual"),
+                (1,),
                 (1,),
             ])
 
