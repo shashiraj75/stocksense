@@ -1285,6 +1285,21 @@ def _verify_schema_postconditions(conn) -> None:
     if not row:
         raise SchemaInitializationError("required column missing: public.daily_picks_cache.status")
 
+    # Sprint 3A, Stage I — supersedes_report_id already existed on
+    # paper_trade_postmortem_report since Sprint 2's own schema (it was
+    # provisioned ahead of use); Stage I is the first application code
+    # to actually write/read it, so this is the first postcondition
+    # verifying it's genuinely present rather than assumed.
+    row = conn.execute(
+        """SELECT 1 FROM information_schema.columns
+           WHERE table_schema = 'public' AND table_name = 'paper_trade_postmortem_report'
+             AND column_name = 'supersedes_report_id'"""
+    ).fetchone()
+    if not row:
+        raise SchemaInitializationError(
+            "required column missing: public.paper_trade_postmortem_report.supersedes_report_id"
+        )
+
     _verify_immutability_trigger_contract(
         conn, table="paper_trade_entry_snapshot",
         trigger="trg_paper_trade_entry_snapshot_immutable",
