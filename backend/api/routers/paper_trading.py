@@ -27,6 +27,19 @@ from services.postmortem.entry_snapshot import (
 from services.postmortem.evidence_attribution import build_evidence_attribution
 from services.postmortem.daily_report import DailyTradePostmortem, build_daily_report
 from services.market_hours import IST, ET
+from services.postmortem.close_service import (
+    CloseServiceError,
+    CloseValidationError,
+    TradeAlreadyClosedError,
+    TradeNotFoundError,
+    TradeNotOwnedError,
+    UnsupportedMarketError,
+    close_paper_trade,
+    sell_exit_reason_to_mechanism,
+)
+from services.postmortem.exit_snapshot import CloseExitMechanism
+from services.postmortem import generation_service
+from services.postmortem import outbox as outbox_ops
 from services.postmortem.idempotency import (
     OPERATION_TYPE_PAPER_BUY,
     POLL_ATTEMPTS,
@@ -877,6 +890,113 @@ def _insert_entry_snapshot(conn, snapshot: EntrySnapshot) -> None:
     )
 
 
+def _exit_snapshot_exists(conn, trade_id: int) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM paper_trade_exit_snapshot WHERE paper_trade_id = %s", (trade_id,)
+    ).fetchone()
+    return row is not None
+
+
+# Trade Postmortem Engine, Sprint 2 — Stage 8 close-to-report behavior.
+_GENERATION_ERROR_CODE = "GENERATION_ERROR"
+
+
+def _run_claimed_generation(conn, *, user_id: str, trade_id: int, outbox_id: int) -> None:
+    """Runs generation for an ALREADY-CLAIMED outbox row (status =
+    GENERATING). Any exception raised here is caught by the caller and
+    turned into a FAILED_RETRYABLE mark using a FRESH connection — this
+    function itself never swallows an exception, so its caller always
+    knows whether the attempt truly reached a terminal/retryable state
+    before returning."""
+    log.info("[postmortem_generation_started] trade_id=%s outbox_id=%s", trade_id, outbox_id)
+    row = conn.execute(
+        f"SELECT {_POSTMORTEM_ROW_COLUMNS} FROM paper_trades WHERE id = %s", (trade_id,)
+    ).fetchone()
+    if row is None:
+        log.warning("[postmortem_generation_terminal_failure] trade_id=%s outbox_id=%s error_code=%s",
+                    trade_id, outbox_id, "TRADE_MISSING")
+        outbox_ops.mark_terminal_failure(
+            conn, outbox_id=outbox_id, error_code="TRADE_MISSING",
+            error_summary="trade row not found at generation time",
+        )
+        return
+    record, _owner = _row_to_closed_trade_record(row)
+    snapshot = _fetch_entry_snapshot(conn, trade_id)
+    exit_present = _exit_snapshot_exists(conn, trade_id)
+    postmortem = compute_postmortem(record, snapshot=snapshot)
+    tz = _REPORT_TIMEZONE.get(record.market)
+    trading_date = record.closed_at.astimezone(tz).date() if (tz and record.closed_at) else None
+    if trading_date is None:
+        log.warning("[postmortem_generation_retryable_failure] trade_id=%s outbox_id=%s error_code=%s",
+                    trade_id, outbox_id, "NO_TRADING_DATE")
+        outbox_ops.mark_retryable_failure(
+            conn, outbox_id=outbox_id, error_code="NO_TRADING_DATE",
+            error_summary="could not resolve a market-local trading date",
+        )
+        return
+    market_timezone = "Asia/Kolkata" if record.market == "IN" else "America/New_York"
+    with conn.transaction():
+        report, _created = generation_service.generate_and_persist(
+            conn, trade_id=trade_id, user_id=user_id, market=record.market,
+            report_trading_date=trading_date, market_timezone=market_timezone,
+            postmortem=postmortem, entry_snapshot=snapshot, exit_snapshot_present=exit_present,
+            outbox_id=outbox_id,
+        )
+    event = "[postmortem_generation_limited]" if report.status == "LIMITED_EVIDENCE" else "[postmortem_generation_completed]"
+    log.info("%s trade_id=%s outbox_id=%s status=%s", event, trade_id, outbox_id, report.status)
+
+
+def _attempt_best_effort_generation(*, user_id: str, trade_id: int, outbox_id: int) -> None:
+    """Best-effort immediate post-commit generation, per Stage 8's own
+    explicit rule: 'a generation failure must never undo a valid trade
+    close' and 'do not block trade close on external network services'.
+    Called strictly AFTER the close transaction has already committed —
+    never allowed to turn this endpoint's response into an error, never a
+    500 for what is otherwise a successful sell.
+
+    Crash-safety (Stage 15 test #22, "worker crash after claim"): once
+    `claim_next_attempt` flips a row to GENERATING, THIS function
+    guarantees that row reaches a terminal or FAILED_RETRYABLE mark
+    before returning — `_run_claimed_generation`'s own exception is
+    caught here and turned into a FAILED_RETRYABLE mark using a fresh
+    connection (the connection that raised may itself be unusable). Only
+    a hard process kill between the claim UPDATE and this except block —
+    a real crash, not a Python exception — can leave a row stuck in
+    GENERATING; that residual, narrower window is the one honestly
+    documented operational limitation of Option B (see
+    outbox.py's module docstring), not something this function itself
+    silently accepts."""
+    try:
+        with _conn() as conn:
+            claimed = outbox_ops.claim_next_attempt(conn, outbox_id=outbox_id, user_id=user_id)
+            if claimed is None:
+                return
+    except Exception:
+        log.warning("[postmortem_generation] outbox claim failed: %s", "claim_error")
+        return
+
+    try:
+        with _conn() as conn:
+            _run_claimed_generation(conn, user_id=user_id, trade_id=trade_id, outbox_id=outbox_id)
+    except Exception as exc:
+        # Privacy-safe: logs only the exception's class name, never its
+        # message, user data, evidence values, or report narrative.
+        log.warning("[postmortem_generation_retryable_failure] trade_id=%s outbox_id=%s error_code=%s",
+                    trade_id, outbox_id, type(exc).__name__)
+        try:
+            with _conn() as recovery_conn:
+                outbox_ops.mark_retryable_failure(
+                    recovery_conn, outbox_id=outbox_id,
+                    error_code=_GENERATION_ERROR_CODE, error_summary=type(exc).__name__,
+                )
+        except Exception:
+            # Even the recovery mark failed (e.g. the database itself is
+            # briefly unreachable) — the row stays GENERATING; the next
+            # on-request recovery path is unaffected by THIS failure
+            # since it operates on its own fresh connection/attempt.
+            log.warning("[postmortem_generation] failed to mark outbox retryable after generation failure")
+
+
 @dataclass
 class _IdempotencyReservation:
     """Outcome of `_resolve_idempotency_reservation` — what the caller
@@ -1392,65 +1512,75 @@ def paper_buy(request: Request, req: BuyRequest, user_id: str = Depends(get_curr
 
 @router.post("/sell/{trade_id}")
 def paper_sell(trade_id: int, req: SellRequest, user_id: str = Depends(get_current_user_id)):
+    """
+    Trade Postmortem Engine, Sprint 2 — the sole manual/stop-loss/target
+    close path now delegates to services.postmortem.close_service.
+    close_paper_trade for the trade UPDATE, immutable exit snapshot, and
+    outbox record, all inside one transaction; this endpoint's own
+    responsibilities are limited to the market-open business rule (not
+    the close service's concern) and crediting cash to the correct
+    market's portfolio column inside that SAME transaction.
+    """
     if req.price <= 0:
         raise HTTPException(status_code=400, detail="Price must be > 0")
 
+    exit_mechanism = sell_exit_reason_to_mechanism(req.exit_reason)
+
     with _conn() as conn:
-        trade = conn.execute(
-            "SELECT user_id, symbol, quantity, entry_price, status, market FROM paper_trades WHERE id = %s",
-            (trade_id,)
+        trade_market_probe = conn.execute(
+            "SELECT market FROM paper_trades WHERE id = %s", (trade_id,)
         ).fetchone()
-
-        if trade is None:
+        if trade_market_probe is None:
             raise HTTPException(status_code=404, detail="Trade not found")
+        if not _is_market_open(trade_market_probe[0]):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{trade_market_probe[0]} market is closed — orders are paused until it reopens",
+            )
 
-        owner, sym, qty, ep, status, trade_market = trade
-        if owner != user_id:
+        try:
+            with conn.transaction():
+                result = close_paper_trade(
+                    conn,
+                    user_id=user_id,
+                    trade_id=trade_id,
+                    exit_price=req.price,
+                    exit_mechanism=exit_mechanism,
+                    exit_mechanism_raw=req.exit_reason,
+                )
+                cash_col = _CASH_COL[result.market]
+                conn.execute(
+                    f"UPDATE paper_portfolio SET {cash_col} = {cash_col} + %s, updated_at = now() WHERE user_id = %s",
+                    (result.proceeds, user_id),
+                )
+        except TradeNotFoundError:
+            raise HTTPException(status_code=404, detail="Trade not found")
+        except TradeNotOwnedError:
             raise HTTPException(status_code=403, detail="Not your trade")
-        if status != "OPEN":
+        except TradeAlreadyClosedError:
             raise HTTPException(status_code=400, detail="Trade already closed")
-        if not _is_market_open(trade_market):
-            raise HTTPException(status_code=400, detail=f"{trade_market} market is closed — orders are paused until it reopens")
+        except (CloseValidationError, UnsupportedMarketError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
-        cash_col = _CASH_COL[trade_market]
-        proceeds = req.price * qty
-        # Trade Postmortem Engine, Phase 1 — same shared function as
-        # _trade_row_to_dict above; single authoritative P&L calculation
-        # path. pnl_pct preserves this endpoint's pre-existing `0` fallback
-        # for the (practically unreachable, since /buy and /sell both
-        # reject price <= 0) ep <= 0 case, rather than switching this
-        # response to `None`.
-        pnl = compute_realized_pnl_abs(ep, req.price, qty)
-        pnl_pct = compute_realized_pnl_pct(ep, req.price)
-        pnl_pct = pnl_pct if pnl_pct is not None else 0
-
-        # WHERE ... AND status = 'OPEN' makes this close idempotent at the
-        # database level: a duplicate/racing close request (e.g. an auto-close
-        # firing twice from two browser tabs) updates zero rows the second
-        # time instead of double-crediting cash or overwriting the exit price.
-        closed = conn.execute(
-            "UPDATE paper_trades SET exit_price = %s, status = 'CLOSED', closed_at = now(), exit_reason = %s "
-            "WHERE id = %s AND status = 'OPEN' RETURNING id",
-            (req.price, req.exit_reason, trade_id)
-        ).fetchone()
-        if closed is None:
-            raise HTTPException(status_code=400, detail="Trade already closed")
-        conn.execute(
-            f"UPDATE paper_portfolio SET {cash_col} = {cash_col} + %s, updated_at = now() WHERE user_id = %s",
-            (proceeds, user_id)
-        )
+    # Stage 8 — best-effort immediate post-commit report generation. The
+    # close transaction has ALREADY committed successfully by this point
+    # (we're past the `with _conn()` block) — a failure here can only
+    # ever leave the outbox row in its already-durable PENDING state for
+    # later on-request recovery; it can never undo the trade close, and
+    # is never allowed to turn this endpoint's response into an error.
+    _attempt_best_effort_generation(user_id=user_id, trade_id=trade_id, outbox_id=result.outbox_id)
 
     return {
         "message": "Paper sell placed",
         "trade_id": trade_id,
-        "symbol": sym,
-        "market": trade_market,
-        "quantity": qty,
-        "entry_price": ep,
-        "exit_price": req.price,
-        "pnl": pnl,
-        "pnl_pct": pnl_pct,
-        "proceeds": round(proceeds, 2),
+        "symbol": result.symbol,
+        "market": result.market,
+        "quantity": result.quantity,
+        "entry_price": result.entry_price,
+        "exit_price": result.exit_price,
+        "pnl": result.realized_pnl_abs,
+        "pnl_pct": result.realized_pnl_pct,
+        "proceeds": result.proceeds,
     }
 
 
@@ -1617,6 +1747,22 @@ def reset_portfolio(user_id: str = Depends(get_current_user_id), market: Literal
                 # still-existing trade_id are harmless to delete slightly
                 # ahead of the trade itself; the reverse order would risk a
                 # moment where a snapshot row is gone but its trade isn't).
+                #
+                # Trade Postmortem Engine, Sprint 2, Stage 11 — reset's
+                # EXISTING contract (established above, unchanged by this
+                # sprint) is DELETION of a user's trades and their
+                # evidence, not administrative closure. The three Sprint 2
+                # durability tables (exit snapshot, generation outbox,
+                # persisted report) each carry their own user_id column
+                # and are deleted the same way, before paper_trades, so a
+                # reset never leaves an orphaned outbox/report row behind.
+                # This means a persisted report or exit snapshot is
+                # immutable-by-UPDATE during normal lifecycle, but not
+                # absolutely immutable — an authorized reset may delete
+                # it, exactly like the entry snapshot already does.
+                conn.execute("DELETE FROM paper_trade_postmortem_report WHERE user_id = %s", (user_id,))
+                conn.execute("DELETE FROM paper_trade_postmortem_outbox WHERE user_id = %s", (user_id,))
+                conn.execute("DELETE FROM paper_trade_exit_snapshot WHERE user_id = %s", (user_id,))
                 conn.execute("DELETE FROM paper_trade_entry_snapshot WHERE user_id = %s", (user_id,))
                 conn.execute("DELETE FROM paper_trades WHERE user_id = %s", (user_id,))
                 # Migration-verification hardening gate, Part 7 — a full
@@ -1637,6 +1783,31 @@ def reset_portfolio(user_id: str = Depends(get_current_user_id), market: Literal
                 )
                 return {"message": "Portfolio reset", "cash": STARTING_CASH_IN, "cash_usd": STARTING_CASH_US}
 
+            # Trade Postmortem Engine, Sprint 2, Stage 11 — same orphan
+            # prevention as the ALL-markets branch above, scoped to this
+            # one market. paper_trade_postmortem_report and
+            # paper_trade_exit_snapshot both carry their own `market`
+            # column and can be filtered directly. paper_trade_postmortem_
+            # outbox does NOT carry a market column (it is scoped only by
+            # paper_trade_id/user_id — see postgres_store.py), so its rows
+            # are identified via a subquery against paper_trades, and MUST
+            # run before the paper_trades DELETE below removes the rows
+            # that subquery depends on.
+            conn.execute(
+                "DELETE FROM paper_trade_postmortem_report WHERE user_id = %s AND market = %s",
+                (user_id, market)
+            )
+            conn.execute(
+                """DELETE FROM paper_trade_postmortem_outbox
+                   WHERE user_id = %s AND paper_trade_id IN (
+                       SELECT id FROM paper_trades WHERE user_id = %s AND market = %s
+                   )""",
+                (user_id, user_id, market)
+            )
+            conn.execute(
+                "DELETE FROM paper_trade_exit_snapshot WHERE user_id = %s AND market = %s",
+                (user_id, market)
+            )
             conn.execute(
                 "DELETE FROM paper_trade_entry_snapshot WHERE user_id = %s AND market = %s",
                 (user_id, market)
@@ -2147,3 +2318,94 @@ def get_trade_postmortem(trade_id: int, user_id: str = Depends(get_current_user_
     )
 
 
+
+
+class GenerateReportResponse(BaseModel):
+    trade_id: int
+    status: str
+    report_schema_version: str
+    calculation_version: str
+    attribution_rules_version: str
+    generated: bool
+    evidence_gap_count: int
+
+
+@router.post("/postmortem/{trade_id}/generate", response_model=GenerateReportResponse)
+def generate_trade_postmortem_endpoint(trade_id: int, user_id: str = Depends(get_current_user_id)):
+    """
+    Trade Postmortem Engine, Sprint 2, Stage 13 — safe, idempotent,
+    user-scoped generation trigger. Additive to the Phase 1
+    GET /postmortem/{trade_id} endpoint above, which is completely
+    unchanged by this sprint (Stage 13's own explicit "retain Phase 1
+    deterministic fallback" option — GET always computes fresh and never
+    reads or writes the new persisted-report table, zero regression
+    risk to its already-shipped, already-tested contract).
+
+    This endpoint:
+    - derives the user strictly from the authenticated session, never a
+      request parameter;
+    - never alters the trade itself (no UPDATE to paper_trades anywhere
+      in this call path);
+    - never accepts or injects evidence from the request body — the only
+      input is `trade_id`, evidence comes exclusively from already-
+      stored trade/entry-snapshot/exit-snapshot rows;
+    - is idempotent: calling it twice for the same trade and the same
+      live rule/calculation versions returns the SAME persisted report
+      both times (report_store.persist_report's own
+      ON CONFLICT DO NOTHING is what actually guarantees this — this
+      endpoint does not add its own separate idempotency layer).
+
+    Not gated by TRADE_POSTMORTEM_DAILY_ENABLED — that flag governs only
+    the daily, multi-trade aggregate surface (GET /postmortem/daily and
+    the /postmortem frontend page), which remains dormant. This
+    single-trade generation endpoint is part of the same durability
+    layer Phase 1's own single-trade GET endpoint already belongs to.
+    """
+    with _conn() as conn:
+        row = conn.execute(
+            f"SELECT {_POSTMORTEM_ROW_COLUMNS} FROM paper_trades WHERE id = %s", (trade_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Trade not found")
+
+        record, owner = _row_to_closed_trade_record(row)
+        if owner != user_id:
+            # Same "identical 404" convention as GET /postmortem/{trade_id}
+            # — never lets a caller distinguish "doesn't exist" from
+            # "exists but isn't yours".
+            raise HTTPException(status_code=404, detail="Trade not found")
+        if record.status != "CLOSED":
+            raise HTTPException(
+                status_code=409,
+                detail={"error_code": "TRADE_NOT_CLOSED", "message": "Postmortem reports are only available for closed trades"},
+            )
+
+        tz = _REPORT_TIMEZONE.get(record.market)
+        if tz is None or record.closed_at is None:
+            raise HTTPException(status_code=500, detail="could not resolve a market-local trading date for this trade")
+        trading_date = record.closed_at.astimezone(tz).date()
+        market_timezone = "Asia/Kolkata" if record.market == "IN" else "America/New_York"
+
+        snapshot = _fetch_entry_snapshot(conn, trade_id)
+        exit_present = _exit_snapshot_exists(conn, trade_id)
+        postmortem = compute_postmortem(record, snapshot=snapshot)
+
+        log.info("[postmortem_generation_started] trade_id=%s outbox_id=%s", trade_id, None)
+        with conn.transaction():
+            report, created = generation_service.generate_and_persist(
+                conn, trade_id=trade_id, user_id=user_id, market=record.market,
+                report_trading_date=trading_date, market_timezone=market_timezone,
+                postmortem=postmortem, entry_snapshot=snapshot, exit_snapshot_present=exit_present,
+            )
+        event = "[postmortem_generation_limited]" if report.status == "LIMITED_EVIDENCE" else "[postmortem_generation_completed]"
+        log.info("%s trade_id=%s outbox_id=%s status=%s", event, trade_id, None, report.status)
+
+    return GenerateReportResponse(
+        trade_id=trade_id,
+        status=report.status,
+        report_schema_version=report.report_schema_version,
+        calculation_version=report.calculation_version,
+        attribution_rules_version=report.attribution_rules_version,
+        generated=created,
+        evidence_gap_count=len(report.evidence_gaps),
+    )
