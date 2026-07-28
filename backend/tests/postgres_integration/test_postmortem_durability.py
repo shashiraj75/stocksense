@@ -104,10 +104,10 @@ class TestExitSnapshotInsertAgainstRealPostgres:
 
         ensure_portfolio(pg_conn, unique_user_id, cash_usd=1_000_000.0)
         trade_row = pg_conn.execute(
-            """INSERT INTO paper_trades (user_id, symbol, market, quantity, entry_price, status,
+            """INSERT INTO paper_trades (session_id, user_id, symbol, market, quantity, entry_price, status,
                                           stop_loss, target_price, trade_management_mode)
-               VALUES (%s, 'AAPL', 'US', 10, 100.0, 'OPEN', 90.0, 130.0, 'auto') RETURNING id""",
-            (unique_user_id,)
+               VALUES (%s, %s, 'AAPL', 'US', 10, 100.0, 'OPEN', 90.0, 130.0, 'auto') RETURNING id""",
+            (unique_user_id, unique_user_id)
         ).fetchone()
         trade_id = trade_row[0]
 
@@ -216,13 +216,21 @@ class TestConcurrentCloseRaceAgainstRealPG:
 @pytest.mark.timeout(30)
 class TestReportGenerationAgainstRealPG:
     def test_generate_endpoint_persists_a_report(self, client, pg_conn, unique_user_id):
+        """_open_and_close's own /sell call already triggers best-effort
+        post-commit generation (Stage 8's own close-to-report behavior),
+        so by the time this test explicitly calls /generate, the report
+        may already exist — this endpoint's own idempotent-return path
+        (generation_status="ALREADY_COMPLETE") is a legitimate, expected
+        outcome here, not a failure to generate. The real assertion is
+        that a report row genuinely exists afterward, exactly once,
+        regardless of which of the two paths produced it."""
         trade_id = _open_and_close(client, pg_conn, unique_user_id)
         resp = client.post(
             f"/api/paper-trading/postmortem/{trade_id}/generate", headers=make_auth_header(unique_user_id)
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert body["generated"] is True
+        assert body["generation_status"] in ("GENERATED", "ALREADY_COMPLETE")
 
         rows = pg_conn.execute(
             "SELECT paper_trade_id, user_id, status FROM paper_trade_postmortem_report WHERE paper_trade_id = %s",
@@ -239,7 +247,13 @@ class TestReportGenerationAgainstRealPG:
         second = client.post(
             f"/api/paper-trading/postmortem/{trade_id}/generate", headers=make_auth_header(unique_user_id)
         ).json()
-        assert first["generated"] is True
+        # The FIRST call may itself already observe ALREADY_COMPLETE (see
+        # test_generate_endpoint_persists_a_report's own note on the
+        # best-effort-generation race) — the idempotency guarantee this
+        # test actually verifies is that the SECOND call never generates
+        # again once a report exists, and exactly one row survives.
+        assert first["generation_status"] in ("GENERATED", "ALREADY_COMPLETE")
+        assert second["generation_status"] == "ALREADY_COMPLETE"
         assert second["generated"] is False
         count = pg_conn.execute(
             "SELECT count(*) FROM paper_trade_postmortem_report WHERE paper_trade_id = %s", (trade_id,)
@@ -356,12 +370,16 @@ class TestCrossUserSellPreflightPrivacyAgainstRealPG:
     def test_cross_user_trade_indistinguishable_from_nonexistent(
         self, client, pg_conn, unique_user_id, market, market_open, monkeypatch
     ):
-        monkeypatch.setattr("api.routers.paper_trading._is_market_open", lambda m: market_open)
+        # Open the victim's trade with the market genuinely open — only
+        # the SELL attempt below needs to observe `market_open`; opening
+        # under a closed market would itself be rejected and never
+        # produce a trade_id to test against.
         victim_id = f"{unique_user_id}-victim"
         ensure_portfolio(pg_conn, victim_id, cash_usd=1_000_000.0)
         symbol = "TCS" if market == "IN" else "AAPL"
         victim_trade_id = _buy(client, victim_id, market=market, symbol=symbol).json()["trade_id"]
 
+        monkeypatch.setattr("api.routers.paper_trading._is_market_open", lambda m: market_open)
         ensure_portfolio(pg_conn, unique_user_id, cash_usd=1_000_000.0)
         not_found = client.post(
             "/api/paper-trading/sell/999999999", json={"price": 100.0, "exit_reason": "MANUAL"},
