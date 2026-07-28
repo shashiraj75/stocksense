@@ -67,10 +67,10 @@ class TestCommitBeforeAcquireVisibility:
     visible from a SECOND connection, and the trade row's lock released,
     before this test even attempts to build price-path evidence."""
 
-    def test_closed_trade_cash_snapshot_outbox_all_visible_before_acquisition(self, client, pg_conn, unique_user_id):
+    def test_closed_trade_cash_snapshot_outbox_all_visible_before_acquisition(self, client, pg_conn, pg_database_url, unique_user_id):
         trade_id = _open_and_close(client, pg_conn, unique_user_id)
 
-        with psycopg.connect(pg_conn.info.dsn, autocommit=True) as second_conn:
+        with psycopg.connect(pg_database_url, autocommit=True) as second_conn:
             status = second_conn.execute(
                 "SELECT status FROM paper_trades WHERE id = %s", (trade_id,)
             ).fetchone()[0]
@@ -89,14 +89,14 @@ class TestCommitBeforeAcquireVisibility:
             ).fetchone()[0]
             assert outbox_count == 1
 
-    def test_trade_row_lock_released_after_close_commits(self, client, pg_conn, unique_user_id):
+    def test_trade_row_lock_released_after_close_commits(self, client, pg_conn, pg_database_url, unique_user_id):
         """A second connection can acquire a conflicting SELECT FOR
         UPDATE with a bounded lock_timeout — proving the close
         transaction's own row lock was released, not merely that the
         transaction eventually committed."""
         trade_id = _open_and_close(client, pg_conn, unique_user_id)
 
-        with psycopg.connect(pg_conn.info.dsn, autocommit=False) as second_conn:
+        with psycopg.connect(pg_database_url, autocommit=False) as second_conn:
             with second_conn.transaction():
                 second_conn.execute("SET LOCAL lock_timeout = '2s'")
                 row = second_conn.execute(
@@ -214,14 +214,23 @@ class TestProviderFailurePreservesState:
 @pytest.mark.timeout(30)
 class TestReportSupersession:
     def _sprint2_report(self, pg_conn, trade_id, user_id):
-        from services.postmortem import report_store
-        report, _ = report_store.persist_report(
-            pg_conn, paper_trade_id=trade_id, user_id=user_id, market="US",
-            report_trading_date=dt.date(2026, 6, 5), market_timezone="America/New_York",
-            report_schema_version="1.0.0", calculation_version="1.0.0", attribution_rules_version="1.0.0",
-            evidence_bundle_version="1.0.0", status="COMPLETE", structured_report={"trade_id": trade_id},
-            evidence_items=[], claims=[], source_manifest={}, evidence_gaps=[], warnings=[],
+        """_open_and_close's real /sell call already triggers best-effort
+        generation for the CURRENT production version triple (see the
+        [postmortem_generation_limited] log line in CI) — fetch THAT
+        real, already-persisted report rather than hand-rolling a second
+        one under guessed version strings, which would collide with
+        nothing (report_store's ON CONFLICT target is the full version
+        triple) and silently create a THIRD, spurious row instead of
+        reusing the real prior report."""
+        from services.postmortem import generation_service, report_store
+        from services.postmortem.evidence_attribution import ATTRIBUTION_RULES_VERSION
+        from services.postmortem.deterministic import CALCULATION_VERSION
+        report = report_store.get_current_report(
+            pg_conn, paper_trade_id=trade_id, user_id=user_id,
+            report_schema_version=generation_service.REPORT_SCHEMA_VERSION,
+            calculation_version=CALCULATION_VERSION, attribution_rules_version=ATTRIBUTION_RULES_VERSION,
         )
+        assert report is not None, "expected _open_and_close's own best-effort generation to have already persisted a report"
         return report
 
     def test_price_path_report_creates_new_row_and_supersedes_prior(self, client, pg_conn, unique_user_id):
