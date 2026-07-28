@@ -438,7 +438,7 @@ _UNACQUIRED_CATEGORIES = (
 
 def _build_position_management_contributor(
     trade_id: int, postmortem: DeterministicPostmortem
-) -> tuple[ContributorAssessment, PostmortemClaim]:
+) -> tuple[ContributorAssessment, PostmortemClaim, list[EvidenceItem]]:
     claim_id = make_claim_id(trade_id, _RULE_POSITION_MANAGEMENT.rule_id)
     td, sd = postmortem.target_distance_at_exit_pct, postmortem.stop_distance_at_exit_pct
 
@@ -453,10 +453,22 @@ def _build_position_management_contributor(
             evidence_class=EvidenceClass.INSUFFICIENT_EVIDENCE.value, confidence_band=ConfidenceBand.NOT_ASSESSABLE.value,
             supporting_evidence_ids=[], opposing_evidence_ids=[], claim_id=claim_id,
         )
-        return assessment, claim
+        return assessment, claim, []
 
     exit_price_ev = make_evidence_id(trade_id, "trade", "exit_price_vs_levels")
     ev_item_note = f"target_distance_at_exit_pct={td}, stop_distance_at_exit_pct={sd}"
+    # Sprint 1 review, Stage 4 finding: this EvidenceItem was previously
+    # referenced by evidence_id in the claim below but never added to the
+    # report's evidence_items list — a dangling reference. Now constructed
+    # once here and returned alongside the claim so the caller can include
+    # it, keeping claim <-> evidence referential integrity intact.
+    evidence_item = EvidenceItem(
+        evidence_id=exit_price_ev, category="trade", name="exit_price_vs_levels",
+        value=ev_item_note, units=None, observation_timestamp=None,  # DeterministicPostmortem does not carry closed_at itself
+        source="paper_trades", source_type=SourceType.SERVER_STORED.value,
+        verification_level=EvidenceVerificationLevel.DIRECTLY_OBSERVED.value,
+        freshness_status=FreshnessStatus.POINT_IN_TIME_VALID.value, limitations=[],
+    )
 
     if (
         postmortem.exit_mechanism == ExitMechanism.MANUAL
@@ -482,7 +494,7 @@ def _build_position_management_contributor(
             evidence_class=EvidenceClass.DIRECTLY_OBSERVED.value, confidence_band=ConfidenceBand.MODERATE.value,
             supporting_evidence_ids=[exit_price_ev], opposing_evidence_ids=[], claim_id=claim_id,
         )
-        return assessment, claim
+        return assessment, claim, [evidence_item]
 
     claim = insufficient_evidence_claim(
         claim_id=claim_id, report_section="contributor_assessments", factor="POSITION_MANAGEMENT",
@@ -495,16 +507,26 @@ def _build_position_management_contributor(
         evidence_class=EvidenceClass.INSUFFICIENT_EVIDENCE.value, confidence_band=ConfidenceBand.NOT_ASSESSABLE.value,
         supporting_evidence_ids=[], opposing_evidence_ids=[], claim_id=claim_id,
     )
-    return assessment, claim
+    # This branch's claim is INSUFFICIENT_EVIDENCE (no supporting_evidence_ids)
+    # so the EvidenceItem computed above is never referenced — correctly
+    # omitted here rather than added as an orphan nobody points to.
+    return assessment, claim, []
 
 
 def _build_exit_logic_contributor(
     trade_id: int, postmortem: DeterministicPostmortem
-) -> tuple[ContributorAssessment, PostmortemClaim]:
+) -> tuple[ContributorAssessment, PostmortemClaim, list[EvidenceItem]]:
     claim_id = make_claim_id(trade_id, _RULE_EXIT_LOGIC.rule_id)
     ev_id = make_evidence_id(trade_id, "trade", "exit_reason")
 
     if postmortem.exit_mechanism == ExitMechanism.UNKNOWN and postmortem.outcome != Outcome.WIN:
+        evidence_item = EvidenceItem(
+            evidence_id=ev_id, category="trade", name="exit_reason", value=postmortem.exit_mechanism_raw,
+            units=None, observation_timestamp=None,  # DeterministicPostmortem does not carry closed_at itself
+            source="paper_trades", source_type=SourceType.SERVER_STORED.value,
+            verification_level=EvidenceVerificationLevel.DIRECTLY_OBSERVED.value,
+            freshness_status=FreshnessStatus.POINT_IN_TIME_VALID.value, limitations=[],
+        )
         claim = PostmortemClaim(
             claim_id=claim_id, report_section="contributor_assessments", factor="EXIT_LOGIC",
             claim_text=(
@@ -521,7 +543,7 @@ def _build_exit_logic_contributor(
             evidence_class=EvidenceClass.DIRECTLY_OBSERVED.value, confidence_band=ConfidenceBand.LOW.value,
             supporting_evidence_ids=[ev_id], opposing_evidence_ids=[], claim_id=claim_id,
         )
-        return assessment, claim
+        return assessment, claim, [evidence_item]
 
     claim = insufficient_evidence_claim(
         claim_id=claim_id, report_section="contributor_assessments", factor="EXIT_LOGIC",
@@ -533,7 +555,7 @@ def _build_exit_logic_contributor(
         evidence_class=EvidenceClass.INSUFFICIENT_EVIDENCE.value, confidence_band=ConfidenceBand.NOT_ASSESSABLE.value,
         supporting_evidence_ids=[], opposing_evidence_ids=[], claim_id=claim_id,
     )
-    return assessment, claim
+    return assessment, claim, []
 
 
 def _build_unacquired_contributor(
@@ -629,14 +651,16 @@ def _build_entry_signal_disagreement_claim(trade_id: int, snapshot: EntrySnapsho
     )
 
 
-def _build_momentum_vs_range_claim(trade_id: int, snapshot: EntrySnapshot | None) -> PostmortemClaim:
+def _build_momentum_vs_range_claim(
+    trade_id: int, snapshot: EntrySnapshot | None
+) -> tuple[PostmortemClaim, list[EvidenceItem]]:
     claim_id = make_claim_id(trade_id, _RULE_MOMENTUM_VS_RANGE.rule_id)
     if snapshot is None:
         return insufficient_evidence_claim(
             claim_id=claim_id, report_section="contradictions", factor="momentum_vs_entry_range",
             rule_id=_RULE_MOMENTUM_VS_RANGE.rule_id, rule_version=_RULE_MOMENTUM_VS_RANGE.rule_version,
             missing_evidence=["no entry snapshot exists for this trade"],
-        )
+        ), []
 
     tech_direction = _technical_direction(snapshot.technical_signal)
     range_position = snapshot.execution_range_position
@@ -646,13 +670,26 @@ def _build_momentum_vs_range_claim(trade_id: int, snapshot: EntrySnapshot | None
             claim_id=claim_id, report_section="contradictions", factor="momentum_vs_entry_range",
             rule_id=_RULE_MOMENTUM_VS_RANGE.rule_id, rule_version=_RULE_MOMENTUM_VS_RANGE.rule_version,
             missing_evidence=["technical_signal has no assessable direction, or execution_range_position is UNKNOWN"],
-        )
+        ), []
 
     tech_ev = make_evidence_id(trade_id, "entry_snapshot", "technical_signal")
     range_ev = make_evidence_id(trade_id, "entry_snapshot", "execution_range_position")
+    # Sprint 1 review, Stage 4 finding: execution_range_position is not
+    # one of the four _SIGNAL_SPECS fields _build_signal_scorecard turns
+    # into an EvidenceItem — this rule is its only producer, so it must
+    # construct and return the item itself rather than assuming it
+    # already exists elsewhere.
+    range_evidence_item = EvidenceItem(
+        evidence_id=range_ev, category="entry_snapshot", name="execution_range_position",
+        value=range_position, units=None, observation_timestamp=snapshot.recommendation_generated_at,
+        source="paper_trade_entry_snapshot", source_type=SourceType.CLIENT_REPORTED.value,
+        verification_level=EvidenceVerificationLevel.CLIENT_REPORTED.value,
+        freshness_status=FreshnessStatus.POINT_IN_TIME_VALID.value,
+        limitations=["client-reported at Buy time; no server-side corroboration exists for this field"],
+    )
 
     if tech_direction == 1 and range_position == "ABOVE_RANGE":
-        return PostmortemClaim(
+        claim = PostmortemClaim(
             claim_id=claim_id, report_section="contradictions", factor="momentum_vs_entry_range",
             claim_text=(
                 "The technical signal was bullish, but the execution price was already above the "
@@ -664,8 +701,9 @@ def _build_momentum_vs_range_claim(trade_id: int, snapshot: EntrySnapshot | None
             contradiction_flags=["MOMENTUM_VS_RANGE"], rule_id=_RULE_MOMENTUM_VS_RANGE.rule_id,
             rule_version=_RULE_MOMENTUM_VS_RANGE.rule_version,
         )
+        return claim, [range_evidence_item]
 
-    return PostmortemClaim(
+    claim = PostmortemClaim(
         claim_id=claim_id, report_section="contradictions", factor="momentum_vs_entry_range",
         claim_text="The technical signal and the execution-range position at entry do not conflict.",
         evidence_class=EvidenceClass.DIRECTLY_OBSERVED.value, confidence_band=ConfidenceBand.MODERATE.value,
@@ -673,6 +711,7 @@ def _build_momentum_vs_range_claim(trade_id: int, snapshot: EntrySnapshot | None
         contradiction_flags=[], rule_id=_RULE_MOMENTUM_VS_RANGE.rule_id,
         rule_version=_RULE_MOMENTUM_VS_RANGE.rule_version,
     )
+    return claim, [range_evidence_item]
 
 
 def _build_price_path_unavailable_claims(trade_id: int) -> list[PostmortemClaim]:
@@ -722,12 +761,14 @@ def build_evidence_attribution(
     claims.append(thesis_claim)
 
     contributors: list[ContributorAssessment] = []
-    pm_assessment, pm_claim = _build_position_management_contributor(postmortem.trade_id, postmortem)
+    pm_assessment, pm_claim, pm_evidence = _build_position_management_contributor(postmortem.trade_id, postmortem)
     contributors.append(pm_assessment)
     claims.append(pm_claim)
-    exit_logic_assessment, exit_logic_claim = _build_exit_logic_contributor(postmortem.trade_id, postmortem)
+    evidence_items.extend(pm_evidence)
+    exit_logic_assessment, exit_logic_claim, exit_logic_evidence = _build_exit_logic_contributor(postmortem.trade_id, postmortem)
     contributors.append(exit_logic_assessment)
     claims.append(exit_logic_claim)
+    evidence_items.extend(exit_logic_evidence)
     for category in _UNACQUIRED_CATEGORIES:
         unacquired_assessment, unacquired_claim = _build_unacquired_contributor(postmortem.trade_id, category)
         contributors.append(unacquired_assessment)
@@ -736,7 +777,9 @@ def build_evidence_attribution(
     primary_contributor, primary_claim_id = _select_primary_contributor(contributors)
 
     claims.append(_build_entry_signal_disagreement_claim(postmortem.trade_id, snapshot))
-    claims.append(_build_momentum_vs_range_claim(postmortem.trade_id, snapshot))
+    momentum_claim, momentum_evidence = _build_momentum_vs_range_claim(postmortem.trade_id, snapshot)
+    claims.append(momentum_claim)
+    evidence_items.extend(momentum_evidence)
     claims.extend(_build_price_path_unavailable_claims(postmortem.trade_id))
 
     if primary_contributor is None:
@@ -751,7 +794,7 @@ def build_evidence_attribution(
         primary_claim_id = primary_contributor_claim.claim_id
         claims.append(primary_contributor_claim)
 
-    return EvidenceAttributionResult(
+    result = EvidenceAttributionResult(
         trade_id=postmortem.trade_id,
         evidence_items=evidence_items,
         claims=claims,
@@ -765,3 +808,75 @@ def build_evidence_attribution(
         calculation_version=ATTRIBUTION_RULES_VERSION,
         warnings=warnings,
     )
+    # Sprint 1 review, Stage 4 — a release-blocking trust gate: a report
+    # with a dangling evidence reference or a duplicate ID is strictly
+    # worse than an error, since it would silently under- or over-state
+    # what's actually backing a claim. Fail closed rather than serve it.
+    violations = validate_report_integrity(result)
+    if violations:
+        raise ReportIntegrityError(
+            f"evidence attribution report for trade_id={postmortem.trade_id} failed integrity validation: "
+            + "; ".join(violations)
+        )
+    return result
+
+
+class ReportIntegrityError(ValueError):
+    """Raised when a computed EvidenceAttributionResult fails referential-
+    integrity validation (see validate_report_integrity) — a bug in this
+    module's own rules, never a normal-path outcome for any real trade."""
+
+
+def validate_report_integrity(result: EvidenceAttributionResult) -> list[str]:
+    """Report-level integrity validator (Sprint 1 review, Stage 4).
+    Returns a list of human-readable violation descriptions; empty means
+    the report is internally consistent. Checked:
+    - evidence IDs are unique;
+    - claim IDs are unique;
+    - every claim's supporting/opposing evidence ID exists in evidence_items;
+    - every contributor's claim_id exists in claims;
+    - every signal evaluation's explanation_claim_id exists in claims;
+    - thesis_verdict_claim_id and primary_contributor_claim_id (when set)
+      exist in claims.
+    """
+    violations: list[str] = []
+
+    evidence_ids = [e.evidence_id for e in result.evidence_items]
+    if len(evidence_ids) != len(set(evidence_ids)):
+        dupes = {eid for eid in evidence_ids if evidence_ids.count(eid) > 1}
+        violations.append(f"duplicate evidence_id(s): {sorted(dupes)}")
+
+    claim_ids = [c.claim_id for c in result.claims]
+    if len(claim_ids) != len(set(claim_ids)):
+        dupes = {cid for cid in claim_ids if claim_ids.count(cid) > 1}
+        violations.append(f"duplicate claim_id(s): {sorted(dupes)}")
+
+    known_evidence_ids = set(evidence_ids)
+    known_claim_ids = set(claim_ids)
+
+    for claim in result.claims:
+        for eid in (*claim.supporting_evidence_ids, *claim.opposing_evidence_ids):
+            if eid not in known_evidence_ids:
+                violations.append(f"claim {claim.claim_id} references unknown evidence_id {eid}")
+
+    for contributor in result.contributor_assessments:
+        if contributor.claim_id not in known_claim_ids:
+            violations.append(
+                f"contributor {contributor.category} references unknown claim_id {contributor.claim_id}"
+            )
+
+    for sig in result.signal_scorecard:
+        if sig.explanation_claim_id not in known_claim_ids:
+            violations.append(
+                f"signal {sig.signal_id} references unknown explanation_claim_id {sig.explanation_claim_id}"
+            )
+
+    if result.thesis_verdict_claim_id not in known_claim_ids:
+        violations.append(f"thesis_verdict_claim_id {result.thesis_verdict_claim_id} not found in claims")
+
+    if result.primary_contributor_claim_id is not None and result.primary_contributor_claim_id not in known_claim_ids:
+        violations.append(
+            f"primary_contributor_claim_id {result.primary_contributor_claim_id} not found in claims"
+        )
+
+    return violations

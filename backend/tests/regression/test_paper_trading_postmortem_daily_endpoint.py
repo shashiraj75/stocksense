@@ -152,6 +152,67 @@ class TestDailyPostmortemEndpoint:
         assert body["summary"]["trade_count"] == 0
         assert body["trades"] == []
 
+    def test_end_to_end_serialization_values_not_just_key_presence(self, client):
+        """Sprint 1 independent review, Stage 14 — asserts actual VALUES
+        through the full router -> Pydantic -> JSON path, not just that the
+        expected keys exist (a mocked-happy-path test can pass that check
+        even if production wiring silently drops real content)."""
+        rows = [_row(trade_id=1, exit_price=95.0, stop_loss=10.0, target_price=101.0, exit_reason="MANUAL")]
+        resp, _ = _get_daily(client, {"date": "2026-06-02", "market": "US"}, rows)
+        assert resp.status_code == 200
+        t = resp.json()["trades"][0]
+        attribution = t["attribution"]
+
+        # evidence_items: at least one real item with a deterministic,
+        # trade-scoped ID (the POSITION_MANAGEMENT rule fires for this
+        # exact manual-loss-closer-to-target fixture).
+        assert len(attribution["evidence_items"]) >= 1
+        assert any(e["evidence_id"].startswith("EV-1-") for e in attribution["evidence_items"])
+
+        # claims: real content, not placeholders, and every evidence
+        # reference resolves within this same response.
+        known_evidence_ids = {e["evidence_id"] for e in attribution["evidence_items"]}
+        known_claim_ids = {c["claim_id"] for c in attribution["claims"]}
+        assert len(attribution["claims"]) > 5
+        insufficient_count = 0
+        for claim in attribution["claims"]:
+            for eid in claim["supporting_evidence_ids"] + claim["opposing_evidence_ids"]:
+                assert eid in known_evidence_ids, f"dangling evidence ref {eid} in {claim['claim_id']}"
+            if claim["evidence_class"] == "INSUFFICIENT_EVIDENCE":
+                insufficient_count += 1
+                assert claim["claim_text"] == "Insufficient evidence to determine this factor reliably."
+                assert claim["confidence_band"] == "NOT_ASSESSABLE"
+        assert insufficient_count > 0  # this fixture has no entry snapshot — most claims are honest gaps
+
+        # contributor_assessments: exactly the 11 known categories, and
+        # POSITION_MANAGEMENT specifically SUPPORTED for this fixture.
+        categories = {c["category"] for c in attribution["contributor_assessments"]}
+        assert categories == {
+            "STOCK_SELECTION", "ENTRY_TIMING", "POSITION_MANAGEMENT", "EXIT_LOGIC", "MARKET_CONDITIONS",
+            "SECTOR_CONDITIONS", "VOLATILITY", "LIQUIDITY", "NEWS_OR_EVENT", "PRICE_NOISE", "ADMINISTRATIVE_ACTION",
+        }
+        pm = next(c for c in attribution["contributor_assessments"] if c["category"] == "POSITION_MANAGEMENT")
+        assert pm["support_level"] == "SUPPORTED"
+        assert pm["claim_id"] in known_claim_ids
+
+        # thesis_verdict: no snapshot -> UNSUPPORTED, with a real backing claim.
+        assert attribution["thesis_verdict"] == "UNSUPPORTED"
+        assert attribution["thesis_verdict_claim_id"] in known_claim_ids
+
+        # primary_contributor: null (SUPPORTED alone never clears the
+        # STRONGLY_SUPPORTED bar), with a claim explaining why, using the
+        # exact fallback sentence.
+        assert attribution["primary_contributor"] is None
+        assert attribution["primary_contributor_claim_id"] in known_claim_ids
+        primary_claim = next(c for c in attribution["claims"] if c["claim_id"] == attribution["primary_contributor_claim_id"])
+        assert primary_claim["claim_text"] == "Insufficient evidence to determine this factor reliably."
+
+        # daily summary reflects this one trade correctly.
+        summary = resp.json()["summary"]
+        assert summary["trade_count"] == 1
+        assert summary["loss_count"] == 1
+        assert summary["recurring_supported_contributors"].get("POSITION_MANAGEMENT") == 1
+
     def test_malformed_date_returns_400(self, client):
         resp, _ = _get_daily(client, {"date": "not-a-date", "market": "US"}, [])
         assert resp.status_code == 400
