@@ -51,6 +51,16 @@ from enum import Enum
 
 OPERATION_TYPE_PAPER_BUY = "PAPER_BUY"
 
+# Trade Postmortem Engine, Sprint 2 correction phase (Stage 6) — a
+# DISTINCT operation type, never reusing OPERATION_TYPE_PAPER_BUY. Same
+# table (paper_trade_idempotency_key), same (user_id, operation_type,
+# idempotency_key) unique-index contract, same decide_action/
+# IdempotencyAction engine below — only the fingerprinted fields and the
+# call site differ (paper_sell, not paper_buy). A Buy key and a Sell key
+# with the same string value for the same user never collide, since the
+# unique index and every lookup include operation_type.
+OPERATION_TYPE_PAPER_SELL = "PAPER_SELL"
+
 # A PENDING row older than this is treated as abandoned (the process that
 # reserved it crashed before marking it COMPLETED or FAILED) rather than
 # "still genuinely processing" — see `decide_action`. A synchronous DB
@@ -137,6 +147,24 @@ def compute_request_fingerprint(
         "trade_management_mode": trade_management_mode or "",
         "evidence_source": evidence_source or "",
         "entry_evidence_schema_version": entry_evidence_schema_version or "",
+    }
+    canonical = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def compute_close_request_fingerprint(*, trade_id: int, exit_price: float, exit_reason: str | None) -> str:
+    """Deterministic SHA-256 hex digest of the financially material Sell
+    (close) fields — mirrors compute_request_fingerprint's own
+    normalization discipline (fixed 6-decimal float formatting, explicit
+    null sentinel), scoped to exactly the fields that determine what this
+    close request financially does. `trade_id` is included so a Sell key
+    reused (by mistake or intentionally) against a DIFFERENT trade is
+    correctly treated as a fingerprint mismatch, never silently applied
+    to the wrong trade."""
+    normalized = {
+        "trade_id": int(trade_id) if isinstance(trade_id, int) and not isinstance(trade_id, bool) else "invalid",
+        "exit_price": _normalize_float(exit_price),
+        "exit_reason": exit_reason or "",
     }
     canonical = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
