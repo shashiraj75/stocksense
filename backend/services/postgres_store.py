@@ -667,6 +667,81 @@ CREATE TRIGGER trg_paper_trade_postmortem_report_immutable
     BEFORE UPDATE ON paper_trade_postmortem_report
     FOR EACH ROW EXECUTE FUNCTION reject_paper_trade_postmortem_report_update();
 
+-- Trade Postmortem Engine, Sprint 3A — point-in-time price-path
+-- evidence. One immutable versioned row per (paper_trade_id,
+-- evidence_bundle_version, source_id, source_version) — the same
+-- "current version identity" pattern paper_trade_postmortem_report
+-- already uses. `bars` is a bounded JSONB array of the full daily OHLC
+-- history for the trade's holding window, kept alongside the row
+-- (Stage 3's own explicit requirement: never store only the computed
+-- MFE/MAE while discarding the bars that support them) — chosen over a
+-- separate per-bar table because this sprint's daily-only resolution
+-- bounds bars-per-trade to, realistically, a few hundred rows even for
+-- a multi-year hold, trivially small as one JSONB array and avoiding an
+-- extra join for every read of a trade's price path.
+--
+-- Never UPDATEd once written (see the immutability trigger below) — a
+-- re-acquisition (new source version, or a retry that produces
+-- different bars) inserts a NEW row under its own version key, exactly
+-- like the report/exit-snapshot tables. `status` mirrors the module-
+-- level statuses in services/postmortem/price_path_evidence.py: COMPLETE
+-- | PARTIAL | UNAVAILABLE | INVALID_SOURCE_DATA | AMBIGUOUS_RESOLUTION.
+CREATE TABLE IF NOT EXISTS paper_trade_price_path_evidence (
+    id                              BIGSERIAL PRIMARY KEY,
+    paper_trade_id                  BIGINT NOT NULL,
+    user_id                         TEXT NOT NULL,
+    symbol                          TEXT NOT NULL,
+    market                          TEXT NOT NULL,
+    evidence_bundle_version         TEXT NOT NULL,
+    source_id                       TEXT NOT NULL,
+    source_type                     TEXT NOT NULL,
+    source_version                  TEXT NOT NULL,
+    provider_symbol                 TEXT NOT NULL,
+    price_adjustment_basis          TEXT NOT NULL,
+    bar_interval                    TEXT NOT NULL,
+    market_timezone                 TEXT NOT NULL,
+    entry_timestamp                 TIMESTAMPTZ NOT NULL,
+    exit_timestamp                  TIMESTAMPTZ NOT NULL,
+    entry_bar_policy                TEXT NOT NULL,
+    exit_bar_policy                 TEXT NOT NULL,
+    requested_window_start          DATE NOT NULL,
+    requested_window_end            DATE NOT NULL,
+    observed_window_start           DATE,
+    observed_window_end             DATE,
+    bars_expected                   INTEGER,
+    bars_observed                   INTEGER NOT NULL,
+    missing_bar_count               INTEGER,
+    -- COMPLETE | PARTIAL | UNAVAILABLE | INVALID_SOURCE_DATA | AMBIGUOUS_RESOLUTION
+    data_completeness               TEXT NOT NULL,
+    freshness_basis                 TEXT NOT NULL,
+    acquisition_timestamp           TIMESTAMPTZ NOT NULL,
+    source_manifest                 JSONB NOT NULL,
+    limitations                     JSONB NOT NULL DEFAULT '[]'::jsonb,
+    bars                            JSONB NOT NULL DEFAULT '[]'::jsonb,
+    evidence_hash                   TEXT NOT NULL,
+    created_at                      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trade_price_path_current_version
+    ON paper_trade_price_path_evidence(paper_trade_id, evidence_bundle_version, source_id, source_version);
+CREATE INDEX IF NOT EXISTS idx_paper_trade_price_path_user
+    ON paper_trade_price_path_evidence(user_id, paper_trade_id);
+CREATE INDEX IF NOT EXISTS idx_paper_trade_price_path_status
+    ON paper_trade_price_path_evidence(data_completeness);
+
+-- Database-level immutability — identical pattern to the report/exit-
+-- snapshot triggers. INSERT and DELETE are untouched (reset must still
+-- be able to delete price-path evidence rows for a reset trade).
+CREATE OR REPLACE FUNCTION reject_paper_trade_price_path_evidence_update() RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'paper_trade_price_path_evidence rows are immutable — UPDATE is not permitted (paper_trade_id=%)', OLD.paper_trade_id;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_paper_trade_price_path_evidence_immutable ON paper_trade_price_path_evidence;
+CREATE TRIGGER trg_paper_trade_price_path_evidence_immutable
+    BEFORE UPDATE ON paper_trade_price_path_evidence
+    FOR EACH ROW EXECUTE FUNCTION reject_paper_trade_price_path_evidence_update();
+
 -- Trade Postmortem Engine — Buy idempotency (Part 7 of the migration-
 -- verification hardening gate). One row per (user_id, operation_type,
 -- idempotency_key) — that triple is the uniqueness boundary a duplicate
@@ -1048,6 +1123,10 @@ ALTER TABLE daily_picks_jobs     ENABLE ROW LEVEL SECURITY;
 ALTER TABLE paper_trade_exit_snapshot     ENABLE ROW LEVEL SECURITY;
 ALTER TABLE paper_trade_postmortem_outbox ENABLE ROW LEVEL SECURITY;
 ALTER TABLE paper_trade_postmortem_report ENABLE ROW LEVEL SECURITY;
+
+-- Trade Postmortem Engine, Sprint 3A — same rationale, applied to the
+-- new price-path evidence table.
+ALTER TABLE paper_trade_price_path_evidence ENABLE ROW LEVEL SECURITY;
 """
 
 
@@ -1152,7 +1231,7 @@ _REQUIRED_SCHEMA_TABLES = [
     "daily_picks_cache", "paper_trades", "paper_portfolio",
     "paper_trade_entry_snapshot", "paper_trade_idempotency_key",
     "paper_trade_exit_snapshot", "paper_trade_postmortem_outbox",
-    "paper_trade_postmortem_report",
+    "paper_trade_postmortem_report", "paper_trade_price_path_evidence",
 ]
 
 _REQUIRED_SCHEMA_CONSTRAINTS = [
@@ -1223,6 +1302,12 @@ def _verify_schema_postconditions(conn) -> None:
         conn, table="paper_trade_postmortem_report",
         trigger="trg_paper_trade_postmortem_report_immutable",
         function="reject_paper_trade_postmortem_report_update",
+    )
+    # Sprint 3A — same contract for the new price-path evidence store.
+    _verify_immutability_trigger_contract(
+        conn, table="paper_trade_price_path_evidence",
+        trigger="trg_paper_trade_price_path_evidence_immutable",
+        function="reject_paper_trade_price_path_evidence_update",
     )
 
 
