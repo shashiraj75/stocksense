@@ -1694,6 +1694,28 @@ DAILY_POSTMORTEM_SCHEMA_VERSION = "2.0.0"
 # potentially-drifting copy.
 _REPORT_TIMEZONE = {"IN": IST, "US": ET}
 
+# Feature gate — PR #32 pre-merge correction. Sprint 1's daily Postmortem
+# surface is an evidence-governance foundation, not the complete
+# investor-facing product (no close-to-report orchestration, no exit
+# snapshots, no persisted reports, no price-path/market/sector/news
+# evidence, no export yet — see services/postmortem/evidence_attribution.py's
+# module docstring). Most trades today correctly resolve to NOT_TESTABLE/
+# INSUFFICIENT_EVIDENCE, which is honest but not yet what a public surface
+# should default to showing. Deployed dormant: this endpoint 404s until
+# explicitly enabled. Mirrors the exact fail-safe kill-switch pattern
+# already proven in this codebase (services/recommendation_consolidation_
+# api_composer.py's RCI_LIVE_STOCK_ANALYSIS_ENABLED, services/
+# finnhub_client.py's ENABLE_FINNHUB_FOR_IN) — missing, empty, or any
+# unrecognized value resolves to disabled; only an explicit accepted true
+# value enables it. This function reads os.getenv ONLY for its own flag —
+# no other environment access, no logging of user data or evidence.
+_TRADE_POSTMORTEM_DAILY_ENV_VAR = "TRADE_POSTMORTEM_DAILY_ENABLED"
+
+
+def _trade_postmortem_daily_enabled() -> bool:
+    raw = os.getenv(_TRADE_POSTMORTEM_DAILY_ENV_VAR, "0").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
 
 class EvidenceItemResponse(BaseModel):
     evidence_id: str
@@ -1929,7 +1951,15 @@ def get_daily_postmortem(
 
     A day with zero matching trades returns 200 with an empty `trades` list
     — a quiet trading day is a valid result, not an error.
+
+    Feature-gated (see _trade_postmortem_daily_enabled above) — disabled
+    by default. When disabled, returns 404 immediately: no date parsing,
+    no database query, no attribution computed, no internal configuration
+    detail exposed.
     """
+    if not _trade_postmortem_daily_enabled():
+        raise HTTPException(status_code=404, detail={"error_code": "FEATURE_NOT_ENABLED"})
+
     try:
         target_date = datetime.strptime(date, "%Y-%m-%d").date()
     except ValueError:

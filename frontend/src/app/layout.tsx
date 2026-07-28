@@ -12,6 +12,7 @@ import { LiveClock } from "@/components/LiveClock";
 import { IndexBar } from "@/components/IndexBar";
 import { NavHeightObserver } from "@/components/NavHeightObserver";
 import { GlobalMarketDropdown } from "@/components/GlobalMarketDropdown";
+import { isTradePostmortemDailyEnabled } from "@/utils/featureFlags";
 
 export const metadata: Metadata = {
   title: { default: "StockSense360 — AI Stock Predictor", template: "%s | StockSense360" },
@@ -36,7 +37,10 @@ export const NAV_LINKS = [
   { href: "/watchlist",  label: "Watchlist" },
   { href: "/validation",    label: "Validation" },
   { href: "/paper-trading", label: "Paper Trade" },
-  { href: "/postmortem",    label: "Postmortem" },
+  // PR #32 pre-merge correction: dormant by default — only shown once
+  // NEXT_PUBLIC_TRADE_POSTMORTEM_DAILY_ENABLED is explicitly enabled at
+  // build time. See src/utils/featureFlags.ts for the fail-safe parsing.
+  ...(isTradePostmortemDailyEnabled() ? [{ href: "/postmortem", label: "Postmortem" }] : []),
 ];
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

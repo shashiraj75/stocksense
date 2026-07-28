@@ -25,6 +25,17 @@ def _jwt_secret(monkeypatch):
     monkeypatch.setenv("SUPABASE_URL", TEST_SUPABASE_URL)
 
 
+@pytest.fixture(autouse=True)
+def _feature_enabled(monkeypatch):
+    """PR #32 pre-merge correction: the daily endpoint is disabled by
+    default (TRADE_POSTMORTEM_DAILY_ENABLED unset). This file's existing
+    tests exercise the endpoint's functional behavior, so they need the
+    flag explicitly enabled — see test_trade_postmortem_daily_feature_flag.py
+    for the flag-parsing unit tests, and TestFeatureFlagGating below in
+    this file for the disabled-state regression coverage."""
+    monkeypatch.setenv("TRADE_POSTMORTEM_DAILY_ENABLED", "true")
+
+
 @pytest.fixture
 def client():
     from api.main import app
@@ -265,3 +276,98 @@ class TestDailyPostmortemEndpoint:
         assert "recurring_supported_contributors" in body["summary"]
         assert "recurring_conflicting_contributors" in body["summary"]
         assert "recurring_not_assessable_count" in body["summary"]
+
+
+@pytest.mark.regression
+class TestFeatureFlagGating:
+    """PR #32 pre-merge correction — the daily endpoint is DISABLED by
+    default. These tests override the file's own autouse _feature_enabled
+    fixture per-case to prove the disabled path independently."""
+
+    def test_disabled_by_default_returns_404(self, client, monkeypatch):
+        monkeypatch.delenv("TRADE_POSTMORTEM_DAILY_ENABLED", raising=False)
+        resp, _ = _get_daily(client, {"date": "2026-06-02", "market": "US"}, [_row(trade_id=1)])
+        assert resp.status_code == 404
+        assert resp.json()["detail"]["error_code"] == "FEATURE_NOT_ENABLED"
+
+    def test_disabled_performs_no_database_query(self, client, monkeypatch):
+        """The recorder tracks every conn.execute() call — zero calls
+        proves the disabled path never reaches the query, not just that
+        it returns an error status."""
+        monkeypatch.delenv("TRADE_POSTMORTEM_DAILY_ENABLED", raising=False)
+        resp, recorder = _get_daily(client, {"date": "2026-06-02", "market": "US"}, [_row(trade_id=1)])
+        assert resp.status_code == 404
+        assert recorder.calls == []
+
+    def test_disabled_response_exposes_no_internal_detail(self, client, monkeypatch):
+        monkeypatch.delenv("TRADE_POSTMORTEM_DAILY_ENABLED", raising=False)
+        resp, _ = _get_daily(client, {"date": "2026-06-02", "market": "US"}, [])
+        body = resp.json()
+        assert list(body["detail"].keys()) == ["error_code"]
+        assert body["detail"]["error_code"] == "FEATURE_NOT_ENABLED"
+
+    def test_explicit_false_returns_404(self, client, monkeypatch):
+        monkeypatch.setenv("TRADE_POSTMORTEM_DAILY_ENABLED", "false")
+        resp, _ = _get_daily(client, {"date": "2026-06-02", "market": "US"}, [])
+        assert resp.status_code == 404
+
+    def test_invalid_value_returns_404(self, client, monkeypatch):
+        monkeypatch.setenv("TRADE_POSTMORTEM_DAILY_ENABLED", "maybe")
+        resp, _ = _get_daily(client, {"date": "2026-06-02", "market": "US"}, [])
+        assert resp.status_code == 404
+
+    def test_explicit_true_enables_normal_response(self, client, monkeypatch):
+        monkeypatch.setenv("TRADE_POSTMORTEM_DAILY_ENABLED", "true")
+        resp, _ = _get_daily(client, {"date": "2026-06-02", "market": "US"}, [_row(trade_id=1, exit_price=120.0)])
+        assert resp.status_code == 200
+        assert resp.json()["summary"]["trade_count"] == 1
+
+    def test_disabled_takes_priority_over_malformed_date(self, client, monkeypatch):
+        """The gate must be checked BEFORE date parsing — a malformed date
+        must not leak whether the feature would otherwise have validated
+        it, and must not exercise any parsing logic while disabled."""
+        monkeypatch.delenv("TRADE_POSTMORTEM_DAILY_ENABLED", raising=False)
+        resp, _ = _get_daily(client, {"date": "not-a-date", "market": "US"}, [])
+        assert resp.status_code == 404
+        assert resp.json()["detail"]["error_code"] == "FEATURE_NOT_ENABLED"
+
+
+@pytest.mark.regression
+class TestExistingPhase1EndpointUnaffected:
+    """PR #32 pre-merge correction — the gate must scope ONLY to the new
+    daily endpoint; GET /postmortem/{trade_id} (Phase 1) must be completely
+    unaffected regardless of the new flag's state."""
+
+    def test_single_trade_endpoint_works_when_daily_flag_disabled(self, client, monkeypatch):
+        monkeypatch.delenv("TRADE_POSTMORTEM_DAILY_ENABLED", raising=False)
+
+        # Phase 1's own endpoint pops fetchone() results sequentially:
+        # first the trade row, then None for "no entry snapshot exists".
+        class _SequentialFetchoneConn:
+            def __init__(self, results):
+                self._results = list(results)
+
+            def execute(self, sql, params=None):
+                return self
+
+            def fetchone(self):
+                return self._results.pop(0) if self._results else None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        single_recorder = _SequentialFetchoneConn([_row(trade_id=1, exit_price=120.0)])
+
+        @contextmanager
+        def _fake_conn():
+            yield single_recorder
+
+        with patch.object(
+            __import__("api.routers.paper_trading", fromlist=["_conn"]), "_conn", _fake_conn
+        ):
+            resp = client.get("/api/paper-trading/postmortem/1", headers=_auth("user-aaa"))
+        assert resp.status_code == 200
+        assert resp.json()["outcome"] == "WIN"

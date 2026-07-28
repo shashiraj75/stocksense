@@ -12,6 +12,7 @@ import {
 import { useAuth } from "@/lib/AuthContext";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
 import { InsufficientEvidenceMark } from "@/components/InsufficientEvidenceMark";
+import { isTradePostmortemDailyEnabled } from "@/utils/featureFlags";
 
 const MARKETS: { key: Market | "ALL"; label: string }[] = [
   { key: "ALL", label: "All Markets" },
@@ -272,12 +273,25 @@ export default function PostmortemPage() {
   const [date, setDate] = useState(todayISO());
   const [market, setMarket] = useMarketPreference<Market | "ALL">(["IN", "US", "ALL"], "ALL");
 
+  // PR #32 pre-merge correction: dormant by default. `enabled` here is
+  // TanStack Query's own fetch-gate — false means the query function
+  // (fetchDailyPostmortem) is never invoked, so a disabled deployment
+  // makes zero requests to the backend's own (also-gated) endpoint.
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["daily-postmortem", date, market, user?.id],
     queryFn: () => fetchDailyPostmortem(date, market),
-    enabled: !!user,
+    enabled: isTradePostmortemDailyEnabled() && !!user,
     staleTime: 60 * 1000,
   });
+
+  if (!isTradePostmortemDailyEnabled()) {
+    return (
+      <div className="max-w-4xl mx-auto px-4 py-16 text-center">
+        <h1 className="text-lg font-semibold text-gray-300">Postmortem reports aren&apos;t available yet</h1>
+        <p className="text-sm text-gray-500 mt-2">This feature isn&apos;t enabled on this deployment yet.</p>
+      </div>
+    );
+  }
 
   if (!user) {
     return <div className="max-w-4xl mx-auto px-4 py-8 text-gray-400">Sign in to view your Trade Postmortem Report.</div>;
