@@ -15,13 +15,14 @@ from services.postmortem.price_path_acquisition import (
     AcquisitionWindowTooLargeError,
     BASIS_INSUFFICIENT_EVIDENCE,
     BASIS_MISMATCH,
-    BASIS_UNKNOWN_ADJUSTMENT,
     COMPATIBLE_UNADJUSTED,
+    COMPOSITE_ADJUSTED_UNKNOWN_BASIS,
     MAX_ACQUISITION_WINDOW_DAYS,
     PriceProviderAcquisitionError,
     SOURCE_SCOPE,
     SOURCE_TYPE,
     SPLIT_IN_WINDOW,
+    UNADJUSTED_PROVIDER_OHLC,
     acquire_price_path_evidence,
     build_price_path_evidence,
     evaluate_basis_compatibility,
@@ -156,7 +157,11 @@ class TestNoLiveNetworkRequestInSuite:
         collection time."""
         import services.postmortem.price_path_acquisition as mod
         source = inspect.getsource(mod)
-        assert "import yfinance" not in source.split("def fetch_raw_daily_bars")[0]
+        # No MODULE-LEVEL (unindented) yfinance import — every reference
+        # is lazy, inside a function body, so importing this module
+        # never triggers a network-capable import at collection time.
+        module_level_imports = [line for line in source.splitlines() if line.startswith("import yfinance")]
+        assert module_level_imports == []
 
 
 @pytest.mark.unit
@@ -181,13 +186,31 @@ class TestBasisCompatibilityClassification:
         result = evaluate_basis_compatibility(acquisition_mode="total_return_adjusted", split_events=[], bars_observed=3)
         assert result == BASIS_MISMATCH
 
-    def test_unrecognized_acquisition_mode_is_unknown_adjustment(self):
+    def test_unrecognized_acquisition_mode_is_composite_adjusted_unknown_basis(self):
+        """Correction 2 — an unrecognized adjusted feed is never silently
+        treated as compatible; it gets its own explicit classification
+        distinct from a genuinely-missing acquisition_mode."""
         result = evaluate_basis_compatibility(acquisition_mode="something_new", split_events=[], bars_observed=3)
-        assert result == BASIS_UNKNOWN_ADJUSTMENT
+        assert result == COMPOSITE_ADJUSTED_UNKNOWN_BASIS
+
+    def test_pinned_auto_adjust_false_is_unadjusted_provider_ohlc(self):
+        """Correction 2's own pinned acquisition mode needs no
+        reconciliation claim — it IS unadjusted by the provider's own
+        documented contract for that argument."""
+        result = evaluate_basis_compatibility(acquisition_mode="auto_adjust_false", split_events=[], bars_observed=3)
+        assert result == UNADJUSTED_PROVIDER_OHLC
 
     def test_missing_acquisition_mode_is_insufficient_evidence(self):
         result = evaluate_basis_compatibility(acquisition_mode=None, split_events=[], bars_observed=3)
         assert result == BASIS_INSUFFICIENT_EVIDENCE
+
+    def test_missing_split_event_is_not_by_itself_proof_of_compatibility(self):
+        """Correction 2 requirement 2 — absence of a split is checked
+        (split_events=[]) but for an unrecognized mode this must NOT be
+        treated as proof of a compatible basis."""
+        result = evaluate_basis_compatibility(acquisition_mode="some_future_mode", split_events=[], bars_observed=10)
+        assert result not in (COMPATIBLE_UNADJUSTED, UNADJUSTED_PROVIDER_OHLC)
+        assert result == COMPOSITE_ADJUSTED_UNKNOWN_BASIS
 
     def test_deterministic_replay_same_inputs_same_result(self):
         first = evaluate_basis_compatibility(acquisition_mode="auto_adjust_true", split_events=[], bars_observed=5)

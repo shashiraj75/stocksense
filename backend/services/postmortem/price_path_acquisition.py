@@ -90,6 +90,38 @@ def _provider_symbol(symbol: str, market: str) -> str:
     return f"{symbol.upper()}{_MARKET_SUFFIX.get(market, '')}"
 
 
+def _resolve_boundary_policies(
+    market: str, entry_timestamp: datetime, exit_timestamp: datetime, limitations: list[str],
+) -> tuple[str, str]:
+    """Pre-Stage-H Correction 1 — resolves real entry/exit boundary
+    policy from services.postmortem.session_boundary's session-aware
+    classification instead of the previous hardcoded PARTIAL_UNKNOWN for
+    every trade. Appends any limitations produced (including the
+    standing EARLY_CLOSE_UNSUPPORTED disclosure) to the caller's shared
+    limitations list. Falls back to PARTIAL_UNKNOWN for any market
+    session_boundary doesn't recognize, or for the after-close/
+    before-open edge cases where the boundary-day bar isn't post-entry
+    (or is post-exit) evidence at all — window-shifting to the adjacent
+    trading session is not yet wired into requested_window_start/end
+    construction, so this stays conservative rather than silently
+    mis-widening the window."""
+    from services.postmortem import session_boundary
+
+    try:
+        entry_result = session_boundary.classify_entry_boundary(market, entry_timestamp)
+        exit_result = session_boundary.classify_exit_boundary(market, exit_timestamp)
+    except session_boundary.SessionBoundaryError:
+        return ENTRY_BAR_PARTIAL_UNKNOWN, EXIT_BAR_PARTIAL_UNKNOWN
+
+    for lim in entry_result["limitations"] + exit_result["limitations"]:
+        if lim not in limitations:
+            limitations.append(lim)
+
+    entry_policy = entry_result["policy"] or ENTRY_BAR_PARTIAL_UNKNOWN
+    exit_policy = exit_result["policy"] or EXIT_BAR_PARTIAL_UNKNOWN
+    return entry_policy, exit_policy
+
+
 def _check_bounded_window(start: date, end: date) -> None:
     if end < start:
         raise AcquisitionWindowTooLargeError(f"end date {end} precedes start date {start}")
@@ -101,16 +133,46 @@ def _check_bounded_window(start: date, end: date) -> None:
         )
 
 
+# Pre-Stage-H Correction 2 — pinned, explicit acquisition arguments.
+# auto_adjust=False is used deliberately: yfinance's own documented
+# contract for auto_adjust=False is that Open/High/Low/Close are the
+# RAW, unadjusted exchange-reported values (only a separate "Adj Close"
+# column is adjusted). Sprint 3A previously used auto_adjust=True and
+# then ASSUMED its composite-adjusted OHLC was "just split-adjusted" —
+# that assumption was never actually established by provider
+# documentation, and is exactly what this correction removes. Raw OHLC
+# under auto_adjust=False needs no adjustment-basis reconciliation claim
+# at all to be compared against this codebase's own unadjusted
+# paper-trade execution prices — it simply IS unadjusted, by the
+# provider's own contract for that argument.
+ACQUISITION_AUTO_ADJUST = False
+ACQUISITION_BACK_ADJUST = False
+ACQUISITION_ACTIONS = True
+ACQUISITION_REPAIR = False
+ACQUISITION_TIMEZONE_BEHAVIOR = "provider_local_exchange_timezone_normalized_to_date_only"
+
+
+def _provider_library_version() -> str:
+    try:
+        import yfinance as yf
+        return getattr(yf, "__version__", "unknown")
+    except Exception:
+        return "unknown"
+
+
 def fetch_raw_daily_bars(
     provider_symbol: str, start: date, end: date, *, timeout: int = FETCH_TIMEOUT_SECONDS,
 ) -> list[dict]:
     """The one function in this module that calls yfinance. Returns a
-    list of {date, open, high, low, close, volume} dicts, raw and
-    unvalidated — build_price_path_evidence does all validation.
-    Provider/network errors are caught here and re-raised as a sanitized
-    PriceProviderAcquisitionError (Stage D item 7/8) — the caller never
-    sees raw provider exception internals, and this function never
-    returns a partially-built or fabricated bar list on failure."""
+    list of {date, open, high, low, close, volume, adj_close, dividend}
+    dicts, raw and unvalidated — build_price_path_evidence does all
+    validation. Uses the pinned, explicit acquisition arguments above
+    (auto_adjust=False, actions=True) rather than any implicit default,
+    per Pre-Stage-H Correction 2. Provider/network errors are caught
+    here and re-raised as a sanitized PriceProviderAcquisitionError
+    (Stage D item 7/8) — the caller never sees raw provider exception
+    internals, and this function never returns a partially-built or
+    fabricated bar list on failure."""
     import yfinance as yf
 
     try:
@@ -119,10 +181,13 @@ def fetch_raw_daily_bars(
         # so the exit session itself is included.
         df = ticker.history(
             start=start.isoformat(), end=(end + timedelta(days=1)).isoformat(),
-            interval="1d", auto_adjust=True, timeout=timeout,
+            interval="1d", auto_adjust=ACQUISITION_AUTO_ADJUST, back_adjust=ACQUISITION_BACK_ADJUST,
+            actions=ACQUISITION_ACTIONS, repair=ACQUISITION_REPAIR, timeout=timeout,
         )
         bars = []
         for idx, row in df.iterrows():
+            adj_close = float(row["Adj Close"]) if "Adj Close" in row and row["Adj Close"] == row["Adj Close"] else None
+            dividend = float(row["Dividends"]) if "Dividends" in row and row["Dividends"] == row["Dividends"] else 0.0
             bars.append({
                 "date": idx.date() if hasattr(idx, "date") else idx,
                 "open": float(row["Open"]),
@@ -130,6 +195,8 @@ def fetch_raw_daily_bars(
                 "low": float(row["Low"]),
                 "close": float(row["Close"]),
                 "volume": float(row["Volume"]) if "Volume" in row and row["Volume"] == row["Volume"] else None,
+                "adj_close": adj_close,
+                "dividend": dividend,
             })
     except Exception as exc:
         raise PriceProviderAcquisitionError(
@@ -141,6 +208,32 @@ def fetch_raw_daily_bars(
             f"provider returned {len(bars)} bars, exceeding the {MAX_ACQUISITION_BARS}-bar bound",
         )
     return bars
+
+
+def fetch_dividend_events(
+    provider_symbol: str, start: date, end: date, *, timeout: int = FETCH_TIMEOUT_SECONDS,
+) -> list[date]:
+    """Returns session dates on which a dividend was paid within
+    [start, end]. Recorded in the manifest for completeness (Correction
+    2's own requirement) — unlike a split, a dividend does not distort
+    RAW (auto_adjust=False) OHLC values, so its presence is disclosed
+    but does not by itself force UNKNOWN_ADJUSTMENT the way a split
+    does."""
+    import yfinance as yf
+
+    try:
+        ticker = yf.Ticker(provider_symbol)
+        dividends = ticker.dividends
+        events = []
+        for ts, amount in dividends.items():
+            d = ts.date() if hasattr(ts, "date") else ts
+            if start <= d <= end and amount and amount != 0.0:
+                events.append(d)
+    except Exception as exc:
+        raise PriceProviderAcquisitionError(
+            "PROVIDER_FETCH_FAILED", f"dividend-event acquisition failed for {provider_symbol}"
+        ) from exc
+    return events
 
 
 def fetch_split_events(
@@ -202,53 +295,89 @@ def build_price_path_evidence(
     exit_timestamp: datetime,
     raw_bars: list[dict],
     split_events: list[date],
+    dividend_events: list[date] | None = None,
     acquisition_timestamp: datetime | None = None,
 ) -> PricePathEvidenceBundle:
     """Pure: no I/O. Turns already-fetched raw daily bars into a
     validated, immutable PricePathEvidenceBundle.
 
-    Window construction (Stage 4): the requested window is
-    [entry_date, exit_date] in the market's own local calendar. Every
-    bar between the two dates (inclusive) is retained; the entry-date
-    and exit-date bars are each tagged with their own boundary policy —
-    PARTIAL_UNKNOWN, since this codebase has no tick data to prove the
-    bar's high/low occurred after entry (or before exit) rather than
-    before entry (or after exit). Same-day entry+exit is the most
-    conservative case: both boundary policies apply to the SAME bar.
+    Window construction (Stage 4, refined by Pre-Stage-H Correction 1):
+    the requested window is [entry_date, exit_date] in the market's own
+    local calendar. Every bar between the two dates (inclusive) is
+    retained; the entry-date and exit-date bars are each tagged with a
+    REAL session-boundary policy computed by
+    services.postmortem.session_boundary — ENTRY_BAR_INCLUDED_FULL /
+    EXIT_BAR_INCLUDED_FULL when the trade timestamp lands exactly at
+    official session open/close, PARTIAL_UNKNOWN otherwise. See
+    _resolve_boundary_policies.
 
-    Adjustment basis (Stage 5): UNADJUSTED-equivalent when raw_bars came
-    from auto_adjust=True (this function's only supported acquisition
-    mode) AND no split occurred in-window (in which case split-adjusted
-    and unadjusted bars are numerically identical for this window, so
-    treating them as safely comparable to this codebase's own UNADJUSTED
-    paper-trade prices is honest). If a split DID occur in-window, this
-    function cannot safely reconcile the provider's split-adjusted
-    history against the paper trade's unadjusted entry/exit prices —
-    status becomes AMBIGUOUS_RESOLUTION and adjustment_basis becomes
-    UNKNOWN_ADJUSTMENT, with an explicit limitation string, rather than
-    silently computing a corrupted MFE/MAE across the split boundary."""
+    Adjustment basis (Correction 2): raw_bars are expected to come from
+    auto_adjust=False acquisition (this function's own contract, not
+    merely a caller convention) — under yfinance's own documented
+    contract for that argument, Open/High/Low/Close are UNADJUSTED
+    exchange-reported values, directly comparable to this codebase's own
+    unadjusted paper-trade prices without needing any adjustment-basis
+    reconciliation claim. A split occurring in-window is still the one
+    disqualifying fact this function checks for: a split changes what
+    "unadjusted" even means across the boundary (pre-split prices are on
+    a different share-count basis than post-split prices), so
+    excursion values are never computed across a split regardless of
+    which acquisition mode produced the bars — status becomes
+    AMBIGUOUS_RESOLUTION and adjustment_basis becomes UNKNOWN_ADJUSTMENT,
+    with an explicit limitation string, rather than silently computing a
+    corrupted MFE/MAE across the split boundary."""
     if acquisition_timestamp is None:
         acquisition_timestamp = datetime.now(timezone.utc)
+    if dividend_events is None:
+        dividend_events = []
 
     entry_date = entry_timestamp.astimezone(market_tzinfo).date()
     exit_date = exit_timestamp.astimezone(market_tzinfo).date()
 
     limitations: list[str] = []
+    any_adj_close = any(
+        raw.get("adj_close") is not None and raw.get("adj_close") == raw.get("adj_close")  # NaN != NaN
+        for raw in raw_bars
+    )
     source_manifest = {
         "source_id": SOURCE_ID_YFINANCE_DAILY,
         "source_type": SOURCE_TYPE,
         "source_scope": SOURCE_SCOPE,
         "production_authoritative": False,
         "source_version": SOURCE_VERSION,
+        "provider": "yfinance",
+        "provider_library_version": _provider_library_version(),
+        "interval": BAR_INTERVAL_DAILY,
+        "auto_adjust": ACQUISITION_AUTO_ADJUST,
+        "back_adjust": ACQUISITION_BACK_ADJUST,
+        "actions": ACQUISITION_ACTIONS,
+        "repair": ACQUISITION_REPAIR,
+        "timezone_behavior": ACQUISITION_TIMEZONE_BEHAVIOR,
+        "raw_ohlc_basis_claim": "UNADJUSTED_PROVIDER_OHLC",
+        "adjusted_close_available": any_adj_close,
+        "split_event_manifest": [d.isoformat() for d in split_events],
+        "dividend_event_manifest": [d.isoformat() for d in dividend_events],
         "provider_symbol": _provider_symbol(symbol, market),
-        "acquisition_mode": "auto_adjust_true",
+        "acquisition_mode": "auto_adjust_false",
+        # Same list object as `limitations` below — appends made after
+        # this point are visible through this key too, so the persisted
+        # manifest always reflects the FINAL limitation set without a
+        # second assignment at every return site.
+        "unresolved_basis_limitations": limitations,
     }
+
+    if dividend_events:
+        limitations.append(
+            f"a dividend was paid within the holding window ({[d.isoformat() for d in dividend_events]}) — "
+            "disclosed for completeness; raw (auto_adjust=False) OHLC values are not distorted by a "
+            "dividend the way they would be by a split, so this does not by itself block computation"
+        )
 
     if split_events:
         limitations.append(
             f"a stock split occurred within the holding window ({[d.isoformat() for d in split_events]}) — "
-            "split-adjusted provider history cannot be safely reconciled against this codebase's own "
-            "unadjusted paper-trade execution prices, so excursion values are not computed for this trade"
+            "a split changes what 'unadjusted' means across the boundary (different share-count basis "
+            "before vs after), so excursion values are not computed for this trade"
         )
         return PricePathEvidenceBundle(
             evidence_bundle_version=EVIDENCE_BUNDLE_SCHEMA_VERSION,
@@ -299,8 +428,9 @@ def build_price_path_evidence(
             verification_level="DIRECTLY_OBSERVED",
         ))
 
-    entry_bar_policy = ENTRY_BAR_PARTIAL_UNKNOWN
-    exit_bar_policy = EXIT_BAR_PARTIAL_UNKNOWN
+    entry_bar_policy, exit_bar_policy = _resolve_boundary_policies(
+        market, entry_timestamp, exit_timestamp, limitations,
+    )
 
     if not bars:
         return PricePathEvidenceBundle(
@@ -355,13 +485,14 @@ def acquire_price_path_evidence(
     market_timezone_name: str, market_tzinfo,
     entry_timestamp: datetime, exit_timestamp: datetime,
     fetch_bars_fn=fetch_raw_daily_bars, fetch_splits_fn=fetch_split_events,
+    fetch_dividends_fn=fetch_dividend_events,
 ) -> PricePathEvidenceBundle:
-    """Thin orchestration: resolves the provider symbol, fetches raw bars
-    and split events (the only I/O in this module), then delegates to
-    the pure build_price_path_evidence. Callers MUST invoke this OUTSIDE
-    any open database transaction (Stage 12) — this function never
-    accepts a `conn` parameter, by design, so it cannot be called from
-    inside one by accident."""
+    """Thin orchestration: resolves the provider symbol, fetches raw
+    bars, split events and dividend events (the only I/O in this
+    module), then delegates to the pure build_price_path_evidence.
+    Callers MUST invoke this OUTSIDE any open database transaction
+    (Stage 12) — this function never accepts a `conn` parameter, by
+    design, so it cannot be called from inside one by accident."""
     provider_symbol = _provider_symbol(symbol, market)
     entry_date = entry_timestamp.astimezone(market_tzinfo).date()
     exit_date = exit_timestamp.astimezone(market_tzinfo).date()
@@ -370,12 +501,13 @@ def acquire_price_path_evidence(
 
     raw_bars = fetch_bars_fn(provider_symbol, entry_date, exit_date)
     split_events = fetch_splits_fn(provider_symbol, entry_date, exit_date)
+    dividend_events = fetch_dividends_fn(provider_symbol, entry_date, exit_date)
 
     return build_price_path_evidence(
         paper_trade_id=paper_trade_id, user_id=user_id, symbol=symbol, market=market,
         market_timezone_name=market_timezone_name, market_tzinfo=market_tzinfo,
         entry_timestamp=entry_timestamp, exit_timestamp=exit_timestamp,
-        raw_bars=raw_bars, split_events=split_events,
+        raw_bars=raw_bars, split_events=split_events, dividend_events=dividend_events,
     )
 
 
@@ -393,35 +525,61 @@ SPLIT_IN_WINDOW = "SPLIT_IN_WINDOW"
 BASIS_UNKNOWN_ADJUSTMENT = "UNKNOWN_ADJUSTMENT"
 BASIS_INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
 
+# Correction 2's expanded vocabulary — distinct from the four names
+# above where the distinction actually matters (a raw auto_adjust=False
+# fetch needs no reconciliation "claim" the way an auto_adjust=True
+# fetch's COMPATIBLE_UNADJUSTED conclusion still implicitly does).
+UNADJUSTED_PROVIDER_OHLC = "UNADJUSTED_PROVIDER_OHLC"
+SPLIT_RECONCILED = "SPLIT_RECONCILED"
+COMPOSITE_ADJUSTED_UNKNOWN_BASIS = "COMPOSITE_ADJUSTED_UNKNOWN_BASIS"
+DIVIDEND_ADJUSTMENT_PRESENT = "DIVIDEND_ADJUSTMENT_PRESENT"
+
 
 def evaluate_basis_compatibility(
     *, acquisition_mode: str | None, split_events: list[date], bars_observed: int,
+    dividend_events: list[date] | None = None,
 ) -> str:
-    """Stage F — never assumes no split occurred. A split anywhere in the
-    requested window is the single most important fact and takes priority
-    over every other consideration, since this codebase has no reconciled
-    split-ratio adjustment logic (see build_price_path_evidence's own
-    docstring — a split in-window already forces UNKNOWN_ADJUSTMENT at
-    the bundle level; this function names that same fact under the
-    Stage F vocabulary for reporting purposes).
+    """Stage F / Correction 2 — never assumes no split occurred. A split
+    anywhere in the requested window is the single most important fact
+    and takes priority over every other consideration, since this
+    codebase has no reconciled split-ratio adjustment logic (see
+    build_price_path_evidence's own docstring — a split in-window
+    already forces UNKNOWN_ADJUSTMENT at the bundle level; this function
+    names that same fact under this module's own reporting vocabulary).
 
     acquisition_mode is read from the persisted source_manifest — never
     re-derived — so replay of an already-persisted evidence bundle
     reproduces the identical compatibility result without any new
     provider call (Stage D item 5 / Stage F's own "same persisted
-    evidence reproduces the same result" requirement)."""
+    evidence reproduces the same result" requirement).
+
+    A missing split event is checked (split_events is empty) but that
+    absence is NOT by itself treated as proof of a compatible basis for
+    any acquisition mode other than auto_adjust_false — a composite
+    "auto_adjust_true"-style feed remains COMPATIBLE_UNADJUSTED only
+    because this codebase's own numerically-identical-absent-a-split
+    reasoning is documented and tested (see the acquisition_mode ==
+    'auto_adjust_true' branch below); any OTHER/unrecognized adjusted
+    mode is COMPOSITE_ADJUSTED_UNKNOWN_BASIS, not silently assumed
+    compatible."""
     if split_events:
         return SPLIT_IN_WINDOW
     if bars_observed <= 0:
         return BASIS_INSUFFICIENT_EVIDENCE
+    if acquisition_mode == "auto_adjust_false":
+        # This module's own current, pinned acquisition mode (Correction
+        # 2): yfinance's documented contract for auto_adjust=False is
+        # that OHLC are the raw, unadjusted exchange-reported values — no
+        # reconciliation claim is even needed here, unlike the
+        # auto_adjust_true branch below.
+        return UNADJUSTED_PROVIDER_OHLC
     if acquisition_mode == "auto_adjust_true":
-        # yfinance's auto_adjust=True history is split-adjusted, but
-        # absent any split in-window (checked above), split-adjusted and
+        # Retained for backward-compatible replay of any evidence
+        # persisted before Correction 2 switched the pinned mode. Absent
+        # any split in-window (checked above), split-adjusted and
         # raw/unadjusted values are numerically identical for this
         # window — safely comparable to this codebase's own unadjusted
         # paper-trade execution prices.
-        return COMPATIBLE_UNADJUSTED
-    if acquisition_mode == "auto_adjust_false":
         return COMPATIBLE_UNADJUSTED
     if acquisition_mode == "total_return_adjusted":
         # Never used for trade-path execution analysis (Stage F's own
@@ -430,4 +588,4 @@ def evaluate_basis_compatibility(
         return BASIS_MISMATCH
     if acquisition_mode is None:
         return BASIS_INSUFFICIENT_EVIDENCE
-    return BASIS_UNKNOWN_ADJUSTMENT
+    return COMPOSITE_ADJUSTED_UNKNOWN_BASIS

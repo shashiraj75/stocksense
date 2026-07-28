@@ -84,15 +84,25 @@ CURRENT_LEVEL_HISTORY_FINDING = LEVEL_HISTORY_ENDPOINTS_ONLY
 
 
 def _interior_bars(bundle: PricePathEvidenceBundle) -> tuple[PricePathBar, ...]:
-    """Bars strictly between the entry-date bar and the exit-date bar —
-    see module docstring's boundary-contamination policy. If entry and
-    exit fall on the same session, or on adjacent sessions with nothing
-    between them, this is empty by construction, never approximated."""
+    """Bars strictly between the entry-date bar and the exit-date bar,
+    PLUS the entry-date bar itself when entry_bar_policy is
+    ENTRY_BAR_INCLUDED_FULL (Pre-Stage-H Correction 1 — entry occurred
+    exactly at official session open, so the full daily bar is genuine
+    post-entry evidence), and symmetrically the exit-date bar when
+    exit_bar_policy is EXIT_BAR_INCLUDED_FULL. If entry and exit fall on
+    the same session and that policy is not the SAME_DAY_FULL_SESSION
+    case, this is empty by construction, never approximated."""
     if not bundle.bars:
         return ()
     entry_date = bundle.requested_window_start
     exit_date = bundle.requested_window_end
-    return tuple(b for b in bundle.bars if entry_date < b.session_date < exit_date)
+    result = [b for b in bundle.bars if entry_date < b.session_date < exit_date]
+    if bundle.entry_bar_policy == "ENTRY_BAR_INCLUDED_FULL":
+        result.extend(b for b in bundle.bars if b.session_date == entry_date and b not in result)
+    if bundle.exit_bar_policy == "EXIT_BAR_INCLUDED_FULL":
+        result.extend(b for b in bundle.bars if b.session_date == exit_date and b not in result)
+    result.sort(key=lambda b: b.session_date)
+    return tuple(result)
 
 
 def _is_finite_positive(value) -> bool:

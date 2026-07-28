@@ -45,7 +45,7 @@ def _bar(session_date, *, o, h, l, c):
     )
 
 
-def _bundle(bars, *, entry_date, exit_date):
+def _bundle(bars, *, entry_date, exit_date, entry_bar_policy="ENTRY_BAR_PARTIAL_UNKNOWN", exit_bar_policy="EXIT_BAR_PARTIAL_UNKNOWN"):
     return PricePathEvidenceBundle(
         evidence_bundle_version="1.0.0", paper_trade_id=1, user_id="u", symbol="TCS", market="IN",
         source_id="yfinance_daily", source_type="EXTERNAL_UNOFFICIAL_DAILY", source_version="1.0.0",
@@ -53,7 +53,7 @@ def _bundle(bars, *, entry_date, exit_date):
         market_timezone="Asia/Kolkata",
         entry_timestamp=dt.datetime(entry_date.year, entry_date.month, entry_date.day, 10, tzinfo=IST),
         exit_timestamp=dt.datetime(exit_date.year, exit_date.month, exit_date.day, 15, tzinfo=IST),
-        entry_bar_policy="ENTRY_BAR_PARTIAL_UNKNOWN", exit_bar_policy="EXIT_BAR_PARTIAL_UNKNOWN",
+        entry_bar_policy=entry_bar_policy, exit_bar_policy=exit_bar_policy,
         requested_window_start=entry_date, requested_window_end=exit_date,
         observed_window_start=bars[0].session_date if bars else None,
         observed_window_end=bars[-1].session_date if bars else None,
@@ -80,6 +80,49 @@ class TestEntryTimingCollapsesToSameEvidence:
             _bar(dt.date(2026, 6, 1), o=100, h=999, l=1, c=100),  # entry-day extreme values would dominate if included
             _bar(dt.date(2026, 6, 3), o=100, h=110, l=95, c=105),
             _bar(dt.date(2026, 6, 5), o=105, h=888, l=2, c=105),  # exit-day extreme values would dominate if included
+        ]
+        bundle = _bundle(bars, entry_date=entry_date, exit_date=exit_date)
+        exc = compute_excursion(bundle, entry_price=100.0, exit_price=105.0)
+        assert exc.mfe_price == 110.0
+        assert exc.mae_price == 95.0
+
+
+@pytest.mark.unit
+class TestIncludedFullBoundaryPolicyWidensExcursion:
+    """Pre-Stage-H Correction 1 — when a real session-boundary
+    resolution determines the entry (or exit) occurred exactly at
+    official session open (or close), that boundary bar's full daily
+    range IS genuine post-entry (or pre-exit) evidence and must be
+    included in MFE/MAE, not excluded by the default conservative rule."""
+
+    def test_entry_bar_included_full_widens_mfe(self):
+        entry_date, exit_date = dt.date(2026, 6, 1), dt.date(2026, 6, 5)
+        bars = [
+            _bar(entry_date, o=100, h=120, l=98, c=110),  # entry-day extreme now legitimately included
+            _bar(dt.date(2026, 6, 3), o=110, h=112, l=108, c=110),
+            _bar(exit_date, o=110, h=111, l=109, c=110),
+        ]
+        bundle = _bundle(bars, entry_date=entry_date, exit_date=exit_date, entry_bar_policy="ENTRY_BAR_INCLUDED_FULL")
+        exc = compute_excursion(bundle, entry_price=100.0, exit_price=110.0)
+        assert exc.mfe_price == 120.0
+
+    def test_exit_bar_included_full_widens_mae(self):
+        entry_date, exit_date = dt.date(2026, 6, 1), dt.date(2026, 6, 5)
+        bars = [
+            _bar(entry_date, o=100, h=101, l=99, c=100),
+            _bar(dt.date(2026, 6, 3), o=100, h=102, l=98, c=100),
+            _bar(exit_date, o=100, h=101, l=80, c=90),  # exit-day low now legitimately included
+        ]
+        bundle = _bundle(bars, entry_date=entry_date, exit_date=exit_date, exit_bar_policy="EXIT_BAR_INCLUDED_FULL")
+        exc = compute_excursion(bundle, entry_price=100.0, exit_price=90.0)
+        assert exc.mae_price == 80.0
+
+    def test_default_partial_unknown_still_excludes_boundary_bars(self):
+        entry_date, exit_date = dt.date(2026, 6, 1), dt.date(2026, 6, 5)
+        bars = [
+            _bar(entry_date, o=100, h=999, l=1, c=100),
+            _bar(dt.date(2026, 6, 3), o=100, h=110, l=95, c=105),
+            _bar(exit_date, o=105, h=888, l=2, c=105),
         ]
         bundle = _bundle(bars, entry_date=entry_date, exit_date=exit_date)
         exc = compute_excursion(bundle, entry_price=100.0, exit_price=105.0)
