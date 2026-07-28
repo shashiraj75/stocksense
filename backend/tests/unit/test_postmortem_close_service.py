@@ -25,8 +25,11 @@ from services.postmortem.close_service import (
     TradeNotFoundError,
     TradeNotOwnedError,
     UnsupportedMarketError,
+    _EXIT_SNAPSHOT_COLUMNS,
+    _build_exit_snapshot_insert,
     close_paper_trade,
 )
+from services.postmortem.exit_snapshot import build_exit_snapshot as _build_exit_snapshot_obj
 from services.postmortem.evidence_attribution import ATTRIBUTION_RULES_VERSION
 from services.postmortem.exit_snapshot import CloseExitMechanism
 
@@ -183,6 +186,58 @@ class TestClosePaperTradeHappyPaths:
 
 
 @pytest.mark.unit
+class TestClosePaperTradeIndeterminatePnl:
+    """Stage 7 correction — a legacy/corrupt stored entry_price must
+    produce a genuinely indeterminate P&L, never a fabricated number, a
+    crash, or a silently-substituted zero misread as real breakeven."""
+
+    @pytest.mark.parametrize("bad_entry_price", [None, float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_or_missing_entry_price_yields_none_pnl_not_a_crash(self, bad_entry_price):
+        shared = _new_shared([_new_trade(entry_price=bad_entry_price)])
+        conn = _FakeConn(shared)
+        result = close_paper_trade(
+            conn, user_id="user-aaa", trade_id=1, exit_price=120.0,
+            exit_mechanism=CloseExitMechanism.MANUAL, exit_mechanism_raw="MANUAL",
+        )
+        assert result.realized_pnl_abs is None
+        assert result.realized_pnl_pct is None
+
+    def test_non_finite_entry_price_exit_snapshot_is_indeterminate_never_breakeven(self):
+        shared = _new_shared([_new_trade(entry_price=float("nan"))])
+        conn = _FakeConn(shared)
+        result = close_paper_trade(
+            conn, user_id="user-aaa", trade_id=1, exit_price=120.0,
+            exit_mechanism=CloseExitMechanism.MANUAL, exit_mechanism_raw="MANUAL",
+        )
+        assert result.exit_snapshot.financial_outcome == "INDETERMINATE"
+
+    def test_valid_entry_price_still_computes_a_real_percentage_not_none(self):
+        shared = _new_shared([_new_trade(entry_price=100.0)])
+        conn = _FakeConn(shared)
+        result = close_paper_trade(
+            conn, user_id="user-aaa", trade_id=1, exit_price=120.0,
+            exit_mechanism=CloseExitMechanism.MANUAL, exit_mechanism_raw="MANUAL",
+        )
+        assert result.realized_pnl_pct == pytest.approx(20.0)
+
+    def test_non_positive_legacy_entry_price_still_computes_abs_pnl_but_none_pct(self):
+        """entry_price <= 0 is arithmetically defined for the absolute
+        P&L (not indeterminate — it's real, if extreme, legacy data), but
+        compute_realized_pnl_pct's own existing guard already returns
+        None for it (a percentage against a non-positive base is
+        meaningless) — this close_service correction doesn't touch that
+        guard, it only stops None/NaN/Infinity from reaching it at all."""
+        shared = _new_shared([_new_trade(entry_price=0.0)])
+        conn = _FakeConn(shared)
+        result = close_paper_trade(
+            conn, user_id="user-aaa", trade_id=1, exit_price=120.0,
+            exit_mechanism=CloseExitMechanism.MANUAL, exit_mechanism_raw="MANUAL",
+        )
+        assert result.realized_pnl_abs == pytest.approx(1200.0)
+        assert result.realized_pnl_pct is None
+
+
+@pytest.mark.unit
 class TestClosePaperTradeFailureModes:
     def test_trade_not_found(self):
         shared = _new_shared([])
@@ -277,3 +332,84 @@ class TestClosePaperTradeFailureModes:
         assert results["already_closed"] == 1
         assert len(shared["exit_snapshots"]) == 1
         assert len(shared["outbox_rows"]) == 1
+
+
+def _sample_snapshot(**overrides):
+    kwargs = dict(
+        paper_trade_id=1, user_id="user-aaa", symbol="AAPL", market="US",
+        exit_mechanism=CloseExitMechanism.MANUAL, exit_mechanism_raw="MANUAL",
+        exit_price=120.0, exit_quantity=10,
+        closed_at=dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc),
+        realized_pnl_abs=200.0, management_mode="manual",
+    )
+    kwargs.update(overrides)
+    return _build_exit_snapshot_obj(**kwargs)
+
+
+@pytest.mark.unit
+class TestExitSnapshotInsertColumnValueParity:
+    """Locks in the PR #33 real-PostgreSQL CI failure fix: the exit-
+    snapshot INSERT's column list, value tuple, and placeholder count
+    must always agree — a real server rejects a bind-parameter-count
+    mismatch that no mocked-connection test previously caught."""
+
+    def test_column_count_equals_value_count_for_null_optional_fields(self):
+        snapshot = _sample_snapshot()  # every Optional[...] field left at its default (None)
+        sql, values = _build_exit_snapshot_insert(snapshot)
+        assert len(values) == len(_EXIT_SNAPSHOT_COLUMNS)
+
+    def test_column_count_equals_value_count_with_every_optional_field_populated(self):
+        snapshot = _sample_snapshot(
+            final_stop_loss=90.0, final_target_price=130.0, trailing_stop_level=95.0,
+            time_exit_rule="EOD", market_close_rule="16:00",
+            levels_modified_after_entry=True,
+            source_request_id="req-123", trigger_observation_timestamp=dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc),
+            trigger_observation_price=119.5, source_metadata={"note": "auto-detected"},
+        )
+        sql, values = _build_exit_snapshot_insert(snapshot)
+        assert len(values) == len(_EXIT_SNAPSHOT_COLUMNS)
+
+    def test_placeholder_count_equals_value_count(self):
+        snapshot = _sample_snapshot()
+        sql, values = _build_exit_snapshot_insert(snapshot)
+        assert sql.count("%s") == len(values)
+
+    def test_placeholder_count_equals_column_count(self):
+        snapshot = _sample_snapshot()
+        sql, values = _build_exit_snapshot_insert(snapshot)
+        assert sql.count("%s") == len(_EXIT_SNAPSHOT_COLUMNS)
+
+    def test_every_declared_column_name_appears_in_the_generated_sql(self):
+        snapshot = _sample_snapshot()
+        sql, _ = _build_exit_snapshot_insert(snapshot)
+        for column in _EXIT_SNAPSHOT_COLUMNS:
+            assert column in sql
+
+    def test_source_metadata_none_serializes_to_none_not_json_null_string(self):
+        snapshot = _sample_snapshot(source_metadata=None)
+        _, values = _build_exit_snapshot_insert(snapshot)
+        assert values[_EXIT_SNAPSHOT_COLUMNS.index("source_metadata")] is None
+
+    def test_source_metadata_populated_serializes_to_json_string(self):
+        snapshot = _sample_snapshot(source_metadata={"detected_by": "browser_useeffect"})
+        _, values = _build_exit_snapshot_insert(snapshot)
+        raw = values[_EXIT_SNAPSHOT_COLUMNS.index("source_metadata")]
+        assert isinstance(raw, str)
+        import json
+        assert json.loads(raw) == {"detected_by": "browser_useeffect"}
+
+    def test_values_are_positionally_ordered_to_match_columns(self):
+        """paper_trade_id must be the first value (matching the first
+        column), user_id the second, and so on — asserting a full
+        positional round-trip against ExitSnapshot's own field access,
+        not just a count."""
+        snapshot = _sample_snapshot()
+        _, values = _build_exit_snapshot_insert(snapshot)
+        by_column = dict(zip(_EXIT_SNAPSHOT_COLUMNS, values))
+        assert by_column["paper_trade_id"] == snapshot.paper_trade_id
+        assert by_column["user_id"] == snapshot.user_id
+        assert by_column["exit_price"] == snapshot.exit_price
+        assert by_column["exit_quantity"] == snapshot.exit_quantity
+        assert by_column["financial_outcome"] == snapshot.financial_outcome
+        assert by_column["closure_classification"] == snapshot.closure_classification
+        assert by_column["trigger_timing_verification"] == snapshot.trigger_timing_verification

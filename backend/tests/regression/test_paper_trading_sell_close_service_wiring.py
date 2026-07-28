@@ -83,9 +83,16 @@ class _FakeConn:
         stripped = sql.strip()
 
         if stripped.startswith("SELECT market FROM paper_trades WHERE id = %s"):
-            (trade_id,) = params
+            # Trade Postmortem Engine, Sprint 2 correction phase — this
+            # probe is now user-scoped (WHERE id = %s AND user_id = %s);
+            # mirror that filter here so a cross-user probe genuinely
+            # returns no row, matching real-database behavior, rather
+            # than leaking the trade's market to a non-owning caller.
+            trade_id, probing_user_id = params
             trade = shared["trades"].get(trade_id)
-            return (trade["market"],) if trade else None
+            if trade is None or trade["user_id"] != probing_user_id:
+                return None
+            return (trade["market"],)
 
         if stripped.startswith("SELECT user_id, symbol, quantity, entry_price, status, market"):
             (trade_id,) = params
@@ -209,11 +216,18 @@ class TestSellDelegatesToCloseService:
         resp = _sell(client, 999, {"price": 100.0, "exit_reason": "MANUAL"}, shared)
         assert resp.status_code == 404
 
-    def test_cross_user_close_403(self, client):
+    def test_cross_user_close_identical_404(self, client):
+        """Trade Postmortem Engine, Sprint 2 correction phase — the
+        market-open preflight is now user-scoped, so a trade owned by
+        another user returns the SAME 404 as a nonexistent trade_id,
+        never a 403 that would confirm the ID exists. This intentionally
+        changed this endpoint's prior contract (a distinguishable 403
+        'Not your trade') in favor of not leaking trade existence."""
         shared = _new_shared([_new_trade(user_id="owner")])
-        resp = _sell(client, 1, {"price": 100.0, "exit_reason": "MANUAL"}, shared, auth_sub="attacker")
-        assert resp.status_code == 403
-        assert "not your trade" in resp.json()["detail"].lower()
+        not_found = _sell(client, 999, {"price": 100.0, "exit_reason": "MANUAL"}, shared)
+        cross_user = _sell(client, 1, {"price": 100.0, "exit_reason": "MANUAL"}, shared, auth_sub="attacker")
+        assert cross_user.status_code == 404
+        assert cross_user.json() == not_found.json()
 
     def test_already_closed_trade_400(self, client):
         shared = _new_shared([_new_trade(status="CLOSED")])
@@ -253,3 +267,57 @@ class TestSellDelegatesToCloseService:
         shared = _new_shared([_new_trade()])
         resp = _sell(client, 1, {"price": 90.0, "exit_reason": "STOP_LOSS"}, shared)
         assert resp.status_code == 200
+
+    def test_missing_legacy_entry_price_yields_null_pnl_not_a_crash_or_fabricated_zero(self, client):
+        """Stage 7 correction — a legacy trade with a NULL stored
+        entry_price must close successfully with pnl=null in the response
+        (a genuinely indeterminate value, surfaced honestly), never a 500
+        crash and never a silently fabricated 0. (A literal NaN/Infinity
+        in the entry_price column is covered at the close_service unit
+        level — see test_postmortem_close_service.py — rather than here,
+        since a NaN would also fail this endpoint's own unrelated JSON
+        response encoding of the raw entry_price field, a separate,
+        narrower gap this correction does not extend to.)"""
+        shared = _new_shared([_new_trade(entry_price=None)])
+        resp = _sell(client, 1, {"price": 120.0, "exit_reason": "MANUAL"}, shared)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["pnl"] is None
+        # pnl_pct keeps this endpoint's own pre-existing legacy "0"
+        # response contract (applied only at this HTTP boundary, per
+        # test_paper_trading_postmortem_pnl_parity.py's locked-in
+        # formula) — never confused with pnl itself, which stays null.
+        assert body["pnl_pct"] == 0
+
+
+@pytest.mark.regression
+class TestCrossUserSellPreflightPrivacyMatrix:
+    """Stage 5 correction — a cross-user sell attempt must be
+    indistinguishable from a nonexistent trade_id regardless of the
+    victim's market or that market's current open/closed state. Before
+    the fix, the preflight probe queried by trade_id alone, so an
+    attacker could learn a target trade's market and whether it was
+    tradeable right now, purely from the HTTP status/detail returned for
+    an ID they don't own."""
+
+    @pytest.mark.parametrize("market,market_open", [
+        ("IN", True), ("IN", False), ("US", True), ("US", False),
+    ])
+    def test_cross_user_trade_indistinguishable_from_nonexistent(self, client, market, market_open):
+        shared = _new_shared([_new_trade(user_id="owner", market=market)])
+
+        with patch.object(
+            __import__("api.routers.paper_trading", fromlist=["_conn"]), "_conn", _conn_factory(shared)
+        ), patch("api.routers.paper_trading._is_market_open", return_value=market_open):
+            not_found = client.post(
+                "/api/paper-trading/sell/999", json={"price": 100.0, "exit_reason": "MANUAL"},
+                headers=_auth("attacker"),
+            )
+            cross_user = client.post(
+                "/api/paper-trading/sell/1", json={"price": 100.0, "exit_reason": "MANUAL"},
+                headers=_auth("attacker"),
+            )
+
+        assert cross_user.status_code == 404
+        assert cross_user.json() == not_found.json()
+        assert shared["trades"][1]["status"] == "OPEN"  # never touched
