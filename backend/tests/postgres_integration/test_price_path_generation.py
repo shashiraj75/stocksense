@@ -266,10 +266,15 @@ class TestReportSupersession:
         ).fetchone()[0]
         assert report_count == 2
 
+        # A manually-bought/sold trade (this test's own setup) has no
+        # entry snapshot, so the real prior report is genuinely
+        # LIMITED_EVIDENCE, not COMPLETE — assert the row is UNCHANGED
+        # by the price-path enhancement (Stage I requirement 1) rather
+        # than assuming a specific status value.
         prior_row_status = pg_conn.execute(
             "SELECT status FROM paper_trade_postmortem_report WHERE id = %s", (prior.id,)
         ).fetchone()[0]
-        assert prior_row_status == "COMPLETE"
+        assert prior_row_status == prior.status
 
     def test_report_update_rejected_by_immutability_trigger(self, client, pg_conn, unique_user_id):
         trade_id = _open_and_close(client, pg_conn, unique_user_id)
