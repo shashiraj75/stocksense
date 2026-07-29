@@ -50,6 +50,12 @@ def _insert_outbox_row(
     conn, *, trade_id: int, user_id: str, status: str = "PENDING", attempt_count: int = 0,
     next_attempt_at=None, lease_expires_at=None, claimed_by=None,
 ) -> int:
+    # next_attempt_at is NOT NULL DEFAULT now() in the real schema —
+    # passing an explicit NULL parameter overrides the column default
+    # rather than falling back to it, so a caller not specifying one
+    # gets `now()` here instead of a literal NULL.
+    if next_attempt_at is None:
+        next_attempt_at = dt.datetime.now(dt.timezone.utc)
     row = conn.execute(
         """INSERT INTO paper_trade_postmortem_outbox
                (paper_trade_id, user_id, requested_report_schema_version,
