@@ -205,9 +205,24 @@ class TestTrueConcurrentGenerate:
             _time.sleep(0.3)  # keep the winner's lease open while the loser's claim races it
             return _fake_bars()
 
-        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _slow_bars)
-
+        # _open_and_close itself goes through /sell, which (per Stage
+        # H2A) ALSO attempts price-path enhancement synchronously once
+        # the flag is enabled — leaving it enabled during setup would
+        # let the sell call itself win the generation race before either
+        # test thread ever calls /generate, collapsing this into a
+        # sequential (not concurrent) scenario. Disabled only for setup,
+        # re-enabled immediately before the two concurrent requests.
+        monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
         trade_id = _open_and_close(client, pg_conn, unique_user_id)
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+
+        pre_existing = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        assert pre_existing == 0, "setup itself must not have already generated the price-path report"
+
+        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _slow_bars)
 
         results = []
         results_lock = threading.Lock()
