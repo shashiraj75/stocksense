@@ -1327,6 +1327,12 @@ def _attempt_price_path_enhancement(
                     market=record.market, report_trading_date=prior_report.report_trading_date,
                     market_timezone=market_timezone_name, source_version=evidence.source_version,
                     outbox_id=outbox_id, claimed_by=claimant,
+                    # Stage J3 — the trade-context ceiling computed by J1A
+                    # BEFORE acquisition (missing/invalid entry-exit
+                    # snapshot, missing exit price) must actually be
+                    # consulted when the report settles, never merely used
+                    # to gate whether acquisition ran.
+                    trade_context_ceiling=eligibility.report_completeness_ceiling,
                 )
         return enhanced, PRICE_PATH_GENERATED
     except generation_service.StaleLeaseError:

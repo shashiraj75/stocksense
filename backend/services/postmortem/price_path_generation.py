@@ -252,6 +252,7 @@ def persist_price_path_report(
     conn, *, prior_report: PersistedReport, payload: PricePathReportPayload, trade_id: int, user_id: str,
     market: str, report_trading_date, market_timezone: str, source_version: str,
     outbox_id: int | None = None, claimed_by: str | None = None,
+    trade_context_ceiling: str = "COMPLETE",
 ) -> tuple[PersistedReport, bool]:
     """PHASE 5 — short write. Merges the price-path payload additively
     on top of the prior report's own structured_report/evidence_items/
@@ -272,11 +273,24 @@ def persist_price_path_report(
     calc_suffix = price_path_calculation_suffix(source_version)
     source_manifest["price_path_calculation_version"] = calc_suffix
 
-    # A report is only COMPLETE overall if it was already COMPLETE
-    # (Sprint 1/2 evidence) AND the price-path layer is itself COMPLETE
-    # — additive evidence can only ever LOWER completeness confidence,
-    # never manufacture it.
-    status = payload.status if prior_report.status == "COMPLETE" else prior_report.status
+    # Stage J3 — the final status is the MINIMUM of every applicable
+    # ceiling: the prior (Sprint 1/2) report's own status, this price-
+    # path payload's own bar/excursion-completeness status, AND the
+    # Stage J1A trade-context ceiling (missing/invalid entry-exit
+    # snapshot, missing exit price) computed by
+    # price_path_eligibility.evaluate_eligibility BEFORE acquisition
+    # ever ran. Composing through compute_report_completeness_ceiling
+    # (rather than the old two-way "payload.status if prior_report.
+    # status == COMPLETE else prior_report.status" comparison) closes a
+    # real gap: without this, a trade-context ceiling computed at
+    # eligibility time was only ever used to GATE whether acquisition
+    # ran, never actually consulted when deciding the persisted status
+    # — it happened to still come out correct in the missing-snapshot/
+    # missing-exit-price cases only because Sprint 2's OWN prior report
+    # coincidentally already reflected the same limiting condition
+    # independently, not because this function ever read it.
+    from services.postmortem.price_path_evidence_decision import compute_report_completeness_ceiling
+    status = compute_report_completeness_ceiling(prior_report.status, payload.status, trade_context_ceiling)
 
     report, created = report_store.persist_report(
         conn, paper_trade_id=trade_id, user_id=user_id, market=market,

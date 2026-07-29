@@ -174,3 +174,63 @@ class TestHistoricalGenerationNeverMutatesSourceRows:
         assert trade_before == trade_after
         assert entry_before == entry_after
         assert exit_before == exit_after
+
+
+@pytest.mark.timeout(30)
+class TestCompatibleReplaySurvivesProviderOutage:
+    def test_second_generate_succeeds_even_when_every_provider_function_raises(
+        self, client, pg_conn, unique_user_id, monkeypatch,
+    ):
+        """Stage J5 — a provider outage must never prevent a compatible
+        (already-settled) outcome from being returned. After the first
+        successful /generate call, every provider function is
+        monkeypatched to raise; a second /generate call must still
+        succeed by never touching the provider at all."""
+        trade_id = _open_and_close(client, pg_conn, unique_user_id)
+        first = _generate(client, unique_user_id, trade_id)
+        assert first.status_code == 200
+        assert first.json()["price_path_generation_status"] == "PRICE_PATH_GENERATED"
+
+        from services.postmortem import price_path_acquisition
+
+        def _raises(*a, **k):
+            raise AssertionError("provider function must not be called on a compatible-replay path")
+
+        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _raises)
+        monkeypatch.setattr(price_path_acquisition, "fetch_split_events", _raises)
+        monkeypatch.setattr(price_path_acquisition, "fetch_dividend_events", _raises)
+
+        second = _generate(client, unique_user_id, trade_id)
+        assert second.status_code == 200
+        assert second.json()["price_path_generation_status"] == "PRICE_PATH_ALREADY_COMPLETE"
+
+
+@pytest.mark.timeout(30)
+class TestTransientProviderFailureMarksRetryable:
+    def test_provider_exception_marks_outbox_failed_retryable_not_terminal(
+        self, client, pg_conn, unique_user_id, monkeypatch,
+    ):
+        from services.postmortem import price_path_acquisition
+
+        def _raises(*a, **k):
+            raise price_path_acquisition.PriceProviderAcquisitionError("PROVIDER_FETCH_FAILED", "synthetic outage")
+
+        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _raises)
+
+        trade_id = _open_and_close(client, pg_conn, unique_user_id)
+        resp = _generate(client, unique_user_id, trade_id)
+        assert resp.status_code == 200
+        assert resp.json()["price_path_generation_status"] == "PRICE_PATH_FAILED_RETRYABLE"
+
+        outbox_status, error_code = pg_conn.execute(
+            "SELECT status, last_error_code FROM paper_trade_postmortem_outbox "
+            "WHERE paper_trade_id = %s AND requested_report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()
+        assert outbox_status == "FAILED_RETRYABLE"
+        assert error_code == "PROVIDER_FETCH_FAILED"
+
+        report_count = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        assert report_count == 0  # no partial/fabricated evidence persisted

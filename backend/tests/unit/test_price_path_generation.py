@@ -415,3 +415,41 @@ class TestPhase5PersistReportAndSupersession:
             report_trading_date=dt.date(2026, 6, 5), market_timezone="America/New_York", source_version="1.0.0",
         )
         assert report.status == "LIMITED_EVIDENCE"
+
+    def test_trade_context_ceiling_alone_caps_an_otherwise_complete_outcome(self):
+        """Stage J3 wiring proof — a COMPLETE prior report AND a COMPLETE
+        price-path payload must still settle LIMITED_EVIDENCE when the
+        Stage J1A trade-context ceiling (computed at eligibility time,
+        BEFORE acquisition ever ran) says LIMITED_EVIDENCE. Before this
+        wiring, trade_context_ceiling was computed but never consulted
+        here -- only used to gate whether acquisition ran at all."""
+        conn = _ReportFakeConn()
+        prior = _prior_report(status="COMPLETE")
+        report, _ = ppg.persist_price_path_report(
+            conn, prior_report=prior, payload=self._payload(), trade_id=1, user_id="user-aaa", market="US",
+            report_trading_date=dt.date(2026, 6, 5), market_timezone="America/New_York", source_version="1.0.0",
+            trade_context_ceiling="LIMITED_EVIDENCE",
+        )
+        assert report.status == "LIMITED_EVIDENCE"
+
+    def test_trade_context_ceiling_complete_does_not_by_itself_upgrade_status(self):
+        conn = _ReportFakeConn()
+        prior = _prior_report(status="LIMITED_EVIDENCE")
+        report, _ = ppg.persist_price_path_report(
+            conn, prior_report=prior, payload=self._payload(), trade_id=1, user_id="user-aaa", market="US",
+            report_trading_date=dt.date(2026, 6, 5), market_timezone="America/New_York", source_version="1.0.0",
+            trade_context_ceiling="COMPLETE",
+        )
+        assert report.status == "LIMITED_EVIDENCE"
+
+    def test_default_trade_context_ceiling_preserves_prior_behavior(self):
+        """Callers that don't pass trade_context_ceiling (the default,
+        'COMPLETE') are unaffected -- non-breaking for any caller not
+        yet updated to compute and pass it."""
+        conn = _ReportFakeConn()
+        prior = _prior_report(status="COMPLETE")
+        report, _ = ppg.persist_price_path_report(
+            conn, prior_report=prior, payload=self._payload(), trade_id=1, user_id="user-aaa", market="US",
+            report_trading_date=dt.date(2026, 6, 5), market_timezone="America/New_York", source_version="1.0.0",
+        )
+        assert report.status == "COMPLETE"
