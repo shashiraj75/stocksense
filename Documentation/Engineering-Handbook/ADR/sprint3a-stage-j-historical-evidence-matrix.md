@@ -31,19 +31,50 @@ not present here at all.
   (`HistoricalEvidenceQualityDecision` — WHETHER it's usable) remain two
   separate, never-merged decisions, persisted as two separate
   `structured_report["price_path"]` blocks.
-- **Manifest-integrity validation is now load-bearing** (Stage J Final
-  Semantic Reconciliation, Stage 2): before ANY compatible persisted
-  evidence row is used for replay,
-  `price_path_acquisition.validate_manifest_compatibility` is checked —
-  missing/tampered hash, missing required field, unsupported
-  schema/normalization/boundary-policy version, or an identity mismatch
-  against the row's own other columns all fail closed
+- **Manifest-integrity validation is load-bearing and now covers the
+  FULL semantic contract** (Stage J Final Semantic Reconciliation Stage 2,
+  expanded to 30 required fields plus 13 cross-checks in Stage J3
+  Stage 5): before ANY compatible persisted evidence row is used for
+  replay — and, as of Stage J3, before a FRESHLY BUILT bundle is even
+  persisted — `price_path_acquisition.validate_manifest_compatibility`
+  is checked: every Stage J-F3 manifest field present; the integrity
+  hash verifies (an ordinary SHA-256 self-consistency check, NOT
+  cryptographic authentication — it detects corruption/drift, not an
+  attacker who rewrites both content and hash together); schema/
+  normalization/boundary-policy versions supported; pinned acquisition
+  arguments match; identity fields (source_id/type/version, symbols,
+  market, interval) match the row's own other columns; provider-
+  exclusive-end equals requested_window_end + 1 day; split/dividend
+  dates are valid ISO dates inside the window; manifest limitations
+  equal the row's own persisted `limitations` column exactly;
+  production_authoritative is exactly False; source_scope/source_type
+  match their fixed constants. Any failure fails closed
   (`MANIFEST_INTEGRITY_VIOLATION`, zero provider calls, zero calculator
-  calls, zero new evidence, zero report, original row unchanged). A
-  legacy row persisted before this manifest-integrity governance existed
-  correctly fails this check — it is never silently treated as
-  compatible merely because the older four-part version identity still
-  matches.
+  calls, zero new evidence under the same identity, zero report,
+  original row(s) unchanged). A legacy row persisted before this
+  governance existed correctly fails this check — never silently
+  treated as compatible merely because an old version identity happens
+  to match.
+- **One authoritative version identity** (Stage J3, Stage 2):
+  `services.postmortem.price_path_identity.CURRENT_PRICE_PATH_SOURCE_
+  IDENTITY` is the sole source every price-path module reads version
+  constants from — `EVIDENCE_BUNDLE_SCHEMA_VERSION`, `SOURCE_VERSION`,
+  `SOURCE_ID_YFINANCE_DAILY`, `SOURCE_MANIFEST_SCHEMA_VERSION`,
+  `SYMBOL_NORMALIZATION_VERSION`, `BOUNDARY_POLICY_VERSION`,
+  `PRICE_PATH_REPORT_SCHEMA_VERSION`, `CALCULATION_RULES_VERSION`.
+  `load_generation_context`'s compatible-evidence lookup and
+  `_price_path_target_identity`'s report/outbox identity now read from
+  the exact same object — the two can no longer silently drift apart.
+  `SOURCE_VERSION` bumped `1.0.0` → `1.1.0` this pass (Stage J3 Stage 3)
+  because the manifest/compatibility semantics genuinely changed
+  materially since 1.0.0 was pinned. Old 1.0.0 rows remain immutable,
+  readable, and never block a fresh 1.1.0 acquisition (the lookup simply
+  no longer finds them — proven in `TestLegacyAndCurrentEvidenceCoexistence`).
+- **India and US real-PostgreSQL assurance is symmetric** (Stage J3,
+  Stage 6): both markets have dedicated fresh-acquisition, replay, and
+  cross-market-isolation real-PG tests — RELIANCE/`.NS`/Asia-Kolkata for
+  India, AAPL/no-suffix/America-New_York (+ one explicit DST-date case)
+  for US.
 - **Trade-context decision provenance** (Stage 7): J1A's own
   `eligibility.reason_codes`/`limitations` (e.g. `EXIT_CONTEXT_INVALID`)
   are persisted as their own `structured_report["price_path"]
@@ -838,3 +869,147 @@ be.
 Implemented on feature branch only; locally verified; PG15 verified;
 PG17 verified; not PR-reviewed; not merged; not deployed; all three
 feature flags remain disabled.
+
+## Stage J3 — Versioned Evidence Identity, Complete Manifest Contract, India/US Assurance (this pass)
+
+Closes the version-identity and both-market-assurance gate exposed by
+the Stage J Final Semantic Reconciliation pass's own load-bearing
+manifest validator.
+
+### Root cause found and fixed
+
+`price_path_generation.load_generation_context`'s compatible-evidence
+LOOKUP defaulted `source_id`/`source_version` to independent bare
+literals (`"yfinance_daily"`/`"1.0.0"`), completely disconnected from
+`price_path_acquisition.SOURCE_VERSION` — the constant every acquisition
+and the report/outbox identity (`_price_path_target_identity`) actually
+used. Both happened to read `"1.0.0"` and so happened to agree, but
+nothing enforced that agreement. Combined with the prior pass's new
+load-bearing manifest validator, this meant: a legacy or incompatible
+row found by the lookup, rejected by manifest validation, would be
+found again by the SAME stale lookup on every retry — permanently
+blocked, never able to fall through to fresh acquisition under a
+genuinely new identity.
+
+### Fix
+
+New `services/postmortem/price_path_identity.py` — the one leaf every
+price-path module imports version constants from; zero imports INTO it
+from any other price_path_* module, so the import direction is safe.
+`load_generation_context`'s literal defaults are removed; its three
+version parameters now default to live references into `CURRENT_PRICE_
+PATH_SOURCE_IDENTITY`, the exact same object `_price_path_target_
+identity()` reads from. `SOURCE_VERSION` bumped `1.0.0` → `1.1.0`.
+
+### Legacy/current compatibility semantics (Stage 4)
+
+- **Old 1.0.0 row**: remains immutable and readable; simply no longer
+  matched by the 1.1.0 lookup (never "rejected then retried forever" —
+  it is structurally invisible to the current identity's search, which
+  is a stronger and simpler guarantee than "rejected but not blocking").
+  Current acquisition proceeds fresh under 1.1.0.
+- **Current 1.1.0 valid row**: compatible replay, zero provider calls,
+  manifest verified before calculation.
+- **Current 1.1.0 corrupt row**: fails closed exactly as before —
+  `MANIFEST_INTEGRITY_VIOLATION`, no provider call, no calculator, no
+  new evidence under the same identity, no report, original row
+  unchanged — proven with a legacy 1.0.0 row ALSO present, to confirm
+  the two failure modes don't interact
+  (`TestCurrentVersionCorruptManifestFailsClosedAlongsideLegacyRow`).
+- **No current row**: normal fresh acquisition under 1.1.0.
+
+### Complete manifest contract (Stage 5)
+
+Expanded from 16 to 30 required fields plus 13 cross-checks (exact list
+in the "Current Architecture" section above). Also now validates a
+FRESHLY BUILT bundle's own manifest before persistence, not only a
+replayed row's — proven self-consistent for both US and IN markets.
+
+`verify_source_manifest_integrity`'s docstring corrected to state its
+actual security boundary honestly: an ordinary SHA-256 self-consistency
+check (corruption/drift detection), not cryptographic authentication —
+it provides no protection against an attacker who can rewrite both the
+manifest content and its stored hash together.
+
+### India and US real-PostgreSQL assurance (Stage 6)
+
+| Requirement | Test |
+|---|---|
+| India symbol normalization (RELIANCE → RELIANCE.NS) | `TestIndiaCompleteAcquisition::test_india_acquisition_persists_correct_manifest_and_identity` |
+| India timezone/session (Asia/Kolkata) | same test — `market_timezone == "Asia/Kolkata"` |
+| India acquisition (full lifecycle, manifest verifies) | same test |
+| India replay (zero provider calls, idempotent) | `TestIndiaEvidenceReplay::test_india_replay_zero_provider_calls_and_idempotent` |
+| US symbol normalization (AAPL, no suffix) | `TestUSCompleteAcquisition::test_us_acquisition_persists_correct_manifest_and_identity` |
+| US timezone/DST (America/New_York, explicit DST-date case) | same test, `use_dst_date=True` parametrization |
+| US acquisition (full lifecycle, manifest verifies) | same test |
+| US replay | `TestUSEvidenceReplay::test_us_replay_zero_provider_calls_and_idempotent` |
+| Cross-market isolation | `TestMarketIsolation::test_india_and_us_evidence_remain_isolated` |
+
+### Legacy coexistence real-PG tests (Stage 7)
+
+| Requirement | Test |
+|---|---|
+| Legacy 1.0.0 row + fresh 1.1.0 acquisition, both persist, old unchanged | `TestLegacyAndCurrentEvidenceCoexistence::test_legacy_row_does_not_block_fresh_current_acquisition` |
+| Legacy 1.0.0 report + new 1.1.0 report coexist, distinct identities | `TestLegacyAndCurrentEvidenceCoexistence::test_legacy_report_and_current_report_coexist` |
+| Legacy/current outbox rows coexist, current request claims only 1.1.0 | `TestLegacyAndCurrentEvidenceCoexistence::test_legacy_and_current_outbox_rows_coexist` |
+| Valid current 1.1.0 replay, no duplicate evidence | `TestUSEvidenceReplay` / `TestIndiaEvidenceReplay` (already covers this) |
+| Corrupt current 1.1.0 manifest with legacy row present | `TestCurrentVersionCorruptManifestFailsClosedAlongsideLegacyRow::test_corrupt_current_manifest_fails_closed_with_legacy_row_present` |
+| Legacy row alone does not become the replay candidate | `TestLegacyAndCurrentEvidenceCoexistence::test_legacy_row_does_not_block_fresh_current_acquisition` (same test proves this — acquisition_status is ACQUISITION_REQUIRED, never COMPATIBLE_REPLAY, with only the legacy row present) |
+| Concurrent 1.1.0 acquisition uniqueness | not independently re-tested — a property of the outbox's own `ON CONFLICT DO NOTHING` unique-index mechanics, unchanged by this pass; already covered by the existing, retained direct-outbox-contention tests |
+
+### Local performance reconciliation (Stage 8)
+
+The prior pass's local non-PG run reported 2728.64s versus this
+codebase's normal ~90-100s range. Re-run this pass under `time -l` with
+`--durations=30`: **96.84s wall time** (4753 passed, 0 failed) —
+does NOT reproduce the slowdown. System evidence at investigation time:
+`uptime` showed the machine had been up only ~20-22 minutes (a very
+recent reboot — consistent with why this session's own `/tmp` worktree
+had also been cleared) with 15-minute load average 22.99 against 10
+CPU cores (`sysctl hw.ncpu`), well over 2x core count, alongside active
+Chrome renderer/GPU-process and system-daemon CPU usage. Honest
+conclusion: no direct evidence ties the SPECIFIC 2728s run to a
+specific cause (load average was not captured at the time that run
+happened), but the machine's own state around that time — a very
+recent reboot with unusually high load averages — is a genuine,
+directly-observed condition consistent with (not proof of) transient
+system contention; the slowdown itself did not reproduce on retry, and
+green real-PostgreSQL CI results for that pass are not invalidated by
+it.
+
+### Local verification
+
+`pytest backend/tests -m "not postgres_integration" --durations=30` →
+**4753 passed, 0 failed, 175 deselected**, 96.84s. Log at
+`/tmp/sprint3a-stage-j3-versioned-identity.log`.
+
+### Real-PG collection: 175 (up from 165)
+
+### Remaining Stage J scope (unchanged from the prior pass, explicitly restated)
+
+Stage J is **not** complete. The following remain, in dependency order:
+
+- Observed-touch-pattern separation from governed-touch-order
+  conclusion (`classify_touch_order` still returns one collapsed enum).
+- Governed touch-order redesign (the four-tier hierarchy this and prior
+  passes' checkpoint reports describe).
+- Single-sided partial-boundary-touch policy change (currently a
+  single-sided boundary touch stays a definitive `TARGET_ONLY`/
+  `STOP_ONLY`; the requested conservative policy would make it
+  `BOUNDARY_BAR_AMBIGUOUS` instead).
+- Live persisted ambiguity proof through the real endpoint (blocked on
+  the two items above — the live endpoint's own hardcoded
+  `level_history_complete=False` currently makes `BOTH_SAME_BAR_
+  AMBIGUOUS`/`BOUNDARY_BAR_AMBIGUOUS` unreachable through `/generate`
+  directly for any real trade).
+- Traceability-validator semantic expansion (test-node-existence
+  cross-check via a deterministic repository test index, per-row
+  semantic assertions beyond rows 13/31/33, stale-name rejection for
+  future refactors).
+
+### Final status (updated)
+
+Implemented on feature branch only; locally verified (4753 passed);
+PG15/PG17 verification pending this pass's own CI dispatch (see
+checkpoint report); not PR-reviewed; not merged; not deployed; all
+three feature flags remain disabled.
