@@ -534,7 +534,15 @@ class TestUnsupportedCompletenessFailsClosedThroughRealReplay:
             row = dict(zip(columns, cur.fetchone()))
         row["data_completeness"] = "SOME_LEGACY_VALUE_NO_LONGER_RECOGNIZED"
         insert_columns = [c for c in columns if c not in ("id", "created_at")]
-        values = tuple(Jsonb(row[c]) if isinstance(row[c], dict) else row[c] for c in insert_columns)
+        # This table's JSONB columns include both object-valued
+        # (source_manifest) and array-valued (limitations, bars) ones --
+        # psycopg deserializes a JSONB array to a plain Python list, not
+        # a dict, so checking only `isinstance(..., dict)` missed `bars`/
+        # `limitations` and left them unadapted (caught by real PG CI on
+        # both PG15 and PG17).
+        values = tuple(
+            Jsonb(row[c]) if isinstance(row[c], (dict, list)) else row[c] for c in insert_columns
+        )
         pg_conn.execute("DELETE FROM paper_trade_price_path_evidence WHERE paper_trade_id = %s", (trade_id,))
         pg_conn.execute(
             f"INSERT INTO paper_trade_price_path_evidence ({', '.join(insert_columns)}) "
