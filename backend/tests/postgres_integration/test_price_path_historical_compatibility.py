@@ -182,14 +182,19 @@ class TestCompatibleReplaySurvivesProviderOutage:
         self, client, pg_conn, unique_user_id, monkeypatch,
     ):
         """Stage J5 — a provider outage must never prevent a compatible
-        (already-settled) outcome from being returned. After the first
-        successful /generate call, every provider function is
-        monkeypatched to raise; a second /generate call must still
-        succeed by never touching the provider at all."""
+        (already-settled) outcome from being returned. A report is
+        settled while the provider is still faked (either during
+        _open_and_close's own /sell call, per Stage H2A, or by this
+        first explicit /generate call — both are a legitimate settled
+        outcome); every provider function is then monkeypatched to
+        raise, and a second /generate call must still succeed by never
+        touching the provider at all."""
         trade_id = _open_and_close(client, pg_conn, unique_user_id)
         first = _generate(client, unique_user_id, trade_id)
         assert first.status_code == 200
-        assert first.json()["price_path_generation_status"] == "PRICE_PATH_GENERATED"
+        assert first.json()["price_path_generation_status"] in (
+            "PRICE_PATH_GENERATED", "PRICE_PATH_ALREADY_COMPLETE",
+        )
 
         from services.postmortem import price_path_acquisition
 
@@ -210,6 +215,21 @@ class TestTransientProviderFailureMarksRetryable:
     def test_provider_exception_marks_outbox_failed_retryable_not_terminal(
         self, client, pg_conn, unique_user_id, monkeypatch,
     ):
+        # _open_and_close's own /sell call ALSO synchronously attempts
+        # price-path enhancement (Stage H2A) with whatever provider is
+        # active at that moment. With the file's autouse fake still
+        # active, that call would succeed and settle a COMPLETE report
+        # during setup -- this explicit /generate call would then hit
+        # the ALREADY_COMPLETE short-circuit and never touch the
+        # (raising) provider at all, never exercising the failure this
+        # test targets. Disabled only for setup, re-enabled with the
+        # raising provider immediately before the explicit call, same
+        # pattern as TestTrueConcurrentGenerate in
+        # test_price_path_endpoint_lifecycle.py.
+        monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
+        trade_id = _open_and_close(client, pg_conn, unique_user_id)
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+
         from services.postmortem import price_path_acquisition
 
         def _raises(*a, **k):
@@ -217,7 +237,12 @@ class TestTransientProviderFailureMarksRetryable:
 
         monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _raises)
 
-        trade_id = _open_and_close(client, pg_conn, unique_user_id)
+        pre_existing = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        assert pre_existing == 0, "setup itself must not have already generated the price-path report"
+
         resp = _generate(client, unique_user_id, trade_id)
         assert resp.status_code == 200
         assert resp.json()["price_path_generation_status"] == "PRICE_PATH_FAILED_RETRYABLE"
