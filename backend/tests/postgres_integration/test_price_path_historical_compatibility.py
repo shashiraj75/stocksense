@@ -1731,45 +1731,81 @@ class TestIndiaCompleteAcquisition:
 
 @pytest.mark.timeout(30)
 class TestIndiaEvidenceReplay:
-    """Stage J3, Stage 6B -- India evidence replay: zero provider calls,
-    evidence reused unchanged, idempotent repeat request."""
+    """Stage J3A, Stage 1 -- CORRECTED: the prior pass's version of this
+    test called /generate first (fresh acquisition + report in one call)
+    then called /generate again -- the second call is REPORT replay
+    (existing_pp_report is not None, short-circuits before any evidence
+    lookup at all), never evidence replay. This version seeds ONLY
+    compatible evidence directly through the production persistence
+    service -- no report, no outbox settlement -- then calls /generate
+    exactly once to prove genuine EVIDENCE replay (COMPATIBLE_REPLAY,
+    provider_call_expected=false, reused_evidence_id set, zero provider
+    calls), and a second time to separately prove REPORT replay."""
 
-    def test_india_replay_zero_provider_calls_and_idempotent(self, client, pg_conn, unique_user_id, monkeypatch):
+    def test_india_true_evidence_replay_then_report_replay(self, client, pg_conn, unique_user_id, monkeypatch):
+        from services.market_hours import IST
+        from services.postmortem import price_path_acquisition, price_path_store
+
         monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
         trade_id = _open_and_close_market(client, pg_conn, unique_user_id, market="IN", symbol="RELIANCE", exit_price=101.0)
         entry_ts = pg_conn.execute("SELECT opened_at FROM paper_trades WHERE id = %s", (trade_id,)).fetchone()[0]
-
-        from services.market_hours import IST
-
         entry_date = entry_ts.astimezone(IST).date()
 
         def _bars(*a, **k):
             return [{"date": entry_date, "open": 2800.0, "high": 2850.0, "low": 2780.0, "close": 2820.0,
                       "volume": 500, "adj_close": None, "dividend": 0.0}]
 
-        from services.postmortem import price_path_acquisition
-        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _bars)
-        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+        bundle = price_path_acquisition.acquire_price_path_evidence(
+            paper_trade_id=trade_id, user_id=unique_user_id, symbol="RELIANCE", market="IN",
+            market_timezone_name="Asia/Kolkata", market_tzinfo=IST,
+            entry_timestamp=entry_ts, exit_timestamp=entry_ts,
+            fetch_bars_fn=_bars, fetch_splits_fn=_fake_none, fetch_dividends_fn=_fake_none,
+        )
+        evidence, _created = price_path_store.persist_evidence(pg_conn, bundle)
 
-        first = _generate(client, unique_user_id, trade_id)
-        assert first.status_code == 200
-        assert first.json()["price_path_generation_status"] == "PRICE_PATH_GENERATED"
+        report_count_before = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        assert report_count_before == 0  # genuine precondition: evidence exists, report does not
 
         def _raises(*a, **k):
-            raise AssertionError("provider must not be called on replay")
+            raise AssertionError("provider must not be called on evidence replay")
 
         monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _raises)
         monkeypatch.setattr(price_path_acquisition, "fetch_split_events", _raises)
         monkeypatch.setattr(price_path_acquisition, "fetch_dividend_events", _raises)
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
 
-        second = _generate(client, unique_user_id, trade_id)
-        assert second.status_code == 200
-        assert second.json()["price_path_generation_status"] == "PRICE_PATH_ALREADY_COMPLETE"
+        # Call 1 -- genuine EVIDENCE replay.
+        first = _generate(client, unique_user_id, trade_id)
+        assert first.status_code == 200
+        assert first.json()["price_path_generation_status"] == "PRICE_PATH_GENERATED"
+
+        structured_report = pg_conn.execute(
+            "SELECT structured_report FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        acquisition = structured_report["price_path"]["acquisition_decision"]
+        assert acquisition["acquisition_status"] == "COMPATIBLE_REPLAY"
+        assert acquisition["provider_call_expected"] is False
+        assert acquisition["reused_evidence_id"] == evidence.id
 
         evidence_count = pg_conn.execute(
             "SELECT count(*) FROM paper_trade_price_path_evidence WHERE paper_trade_id = %s", (trade_id,)
         ).fetchone()[0]
-        assert evidence_count == 1
+        assert evidence_count == 1  # no second evidence row was acquired
+
+        # Call 2 -- genuine REPORT replay (a report now exists).
+        second = _generate(client, unique_user_id, trade_id)
+        assert second.status_code == 200
+        assert second.json()["price_path_generation_status"] == "PRICE_PATH_ALREADY_COMPLETE"
+
+        report_count_after = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        assert report_count_after == 1  # no duplicate, no new supersession
 
 
 @pytest.mark.timeout(30)
@@ -1833,44 +1869,74 @@ class TestUSCompleteAcquisition:
 
 @pytest.mark.timeout(30)
 class TestUSEvidenceReplay:
-    """Stage J3, Stage 6D -- US evidence replay, same requirements as India."""
+    """Stage J3A, Stage 2 -- same correction as TestIndiaEvidenceReplay:
+    seeds ONLY compatible evidence directly through the production
+    persistence service (no report, no outbox settlement), then proves
+    genuine EVIDENCE replay on the first /generate call and genuine
+    REPORT replay on the second, never conflating the two."""
 
-    def test_us_replay_zero_provider_calls_and_idempotent(self, client, pg_conn, unique_user_id, monkeypatch):
+    def test_us_true_evidence_replay_then_report_replay(self, client, pg_conn, unique_user_id, monkeypatch):
+        from services.market_hours import ET
+        from services.postmortem import price_path_acquisition, price_path_store
+
         monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
         trade_id = _open_and_close_market(client, pg_conn, unique_user_id, market="US", symbol="AAPL", exit_price=101.0)
         entry_ts = pg_conn.execute("SELECT opened_at FROM paper_trades WHERE id = %s", (trade_id,)).fetchone()[0]
-
-        from services.market_hours import ET
-
         entry_date = entry_ts.astimezone(ET).date()
 
         def _bars(*a, **k):
             return [{"date": entry_date, "open": 190.0, "high": 195.0, "low": 188.0, "close": 192.0,
                       "volume": 500, "adj_close": None, "dividend": 0.0}]
 
-        from services.postmortem import price_path_acquisition
-        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _bars)
+        bundle = price_path_acquisition.acquire_price_path_evidence(
+            paper_trade_id=trade_id, user_id=unique_user_id, symbol="AAPL", market="US",
+            market_timezone_name="America/New_York", market_tzinfo=ET,
+            entry_timestamp=entry_ts, exit_timestamp=entry_ts,
+            fetch_bars_fn=_bars, fetch_splits_fn=_fake_none, fetch_dividends_fn=_fake_none,
+        )
+        evidence, _created = price_path_store.persist_evidence(pg_conn, bundle)
+
+        report_count_before = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        assert report_count_before == 0
+
+        def _raises(*a, **k):
+            raise AssertionError("provider must not be called on evidence replay")
+
+        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _raises)
+        monkeypatch.setattr(price_path_acquisition, "fetch_split_events", _raises)
+        monkeypatch.setattr(price_path_acquisition, "fetch_dividend_events", _raises)
         monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
 
         first = _generate(client, unique_user_id, trade_id)
         assert first.status_code == 200
         assert first.json()["price_path_generation_status"] == "PRICE_PATH_GENERATED"
 
-        def _raises(*a, **k):
-            raise AssertionError("provider must not be called on replay")
-
-        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _raises)
-        monkeypatch.setattr(price_path_acquisition, "fetch_split_events", _raises)
-        monkeypatch.setattr(price_path_acquisition, "fetch_dividend_events", _raises)
-
-        second = _generate(client, unique_user_id, trade_id)
-        assert second.status_code == 200
-        assert second.json()["price_path_generation_status"] == "PRICE_PATH_ALREADY_COMPLETE"
+        structured_report = pg_conn.execute(
+            "SELECT structured_report FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        acquisition = structured_report["price_path"]["acquisition_decision"]
+        assert acquisition["acquisition_status"] == "COMPATIBLE_REPLAY"
+        assert acquisition["provider_call_expected"] is False
+        assert acquisition["reused_evidence_id"] == evidence.id
 
         evidence_count = pg_conn.execute(
             "SELECT count(*) FROM paper_trade_price_path_evidence WHERE paper_trade_id = %s", (trade_id,)
         ).fetchone()[0]
         assert evidence_count == 1
+
+        second = _generate(client, unique_user_id, trade_id)
+        assert second.status_code == 200
+        assert second.json()["price_path_generation_status"] == "PRICE_PATH_ALREADY_COMPLETE"
+
+        report_count_after = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        assert report_count_after == 1
 
 
 @pytest.mark.timeout(30)
@@ -2034,18 +2100,45 @@ class TestLegacyAndCurrentEvidenceCoexistence:
         ).fetchone()[0]
         assert structured_report["price_path"]["acquisition_decision"]["acquisition_status"] == "ACQUISITION_REQUIRED"
 
-    def test_legacy_report_and_current_report_coexist(self, client, pg_conn, unique_user_id, monkeypatch):
-        """Stage 7 item 2 -- simulates an existing 1.0.0-identity report
-        row (Sprint 2's own seed, which already uses a distinct schema/
-        calc identity from the 1.1.0 price-path report) plus a new 1.1.0
-        report; both remain, distinct calculation identities, no
-        supersession corruption of the Sprint 2 row."""
+    def test_genuine_legacy_price_path_report_and_current_report_coexist(
+        self, client, pg_conn, unique_user_id, monkeypatch,
+    ):
+        """Stage J3A, Stage 6 -- CORRECTED: the prior version of this test
+        only proved a Sprint 2 (report_schema_version=1.0.0) report
+        coexists with the 1.1.0 price-path report -- those two were
+        always going to coexist trivially, since they don't even share a
+        schema version. This seeds a GENUINE OLD price-path report
+        (report_schema_version=1.1.0, calculation_version containing
+        price_path:1.0.0+src:1.0.0 -- the exact identity a real
+        pre-Stage-J3 acquisition would have produced) and proves it
+        coexists with the CURRENT price-path report
+        (price_path:1.0.0+src:1.1.0) under the SAME report_schema_version
+        but a genuinely different calculation_version -- the real
+        collision boundary this table's unique index actually enforces."""
+        from services.postmortem import price_path_generation, report_store
+
         monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
         trade_id = _open_and_close(client, pg_conn, unique_user_id)
-        sprint2_report_id = pg_conn.execute(
-            "SELECT id FROM paper_trade_postmortem_report WHERE paper_trade_id = %s AND report_schema_version = '1.0.0'",
+        sprint2_report = pg_conn.execute(
+            "SELECT id, structured_report, source_manifest, evidence_gaps, warnings, market, report_trading_date, "
+            "market_timezone, attribution_rules_version, evidence_bundle_version "
+            "FROM paper_trade_postmortem_report WHERE paper_trade_id = %s AND report_schema_version = '1.0.0'",
             (trade_id,),
-        ).fetchone()[0]
+        ).fetchone()
+        sprint2_report_id = sprint2_report[0]
+
+        old_calc_version = price_path_generation.price_path_calculation_suffix("1.0.0")
+        old_report, _created = report_store.persist_report(
+            pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market=sprint2_report[5],
+            report_trading_date=sprint2_report[6], market_timezone=sprint2_report[7],
+            report_schema_version="1.1.0", calculation_version=old_calc_version,
+            attribution_rules_version=sprint2_report[8], evidence_bundle_version=sprint2_report[9],
+            status="LIMITED_EVIDENCE", structured_report=sprint2_report[1],
+            evidence_items=[], claims=[], source_manifest=sprint2_report[2],
+            evidence_gaps=list(sprint2_report[3]), warnings=list(sprint2_report[4]),
+            supersedes_report_id=sprint2_report_id,
+        )
+        assert "price_path:1.0.0+src:1.0.0" in old_calc_version
 
         entry_ts = pg_conn.execute("SELECT opened_at FROM paper_trades WHERE id = %s", (trade_id,)).fetchone()[0]
         from services.market_hours import ET
@@ -2062,26 +2155,69 @@ class TestLegacyAndCurrentEvidenceCoexistence:
 
         resp = _generate(client, unique_user_id, trade_id)
         assert resp.status_code == 200
+        assert resp.json()["price_path_generation_status"] == "PRICE_PATH_GENERATED"
 
         reports = pg_conn.execute(
-            "SELECT id, report_schema_version, calculation_version FROM paper_trade_postmortem_report "
-            "WHERE paper_trade_id = %s ORDER BY id", (trade_id,),
+            "SELECT id, report_schema_version, calculation_version, supersedes_report_id "
+            "FROM paper_trade_postmortem_report WHERE paper_trade_id = %s ORDER BY id", (trade_id,),
         ).fetchall()
-        schema_versions = {r[1] for r in reports}
-        assert schema_versions == {"1.0.0", "1.1.0"}
-        calc_versions = {r[2] for r in reports}
-        assert len(calc_versions) == 2  # distinct calculation identities
+        assert len(reports) == 3  # Sprint 2 + old price-path (seeded) + current price-path
 
-        sprint2_still_present = any(r[0] == sprint2_report_id for r in reports)
-        assert sprint2_still_present
+        by_id = {r[0]: r for r in reports}
+        assert sprint2_report_id in by_id  # Sprint 2 report untouched
+        assert old_report.id in by_id  # seeded old price-path report untouched
+        assert by_id[old_report.id][2] == old_calc_version  # its own identity never mutated
 
-    def test_legacy_and_current_outbox_rows_coexist(self, client, pg_conn, unique_user_id, monkeypatch):
-        """Stage 7 item 3 -- the price-path outbox row's requested
-        identity contains src:1.1.0; any pre-existing outbox row (e.g.
-        Sprint 2's own, or a hypothetical prior price-path attempt under
-        an older identity) is never claimed by the current request."""
+        current_price_path_rows = [r for r in reports if r[1] == "1.1.0" and r[0] != old_report.id]
+        assert len(current_price_path_rows) == 1
+        current_calc_version = current_price_path_rows[0][2]
+        assert "price_path:1.0.0+src:1.1.0" in current_calc_version
+        assert current_calc_version != old_calc_version  # genuinely distinct identities, not the same row
+
+        # Supersession chain is non-cyclic and points at the Sprint 2
+        # report -- the live path always looks up its own prior_report by
+        # the SPRINT 2 identity specifically (report_schema_version=
+        # generation_service.REPORT_SCHEMA_VERSION), never "whatever the
+        # most recent report happens to be," so an old price-path report
+        # coexisting alongside it is never mistaken for the supersession
+        # target. Confirms the seeded old report and the current report
+        # are genuinely independent rows, not a chain through each other.
+        assert current_price_path_rows[0][3] == sprint2_report_id
+        assert by_id[old_report.id][3] == sprint2_report_id  # the seeded old report's own supersession target, unchanged
+
+    def test_genuine_legacy_price_path_outbox_and_current_outbox_coexist(
+        self, client, pg_conn, unique_user_id, monkeypatch,
+    ):
+        """Stage J3A, Stage 7 -- CORRECTED: seeds a GENUINE old price-path
+        outbox row (requested_report_schema_version=1.1.0, requested_
+        calculation_version containing price_path:1.0.0+src:1.0.0 -- the
+        exact identity a real pre-Stage-J3 price-path attempt would have
+        claimed) rather than relying on Sprint 2's own, differently-
+        schema-versioned outbox row. Proves: the old row is left
+        completely unchanged (no attempt_count/claimant/status change),
+        a DISTINCT current outbox row (src:1.1.0) is created, and the
+        current request settles only the new row."""
+        from services.postmortem import price_path_generation
+        from services.postmortem.evidence_attribution import ATTRIBUTION_RULES_VERSION
+
         monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
         trade_id = _open_and_close(client, pg_conn, unique_user_id)
+
+        old_calc_version = price_path_generation.price_path_calculation_suffix("1.0.0")
+        assert "price_path:1.0.0+src:1.0.0" in old_calc_version
+        old_outbox_id = pg_conn.execute(
+            """INSERT INTO paper_trade_postmortem_outbox
+                   (paper_trade_id, user_id, requested_report_schema_version,
+                    requested_calculation_version, requested_rules_version, status)
+               VALUES (%s, %s, %s, %s, %s, %s)
+               RETURNING id""",
+            (trade_id, unique_user_id, "1.1.0", old_calc_version, ATTRIBUTION_RULES_VERSION, "LIMITED_EVIDENCE"),
+        ).fetchone()[0]
+        old_row_before = pg_conn.execute(
+            "SELECT status, claimed_by, attempt_count FROM paper_trade_postmortem_outbox WHERE id = %s",
+            (old_outbox_id,),
+        ).fetchone()
+
         entry_ts = pg_conn.execute("SELECT opened_at FROM paper_trades WHERE id = %s", (trade_id,)).fetchone()[0]
         from services.market_hours import ET
 
@@ -2097,14 +2233,25 @@ class TestLegacyAndCurrentEvidenceCoexistence:
 
         resp = _generate(client, unique_user_id, trade_id)
         assert resp.status_code == 200
+        assert resp.json()["price_path_generation_status"] == "PRICE_PATH_GENERATED"
+
+        old_row_after = pg_conn.execute(
+            "SELECT status, claimed_by, attempt_count FROM paper_trade_postmortem_outbox WHERE id = %s",
+            (old_outbox_id,),
+        ).fetchone()
+        assert old_row_after == old_row_before  # completely untouched
 
         outbox_rows = pg_conn.execute(
-            "SELECT requested_report_schema_version, requested_calculation_version FROM paper_trade_postmortem_outbox "
-            "WHERE paper_trade_id = %s", (trade_id,),
+            "SELECT id, requested_calculation_version, status FROM paper_trade_postmortem_outbox "
+            "WHERE paper_trade_id = %s AND requested_report_schema_version = '1.1.0'", (trade_id,),
         ).fetchall()
-        price_path_rows = [r for r in outbox_rows if r[0] == "1.1.0"]
-        assert len(price_path_rows) == 1
-        assert "src:1.1.0" in price_path_rows[0][1]
+        assert len(outbox_rows) == 2  # old seeded row + genuinely new current row
+
+        current_rows = [r for r in outbox_rows if r[0] != old_outbox_id]
+        assert len(current_rows) == 1
+        assert "price_path:1.0.0+src:1.1.0" in current_rows[0][1]
+        assert current_rows[0][1] != old_calc_version
+        assert current_rows[0][2] == "LIMITED_EVIDENCE"  # settled through the NEW row
 
 
 @pytest.mark.timeout(30)
@@ -2192,3 +2339,155 @@ class TestCurrentVersionCorruptManifestFailsClosedAlongsideLegacyRow:
         ).fetchone()
         assert outbox_status == "FAILED_RETRYABLE"
         assert error_code == "MANIFEST_INTEGRITY_VIOLATION"
+
+
+@pytest.mark.timeout(30)
+class TestWrongMarketReplayCandidateRejected:
+    """Stage J3A, Stage 4 -- an evidence row sharing the CURRENT trade's
+    own paper_trade_id/user_id (the SQL lookup's own scope) but
+    internally consistent with a DIFFERENT market is found by the basic
+    version lookup yet rejected by validate_replay_compatibility against
+    the real current trade. Proves genuine current-trade isolation, not
+    merely "each trade retrieves its own row" (which the basic lookup's
+    own WHERE clause already guarantees trivially)."""
+
+    def test_wrong_market_in_evidence_rejected_for_us_trade(self, client, pg_conn, unique_user_id, monkeypatch):
+        from services.market_hours import IST
+        from services.postmortem import price_path_acquisition, price_path_store
+
+        monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
+        trade_id = _open_and_close_market(client, pg_conn, unique_user_id, market="US", symbol="AAPL", exit_price=101.0)
+        entry_ts = pg_conn.execute("SELECT opened_at FROM paper_trades WHERE id = %s", (trade_id,)).fetchone()[0]
+        entry_date_ist = entry_ts.astimezone(IST).date()
+
+        def _in_bars(*a, **k):
+            return [{"date": entry_date_ist, "open": 2800.0, "high": 2850.0, "low": 2780.0, "close": 2820.0,
+                      "volume": 500, "adj_close": None, "dividend": 0.0}]
+
+        # Internally-consistent IN/RELIANCE bundle, but stamped with the
+        # CURRENT (US) trade's own paper_trade_id/user_id -- exactly the
+        # "right lookup scope, wrong internal content" scenario.
+        wrong_market_bundle = price_path_acquisition.build_price_path_evidence(
+            paper_trade_id=trade_id, user_id=unique_user_id, symbol="RELIANCE", market="IN",
+            market_timezone_name="Asia/Kolkata", market_tzinfo=IST,
+            entry_timestamp=entry_ts, exit_timestamp=entry_ts,
+            raw_bars=_in_bars(), split_events=[],
+        )
+        price_path_store.persist_evidence(pg_conn, wrong_market_bundle)
+
+        def _raises(*a, **k):
+            raise AssertionError("provider must not be called when replay compatibility rejects the candidate")
+
+        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _raises)
+        monkeypatch.setattr(price_path_acquisition, "fetch_split_events", _raises)
+        monkeypatch.setattr(price_path_acquisition, "fetch_dividend_events", _raises)
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+
+        resp = _generate(client, unique_user_id, trade_id)
+        assert resp.status_code == 200
+        assert resp.json()["price_path_generation_status"] == "PRICE_PATH_FAILED_RETRYABLE"
+
+        report_count = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        assert report_count == 0
+
+        evidence_count = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_price_path_evidence WHERE paper_trade_id = %s", (trade_id,)
+        ).fetchone()[0]
+        assert evidence_count == 1  # the wrong-market row, never repaired or duplicated
+
+        outbox_status, error_code = pg_conn.execute(
+            "SELECT status, last_error_code FROM paper_trade_postmortem_outbox "
+            "WHERE paper_trade_id = %s AND requested_report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()
+        assert outbox_status == "FAILED_RETRYABLE"
+        assert error_code == "REPLAY_TRADE_CONTEXT_MISMATCH"
+
+    def test_wrong_market_us_evidence_rejected_for_india_trade(self, client, pg_conn, unique_user_id, monkeypatch):
+        from services.market_hours import ET
+        from services.postmortem import price_path_acquisition, price_path_store
+
+        monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
+        trade_id = _open_and_close_market(client, pg_conn, unique_user_id, market="IN", symbol="RELIANCE", exit_price=101.0)
+        entry_ts = pg_conn.execute("SELECT opened_at FROM paper_trades WHERE id = %s", (trade_id,)).fetchone()[0]
+        entry_date_et = entry_ts.astimezone(ET).date()
+
+        def _us_bars(*a, **k):
+            return [{"date": entry_date_et, "open": 190.0, "high": 195.0, "low": 188.0, "close": 192.0,
+                      "volume": 500, "adj_close": None, "dividend": 0.0}]
+
+        wrong_market_bundle = price_path_acquisition.build_price_path_evidence(
+            paper_trade_id=trade_id, user_id=unique_user_id, symbol="AAPL", market="US",
+            market_timezone_name="America/New_York", market_tzinfo=ET,
+            entry_timestamp=entry_ts, exit_timestamp=entry_ts,
+            raw_bars=_us_bars(), split_events=[],
+        )
+        price_path_store.persist_evidence(pg_conn, wrong_market_bundle)
+
+        def _raises(*a, **k):
+            raise AssertionError("provider must not be called when replay compatibility rejects the candidate")
+
+        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _raises)
+        monkeypatch.setattr(price_path_acquisition, "fetch_split_events", _raises)
+        monkeypatch.setattr(price_path_acquisition, "fetch_dividend_events", _raises)
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+
+        resp = _generate(client, unique_user_id, trade_id)
+        assert resp.status_code == 200
+        assert resp.json()["price_path_generation_status"] == "PRICE_PATH_FAILED_RETRYABLE"
+
+        outbox_status, error_code = pg_conn.execute(
+            "SELECT status, last_error_code FROM paper_trade_postmortem_outbox "
+            "WHERE paper_trade_id = %s AND requested_report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()
+        assert outbox_status == "FAILED_RETRYABLE"
+        assert error_code == "REPLAY_TRADE_CONTEXT_MISMATCH"
+
+
+@pytest.mark.timeout(30)
+class TestWrongSymbolReplayCandidateRejected:
+    """Stage J3A, Stage 4C -- same trade ID and market, but the evidence
+    row internally agrees with a DIFFERENT symbol than the current
+    trade's own persisted symbol."""
+
+    def test_wrong_symbol_evidence_rejected(self, client, pg_conn, unique_user_id, monkeypatch):
+        from services.market_hours import ET
+        from services.postmortem import price_path_acquisition, price_path_store
+
+        monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
+        trade_id = _open_and_close_market(client, pg_conn, unique_user_id, market="US", symbol="AAPL", exit_price=101.0)
+        entry_ts = pg_conn.execute("SELECT opened_at FROM paper_trades WHERE id = %s", (trade_id,)).fetchone()[0]
+        entry_date = entry_ts.astimezone(ET).date()
+
+        def _bars(*a, **k):
+            return [{"date": entry_date, "open": 300.0, "high": 305.0, "low": 298.0, "close": 302.0,
+                      "volume": 500, "adj_close": None, "dividend": 0.0}]
+
+        wrong_symbol_bundle = price_path_acquisition.build_price_path_evidence(
+            paper_trade_id=trade_id, user_id=unique_user_id, symbol="MSFT", market="US",
+            market_timezone_name="America/New_York", market_tzinfo=ET,
+            entry_timestamp=entry_ts, exit_timestamp=entry_ts,
+            raw_bars=_bars(), split_events=[],
+        )
+        price_path_store.persist_evidence(pg_conn, wrong_symbol_bundle)
+
+        def _raises(*a, **k):
+            raise AssertionError("provider must not be called when replay compatibility rejects the candidate")
+
+        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _raises)
+        monkeypatch.setattr(price_path_acquisition, "fetch_split_events", _raises)
+        monkeypatch.setattr(price_path_acquisition, "fetch_dividend_events", _raises)
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+
+        resp = _generate(client, unique_user_id, trade_id)
+        assert resp.status_code == 200
+        assert resp.json()["price_path_generation_status"] == "PRICE_PATH_FAILED_RETRYABLE"
+
+        outbox_status, error_code = pg_conn.execute(
+            "SELECT status, last_error_code FROM paper_trade_postmortem_outbox "
+            "WHERE paper_trade_id = %s AND requested_report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()
+        assert outbox_status == "FAILED_RETRYABLE"
+        assert error_code == "REPLAY_TRADE_CONTEXT_MISMATCH"
