@@ -938,11 +938,11 @@ manifest content and its stored hash together.
 | India symbol normalization (RELIANCE → RELIANCE.NS) | `TestIndiaCompleteAcquisition::test_india_acquisition_persists_correct_manifest_and_identity` |
 | India timezone/session (Asia/Kolkata) | same test — `market_timezone == "Asia/Kolkata"` |
 | India acquisition (full lifecycle, manifest verifies) | same test |
-| India replay (zero provider calls, idempotent) | `TestIndiaEvidenceReplay::test_india_replay_zero_provider_calls_and_idempotent` |
+| India replay (zero provider calls, idempotent) | `TestIndiaEvidenceReplay::test_india_true_evidence_replay_then_report_replay` |
 | US symbol normalization (AAPL, no suffix) | `TestUSCompleteAcquisition::test_us_acquisition_persists_correct_manifest_and_identity` |
 | US timezone/DST (America/New_York, explicit DST-date case) | same test, `use_dst_date=True` parametrization |
 | US acquisition (full lifecycle, manifest verifies) | same test |
-| US replay | `TestUSEvidenceReplay::test_us_replay_zero_provider_calls_and_idempotent` |
+| US replay | `TestUSEvidenceReplay::test_us_true_evidence_replay_then_report_replay` |
 | Cross-market isolation | `TestMarketIsolation::test_india_and_us_evidence_remain_isolated` |
 
 ### Legacy coexistence real-PG tests (Stage 7)
@@ -950,8 +950,8 @@ manifest content and its stored hash together.
 | Requirement | Test |
 |---|---|
 | Legacy 1.0.0 row + fresh 1.1.0 acquisition, both persist, old unchanged | `TestLegacyAndCurrentEvidenceCoexistence::test_legacy_row_does_not_block_fresh_current_acquisition` |
-| Legacy 1.0.0 report + new 1.1.0 report coexist, distinct identities | `TestLegacyAndCurrentEvidenceCoexistence::test_legacy_report_and_current_report_coexist` |
-| Legacy/current outbox rows coexist, current request claims only 1.1.0 | `TestLegacyAndCurrentEvidenceCoexistence::test_legacy_and_current_outbox_rows_coexist` |
+| Legacy 1.0.0 report + new 1.1.0 report coexist, distinct identities | `TestLegacyAndCurrentEvidenceCoexistence::test_genuine_legacy_price_path_report_and_current_report_coexist` |
+| Legacy/current outbox rows coexist, current request claims only 1.1.0 | `TestLegacyAndCurrentEvidenceCoexistence::test_genuine_legacy_price_path_outbox_and_current_outbox_coexist` |
 | Valid current 1.1.0 replay, no duplicate evidence | `TestUSEvidenceReplay` / `TestIndiaEvidenceReplay` (already covers this) |
 | Corrupt current 1.1.0 manifest with legacy row present | `TestCurrentVersionCorruptManifestFailsClosedAlongsideLegacyRow::test_corrupt_current_manifest_fails_closed_with_legacy_row_present` |
 | Legacy row alone does not become the replay candidate | `TestLegacyAndCurrentEvidenceCoexistence::test_legacy_row_does_not_block_fresh_current_acquisition` (same test proves this — acquisition_status is ACQUISITION_REQUIRED, never COMPATIBLE_REPLAY, with only the legacy row present) |
@@ -1013,3 +1013,111 @@ Implemented on feature branch only; locally verified (4753 passed);
 PG15/PG17 verification pending this pass's own CI dispatch (see
 checkpoint report); not PR-reviewed; not merged; not deployed; all
 three feature flags remain disabled.
+
+## Stage J3A — True Both-Market Evidence Replay, Current-Trade Compatibility, Legacy Identity Assurance (this pass)
+
+Closes the remaining Stage J3 assurance contradictions the prior pass's
+own checkpoint report honestly did not close.
+
+### Distinguishing fresh acquisition, evidence replay, and report replay
+
+- **Fresh acquisition**: no compatible evidence exists; the live
+  provider is called; a new evidence row and a new report are both
+  created in the same request.
+- **Evidence replay**: compatible evidence already exists, but no
+  current-identity report exists yet; the provider is NOT called; a
+  report is built from the persisted evidence
+  (`acquisition_status=COMPATIBLE_REPLAY`, `provider_call_expected=
+  False`, `reused_evidence_id` set to the existing row's own id).
+- **Report replay**: a current-identity report already exists;
+  `_attempt_price_path_enhancement` returns it immediately
+  (`existing_pp_report is not None`) — this short-circuits BEFORE any
+  evidence lookup, outbox claim, or manifest check even runs.
+
+The prior pass's India/US "evidence replay" tests actually proved report
+replay on their second `/generate` call, since their first call already
+created BOTH the evidence row and the report in one step (fresh
+acquisition). Corrected this pass — see the traceability table below.
+
+### Current-trade replay compatibility
+
+New `price_path_acquisition.validate_replay_compatibility` — delegates
+first to `validate_manifest_compatibility` (internal self-consistency),
+then compares the evidence row against the CURRENT persisted trade's own
+facts (trade ID, user ID, symbol, market, deterministic provider-symbol
+normalization, market timezone, entry/exit timestamps, requested window
+start/end). A row that is internally perfectly consistent but describes
+a different trade's market/symbol/window now fails closed under the
+distinct `REPLAY_TRADE_CONTEXT_MISMATCH` reason code — proven for both
+directions (India evidence rejected for a US trade, US evidence rejected
+for an India trade) and for wrong-symbol-same-market. Never consults the
+current stock universe; never infers a rename/merger/delisting.
+
+### Complete manifest semantic contract (remaining Stage 5 items)
+
+Added semantic-VALUE checks (not merely field presence) for `provider`,
+`timezone_behavior`, `raw_ohlc_basis_claim`, `acquisition_mode` (each
+must equal its exact pinned constant), and
+`requested_trading_weekday_count` (must be a non-negative integer
+matching the deterministic count for the persisted window).
+
+### Genuine legacy price-path identity coexistence
+
+The prior pass's "legacy report/outbox coexistence" tests only proved a
+Sprint 2 (`report_schema_version=1.0.0`) row coexists with the 1.1.0
+price-path row — those never shared a schema version, so coexistence was
+never actually at risk. This pass seeds a GENUINE old price-path
+report/outbox row (`report_schema_version=1.1.0`,
+`calculation_version` containing `price_path:1.0.0+src:1.0.0` — the
+exact identity a real pre-Stage-J3 acquisition would have produced) and
+proves the real collision boundary the unique index enforces: both rows
+coexist, the old row is untouched, the current row's identity contains
+`src:1.1.0`, and the supersession chain still points at the live path's
+own always-Sprint-2-identity `prior_report` lookup (confirmed this is
+correct behavior, not a bug — an old price-path report coexisting
+alongside is never mistaken for the supersession target).
+
+### Traceability (exact test references)
+
+| Requirement | Test |
+|---|---|
+| India true evidence replay | `TestIndiaEvidenceReplay::test_india_true_evidence_replay_then_report_replay` |
+| India report replay (same test, second `/generate` call) | same test |
+| US true evidence replay | `TestUSEvidenceReplay::test_us_true_evidence_replay_then_report_replay` |
+| US report replay (same test, second call) | same test |
+| Wrong-market (IN evidence, US trade) rejection | `TestWrongMarketReplayCandidateRejected::test_wrong_market_in_evidence_rejected_for_us_trade` |
+| Wrong-market (US evidence, IN trade) rejection | `TestWrongMarketReplayCandidateRejected::test_wrong_market_us_evidence_rejected_for_india_trade` |
+| Wrong-symbol rejection | `TestWrongSymbolReplayCandidateRejected::test_wrong_symbol_evidence_rejected` |
+| Genuine old/current price-path report coexistence | `TestLegacyAndCurrentEvidenceCoexistence::test_genuine_legacy_price_path_report_and_current_report_coexist` |
+| Genuine old/current price-path outbox coexistence | `TestLegacyAndCurrentEvidenceCoexistence::test_genuine_legacy_price_path_outbox_and_current_outbox_coexist` |
+| Current-trade compatibility decision (unit) | `TestReplayCompatibilityAgainstCurrentTrade` (9 tests, `test_price_path_acquisition_boundary.py`) |
+
+### Still not done this pass (honestly, not silently dropped)
+
+- **India exact 09:15/15:30 IST session-boundary real-PG proof** and the
+  symmetric **US exact 09:30/16:00 ET (+ DST) proof** — `ENTRY_BAR_
+  INCLUDED_FULL`/`EXIT_BAR_INCLUDED_FULL` policy classification is
+  exercised indirectly by the existing acquisition tests (which use
+  whatever "now" the test run happens to produce, or a forced non-exact
+  window for the DST case) but not proven against a trade window forced
+  to the EXACT official open/close timestamp through the real endpoint.
+  This remains open for a dedicated follow-up.
+- A partial-session `PARTIAL_UNKNOWN` real-PG proof for each market,
+  same reason.
+
+### Local verification
+
+`pytest backend/tests -m "not postgres_integration" --durations=30` →
+**4762 passed, 0 failed, 178 deselected**, 93.01s. Log at
+`/tmp/sprint3a-stage-j3a-assurance.log`.
+
+### Remaining Stage J scope (unchanged, restated)
+
+Stage J is **not** complete. Observed-touch-pattern separation from
+governed-touch-order conclusion, the governed touch-order redesign,
+single-sided partial-boundary-touch policy, live persisted ambiguity
+proof, and traceability-validator semantic expansion all remain — none
+started this phase, per the explicit instruction not to begin
+touch-semantics work. India/US exact session-boundary real-PG proof
+(above) also remains, newly identified as open by this pass's own
+honest accounting.
