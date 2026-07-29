@@ -102,17 +102,25 @@ class TestMissingSnapshotCapsReportAtLimitedEvidence:
         own data so every NOT NULL column stays populated."""
         trade_id = _open_and_close(client, pg_conn, unique_user_id)
 
+        from psycopg.types.json import Jsonb
+
         with pg_conn.cursor() as cur:
             cur.execute("SELECT * FROM paper_trade_entry_snapshot WHERE paper_trade_id = %s", (trade_id,))
             columns = [d.name for d in cur.description]
             row = dict(zip(columns, cur.fetchone()))
         row["market"] = "IN" if row["market"] == "US" else "US"
         insert_columns = [c for c in columns if c not in ("id", "created_at")]
+        # verification_levels/recommendation_reasoning are JSONB and come
+        # back from psycopg as plain dicts — re-inserting a bare dict
+        # against a %s placeholder has no adapter; Jsonb() wraps it.
+        values = tuple(
+            Jsonb(row[c]) if isinstance(row[c], dict) else row[c] for c in insert_columns
+        )
         pg_conn.execute("DELETE FROM paper_trade_entry_snapshot WHERE paper_trade_id = %s", (trade_id,))
         pg_conn.execute(
             f"INSERT INTO paper_trade_entry_snapshot ({', '.join(insert_columns)}) "
             f"VALUES ({', '.join('%s' for _ in insert_columns)})",
-            tuple(row[c] for c in insert_columns),
+            values,
         )
 
         resp = _generate(client, unique_user_id, trade_id)
