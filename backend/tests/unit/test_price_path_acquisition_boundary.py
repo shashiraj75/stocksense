@@ -362,6 +362,99 @@ class TestManifestCompatibilityValidation:
         assert decision.compatible is False
         assert decision.reason_code == MANIFEST_INTEGRITY_VIOLATION
 
+    def _tamper(self, evidence, **overrides):
+        tampered_manifest = dict(evidence.source_manifest)
+        tampered_manifest.update(overrides)
+        tampered_manifest = finalize_source_manifest(tampered_manifest, tampered_manifest["unresolved_basis_limitations"])
+        return evidence.__class__(**{**evidence.__dict__, "source_manifest": tampered_manifest})
+
+    def test_production_authoritative_true_fails_closed(self):
+        evidence = self._tamper(self._valid_evidence(), production_authoritative=True)
+        decision = validate_manifest_compatibility(evidence)
+        assert decision.compatible is False
+        assert decision.reason_code == MANIFEST_INTEGRITY_VIOLATION
+
+    def test_wrong_source_scope_fails_closed(self):
+        evidence = self._tamper(self._valid_evidence(), source_scope="SOMETHING_ELSE")
+        decision = validate_manifest_compatibility(evidence)
+        assert decision.compatible is False
+        assert decision.reason_code == MANIFEST_INTEGRITY_VIOLATION
+
+    def test_wrong_source_type_fails_closed(self):
+        evidence = self._tamper(self._valid_evidence(), source_type="APPROVED_EXTERNAL_SOURCE")
+        decision = validate_manifest_compatibility(evidence)
+        assert decision.compatible is False
+        assert decision.reason_code == MANIFEST_INTEGRITY_VIOLATION
+
+    def test_wrong_provider_exclusive_request_end_fails_closed(self):
+        evidence = self._tamper(self._valid_evidence(), provider_exclusive_request_end="2099-01-01")
+        decision = validate_manifest_compatibility(evidence)
+        assert decision.compatible is False
+        assert decision.reason_code == MANIFEST_INTEGRITY_VIOLATION
+
+    def test_split_event_date_outside_window_fails_closed(self):
+        evidence = self._tamper(self._valid_evidence(), split_event_manifest=["1999-01-01"])
+        decision = validate_manifest_compatibility(evidence)
+        assert decision.compatible is False
+        assert decision.reason_code == MANIFEST_INTEGRITY_VIOLATION
+
+    def test_non_iso_split_event_date_fails_closed(self):
+        evidence = self._tamper(self._valid_evidence(), split_event_manifest=["not-a-date"])
+        decision = validate_manifest_compatibility(evidence)
+        assert decision.compatible is False
+        assert decision.reason_code == MANIFEST_INTEGRITY_VIOLATION
+
+    def test_split_event_manifest_wrong_type_fails_closed(self):
+        evidence = self._tamper(self._valid_evidence(), split_event_manifest="not-a-list")
+        decision = validate_manifest_compatibility(evidence)
+        assert decision.compatible is False
+        assert decision.reason_code == MANIFEST_INTEGRITY_VIOLATION
+
+    def test_limitations_divergence_fails_closed(self):
+        """The manifest's own unresolved_basis_limitations is tampered
+        to diverge from the evidence row's own persisted `limitations`
+        column -- proving Stage 5 item 9's cross-check is real."""
+        evidence = self._valid_evidence()
+        tampered_manifest = dict(evidence.source_manifest)
+        tampered_manifest["unresolved_basis_limitations"] = ["a fabricated limitation never in evidence.limitations"]
+        tampered_manifest.pop("manifest_integrity_hash", None)
+        from services.postmortem.price_path_acquisition import _compute_manifest_integrity_hash
+        tampered_manifest["manifest_integrity_hash"] = _compute_manifest_integrity_hash(tampered_manifest)
+        evidence = evidence.__class__(**{**evidence.__dict__, "source_manifest": tampered_manifest})
+        decision = validate_manifest_compatibility(evidence)
+        assert decision.compatible is False
+        assert decision.reason_code == MANIFEST_INTEGRITY_VIOLATION
+
+    def test_adjusted_close_available_wrong_type_fails_closed(self):
+        evidence = self._tamper(self._valid_evidence(), adjusted_close_available="yes")
+        decision = validate_manifest_compatibility(evidence)
+        assert decision.compatible is False
+        assert decision.reason_code == MANIFEST_INTEGRITY_VIOLATION
+
+    def test_missing_provider_library_version_fails_closed(self):
+        evidence = self._tamper(self._valid_evidence(), provider_library_version="")
+        decision = validate_manifest_compatibility(evidence)
+        assert decision.compatible is False
+        assert decision.reason_code == MANIFEST_INTEGRITY_VIOLATION
+
+    def test_fresh_bundle_manifest_is_self_consistent(self):
+        """Stage J3, Stage 5 -- a freshly built bundle's own manifest
+        must ALSO pass validate_manifest_compatibility, not only a
+        replayed row's. Proves the same finalize_source_manifest output
+        that a replay would later validate is self-consistent at
+        construction time too."""
+        for market, symbol in (("US", "AAPL"), ("IN", "RELIANCE")):
+            bundle = build_price_path_evidence(
+                paper_trade_id=1, user_id="u", symbol=symbol, market=market,
+                market_timezone_name="America/New_York" if market == "US" else "Asia/Kolkata",
+                market_tzinfo=ET,
+                entry_timestamp=dt.datetime(2026, 6, 1, tzinfo=ET), exit_timestamp=dt.datetime(2026, 6, 1, tzinfo=ET),
+                raw_bars=[{"date": dt.date(2026, 6, 1), "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": None}],
+                split_events=[],
+            )
+            decision = validate_manifest_compatibility(bundle)
+            assert decision.compatible is True, f"{market} fresh bundle manifest failed: {decision.detail}"
+
 
 @pytest.mark.unit
 class TestBundleAndManifestLimitationsIdentical:
