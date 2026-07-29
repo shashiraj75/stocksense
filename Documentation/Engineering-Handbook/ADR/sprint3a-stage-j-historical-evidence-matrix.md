@@ -743,7 +743,7 @@ Six new dedicated real-PG scenarios, none duplicating an existing proof:
 | Persisted contamination exclusion (pre-entry/post-exit/current-date-outside-window bars all excluded) | `TestPersistedContaminationExclusion::test_only_in_window_bars_are_persisted` |
 | Boundary + interior touch on different bars → BOUNDARY_BAR_AMBIGUOUS, LIMITED_EVIDENCE | `TestBoundaryTouchPersistedAmbiguous::test_boundary_and_interior_touch_on_different_bars_is_ambiguous` |
 | Both stop/target in one interior bar → BOTH_SAME_BAR_AMBIGUOUS, LIMITED_EVIDENCE, MFE/MAE still populated | `TestBothSameBarPersistedAmbiguous::test_both_same_interior_bar_is_ambiguous_with_excursion_populated` |
-| Invalid (present-but-wrong-trade) exit snapshot caps report, never fabricates exit rationale | `TestInvalidExitSnapshotThroughRealEndpoint::test_invalid_exit_snapshot_caps_report_and_never_fabricates_rationale` |
+| Invalid (present-but-wrong-market) exit snapshot caps report at LIMITED_EVIDENCE | `TestInvalidExitSnapshotThroughRealEndpoint::test_invalid_exit_snapshot_caps_report_and_never_fabricates_rationale` |
 | Manifest hash verifies from real JSONB; tampered copy fails | `TestFinalManifestIntegrityThroughRealPostgres::test_manifest_hash_verifies_from_real_jsonb_and_tamper_fails` |
 | No-bars: persisted `limitations` column == persisted `source_manifest.unresolved_basis_limitations` exactly | `TestNoBarsManifestConsistencyThroughRealPostgres::test_persisted_limitations_and_manifest_match` |
 
