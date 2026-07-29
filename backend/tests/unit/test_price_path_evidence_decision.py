@@ -14,6 +14,9 @@ from services.postmortem.price_path_evidence_decision import (
     CALCULATION_ELIGIBLE,
     CALCULATION_UNAVAILABLE,
     COMPATIBLE_REPLAY,
+    IMMEDIATE_FAILED_RETRYABLE,
+    IMMEDIATE_FAILED_TERMINAL,
+    INTERNAL_INTEGRITY_VIOLATION,
     PARTIAL_EVIDENCE,
     SOURCE_INVALID,
     SOURCE_UNAVAILABLE,
@@ -86,7 +89,16 @@ class TestProviderFailurePolicy:
         policy = get_provider_failure_policy(error_code="SOME_FUTURE_CODE_NEVER_SEEN_BEFORE")
         assert policy.evidence_fresh_persistence_permitted is False
         assert policy.report_permitted is False
-        assert policy.retry_permitted is True  # still safely retryable, never silently dropped
+        # still bounded/retryable never silently dropped -- not
+        # immediately terminal for a code this module has never seen
+        assert policy.immediate_outbox_outcome == IMMEDIATE_FAILED_RETRYABLE
+
+    def test_immediate_outbox_outcome_is_never_ambiguous(self):
+        """Stage 1 -- exactly one of FAILED_RETRYABLE/FAILED_TERMINAL,
+        never a combination the live path must independently resolve."""
+        for code in ("PROVIDER_FETCH_FAILED", "PROVIDER_RESPONSE_TOO_LARGE", "PROVIDER_UNEXPECTED_COLUMN_SHAPE", "UNKNOWN"):
+            policy = get_provider_failure_policy(error_code=code)
+            assert policy.immediate_outbox_outcome in (IMMEDIATE_FAILED_RETRYABLE, IMMEDIATE_FAILED_TERMINAL)
 
 
 @pytest.mark.unit

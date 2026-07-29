@@ -194,16 +194,27 @@ def classify_acquired_evidence(*, data_completeness: str | None) -> HistoricalEv
     )
 
 
+# The outbox's own claim_next_attempt/MAX_ATTEMPTS_BEFORE_TERMINAL
+# mechanism (outbox.py) is a SEPARATE, already-tested concern: it may
+# later move a FAILED_RETRYABLE row to FAILED_TERMINAL once the attempt
+# limit is exceeded, regardless of what any single policy below says.
+# immediate_outbox_outcome below describes ONLY what THIS attempt's own
+# failure settles to right now — never both retryable and terminal at
+# once, unlike the prior retry_permitted=True/terminal_permitted=True
+# combination, which described every code identically and left the live
+# path to independently decide (ambiguously) which one applied.
+IMMEDIATE_FAILED_RETRYABLE = "FAILED_RETRYABLE"
+IMMEDIATE_FAILED_TERMINAL = "FAILED_TERMINAL"
+
+
 @dataclass(frozen=True)
 class ProviderFailurePolicy:
-    """Stage J1B-Fail-Closed-Hardening, Stage 5 — the SINGLE typed
-    mapping from a provider error code to every lifecycle consequence.
-    Callers consult this policy and act on its fields; they do not
-    separately hard-code the same outcome next to a call to
-    classify_provider_failure."""
+    """Stage J1B-Assurance-Closure — the SINGLE typed mapping from a
+    provider error code to every lifecycle consequence. Every field here
+    is read and enforced by the live path (paper_trading.py); none is
+    merely informational."""
     evidence_status: str
-    retry_permitted: bool
-    terminal_permitted: bool
+    immediate_outbox_outcome: str  # IMMEDIATE_FAILED_RETRYABLE | IMMEDIATE_FAILED_TERMINAL
     evidence_fresh_persistence_permitted: bool
     report_permitted: bool
     sanitized_error_code: str
@@ -212,36 +223,33 @@ class ProviderFailurePolicy:
 
 # Every PriceProviderAcquisitionError.code this codebase currently
 # raises (price_path_acquisition.py), inspected explicitly rather than
-# assumed identical. All three are, today, retryable-not-terminal: none
-# represents a condition retrying the SAME request is guaranteed to
-# reproduce forever in a way that couldn't ALSO resolve (a transient
-# network blip, a momentarily-too-large response, or — for the shape
-# error — a genuinely unexpected provider library behavior that a
+# assumed identical. All three currently settle IMMEDIATE_FAILED_
+# RETRYABLE: none represents a condition retrying the SAME request is
+# guaranteed to reproduce forever in a way that couldn't ALSO resolve (a
+# transient network blip, a momentarily-too-large response, or — for the
+# shape error — a genuinely unexpected provider library behavior a
 # future library version could stop producing). The outbox's own
-# MAX_ATTEMPTS_BEFORE_TERMINAL already bounds a truly permanent failure
-# to a finite number of attempts before durably settling FAILED_TERMINAL
-# — terminal_permitted=True here means "the attempt-limit mechanism is
-# allowed to eventually terminate this," not "this call itself settles
-# terminal."
+# attempt-limit mechanism remains the sole path to an eventual
+# FAILED_TERMINAL for these codes.
 _PROVIDER_FAILURE_POLICIES = {
     "PROVIDER_FETCH_FAILED": ProviderFailurePolicy(
-        evidence_status=SOURCE_UNAVAILABLE, retry_permitted=True, terminal_permitted=True,
+        evidence_status=SOURCE_UNAVAILABLE, immediate_outbox_outcome=IMMEDIATE_FAILED_RETRYABLE,
         evidence_fresh_persistence_permitted=False, report_permitted=False,
         sanitized_error_code="PROVIDER_FETCH_FAILED", limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
     ),
     "PROVIDER_RESPONSE_TOO_LARGE": ProviderFailurePolicy(
-        evidence_status=SOURCE_UNAVAILABLE, retry_permitted=True, terminal_permitted=True,
+        evidence_status=SOURCE_UNAVAILABLE, immediate_outbox_outcome=IMMEDIATE_FAILED_RETRYABLE,
         evidence_fresh_persistence_permitted=False, report_permitted=False,
         sanitized_error_code="PROVIDER_RESPONSE_TOO_LARGE", limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
     ),
     "PROVIDER_UNEXPECTED_COLUMN_SHAPE": ProviderFailurePolicy(
-        evidence_status=SOURCE_INVALID, retry_permitted=True, terminal_permitted=True,
+        evidence_status=SOURCE_INVALID, immediate_outbox_outcome=IMMEDIATE_FAILED_RETRYABLE,
         evidence_fresh_persistence_permitted=False, report_permitted=False,
         sanitized_error_code="PROVIDER_UNEXPECTED_COLUMN_SHAPE", limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
     ),
 }
 _DEFAULT_PROVIDER_FAILURE_POLICY = ProviderFailurePolicy(
-    evidence_status=SOURCE_UNAVAILABLE, retry_permitted=True, terminal_permitted=True,
+    evidence_status=SOURCE_UNAVAILABLE, immediate_outbox_outcome=IMMEDIATE_FAILED_RETRYABLE,
     evidence_fresh_persistence_permitted=False, report_permitted=False,
     sanitized_error_code="PROVIDER_ACQUISITION_ERROR", limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
 )
@@ -249,9 +257,23 @@ _DEFAULT_PROVIDER_FAILURE_POLICY = ProviderFailurePolicy(
 
 def get_provider_failure_policy(*, error_code: str) -> ProviderFailurePolicy:
     """A code this module hasn't seen before still fails closed (never
-    evidence persistence, never a report) via _DEFAULT_PROVIDER_FAILURE_
-    POLICY, rather than raising or silently permitting persistence."""
+    evidence persistence, never a report, immediately retryable never
+    silently terminal) via _DEFAULT_PROVIDER_FAILURE_POLICY, rather than
+    raising or silently permitting persistence."""
     return _PROVIDER_FAILURE_POLICIES.get(error_code, _DEFAULT_PROVIDER_FAILURE_POLICY)
+
+
+# Stage 2/3 — a SANITIZED internal-integrity outcome for two distinct
+# defensive-only conditions that must never fabricate a report or
+# persist anything, yet must never crash the request either:
+#   1. A COMPATIBLE_REPLAY acquisition decision with no actual evidence
+#      object present (a contradictory internal state — see Stage 2's
+#      replacement of the old `assert evidence is not None`).
+#   2. A freshly acquired bundle classified SOURCE_INVALID or
+#      UNSUPPORTED_EVIDENCE_COMPLETENESS (Stage 3's conservative rule:
+#      unlike SOURCE_UNAVAILABLE's honest zero-bar manifest, these two
+#      states must never produce ANY report, complete or limited).
+INTERNAL_INTEGRITY_VIOLATION = "INTERNAL_INTEGRITY_VIOLATION"
 
 
 _KNOWN_CEILINGS = frozenset({"COMPLETE", "LIMITED_EVIDENCE"})
