@@ -254,3 +254,74 @@ Corrects six confirmed defects in the prior pass's J1B integration:
   malformed-provider-response policy-driven outcome as its own dedicated
   test (currently only unit-tested via `ProviderFailurePolicy`), invalid
   exit snapshot with an explicit limitation.
+
+## Stage J1B-Assurance-Closure (this pass)
+
+1. **Provider-failure governance consolidated.** `classify_provider_failure`
+   was fully dead code — defined, unit-tested, but never called by the live
+   path (`get_provider_failure_policy` was already the sole authority in
+   `_attempt_price_path_enhancement`, from the prior pass). Removed the
+   function and its `_SOURCE_INVALID_PROVIDER_CODES` table entirely rather
+   than leaving a second, unconsulted classification. `get_provider_failure_
+   policy`/`ProviderFailurePolicy` is now documented in the module header as
+   the sole provider-failure authority.
+
+2. **`compute_report_completeness_ceiling` fail-open bug fixed.** The prior
+   implementation (`"LIMITED_EVIDENCE" if "LIMITED_EVIDENCE" in ceilings
+   else "COMPLETE"`) treated ANY value that wasn't literally the string
+   `"LIMITED_EVIDENCE"` as equivalent to `"COMPLETE"` — including `None`,
+   `""`, a typo, or a genuinely unknown future ceiling value. Now validates
+   every input against the known two-value set and fails closed to
+   `LIMITED_EVIDENCE` on anything unrecognized. Exhaustively parameterized
+   tests (`TestCeilingComposerFailsClosedOnUnknownInputs`).
+
+3. **`persistence_permitted` renamed `fresh_persistence_permitted`**
+   throughout (`HistoricalEvidenceQualityDecision`, the live path, all
+   tests) — the field only ever governs whether a FRESH bundle may be
+   inserted; on a replay path the evidence row already exists and is never
+   affected by this field. `ProviderFailurePolicy`'s own persistence field
+   is separately named `evidence_fresh_persistence_permitted` for the same
+   reason.
+
+4. **Calculator gating proven with direct instrumentation**, not inferred
+   from null output fields — `test_zero_bars_never_invokes_the_calculator`
+   patches `compute_excursion`/`detect_touches`/`classify_touch_order`
+   directly and asserts zero calls for a `SOURCE_UNAVAILABLE` outcome, with
+   `test_complete_evidence_does_invoke_the_calculator` as the positive
+   control proving the spy mechanism itself is sound.
+
+5. **New real-PG scenario**: `TestMalformedProviderResponseUsesPolicyDrivenOutcome`
+   — `PROVIDER_UNEXPECTED_COLUMN_SHAPE` remains distinguishable from
+   `PROVIDER_FETCH_FAILED` in the durable outbox error code, zero evidence
+   persisted, zero report created.
+
+### Assurance traceability (partial — see Known Limitations)
+
+| Requirement | Production path | Test | Type | Result |
+|---|---|---|---|---|
+| Unknown data_completeness fails closed | `classify_acquired_evidence` | `TestFailClosedOnUnsupportedCompleteness` (9 params) | unit | pass |
+| Ceiling composer fails closed | `compute_report_completeness_ceiling` | `TestCeilingComposerFailsClosedOnUnknownInputs` | unit | pass |
+| Provider-failure policy is sole authority | `get_provider_failure_policy` | `TestProviderFailurePolicy` | unit | pass |
+| Calculator never called when unavailable | `_attempt_price_path_enhancement` | `test_zero_bars_never_invokes_the_calculator` | regression (spy) | pass |
+| Calculator called when eligible (control) | same | `test_complete_evidence_does_invoke_the_calculator` | regression (spy) | pass |
+| Fresh acquisition provenance | same | `test_split_in_window_is_classified_ambiguous_and_caps_limited_evidence` | regression | pass |
+| Evidence replay provenance (provider_call_expected=false) | same | `TestTrueEvidenceReplayWithoutAnyReport` | real-PG | pass |
+| Zero-bar report never fabricates analytics | same | `TestZeroBarResultNeverFabricatesAnalytics` | real-PG | pass |
+| Malformed provider response policy outcome | same | `TestMalformedProviderResponseUsesPolicyDrivenOutcome` | real-PG | pass |
+| Transient provider failure policy outcome | same | `TestTransientProviderFailureMarksRetryable` | real-PG | pass |
+
+### Known limitations after this pass (honest, not exhaustive)
+
+Given the bounded scope of this phase, several Stage 5 scenarios from the
+requesting checkpoint were **not** added as dedicated real-PG tests this
+pass — their production behavior is correct and covered indirectly by
+existing tests, but not under a dedicated named real-PG scenario:
+unsupported-completeness fail-closed through the real endpoint (unit-level
+only), invalid-source non-persistence through the real endpoint (unit-level
+only), atomic limited-settlement under a forced stale-claimant/rollback
+condition (structurally guaranteed by the existing `conn.transaction()`
+wrapping, not independently re-proven this pass), and full trade/snapshot
+immutability across all three paths (proven for one path in the prior
+pass). Aggregate real-PG collection increased by 1 (144→145) this pass —
+a single new named scenario, not a claim of covering the full Stage 5
+matrix.
