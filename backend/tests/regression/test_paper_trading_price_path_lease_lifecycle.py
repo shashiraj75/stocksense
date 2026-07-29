@@ -280,7 +280,8 @@ class TestSuccessfulGenerationAndIdempotentReplay:
         assert status == ptr.PRICE_PATH_GENERATED
         assert report is not None
         assert report.status == "LIMITED_EVIDENCE"
-        assert report.structured_report["price_path"]["evidence_decision"]["evidence_status"] == "AMBIGUOUS_RESOLUTION"
+        assert report.structured_report["price_path"]["evidence_quality_decision"]["evidence_status"] == "AMBIGUOUS_RESOLUTION"
+        assert report.structured_report["price_path"]["acquisition_decision"]["provider_call_expected"] is True
 
     def test_second_call_is_idempotent_no_second_provider_call(self):
         shared = _new_shared([{}])

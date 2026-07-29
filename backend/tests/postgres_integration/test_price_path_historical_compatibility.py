@@ -177,6 +177,53 @@ class TestHistoricalGenerationNeverMutatesSourceRows:
 
 
 @pytest.mark.timeout(30)
+class TestZeroBarResultNeverFabricatesAnalytics:
+    """Stage J1B-Fail-Closed-Hardening, Stage 4/10 -- CALCULATION_
+    UNAVAILABLE must prevent the actual MFE/MAE/touch calculator from
+    ever running, not merely be a field computed and then ignored. A
+    zero-bar provider response still produces a real, persisted,
+    LIMITED_EVIDENCE report (an honest manifest-only outcome), but every
+    analytic field must be null -- never zero, never fabricated."""
+
+    def test_zero_bars_produces_limited_report_with_all_null_analytics(
+        self, client, pg_conn, unique_user_id, monkeypatch,
+    ):
+        from services.postmortem import price_path_acquisition
+        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _fake_none)
+
+        trade_id = _open_and_close(client, pg_conn, unique_user_id)
+        resp = _generate(client, unique_user_id, trade_id)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "LIMITED_EVIDENCE"
+
+        structured_report = pg_conn.execute(
+            "SELECT structured_report FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        section = structured_report["price_path"]
+        assert section["price_path_status"] == "SOURCE_UNAVAILABLE"
+        for field in ("mfe_abs", "mfe_pct", "mae_signed_abs", "mae_signed_pct",
+                      "mae_magnitude_abs", "mae_magnitude_pct", "target_touch", "stop_touch", "touch_order"):
+            assert section[field] is None, f"{field} must be null, never a fabricated zero/value"
+        assert structured_report["price_path"]["evidence_quality_decision"]["calculation_status"] == "CALCULATION_UNAVAILABLE"
+
+        # The zero-bar bundle is still an honest, immutable evidence
+        # record (never fabricated bars) -- Stage 3's own explicit
+        # persistence-permitted decision for SOURCE_UNAVAILABLE.
+        evidence_count = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_price_path_evidence WHERE paper_trade_id = %s", (trade_id,)
+        ).fetchone()[0]
+        assert evidence_count == 1
+
+        outbox_status = pg_conn.execute(
+            "SELECT status FROM paper_trade_postmortem_outbox "
+            "WHERE paper_trade_id = %s AND requested_report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        assert outbox_status == "LIMITED_EVIDENCE"
+
+
+@pytest.mark.timeout(30)
 class TestTrueEvidenceReplayWithoutAnyReport:
     """Stage J1B/Stage 8 — the load-bearing proof that PERSISTED
     EVIDENCE (not an already-complete REPORT) can be replayed to
@@ -253,6 +300,15 @@ class TestTrueEvidenceReplayWithoutAnyReport:
         assert report_row is not None
         report_id, report_status, structured_report = report_row
         assert structured_report["price_path"]["price_path_evidence_id"] == persisted_evidence.id
+
+        # Stage J1B-Fail-Closed-Hardening — acquisition provenance must
+        # truthfully record that NO provider call occurred for this
+        # report, not merely that the endpoint happened to succeed.
+        acquisition = structured_report["price_path"]["acquisition_decision"]
+        assert acquisition["acquisition_status"] == "COMPATIBLE_REPLAY"
+        assert acquisition["provider_call_expected"] is False
+        assert acquisition["reused_evidence_id"] == persisted_evidence.id
+        assert structured_report["price_path"]["evidence_quality_decision"]["calculation_status"] == "CALCULATION_ELIGIBLE"
 
         outbox_status = pg_conn.execute(
             "SELECT status FROM paper_trade_postmortem_outbox "

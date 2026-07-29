@@ -1294,20 +1294,25 @@ def _attempt_price_path_enhancement(
                 level_history_complete=False, prior_report=prior_report,
             )
 
-        # Stage J1B load-bearing integration — this decision, not the
-        # bare `is None` check, now GOVERNS what happens next: replaces
-        # the prior untyped branch as the authoritative control (the
-        # `is None` check remains only as the mechanical Python
-        # condition needed to actually skip the provider call; the
-        # DECISION about whether that is correct comes from here).
-        replay_decision = price_path_evidence_decision.classify_replay_or_acquisition(
-            compatible_evidence_found=ctx.compatible_evidence is not None
+        # Stage J1B-Fail-Closed-Hardening — acquisition provenance (WHERE
+        # the evidence came from) is decided ONCE, here, and never
+        # revised by anything discovered about evidence QUALITY
+        # afterward. This decision, not the bare `is None` check, GOVERNS
+        # what happens next (the `is None` check remains only as the
+        # mechanical Python condition needed to actually skip the
+        # provider call).
+        acquisition_decision = price_path_evidence_decision.classify_replay_or_acquisition(
+            compatible_evidence_found=ctx.compatible_evidence is not None,
+            evidence_id=ctx.compatible_evidence.id if ctx.compatible_evidence is not None else None,
         )
         evidence = ctx.compatible_evidence
-        if replay_decision.evidence_status == price_path_evidence_decision.COMPATIBLE_REPLAY:
+        if acquisition_decision.acquisition_status == price_path_evidence_decision.COMPATIBLE_REPLAY:
             # 2B — evidence replay: zero provider calls, the persisted
             # evidence (same row, same hash) is used directly.
             assert evidence is not None, "COMPATIBLE_REPLAY decision without compatible evidence present"
+            quality_decision = price_path_evidence_decision.classify_acquired_evidence(
+                data_completeness=evidence.data_completeness,
+            )
         else:
             # Provider acquisition — deliberately outside any
             # `with _conn():` block; a provider timeout or transient
@@ -1319,48 +1324,57 @@ def _attempt_price_path_enhancement(
                     fetch_splits_fn=fetch_splits_fn, fetch_dividends_fn=fetch_dividends_fn,
                 )
             except PriceProviderAcquisitionError as exc:
-                # Stage J1B/J4 — every provider error code is classified
-                # explicitly (never blanket-identical), even though the
-                # current durable outcome for both SOURCE_UNAVAILABLE and
-                # SOURCE_INVALID remains FAILED_RETRYABLE: the outbox's
-                # own MAX_ATTEMPTS_BEFORE_TERMINAL already bounds a
-                # permanently-broken provider contract to a finite number
-                # of attempts before durably settling FAILED_TERMINAL, so
-                # escalating SOURCE_INVALID straight to terminal here
-                # would only remove that existing safety margin without
-                # a corresponding benefit — a deliberate, documented
-                # choice, not an oversight.
-                failure_decision = price_path_evidence_decision.classify_provider_failure(error_code=exc.code)
+                # Stage J1B-Fail-Closed-Hardening, Stage 5 — the SINGLE
+                # typed policy GOVERNS the lifecycle action; this is no
+                # longer classify-then-hard-code-the-same-action-anyway.
+                policy = price_path_evidence_decision.get_provider_failure_policy(error_code=exc.code)
                 with _conn() as conn:
-                    outbox_ops.mark_retryable_failure(
-                        conn, outbox_id=outbox_id, error_code=exc.code,
-                        error_summary=type(exc).__name__, claimed_by=claimant,
-                    )
+                    if policy.terminal_permitted and not policy.retry_permitted:
+                        outbox_ops.mark_terminal_failure(
+                            conn, outbox_id=outbox_id, error_code=policy.sanitized_error_code,
+                            error_summary=type(exc).__name__, claimed_by=claimant,
+                        )
+                        result_status = PRICE_PATH_FAILED_TERMINAL
+                    else:
+                        outbox_ops.mark_retryable_failure(
+                            conn, outbox_id=outbox_id, error_code=policy.sanitized_error_code,
+                            error_summary=type(exc).__name__, claimed_by=claimant,
+                        )
+                        result_status = PRICE_PATH_FAILED_RETRYABLE
                 log.warning(
                     "[price_path_provider_failure] trade_id=%s evidence_status=%s",
-                    trade_id, failure_decision.evidence_status,
+                    trade_id, policy.evidence_status,
                 )
-                return None, PRICE_PATH_FAILED_RETRYABLE
-            with _conn() as conn:
-                evidence, _created = price_path_generation.persist_price_path_evidence(conn, bundle)
+                return None, result_status
 
-        # Stage J1B — classify the now-available evidence (whether
-        # replayed from a PRIOR acquisition or freshly acquired this
-        # attempt) from its own real, already-computed data_completeness
-        # field (build_price_path_evidence's own exhaustive 5-value
-        # STATUS_* enum — COMPLETE/PARTIAL/UNAVAILABLE/
-        # INVALID_SOURCE_DATA/AMBIGUOUS_RESOLUTION, the last of which is
-        # also what a split inside the window already produces), never
-        # re-derived or fabricated here.
-        evidence_decision = price_path_evidence_decision.classify_acquired_evidence(
-            data_completeness=evidence.data_completeness,
-        )
+            # Stage 3 — CLASSIFY the freshly acquired bundle BEFORE any
+            # persistence decision, never after. persistence_permitted
+            # governs whether the bundle becomes an immutable evidence
+            # row at all (SOURCE_INVALID/unsupported-enum bundles are
+            # never persisted — Stage 3's own explicit requirement).
+            quality_decision = price_path_evidence_decision.classify_acquired_evidence(
+                data_completeness=bundle.data_completeness,
+            )
+            if quality_decision.persistence_permitted:
+                with _conn() as conn:
+                    evidence, _created = price_path_generation.persist_price_path_evidence(conn, bundle)
+            else:
+                evidence = bundle  # unpersisted — still carries source_version/data_completeness for the report
 
-        payload = price_path_generation.build_price_path_report_payload(
-            evidence, entry_price=ctx.entry_price, exit_price=ctx.exit_price,
-            applicable_stop=ctx.applicable_stop, applicable_target=ctx.applicable_target,
-            level_history_complete=ctx.level_history_complete, trade_id=trade_id,
-        )
+        # Stage 4 — calculation_status is now AUTHORITATIVE over whether
+        # the actual MFE/MAE/touch calculator ever runs, not merely a
+        # field computed and ignored.
+        evidence_id = evidence.id if hasattr(evidence, "id") else None
+        if quality_decision.calculation_status == price_path_evidence_decision.CALCULATION_ELIGIBLE:
+            payload = price_path_generation.build_price_path_report_payload(
+                evidence, entry_price=ctx.entry_price, exit_price=ctx.exit_price,
+                applicable_stop=ctx.applicable_stop, applicable_target=ctx.applicable_target,
+                level_history_complete=ctx.level_history_complete, trade_id=trade_id,
+            )
+        else:
+            payload = price_path_generation.build_unavailable_report_payload(
+                evidence_id=evidence_id, quality_decision=quality_decision, trade_id=trade_id,
+            )
 
         with _conn() as conn:
             with conn.transaction():
@@ -1375,12 +1389,10 @@ def _attempt_price_path_enhancement(
                     # consulted when the report settles, never merely used
                     # to gate whether acquisition ran.
                     trade_context_ceiling=eligibility.report_completeness_ceiling,
-                    # Stage J1B load-bearing integration — the evidence
-                    # decision's own ceiling (basis-incompatible/partial/
-                    # ambiguous/source-unavailable) is now composed into
-                    # the final status too, not merely computed and
-                    # discarded.
-                    evidence_decision=evidence_decision,
+                    # Stage 7 — acquisition provenance and evidence
+                    # quality are persisted as two separate, never-merged
+                    # decisions.
+                    acquisition_decision=acquisition_decision, quality_decision=quality_decision,
                 )
         return enhanced, PRICE_PATH_GENERATED
     except generation_service.StaleLeaseError:

@@ -248,12 +248,44 @@ def build_price_path_report_payload(
     )
 
 
+def build_unavailable_report_payload(
+    *, evidence_id: int | None, quality_decision, trade_id: int,
+) -> PricePathReportPayload:
+    """Stage J1B-Fail-Closed-Hardening, Stage 4 — the CALCULATION_
+    UNAVAILABLE counterpart to build_price_path_report_payload. Never
+    calls compute_excursion/detect_touches/classify_touch_order (the
+    actual calculator) — every analytic field is explicitly null, never
+    a zero or a guessed value, matching Sprint 2/3A's own no-fabrication
+    discipline. `evidence_id` is None whenever quality_decision.
+    persistence_permitted was False (SOURCE_INVALID, unsupported/
+    unknown completeness) — no evidence row exists to reference."""
+    section = {
+        "price_path_status": quality_decision.evidence_status,
+        "price_path_evidence_id": evidence_id,
+        "mfe_abs": None, "mfe_pct": None,
+        "mae_signed_abs": None, "mae_signed_pct": None,
+        "mae_magnitude_abs": None, "mae_magnitude_pct": None,
+        "mfe_timestamp": None, "mae_timestamp": None,
+        "target_touch": None, "target_touch_type": None,
+        "stop_touch": None, "stop_touch_type": None,
+        "touch_order": None,
+        "giveback_abs": None, "giveback_pct": None,
+        "captured_mfe_pct": None,
+        "price_path_evidence_ids": [],
+        "price_path_limitations": list(quality_decision.limitations),
+    }
+    return PricePathReportPayload(
+        status="LIMITED_EVIDENCE", price_path_section=section, evidence_items=[], claims=[],
+        limitations=list(quality_decision.limitations),
+    )
+
+
 def persist_price_path_report(
     conn, *, prior_report: PersistedReport, payload: PricePathReportPayload, trade_id: int, user_id: str,
     market: str, report_trading_date, market_timezone: str, source_version: str,
     outbox_id: int | None = None, claimed_by: str | None = None,
     trade_context_ceiling: str = "COMPLETE",
-    evidence_decision=None,
+    acquisition_decision=None, quality_decision=None,
 ) -> tuple[PersistedReport, bool]:
     """PHASE 5 — short write. Merges the price-path payload additively
     on top of the prior report's own structured_report/evidence_items/
@@ -290,24 +322,40 @@ def persist_price_path_report(
     # never consulted here would still let a downstream COMPLETE value
     # override it.
     from services.postmortem.price_path_evidence_decision import compute_report_completeness_ceiling
-    evidence_ceiling = evidence_decision.report_completeness_ceiling if evidence_decision is not None else "COMPLETE"
+    quality_ceiling = quality_decision.report_completeness_ceiling if quality_decision is not None else "COMPLETE"
     status = compute_report_completeness_ceiling(
-        prior_report.status, payload.status, trade_context_ceiling, evidence_ceiling,
+        prior_report.status, payload.status, trade_context_ceiling, quality_ceiling,
     )
 
-    # Stage J7 (decision provenance) — the J1B fields that explain WHY a
-    # report is limited are persisted alongside the rest of the price-
-    # path section, never as an unrestricted raw provider payload; a
-    # deterministic replay of the same trade/evidence reproduces the
-    # identical decision fields.
-    if evidence_decision is not None:
+    # Stage J7 (decision provenance) — acquisition provenance (WHERE the
+    # evidence came from) and evidence-quality (WHETHER it is usable)
+    # are persisted as two SEPARATE blocks, never merged into one —
+    # merging them was exactly the false-provenance defect this Stage
+    # was opened to fix (a replayed report's provider_call_expected
+    # must read False regardless of what the quality decision says).
+    # Deterministic replay of the same trade/evidence reproduces
+    # identical decision fields; never an unrestricted raw provider
+    # payload.
+    extra_limitations = []
+    if acquisition_decision is not None or quality_decision is not None:
         structured_report["price_path"] = dict(structured_report["price_path"])
-        structured_report["price_path"]["evidence_decision"] = {
-            "evidence_status": evidence_decision.evidence_status,
-            "calculation_status": evidence_decision.calculation_status,
-            "provider_call_expected": evidence_decision.provider_call_expected,
-            "reason_codes": list(evidence_decision.reason_codes),
-        }
+        if acquisition_decision is not None:
+            structured_report["price_path"]["acquisition_decision"] = {
+                "acquisition_status": acquisition_decision.acquisition_status,
+                "provider_call_expected": acquisition_decision.provider_call_expected,
+                "compatible_evidence_found": acquisition_decision.compatible_evidence_found,
+                "reused_evidence_id": acquisition_decision.evidence_id,
+                "reason_codes": list(acquisition_decision.reason_codes),
+            }
+            extra_limitations.extend(acquisition_decision.limitations)
+        if quality_decision is not None:
+            structured_report["price_path"]["evidence_quality_decision"] = {
+                "evidence_status": quality_decision.evidence_status,
+                "calculation_status": quality_decision.calculation_status,
+                "persistence_permitted": quality_decision.persistence_permitted,
+                "reason_codes": list(quality_decision.reason_codes),
+            }
+            extra_limitations.extend(quality_decision.limitations)
 
     report, created = report_store.persist_report(
         conn, paper_trade_id=trade_id, user_id=user_id, market=market,
@@ -318,8 +366,7 @@ def persist_price_path_report(
         evidence_bundle_version=prior_report.evidence_bundle_version,
         status=status, structured_report=structured_report,
         evidence_items=evidence_items, claims=claims, source_manifest=source_manifest,
-        evidence_gaps=list(prior_report.evidence_gaps) + list(payload.limitations)
-        + (list(evidence_decision.limitations) if evidence_decision is not None else []),
+        evidence_gaps=list(prior_report.evidence_gaps) + list(payload.limitations) + extra_limitations,
         warnings=list(prior_report.warnings),
         supersedes_report_id=prior_report.id,
     )
