@@ -425,3 +425,58 @@ class TestTransientProviderFailureMarksRetryable:
             "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
         ).fetchone()[0]
         assert report_count == 0  # no partial/fabricated evidence persisted
+
+
+@pytest.mark.timeout(30)
+class TestMalformedProviderResponseUsesPolicyDrivenOutcome:
+    """Stage J1B-Assurance-Closure, Stage 5D -- PROVIDER_UNEXPECTED_
+    COLUMN_SHAPE (a malformed/unexpected provider response shape) must
+    remain distinguishable from a plain transient PROVIDER_FETCH_FAILED
+    outage, and the outcome must come from get_provider_failure_policy,
+    not a separate hard-coded action."""
+
+    def test_malformed_response_marks_source_invalid_and_no_evidence_persisted(
+        self, client, pg_conn, unique_user_id, monkeypatch,
+    ):
+        monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
+        trade_id = _open_and_close(client, pg_conn, unique_user_id)
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+
+        from services.postmortem import price_path_acquisition
+
+        def _raises(*a, **k):
+            raise price_path_acquisition.PriceProviderAcquisitionError(
+                "PROVIDER_UNEXPECTED_COLUMN_SHAPE", "synthetic malformed response"
+            )
+
+        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _raises)
+
+        pre_existing = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        assert pre_existing == 0
+
+        resp = _generate(client, unique_user_id, trade_id)
+        assert resp.status_code == 200
+        # Policy-driven: currently retryable (not immediately terminal) --
+        # the outbox's own attempt-limit still bounds eventual settlement.
+        assert resp.json()["price_path_generation_status"] == "PRICE_PATH_FAILED_RETRYABLE"
+
+        outbox_status, error_code = pg_conn.execute(
+            "SELECT status, last_error_code FROM paper_trade_postmortem_outbox "
+            "WHERE paper_trade_id = %s AND requested_report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()
+        assert outbox_status == "FAILED_RETRYABLE"
+        assert error_code == "PROVIDER_UNEXPECTED_COLUMN_SHAPE"  # distinguishable from PROVIDER_FETCH_FAILED
+
+        evidence_count = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_price_path_evidence WHERE paper_trade_id = %s", (trade_id,)
+        ).fetchone()[0]
+        assert evidence_count == 0  # never persisted for a malformed response
+
+        report_count = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        assert report_count == 0

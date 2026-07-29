@@ -283,6 +283,48 @@ class TestSuccessfulGenerationAndIdempotentReplay:
         assert report.structured_report["price_path"]["evidence_quality_decision"]["evidence_status"] == "AMBIGUOUS_RESOLUTION"
         assert report.structured_report["price_path"]["acquisition_decision"]["provider_call_expected"] is True
 
+    def test_zero_bars_never_invokes_the_calculator(self):
+        """Stage J1B-Assurance-Closure, Stage 4 -- direct instrumentation
+        of the actual calculator entry points (not an inference from
+        null output fields). A zero-bar provider response classifies
+        SOURCE_UNAVAILABLE / CALCULATION_UNAVAILABLE and must never call
+        compute_excursion/detect_touches/classify_touch_order at all."""
+        from unittest.mock import patch
+        shared = _new_shared([{}])
+        with patch("services.postmortem.price_path_generation.compute_excursion") as spy_excursion, \
+             patch("services.postmortem.price_path_generation.detect_touches") as spy_touches, \
+             patch("services.postmortem.price_path_generation.classify_touch_order") as spy_order:
+            report, status = _attempt(
+                shared, fetch_bars_fn=lambda *a: [], fetch_splits_fn=lambda *a: [], fetch_dividends_fn=lambda *a: [],
+            )
+            spy_excursion.assert_not_called()
+            spy_touches.assert_not_called()
+            spy_order.assert_not_called()
+        import api.routers.paper_trading as ptr
+        assert status == ptr.PRICE_PATH_GENERATED
+        assert report is not None
+        assert report.status == "LIMITED_EVIDENCE"
+        assert report.structured_report["price_path"]["mfe_abs"] is None
+        assert report.structured_report["price_path"]["evidence_quality_decision"]["evidence_status"] == "SOURCE_UNAVAILABLE"
+
+    def test_complete_evidence_does_invoke_the_calculator(self):
+        """The positive control for the spy above -- a normal COMPLETE
+        acquisition must actually call the calculator, proving the spy
+        mechanism itself is sound (not merely un-invoked by accident)."""
+        from unittest.mock import patch
+        shared = _new_shared([{}])
+        with patch(
+            "services.postmortem.price_path_generation.compute_excursion",
+            wraps=__import__("services.postmortem.price_path_generation", fromlist=["compute_excursion"]).compute_excursion,
+        ) as spy_excursion:
+            report, status = _attempt(
+                shared, fetch_bars_fn=lambda *a: _fake_bars(), fetch_splits_fn=lambda *a: [], fetch_dividends_fn=lambda *a: [],
+            )
+            spy_excursion.assert_called_once()
+        import api.routers.paper_trading as ptr
+        assert status == ptr.PRICE_PATH_GENERATED
+        assert report is not None
+
     def test_second_call_is_idempotent_no_second_provider_call(self):
         shared = _new_shared([{}])
         calls = {"n": 0}
