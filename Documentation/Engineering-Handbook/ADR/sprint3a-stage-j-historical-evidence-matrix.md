@@ -325,3 +325,77 @@ immutability across all three paths (proven for one path in the prior
 pass). Aggregate real-PG collection increased by 1 (144→145) this pass —
 a single new named scenario, not a claim of covering the full Stage 5
 matrix.
+
+## Stage J1B-Real-PG-Assurance-Completion (this pass)
+
+1. **ProviderFailurePolicy simplified** — `retry_permitted`/`terminal_permitted`
+   (an ambiguous combination that described every current code identically
+   and left the live path to independently decide which applied) replaced
+   with a single `immediate_outbox_outcome` field
+   (`IMMEDIATE_FAILED_RETRYABLE` | `IMMEDIATE_FAILED_TERMINAL`). The live
+   path now branches directly on this field. The outbox's own attempt-limit
+   mechanism (`outbox.py`, unchanged, already tested) remains the sole path
+   from a retryable failure to an eventual terminal one.
+
+2. **Bare `assert evidence is not None` replaced** with an explicit
+   fail-closed branch: a `COMPATIBLE_REPLAY` decision with no evidence
+   object present now settles `FAILED_RETRYABLE` under a sanitized
+   `INTERNAL_INTEGRITY_VIOLATION` code, never a crash and never bypassable
+   under optimized (`python -O`) execution. Noted honestly: given the
+   current code shape (`evidence = ctx.compatible_evidence`, the same
+   object reference used to decide `compatible_evidence_found`), this
+   specific contradiction is structurally unreachable today — the fix is
+   defensive-in-depth against a future refactor that decouples the two,
+   verified by code review rather than a forced test.
+
+3. **Formal invalid-bundle report policy implemented**: `SOURCE_INVALID`
+   and `UNSUPPORTED_EVIDENCE_COMPLETENESS` now produce **no report at
+   all** (not even LIMITED_EVIDENCE) — the outbox settles
+   `FAILED_RETRYABLE` under the evidence status as its own sanitized error
+   code, applied identically whether the bad classification came from a
+   fresh bundle or a replay of previously-persisted (e.g. corrupted)
+   evidence. `SOURCE_UNAVAILABLE` remains the one state that may still
+   produce an honest `LIMITED_EVIDENCE` report from its zero-bar manifest.
+   This closes a real behavioral gap: before this pass, the live path
+   built and persisted a `LIMITED_EVIDENCE` report even for
+   `SOURCE_INVALID`/`UNSUPPORTED` evidence.
+
+4. **`INVALID_SOURCE_DATA` confirmed unreachable via genuine acquisition** —
+   `price_path_acquisition.build_price_path_evidence` has no code path
+   that ever assigns `STATUS_INVALID_SOURCE_DATA` (verified by direct
+   grep/code inspection). The only real service-boundary way to exercise
+   `UNSUPPORTED_EVIDENCE_COMPLETENESS`'s fail-closed behavior is a
+   persisted evidence row whose `data_completeness` has been corrupted
+   (simulating legacy/damaged data) — implemented as
+   `TestUnsupportedCompletenessFailsClosedThroughRealReplay`.
+
+### Real-PG collection: 151 (up from 145), 6 new dedicated scenarios
+
+| # | Scenario | Test |
+|---|---|---|
+| 5A | Fresh acquisition provenance | `TestFreshAcquisitionProvenanceThroughRealEndpoint` |
+| 5B | Unsupported completeness fail-closed (corrupted persisted data) | `TestUnsupportedCompletenessFailsClosedThroughRealReplay` |
+| 5D (strengthened) | Malformed provider response, policy-driven | `TestMalformedProviderResponseUsesPolicyDrivenOutcome` |
+| 5F | Atomic settlement / forced stale-claimant rollback | `test_stale_claimant_report_insert_rolls_back_atomically` (test_price_path_generation.py) |
+| 5G | Replay immutability, byte-for-byte row comparison | `TestReplayImmutabilityByteForByte` |
+| 5H | Trade/snapshot immutability, source-unavailable path | `TestTradeAndSnapshotImmutabilityAcrossPaths` |
+| 5I | Report replay separation, no new provenance fabricated | `TestReportReplaySeparationThroughRealEndpoint` |
+
+### Still not implementable / still open
+
+- **5C (invalid-source through real bundle validation)**: genuinely not
+  implementable without adding new production validation logic that
+  doesn't exist today — `INVALID_SOURCE_DATA` has zero live producers.
+  The exception-based `SOURCE_INVALID` trigger (5D,
+  `PROVIDER_UNEXPECTED_COLUMN_SHAPE`) remains the only real path to that
+  evidence status.
+- Calculator-gating matrix is not exhaustive: `SOURCE_UNAVAILABLE` is
+  directly spied (prior pass); `SOURCE_INVALID`/`UNSUPPORTED_EVIDENCE_
+  COMPLETENESS` are now structurally guaranteed to never reach the
+  calculator (Stage 3's no-report policy means `build_price_path_report_
+  payload`/`build_unavailable_report_payload` are never even called for
+  these two states — verified by code review, not a dedicated spy test
+  this pass).
+- Source-manifest field persistence, explicit window-contamination
+  traceability, and the full 40-scenario table remain out of scope for
+  this bounded J1B phase, as before.
