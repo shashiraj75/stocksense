@@ -331,15 +331,52 @@ def _compute_manifest_integrity_hash(manifest: dict) -> str:
     """Separate from _compute_evidence_hash (bars only) — this covers the
     manifest's own provenance/configuration fields, so a manifest could be
     tampered with or corrupted independently of the bar data and still be
-    caught. `unresolved_basis_limitations` is excluded because it is the
-    same mutable list object as the bundle's own `limitations` field and
-    is still being appended to by the caller at the point this function
-    runs for the split-in-window/no-bars early-return paths — hashing a
-    not-yet-final list would make the hash non-reproducible for the exact
-    same acquisition. Every other field is fixed at this point."""
-    hashable = {k: v for k, v in manifest.items() if k != "unresolved_basis_limitations"}
+    caught. Excludes ONLY `manifest_integrity_hash` itself (the field
+    being computed cannot hash itself) — every other field, INCLUDING
+    `unresolved_basis_limitations`, is covered. Callers MUST call this
+    only through finalize_source_manifest, after every limitation for the
+    return path in question is already known — never on a still-mutable
+    manifest."""
+    hashable = {k: v for k, v in manifest.items() if k != "manifest_integrity_hash"}
     canonical = json.dumps(hashable, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def finalize_source_manifest(source_manifest: dict, final_limitations: list[str]) -> dict:
+    """Stage J Final-Closure-Correction — the one place
+    `manifest_integrity_hash` is ever computed. Must be called exactly
+    once per return path, only after every limitation applicable to that
+    path (dividend/split disclosure, boundary-policy limitations, the
+    no-bars message, the partial-window gap message) has already been
+    appended to `final_limitations` — never before.
+
+    Returns a NEW dict (the input `source_manifest` is never mutated) so
+    a caller cannot accidentally keep touching the pre-finalization
+    object after this returns. `unresolved_basis_limitations` becomes an
+    immutable SNAPSHOT copy of `final_limitations` — not the same list
+    object a caller might still hold a mutable reference to — so a
+    finalized manifest can never silently change out from under its own
+    hash. This is also what guarantees the bundle's own `limitations`
+    field and the manifest's `unresolved_basis_limitations` always
+    contain identical final content: both are built from the exact same
+    `final_limitations` list at the exact same point in time."""
+    finalized = dict(source_manifest)
+    finalized["unresolved_basis_limitations"] = list(final_limitations)
+    finalized.pop("manifest_integrity_hash", None)
+    finalized["manifest_integrity_hash"] = _compute_manifest_integrity_hash(finalized)
+    return finalized
+
+
+def verify_source_manifest_integrity(manifest: dict) -> bool:
+    """Deterministic tamper-detection helper: recomputes the hash over
+    every field except `manifest_integrity_hash` and compares against the
+    stored value. Returns False (never raises) for a manifest missing the
+    hash field entirely — an unhashed manifest cannot be verified, not
+    trivially "valid"."""
+    stored = manifest.get("manifest_integrity_hash")
+    if not stored:
+        return False
+    return _compute_manifest_integrity_hash(manifest) == stored
 
 
 def _compute_evidence_hash(bars: list[PricePathBar]) -> str:
@@ -466,13 +503,15 @@ def build_price_path_evidence(
         ),
         "boundary_policy_version": BOUNDARY_POLICY_VERSION,
         "requested_trading_weekday_count": _count_requested_weekdays(entry_date, exit_date),
-        # Same list object as `limitations` below — appends made after
-        # this point are visible through this key too, so the persisted
-        # manifest always reflects the FINAL limitation set without a
-        # second assignment at every return site.
-        "unresolved_basis_limitations": limitations,
+        # NOT populated here — `unresolved_basis_limitations` and
+        # `manifest_integrity_hash` are only ever set once, by
+        # finalize_source_manifest, after every limitation for the
+        # actual return path is known. Setting them here (as a prior
+        # pass did) meant the hash was computed BEFORE dividend/split/
+        # boundary-policy/no-bars/partial-window limitations were even
+        # appended — a hash that excluded mutable final content, exactly
+        # the defect this restructuring fixes.
     }
-    source_manifest["manifest_integrity_hash"] = _compute_manifest_integrity_hash(source_manifest)
 
     if dividend_events:
         limitations.append(
@@ -487,6 +526,7 @@ def build_price_path_evidence(
             "a split changes what 'unadjusted' means across the boundary (different share-count basis "
             "before vs after), so excursion values are not computed for this trade"
         )
+        final_manifest = finalize_source_manifest(source_manifest, limitations)
         return PricePathEvidenceBundle(
             evidence_bundle_version=EVIDENCE_BUNDLE_SCHEMA_VERSION,
             paper_trade_id=paper_trade_id, user_id=user_id, symbol=symbol, market=market,
@@ -499,8 +539,8 @@ def build_price_path_evidence(
             observed_window_start=None, observed_window_end=None,
             bars_expected=None, bars_observed=0, missing_bar_count=None,
             data_completeness=STATUS_AMBIGUOUS_RESOLUTION, freshness_basis="acquired_at_generation_time",
-            acquisition_timestamp=acquisition_timestamp, source_manifest=source_manifest,
-            limitations=limitations, bars=(), evidence_hash=_compute_evidence_hash([]),
+            acquisition_timestamp=acquisition_timestamp, source_manifest=final_manifest,
+            limitations=list(limitations), bars=(), evidence_hash=_compute_evidence_hash([]),
         )
 
     # Deduplicate and sort defensively — a provider returning a
@@ -541,6 +581,13 @@ def build_price_path_evidence(
     )
 
     if not bars:
+        # Appended to the SHARED `limitations` list (never a separate
+        # literal) — a prior pass built a brand-new one-item list here,
+        # which silently diverged from source_manifest's own final
+        # unresolved_basis_limitations whenever a dividend or
+        # boundary-policy limitation had already been recorded above.
+        limitations.append("no valid bars were returned by the provider for the requested window")
+        final_manifest = finalize_source_manifest(source_manifest, limitations)
         return PricePathEvidenceBundle(
             evidence_bundle_version=EVIDENCE_BUNDLE_SCHEMA_VERSION,
             paper_trade_id=paper_trade_id, user_id=user_id, symbol=symbol, market=market,
@@ -553,8 +600,8 @@ def build_price_path_evidence(
             observed_window_start=None, observed_window_end=None,
             bars_expected=None, bars_observed=0, missing_bar_count=None,
             data_completeness=STATUS_UNAVAILABLE, freshness_basis="acquired_at_generation_time",
-            acquisition_timestamp=acquisition_timestamp, source_manifest=source_manifest,
-            limitations=["no valid bars were returned by the provider for the requested window"],
+            acquisition_timestamp=acquisition_timestamp, source_manifest=final_manifest,
+            limitations=list(limitations),
             bars=(), evidence_hash=_compute_evidence_hash([]),
         )
 
@@ -569,6 +616,7 @@ def build_price_path_evidence(
             "absences, not evidence gaps; this limitation covers unexplained gaps within the observed range)"
         )
 
+    final_manifest = finalize_source_manifest(source_manifest, limitations)
     return PricePathEvidenceBundle(
         evidence_bundle_version=EVIDENCE_BUNDLE_SCHEMA_VERSION,
         paper_trade_id=paper_trade_id, user_id=user_id, symbol=symbol, market=market,
@@ -582,8 +630,8 @@ def build_price_path_evidence(
         bars_expected=expected_calendar_days, bars_observed=len(bars),
         missing_bar_count=None,  # non-trading days are expected absences, not "missing" — never counted here
         data_completeness=completeness, freshness_basis="acquired_at_generation_time",
-        acquisition_timestamp=acquisition_timestamp, source_manifest=source_manifest,
-        limitations=limitations, bars=tuple(bars), evidence_hash=_compute_evidence_hash(bars),
+        acquisition_timestamp=acquisition_timestamp, source_manifest=final_manifest,
+        limitations=list(limitations), bars=tuple(bars), evidence_hash=_compute_evidence_hash(bars),
     )
 
 

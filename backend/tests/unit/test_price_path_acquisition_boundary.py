@@ -26,6 +26,8 @@ from services.postmortem.price_path_acquisition import (
     acquire_price_path_evidence,
     build_price_path_evidence,
     evaluate_basis_compatibility,
+    finalize_source_manifest,
+    verify_source_manifest_integrity,
 )
 
 
@@ -149,6 +151,172 @@ class TestSourceManifestCompleteness:
         assert bundle.bars_observed == 1
         assert bundle.bars[0].open == 10.0
         assert bundle.bars[0].close == 15.0
+
+
+def _base_manifest(**overrides):
+    """A synthetic, already near-final manifest (everything
+    finalize_source_manifest would produce except the hash itself) for
+    direct hash-coverage testing — isolates the hash function's own
+    field-sensitivity from acquisition's broader plumbing."""
+    manifest = dict(
+        source_manifest_schema_version="1.0.0", source_id="yfinance_daily",
+        source_type="EXTERNAL_UNOFFICIAL_DAILY", source_scope="BOUNDED_EVIDENCE_ACQUISITION_ONLY",
+        production_authoritative=False, source_version="1.0.0", provider="yfinance",
+        provider_library_version="0.2.40", interval="1d", auto_adjust=False, back_adjust=False,
+        actions=True, repair=False, prepost=False,
+        timezone_behavior="provider_local_exchange_timezone_normalized_to_date_only",
+        raw_ohlc_basis_claim="PROVIDER_RETURNED_UNADJUSTED_OHLC", adjusted_close_available=False,
+        split_event_manifest=[], dividend_event_manifest=[], provider_symbol="AAPL", trade_symbol="AAPL",
+        symbol_normalization_version="1.0.0", market="US", acquisition_mode="auto_adjust_false",
+        provider_request_start="2026-06-01", provider_exclusive_request_end="2026-06-04",
+        end_widening_reason="widened for provider exclusivity", boundary_policy_version="1.0.0",
+        requested_trading_weekday_count=3,
+    )
+    manifest.update(overrides)
+    return manifest
+
+
+@pytest.mark.unit
+class TestManifestIntegrityHashCoverage:
+    """Stage J Final-Closure-Correction, Stage 2 — proves
+    manifest_integrity_hash actually covers every field it claims to,
+    proves determinism/key-order-independence, and proves tamper
+    detection via verify_source_manifest_integrity."""
+
+    def _hash_of(self, **overrides):
+        finalized = finalize_source_manifest(_base_manifest(**overrides), final_limitations=[])
+        return finalized["manifest_integrity_hash"]
+
+    @pytest.mark.parametrize("field,changed_value", [
+        ("trade_symbol", "MSFT"),
+        ("provider_symbol", "MSFT"),
+        ("market", "IN"),
+        ("source_version", "2.0.0"),
+        ("provider_library_version", "0.2.41"),
+        ("provider_request_start", "2026-06-02"),
+        ("provider_exclusive_request_end", "2026-06-05"),
+        ("boundary_policy_version", "2.0.0"),
+        ("split_event_manifest", ["2026-06-02"]),
+        ("dividend_event_manifest", ["2026-06-02"]),
+        ("prepost", True),
+        ("raw_ohlc_basis_claim", "SOMETHING_ELSE"),
+    ])
+    def test_hash_changes_when_covered_field_changes(self, field, changed_value):
+        baseline = self._hash_of()
+        changed = self._hash_of(**{field: changed_value})
+        assert baseline != changed, f"manifest_integrity_hash did not change when {field!r} changed"
+
+    def test_hash_changes_when_unresolved_limitations_change(self):
+        h1 = finalize_source_manifest(_base_manifest(), final_limitations=[])["manifest_integrity_hash"]
+        h2 = finalize_source_manifest(_base_manifest(), final_limitations=["a dividend was paid"])["manifest_integrity_hash"]
+        assert h1 != h2
+
+    def test_identical_finalized_manifests_yield_identical_hashes(self):
+        h1 = finalize_source_manifest(_base_manifest(), final_limitations=["x"])["manifest_integrity_hash"]
+        h2 = finalize_source_manifest(_base_manifest(), final_limitations=["x"])["manifest_integrity_hash"]
+        assert h1 == h2
+
+    def test_reordered_dict_keys_do_not_change_hash(self):
+        m1 = _base_manifest()
+        m2 = dict(reversed(list(_base_manifest().items())))
+        h1 = finalize_source_manifest(m1, final_limitations=["x"])["manifest_integrity_hash"]
+        h2 = finalize_source_manifest(m2, final_limitations=["x"])["manifest_integrity_hash"]
+        assert h1 == h2
+
+    def test_reordered_limitations_list_changes_hash(self):
+        """Stage 2, item 3 — unresolved_basis_limitations is an ORDERED
+        append log (each limitation appended as it's discovered), not a
+        canonically-sorted set; the contract is that its order is
+        semantically meaningful (matching the bundle's own `limitations`
+        append order), so a reordering must change the hash."""
+        h1 = finalize_source_manifest(_base_manifest(), final_limitations=["a", "b"])["manifest_integrity_hash"]
+        h2 = finalize_source_manifest(_base_manifest(), final_limitations=["b", "a"])["manifest_integrity_hash"]
+        assert h1 != h2
+
+    def test_manifest_verifies_successfully_after_dict_round_trip(self):
+        """Simulates a JSONB round-trip: dict -> JSON string -> dict is
+        exactly what psycopg's JSONB deserialization does; the hash must
+        still verify against the round-tripped copy."""
+        import json
+
+        finalized = finalize_source_manifest(_base_manifest(), final_limitations=["a dividend was paid"])
+        round_tripped = json.loads(json.dumps(finalized))
+        assert verify_source_manifest_integrity(round_tripped) is True
+
+    def test_tampering_with_limitations_fails_verification(self):
+        finalized = finalize_source_manifest(_base_manifest(), final_limitations=["original"])
+        tampered = dict(finalized)
+        tampered["unresolved_basis_limitations"] = ["tampered"]
+        assert verify_source_manifest_integrity(tampered) is False
+
+    def test_tampering_with_request_dates_fails_verification(self):
+        finalized = finalize_source_manifest(_base_manifest(), final_limitations=[])
+        tampered = dict(finalized)
+        tampered["provider_request_start"] = "1999-01-01"
+        assert verify_source_manifest_integrity(tampered) is False
+
+    def test_untampered_manifest_verifies(self):
+        finalized = finalize_source_manifest(_base_manifest(), final_limitations=["x"])
+        assert verify_source_manifest_integrity(finalized) is True
+
+    def test_manifest_missing_hash_field_fails_verification(self):
+        assert verify_source_manifest_integrity(_base_manifest()) is False
+
+
+@pytest.mark.unit
+class TestBundleAndManifestLimitationsIdentical:
+    """Stage J Final-Closure-Correction, Stage 2, item 7 — bundle.
+    limitations and bundle.source_manifest['unresolved_basis_limitations']
+    must contain identical final content across every return path,
+    including the no-bars path, which previously constructed a SEPARATE
+    one-item list literal that silently diverged whenever a dividend or
+    boundary-policy limitation had already been recorded."""
+
+    def _check(self, bundle):
+        assert list(bundle.limitations) == list(bundle.source_manifest["unresolved_basis_limitations"])
+        return bundle
+
+    def test_complete_evidence(self):
+        bundle = self._check(build_price_path_evidence(
+            paper_trade_id=1, user_id="u", symbol="AAPL", market="US",
+            market_timezone_name="America/New_York", market_tzinfo=ET,
+            entry_timestamp=dt.datetime(2026, 6, 1, tzinfo=ET), exit_timestamp=dt.datetime(2026, 6, 1, tzinfo=ET),
+            raw_bars=[{"date": dt.date(2026, 6, 1), "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": None}],
+            split_events=[],
+        ))
+        assert bundle.data_completeness == "COMPLETE"
+
+    def test_partial_evidence(self):
+        self._check(build_price_path_evidence(
+            paper_trade_id=1, user_id="u", symbol="AAPL", market="US",
+            market_timezone_name="America/New_York", market_tzinfo=ET,
+            entry_timestamp=dt.datetime(2026, 6, 1, tzinfo=ET), exit_timestamp=dt.datetime(2026, 6, 3, tzinfo=ET),
+            raw_bars=[{"date": dt.date(2026, 6, 1), "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": None}],
+            split_events=[],
+        ))
+
+    def test_no_bars(self):
+        """The exact scenario the divergence bug affected — a dividend
+        limitation is recorded, THEN the no-bars branch fires; both the
+        bundle's limitations and the manifest's must contain BOTH the
+        dividend message and the no-bars message, in the same order."""
+        bundle = self._check(build_price_path_evidence(
+            paper_trade_id=1, user_id="u", symbol="AAPL", market="US",
+            market_timezone_name="America/New_York", market_tzinfo=ET,
+            entry_timestamp=dt.datetime(2026, 6, 1, tzinfo=ET), exit_timestamp=dt.datetime(2026, 6, 3, tzinfo=ET),
+            raw_bars=[], split_events=[], dividend_events=[dt.date(2026, 6, 2)],
+        ))
+        assert any("dividend" in lim for lim in bundle.limitations)
+        assert bundle.limitations[-1] == "no valid bars were returned by the provider for the requested window"
+
+    def test_split_in_window(self):
+        self._check(build_price_path_evidence(
+            paper_trade_id=1, user_id="u", symbol="AAPL", market="US",
+            market_timezone_name="America/New_York", market_tzinfo=ET,
+            entry_timestamp=dt.datetime(2026, 6, 1, tzinfo=ET), exit_timestamp=dt.datetime(2026, 6, 3, tzinfo=ET),
+            raw_bars=[{"date": dt.date(2026, 6, 2), "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": None}],
+            split_events=[dt.date(2026, 6, 2)],
+        ))
 
 
 @pytest.mark.unit
