@@ -1359,14 +1359,19 @@ class TestBothSameBarPersistedAmbiguous:
 
 @pytest.mark.timeout(30)
 class TestInvalidExitSnapshotThroughRealEndpoint:
-    """Stage J Final-Closure-Correction, Stage 6 item 4 -- a PRESENT_
-    INVALID exit snapshot (belongs to a different trade -- corrupted via
-    the same immutable DELETE+reinsert method the entry-snapshot
-    equivalent test in this file already uses) caps the report at
-    LIMITED_EVIDENCE with an explicit limitation, never fabricating an
-    exit rationale."""
+    """Stage J Final Semantic Reconciliation, Stage 7 -- a PRESENT_
+    INVALID exit snapshot (market-mismatched -- corrupted via the same
+    immutable DELETE+reinsert method the entry-snapshot equivalent test
+    in this file already uses) caps the report at LIMITED_EVIDENCE AND
+    now persists an explicit, deterministic structured reason
+    (trade_context_decision.reason_codes contains EXIT_CONTEXT_INVALID,
+    folded into evidence_gaps too) -- closing the gap the prior pass
+    found and honestly worked around: eligibility.limitations was
+    computed but never actually reached evidence_gaps or the structured
+    report before this pass wired persist_price_path_report's new
+    trade_context_decision parameter."""
 
-    def test_invalid_exit_snapshot_caps_report_and_never_fabricates_rationale(
+    def test_invalid_exit_snapshot_persists_explicit_structured_reason(
         self, client, pg_conn, unique_user_id, monkeypatch,
     ):
         from psycopg.types.json import Jsonb
@@ -1399,23 +1404,22 @@ class TestInvalidExitSnapshotThroughRealEndpoint:
         resp = _generate(client, unique_user_id, trade_id)
         assert resp.status_code == 200
 
-        status = pg_conn.execute(
-            "SELECT status FROM paper_trade_postmortem_report "
+        status, structured_report, evidence_gaps = pg_conn.execute(
+            "SELECT status, structured_report, evidence_gaps FROM paper_trade_postmortem_report "
             "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
-        ).fetchone()[0]
-        # A market-mismatched (present-but-invalid) exit snapshot must
-        # cap the report exactly like a genuinely missing one -- proven
-        # at the report-status level, matching the established pattern
-        # this file's own TestMissingSnapshotCapsReportAtLimitedEvidence
-        # class already uses. The "never fabricates an exit rationale"
-        # half of this requirement is structurally guaranteed by the
-        # SAME LIMITED_EVIDENCE-capping mechanism row 6 of the Stage J
-        # scenario matrix already documents and cites
-        # (price_path_eligibility.py's own null-out-on-invalid behavior,
-        # unit-tested there) -- not re-proven a second, redundant way
-        # here via an unverified structured_report field name.
+        ).fetchone()
         assert status != "COMPLETE"
         assert status == "LIMITED_EVIDENCE"
+
+        trade_context_decision = structured_report["price_path"]["trade_context_decision"]
+        assert "EXIT_CONTEXT_INVALID" in trade_context_decision["reason_codes"]
+        assert any("EXIT_CONTEXT_INVALID" == g or "exit snapshot row exists" in g for g in evidence_gaps)
+
+        outbox_status = pg_conn.execute(
+            "SELECT status FROM paper_trade_postmortem_outbox "
+            "WHERE paper_trade_id = %s AND requested_report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        assert outbox_status == "LIMITED_EVIDENCE"
 
 
 @pytest.mark.timeout(30)
@@ -1490,3 +1494,162 @@ class TestNoBarsManifestConsistencyThroughRealPostgres:
         ).fetchone()
         assert list(limitations) == list(manifest["unresolved_basis_limitations"])
         assert "no valid bars were returned by the provider for the requested window" in limitations
+
+
+@pytest.mark.timeout(30)
+class TestZeroBarLifecycleThroughRealEndpoint:
+    """Stage J Final Semantic Reconciliation, Stage 1 -- corrects a real
+    documentation defect found by direct audit: rows 2/21 of the Stage J
+    matrix previously claimed the zero-bar fresh-acquisition path settles
+    the outbox FAILED_RETRYABLE with no report -- that was never true.
+    FAILED_RETRYABLE-with-no-report is reserved for SOURCE_INVALID/
+    UNSUPPORTED_EVIDENCE_COMPLETENESS (which have fresh_persistence_
+    permitted=False). SOURCE_UNAVAILABLE (fresh_persistence_permitted=
+    True) always persists its honest zero-bar evidence row and produces
+    an honest LIMITED_EVIDENCE report via build_unavailable_report_
+    payload -- confirmed by the pre-existing regression test
+    test_zero_bars_never_invokes_the_calculator, which this real-PG test
+    reproduces end-to-end through the actual HTTP endpoint and real
+    PostgreSQL storage."""
+
+    def test_zero_bars_persists_unavailable_evidence_and_limited_report(
+        self, client, pg_conn, unique_user_id, monkeypatch,
+    ):
+        monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
+        trade_id = _open_and_close(client, pg_conn, unique_user_id)
+
+        from services.postmortem import price_path_acquisition, price_path_generation
+
+        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _fake_none)
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+
+        calls = {"excursion": 0, "touches": 0, "order": 0}
+
+        def _count(name):
+            def _inner(*a, **k):
+                calls[name] += 1
+                raise AssertionError(f"{name} must never be invoked for zero-bar evidence")
+            return _inner
+
+        monkeypatch.setattr(price_path_generation, "compute_excursion", _count("excursion"))
+        monkeypatch.setattr(price_path_generation, "detect_touches", _count("touches"))
+        monkeypatch.setattr(price_path_generation, "classify_touch_order", _count("order"))
+
+        resp = _generate(client, unique_user_id, trade_id)
+        assert resp.status_code == 200
+        assert resp.json()["price_path_generation_status"] == "PRICE_PATH_GENERATED"
+        assert calls == {"excursion": 0, "touches": 0, "order": 0}
+
+        evidence_count, data_completeness = pg_conn.execute(
+            "SELECT count(*), max(data_completeness) FROM paper_trade_price_path_evidence "
+            "WHERE paper_trade_id = %s", (trade_id,)
+        ).fetchone()
+        assert evidence_count == 1
+        assert data_completeness == "UNAVAILABLE"
+
+        report_count, status, structured_report = pg_conn.execute(
+            "SELECT count(*) OVER (), status, structured_report FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()
+        assert report_count == 1
+        assert status == "LIMITED_EVIDENCE"
+        section = structured_report["price_path"]
+        for field in (
+            "mfe_abs", "mfe_pct", "mae_signed_abs", "mae_signed_pct", "mae_magnitude_abs",
+            "mae_magnitude_pct", "target_touch", "stop_touch", "touch_order",
+            "giveback_abs", "captured_mfe_pct",
+        ):
+            assert section[field] is None, f"{field} must be null for zero-bar evidence, not fabricated"
+
+        outbox_status = pg_conn.execute(
+            "SELECT status FROM paper_trade_postmortem_outbox "
+            "WHERE paper_trade_id = %s AND requested_report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        assert outbox_status == "LIMITED_EVIDENCE"
+
+
+@pytest.mark.timeout(30)
+class TestLegacyManifestReplayFailsClosedThroughRealEndpoint:
+    """Stage J Final Semantic Reconciliation, Stage 2 -- a manifest hash
+    the live replay path never checks is not a production integrity
+    control. This proves it IS load-bearing end-to-end: a persisted
+    evidence row whose manifest lacks the Stage J-F3 fields (simulating
+    a row acquired before manifest-integrity governance existed) is
+    rejected on replay -- zero provider calls, zero calculator calls,
+    zero new evidence, zero report, the original row left completely
+    unchanged, outbox FAILED_RETRYABLE under the sanitized
+    MANIFEST_INTEGRITY_VIOLATION code."""
+
+    def test_legacy_manifest_replay_fails_closed(self, client, pg_conn, unique_user_id, monkeypatch):
+        from psycopg.types.json import Jsonb
+        from services.market_hours import ET
+        from services.postmortem import price_path_acquisition, price_path_store
+
+        monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
+        trade_id = _open_and_close(client, pg_conn, unique_user_id)
+        entry_ts, exit_ts = pg_conn.execute(
+            "SELECT opened_at, closed_at FROM paper_trades WHERE id = %s", (trade_id,)
+        ).fetchone()
+        entry_date = entry_ts.astimezone(ET).date()
+
+        def _bars_in_window(*a, **k):
+            return [{"date": entry_date, "open": 100.0, "high": 108.0, "low": 99.0, "close": 101.0,
+                      "volume": 500, "adj_close": None, "dividend": 0.0}]
+
+        bundle = price_path_acquisition.acquire_price_path_evidence(
+            paper_trade_id=trade_id, user_id=unique_user_id, symbol="AAPL", market="US",
+            market_timezone_name="America/New_York", market_tzinfo=ET,
+            entry_timestamp=entry_ts, exit_timestamp=exit_ts,
+            fetch_bars_fn=_bars_in_window, fetch_splits_fn=_fake_none, fetch_dividends_fn=_fake_none,
+        )
+        price_path_store.persist_evidence(pg_conn, bundle)
+
+        # Corrupt the persisted manifest down to a legacy (pre-Stage-J-F3)
+        # shape -- DELETE + re-INSERT, since this table is immutable.
+        with pg_conn.cursor() as cur:
+            cur.execute("SELECT * FROM paper_trade_price_path_evidence WHERE paper_trade_id = %s", (trade_id,))
+            columns = [d.name for d in cur.description]
+            row = dict(zip(columns, cur.fetchone()))
+        row["source_manifest"] = {
+            "source_id": "yfinance_daily", "source_type": "EXTERNAL_UNOFFICIAL_DAILY",
+            "provider": "yfinance", "auto_adjust": False,
+        }  # legacy shape -- missing manifest_integrity_hash and every Stage J-F3 field
+        insert_columns = [c for c in columns if c not in ("id", "created_at")]
+        values = tuple(Jsonb(row[c]) if isinstance(row[c], (dict, list)) else row[c] for c in insert_columns)
+        pg_conn.execute("DELETE FROM paper_trade_price_path_evidence WHERE paper_trade_id = %s", (trade_id,))
+        pg_conn.execute(
+            f"INSERT INTO paper_trade_price_path_evidence ({', '.join(insert_columns)}) "
+            f"VALUES ({', '.join('%s' for _ in insert_columns)})",
+            values,
+        )
+
+        def _raises(*a, **k):
+            raise AssertionError("provider must not be called on a manifest-integrity-failed replay")
+
+        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _raises)
+        monkeypatch.setattr(price_path_acquisition, "fetch_split_events", _raises)
+        monkeypatch.setattr(price_path_acquisition, "fetch_dividend_events", _raises)
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+
+        resp = _generate(client, unique_user_id, trade_id)
+        assert resp.status_code == 200
+        assert resp.json()["price_path_generation_status"] == "PRICE_PATH_FAILED_RETRYABLE"
+
+        evidence_count, stored_manifest = pg_conn.execute(
+            "SELECT count(*) OVER (), max(source_manifest::text) FROM paper_trade_price_path_evidence "
+            "WHERE paper_trade_id = %s", (trade_id,)
+        ).fetchone()
+        assert evidence_count == 1  # never repaired, never duplicated
+
+        report_count = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        assert report_count == 0
+
+        outbox_status, error_code = pg_conn.execute(
+            "SELECT status, last_error_code FROM paper_trade_postmortem_outbox "
+            "WHERE paper_trade_id = %s AND requested_report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()
+        assert outbox_status == "FAILED_RETRYABLE"
+        assert error_code == "MANIFEST_INTEGRITY_VIOLATION"
