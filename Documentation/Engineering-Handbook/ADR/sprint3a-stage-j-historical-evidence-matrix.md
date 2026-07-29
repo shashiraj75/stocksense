@@ -399,3 +399,96 @@ matrix.
 - Source-manifest field persistence, explicit window-contamination
   traceability, and the full 40-scenario table remain out of scope for
   this bounded J1B phase, as before.
+
+## Stage J1B-Final-Reconciliation (this pass)
+
+Corrects two internal contradictions in the prior pass's own claims:
+
+1. **`ProviderFailurePolicy` reduced to exactly three load-bearing
+   fields**: `evidence_status`, `immediate_outbox_outcome`,
+   `sanitized_error_code`. The prior pass claimed "every field here is
+   read and enforced by the live path" while `evidence_fresh_
+   persistence_permitted`, `report_permitted`, and `limitations` were
+   never actually read anywhere — a caught `PriceProviderAcquisitionError`
+   has, by construction, no validated bundle at all for EVERY current
+   code, so "no evidence, no report" is a property of the exception path
+   itself, not a per-code policy decision worth its own fields.
+   `evidence_status` drives sanitized **logging** only (a `log.warning`
+   call); it does **not** drive `last_error_code` — `sanitized_error_code`
+   alone is what `mark_retryable_failure`/`mark_terminal_failure` persist.
+
+2. **`INVALID_SOURCE_DATA` removed from `_DATA_COMPLETENESS_TO_EVIDENCE_
+   STATUS`** — it was never a real acquired-bundle producer (confirmed
+   twice now, this pass by direct grep of `price_path_acquisition.py`: no
+   assignment of `STATUS_INVALID_SOURCE_DATA` exists anywhere), so mapping
+   it as an active classification target implied a live producer that
+   doesn't exist — itself a form of fabrication. A persisted row somehow
+   containing that legacy value now correctly falls through to the same
+   `UNSUPPORTED_EVIDENCE_COMPLETENESS` fail-closed branch as any other
+   unrecognized value. `classify_acquired_evidence` can no longer return
+   `SOURCE_INVALID` for any input (proven by
+   `test_never_returns_source_invalid_for_any_input`, 8 parameterized
+   values). `SOURCE_INVALID` remains fully real via its one genuine
+   trigger: `ProviderFailurePolicy` for a caught
+   `PROVIDER_UNEXPECTED_COLUMN_SHAPE` exception.
+
+3. **Explicit integrity branch now tested** — both a fake-conn regression
+   test (`TestContradictoryReplayStateFailsClosed`) and a real-PostgreSQL
+   HTTP-endpoint test
+   (`TestContradictoryReplayStateFailsClosedThroughRealEndpoint`) force
+   `classify_replay_or_acquisition` to claim `COMPATIBLE_REPLAY` while no
+   compatible evidence genuinely exists, proving: zero provider calls,
+   zero evidence rows, zero reports, outbox settles `FAILED_RETRYABLE`
+   with `last_error_code = INTERNAL_INTEGRITY_VIOLATION`. Test-only forced
+   contradiction injection via monkeypatch — production logic was not
+   altered to make this naturally reachable.
+
+4. **Stale-claimant rollback test now uses a genuine second connection**
+   — the prior pass's test queried only through `pg_conn` while its own
+   docstring claimed independent second-connection visibility, a real
+   inconsistency between claim and implementation. Fixed:
+   `psycopg.connect(pg_database_url, autocommit=True)` opens a truly
+   independent connection after the forced `StaleLeaseError`, and asserts
+   report count, supersession count, and outbox `claimed_by`/`status`
+   from it.
+
+5. **Calculator-gating coverage completed** for `UNSUPPORTED_EVIDENCE_
+   COMPLETENESS` and `SOURCE_INVALID` via forced test-only quality
+   decisions (`test_unsupported_completeness_never_invokes_the_calculator`,
+   `test_source_invalid_never_invokes_the_calculator`) — both spy directly
+   on `compute_excursion`/`detect_touches`/`classify_touch_order` and
+   assert zero calls, rather than inferring this from control-flow review.
+
+6. **Fresh-acquisition test's loose `status in ("COMPLETE",
+   "LIMITED_EVIDENCE")` replaced with the exact expected value**
+   (`LIMITED_EVIDENCE` — deterministic given `_open_and_close`'s manual
+   Buy has no entry snapshot). **Report-replay test strengthened** with
+   explicit provider-fail patching, structured-content byte-for-byte
+   comparison, and an explicit check that no new acquisition-decision
+   block was fabricated for the replayed call.
+
+### Real-PG collection: 152 (up from 151)
+
+New this pass: `TestContradictoryReplayStateFailsClosedThroughRealEndpoint`.
+
+### Updated J1B traceability (exact test names)
+
+| Requirement | Test | Type | PG15/17 |
+|---|---|---|---|
+| ProviderFailurePolicy has exactly 3 fields | `test_policy_has_exactly_three_load_bearing_fields` | unit | n/a |
+| INVALID_SOURCE_DATA never returned by classify_acquired_evidence | `test_never_returns_source_invalid_for_any_input` (8 params) | unit | n/a |
+| Legacy INVALID_SOURCE_DATA value fails closed | `test_legacy_invalid_source_data_value_falls_through_to_unsupported` | unit | n/a |
+| Integrity violation fails closed (forced) | `TestContradictoryReplayStateFailsClosed` | regression | n/a |
+| Integrity violation fails closed (forced, real endpoint) | `TestContradictoryReplayStateFailsClosedThroughRealEndpoint` | real-PG | pass/pass |
+| UNSUPPORTED completeness never calls calculator (forced) | `test_unsupported_completeness_never_invokes_the_calculator` | regression | n/a |
+| SOURCE_INVALID never calls calculator (forced) | `test_source_invalid_never_invokes_the_calculator` | regression | n/a |
+| Stale-claimant rollback, genuine second connection | `test_stale_claimant_report_insert_rolls_back_atomically` | real-PG | pass/pass |
+| Fresh acquisition exact outbox status | `TestFreshAcquisitionProvenanceThroughRealEndpoint` | real-PG | pass/pass |
+| Report replay: no fabricated provenance, provider-fail patched | `test_existing_report_never_fabricates_new_provenance` | real-PG | pass/pass |
+
+### Still open
+
+Source-manifest field persistence, explicit window-contamination
+traceability, `AMBIGUOUS_RESOLUTION`'s same-day/boundary trigger (only the
+split trigger is wired), full 40-scenario table — unchanged from prior
+passes, out of scope for J1B.
