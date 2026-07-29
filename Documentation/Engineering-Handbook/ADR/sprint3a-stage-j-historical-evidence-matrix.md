@@ -170,3 +170,87 @@ that have a real, grounded live signal:
   explicit limitation, atomic limited-report+terminal-outbox settlement as
   its own dedicated named test (currently proven only implicitly via the
   evidence-replay test's own outbox/report status equality assertion).
+
+## Stage J1B-Fail-Closed-Hardening (this pass)
+
+Corrects six confirmed defects in the prior pass's J1B integration:
+
+1. **Unknown data_completeness fell through to COMPLETE.** Fixed:
+   `classify_acquired_evidence` now checks the known-value dict FIRST and
+   returns a new `UNSUPPORTED_EVIDENCE_COMPLETENESS` status
+   (`calculation_status=CALCULATION_UNAVAILABLE`,
+   `persistence_permitted=False`, ceiling `LIMITED_EVIDENCE`) for anything
+   not in the exhaustive known set — `None`, `""`, a typo, a future value.
+   Exhaustively parameterized tests in `test_price_path_evidence_decision.py::
+   TestFailClosedOnUnsupportedCompleteness`.
+
+2. **Acquisition provenance and evidence quality were one conflated
+   object**, so a replayed report's `provider_call_expected` could read
+   `True`. Split into two separate dataclasses:
+   `HistoricalEvidenceAcquisitionDecision` (WHERE evidence came from —
+   `acquisition_status`, `provider_call_expected`,
+   `compatible_evidence_found`, `evidence_id`) and
+   `HistoricalEvidenceQualityDecision` (WHETHER it's usable —
+   `evidence_status`, `calculation_status`, `persistence_permitted`,
+   `report_completeness_ceiling`). Acquisition is decided ONCE, before
+   anything about quality is known, and never revised afterward. Both are
+   persisted as separate `structured_report["price_path"]` blocks —
+   `acquisition_decision` and `evidence_quality_decision`.
+
+3. **`calculation_status` didn't gate calculator invocation** —
+   `build_price_path_report_payload` (which calls `compute_excursion`/
+   `detect_touches`/`classify_touch_order`) ran regardless. Fixed: the
+   live path now branches on `quality_decision.calculation_status` —
+   `CALCULATION_ELIGIBLE` calls the real payload builder;
+   `CALCULATION_UNAVAILABLE` calls a new `build_unavailable_report_payload`
+   that never touches the calculator and sets every analytic field to
+   `None` explicitly (never a fabricated zero).
+
+4. **Fresh bundles were persisted before quality classification**, so
+   `SOURCE_INVALID` couldn't prevent persistence. Fixed: the live path now
+   classifies (`classify_acquired_evidence`) BEFORE the
+   `persist_price_path_evidence` call, and only persists when
+   `quality_decision.persistence_permitted` is `True`. Decided explicitly
+   per state: `SOURCE_UNAVAILABLE` (zero-bar, honest manifest, never
+   fabricated bars) → persistence permitted; `SOURCE_INVALID` and
+   `UNSUPPORTED_EVIDENCE_COMPLETENESS` → never persisted.
+
+5. **`classify_provider_failure`'s result only reached a log line** — the
+   actual `mark_retryable_failure` call was unconditional and hard-coded
+   right next to it. Fixed: a new typed `ProviderFailurePolicy` (per error
+   code: `retry_permitted`, `terminal_permitted`,
+   `evidence_persistence_permitted`, `report_permitted`,
+   `sanitized_error_code`) via `get_provider_failure_policy` is now what
+   the live path branches on to choose `mark_retryable_failure` vs
+   `mark_terminal_failure`. All three known codes currently resolve
+   `retry_permitted=True` (unchanged observable behavior — the outbox's
+   own attempt-limit already bounds a permanent failure), but the OUTCOME
+   now genuinely comes from the policy, not a separate hard-coded action.
+   An unrecognized code fails closed via a documented default policy
+   (never permits persistence or a report).
+
+6. **`PRICE_BASIS_INCOMPATIBLE` had no grounded live signal.** Per Stage
+   6's own instruction ("if no grounded distinction is currently
+   possible, remove from the active runtime enum, retain only as
+   documented future scope"): removed as a value any live function can
+   return. Kept as `PRICE_BASIS_INCOMPATIBLE_FUTURE_SCOPE`, documented,
+   unreferenced by any branch — a future acquisition-layer signal
+   (a persisted, provider-derived basis-compatibility field) can adopt it
+   without a rename. Unknown/incompatible basis today still fails closed
+   through `AMBIGUOUS_RESOLUTION` (the split-in-window case) or
+   `UNSUPPORTED_EVIDENCE_COMPLETENESS` (anything genuinely unrecognized) —
+   never silently `COMPLETE`.
+
+### Still open after this pass
+
+- `AMBIGUOUS_RESOLUTION`'s same-day/boundary-ambiguity trigger (as
+  opposed to the split-in-window trigger, which is wired) has no live
+  signal yet.
+- Source-manifest field persistence (normalization version, source scope
+  as named report fields).
+- Explicit window-contamination traceability under a Stage J test name.
+- Full 40-scenario requirement-to-test traceability table.
+- Remaining Stage J10 real-PG scenarios not yet added this pass:
+  malformed-provider-response policy-driven outcome as its own dedicated
+  test (currently only unit-tested via `ProviderFailurePolicy`), invalid
+  exit snapshot with an explicit limitation.
