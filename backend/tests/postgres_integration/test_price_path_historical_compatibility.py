@@ -251,15 +251,30 @@ class TestTrueEvidenceReplayWithoutAnyReport:
         ).fetchone()
 
         # Build one real evidence bundle via the actual acquisition
-        # function (using the fake bars/splits/dividends already active
-        # for this file) and persist it directly -- simulating evidence
-        # that was captured by a prior attempt, independent of any
-        # report ever being constructed from it.
+        # function and persist it directly -- simulating evidence that
+        # was captured by a prior attempt, independent of any report
+        # ever being constructed from it. Bars must be dated within the
+        # REAL entry/exit window (module-level _fake_bars is hardcoded
+        # to 2026-06-02/03 and would be filtered out entirely by
+        # build_price_path_evidence's own entry_date/exit_date bounds
+        # check, silently downgrading the bundle to SOURCE_UNAVAILABLE
+        # -- caught by real PG CI when the calculation_status assertion
+        # below was added).
+        entry_date, exit_date = entry_ts.astimezone(ET).date(), exit_ts.astimezone(ET).date()
+
+        def _bars_in_window(*a, **k):
+            return [
+                {"date": entry_date, "open": 100.0, "high": 115.0, "low": 99.0, "close": 105.0,
+                 "volume": 500, "adj_close": None, "dividend": 0.0},
+                {"date": exit_date, "open": 105.0, "high": 112.0, "low": 90.0, "close": 95.0,
+                 "volume": 500, "adj_close": None, "dividend": 0.0},
+            ]
+
         bundle = price_path_acquisition.acquire_price_path_evidence(
             paper_trade_id=trade_id, user_id=unique_user_id, symbol="AAPL", market="US",
             market_timezone_name="America/New_York", market_tzinfo=ET,
             entry_timestamp=entry_ts, exit_timestamp=exit_ts,
-            fetch_bars_fn=_fake_bars, fetch_splits_fn=_fake_none, fetch_dividends_fn=_fake_none,
+            fetch_bars_fn=_bars_in_window, fetch_splits_fn=_fake_none, fetch_dividends_fn=_fake_none,
         )
         persisted_evidence, created = price_path_store.persist_evidence(pg_conn, bundle)
         assert created is True
