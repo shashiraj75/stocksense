@@ -1212,9 +1212,29 @@ class TestBoundaryTouchPersistedAmbiguous:
     (boundary touch in a different bar from the other touch) makes this
     genuinely BOUNDARY_BAR_AMBIGUOUS, distinct from a single-sided
     boundary touch (which stays a definitive TARGET_ONLY/STOP_ONLY, per
-    the existing unit tests -- not duplicated here)."""
+    the existing unit tests -- not duplicated here).
 
-    def test_boundary_and_interior_touch_on_different_bars_persists_ambiguous(
+    NOTE on level_history_complete: classify_touch_order's rule 1 is
+    "if not level_history_complete: return LEVEL_HISTORY_INCOMPLETE" --
+    the MOST restrictive rule, checked first. paper_trading.py's live
+    /generate call site hardcodes level_history_complete=False for
+    every real trade today (this codebase's own honest, documented
+    finding: it cannot yet prove full stop/target edit history for any
+    real trade) -- so LEVEL_HISTORY_INCOMPLETE always wins over
+    BOUNDARY_BAR_AMBIGUOUS through the live endpoint's CURRENT call
+    site, regardless of the actual touch pattern. That is real,
+    verified production behavior, not a test bug -- confirmed by CI
+    failure when this test first asserted BOUNDARY_BAR_AMBIGUOUS
+    through /generate directly. Proving the ambiguity classifier itself
+    against genuine PostgreSQL-persisted evidence (acquired and stored
+    through the real endpoint) is therefore done by loading that same
+    persisted evidence back via price_path_store and calling
+    build_price_path_report_payload directly with
+    level_history_complete=True -- still fully grounded in real PG
+    data, just not routed through the live endpoint's own current,
+    deliberately conservative level-history stance."""
+
+    def test_boundary_and_interior_touch_on_different_bars_is_ambiguous(
         self, client, pg_conn, unique_user_id, monkeypatch,
     ):
         monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
@@ -1240,7 +1260,7 @@ class TestBoundaryTouchPersistedAmbiguous:
                  "volume": 500, "adj_close": None, "dividend": 0.0},  # exit boundary bar
             ]
 
-        from services.postmortem import price_path_acquisition
+        from services.postmortem import price_path_acquisition, price_path_generation, price_path_store
         monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _boundary_and_interior_bars)
         monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
 
@@ -1248,22 +1268,43 @@ class TestBoundaryTouchPersistedAmbiguous:
         assert resp.status_code == 200
         assert resp.json()["price_path_generation_status"] == "PRICE_PATH_GENERATED"
 
-        structured_report, status = pg_conn.execute(
-            "SELECT structured_report, status FROM paper_trade_postmortem_report "
+        # Confirm the live endpoint's own honest, current stance first.
+        structured_report = pg_conn.execute(
+            "SELECT structured_report FROM paper_trade_postmortem_report "
             "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
-        ).fetchone()
-        assert structured_report["price_path"]["touch_order"] == "BOUNDARY_BAR_AMBIGUOUS"
-        assert status == "LIMITED_EVIDENCE"
+        ).fetchone()[0]
+        assert structured_report["price_path"]["touch_order"] == "LEVEL_HISTORY_INCOMPLETE"
+
+        evidence = price_path_store.get_current_evidence(
+            pg_conn, paper_trade_id=trade_id, user_id=unique_user_id,
+            evidence_bundle_version="1.0.0", source_id="yfinance_daily", source_version="1.0.0",
+        )
+        assert evidence is not None
+        payload = price_path_generation.build_price_path_report_payload(
+            evidence, entry_price=100.0, exit_price=101.0, applicable_stop=90.0, applicable_target=120.0,
+            level_history_complete=True, trade_id=trade_id,
+        )
+        assert payload.price_path_section["touch_order"] == "BOUNDARY_BAR_AMBIGUOUS"
+        assert payload.status == "LIMITED_EVIDENCE"
 
 
 @pytest.mark.timeout(30)
 class TestBothSameBarPersistedAmbiguous:
     """Stage J Final-Closure-Correction, Stage 6 item 3 -- stop and target
     both touched within one INTERIOR daily bar -- BOTH_SAME_BAR_AMBIGUOUS,
-    persisted through the real endpoint, with independently valid MFE/MAE
-    still populated (excursion is computed independently of touch order)."""
+    against genuine PostgreSQL-persisted evidence, with independently
+    valid MFE/MAE still populated (excursion is computed independently
+    of touch order).
 
-    def test_both_same_interior_bar_persists_ambiguous_with_excursion_populated(
+    Same level_history_complete note as TestBoundaryTouchPersistedAmbiguous
+    above -- the live endpoint's own current, honest, hardcoded
+    level_history_complete=False means LEVEL_HISTORY_INCOMPLETE always
+    wins through /generate directly (confirmed by real CI failure when
+    this test first asserted BOTH_SAME_BAR_AMBIGUOUS through /generate);
+    the ambiguity classifier is proven directly against the real
+    persisted evidence instead."""
+
+    def test_both_same_interior_bar_is_ambiguous_with_excursion_populated(
         self, client, pg_conn, unique_user_id, monkeypatch,
     ):
         monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
@@ -1286,7 +1327,7 @@ class TestBothSameBarPersistedAmbiguous:
                  "volume": 500, "adj_close": None, "dividend": 0.0},
             ]
 
-        from services.postmortem import price_path_acquisition
+        from services.postmortem import price_path_acquisition, price_path_generation, price_path_store
         monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _both_same_bar)
         monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
 
@@ -1294,13 +1335,24 @@ class TestBothSameBarPersistedAmbiguous:
         assert resp.status_code == 200
         assert resp.json()["price_path_generation_status"] == "PRICE_PATH_GENERATED"
 
-        structured_report, status = pg_conn.execute(
-            "SELECT structured_report, status FROM paper_trade_postmortem_report "
+        structured_report = pg_conn.execute(
+            "SELECT structured_report FROM paper_trade_postmortem_report "
             "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
-        ).fetchone()
-        section = structured_report["price_path"]
+        ).fetchone()[0]
+        assert structured_report["price_path"]["touch_order"] == "LEVEL_HISTORY_INCOMPLETE"
+
+        evidence = price_path_store.get_current_evidence(
+            pg_conn, paper_trade_id=trade_id, user_id=unique_user_id,
+            evidence_bundle_version="1.0.0", source_id="yfinance_daily", source_version="1.0.0",
+        )
+        assert evidence is not None
+        payload = price_path_generation.build_price_path_report_payload(
+            evidence, entry_price=100.0, exit_price=100.0, applicable_stop=90.0, applicable_target=120.0,
+            level_history_complete=True, trade_id=trade_id,
+        )
+        section = payload.price_path_section
         assert section["touch_order"] == "BOTH_SAME_BAR_AMBIGUOUS"
-        assert status == "LIMITED_EVIDENCE"
+        assert payload.status == "LIMITED_EVIDENCE"
         assert section["mfe_abs"] == pytest.approx(25.0)  # interior high 125 - entry 100
         assert section["mae_signed_abs"] == pytest.approx(-15.0)  # interior low 85 - entry 100
 
@@ -1322,11 +1374,18 @@ class TestInvalidExitSnapshotThroughRealEndpoint:
         monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
         trade_id = _open_and_close(client, pg_conn, unique_user_id)
 
+        # Market mismatch (not a trade_id substitution -- a trade_id
+        # substitution makes _fetch_exit_snapshot(trade_id) return None,
+        # which is MISSING, not PRESENT_INVALID; mirrors the working
+        # entry-snapshot pattern in TestMissingSnapshotCapsReportAt
+        # LimitedEvidence above) -- the row is still found BY trade_id,
+        # but fails market-equality validation, producing a genuine
+        # PRESENT_INVALID (EXIT_CONTEXT_INVALID) classification.
         with pg_conn.cursor() as cur:
             cur.execute("SELECT * FROM paper_trade_exit_snapshot WHERE paper_trade_id = %s", (trade_id,))
             columns = [d.name for d in cur.description]
             row = dict(zip(columns, cur.fetchone()))
-        row["paper_trade_id"] = row["paper_trade_id"] + 1_000_000_000  # belongs to a different (nonexistent) trade now
+        row["market"] = "IN" if row["market"] == "US" else "US"
         insert_columns = [c for c in columns if c not in ("id", "created_at")]
         values = tuple(Jsonb(row[c]) if isinstance(row[c], (dict, list)) else row[c] for c in insert_columns)
         pg_conn.execute("DELETE FROM paper_trade_exit_snapshot WHERE paper_trade_id = %s", (trade_id,))
@@ -1346,7 +1405,7 @@ class TestInvalidExitSnapshotThroughRealEndpoint:
         ).fetchone()
         assert status != "COMPLETE"
         assert status == "LIMITED_EVIDENCE"
-        assert any("exit" in g.lower() for g in evidence_gaps)
+        assert any("EXIT_CONTEXT_INVALID" in g or "exit" in g.lower() for g in evidence_gaps)
 
 
 @pytest.mark.timeout(30)

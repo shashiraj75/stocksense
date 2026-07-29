@@ -741,8 +741,8 @@ Six new dedicated real-PG scenarios, none duplicating an existing proof:
 | Requirement | Test |
 |---|---|
 | Persisted contamination exclusion (pre-entry/post-exit/current-date-outside-window bars all excluded) | `TestPersistedContaminationExclusion::test_only_in_window_bars_are_persisted` |
-| Boundary + interior touch on different bars → BOUNDARY_BAR_AMBIGUOUS, LIMITED_EVIDENCE | `TestBoundaryTouchPersistedAmbiguous::test_boundary_and_interior_touch_on_different_bars_persists_ambiguous` |
-| Both stop/target in one interior bar → BOTH_SAME_BAR_AMBIGUOUS, LIMITED_EVIDENCE, MFE/MAE still populated | `TestBothSameBarPersistedAmbiguous::test_both_same_interior_bar_persists_ambiguous_with_excursion_populated` |
+| Boundary + interior touch on different bars → BOUNDARY_BAR_AMBIGUOUS, LIMITED_EVIDENCE | `TestBoundaryTouchPersistedAmbiguous::test_boundary_and_interior_touch_on_different_bars_is_ambiguous` |
+| Both stop/target in one interior bar → BOTH_SAME_BAR_AMBIGUOUS, LIMITED_EVIDENCE, MFE/MAE still populated | `TestBothSameBarPersistedAmbiguous::test_both_same_interior_bar_is_ambiguous_with_excursion_populated` |
 | Invalid (present-but-wrong-trade) exit snapshot caps report, never fabricates exit rationale | `TestInvalidExitSnapshotThroughRealEndpoint::test_invalid_exit_snapshot_caps_report_and_never_fabricates_rationale` |
 | Manifest hash verifies from real JSONB; tampered copy fails | `TestFinalManifestIntegrityThroughRealPostgres::test_manifest_hash_verifies_from_real_jsonb_and_tamper_fails` |
 | No-bars: persisted `limitations` column == persisted `source_manifest.unresolved_basis_limitations` exactly | `TestNoBarsManifestConsistencyThroughRealPostgres::test_persisted_limitations_and_manifest_match` |
@@ -751,6 +751,26 @@ Six new dedicated real-PG scenarios, none duplicating an existing proof:
 `UPDATE` for the boundary/both-same-bar/contamination tests — unlike the
 snapshot/evidence/report tables, `paper_trades` carries no immutability
 trigger, confirmed before use.
+
+**Real finding from this pass's own CI run** (not a pre-existing known
+limitation, a genuinely NEW fact discovered while writing these tests):
+`BOUNDARY_BAR_AMBIGUOUS` and `BOTH_SAME_BAR_AMBIGUOUS` cannot actually be
+produced by the live `/generate` endpoint for ANY real trade today.
+`classify_touch_order`'s rule 1 ("if not level_history_complete: return
+LEVEL_HISTORY_INCOMPLETE") is checked FIRST, and
+`paper_trading.py`'s live call site hardcodes
+`level_history_complete=False` for every real trade (this codebase's own
+honest finding: it cannot yet prove full stop/target edit history for
+any real trade). The first version of these two tests asserted the
+ambiguity value directly through `/generate` and failed real CI with
+`LEVEL_HISTORY_INCOMPLETE` instead — confirming this is real production
+behavior, not a test bug. Both tests now acquire and persist evidence
+through the real endpoint (still genuine PostgreSQL round-trip), then
+call `build_price_path_report_payload` directly against that persisted
+evidence with `level_history_complete=True` to prove the ambiguity
+classifier itself, while separately asserting the live endpoint's own
+current `LEVEL_HISTORY_INCOMPLETE` behavior is exactly what it claims to
+be.
 
 ### Real-PG collection: 163 (up from 157)
 
