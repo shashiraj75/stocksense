@@ -284,7 +284,7 @@ class TestReportSupersession:
                 "UPDATE paper_trade_postmortem_report SET status = 'FAILED_TERMINAL' WHERE id = %s", (prior.id,)
             )
 
-    def test_stale_claimant_report_insert_rolls_back_atomically(self, client, pg_conn, unique_user_id):
+    def test_stale_claimant_report_insert_rolls_back_atomically(self, client, pg_conn, pg_database_url, unique_user_id):
         """Stage J1B-Real-PG-Assurance, Stage 5F -- a genuine forced
         stale-claimant condition (not merely a description of the
         transaction structure): a real outbox row is claimed, then its
@@ -351,10 +351,9 @@ class TestReportSupersession:
                     source_version="1.0.0", outbox_id=outbox_id, claimed_by=stale_claimant,
                 )
 
-        # No partial settlement -- verified from THIS connection (the
-        # transaction rollback is synchronous) and from the outbox row's
-        # own claimed_by, which must still read the fresh claimant, never
-        # overwritten by the stale attempt's failed insert.
+        # No partial settlement -- verified from THIS connection first
+        # (the transaction rollback is synchronous, so this alone would
+        # already prove it under autocommit)...
         report_count_after = pg_conn.execute(
             "SELECT count(*) FROM paper_trade_postmortem_report WHERE paper_trade_id = %s", (trade_id,)
         ).fetchone()[0]
@@ -364,6 +363,28 @@ class TestReportSupersession:
             "SELECT claimed_by FROM paper_trade_postmortem_outbox WHERE id = %s", (outbox_id,)
         ).fetchone()[0]
         assert outbox_claimed_by == fresh_claimant  # never overwritten by the stale attempt
+
+        # ...and independently reconfirmed from a GENUINE second
+        # connection (Stage J1B-Final-Reconciliation, Stage 4) -- proving
+        # the rollback is durably visible across connections, not merely
+        # an artifact of re-querying the same session that ran it.
+        with psycopg.connect(pg_database_url, autocommit=True) as second_conn:
+            report_count_second_conn = second_conn.execute(
+                "SELECT count(*) FROM paper_trade_postmortem_report WHERE paper_trade_id = %s", (trade_id,)
+            ).fetchone()[0]
+            assert report_count_second_conn == report_count_before
+
+            supersession_count = second_conn.execute(
+                "SELECT count(*) FROM paper_trade_postmortem_report "
+                "WHERE paper_trade_id = %s AND supersedes_report_id = %s", (trade_id, prior.id),
+            ).fetchone()[0]
+            assert supersession_count == 0  # no supersession row from the rolled-back attempt
+
+            outbox_row_second_conn = second_conn.execute(
+                "SELECT claimed_by, status FROM paper_trade_postmortem_outbox WHERE id = %s", (outbox_id,)
+            ).fetchone()
+            assert outbox_row_second_conn[0] == fresh_claimant  # never overwritten by the stale attempt
+            assert outbox_row_second_conn[1] == "GENERATING"  # not terminally settled by the stale attempt
 
 
 @pytest.mark.timeout(30)

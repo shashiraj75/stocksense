@@ -325,6 +325,64 @@ class TestSuccessfulGenerationAndIdempotentReplay:
         assert status == ptr.PRICE_PATH_GENERATED
         assert report is not None
 
+    def test_unsupported_completeness_never_invokes_the_calculator(self):
+        """Stage J1B-Final-Reconciliation, Stage 5 -- forced test-only
+        quality decision (never a naturally reachable acquired-bundle
+        state via the real fetch functions): proves the live path's
+        no-report policy for UNSUPPORTED_EVIDENCE_COMPLETENESS holds
+        even where the calculator COULD have been reached, not merely
+        inferred from control-flow review."""
+        from unittest.mock import patch
+        from services.postmortem import price_path_evidence_decision as pped
+        shared = _new_shared([{}])
+        forced = pped.HistoricalEvidenceQualityDecision(
+            evidence_status=pped.UNSUPPORTED_EVIDENCE_COMPLETENESS, calculation_status=pped.CALCULATION_UNAVAILABLE,
+            fresh_persistence_permitted=False, report_completeness_ceiling="LIMITED_EVIDENCE",
+        )
+        with patch.object(pped, "classify_acquired_evidence", return_value=forced), \
+             patch("services.postmortem.price_path_generation.compute_excursion") as spy_excursion, \
+             patch("services.postmortem.price_path_generation.detect_touches") as spy_touches, \
+             patch("services.postmortem.price_path_generation.classify_touch_order") as spy_order:
+            report, status = _attempt(
+                shared, fetch_bars_fn=lambda *a: _fake_bars(), fetch_splits_fn=lambda *a: [], fetch_dividends_fn=lambda *a: [],
+            )
+            spy_excursion.assert_not_called()
+            spy_touches.assert_not_called()
+            spy_order.assert_not_called()
+        import api.routers.paper_trading as ptr
+        assert report is None
+        assert status == ptr.PRICE_PATH_FAILED_RETRYABLE
+        assert shared["evidence_rows"] == {}
+        assert len(shared["report_rows"]) == 1  # only the seeded Sprint 2 report
+
+    def test_source_invalid_never_invokes_the_calculator(self):
+        """SOURCE_INVALID has no live acquired-bundle producer (see
+        price_path_evidence_decision's own module docstring), but the
+        live path's defensive no-report handling for it is still
+        directly proven here via a forced quality decision."""
+        from unittest.mock import patch
+        from services.postmortem import price_path_evidence_decision as pped
+        shared = _new_shared([{}])
+        forced = pped.HistoricalEvidenceQualityDecision(
+            evidence_status=pped.SOURCE_INVALID, calculation_status=pped.CALCULATION_UNAVAILABLE,
+            fresh_persistence_permitted=False, report_completeness_ceiling="LIMITED_EVIDENCE",
+        )
+        with patch.object(pped, "classify_acquired_evidence", return_value=forced), \
+             patch("services.postmortem.price_path_generation.compute_excursion") as spy_excursion, \
+             patch("services.postmortem.price_path_generation.detect_touches") as spy_touches, \
+             patch("services.postmortem.price_path_generation.classify_touch_order") as spy_order:
+            report, status = _attempt(
+                shared, fetch_bars_fn=lambda *a: _fake_bars(), fetch_splits_fn=lambda *a: [], fetch_dividends_fn=lambda *a: [],
+            )
+            spy_excursion.assert_not_called()
+            spy_touches.assert_not_called()
+            spy_order.assert_not_called()
+        import api.routers.paper_trading as ptr
+        assert report is None
+        assert status == ptr.PRICE_PATH_FAILED_RETRYABLE
+        assert shared["evidence_rows"] == {}
+        assert len(shared["report_rows"]) == 1
+
     def test_second_call_is_idempotent_no_second_provider_call(self):
         shared = _new_shared([{}])
         calls = {"n": 0}
@@ -495,3 +553,38 @@ class TestHistoricalEligibilityGating:
         import api.routers.paper_trading as ptr
         assert status == ptr.PRICE_PATH_GENERATED
         assert report is not None
+
+
+@pytest.mark.regression
+class TestContradictoryReplayStateFailsClosed:
+    """Stage J1B-Final-Reconciliation, Stage 3 -- deterministic test-only
+    forced contradiction injection (never altering production logic to
+    make this naturally reachable): classify_replay_or_acquisition is
+    monkeypatched to claim COMPATIBLE_REPLAY while no compatible evidence
+    is actually seeded, proving the explicit fail-closed branch that
+    replaced the old `assert evidence is not None`."""
+
+    def test_forced_contradiction_settles_retryable_with_no_side_effects(self):
+        from unittest.mock import patch
+        from services.postmortem import price_path_evidence_decision
+
+        shared = _new_shared([{}])  # no evidence_rows seeded -- ctx.compatible_evidence is genuinely None
+
+        def _raises(*a, **k):
+            raise AssertionError("provider must not be called on the integrity-violation path")
+
+        fake_acquisition = price_path_evidence_decision.HistoricalEvidenceAcquisitionDecision(
+            acquisition_status=price_path_evidence_decision.COMPATIBLE_REPLAY,
+            provider_call_expected=False, compatible_evidence_found=True, evidence_id=999999,
+        )
+        with patch.object(price_path_evidence_decision, "classify_replay_or_acquisition", return_value=fake_acquisition):
+            report, status = _attempt(shared, fetch_bars_fn=_raises, fetch_splits_fn=_raises, fetch_dividends_fn=_raises)
+
+        import api.routers.paper_trading as ptr
+        assert report is None
+        assert status == ptr.PRICE_PATH_FAILED_RETRYABLE
+        assert len(shared["report_rows"]) == 1  # only the seeded Sprint 2 report -- no price-path report added
+        assert shared["evidence_rows"] == {}
+        outbox_row = list(shared["outbox_rows"].values())[0]
+        assert outbox_row["status"] == "FAILED_RETRYABLE"
+        assert outbox_row["last_error_code"] == price_path_evidence_decision.INTERNAL_INTEGRITY_VIOLATION

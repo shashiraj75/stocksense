@@ -628,7 +628,13 @@ class TestFreshAcquisitionProvenanceThroughRealEndpoint:
             "SELECT status FROM paper_trade_postmortem_outbox "
             "WHERE paper_trade_id = %s AND requested_report_schema_version = '1.1.0'", (trade_id,)
         ).fetchone()[0]
-        assert outbox_status in ("COMPLETE", "LIMITED_EVIDENCE")  # a settled terminal status, not GENERATING
+        # Stage J1B-Final-Reconciliation, Stage 6 -- the exact expected
+        # value, not a loose either-or: _open_and_close's manual /buy has
+        # no entry snapshot, so the real Sprint 2 prior report is
+        # deterministically LIMITED_EVIDENCE, and compute_report_
+        # completeness_ceiling's minimum-of-all-ceilings composition means
+        # the price-path report (and its outbox settlement) must be too.
+        assert outbox_status == "LIMITED_EVIDENCE"
 
 
 @pytest.mark.timeout(30)
@@ -639,7 +645,7 @@ class TestReportReplaySeparationThroughRealEndpoint:
     TestTrueEvidenceReplayWithoutAnyReport), which still does construct
     a report from persisted evidence."""
 
-    def test_existing_report_never_fabricates_new_provenance(self, client, pg_conn, unique_user_id):
+    def test_existing_report_never_fabricates_new_provenance(self, client, pg_conn, unique_user_id, monkeypatch):
         trade_id = _open_and_close(client, pg_conn, unique_user_id)
         first = _generate(client, unique_user_id, trade_id)
         assert first.status_code == 200
@@ -652,6 +658,24 @@ class TestReportReplaySeparationThroughRealEndpoint:
             "SELECT attempt_count FROM paper_trade_postmortem_outbox "
             "WHERE paper_trade_id = %s AND requested_report_schema_version = '1.1.0'", (trade_id,)
         ).fetchone()[0]
+        structured_report_before = pg_conn.execute(
+            "SELECT structured_report FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+
+        # Stage 6 -- explicitly patch every provider function to fail the
+        # test if invoked, proving report replay never even reaches the
+        # evidence-lookup layer (distinct from evidence replay, which
+        # DOES look up persisted evidence but still never calls the
+        # provider).
+        from services.postmortem import price_path_acquisition
+
+        def _raises(*a, **k):
+            raise AssertionError("provider must not be called on a report-replay path")
+
+        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _raises)
+        monkeypatch.setattr(price_path_acquisition, "fetch_split_events", _raises)
+        monkeypatch.setattr(price_path_acquisition, "fetch_dividend_events", _raises)
 
         second = _generate(client, unique_user_id, trade_id)
         assert second.status_code == 200
@@ -665,9 +689,18 @@ class TestReportReplaySeparationThroughRealEndpoint:
             "SELECT attempt_count FROM paper_trade_postmortem_outbox "
             "WHERE paper_trade_id = %s AND requested_report_schema_version = '1.1.0'", (trade_id,)
         ).fetchone()[0]
+        structured_report_after = pg_conn.execute(
+            "SELECT structured_report FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
 
         assert report_count_after == report_count_before  # no new report row
         assert outbox_attempt_after == outbox_attempt_before  # no new claim attempt at all
+        assert structured_report_after == structured_report_before  # content byte-for-byte unchanged
+        # No new acquisition/quality decision block was fabricated for
+        # this second call -- the persisted block is exactly the one the
+        # FIRST (fresh-acquisition) call wrote.
+        assert structured_report_after["price_path"]["acquisition_decision"]["acquisition_status"] == "ACQUISITION_REQUIRED"
 
 
 @pytest.mark.timeout(30)
@@ -780,3 +813,65 @@ class TestTradeAndSnapshotImmutabilityAcrossPaths:
         assert trade_before == trade_after
         assert entry_before == entry_after
         assert exit_before == exit_after
+
+
+@pytest.mark.timeout(30)
+class TestContradictoryReplayStateFailsClosedThroughRealEndpoint:
+    """Stage J1B-Final-Reconciliation, Stage 3 -- real-PostgreSQL, real
+    HTTP-endpoint proof of the explicit fail-closed branch that replaced
+    the old `assert evidence is not None`. Test-only forced contradiction
+    injection via monkeypatch (never altering production logic to make
+    this naturally reachable): classify_replay_or_acquisition is patched
+    to claim COMPATIBLE_REPLAY while no compatible evidence row actually
+    exists in the database."""
+
+    def test_forced_contradiction_settles_retryable_with_zero_provider_calls(
+        self, client, pg_conn, unique_user_id, monkeypatch,
+    ):
+        from services.postmortem import price_path_acquisition, price_path_evidence_decision
+
+        monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
+        trade_id = _open_and_close(client, pg_conn, unique_user_id)
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+
+        evidence_count_before = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_price_path_evidence WHERE paper_trade_id = %s", (trade_id,)
+        ).fetchone()[0]
+        assert evidence_count_before == 0  # no compatible evidence genuinely exists
+
+        def _raises(*a, **k):
+            raise AssertionError("provider must not be called on the integrity-violation path")
+
+        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _raises)
+        monkeypatch.setattr(price_path_acquisition, "fetch_split_events", _raises)
+        monkeypatch.setattr(price_path_acquisition, "fetch_dividend_events", _raises)
+
+        fake_acquisition = price_path_evidence_decision.HistoricalEvidenceAcquisitionDecision(
+            acquisition_status=price_path_evidence_decision.COMPATIBLE_REPLAY,
+            provider_call_expected=False, compatible_evidence_found=True, evidence_id=999999,
+        )
+        monkeypatch.setattr(
+            price_path_evidence_decision, "classify_replay_or_acquisition", lambda **kw: fake_acquisition
+        )
+
+        resp = _generate(client, unique_user_id, trade_id)
+        assert resp.status_code == 200
+        assert resp.json()["price_path_generation_status"] == "PRICE_PATH_FAILED_RETRYABLE"
+
+        evidence_count_after = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_price_path_evidence WHERE paper_trade_id = %s", (trade_id,)
+        ).fetchone()[0]
+        assert evidence_count_after == 0
+
+        report_count = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        assert report_count == 0
+
+        outbox_status, error_code = pg_conn.execute(
+            "SELECT status, last_error_code FROM paper_trade_postmortem_outbox "
+            "WHERE paper_trade_id = %s AND requested_report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()
+        assert outbox_status == "FAILED_RETRYABLE"
+        assert error_code == "INTERNAL_INTEGRITY_VIOLATION"
