@@ -255,13 +255,38 @@ def build_touch_order_claim(
             "are known, so a full level-change history is not available to determine touch order."
         ),
     }
-    ambiguous = order in (BOTH_SAME_BAR_AMBIGUOUS, BOUNDARY_BAR_AMBIGUOUS, LEVEL_HISTORY_INCOMPLETE)
+
+    # BOUNDARY_BAR_AMBIGUOUS and LEVEL_HISTORY_INCOMPLETE are NOT two
+    # pieces of evidence actively contradicting each other (that is
+    # BOTH_SAME_BAR_AMBIGUOUS's own, genuinely different, case) — they
+    # are a single observation whose temporal attribution can't be
+    # trusted, or no observation at all (LEVEL_HISTORY_INCOMPLETE is
+    # returned regardless of whether either level was ever touched).
+    # evidence.py's own governance rule requires CONFLICTING_EVIDENCE
+    # claims to cite BOTH supporting and opposing evidence — neither
+    # case here has genuine opposing evidence, so mislabeling either as
+    # CONFLICTING_EVIDENCE would either violate that rule (when
+    # opposing is empty) or misrepresent a single ambiguous observation
+    # as if it were two conflicting ones. The honest classification is
+    # INSUFFICIENT_EVIDENCE, matching this codebase's one fallback
+    # sentence — the underlying bar evidence (if any) is still returned
+    # to the caller as `items`, just not cited as this claim's own
+    # "supporting" evidence.
+    if order in (BOUNDARY_BAR_AMBIGUOUS, LEVEL_HISTORY_INCOMPLETE):
+        claim = insufficient_evidence_claim(
+            claim_id=make_claim_id(trade_id, "TOUCH_ORDER"), report_section=_REPORT_SECTION, factor="touch_order",
+            rule_id="TOUCH_ORDER", rule_version=RULES_VERSION,
+            missing_evidence=["reliable_touch_ordering"], limitations=[text_by_order[order]],
+        )
+        return items, claim
+
+    ambiguous = order == BOTH_SAME_BAR_AMBIGUOUS
     claim = PostmortemClaim(
         claim_id=make_claim_id(trade_id, "TOUCH_ORDER"), report_section=_REPORT_SECTION, factor="touch_order",
         claim_text=text_by_order[order],
         evidence_class=(EvidenceClass.CONFLICTING_EVIDENCE.value if ambiguous else EvidenceClass.EVIDENCE_SUPPORTED.value),
         confidence_band=(ConfidenceBand.LOW.value if ambiguous else ConfidenceBand.MODERATE.value),
-        supporting_evidence_ids=supporting, opposing_evidence_ids=(supporting if order == BOTH_SAME_BAR_AMBIGUOUS else []),
+        supporting_evidence_ids=supporting, opposing_evidence_ids=(supporting if ambiguous else []),
         missing_evidence=[], contradiction_flags=([order] if ambiguous else []),
         rule_id="TOUCH_ORDER", rule_version=RULES_VERSION,
         limitations=[text_by_order[order]] if ambiguous else [],

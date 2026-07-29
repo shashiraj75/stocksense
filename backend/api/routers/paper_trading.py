@@ -1083,51 +1083,120 @@ def _attempt_best_effort_generation(*, user_id: str, trade_id: int, outbox_id: i
         log.warning("[postmortem_generation] best-effort generation attempt failed: %s", "unexpected_error")
 
 
+# Trade Postmortem Sprint 3A, Stage H2 durable-lifecycle correction —
+# the price-path attempt is now a genuine leased outbox lifecycle, not
+# an unleased best-effort helper. Stable status vocabulary this
+# function returns as the second element of its (report, status) tuple:
+PRICE_PATH_GENERATED = "PRICE_PATH_GENERATED"
+PRICE_PATH_ALREADY_COMPLETE = "PRICE_PATH_ALREADY_COMPLETE"
+PRICE_PATH_GENERATION_IN_PROGRESS = "PRICE_PATH_GENERATION_IN_PROGRESS"
+PRICE_PATH_FAILED_RETRYABLE = "PRICE_PATH_FAILED_RETRYABLE"
+PRICE_PATH_FAILED_TERMINAL = "PRICE_PATH_FAILED_TERMINAL"
+PRICE_PATH_NOT_YET_AVAILABLE = "PRICE_PATH_NOT_YET_AVAILABLE"  # no prior Sprint 2 report to enhance yet
+
+
+def _price_path_target_identity() -> tuple[str, str, str]:
+    """The Sprint 3A target report identity, computable BEFORE
+    acquisition (never after) — price_path_acquisition.SOURCE_VERSION is
+    a static module-level constant for the lifetime of one deployment,
+    so the calculation_version suffix it produces is exactly the one any
+    successful acquisition under this deployment will also embed into
+    its evidence's own source_version field. This is what lets the
+    outbox row's requested_calculation_version be fixed at claim time,
+    matching Sprint 2's own static-identity convention exactly."""
+    from services.postmortem.price_path_acquisition import SOURCE_VERSION as PP_SOURCE_VERSION
+    return (
+        price_path_generation.PRICE_PATH_REPORT_SCHEMA_VERSION,
+        price_path_generation.price_path_calculation_suffix(PP_SOURCE_VERSION),
+        ATTRIBUTION_RULES_VERSION,
+    )
+
+
+def _insert_price_path_outbox_record(conn, *, trade_id: int, user_id: str, source_request_id: str | None = None) -> tuple[int, bool]:
+    """Same idempotent-insert pattern as close_service._insert_outbox_
+    record, against the SAME paper_trade_postmortem_outbox table and the
+    SAME (paper_trade_id, requested_report_schema_version,
+    requested_calculation_version, requested_rules_version) unique
+    index — that index already supports more than one row per trade
+    whenever the version triple differs, so the Sprint 3A price-path
+    identity gets its own row without any schema change. The Sprint 2
+    outbox row (and report) are never touched by this function."""
+    schema_v, calc_v, rules_v = _price_path_target_identity()
+    row = conn.execute(
+        """INSERT INTO paper_trade_postmortem_outbox
+               (paper_trade_id, user_id, requested_report_schema_version,
+                requested_calculation_version, requested_rules_version, source_request_id)
+           VALUES (%s, %s, %s, %s, %s, %s)
+           ON CONFLICT (paper_trade_id, requested_report_schema_version,
+                        requested_calculation_version, requested_rules_version)
+           DO NOTHING
+           RETURNING id""",
+        (trade_id, user_id, schema_v, calc_v, rules_v, source_request_id),
+    ).fetchone()
+    if row is not None:
+        return row[0], True
+    existing = conn.execute(
+        """SELECT id FROM paper_trade_postmortem_outbox
+           WHERE paper_trade_id = %s AND requested_report_schema_version = %s
+             AND requested_calculation_version = %s AND requested_rules_version = %s""",
+        (trade_id, schema_v, calc_v, rules_v),
+    ).fetchone()
+    return existing[0], False
+
+
+_PRICE_PATH_ERROR_CODE = "PRICE_PATH_GENERATION_ERROR"
+
+
 def _attempt_price_path_enhancement(
     *, user_id: str, trade_id: int,
     fetch_bars_fn=None, fetch_splits_fn=None, fetch_dividends_fn=None,
-):
-    """Trade Postmortem Sprint 3A, Stage H2 — additive, best-effort
-    price-path enhancement layered on top of an already-settled Sprint 2
-    report. Never raises (matches _attempt_best_effort_generation's own
-    contract); returns the enhanced PersistedReport on success, or None
-    if there is nothing to enhance yet (no prior Sprint 2 report) or the
-    attempt failed for any reason.
+) -> tuple[object | None, str]:
+    """Trade Postmortem Sprint 3A, Stage H2 durable-lifecycle correction.
 
-    This does NOT claim or touch the outbox lease — that lease was
-    already claimed and settled by the Sprint 2 generation this builds
-    on top of (see generation_service.generate_and_persist's own
-    outbox_id/claimed_by contract). Price-path enhancement is a
-    supplementary step, not a competing claimant for the same slot.
+    Returns (report_or_None, status) where status is one of the
+    PRICE_PATH_* constants above. Uses its OWN versioned outbox row
+    (see _insert_price_path_outbox_record) claimed through the exact
+    same lease-safe outbox_ops.claim_next_attempt/mark_terminal/
+    mark_retryable_failure machinery Sprint 2's own generation already
+    relies on — atomic claim, claimant-token stale-worker protection,
+    retry backoff, and an attempt limit all come from that shared,
+    already-tested module, not reimplemented here.
 
     Phase boundaries (Stage H1's five-phase design) are preserved
-    exactly: Phase 1 (short read) and Phase 3/5 (short writes) each get
-    their OWN `with _conn():` block; Phase 2 (provider acquisition) runs
-    entirely between them, with no database connection in scope at all,
-    so a slow or hanging provider can never hold a connection or a
-    transaction open. fetch_bars_fn/fetch_splits_fn/fetch_dividends_fn
-    default to the real network-calling functions when not supplied
-    (production behavior) — tests inject fakes instead of monkeypatching
-    module internals."""
+    exactly: Phase 1/2 (read + claim) and Phase 5/6 (short writes) each
+    get their OWN `with _conn():` block; provider acquisition runs
+    entirely between them, with no database connection in scope at all.
+    fetch_bars_fn/fetch_splits_fn/fetch_dividends_fn default to the real
+    network-calling functions when not supplied (production behavior) —
+    tests inject fakes instead of monkeypatching module internals.
+
+    A genuinely unexpected exception is still never allowed to reach the
+    caller (matching _attempt_best_effort_generation's own contract) —
+    it is classified PRICE_PATH_FAILED_RETRYABLE where a claim was held,
+    logged with only its class name (never raw exception text), and the
+    lease is marked retryable so a later attempt can reclaim it rather
+    than the row sitting stuck."""
     from services.postmortem.price_path_acquisition import (
-        fetch_dividend_events, fetch_raw_daily_bars, fetch_split_events,
+        PriceProviderAcquisitionError, fetch_dividend_events, fetch_raw_daily_bars, fetch_split_events,
     )
     fetch_bars_fn = fetch_bars_fn or fetch_raw_daily_bars
     fetch_splits_fn = fetch_splits_fn or fetch_split_events
     fetch_dividends_fn = fetch_dividends_fn or fetch_dividend_events
 
+    outbox_id = None
+    claimant = None
     try:
         with _conn() as conn:
             row = conn.execute(
                 f"SELECT {_POSTMORTEM_ROW_COLUMNS} FROM paper_trades WHERE id = %s", (trade_id,)
             ).fetchone()
             if row is None:
-                return None
+                return None, PRICE_PATH_NOT_YET_AVAILABLE
             record, owner = _row_to_closed_trade_record(row)
             if owner != user_id or record.status != "CLOSED":
-                return None
+                return None, PRICE_PATH_NOT_YET_AVAILABLE
             if record.entry_price is None or record.opened_at is None or record.closed_at is None:
-                return None
+                return None, PRICE_PATH_NOT_YET_AVAILABLE
 
             prior_report = report_store.get_current_report(
                 conn, paper_trade_id=trade_id, user_id=user_id,
@@ -1135,12 +1204,34 @@ def _attempt_price_path_enhancement(
                 calculation_version=CALCULATION_VERSION, attribution_rules_version=ATTRIBUTION_RULES_VERSION,
             )
             if prior_report is None:
-                return None  # nothing to enhance yet — Sprint 2 generation hasn't settled
+                return None, PRICE_PATH_NOT_YET_AVAILABLE  # Sprint 2 generation hasn't settled yet
 
             tz = _REPORT_TIMEZONE.get(record.market)
             if tz is None:
-                return None
+                return None, PRICE_PATH_NOT_YET_AVAILABLE
             market_timezone_name = "Asia/Kolkata" if record.market == "IN" else "America/New_York"
+
+            schema_v, calc_v, rules_v = _price_path_target_identity()
+            existing_pp_report = report_store.get_current_report(
+                conn, paper_trade_id=trade_id, user_id=user_id,
+                report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+            )
+            if existing_pp_report is not None:
+                # Idempotent: identical target identity already settled —
+                # never re-claim, never call the provider again.
+                return existing_pp_report, PRICE_PATH_ALREADY_COMPLETE
+
+            outbox_id, _created = _insert_price_path_outbox_record(conn, trade_id=trade_id, user_id=user_id)
+            claimant = outbox_ops.new_claimant_token()
+            claimed = outbox_ops.claim_next_attempt(conn, outbox_id=outbox_id, user_id=user_id, claimant=claimant)
+            if claimed is None:
+                # Another valid, non-expired lease currently owns this
+                # row — never run a concurrent duplicate attempt.
+                return None, PRICE_PATH_GENERATION_IN_PROGRESS
+            if claimed.status == "FAILED_TERMINAL":
+                return None, PRICE_PATH_FAILED_TERMINAL
+            if claimed.status != "GENERATING":
+                return None, PRICE_PATH_NOT_YET_AVAILABLE
 
             ctx = price_path_generation.load_generation_context(
                 conn, trade_id=trade_id, user_id=user_id, symbol=record.symbol, market=record.market,
@@ -1157,11 +1248,22 @@ def _attempt_price_path_enhancement(
 
         evidence = ctx.compatible_evidence
         if evidence is None:
-            # Phase 2 — deliberately outside any `with _conn():` block.
-            bundle = price_path_generation.acquire_evidence_outside_transaction(
-                ctx, market_tzinfo=tz, fetch_bars_fn=fetch_bars_fn,
-                fetch_splits_fn=fetch_splits_fn, fetch_dividends_fn=fetch_dividends_fn,
-            )
+            # Provider acquisition — deliberately outside any
+            # `with _conn():` block; a provider timeout or transient
+            # failure here is a classified, durable retryable failure,
+            # never a swallowed None.
+            try:
+                bundle = price_path_generation.acquire_evidence_outside_transaction(
+                    ctx, market_tzinfo=tz, fetch_bars_fn=fetch_bars_fn,
+                    fetch_splits_fn=fetch_splits_fn, fetch_dividends_fn=fetch_dividends_fn,
+                )
+            except PriceProviderAcquisitionError as exc:
+                with _conn() as conn:
+                    outbox_ops.mark_retryable_failure(
+                        conn, outbox_id=outbox_id, error_code=exc.code,
+                        error_summary=type(exc).__name__, claimed_by=claimant,
+                    )
+                return None, PRICE_PATH_FAILED_RETRYABLE
             with _conn() as conn:
                 evidence, _created = price_path_generation.persist_price_path_evidence(conn, bundle)
 
@@ -1177,11 +1279,27 @@ def _attempt_price_path_enhancement(
                     conn, prior_report=prior_report, payload=payload, trade_id=trade_id, user_id=user_id,
                     market=record.market, report_trading_date=prior_report.report_trading_date,
                     market_timezone=market_timezone_name, source_version=evidence.source_version,
+                    outbox_id=outbox_id, claimed_by=claimant,
                 )
-        return enhanced
-    except Exception:
-        log.warning("[postmortem_price_path_generation] enhancement attempt failed: %s", "unexpected_error")
-        return None
+        return enhanced, PRICE_PATH_GENERATED
+    except generation_service.StaleLeaseError:
+        # A fresher claimant already reclaimed this row while this
+        # attempt was computing — this attempt's own report INSERT (if
+        # any occurred inside the `with conn.transaction():` above)
+        # rolled back with it. Never treat this as success.
+        return None, PRICE_PATH_GENERATION_IN_PROGRESS
+    except Exception as exc:
+        log.warning("[postmortem_price_path_generation] enhancement attempt failed: %s", type(exc).__name__)
+        if outbox_id is not None and claimant is not None:
+            try:
+                with _conn() as conn:
+                    outbox_ops.mark_retryable_failure(
+                        conn, outbox_id=outbox_id, error_code=_PRICE_PATH_ERROR_CODE,
+                        error_summary=type(exc).__name__, claimed_by=claimant,
+                    )
+            except Exception:
+                pass  # best-effort — the claim will still expire and become reclaimable
+        return None, PRICE_PATH_FAILED_RETRYABLE
 
 
 @dataclass
@@ -2668,11 +2786,14 @@ def get_trade_postmortem(trade_id: int, user_id: str = Depends(get_current_user_
 
 class GenerateReportResponse(BaseModel):
     trade_id: int
-    # GENERATED (this call produced a new/first report row) |
-    # ALREADY_COMPLETE (a persisted report for the current version triple
-    # already existed — returned idempotently, nothing generated) |
-    # IN_PROGRESS (another valid, non-expired lease currently owns this
-    # trade's outbox row — no concurrent duplicate generation was
+    # GENERATED (the EFFECTIVE report — the most authoritative one
+    # available after this call, which may be the newly-created
+    # price-path report even when the underlying Sprint 2 report already
+    # existed — see Stage H2 durable-lifecycle correction) |
+    # ALREADY_COMPLETE (the effective report already existed — returned
+    # idempotently, nothing generated this call) |
+    # IN_PROGRESS (another valid, non-expired lease currently owns the
+    # relevant outbox row — no concurrent duplicate generation was
     # attempted; retry later).
     generation_status: str
     status: str | None = None
@@ -2681,29 +2802,57 @@ class GenerateReportResponse(BaseModel):
     attribution_rules_version: str | None = None
     generated: bool
     evidence_gap_count: int | None = None
+    # Additive Sprint 3A fields — existing clients reading only the
+    # fields above remain fully compatible; these expose the granular
+    # base-vs-price-path breakdown for clients that want it.
+    base_generation_status: str | None = None
+    price_path_generation_status: str | None = None
+    effective_report_version: str | None = None
 
 
 def _build_generate_response(*, trade_id: int, user_id: str, generation_status: str, report, generated: bool) -> "GenerateReportResponse":
-    """Trade Postmortem Sprint 3A, Stage H2B — shared response builder for
-    every /generate return site. When the price-path flag is enabled,
-    attempts additive enhancement on top of `report` and, on success,
-    returns the ENHANCED report's own version/status fields instead of
-    the plain Sprint 1/2 ones — `generation_status` (GENERATED/
-    ALREADY_COMPLETE) is left as the caller determined it, since price-
-    path enhancement is a supplementary step layered on an already-
-    settled Sprint 2 outcome, not a new generation-status classification
-    of its own."""
+    """Trade Postmortem Sprint 3A, Stage H2 durable-lifecycle correction
+    — shared response builder for every /generate return site.
+
+    When the price-path flag is enabled, attempts enhancement via its
+    OWN leased outbox lifecycle (see _attempt_price_path_enhancement)
+    and, when it PRODUCES a report this call (PRICE_PATH_GENERATED or
+    PRICE_PATH_ALREADY_COMPLETE), that report becomes the EFFECTIVE
+    report — `generation_status`/`generated`/`report_schema_version`/etc
+    describe IT, never silently describing the Sprint 2 report while
+    returning Sprint 3A fields (Programme Director finding #9), and a
+    freshly-generated price-path report is never reported with
+    generated=False merely because the underlying Sprint 2 report
+    already existed (finding #1/requirement 1). `base_generation_status`
+    preserves the original Sprint 2-level classification unconditionally."""
     effective = report
+    effective_generation_status = generation_status
+    effective_generated = generated
+    price_path_status = None
+
     if _trade_postmortem_price_path_enabled():
-        enhanced = _attempt_price_path_enhancement(user_id=user_id, trade_id=trade_id)
+        enhanced, price_path_status = _attempt_price_path_enhancement(user_id=user_id, trade_id=trade_id)
         if enhanced is not None:
             effective = enhanced
+            effective_generated = price_path_status == PRICE_PATH_GENERATED
+            effective_generation_status = (
+                "GENERATED" if price_path_status == PRICE_PATH_GENERATED else "ALREADY_COMPLETE"
+            )
+        # A None result (IN_PROGRESS / FAILED_RETRYABLE / FAILED_TERMINAL /
+        # NOT_YET_AVAILABLE) never overwrites `effective` — the caller's
+        # own Sprint 2 report/status stands, with price_path_status
+        # exposed separately so a failed attempt is never silently
+        # represented as the Sprint 2 report being ALREADY_COMPLETE for
+        # the price-path dimension too (finding #10).
+
     return GenerateReportResponse(
-        trade_id=trade_id, generation_status=generation_status, status=effective.status,
+        trade_id=trade_id, generation_status=effective_generation_status, status=effective.status,
         report_schema_version=effective.report_schema_version,
         calculation_version=effective.calculation_version,
         attribution_rules_version=effective.attribution_rules_version,
-        generated=generated, evidence_gap_count=len(effective.evidence_gaps),
+        generated=effective_generated, evidence_gap_count=len(effective.evidence_gaps),
+        base_generation_status=generation_status, price_path_generation_status=price_path_status,
+        effective_report_version=effective.report_schema_version,
     )
 
 
