@@ -124,3 +124,32 @@ class TestPricePathEvidenceBundleValidation:
     def test_unknown_status_rejected(self):
         with pytest.raises(PricePathEvidenceError):
             _bundle(data_completeness="NOT_A_REAL_STATUS")
+
+
+@pytest.mark.unit
+class TestLegacyInvalidSourceDataContract:
+    """Stage J-F2 — STATUS_INVALID_SOURCE_DATA has zero live producers
+    (confirmed by direct inspection of price_path_acquisition.py across
+    two separate audit phases) but remains declared and
+    _VALID_STATUSES-accepted for legacy-read compatibility only. These
+    tests prove both halves of that contract: the value is still
+    constructible (so an old persisted row replays without error) and no
+    current production code path ever produces it fresh."""
+
+    def test_legacy_invalid_source_data_status_has_no_producer(self):
+        import inspect
+
+        from services.postmortem import price_path_acquisition
+
+        source = inspect.getsource(price_path_acquisition)
+        assert "STATUS_INVALID_SOURCE_DATA" not in source, (
+            "price_path_acquisition.py must never assign STATUS_INVALID_SOURCE_DATA — "
+            "it is legacy-read-only, see price_path_evidence.py's status declaration comment"
+        )
+
+    def test_legacy_invalid_source_data_bundle_replays_without_error(self):
+        from services.postmortem.price_path_evidence import STATUS_INVALID_SOURCE_DATA
+
+        bundle = _bundle(bars=(), data_completeness=STATUS_INVALID_SOURCE_DATA)
+        assert bundle.data_completeness == STATUS_INVALID_SOURCE_DATA
+        assert bundle.bars_observed == 0

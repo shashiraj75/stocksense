@@ -133,7 +133,25 @@ EXIT_BAR_PARTIAL_UNKNOWN = "EXIT_BAR_PARTIAL_UNKNOWN"
 STATUS_COMPLETE = "COMPLETE"
 STATUS_PARTIAL = "PARTIAL"
 STATUS_UNAVAILABLE = "UNAVAILABLE"
+
+# LEGACY-READ COMPATIBILITY (Stage J-F2, decided over VERSIONED REMOVAL):
+# build_price_path_evidence has never assigned this value (confirmed by
+# direct inspection of price_path_acquisition.py, twice, in two separate
+# audit phases) and price_path_evidence_decision._DATA_COMPLETENESS_TO_
+# EVIDENCE_STATUS deliberately excludes it as a mapping key — any bundle
+# carrying it (fresh or previously persisted) is classified fail-closed
+# as UNSUPPORTED_EVIDENCE_COMPLETENESS by the decision layer, never
+# treated as an active, presentable state. It remains declared and
+# _VALID_STATUSES-accepted here ONLY so that (a) __post_init__ does not
+# reject a legacy row read back from storage before it ever existed
+# under the current classification rules, and (b) a bundle reconstructed
+# for replay/audit purposes can still be constructed at all. No code
+# path in this module or its callers ever assigns this value to a fresh
+# bundle; see test_legacy_invalid_source_data_status_has_no_producer and
+# test_legacy_invalid_source_data_bundle_replays_without_error in
+# tests/unit/test_price_path_evidence.py.
 STATUS_INVALID_SOURCE_DATA = "INVALID_SOURCE_DATA"
+
 STATUS_AMBIGUOUS_RESOLUTION = "AMBIGUOUS_RESOLUTION"
 
 _VALID_STATUSES = frozenset({
