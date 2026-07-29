@@ -1325,6 +1325,35 @@ def _attempt_price_path_enhancement(
                     )
                 log.warning("[price_path_internal_integrity_violation] trade_id=%s reason=replay_without_evidence", trade_id)
                 return None, PRICE_PATH_FAILED_RETRYABLE
+
+            # Stage J Final Semantic Reconciliation, Stage 2 — a manifest
+            # hash nobody checks is not a production integrity control.
+            # Before this replay's evidence is trusted for classification
+            # at all, its manifest must pass validate_manifest_
+            # compatibility (schema/identity/pinned-argument checks,
+            # including the tamper-detecting hash itself). A legacy row
+            # persisted before Stage J-F3 added these manifest fields
+            # correctly fails this — never silently treated as compatible
+            # merely because the older four-part version identity still
+            # matches. Fails exactly like the missing-evidence case
+            # above: no provider call, no calculator, no new evidence, no
+            # report, the ORIGINAL row untouched.
+            from services.postmortem.price_path_acquisition import validate_manifest_compatibility
+
+            manifest_decision = validate_manifest_compatibility(evidence)
+            if not manifest_decision.compatible:
+                with _conn() as conn:
+                    outbox_ops.mark_retryable_failure(
+                        conn, outbox_id=outbox_id,
+                        error_code=manifest_decision.reason_code,
+                        error_summary="ManifestCompatibilityViolation", claimed_by=claimant,
+                    )
+                log.warning(
+                    "[price_path_manifest_integrity_violation] trade_id=%s reason=%s",
+                    trade_id, manifest_decision.reason_code,
+                )
+                return None, PRICE_PATH_FAILED_RETRYABLE
+
             quality_decision = price_path_evidence_decision.classify_acquired_evidence(
                 data_completeness=evidence.data_completeness,
             )
@@ -1425,6 +1454,7 @@ def _attempt_price_path_enhancement(
                     # consulted when the report settles, never merely used
                     # to gate whether acquisition ran.
                     trade_context_ceiling=eligibility.report_completeness_ceiling,
+                    trade_context_decision=eligibility,
                     # Stage 7 — acquisition provenance and evidence
                     # quality are persisted as two separate, never-merged
                     # decisions.

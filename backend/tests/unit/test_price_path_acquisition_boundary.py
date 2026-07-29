@@ -26,7 +26,10 @@ from services.postmortem.price_path_acquisition import (
     acquire_price_path_evidence,
     build_price_path_evidence,
     evaluate_basis_compatibility,
+    MANIFEST_INTEGRITY_VIOLATION,
+    SOURCE_ID_YFINANCE_DAILY,
     finalize_source_manifest,
+    validate_manifest_compatibility,
     verify_source_manifest_integrity,
 )
 
@@ -261,6 +264,103 @@ class TestManifestIntegrityHashCoverage:
 
     def test_manifest_missing_hash_field_fails_verification(self):
         assert verify_source_manifest_integrity(_base_manifest()) is False
+
+
+class _FakeLegacyEvidenceRow:
+    """Duck-types a persisted evidence row missing the Stage J-F3
+    manifest fields (source_manifest={}) -- simulates a row persisted
+    before this codebase added manifest-integrity governance."""
+
+    def __init__(self, source_manifest):
+        self.source_manifest = source_manifest
+        self.source_id = SOURCE_ID_YFINANCE_DAILY
+        self.source_type = SOURCE_TYPE
+        self.source_version = "1.0.0"
+        self.provider_symbol = "AAPL"
+        self.market = "US"
+        self.symbol = "aapl"
+        self.bar_interval = "1d"
+        self.requested_window_start = dt.date(2026, 6, 1)
+
+
+@pytest.mark.unit
+class TestManifestCompatibilityValidation:
+    """Stage J Final Semantic Reconciliation, Stage 2 -- proves the
+    manifest hash is genuinely load-bearing: a valid current manifest
+    passes, and every category of corruption/incompleteness fails
+    closed with MANIFEST_INTEGRITY_VIOLATION."""
+
+    def _valid_evidence(self):
+        return build_price_path_evidence(
+            paper_trade_id=1, user_id="u", symbol="aapl", market="US",
+            market_timezone_name="America/New_York", market_tzinfo=ET,
+            entry_timestamp=dt.datetime(2026, 6, 1, tzinfo=ET), exit_timestamp=dt.datetime(2026, 6, 1, tzinfo=ET),
+            raw_bars=[{"date": dt.date(2026, 6, 1), "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": None}],
+            split_events=[],
+        )
+
+    def test_valid_current_manifest_is_compatible(self):
+        decision = validate_manifest_compatibility(self._valid_evidence())
+        assert decision.compatible is True
+        assert decision.reason_code is None
+
+    def test_legacy_empty_manifest_fails_closed(self):
+        decision = validate_manifest_compatibility(_FakeLegacyEvidenceRow(source_manifest={}))
+        assert decision.compatible is False
+        assert decision.reason_code == MANIFEST_INTEGRITY_VIOLATION
+
+    def test_non_mapping_manifest_fails_closed(self):
+        decision = validate_manifest_compatibility(_FakeLegacyEvidenceRow(source_manifest=None))
+        assert decision.compatible is False
+        assert decision.reason_code == MANIFEST_INTEGRITY_VIOLATION
+
+    def test_missing_hash_fails_closed(self):
+        evidence = self._valid_evidence()
+        tampered_manifest = dict(evidence.source_manifest)
+        del tampered_manifest["manifest_integrity_hash"]
+        evidence = evidence.__class__(**{**evidence.__dict__, "source_manifest": tampered_manifest})
+        decision = validate_manifest_compatibility(evidence)
+        assert decision.compatible is False
+        assert decision.reason_code == MANIFEST_INTEGRITY_VIOLATION
+
+    def test_tampered_hash_fails_closed(self):
+        evidence = self._valid_evidence()
+        tampered_manifest = dict(evidence.source_manifest)
+        tampered_manifest["manifest_integrity_hash"] = "0" * 64
+        evidence = evidence.__class__(**{**evidence.__dict__, "source_manifest": tampered_manifest})
+        decision = validate_manifest_compatibility(evidence)
+        assert decision.compatible is False
+        assert decision.reason_code == MANIFEST_INTEGRITY_VIOLATION
+
+    def test_unsupported_schema_version_fails_closed(self):
+        evidence = self._valid_evidence()
+        tampered_manifest = dict(evidence.source_manifest)
+        tampered_manifest["source_manifest_schema_version"] = "99.0.0"
+        tampered_manifest = finalize_source_manifest(tampered_manifest, tampered_manifest["unresolved_basis_limitations"])
+        evidence = evidence.__class__(**{**evidence.__dict__, "source_manifest": tampered_manifest})
+        decision = validate_manifest_compatibility(evidence)
+        assert decision.compatible is False
+        assert decision.reason_code == MANIFEST_INTEGRITY_VIOLATION
+
+    def test_identity_mismatch_fails_closed(self):
+        evidence = self._valid_evidence()
+        tampered_manifest = dict(evidence.source_manifest)
+        tampered_manifest["provider_symbol"] = "MSFT"
+        tampered_manifest = finalize_source_manifest(tampered_manifest, tampered_manifest["unresolved_basis_limitations"])
+        evidence = evidence.__class__(**{**evidence.__dict__, "source_manifest": tampered_manifest})
+        decision = validate_manifest_compatibility(evidence)
+        assert decision.compatible is False
+        assert decision.reason_code == MANIFEST_INTEGRITY_VIOLATION
+
+    def test_pinned_argument_mismatch_fails_closed(self):
+        evidence = self._valid_evidence()
+        tampered_manifest = dict(evidence.source_manifest)
+        tampered_manifest["auto_adjust"] = True
+        tampered_manifest = finalize_source_manifest(tampered_manifest, tampered_manifest["unresolved_basis_limitations"])
+        evidence = evidence.__class__(**{**evidence.__dict__, "source_manifest": tampered_manifest})
+        decision = validate_manifest_compatibility(evidence)
+        assert decision.compatible is False
+        assert decision.reason_code == MANIFEST_INTEGRITY_VIOLATION
 
 
 @pytest.mark.unit

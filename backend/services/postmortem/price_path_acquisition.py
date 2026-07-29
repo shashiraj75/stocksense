@@ -21,6 +21,7 @@ its own, separate, short transaction.
 import hashlib
 import json
 import math
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
 from services.postmortem.price_path_evidence import (
@@ -377,6 +378,126 @@ def verify_source_manifest_integrity(manifest: dict) -> bool:
     if not stored:
         return False
     return _compute_manifest_integrity_hash(manifest) == stored
+
+
+# --- Stage J Final Semantic Reconciliation, Stage 2 --------------------
+# A manifest hash a caller never checks is not a production integrity
+# control, only a testable helper. This makes it load-bearing: before
+# ANY compatible persisted evidence row is used for replay, its manifest
+# must pass this validation, or the replay is refused fail-closed
+# (never silently repaired, never re-derived from current data).
+MANIFEST_INTEGRITY_VIOLATION = "MANIFEST_INTEGRITY_VIOLATION"
+
+# Every field a persisted manifest must carry for replay to be
+# considered — a legacy row persisted before Stage J-F3 added these
+# fields will be missing several of these and correctly fails closed,
+# never treated as compatible merely because the old four-part
+# (paper_trade_id, evidence_bundle_version, source_id, source_version)
+# identity still matches.
+_REQUIRED_MANIFEST_FIELDS_FOR_REPLAY = (
+    "source_manifest_schema_version", "source_id", "source_type", "source_version",
+    "provider_symbol", "trade_symbol", "market", "interval",
+    "symbol_normalization_version", "boundary_policy_version",
+    "auto_adjust", "back_adjust", "actions", "repair", "prepost",
+    "provider_request_start", "manifest_integrity_hash",
+)
+
+_SUPPORTED_SOURCE_MANIFEST_SCHEMA_VERSIONS = frozenset({SOURCE_MANIFEST_SCHEMA_VERSION})
+_SUPPORTED_SYMBOL_NORMALIZATION_VERSIONS = frozenset({SYMBOL_NORMALIZATION_VERSION})
+_SUPPORTED_BOUNDARY_POLICY_VERSIONS = frozenset({BOUNDARY_POLICY_VERSION})
+
+
+@dataclass(frozen=True)
+class ManifestCompatibilityDecision:
+    """WHETHER a persisted evidence row's manifest may be trusted for
+    replay. Distinct from HistoricalEvidenceAcquisitionDecision (WHERE
+    evidence came from, price_path_evidence_decision.py) and
+    HistoricalEvidenceQualityDecision (WHETHER the bundle's own data is
+    usable) — this is a THIRD, prior gate: is the manifest itself
+    internally consistent and trustworthy at all, checked before either
+    of those other two decisions ever consult the row's content."""
+
+    compatible: bool
+    reason_code: str | None
+    detail: str = ""
+
+
+def validate_manifest_compatibility(evidence) -> ManifestCompatibilityDecision:
+    """Pure, no I/O. `evidence` is an already-persisted evidence row
+    (duck-typed: anything exposing .source_manifest, .source_id,
+    .source_type, .source_version, .provider_symbol, .market, .symbol,
+    .bar_interval, .requested_window_start — both
+    PricePathEvidenceBundle and price_path_store's PersistedPricePathEvidence
+    satisfy this). Checked BEFORE classify_acquired_evidence ever runs on
+    a replay path — a manifest that fails this is never even classified
+    for quality, since its own provenance cannot be trusted enough to
+    ask that question."""
+    manifest = evidence.source_manifest
+    if not isinstance(manifest, dict):
+        return ManifestCompatibilityDecision(False, MANIFEST_INTEGRITY_VIOLATION, "source_manifest is not a mapping")
+
+    for field in _REQUIRED_MANIFEST_FIELDS_FOR_REPLAY:
+        if field not in manifest:
+            return ManifestCompatibilityDecision(
+                False, MANIFEST_INTEGRITY_VIOLATION, f"missing required manifest field: {field}"
+            )
+
+    if not verify_source_manifest_integrity(manifest):
+        return ManifestCompatibilityDecision(
+            False, MANIFEST_INTEGRITY_VIOLATION, "manifest_integrity_hash failed verification"
+        )
+
+    if manifest["source_manifest_schema_version"] not in _SUPPORTED_SOURCE_MANIFEST_SCHEMA_VERSIONS:
+        return ManifestCompatibilityDecision(
+            False, MANIFEST_INTEGRITY_VIOLATION, "unsupported source_manifest_schema_version"
+        )
+    if manifest["symbol_normalization_version"] not in _SUPPORTED_SYMBOL_NORMALIZATION_VERSIONS:
+        return ManifestCompatibilityDecision(
+            False, MANIFEST_INTEGRITY_VIOLATION, "unsupported symbol_normalization_version"
+        )
+    if manifest["boundary_policy_version"] not in _SUPPORTED_BOUNDARY_POLICY_VERSIONS:
+        return ManifestCompatibilityDecision(
+            False, MANIFEST_INTEGRITY_VIOLATION, "unsupported boundary_policy_version"
+        )
+
+    # Pinned acquisition arguments — never varies by trade; a manifest
+    # declaring anything else is either corrupted or from a acquisition
+    # configuration this codebase no longer runs.
+    pinned = (
+        ("auto_adjust", ACQUISITION_AUTO_ADJUST), ("back_adjust", ACQUISITION_BACK_ADJUST),
+        ("actions", ACQUISITION_ACTIONS), ("repair", ACQUISITION_REPAIR), ("prepost", ACQUISITION_PREPOST),
+    )
+    for key, expected in pinned:
+        if manifest[key] != expected:
+            return ManifestCompatibilityDecision(
+                False, MANIFEST_INTEGRITY_VIOLATION, f"manifest {key}={manifest[key]!r} does not match pinned {expected!r}"
+            )
+
+    # Identity fields must match the evidence row's OWN top-level
+    # fields — never re-derived from current data (Stage 2 item 6); this
+    # only ever compares the manifest against the SAME row's own other
+    # columns, both already persisted at acquisition time.
+    identity_checks = (
+        ("source_id", evidence.source_id), ("source_type", evidence.source_type),
+        ("source_version", evidence.source_version), ("provider_symbol", evidence.provider_symbol),
+        ("market", evidence.market), ("interval", evidence.bar_interval),
+    )
+    for key, expected in identity_checks:
+        if manifest.get(key) != expected:
+            return ManifestCompatibilityDecision(
+                False, MANIFEST_INTEGRITY_VIOLATION, f"manifest {key} does not match evidence row's own {key}"
+            )
+    if manifest.get("trade_symbol") != evidence.symbol.upper():
+        return ManifestCompatibilityDecision(
+            False, MANIFEST_INTEGRITY_VIOLATION, "manifest trade_symbol does not match evidence symbol"
+        )
+    if manifest.get("provider_request_start") != evidence.requested_window_start.isoformat():
+        return ManifestCompatibilityDecision(
+            False, MANIFEST_INTEGRITY_VIOLATION,
+            "manifest provider_request_start does not match evidence requested_window_start",
+        )
+
+    return ManifestCompatibilityDecision(True, None)
 
 
 def _compute_evidence_hash(bars: list[PricePathBar]) -> str:
