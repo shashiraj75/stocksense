@@ -186,7 +186,6 @@ class TestPhase1LoadGenerationContext:
             market_timezone_name="America/New_York", entry_timestamp=dt.datetime(2026, 6, 1, tzinfo=ET),
             entry_price=100.0, exit_price=110.0, applicable_stop=90.0, applicable_target=120.0,
             exit_timestamp=dt.datetime(2026, 6, 5, tzinfo=ET), level_history_complete=True, prior_report=None,
-            evidence_bundle_version="1.0.0", source_id="yfinance_daily", source_version="1.0.0",
         )
         assert ctx.compatible_evidence is not None
 
@@ -198,7 +197,6 @@ class TestPhase1LoadGenerationContext:
             market_timezone_name="America/New_York", entry_timestamp=dt.datetime(2026, 6, 1, tzinfo=ET),
             entry_price=100.0, exit_price=110.0, applicable_stop=90.0, applicable_target=120.0,
             exit_timestamp=dt.datetime(2026, 6, 5, tzinfo=ET), level_history_complete=True, prior_report=None,
-            evidence_bundle_version="1.0.0", source_id="yfinance_daily", source_version="1.0.0",
         )
         assert ctx.compatible_evidence is None
 

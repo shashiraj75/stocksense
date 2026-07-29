@@ -406,11 +406,11 @@ class TestLeaseConcurrency:
     def test_active_non_expired_lease_returns_in_progress(self):
         shared = _new_shared([{}])
         # Simulate another worker already holding the lease.
-        shared["outbox_by_key"][(1, "1.1.0", "1.1.0+price_path:1.0.0+src:1.0.0", "2.0.0")] = 1
+        shared["outbox_by_key"][(1, "1.1.0", "1.1.0+price_path:1.0.0+src:1.1.0", "2.0.0")] = 1
         shared["outbox_rows"][1] = {
             "id": 1, "paper_trade_id": 1, "user_id": "user-aaa",
             "requested_report_schema_version": "1.1.0",
-            "requested_calculation_version": "1.1.0+price_path:1.0.0+src:1.0.0",
+            "requested_calculation_version": "1.1.0+price_path:1.0.0+src:1.1.0",
             "requested_rules_version": "2.0.0", "status": "GENERATING", "attempt_count": 1,
             "source_request_id": None, "claimed_by": "other-worker-token",
             "next_attempt_at": None,
@@ -424,11 +424,11 @@ class TestLeaseConcurrency:
 
     def test_expired_lease_is_reclaimable(self):
         shared = _new_shared([{}])
-        shared["outbox_by_key"][(1, "1.1.0", "1.1.0+price_path:1.0.0+src:1.0.0", "2.0.0")] = 1
+        shared["outbox_by_key"][(1, "1.1.0", "1.1.0+price_path:1.0.0+src:1.1.0", "2.0.0")] = 1
         shared["outbox_rows"][1] = {
             "id": 1, "paper_trade_id": 1, "user_id": "user-aaa",
             "requested_report_schema_version": "1.1.0",
-            "requested_calculation_version": "1.1.0+price_path:1.0.0+src:1.0.0",
+            "requested_calculation_version": "1.1.0+price_path:1.0.0+src:1.1.0",
             "requested_rules_version": "2.0.0", "status": "GENERATING", "attempt_count": 1,
             "source_request_id": None, "claimed_by": "crashed-worker-token",
             "next_attempt_at": None,
