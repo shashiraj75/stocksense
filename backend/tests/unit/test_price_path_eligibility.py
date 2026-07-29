@@ -11,7 +11,10 @@ import pytest
 from services.postmortem.price_path_eligibility import (
     ELIGIBLE_COMPLETE_CONTEXT,
     ELIGIBLE_PARTIAL_CONTEXT,
+    ENTRY_CONTEXT_INVALID,
+    EXIT_CONTEXT_INVALID,
     INVALID_MARKET,
+    INVALID_SYMBOL,
     INVALID_TRADE_PRICE,
     INVALID_TRADE_TIMELINE,
     MISSING_ENTRY_CONTEXT,
@@ -145,3 +148,59 @@ class TestContextCeiling:
     def test_missing_evidence_gap_strings_present(self):
         result = _eval(entry_snapshot_present=False)
         assert "entry_snapshot" in result.required_missing_evidence
+
+
+@pytest.mark.unit
+class TestSymbolGovernance:
+    """Stage J4 — an empty or malformed symbol blocks acquisition
+    entirely, before any provider access, distinct from an unsupported
+    market or invalid timeline/price."""
+
+    def test_empty_symbol_blocks_acquisition(self):
+        result = _eval(symbol="")
+        assert result.eligibility_status == INVALID_SYMBOL
+        assert result.acquisition_allowed is False
+        assert result.replay_allowed is False
+        assert result.calculation_allowed is False
+
+    @pytest.mark.parametrize("bad_symbol", ["AA PL", "AAPL;DROP", "日本語", "AA\nPL"])
+    def test_malformed_symbol_blocks_acquisition(self, bad_symbol):
+        result = _eval(symbol=bad_symbol)
+        assert result.eligibility_status == INVALID_SYMBOL
+        assert result.acquisition_allowed is False
+
+    @pytest.mark.parametrize("good_symbol", ["AAPL", "BRK.B", "RDS-A", "RELIANCE"])
+    def test_well_formed_symbol_does_not_block(self, good_symbol):
+        result = _eval(symbol=good_symbol)
+        assert result.eligibility_status != INVALID_SYMBOL
+        assert result.acquisition_allowed is True
+
+    def test_symbol_not_provided_skips_check_entirely(self):
+        """Callers that don't pass symbol at all (the default) are
+        unaffected — this only activates when a caller opts in."""
+        result = _eval()
+        assert result.eligibility_status != INVALID_SYMBOL
+
+
+@pytest.mark.unit
+class TestPresentInvalidVersusMissingSnapshot:
+    """Stage J2 — a snapshot row that exists but fails validation
+    (PRESENT_INVALID) is distinct from a row that was never captured
+    (MISSING), even though both cap the ceiling identically."""
+
+    def test_present_invalid_entry_gets_distinct_reason_code(self):
+        result = _eval(entry_snapshot_present=False, entry_snapshot_invalid=True)
+        assert ENTRY_CONTEXT_INVALID in result.reason_codes
+        assert MISSING_ENTRY_CONTEXT not in result.reason_codes
+        assert result.report_completeness_ceiling == "LIMITED_EVIDENCE"
+
+    def test_missing_entry_gets_missing_reason_code_not_invalid(self):
+        result = _eval(entry_snapshot_present=False, entry_snapshot_invalid=False)
+        assert MISSING_ENTRY_CONTEXT in result.reason_codes
+        assert ENTRY_CONTEXT_INVALID not in result.reason_codes
+
+    def test_present_invalid_exit_gets_distinct_reason_code(self):
+        result = _eval(exit_snapshot_present=False, exit_snapshot_invalid=True)
+        assert EXIT_CONTEXT_INVALID in result.reason_codes
+        assert MISSING_EXIT_CONTEXT not in result.reason_codes
+        assert result.report_completeness_ceiling == "LIMITED_EVIDENCE"

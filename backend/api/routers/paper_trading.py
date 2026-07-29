@@ -1243,6 +1243,12 @@ def _attempt_price_path_enhancement(
                 opened_at=record.opened_at, closed_at=record.closed_at,
                 entry_snapshot_present=entry_snapshot_valid,
                 exit_snapshot_present=exit_snapshot_valid,
+                symbol=record.symbol,
+                # PRESENT_INVALID (row exists but failed ownership/market
+                # validation) vs MISSING (no row at all) — Stage J2's own
+                # required distinction.
+                entry_snapshot_invalid=(entry_snapshot is not None and not entry_snapshot_valid),
+                exit_snapshot_invalid=(exit_snapshot is not None and not exit_snapshot_valid),
             )
             if not eligibility.acquisition_allowed:
                 return None, PRICE_PATH_NOT_YET_AVAILABLE
