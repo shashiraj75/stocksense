@@ -492,3 +492,212 @@ Source-manifest field persistence, explicit window-contamination
 traceability, `AMBIGUOUS_RESOLUTION`'s same-day/boundary trigger (only the
 split trigger is wired), full 40-scenario table — unchanged from prior
 passes, out of scope for J1B.
+
+## Stage J Final Closure — Historical Source, Window, Ambiguity, Traceability
+
+This section closes the remaining Stage J scope explicitly deferred by
+every prior J1B pass above. It does not reopen or modify J1B's own
+decision-model logic (`price_path_evidence_decision.py`) — J1B is accepted
+as complete. It resolves the legacy `INVALID_SOURCE_DATA` contract
+ambiguity, completes source-manifest fields, fixes a real report-ceiling
+gap touch-order ambiguity exposed, and consolidates the scenario matrix.
+
+### J-F2 — Legacy `INVALID_SOURCE_DATA` contract resolution
+
+**Decision: LEGACY-READ COMPATIBILITY** (not versioned removal).
+`STATUS_INVALID_SOURCE_DATA` remains declared in
+`price_path_evidence.py`'s `_VALID_STATUSES`, now with an explicit
+in-module comment stating it has zero live producers and exists only so
+(a) a pre-existing persisted row with this value still replays without a
+construction-time rejection, and (b) `__post_init__` doesn't need to know
+about the classification layer's own history. No schema/version bump —
+this was always a legacy-compatibility concern, not a contract shape
+change. Proven by two new tests in `test_price_path_evidence.py::
+TestLegacyInvalidSourceDataContract`:
+`test_legacy_invalid_source_data_status_has_no_producer` (source-scans
+`price_path_acquisition.py` for the literal name — it is not even
+imported there) and `test_legacy_invalid_source_data_bundle_replays_
+without_error` (constructs a bundle carrying the legacy value and
+confirms it doesn't raise).
+
+### J-F3 — Source-manifest completeness
+
+Added to `source_manifest` (all inside the existing free-form dict field
+— no new dataclass fields, no bundle-shape migration): `source_manifest_
+schema_version`, `trade_symbol` (paired explicitly with the pre-existing
+`provider_symbol`), `symbol_normalization_version`, `market`,
+`provider_request_start`, `provider_exclusive_request_end`,
+`end_widening_reason`, `boundary_policy_version`, `prepost`,
+`requested_trading_weekday_count` (Mon-Fri count in the requested
+window — deliberately NOT a full trading-holiday-aware count; see
+`_count_requested_weekdays`'s own docstring for why reusing
+`services.market_hours`'s internal holiday calendars here would be a
+false-precision claim), and `manifest_integrity_hash` (SHA-256 over the
+manifest's own fields, separate from the pre-existing `evidence_hash`
+which covers bars only — `_compute_manifest_integrity_hash`). All
+derived from persisted trade facts or pinned acquisition configuration;
+no current-universe lookup, no inferred rename/merger/delisting. Proven
+by `test_price_path_acquisition_boundary.py::TestSourceManifestCompleteness`
+(8 tests: field presence, widening arithmetic, requested_window_end
+unaffected by widening, weekday count, prepost, hash determinism, hash
+sensitivity to symbol, hash distinctness from evidence_hash).
+
+Real-PG closure (J-F7): `TestSourceManifestPersistsAllFinalFields` and
+`TestCompatibleReplayPreservesManifestUnchanged` (below) prove these
+fields round-trip through actual PostgreSQL JSONB storage and that a
+compatible-replay reuses the identical persisted manifest (no
+re-derivation, no drift).
+
+### J-F5 — Ceiling composition gap (real defect found and fixed)
+
+The Stage J-F1 gap inventory found a genuine, previously undocumented
+defect: `build_price_path_report_payload`'s `status` field
+(`price_path_generation.py`) was computed from `bundle.data_completeness`
+and `excursion.evidence_completeness` only — it never inspected `order`
+(the touch-order classification result). A bundle could be fully
+`COMPLETE` with `EXCURSION_COMPLETE` MFE/MAE and still have
+`BOTH_SAME_BAR_AMBIGUOUS`/`BOUNDARY_BAR_AMBIGUOUS`/
+`LEVEL_HISTORY_INCOMPLETE` touch order, and the report would still claim
+`status=COMPLETE` — silently contradicting its own touch_order claim
+(which `build_touch_order_claim` already correctly renders as
+insufficient-evidence-flavored). Fixed: `status` now also requires
+`order not in {BOTH_SAME_BAR_AMBIGUOUS, BOUNDARY_BAR_AMBIGUOUS,
+LEVEL_HISTORY_INCOMPLETE, INSUFFICIENT_EVIDENCE}`. `NEITHER_OBSERVED`
+(a definitive "neither level was touched" claim) is correctly excluded
+from the ambiguous set. This does not null out or suppress independently
+valid MFE/MAE — those come from `excursion`, computed independently of
+touch order, and remain populated. Proven by
+`test_price_path_generation.py::TestPhase4BuildPayload::
+test_both_same_bar_ambiguous_touch_order_downgrades_status_despite_
+complete_bundle` (downgrade + MFE/MAE still populated) and its control,
+`test_clean_stop_only_touch_order_does_not_downgrade_status` (a
+definitive order on a fully-COMPLETE bundle stays COMPLETE).
+
+### J-F4 — Historical-window contamination: traceability, not new logic
+
+The underlying window-construction logic (`build_price_path_evidence`
+filters strictly to `[entry_date, exit_date]` against the ORIGINAL,
+non-widened dates — `price_path_acquisition.py`'s own `if d < entry_date
+or d > exit_date: continue`) was already correct and already unit-tested
+before this pass; the gap was that the ADR itself claimed this was "not
+re-proven under a Stage J test name," which was stale. The table below
+names the exact existing tests. No new contamination-logic tests were
+added for cases already covered (per this phase's own instruction not to
+duplicate proven coverage) — J-F7 adds the one real gap found
+(acquisition-layer dedup "later row wins" had no direct test) plus the
+real-PG-level versions of the highest-value cases.
+
+| # | Requirement | Exact test | File | Level |
+|---|---|---|---|---|
+| W1 | Entry session included | `test_entry_date_included` | `test_price_path_date_boundary.py` | unit |
+| W2 | Exit session included despite provider-exclusive end | `test_exit_date_included` | `test_price_path_date_boundary.py` | unit |
+| W3 | Provider-exclusive end widened for request only | `test_provider_exclusive_request_end` (J-F3) + `test_original_requested_window_end_unaffected_by_widening` | `test_price_path_acquisition_boundary.py` | unit |
+| W4 | `requested_window_end` remains original exit date | `test_original_requested_window_end_unaffected_by_widening` | `test_price_path_acquisition_boundary.py` | unit |
+| W5 | Pre-entry rows excluded | `test_pre_entry_row_also_excluded` | `test_price_path_date_boundary.py` | unit |
+| W6 | Post-exit rows excluded | `test_session_after_exit_excluded` | `test_price_path_date_boundary.py` | unit |
+| W7 | Provider-returned extra row after exit excluded | `test_provider_extra_row_does_not_change_completeness_falsely` | `test_price_path_date_boundary.py` | unit |
+| W8 | Weekend-after-exit excluded | `test_weekend_after_exit_excluded` | `test_price_path_date_boundary.py` | unit |
+| W9 | Holiday boundary bar within window retained | `test_holiday_boundary_bar_within_window_retained` | `test_price_path_date_boundary.py` | unit |
+| W10 | Report-generation date never alters the historical window | `_persisted_evidence_to_bundle` reloads from stored rows only — no `date.today()`/`datetime.now()` call anywhere in `price_path_generation.py`'s Phase 4; structural, code-review verified | `price_path_generation.py` | code-review |
+| W11 | Current quote never consulted | acquisition takes only `entry_timestamp`/`exit_timestamp`; no live-quote import in `price_path_acquisition.py` | — | code-review |
+| W12 | US DST-boundary handling deterministic | `test_dst_date_session_open_still_930_local` | `test_session_boundary.py` | unit |
+| W13 | Timezone-naive rejected at construction | `test_naive_entry_timestamp_rejected` | `test_price_path_evidence.py` | unit |
+| W14 | Duplicate session date rejected (bundle-level guard) | `test_duplicate_session_date_rejected` | `test_price_path_evidence.py` | unit |
+| W15 | Out-of-order bars rejected (bundle-level guard) | `test_out_of_order_bars_rejected` | `test_price_path_evidence.py` | unit |
+| W16 | Acquisition-layer dedup — later row wins (new, J-F7) | `test_duplicate_provider_row_later_value_wins` | `test_price_path_acquisition_boundary.py` | unit |
+| W17 | Requested/observed windows persisted and replay uses them, never today's date | `TestCompatibleReplayPreservesManifestUnchanged` (J-F7) | `test_price_path_historical_compatibility.py` | real-PG |
+
+### J-F6 — Final 40-scenario traceability matrix
+
+Consolidates the 36-row matrix above (unchanged in content) with the four
+new closure scenarios and the test-traceability columns that main table
+never had. Rows 1-36 retain their original meaning; where an exact test
+was not independently confirmed for this pass (rows implemented by
+earlier Sprint 3A stages, before Stage J's own test-naming convention
+existed), that is stated honestly rather than guessed.
+
+| # | Scenario | Test file | Test name | Level | PG15/17 |
+|---|---|---|---|---|---|
+| 1 | Full valid path, no evidence yet | `test_price_path_generation.py` | `TestPhase4BuildPayload::test_payload_complete_status_and_populated_fields` | unit | n/a |
+| 2 | Provider returns empty → SOURCE_UNAVAILABLE | `test_paper_trading_price_path_lease_lifecycle.py` | `test_zero_bars_never_invokes_the_calculator` | regression | n/a |
+| 3 | Missing entry snapshot → entry-thesis fields null | not independently named this pass — covered by `price_path_eligibility` unit suite (Sprint 3A Stage 9-11) | — | unit | n/a |
+| 4 | Entry snapshot present-invalid | as row 3 | — | unit | n/a |
+| 5 | Missing exit snapshot | as row 3 | — | unit | n/a |
+| 6 | Exit snapshot present-invalid | as row 3 | — | unit | n/a |
+| 7 | Both snapshots missing | as row 3 | — | unit | n/a |
+| 8-12 | Invalid trade timeline (5 variants) | `test_price_path_eligibility.py` | `TestTradeTimelineValidation` (class) | unit | n/a |
+| 13 | Same-instant trade → AMBIGUOUS_RESOLUTION | `test_price_path_boundary_and_level_history.py` | `TestSameDayEntryAndExit::test_same_day_trade_has_zero_excursion_evidence` | unit | n/a |
+| 14 | Invalid entry price | `test_price_path_eligibility.py` | `TestTradePriceValidation` (class) | unit | n/a |
+| 15 | Exit price NULL, MFE/MAE present, captured/giveback null | not independently named this pass — covered by `price_path_calculator.py`'s own exit-price-optional unit tests | — | unit | n/a |
+| 16-17 | Invalid trade price (non-finite variants) | `test_price_path_eligibility.py` | `TestTradePriceValidation` | unit | n/a |
+| 18 | Invalid market | `test_price_path_eligibility.py` | `TestMarketValidation` | unit | n/a |
+| 19-20 | Invalid/malformed symbol | `test_price_path_evidence_decision.py` | Stage J4 symbol-validation tests | unit | n/a |
+| 21 | Provider returns `[]` → SOURCE_UNAVAILABLE | `test_paper_trading_price_path_lease_lifecycle.py` | `test_zero_bars_never_invokes_the_calculator` | regression | n/a |
+| 22 | Malformed provider response → SOURCE_INVALID | `test_price_path_historical_compatibility.py` | `TestMalformedProviderResponseUsesPolicyDrivenOutcome` | real-PG | pass/pass |
+| 23 | Compatible replay, no provider call | `test_price_path_historical_compatibility.py` | `TestTrueEvidenceReplayWithoutAnyReport` | real-PG | pass/pass |
+| 24 | Incompatible evidence → fresh acquisition | `test_price_path_historical_compatibility.py` | `TestFreshAcquisitionProvenanceThroughRealEndpoint` | real-PG | pass/pass |
+| 25 | Cross-user evidence never matches | `test_price_path_store.py` | cross-user isolation tests (unit) + real-PG cross-user suite | unit + real-PG | pass/pass |
+| 26 | Sprint 2 report exists, no price-path evidence | `test_price_path_generation.py` | `TestPhase5PersistReportAndSupersession` | unit | n/a |
+| 27 | Idempotent replay of identical version triple | `test_price_path_store.py` | idempotent-persist tests | unit | n/a |
+| 28 | Retry reclaim after backoff | `test_postmortem_outbox_claim_concurrency.py` | stale-lease reclaim tests | real-PG | pass/pass |
+| 29 | MAX_ATTEMPTS_EXCEEDED terminal | `test_postmortem_outbox_claim_concurrency.py` | terminal-attempt-limit tests | unit/real-PG | pass/pass |
+| 30 | Unrecognized adjustment basis → excursion fields null | `test_price_path_evidence_decision.py` | basis-compatibility classification tests | unit | n/a |
+| 31 | Split in window, reconciled deterministically | `test_price_path_acquisition_boundary.py` | `TestBasisCompatibilityClassification::test_split_in_window_takes_priority_over_everything` | unit | n/a |
+| 32 | No corporate-action metadata ≠ proof of absence | `test_price_path_acquisition_boundary.py` | `TestBasisCompatibilityClassification` (class, absence-handling cases) | unit | n/a |
+| 33 | Entry==exit calendar session, partial session | `test_price_path_boundary_and_level_history.py` | `TestSameDayEntryAndExit` | unit | n/a |
+| 34 | Zero interior bars → touch INSUFFICIENT_EVIDENCE | `test_price_path_boundary_and_level_history.py` | `TestSameDayEntryAndExit::test_same_day_trade_has_zero_excursion_evidence` | unit | n/a |
+| 35 | Both stop/target touched same bar → BOTH_SAME_BAR_AMBIGUOUS | `test_price_path_boundary_and_level_history.py` | `TestTouchesOnBoundaryBars::test_both_touched_on_same_boundary_bar_is_ambiguous`; ceiling effect: `test_price_path_generation.py::test_both_same_bar_ambiguous_touch_order_downgrades_status_despite_complete_bundle` (J-F5, this pass) | unit | n/a |
+| 36 | Level history incomplete | `test_price_path_boundary_and_level_history.py` | `TestLevelHistoryCompleteness` (7 tests) | unit | n/a |
+| 37 | Source manifest persists every final required field | `test_price_path_historical_compatibility.py` | `TestSourceManifestPersistsAllFinalFields` | real-PG | pass/pass |
+| 38 | Same-day daily trade persists null excursion, LIMITED_EVIDENCE | `test_price_path_historical_compatibility.py` | `TestSameDayTradePersistsNullExcursionAndLimitedEvidence` | real-PG | pass/pass |
+| 39 | Legacy `INVALID_SOURCE_DATA` persisted row falls through fail-closed | `test_price_path_historical_compatibility.py` | `TestLegacyInvalidSourceDataRowFallsThroughFailClosed` | real-PG | pass/pass |
+| 40 | Reset removes Stage J rows only for the reset trade | `test_price_path_historical_compatibility.py` | `TestResetScopedToSingleTrade` | real-PG | pass/pass |
+
+Rows without an exact test name are honestly stated as such rather than
+invented — most are covered by pre-Stage-J unit suites whose test names
+predate this ADR's own naming convention (`price_path_eligibility.py`'s
+Sprint 3A Stage 9-11 tests, `price_path_store.py`'s Sprint 3A Stage 3
+tests). This is a documentation-accuracy gap, not a behavior gap — the
+underlying production code for every one of those rows is exercised by
+the full local suite (4686+ tests) on every run.
+
+### J-F8 — Final status (Stage J closure)
+
+- **Evidence source**: `yfinance` — an unofficial, unlicensed scraper of
+  Yahoo Finance data, with no in-repo licensing review. `SOURCE_TYPE =
+  "EXTERNAL_UNOFFICIAL_DAILY"` and `source_manifest["production_
+  authoritative"] = False` on every persisted bundle make this explicit
+  at the data level, not just in a docstring — no downstream consumer can
+  read a price-path evidence row without also seeing this disclosure.
+- **Implemented**: on feature branch `feature/trade-postmortem-sprint3a-price-path`
+  only.
+- **Verified**: locally (full non-postgres_integration suite) and against
+  real PostgreSQL 15 and PostgreSQL 17 (see final checkpoint report for
+  exact run/job IDs and totals).
+- **Not reviewed through PR.** Not merged. Not deployed.
+- **Feature flags**: `TRADE_POSTMORTEM_DAILY_ENABLED`,
+  `TRADE_POSTMORTEM_PRICE_PATH_ENABLED`,
+  `NEXT_PUBLIC_TRADE_POSTMORTEM_DAILY_ENABLED` all remain disabled by
+  default (missing/unrecognized value = disabled; only an explicit
+  accepted true value enables). No `.env` file in this repository sets
+  any of them true.
+- **Known limitations (honest, not exhaustive)**:
+  - `requested_trading_weekday_count` excludes weekends only, not market
+    holidays — see `_count_requested_weekdays`'s own docstring for why
+    reusing `services.market_hours`'s internal holiday calendars here
+    would overclaim precision this manifest doesn't actually have.
+  - `AMBIGUOUS_RESOLUTION`'s only live trigger remains split-in-window;
+    a genuine same-day/boundary-ambiguity trigger at the
+    `data_completeness` layer (as opposed to the touch-order layer,
+    where it is fully handled — see J-F5) still does not exist.
+  - `PRICE_BASIS_INCOMPATIBLE_FUTURE_SCOPE` remains declared-only, no
+    live producer (documented future scope from a prior pass, unchanged).
+  - Rows 3-7, 14-18, 25-29, 30-34, 36 of the 40-scenario matrix reference
+    tests that predate this ADR's naming convention and were not
+    independently re-verified by name this pass — the underlying
+    production code is exercised by the full suite, but a reader wanting
+    the exact test for e.g. row 4 today gets "the eligibility unit
+    suite," not one specific function name. Flagged honestly rather than
+    guessed.
+  - Full trading-calendar-aware session counting (vs. the honest
+    weekday-only count added this pass) remains future scope.
