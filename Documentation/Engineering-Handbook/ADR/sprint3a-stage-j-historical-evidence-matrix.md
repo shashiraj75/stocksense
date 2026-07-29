@@ -10,10 +10,67 @@ explicit instruction not to maintain competing documents. Every row is
 either implemented and covered by an exact, verified, passing test, or is
 not present here at all.
 
+## Current Architecture (authoritative — supersedes all narrative below)
+
+- **`ProviderFailurePolicy`** (`price_path_evidence_decision.py`) is the
+  SOLE provider-failure authority, exactly 3 fields:
+  `evidence_status`, `immediate_outbox_outcome`, `sanitized_error_code`.
+  `classify_provider_failure` (an earlier, duplicate classifier) was
+  removed entirely — do not cite it as live code.
+- **Active bundle `data_completeness` states**: `COMPLETE`, `PARTIAL`,
+  `UNAVAILABLE`, `AMBIGUOUS_RESOLUTION` — 4 values, all with real live
+  producers in `price_path_acquisition.build_price_path_evidence`.
+- **`STATUS_INVALID_SOURCE_DATA` is legacy-read-only**: declared in
+  `price_path_evidence.py` for backward-compatible replay of any
+  pre-existing persisted row only; zero live producers; any row
+  carrying it (fresh or legacy) is classified fail-closed as
+  `UNSUPPORTED_EVIDENCE_COMPLETENESS` by
+  `price_path_evidence_decision.classify_acquired_evidence`.
+- **Acquisition provenance** (`HistoricalEvidenceAcquisitionDecision` —
+  WHERE evidence came from) and **evidence quality**
+  (`HistoricalEvidenceQualityDecision` — WHETHER it's usable) remain two
+  separate, never-merged decisions, persisted as two separate
+  `structured_report["price_path"]` blocks.
+- **Manifest-integrity validation is now load-bearing** (Stage J Final
+  Semantic Reconciliation, Stage 2): before ANY compatible persisted
+  evidence row is used for replay,
+  `price_path_acquisition.validate_manifest_compatibility` is checked —
+  missing/tampered hash, missing required field, unsupported
+  schema/normalization/boundary-policy version, or an identity mismatch
+  against the row's own other columns all fail closed
+  (`MANIFEST_INTEGRITY_VIOLATION`, zero provider calls, zero calculator
+  calls, zero new evidence, zero report, original row unchanged). A
+  legacy row persisted before this manifest-integrity governance existed
+  correctly fails this check — it is never silently treated as
+  compatible merely because the older four-part version identity still
+  matches.
+- **Trade-context decision provenance** (Stage 7): J1A's own
+  `eligibility.reason_codes`/`limitations` (e.g. `EXIT_CONTEXT_INVALID`)
+  are persisted as their own `structured_report["price_path"]
+  ["trade_context_decision"]` block and folded into `evidence_gaps`, via
+  `persist_price_path_report`'s `trade_context_decision` parameter.
+- **Touch pattern vs. governed touch-order conclusion**: **NOT YET
+  separated** as of this pass. `classify_touch_order` still returns one
+  collapsed enum, and `level_history_complete=False` (hardcoded for
+  every real trade today) means `LEVEL_HISTORY_INCOMPLETE` wins over
+  `BOTH_SAME_BAR_AMBIGUOUS`/`BOUNDARY_BAR_AMBIGUOUS` through the live
+  endpoint for any real trade, exactly as row 35's own citation already
+  documents (a unit-level, not live-endpoint, proof). Separating
+  "what was observed" from "what can be concluded given level-history
+  limitations" into two independent, separately-persisted fields is
+  scoped, deliberately deferred work — see the Stage J Final Semantic
+  Reconciliation checkpoint report for the explicit reasoning.
+- **Zero-bar fresh acquisition** (`SOURCE_UNAVAILABLE`): always persists
+  one honest zero-bar evidence row and produces one honest
+  `LIMITED_EVIDENCE` report via `build_unavailable_report_payload` —
+  never `FAILED_RETRYABLE` with no report (that outcome is reserved for
+  `SOURCE_INVALID`/`UNSUPPORTED_EVIDENCE_COMPLETENESS`, which have
+  `fresh_persistence_permitted=False`).
+
 | # | Description | Trade validity | Entry snapshot | Exit snapshot | Symbol/source | Evidence availability | Evidence compatibility | Replay/acquisition decision | Calculation eligibility | Report completeness ceiling | Provider-call expectation | Evidence-row outcome | Report outcome | Outbox outcome | Reason/limitation codes | Test file | Test function | Test level | PG15/17 result |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | 1 | Full valid path, provider returns complete bars | valid | PRESENT_VALID | PRESENT_VALID | valid | none | n/a | n/a (fresh acquisition) | CALCULATION_ELIGIBLE | COMPLETE | called | 1 row, COMPLETE | new price-path report, COMPLETE | GENERATING→COMPLETE | — | test_price_path_generation.py | TestPhase4BuildPayload::test_payload_complete_status_and_populated_fields | unit | n/a |
-| 2 | Provider returns empty bar list | valid | PRESENT_VALID | PRESENT_VALID | valid | none, provider empty | n/a | ACQUISITION_REQUIRED | CALCULATION_UNAVAILABLE | LIMITED_EVIDENCE | called, empty | 1 row, SOURCE_UNAVAILABLE | none this attempt | FAILED_RETRYABLE | SOURCE_UNAVAILABLE | test_paper_trading_price_path_lease_lifecycle.py | TestSuccessfulGenerationAndIdempotentReplay::test_zero_bars_never_invokes_the_calculator | regression | n/a |
+| 2 | Provider returns empty bar list — CORRECTED: fresh SOURCE_UNAVAILABLE evidence is still persisted and still produces an honest zero-bar LIMITED_EVIDENCE report (never FAILED_RETRYABLE — that outcome is reserved for SOURCE_INVALID/UNSUPPORTED_EVIDENCE_COMPLETENESS, which produce no report at all) | valid | PRESENT_VALID | PRESENT_VALID | valid | none, provider empty | n/a | ACQUISITION_REQUIRED | CALCULATION_UNAVAILABLE | LIMITED_EVIDENCE | called, empty | 1 row, data_completeness=UNAVAILABLE | 1 row, LIMITED_EVIDENCE, every analytic field explicit None via build_unavailable_report_payload, calculator never invoked | GENERATING→LIMITED_EVIDENCE | SOURCE_UNAVAILABLE | test_paper_trading_price_path_lease_lifecycle.py | TestSuccessfulGenerationAndIdempotentReplay::test_zero_bars_never_invokes_the_calculator | regression | n/a |
 | 3 | Missing entry snapshot | valid | MISSING | PRESENT_VALID | valid | none | n/a | ACQUISITION_REQUIRED | CALCULATION_ELIGIBLE | LIMITED_EVIDENCE | called | 1 row | report, entry-thesis fields null | GENERATING→LIMITED_EVIDENCE | MISSING_ENTRY_CONTEXT | test_price_path_eligibility.py | TestContextCeiling::test_missing_entry_snapshot_caps_ceiling | unit | n/a |
 | 4 | Entry snapshot present but wrong trade/user/market (PRESENT_INVALID) | valid | PRESENT_INVALID | PRESENT_VALID | valid | none | n/a | ACQUISITION_REQUIRED | CALCULATION_ELIGIBLE | LIMITED_EVIDENCE | called | 1 row | report, entry-thesis fields null, explicit limitation | GENERATING→LIMITED_EVIDENCE | ENTRY_CONTEXT_INVALID | test_price_path_historical_compatibility.py | TestMissingSnapshotCapsReportAtLimitedEvidence::test_invalid_entry_snapshot_market_mismatch_produces_limited_evidence | real-PG | pass/pass |
 | 5 | Missing exit snapshot | valid | PRESENT_VALID | MISSING | valid | none | n/a | ACQUISITION_REQUIRED | CALCULATION_ELIGIBLE | LIMITED_EVIDENCE | called | 1 row | report, exit-rationale fields null | GENERATING→LIMITED_EVIDENCE | MISSING_EXIT_CONTEXT | test_price_path_eligibility.py | TestContextCeiling::test_missing_exit_snapshot_caps_ceiling | unit | n/a |
@@ -32,7 +89,7 @@ not present here at all.
 | 18 | Invalid/unsupported market | invalid | — | — | — | — | no | acquisition_allowed=False | n/a | LIMITED_EVIDENCE | never | no row created | none | no outbox row created | INVALID_MARKET | test_price_path_eligibility.py | TestInvalidMarket::test_unsupported_market_blocks_acquisition | unit | n/a |
 | 19 | Invalid symbol (empty string) | valid | — | — | invalid | — | no | acquisition_allowed=False | n/a | LIMITED_EVIDENCE | never | no row created | none | no outbox row created | INVALID_SYMBOL | test_price_path_eligibility.py | TestSymbolGovernance::test_empty_symbol_blocks_acquisition | unit | n/a |
 | 20 | Malformed symbol (control characters etc.) | valid | — | — | invalid | — | no | acquisition_allowed=False | n/a | LIMITED_EVIDENCE | never | no row created | none | no outbox row created | INVALID_SYMBOL | test_price_path_eligibility.py | TestSymbolGovernance::test_malformed_symbol_blocks_acquisition | unit | n/a |
-| 21 | Provider returns [] (fresh acquisition path) | valid | PRESENT_VALID | PRESENT_VALID | valid | none, provider returns [] | n/a | ACQUISITION_REQUIRED | CALCULATION_UNAVAILABLE | LIMITED_EVIDENCE | called, empty | 1 row, SOURCE_UNAVAILABLE | none this attempt | FAILED_RETRYABLE | SOURCE_UNAVAILABLE | test_paper_trading_price_path_lease_lifecycle.py | TestSuccessfulGenerationAndIdempotentReplay::test_zero_bars_never_invokes_the_calculator | regression | n/a |
+| 21 | Provider returns [] (fresh acquisition path) — CORRECTED, the same real code path as scenario 2 (both are the fresh-acquisition zero-bar case; kept as its own row only because the original Stage J request numbered them separately) | valid | PRESENT_VALID | PRESENT_VALID | valid | none, provider returns [] | n/a | ACQUISITION_REQUIRED | CALCULATION_UNAVAILABLE | LIMITED_EVIDENCE | called, empty | 1 row, data_completeness=UNAVAILABLE | 1 row, LIMITED_EVIDENCE, every analytic field explicit None, calculator never invoked | GENERATING→LIMITED_EVIDENCE | SOURCE_UNAVAILABLE | test_price_path_historical_compatibility.py | TestZeroBarLifecycleThroughRealEndpoint::test_zero_bars_persists_unavailable_evidence_and_limited_report | real-PG | pass/pass |
 | 22 | Malformed provider response (unexpected column shape) | valid | PRESENT_VALID | PRESENT_VALID | valid | none, provider rejected | n/a | ACQUISITION_REQUIRED | CALCULATION_UNAVAILABLE | LIMITED_EVIDENCE | called, rejected | 0 rows, no evidence persisted | none, no partial evidence | FAILED_RETRYABLE | SOURCE_INVALID | test_price_path_historical_compatibility.py | TestMalformedProviderResponseUsesPolicyDrivenOutcome::test_malformed_response_marks_source_invalid_and_no_evidence_persisted | real-PG | pass/pass |
 | 23 | Compatible persisted evidence exists, no report yet — evidence replay | valid | PRESENT_VALID | PRESENT_VALID | valid | compatible | yes | COMPATIBLE_REPLAY | CALCULATION_ELIGIBLE | inherits from context | not called | 1 row, reused unchanged | report constructed from persisted evidence, deterministic hash match | GENERATING→settled from replay | COMPATIBLE_REPLAY | test_price_path_historical_compatibility.py | TestTrueEvidenceReplayWithoutAnyReport::test_generate_constructs_report_from_persisted_evidence_with_zero_provider_calls | real-PG | pass/pass |
 | 24 | Incompatible evidence (different window/basis/version) — fresh acquisition | valid | PRESENT_VALID | PRESENT_VALID | valid | incompatible | no | ACQUISITION_REQUIRED | CALCULATION_ELIGIBLE | inherits from context | called | new row | new report, prior evidence untouched, immutable | GENERATING→settled | ACQUISITION_REQUIRED | test_price_path_historical_compatibility.py | TestFreshAcquisitionProvenanceThroughRealEndpoint::test_fresh_acquisition_records_full_provenance | real-PG | pass/pass |
@@ -86,6 +143,8 @@ No row in this matrix is coded around with a fabricated value. Every
 LIMITED_EVIDENCE/INSUFFICIENT_EVIDENCE path renders the fixed fallback text
 ("Insufficient evidence to determine this factor reliably.") and never a
 zero, a guessed price, or an inferred market event.
+
+> **HISTORICAL SECTION NOTICE**: everything from here through the end of the "Stage J1B-Final-Reconciliation" section describes a chronological sequence of now-superseded intermediate states, each corrected by a LATER section further down this document. In particular: `classify_provider_failure` (mentioned below as the live classifier) was fully removed in the later "Stage J1B-Assurance-Closure" section -- `get_provider_failure_policy`/`ProviderFailurePolicy` is the sole, current provider-failure authority. References below to a "5-value" data_completeness enum including `INVALID_SOURCE_DATA` as an active value were corrected in the later "Stage J1B-Final-Reconciliation" section -- INVALID_SOURCE_DATA is legacy-read-only today, confirmed by `price_path_evidence.py`'s own in-module comment and `TestLegacyInvalidSourceDataContract`. Do not cite this section as current architecture; see "Current Architecture (authoritative)" near the top of this document, and the consolidated 40-row matrix above it.
 
 ## Stage J1B load-bearing integration (this pass)
 
@@ -743,7 +802,7 @@ Six new dedicated real-PG scenarios, none duplicating an existing proof:
 | Persisted contamination exclusion (pre-entry/post-exit/current-date-outside-window bars all excluded) | `TestPersistedContaminationExclusion::test_only_in_window_bars_are_persisted` |
 | Boundary + interior touch on different bars → BOUNDARY_BAR_AMBIGUOUS, LIMITED_EVIDENCE | `TestBoundaryTouchPersistedAmbiguous::test_boundary_and_interior_touch_on_different_bars_is_ambiguous` |
 | Both stop/target in one interior bar → BOTH_SAME_BAR_AMBIGUOUS, LIMITED_EVIDENCE, MFE/MAE still populated | `TestBothSameBarPersistedAmbiguous::test_both_same_interior_bar_is_ambiguous_with_excursion_populated` |
-| Invalid (present-but-wrong-market) exit snapshot caps report at LIMITED_EVIDENCE | `TestInvalidExitSnapshotThroughRealEndpoint::test_invalid_exit_snapshot_caps_report_and_never_fabricates_rationale` |
+| Invalid (present-but-wrong-market) exit snapshot caps report at LIMITED_EVIDENCE | `TestInvalidExitSnapshotThroughRealEndpoint::test_invalid_exit_snapshot_persists_explicit_structured_reason` |
 | Manifest hash verifies from real JSONB; tampered copy fails | `TestFinalManifestIntegrityThroughRealPostgres::test_manifest_hash_verifies_from_real_jsonb_and_tamper_fails` |
 | No-bars: persisted `limitations` column == persisted `source_manifest.unresolved_basis_limitations` exactly | `TestNoBarsManifestConsistencyThroughRealPostgres::test_persisted_limitations_and_manifest_match` |
 
