@@ -77,8 +77,9 @@ class _FakeConn:
             existing_id = shared["outbox_by_key"].get((trade_id, schema_v, calc_v, rules_v))
             return (existing_id,) if existing_id is not None else None
 
-        if "WITH claimable AS" in sql:
-            max_attempts, outbox_id, user_id, lease_seconds, claimant = params
+        if "UPDATE paper_trade_postmortem_outbox o" in sql and "GENERATING" in sql:
+            max_attempts, outbox_id, user_id = params["max_attempts"], params["outbox_id"], params["user_id"]
+            lease_seconds, claimant = params["lease_seconds"], params["claimant"]
             row = shared["outbox_rows"].get(outbox_id)
             if row is None or row["user_id"] != user_id:
                 return None
