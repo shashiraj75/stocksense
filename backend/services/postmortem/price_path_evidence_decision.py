@@ -84,39 +84,60 @@ def classify_provider_failure(*, error_code: str) -> HistoricalEvidenceDecision:
     )
 
 
-def classify_acquired_evidence(
-    *, bars_observed: int, data_completeness: str, adjustment_basis_known: bool, ambiguous_resolution: bool,
-) -> HistoricalEvidenceDecision:
+# price_path_evidence.STATUS_* -> this module's own evidence_status.
+# build_price_path_evidence (price_path_acquisition.py) already
+# maintains a real, exhaustive 5-value data_completeness enum —
+# COMPLETE/PARTIAL/UNAVAILABLE/INVALID_SOURCE_DATA/AMBIGUOUS_RESOLUTION
+# — computed from real facts (an empty provider response, a malformed
+# row, a split inside the window). This mapping is deliberately
+# DERIVED FROM that real enum rather than from separately-invented
+# boolean signals (an earlier draft of this function took
+# adjustment_basis_known/ambiguous_resolution booleans that had no
+# grounded live source and would have required fabricating a value to
+# call) — PRICE_BASIS_INCOMPATIBLE remains declared in this module's
+# vocabulary for a future acquisition-layer signal that distinguishes
+# "bars ARE available but basis is unknown" from "no usable evidence at
+# all," but the live acquisition layer does not yet produce that
+# distinction (a split-in-window currently zeroes bars_observed AND
+# classifies AMBIGUOUS_RESOLUTION, never a separate basis-only state) —
+# so PRICE_BASIS_INCOMPATIBLE has no live caller today; it is not
+# removed, since Stage J7 is explicit that it must exist, but this is
+# an honest, documented gap rather than a forced mapping.
+_DATA_COMPLETENESS_TO_EVIDENCE_STATUS = {
+    "UNAVAILABLE": SOURCE_UNAVAILABLE,
+    "INVALID_SOURCE_DATA": SOURCE_INVALID,
+    "AMBIGUOUS_RESOLUTION": AMBIGUOUS_RESOLUTION,
+    "PARTIAL": PARTIAL_EVIDENCE,
+}
+
+
+def classify_acquired_evidence(*, data_completeness: str) -> HistoricalEvidenceDecision:
     """Called after a provider response was successfully validated into
-    a PricePathEvidenceBundle (bars_observed=0 is a valid, honest
-    outcome here — build_price_path_evidence already returns a
-    STATUS_UNAVAILABLE bundle rather than raising for an empty
-    response, so 'the provider ran but found nothing' is represented as
-    a bundle, not an exception)."""
-    if bars_observed == 0:
+    a PricePathEvidenceBundle (or after a compatible evidence row was
+    replayed) — `data_completeness` is that bundle's own real,
+    already-computed field, never re-derived from bar counts here."""
+    status = _DATA_COMPLETENESS_TO_EVIDENCE_STATUS.get(data_completeness)
+    if status in (SOURCE_UNAVAILABLE, SOURCE_INVALID):
         return HistoricalEvidenceDecision(
-            evidence_status=SOURCE_UNAVAILABLE, calculation_status=CALCULATION_UNAVAILABLE,
+            evidence_status=status, calculation_status=CALCULATION_UNAVAILABLE,
             provider_call_expected=True, report_completeness_ceiling="LIMITED_EVIDENCE",
-            reason_codes=(SOURCE_UNAVAILABLE,), limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
+            reason_codes=(status,), limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
         )
-    if not adjustment_basis_known:
-        return HistoricalEvidenceDecision(
-            evidence_status=PRICE_BASIS_INCOMPATIBLE, calculation_status=CALCULATION_UNAVAILABLE,
-            provider_call_expected=True, report_completeness_ceiling="LIMITED_EVIDENCE",
-            reason_codes=(PRICE_BASIS_INCOMPATIBLE,), limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
-        )
-    if ambiguous_resolution:
+    if status == AMBIGUOUS_RESOLUTION:
         return HistoricalEvidenceDecision(
             evidence_status=AMBIGUOUS_RESOLUTION, calculation_status=CALCULATION_ELIGIBLE,
             provider_call_expected=True, report_completeness_ceiling="LIMITED_EVIDENCE",
             reason_codes=(AMBIGUOUS_RESOLUTION,), limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
         )
-    if data_completeness == "PARTIAL":
+    if status == PARTIAL_EVIDENCE:
         return HistoricalEvidenceDecision(
             evidence_status=PARTIAL_EVIDENCE, calculation_status=CALCULATION_ELIGIBLE,
             provider_call_expected=True, report_completeness_ceiling="LIMITED_EVIDENCE",
             reason_codes=(PARTIAL_EVIDENCE,),
         )
+    # COMPLETE (or any future/unrecognized value defensively treated as
+    # not-worse-than-complete rather than silently fabricating a
+    # limitation for a state this mapping doesn't yet know about).
     return HistoricalEvidenceDecision(
         evidence_status=CALCULATION_ELIGIBLE, calculation_status=CALCULATION_ELIGIBLE,
         provider_call_expected=True, report_completeness_ceiling="COMPLETE",

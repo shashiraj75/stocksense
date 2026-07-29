@@ -261,6 +261,27 @@ class TestSuccessfulGenerationAndIdempotentReplay:
         assert len(shared["outbox_rows"]) == 1
         assert list(shared["outbox_rows"].values())[0]["status"] == "COMPLETE" or list(shared["outbox_rows"].values())[0]["status"] == "LIMITED_EVIDENCE"
 
+    def test_split_in_window_is_classified_ambiguous_and_caps_limited_evidence(self):
+        """Stage J1B load-bearing proof: a split inside the acquisition
+        window makes price_path_acquisition.build_price_path_evidence
+        (the REAL, unfaked classification logic -- only the fetch
+        functions are faked here) set data_completeness to
+        AMBIGUOUS_RESOLUTION (a split changes what 'unadjusted' means
+        across the boundary). That real signal must flow through
+        classify_acquired_evidence and compute_report_completeness_
+        ceiling into the persisted report's own status -- not merely be
+        computed and discarded."""
+        shared = _new_shared([{}])
+        report, status = _attempt(
+            shared, fetch_bars_fn=lambda *a: _fake_bars(),
+            fetch_splits_fn=lambda *a: [dt.date(2026, 6, 2)], fetch_dividends_fn=lambda *a: [],
+        )
+        import api.routers.paper_trading as ptr
+        assert status == ptr.PRICE_PATH_GENERATED
+        assert report is not None
+        assert report.status == "LIMITED_EVIDENCE"
+        assert report.structured_report["price_path"]["evidence_decision"]["evidence_status"] == "AMBIGUOUS_RESOLUTION"
+
     def test_second_call_is_idempotent_no_second_provider_call(self):
         shared = _new_shared([{}])
         calls = {"n": 0}

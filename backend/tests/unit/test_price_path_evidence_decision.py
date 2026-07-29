@@ -13,7 +13,6 @@ from services.postmortem.price_path_evidence_decision import (
     CALCULATION_UNAVAILABLE,
     COMPATIBLE_REPLAY,
     PARTIAL_EVIDENCE,
-    PRICE_BASIS_INCOMPATIBLE,
     SOURCE_INVALID,
     SOURCE_UNAVAILABLE,
     classify_acquired_evidence,
@@ -65,56 +64,53 @@ class TestProviderFailureClassification:
 
 @pytest.mark.unit
 class TestAcquiredEvidenceClassification:
-    def test_empty_provider_history_is_source_unavailable_never_invalid(self):
+    """data_completeness is the REAL, already-computed field on
+    PricePathEvidenceBundle (price_path_acquisition.build_price_path_
+    evidence's own 5-value STATUS_* enum) — this classifier derives
+    from it directly rather than from separately-invented signals."""
+
+    def test_unavailable_is_source_unavailable_never_invalid(self):
         """Empty provider history is never evidence the trade/symbol
         was invalid — build_price_path_evidence already returns a
         bundle (not an exception) for this, so this must classify it as
         a named unavailable state, not fabricate anything."""
-        result = classify_acquired_evidence(
-            bars_observed=0, data_completeness="UNAVAILABLE", adjustment_basis_known=True,
-            ambiguous_resolution=False,
-        )
+        result = classify_acquired_evidence(data_completeness="UNAVAILABLE")
         assert result.evidence_status == SOURCE_UNAVAILABLE
         assert result.calculation_status == CALCULATION_UNAVAILABLE
         assert result.report_completeness_ceiling == "LIMITED_EVIDENCE"
 
-    def test_unknown_basis_prevents_mfe_and_mae(self):
-        result = classify_acquired_evidence(
-            bars_observed=5, data_completeness="COMPLETE", adjustment_basis_known=False,
-            ambiguous_resolution=False,
-        )
-        assert result.evidence_status == PRICE_BASIS_INCOMPATIBLE
+    def test_invalid_source_data_is_source_invalid(self):
+        result = classify_acquired_evidence(data_completeness="INVALID_SOURCE_DATA")
+        assert result.evidence_status == SOURCE_INVALID
         assert result.calculation_status == CALCULATION_UNAVAILABLE
         assert result.report_completeness_ceiling == "LIMITED_EVIDENCE"
 
     def test_ambiguous_resolution_still_permits_calculation(self):
-        """A same-day partial-session trade may still support MFE/MAE
-        even while touch-order claims stay unavailable."""
-        result = classify_acquired_evidence(
-            bars_observed=1, data_completeness="COMPLETE", adjustment_basis_known=True,
-            ambiguous_resolution=True,
-        )
+        """A same-day partial-session trade (or a split inside the
+        window — build_price_path_evidence's own real AMBIGUOUS_
+        RESOLUTION trigger) may still support MFE/MAE even while touch-
+        order claims stay unavailable."""
+        result = classify_acquired_evidence(data_completeness="AMBIGUOUS_RESOLUTION")
         assert result.evidence_status == AMBIGUOUS_RESOLUTION
         assert result.calculation_status == CALCULATION_ELIGIBLE
         assert result.report_completeness_ceiling == "LIMITED_EVIDENCE"
 
     def test_partial_completeness_still_eligible_but_capped(self):
-        result = classify_acquired_evidence(
-            bars_observed=3, data_completeness="PARTIAL", adjustment_basis_known=True,
-            ambiguous_resolution=False,
-        )
+        result = classify_acquired_evidence(data_completeness="PARTIAL")
         assert result.evidence_status == PARTIAL_EVIDENCE
         assert result.calculation_status == CALCULATION_ELIGIBLE
         assert result.report_completeness_ceiling == "LIMITED_EVIDENCE"
 
-    def test_complete_unambiguous_known_basis_is_fully_eligible(self):
-        result = classify_acquired_evidence(
-            bars_observed=5, data_completeness="COMPLETE", adjustment_basis_known=True,
-            ambiguous_resolution=False,
-        )
+    def test_complete_is_fully_eligible(self):
+        result = classify_acquired_evidence(data_completeness="COMPLETE")
         assert result.evidence_status == CALCULATION_ELIGIBLE
         assert result.calculation_status == CALCULATION_ELIGIBLE
         assert result.report_completeness_ceiling == "COMPLETE"
+
+    def test_unrecognized_value_defaults_to_complete_eligible_never_fabricates_a_limitation(self):
+        result = classify_acquired_evidence(data_completeness="SOME_FUTURE_STATUS_THIS_MAPPING_DOES_NOT_KNOW")
+        assert result.evidence_status == CALCULATION_ELIGIBLE
+        assert result.limitations == ()
 
 
 @pytest.mark.unit

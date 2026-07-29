@@ -253,6 +253,7 @@ def persist_price_path_report(
     market: str, report_trading_date, market_timezone: str, source_version: str,
     outbox_id: int | None = None, claimed_by: str | None = None,
     trade_context_ceiling: str = "COMPLETE",
+    evidence_decision=None,
 ) -> tuple[PersistedReport, bool]:
     """PHASE 5 — short write. Merges the price-path payload additively
     on top of the prior report's own structured_report/evidence_items/
@@ -275,22 +276,38 @@ def persist_price_path_report(
 
     # Stage J3 — the final status is the MINIMUM of every applicable
     # ceiling: the prior (Sprint 1/2) report's own status, this price-
-    # path payload's own bar/excursion-completeness status, AND the
-    # Stage J1A trade-context ceiling (missing/invalid entry-exit
-    # snapshot, missing exit price) computed by
-    # price_path_eligibility.evaluate_eligibility BEFORE acquisition
-    # ever ran. Composing through compute_report_completeness_ceiling
-    # (rather than the old two-way "payload.status if prior_report.
-    # status == COMPLETE else prior_report.status" comparison) closes a
-    # real gap: without this, a trade-context ceiling computed at
-    # eligibility time was only ever used to GATE whether acquisition
-    # ran, never actually consulted when deciding the persisted status
-    # — it happened to still come out correct in the missing-snapshot/
-    # missing-exit-price cases only because Sprint 2's OWN prior report
-    # coincidentally already reflected the same limiting condition
-    # independently, not because this function ever read it.
+    # path payload's own bar/excursion-completeness status, the Stage
+    # J1A trade-context ceiling (missing/invalid entry-exit snapshot,
+    # missing exit price) computed by price_path_eligibility.
+    # evaluate_eligibility BEFORE acquisition ever ran, AND (Stage J1B
+    # load-bearing integration) the evidence decision's own ceiling
+    # (compatible-replay/acquisition-required/source-unavailable/
+    # source-invalid/basis-incompatible/partial/ambiguous), computed by
+    # price_path_evidence_decision AFTER evidence became available.
+    # Composing all four through compute_report_completeness_ceiling
+    # (never a two-way comparison) is what actually makes J1B's ceiling
+    # load-bearing rather than merely advisory — a classifier called but
+    # never consulted here would still let a downstream COMPLETE value
+    # override it.
     from services.postmortem.price_path_evidence_decision import compute_report_completeness_ceiling
-    status = compute_report_completeness_ceiling(prior_report.status, payload.status, trade_context_ceiling)
+    evidence_ceiling = evidence_decision.report_completeness_ceiling if evidence_decision is not None else "COMPLETE"
+    status = compute_report_completeness_ceiling(
+        prior_report.status, payload.status, trade_context_ceiling, evidence_ceiling,
+    )
+
+    # Stage J7 (decision provenance) — the J1B fields that explain WHY a
+    # report is limited are persisted alongside the rest of the price-
+    # path section, never as an unrestricted raw provider payload; a
+    # deterministic replay of the same trade/evidence reproduces the
+    # identical decision fields.
+    if evidence_decision is not None:
+        structured_report["price_path"] = dict(structured_report["price_path"])
+        structured_report["price_path"]["evidence_decision"] = {
+            "evidence_status": evidence_decision.evidence_status,
+            "calculation_status": evidence_decision.calculation_status,
+            "provider_call_expected": evidence_decision.provider_call_expected,
+            "reason_codes": list(evidence_decision.reason_codes),
+        }
 
     report, created = report_store.persist_report(
         conn, paper_trade_id=trade_id, user_id=user_id, market=market,
@@ -301,7 +318,8 @@ def persist_price_path_report(
         evidence_bundle_version=prior_report.evidence_bundle_version,
         status=status, structured_report=structured_report,
         evidence_items=evidence_items, claims=claims, source_manifest=source_manifest,
-        evidence_gaps=list(prior_report.evidence_gaps) + list(payload.limitations),
+        evidence_gaps=list(prior_report.evidence_gaps) + list(payload.limitations)
+        + (list(evidence_decision.limitations) if evidence_decision is not None else []),
         warnings=list(prior_report.warnings),
         supersedes_report_id=prior_report.id,
     )

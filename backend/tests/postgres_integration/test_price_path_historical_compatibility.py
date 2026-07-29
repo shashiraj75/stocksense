@@ -177,6 +177,101 @@ class TestHistoricalGenerationNeverMutatesSourceRows:
 
 
 @pytest.mark.timeout(30)
+class TestTrueEvidenceReplayWithoutAnyReport:
+    """Stage J1B/Stage 8 — the load-bearing proof that PERSISTED
+    EVIDENCE (not an already-complete REPORT) can be replayed to
+    CONSTRUCT a missing report. TestCompatibleReplaySurvivesProviderOutage
+    below proves report replay (an immutable report already exists);
+    this test proves the materially different evidence-replay path: a
+    compatible evidence bundle exists, NO price-path report exists yet,
+    and the live /generate endpoint must still construct one without
+    ever touching the provider."""
+
+    def test_generate_constructs_report_from_persisted_evidence_with_zero_provider_calls(
+        self, client, pg_conn, unique_user_id, monkeypatch,
+    ):
+        from services.market_hours import ET
+        from services.postmortem import price_path_acquisition, price_path_generation, price_path_store
+
+        # Price-path disabled during /sell -- the trade closes under
+        # Sprint 2 only, exactly the "historical trade predating the
+        # price-path evidence layer" shape Stage J exists to handle.
+        monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
+        trade_id = _open_and_close(client, pg_conn, unique_user_id)
+
+        entry_ts, exit_ts = pg_conn.execute(
+            "SELECT opened_at, closed_at FROM paper_trades WHERE id = %s", (trade_id,)
+        ).fetchone()
+
+        # Build one real evidence bundle via the actual acquisition
+        # function (using the fake bars/splits/dividends already active
+        # for this file) and persist it directly -- simulating evidence
+        # that was captured by a prior attempt, independent of any
+        # report ever being constructed from it.
+        bundle = price_path_acquisition.acquire_price_path_evidence(
+            paper_trade_id=trade_id, user_id=unique_user_id, symbol="AAPL", market="US",
+            market_timezone_name="America/New_York", market_tzinfo=ET,
+            entry_timestamp=entry_ts, exit_timestamp=exit_ts,
+            fetch_bars_fn=_fake_bars, fetch_splits_fn=_fake_none, fetch_dividends_fn=_fake_none,
+        )
+        persisted_evidence, created = price_path_store.persist_evidence(pg_conn, bundle)
+        assert created is True
+
+        evidence_count = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_price_path_evidence WHERE paper_trade_id = %s", (trade_id,)
+        ).fetchone()[0]
+        assert evidence_count == 1
+        report_count_before = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        assert report_count_before == 0
+
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+
+        def _raises(*a, **k):
+            raise AssertionError("provider function must not be called on a genuine evidence-replay path")
+
+        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _raises)
+        monkeypatch.setattr(price_path_acquisition, "fetch_split_events", _raises)
+        monkeypatch.setattr(price_path_acquisition, "fetch_dividend_events", _raises)
+
+        resp = _generate(client, unique_user_id, trade_id)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["price_path_generation_status"] == "PRICE_PATH_GENERATED"
+
+        evidence_count_after = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_price_path_evidence WHERE paper_trade_id = %s", (trade_id,)
+        ).fetchone()[0]
+        assert evidence_count_after == 1  # no second evidence row created
+
+        report_row = pg_conn.execute(
+            "SELECT id, status, structured_report FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()
+        assert report_row is not None
+        report_id, report_status, structured_report = report_row
+        assert structured_report["price_path"]["price_path_evidence_id"] == persisted_evidence.id
+
+        outbox_status = pg_conn.execute(
+            "SELECT status FROM paper_trade_postmortem_outbox "
+            "WHERE paper_trade_id = %s AND requested_report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        assert outbox_status == report_status  # Stage J8 -- report/outbox consistency
+
+        # Repeated generate is idempotent -- no duplicate report/supersession.
+        second = _generate(client, unique_user_id, trade_id)
+        assert second.status_code == 200
+        assert second.json()["price_path_generation_status"] == "PRICE_PATH_ALREADY_COMPLETE"
+        report_count_final = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        assert report_count_final == 1
+
+
+@pytest.mark.timeout(30)
 class TestCompatibleReplaySurvivesProviderOutage:
     def test_second_generate_succeeds_even_when_every_provider_function_raises(
         self, client, pg_conn, unique_user_id, monkeypatch,

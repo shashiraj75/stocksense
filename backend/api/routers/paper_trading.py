@@ -46,6 +46,7 @@ from services.postmortem import outbox as outbox_ops
 from services.postmortem import report_store
 from services.postmortem import price_path_generation
 from services.postmortem import price_path_eligibility
+from services.postmortem import price_path_evidence_decision
 from services.postmortem.idempotency import (
     OPERATION_TYPE_PAPER_BUY,
     OPERATION_TYPE_PAPER_SELL,
@@ -1293,8 +1294,21 @@ def _attempt_price_path_enhancement(
                 level_history_complete=False, prior_report=prior_report,
             )
 
+        # Stage J1B load-bearing integration — this decision, not the
+        # bare `is None` check, now GOVERNS what happens next: replaces
+        # the prior untyped branch as the authoritative control (the
+        # `is None` check remains only as the mechanical Python
+        # condition needed to actually skip the provider call; the
+        # DECISION about whether that is correct comes from here).
+        replay_decision = price_path_evidence_decision.classify_replay_or_acquisition(
+            compatible_evidence_found=ctx.compatible_evidence is not None
+        )
         evidence = ctx.compatible_evidence
-        if evidence is None:
+        if replay_decision.evidence_status == price_path_evidence_decision.COMPATIBLE_REPLAY:
+            # 2B — evidence replay: zero provider calls, the persisted
+            # evidence (same row, same hash) is used directly.
+            assert evidence is not None, "COMPATIBLE_REPLAY decision without compatible evidence present"
+        else:
             # Provider acquisition — deliberately outside any
             # `with _conn():` block; a provider timeout or transient
             # failure here is a classified, durable retryable failure,
@@ -1305,14 +1319,42 @@ def _attempt_price_path_enhancement(
                     fetch_splits_fn=fetch_splits_fn, fetch_dividends_fn=fetch_dividends_fn,
                 )
             except PriceProviderAcquisitionError as exc:
+                # Stage J1B/J4 — every provider error code is classified
+                # explicitly (never blanket-identical), even though the
+                # current durable outcome for both SOURCE_UNAVAILABLE and
+                # SOURCE_INVALID remains FAILED_RETRYABLE: the outbox's
+                # own MAX_ATTEMPTS_BEFORE_TERMINAL already bounds a
+                # permanently-broken provider contract to a finite number
+                # of attempts before durably settling FAILED_TERMINAL, so
+                # escalating SOURCE_INVALID straight to terminal here
+                # would only remove that existing safety margin without
+                # a corresponding benefit — a deliberate, documented
+                # choice, not an oversight.
+                failure_decision = price_path_evidence_decision.classify_provider_failure(error_code=exc.code)
                 with _conn() as conn:
                     outbox_ops.mark_retryable_failure(
                         conn, outbox_id=outbox_id, error_code=exc.code,
                         error_summary=type(exc).__name__, claimed_by=claimant,
                     )
+                log.warning(
+                    "[price_path_provider_failure] trade_id=%s evidence_status=%s",
+                    trade_id, failure_decision.evidence_status,
+                )
                 return None, PRICE_PATH_FAILED_RETRYABLE
             with _conn() as conn:
                 evidence, _created = price_path_generation.persist_price_path_evidence(conn, bundle)
+
+        # Stage J1B — classify the now-available evidence (whether
+        # replayed from a PRIOR acquisition or freshly acquired this
+        # attempt) from its own real, already-computed data_completeness
+        # field (build_price_path_evidence's own exhaustive 5-value
+        # STATUS_* enum — COMPLETE/PARTIAL/UNAVAILABLE/
+        # INVALID_SOURCE_DATA/AMBIGUOUS_RESOLUTION, the last of which is
+        # also what a split inside the window already produces), never
+        # re-derived or fabricated here.
+        evidence_decision = price_path_evidence_decision.classify_acquired_evidence(
+            data_completeness=evidence.data_completeness,
+        )
 
         payload = price_path_generation.build_price_path_report_payload(
             evidence, entry_price=ctx.entry_price, exit_price=ctx.exit_price,
@@ -1333,6 +1375,12 @@ def _attempt_price_path_enhancement(
                     # consulted when the report settles, never merely used
                     # to gate whether acquisition ran.
                     trade_context_ceiling=eligibility.report_completeness_ceiling,
+                    # Stage J1B load-bearing integration — the evidence
+                    # decision's own ceiling (basis-incompatible/partial/
+                    # ambiguous/source-unavailable) is now composed into
+                    # the final status too, not merely computed and
+                    # discarded.
+                    evidence_decision=evidence_decision,
                 )
         return enhanced, PRICE_PATH_GENERATED
     except generation_service.StaleLeaseError:
