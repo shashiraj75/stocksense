@@ -45,6 +45,7 @@ INVALID_TRADE_PRICE = "INVALID_TRADE_PRICE"
 INVALID_MARKET = "INVALID_MARKET"
 MISSING_ENTRY_CONTEXT = "MISSING_ENTRY_CONTEXT"
 MISSING_EXIT_CONTEXT = "MISSING_EXIT_CONTEXT"
+MISSING_EXIT_PRICE = "MISSING_EXIT_PRICE"
 
 _SUPPORTED_MARKETS = frozenset({"IN", "US"})
 
@@ -150,6 +151,23 @@ def evaluate_eligibility(
     # honestly be (Stage J2's own required separation).
     missing_evidence: list[str] = []
     ceiling = "COMPLETE"
+    if exit_price is None:
+        # Stage J3 correction: MFE/signed-MAE/MAE-magnitude may still be
+        # calculable from valid bar evidence with a missing exit price,
+        # but captured_mfe_pct, giveback, and any complete exit-
+        # performance interpretation cannot be — the overall report can
+        # never honestly claim COMPLETE while that gap exists, even
+        # though this does not itself block acquisition/replay/
+        # calculation (compute_excursion's own _is_finite_positive check
+        # on exit_price already keeps those specific fields null rather
+        # than fabricated).
+        reason_codes.append(MISSING_EXIT_PRICE)
+        missing_evidence.append("exit_price")
+        limitations.append(
+            "exit_price is missing — captured MFE, giveback, and complete exit-performance "
+            "interpretation cannot be determined reliably"
+        )
+        ceiling = "LIMITED_EVIDENCE"
     if not entry_snapshot_present:
         reason_codes.append(MISSING_ENTRY_CONTEXT)
         missing_evidence.append("entry_snapshot")

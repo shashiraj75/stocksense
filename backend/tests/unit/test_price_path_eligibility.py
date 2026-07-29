@@ -49,6 +49,18 @@ class TestValidTrade:
         assert result.acquisition_allowed is True
         assert result.eligibility_status != INVALID_TRADE_PRICE
 
+    def test_null_exit_price_still_caps_ceiling_stage_j3(self):
+        """Stage J3 correction — missing exit_price permits MFE/signed-
+        MAE/MAE-magnitude to still be calculated, but captured MFE,
+        giveback, and complete exit-performance interpretation cannot
+        be — the overall report can never claim COMPLETE."""
+        from services.postmortem.price_path_eligibility import MISSING_EXIT_PRICE
+        result = _eval(exit_price=None)
+        assert result.report_completeness_ceiling == "LIMITED_EVIDENCE"
+        assert MISSING_EXIT_PRICE in result.reason_codes
+        assert "exit_price" in result.required_missing_evidence
+        assert result.calculation_allowed is True  # MFE/MAE still computable
+
 
 @pytest.mark.unit
 class TestInvalidMarket:

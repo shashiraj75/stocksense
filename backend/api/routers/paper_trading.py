@@ -1212,17 +1212,37 @@ def _attempt_price_path_enhancement(
             # unsupported market) never gets an outbox row at all — the
             # simplest, safest way to guarantee it is never repeatedly
             # retried (Stage J8 item 5's own explicit requirement).
-            # entry/exit snapshot presence is derived from the ALREADY-
-            # COMPUTED Sprint 2 report status (generation_service.py's
-            # own build_report_payload already sets LIMITED_EVIDENCE
-            # whenever either snapshot is missing) rather than re-
-            # querying both snapshot tables here.
-            historical_context_complete = prior_report.status == "COMPLETE"
+            #
+            # Stage J2 correction: entry/exit snapshot presence is now
+            # determined by loading the ACTUAL snapshot rows (the same
+            # _fetch_entry_snapshot/_fetch_exit_snapshot helpers
+            # _run_claimed_generation already uses) and validating their
+            # own paper_trade_id/user_id/market against this trade's own
+            # record — never inferred from the Sprint 2 report's own
+            # status, which conflates "was context available at THAT
+            # generation attempt" with "does context exist right now."
+            # A snapshot row that exists but belongs to the wrong trade,
+            # user or market is treated as effectively absent (present-
+            # but-invalid), never used.
+            entry_snapshot = _fetch_entry_snapshot(conn, trade_id)
+            entry_snapshot_valid = (
+                entry_snapshot is not None
+                and entry_snapshot.paper_trade_id == trade_id
+                and entry_snapshot.user_id == user_id
+                and entry_snapshot.market == record.market
+            )
+            exit_snapshot = _fetch_exit_snapshot(conn, trade_id)
+            exit_snapshot_valid = (
+                exit_snapshot is not None
+                and exit_snapshot.paper_trade_id == trade_id
+                and exit_snapshot.user_id == user_id
+                and exit_snapshot.market == record.market
+            )
             eligibility = price_path_eligibility.evaluate_eligibility(
                 market=record.market, entry_price=record.entry_price, exit_price=record.exit_price,
                 opened_at=record.opened_at, closed_at=record.closed_at,
-                entry_snapshot_present=historical_context_complete,
-                exit_snapshot_present=historical_context_complete,
+                entry_snapshot_present=entry_snapshot_valid,
+                exit_snapshot_present=exit_snapshot_valid,
             )
             if not eligibility.acquisition_allowed:
                 return None, PRICE_PATH_NOT_YET_AVAILABLE
