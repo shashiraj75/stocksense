@@ -88,3 +88,85 @@ expectation · **Outbox** = outbox outcome · **Report** = report outcome ·
 No row in this matrix is coded around with a fabricated value. Every
 LIMITED_EVIDENCE/INSUFFICIENT_EVIDENCE path renders the fixed fallback text
 and never a zero, a guessed price, or an inferred market event.
+
+## Stage J1B load-bearing integration (this pass)
+
+The gap explicitly flagged in the prior checkpoint — "J1B is unit-tested but
+bypassed by the live generation path" — is closed for the decision points
+that have a real, grounded live signal:
+
+- **Report replay vs evidence replay** are now distinct, both proven:
+  report replay (`existing_pp_report is not None`, `paper_trading.py`) never
+  reaches the outbox claim at all; evidence replay (compatible evidence,
+  no report yet) is governed by `classify_replay_or_acquisition`, proven by
+  `tests/postgres_integration/test_price_path_historical_compatibility.py::
+  TestTrueEvidenceReplayWithoutAnyReport` — a compatible evidence bundle is
+  persisted directly (bypassing `/sell`/`/generate`), then `/generate` is
+  called with every provider function raising `AssertionError`, and still
+  succeeds by constructing a report from the persisted evidence alone.
+- **Provider-error-code mapping**: every `PriceProviderAcquisitionError`
+  code is classified via `classify_provider_failure` before the existing
+  `mark_retryable_failure` call — `PROVIDER_UNEXPECTED_COLUMN_SHAPE` →
+  `SOURCE_INVALID`; `PROVIDER_FETCH_FAILED`/`PROVIDER_RESPONSE_TOO_LARGE` →
+  `SOURCE_UNAVAILABLE`. Both currently settle `FAILED_RETRYABLE` (not
+  terminal) — a deliberate choice: the outbox's own
+  `MAX_ATTEMPTS_BEFORE_TERMINAL` already bounds a permanently-broken
+  provider contract to a finite number of attempts, so escalating
+  `SOURCE_INVALID` straight to `FAILED_TERMINAL` here would remove that
+  existing safety margin without a corresponding benefit.
+- **Acquired-evidence classification** (`classify_acquired_evidence`) is
+  now derived directly from `PricePathEvidenceBundle.data_completeness` —
+  the REAL, already-computed 5-value enum
+  (`COMPLETE`/`PARTIAL`/`UNAVAILABLE`/`INVALID_SOURCE_DATA`/
+  `AMBIGUOUS_RESOLUTION`) `build_price_path_evidence` produces from real
+  facts (empty provider response, malformed rows, a split inside the
+  window). An earlier draft of this function took separately-invented
+  `adjustment_basis_known`/`ambiguous_resolution` booleans with no grounded
+  live source; rewritten to derive from the real field instead. Proven live
+  by `tests/regression/test_paper_trading_price_path_lease_lifecycle.py::
+  TestSuccessfulGenerationAndIdempotentReplay::
+  test_split_in_window_is_classified_ambiguous_and_caps_limited_evidence` —
+  a real split-in-window response (via the REAL, unfaked
+  `build_price_path_evidence`) flows through to `AMBIGUOUS_RESOLUTION` and
+  caps the persisted report at `LIMITED_EVIDENCE`.
+- **`PRICE_BASIS_INCOMPATIBLE` has no live caller today** — honestly
+  documented, not forced: the acquisition layer's real 5-value enum does
+  not currently distinguish "bars available but basis unknown" from
+  "ambiguous" (a split zeroes `bars_observed` AND sets
+  `AMBIGUOUS_RESOLUTION`, never a separate basis-only state). The state
+  remains declared per Stage J7's requirement, for a future acquisition-
+  layer signal.
+- **Evidence ceiling composition**: `persist_price_path_report` now composes
+  `prior_report.status`, `payload.status`, `trade_context_ceiling` (J1A),
+  AND `evidence_decision.report_completeness_ceiling` (J1B) through the
+  single `compute_report_completeness_ceiling` function — proven by
+  `tests/unit/test_price_path_generation.py`'s
+  `test_trade_context_ceiling_alone_caps_an_otherwise_complete_outcome` and
+  the live split-in-window regression test above.
+- **Decision provenance**: `evidence_status`, `calculation_status`,
+  `provider_call_expected`, and `reason_codes` are persisted into
+  `structured_report["price_path"]["evidence_decision"]`; `limitations` are
+  folded into the existing `evidence_gaps` list. No raw provider payload is
+  added.
+- **Report/outbox consistency**: unchanged and already correct —
+  `mark_terminal` was already called with `report.status` (the final
+  composed value), so this was structurally guaranteed before this pass
+  too; the true-evidence-replay test explicitly re-asserts it.
+
+### Remaining Stage J closure work (still open after this pass)
+
+- Complete persisted source-manifest fields (normalization version, source
+  scope, provider/library version as named, queryable report fields).
+- Explicit historical-window contamination traceability (dedicated Stage-J-
+  labeled tests for entry/exit boundary inclusion, weekend/holiday
+  exclusion, DST, timezone-naive handling — the underlying logic is correct
+  from earlier Sprint 3A work but not re-proven under a Stage J test name).
+- `AMBIGUOUS_RESOLUTION`'s same-day/boundary-ambiguity trigger (as opposed
+  to the split-in-window trigger, which is now wired) has no live signal
+  yet at this decision point.
+- Complete requirement-to-test traceability table (the full 40-scenario
+  matrix from the original Stage J request).
+- Remaining Stage J10 real-PG scenarios: invalid exit snapshot with an
+  explicit limitation, atomic limited-report+terminal-outbox settlement as
+  its own dedicated named test (currently proven only implicitly via the
+  evidence-replay test's own outbox/report status equality assertion).
