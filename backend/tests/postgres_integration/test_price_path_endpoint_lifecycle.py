@@ -183,24 +183,26 @@ class TestGenerateEndpointPricePathWiring:
 class TestTrueConcurrentGenerate:
     def test_two_simultaneous_generate_requests_one_provider_call_one_report(self, client, pg_conn, unique_user_id, monkeypatch):
         """TRUE concurrency: two real threads issue real HTTP requests
-        against the real TestClient/database simultaneously (started
-        together, no artificial sequencing) — not a sequential
-        simulation of a fake row's status. Only the winning claimant
-        ever reaches the provider call at all (the loser is rejected at
-        the atomic outbox claim itself, before Phase 2) — a small sleep
-        inside the provider widens that request's own window without
-        requiring both threads to arrive, which a 2-party barrier would
-        incorrectly assume."""
+        against the real TestClient/database, released together by a
+        REQUEST-START barrier (not a provider-call barrier — only the
+        winning claimant ever reaches the provider at all, since the
+        loser is rejected at the atomic outbox claim itself, before
+        Phase 2; a barrier inside the provider would wait forever for an
+        arrival that, by design, only one side ever makes). A short
+        provider-side sleep keeps the winner's lease open long enough
+        for the loser's own claim attempt to genuinely race against it,
+        rather than trivially finding the row already settled."""
         from services.postmortem import price_path_acquisition
         import time as _time
 
         calls = {"n": 0}
         calls_lock = threading.Lock()
+        start_barrier = threading.Barrier(2, timeout=15)
 
         def _slow_bars(*a, **k):
             with calls_lock:
                 calls["n"] += 1
-            _time.sleep(0.3)  # widen the race window for the second thread
+            _time.sleep(0.3)  # keep the winner's lease open while the loser's claim races it
             return _fake_bars()
 
         monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _slow_bars)
@@ -209,11 +211,16 @@ class TestTrueConcurrentGenerate:
 
         results = []
         results_lock = threading.Lock()
+        thread_exceptions = []
 
         def _attempt():
-            resp = _generate(client, unique_user_id, trade_id)
-            with results_lock:
-                results.append(resp.json())
+            try:
+                start_barrier.wait()  # both requests begin together
+                resp = _generate(client, unique_user_id, trade_id)
+                with results_lock:
+                    results.append(resp.json())
+            except Exception as exc:  # pragma: no cover - surfaced via thread_exceptions below
+                thread_exceptions.append(exc)
 
         threads = [threading.Thread(target=_attempt) for _ in range(2)]
         for t in threads:
@@ -221,22 +228,32 @@ class TestTrueConcurrentGenerate:
         for t in threads:
             t.join(timeout=20)
 
+        assert not any(t.is_alive() for t in threads), "a worker thread did not finish within the join timeout"
+        assert thread_exceptions == [], f"worker thread(s) raised: {thread_exceptions}"
         assert len(results) == 2
+
         statuses = [r["price_path_generation_status"] for r in results]
-        # Both may observe GENERATED (one truly generated; the other's
-        # own claim attempt lost the race and, once the winner commits,
-        # a subsequent internal re-check would find it ALREADY_COMPLETE
-        # — but a request that lost the claim race outright returns
-        # GENERATION_IN_PROGRESS/NOT_YET_AVAILABLE, never a duplicate
-        # GENERATED). The key invariants are the DURABLE ones below.
-        assert statuses.count("PRICE_PATH_GENERATED") <= 1
+        allowed_losing_statuses = {"PRICE_PATH_GENERATION_IN_PROGRESS", "PRICE_PATH_ALREADY_COMPLETE"}
+        generated_count = statuses.count("PRICE_PATH_GENERATED")
+        assert generated_count == 1, f"expected exactly one PRICE_PATH_GENERATED, got statuses={statuses}"
+        losing_statuses = [s for s in statuses if s != "PRICE_PATH_GENERATED"]
+        assert len(losing_statuses) == 1
+        assert losing_statuses[0] in allowed_losing_statuses, (
+            f"losing request returned an unexpected status: {losing_statuses[0]!r} "
+            f"(allowed: {allowed_losing_statuses})"
+        )
         assert calls["n"] == 1  # exactly one provider invocation across both requests
 
         report_count = pg_conn.execute(
             "SELECT count(*) FROM paper_trade_postmortem_report "
             "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
         ).fetchone()[0]
-        assert report_count == 1  # exactly one price-path report, never two
+        assert report_count == 1  # exactly one price-path report, never two — no supersession fork
+
+        evidence_count = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_price_path_evidence WHERE paper_trade_id = %s", (trade_id,)
+        ).fetchone()[0]
+        assert evidence_count == 1  # exactly one compatible evidence version
 
         outbox_count = pg_conn.execute(
             "SELECT count(*) FROM paper_trade_postmortem_outbox "
