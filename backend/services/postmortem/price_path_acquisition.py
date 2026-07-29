@@ -580,6 +580,114 @@ def validate_manifest_compatibility(evidence) -> ManifestCompatibilityDecision:
             False, MANIFEST_INTEGRITY_VIOLATION, "manifest provider_library_version is missing or not a string"
         )
 
+    # Stage J3A, Stage 5 — semantic-VALUE checks (not merely presence)
+    # for fields whose exact pinned value matters, not just that a value
+    # exists.
+    fixed_semantic_values = (
+        ("provider", "yfinance"),
+        ("timezone_behavior", ACQUISITION_TIMEZONE_BEHAVIOR),
+        ("raw_ohlc_basis_claim", "PROVIDER_RETURNED_UNADJUSTED_OHLC"),
+        ("acquisition_mode", "auto_adjust_false"),
+    )
+    for key, expected in fixed_semantic_values:
+        if manifest.get(key) != expected:
+            return ManifestCompatibilityDecision(
+                False, MANIFEST_INTEGRITY_VIOLATION, f"manifest {key}={manifest.get(key)!r} does not equal pinned {expected!r}"
+            )
+
+    weekday_count = manifest.get("requested_trading_weekday_count")
+    if not isinstance(weekday_count, int) or isinstance(weekday_count, bool) or weekday_count < 0:
+        return ManifestCompatibilityDecision(
+            False, MANIFEST_INTEGRITY_VIOLATION, "manifest requested_trading_weekday_count is not a non-negative integer"
+        )
+    expected_weekday_count = _count_requested_weekdays(evidence.requested_window_start, evidence.requested_window_end)
+    if weekday_count != expected_weekday_count:
+        return ManifestCompatibilityDecision(
+            False, MANIFEST_INTEGRITY_VIOLATION,
+            "manifest requested_trading_weekday_count does not match the deterministic count for the requested window",
+        )
+
+    return ManifestCompatibilityDecision(True, None)
+
+
+# Stage J3A — a compatible evidence row's own manifest can be perfectly
+# self-consistent and STILL be the wrong row: same paper_trade_id/user_id
+# (the SQL lookup's own scope) but internally corrupted/substituted to
+# describe a different market, symbol, or window than the CURRENT
+# persisted paper trade actually has. validate_manifest_compatibility
+# alone cannot catch this — it never consults anything about "the
+# current trade," only the row's own internal agreement. This is a
+# distinct reason code (not MANIFEST_INTEGRITY_VIOLATION) so the two
+# failure classes stay diagnosable apart, even though both fail closed
+# identically.
+REPLAY_TRADE_CONTEXT_MISMATCH = "REPLAY_TRADE_CONTEXT_MISMATCH"
+
+
+def validate_replay_compatibility(
+    evidence, *, expected_trade_id: int, expected_user_id: str, expected_symbol: str, expected_market: str,
+    expected_market_timezone: str, expected_entry_timestamp: datetime, expected_exit_timestamp: datetime,
+    expected_requested_window_start: date, expected_requested_window_end: date,
+) -> ManifestCompatibilityDecision:
+    """Pure, no I/O. Superset of validate_manifest_compatibility: first
+    runs every internal-consistency/hash/schema-version check that
+    function already performs, THEN compares the row against the
+    CURRENT persisted paper trade's own facts — never the current stock
+    universe, never a re-derived/inferred symbol rename or delisting,
+    only the trade's own already-persisted columns the caller passes in.
+    A row that passes validate_manifest_compatibility but fails here is
+    exactly the "internally consistent, wrong trade" case Stage J3A was
+    opened to close."""
+    manifest_decision = validate_manifest_compatibility(evidence)
+    if not manifest_decision.compatible:
+        return manifest_decision
+
+    manifest = evidence.source_manifest
+
+    if evidence.paper_trade_id != expected_trade_id:
+        return ManifestCompatibilityDecision(
+            False, REPLAY_TRADE_CONTEXT_MISMATCH, "evidence.paper_trade_id does not match the current trade"
+        )
+    if evidence.user_id != expected_user_id:
+        return ManifestCompatibilityDecision(
+            False, REPLAY_TRADE_CONTEXT_MISMATCH, "evidence.user_id does not match the current user"
+        )
+    if evidence.symbol.upper() != expected_symbol.upper():
+        return ManifestCompatibilityDecision(
+            False, REPLAY_TRADE_CONTEXT_MISMATCH, "evidence.symbol does not match the current trade's symbol"
+        )
+    if evidence.market != expected_market:
+        return ManifestCompatibilityDecision(
+            False, REPLAY_TRADE_CONTEXT_MISMATCH, "evidence.market does not match the current trade's market"
+        )
+    expected_provider_symbol = _provider_symbol(expected_symbol, expected_market)
+    if evidence.provider_symbol != expected_provider_symbol or manifest.get("provider_symbol") != expected_provider_symbol:
+        return ManifestCompatibilityDecision(
+            False, REPLAY_TRADE_CONTEXT_MISMATCH,
+            "evidence.provider_symbol does not match deterministic normalization of the current symbol/market",
+        )
+    if evidence.market_timezone != expected_market_timezone:
+        return ManifestCompatibilityDecision(
+            False, REPLAY_TRADE_CONTEXT_MISMATCH, "evidence.market_timezone does not match the current market"
+        )
+    if evidence.entry_timestamp != expected_entry_timestamp:
+        return ManifestCompatibilityDecision(
+            False, REPLAY_TRADE_CONTEXT_MISMATCH, "evidence.entry_timestamp does not match the current trade's opened_at"
+        )
+    if evidence.exit_timestamp != expected_exit_timestamp:
+        return ManifestCompatibilityDecision(
+            False, REPLAY_TRADE_CONTEXT_MISMATCH, "evidence.exit_timestamp does not match the current trade's closed_at"
+        )
+    if evidence.requested_window_start != expected_requested_window_start:
+        return ManifestCompatibilityDecision(
+            False, REPLAY_TRADE_CONTEXT_MISMATCH,
+            "evidence.requested_window_start does not match the current trade's market-local entry date",
+        )
+    if evidence.requested_window_end != expected_requested_window_end:
+        return ManifestCompatibilityDecision(
+            False, REPLAY_TRADE_CONTEXT_MISMATCH,
+            "evidence.requested_window_end does not match the current trade's market-local exit date",
+        )
+
     return ManifestCompatibilityDecision(True, None)
 
 

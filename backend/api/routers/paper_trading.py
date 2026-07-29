@@ -1331,21 +1331,35 @@ def _attempt_price_path_enhancement(
                 log.warning("[price_path_internal_integrity_violation] trade_id=%s reason=replay_without_evidence", trade_id)
                 return None, PRICE_PATH_FAILED_RETRYABLE
 
-            # Stage J Final Semantic Reconciliation, Stage 2 — a manifest
-            # hash nobody checks is not a production integrity control.
-            # Before this replay's evidence is trusted for classification
-            # at all, its manifest must pass validate_manifest_
-            # compatibility (schema/identity/pinned-argument checks,
-            # including the tamper-detecting hash itself). A legacy row
-            # persisted before Stage J-F3 added these manifest fields
-            # correctly fails this — never silently treated as compatible
-            # merely because the older four-part version identity still
-            # matches. Fails exactly like the missing-evidence case
-            # above: no provider call, no calculator, no new evidence, no
-            # report, the ORIGINAL row untouched.
-            from services.postmortem.price_path_acquisition import validate_manifest_compatibility
+            # Stage J Final Semantic Reconciliation Stage 2 / Stage J3A —
+            # a manifest hash nobody checks is not a production integrity
+            # control, and a manifest that is only internally
+            # self-consistent can still describe the WRONG trade (same
+            # paper_trade_id/user_id — the SQL lookup's own scope — but
+            # corrupted/substituted market, symbol, or window). Before
+            # this replay's evidence is trusted for classification at
+            # all, it must pass validate_replay_compatibility: every
+            # internal manifest check validate_manifest_compatibility
+            # already performs, PLUS agreement with the CURRENT persisted
+            # trade's own symbol/market/timezone/timestamps/window —
+            # never the current stock universe, never an inferred
+            # rename. A legacy row persisted before Stage J-F3 added
+            # these manifest fields correctly fails this — never silently
+            # treated as compatible merely because the older four-part
+            # version identity still matches. Fails exactly like the
+            # missing-evidence case above: no provider call, no
+            # calculator, no new evidence, no report, the ORIGINAL row
+            # untouched.
+            from services.postmortem.price_path_acquisition import validate_replay_compatibility
 
-            manifest_decision = validate_manifest_compatibility(evidence)
+            manifest_decision = validate_replay_compatibility(
+                evidence, expected_trade_id=trade_id, expected_user_id=user_id,
+                expected_symbol=record.symbol, expected_market=record.market,
+                expected_market_timezone=market_timezone_name,
+                expected_entry_timestamp=record.opened_at, expected_exit_timestamp=record.closed_at,
+                expected_requested_window_start=record.opened_at.astimezone(tz).date(),
+                expected_requested_window_end=record.closed_at.astimezone(tz).date(),
+            )
             if not manifest_decision.compatible:
                 with _conn() as conn:
                     outbox_ops.mark_retryable_failure(

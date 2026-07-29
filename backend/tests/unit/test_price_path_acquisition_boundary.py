@@ -28,8 +28,10 @@ from services.postmortem.price_path_acquisition import (
     evaluate_basis_compatibility,
     MANIFEST_INTEGRITY_VIOLATION,
     SOURCE_ID_YFINANCE_DAILY,
+    REPLAY_TRADE_CONTEXT_MISMATCH,
     finalize_source_manifest,
     validate_manifest_compatibility,
+    validate_replay_compatibility,
     verify_source_manifest_integrity,
 )
 
@@ -454,6 +456,103 @@ class TestManifestCompatibilityValidation:
             )
             decision = validate_manifest_compatibility(bundle)
             assert decision.compatible is True, f"{market} fresh bundle manifest failed: {decision.detail}"
+
+
+@pytest.mark.unit
+class TestReplayCompatibilityAgainstCurrentTrade:
+    """Stage J3A, Stage 3 -- a manifest can be perfectly self-consistent
+    (validate_manifest_compatibility passes) and STILL be the wrong row
+    for the CURRENT trade. validate_replay_compatibility is the added
+    gate that catches this by comparing the evidence row against the
+    caller-supplied current-trade facts, never re-deriving them from
+    current market data."""
+
+    def _bundle(self, **overrides):
+        kwargs = dict(
+            paper_trade_id=1, user_id="user-aaa", symbol="AAPL", market="US",
+            market_timezone_name="America/New_York", market_tzinfo=ET,
+            entry_timestamp=dt.datetime(2026, 6, 1, tzinfo=ET), exit_timestamp=dt.datetime(2026, 6, 1, tzinfo=ET),
+            raw_bars=[{"date": dt.date(2026, 6, 1), "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": None}],
+            split_events=[],
+        )
+        kwargs.update(overrides)
+        return build_price_path_evidence(**kwargs)
+
+    def _expected(self, **overrides):
+        kwargs = dict(
+            expected_trade_id=1, expected_user_id="user-aaa", expected_symbol="AAPL", expected_market="US",
+            expected_market_timezone="America/New_York",
+            expected_entry_timestamp=dt.datetime(2026, 6, 1, tzinfo=ET),
+            expected_exit_timestamp=dt.datetime(2026, 6, 1, tzinfo=ET),
+            expected_requested_window_start=dt.date(2026, 6, 1), expected_requested_window_end=dt.date(2026, 6, 1),
+        )
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_matching_current_trade_is_compatible(self):
+        decision = validate_replay_compatibility(self._bundle(), **self._expected())
+        assert decision.compatible is True
+        assert decision.reason_code is None
+
+    def test_wrong_trade_id_fails_closed(self):
+        decision = validate_replay_compatibility(self._bundle(), **self._expected(expected_trade_id=999))
+        assert decision.compatible is False
+        assert decision.reason_code == REPLAY_TRADE_CONTEXT_MISMATCH
+
+    def test_wrong_user_id_fails_closed(self):
+        decision = validate_replay_compatibility(self._bundle(), **self._expected(expected_user_id="attacker"))
+        assert decision.compatible is False
+        assert decision.reason_code == REPLAY_TRADE_CONTEXT_MISMATCH
+
+    def test_wrong_symbol_fails_closed(self):
+        decision = validate_replay_compatibility(self._bundle(), **self._expected(expected_symbol="MSFT"))
+        assert decision.compatible is False
+        assert decision.reason_code == REPLAY_TRADE_CONTEXT_MISMATCH
+
+    def test_wrong_market_fails_closed(self):
+        """An internally-consistent US bundle checked against an IN
+        expectation -- proves the exact 'right internal manifest, wrong
+        trade market' scenario Stage J3A exists to close."""
+        decision = validate_replay_compatibility(
+            self._bundle(),
+            **self._expected(expected_market="IN", expected_market_timezone="Asia/Kolkata"),
+        )
+        assert decision.compatible is False
+        assert decision.reason_code == REPLAY_TRADE_CONTEXT_MISMATCH
+
+    def test_wrong_entry_timestamp_fails_closed(self):
+        decision = validate_replay_compatibility(
+            self._bundle(), **self._expected(expected_entry_timestamp=dt.datetime(2026, 6, 2, tzinfo=ET))
+        )
+        assert decision.compatible is False
+        assert decision.reason_code == REPLAY_TRADE_CONTEXT_MISMATCH
+
+    def test_wrong_exit_timestamp_fails_closed(self):
+        decision = validate_replay_compatibility(
+            self._bundle(), **self._expected(expected_exit_timestamp=dt.datetime(2026, 6, 2, tzinfo=ET))
+        )
+        assert decision.compatible is False
+        assert decision.reason_code == REPLAY_TRADE_CONTEXT_MISMATCH
+
+    def test_wrong_requested_window_fails_closed(self):
+        decision = validate_replay_compatibility(
+            self._bundle(), **self._expected(expected_requested_window_start=dt.date(2026, 5, 30))
+        )
+        assert decision.compatible is False
+        assert decision.reason_code == REPLAY_TRADE_CONTEXT_MISMATCH
+
+    def test_underlying_manifest_failure_still_reported_as_manifest_violation(self):
+        """A manifest that fails the internal-consistency gate reports
+        MANIFEST_INTEGRITY_VIOLATION, not REPLAY_TRADE_CONTEXT_MISMATCH
+        -- validate_replay_compatibility delegates first, never masking
+        the more fundamental failure."""
+        bundle = self._bundle()
+        tampered_manifest = dict(bundle.source_manifest)
+        tampered_manifest["manifest_integrity_hash"] = "0" * 64
+        bundle = bundle.__class__(**{**bundle.__dict__, "source_manifest": tampered_manifest})
+        decision = validate_replay_compatibility(bundle, **self._expected())
+        assert decision.compatible is False
+        assert decision.reason_code == MANIFEST_INTEGRITY_VIOLATION
 
 
 @pytest.mark.unit
