@@ -257,7 +257,7 @@ def build_unavailable_report_payload(
     actual calculator) — every analytic field is explicitly null, never
     a zero or a guessed value, matching Sprint 2/3A's own no-fabrication
     discipline. `evidence_id` is None whenever quality_decision.
-    persistence_permitted was False (SOURCE_INVALID, unsupported/
+    fresh_persistence_permitted was False (SOURCE_INVALID, unsupported/
     unknown completeness) — no evidence row exists to reference."""
     section = {
         "price_path_status": quality_decision.evidence_status,
@@ -352,7 +352,7 @@ def persist_price_path_report(
             structured_report["price_path"]["evidence_quality_decision"] = {
                 "evidence_status": quality_decision.evidence_status,
                 "calculation_status": quality_decision.calculation_status,
-                "persistence_permitted": quality_decision.persistence_permitted,
+                "fresh_persistence_permitted": quality_decision.fresh_persistence_permitted,
                 "reason_codes": list(quality_decision.reason_codes),
             }
             extra_limitations.extend(quality_decision.limitations)

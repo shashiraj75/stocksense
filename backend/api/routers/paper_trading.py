@@ -1348,14 +1348,14 @@ def _attempt_price_path_enhancement(
                 return None, result_status
 
             # Stage 3 — CLASSIFY the freshly acquired bundle BEFORE any
-            # persistence decision, never after. persistence_permitted
+            # persistence decision, never after. fresh_persistence_permitted
             # governs whether the bundle becomes an immutable evidence
             # row at all (SOURCE_INVALID/unsupported-enum bundles are
             # never persisted — Stage 3's own explicit requirement).
             quality_decision = price_path_evidence_decision.classify_acquired_evidence(
                 data_completeness=bundle.data_completeness,
             )
-            if quality_decision.persistence_permitted:
+            if quality_decision.fresh_persistence_permitted:
                 with _conn() as conn:
                     evidence, _created = price_path_generation.persist_price_path_evidence(conn, bundle)
             else:
