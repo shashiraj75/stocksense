@@ -91,6 +91,29 @@ class TestFirstInitialization:
         assert "idx_paper_trade_entry_snapshot_trade" in indexes
         assert "idx_paper_trade_entry_snapshot_user" in indexes
 
+    def test_entry_snapshot_trade_index_is_genuinely_unique_on_the_intended_column(self, pg_conn, initialized_schema):
+        """Trade Postmortem Sprint 3A, Outbox Claim-Race Assurance Closure,
+        Stage 9 — index NAME presence alone (the test above) does not
+        prove the index is actually UNIQUE or covers the intended column;
+        this reads pg_index.indisunique and the real column list directly
+        from the catalog. Deliberately does NOT assert anything about
+        which scan strategy the planner picks on a tiny table — that is
+        Stage N's concern (realistic-volume EXPLAIN behaviour), not a
+        schema postcondition."""
+        row = pg_conn.execute(
+            """SELECT ix.indisunique, array_agg(a.attname ORDER BY array_position(ix.indkey, a.attnum))
+               FROM pg_index ix
+               JOIN pg_class i ON i.oid = ix.indexrelid
+               JOIN pg_class t ON t.oid = ix.indrelid
+               JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(ix.indkey)
+               WHERE t.relname = 'paper_trade_entry_snapshot' AND i.relname = 'idx_paper_trade_entry_snapshot_trade'
+               GROUP BY ix.indisunique""",
+        ).fetchone()
+        assert row is not None, "idx_paper_trade_entry_snapshot_trade not found via pg_index catalog lookup"
+        is_unique, columns = row
+        assert is_unique is True
+        assert list(columns) == ["paper_trade_id"]
+
     def test_idempotency_unique_constraint_and_created_at_index(self, pg_conn, initialized_schema):
         indexes = _indexes(pg_conn, "paper_trade_idempotency_key")
         assert "idx_paper_trade_idem_key_unique" in indexes

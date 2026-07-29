@@ -276,6 +276,12 @@ class TestTrueConcurrentGenerate:
         ).fetchone()[0]
         assert outbox_count == 1  # exactly one deterministic price-path outbox row
 
+        outbox_attempt_count = pg_conn.execute(
+            "SELECT attempt_count FROM paper_trade_postmortem_outbox "
+            "WHERE paper_trade_id = %s AND requested_report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        assert outbox_attempt_count == 1  # the loser's claim attempt was rejected before incrementing anything
+
     def test_active_lease_returns_in_progress_not_a_duplicate_claim(self, client, pg_conn, unique_user_id, monkeypatch):
         """A request arriving while another holds the lease must observe
         a stable status, never race a concurrent duplicate generation."""
