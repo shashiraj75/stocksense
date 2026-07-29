@@ -370,3 +370,63 @@ class TestCrossUserIsolation:
         import api.routers.paper_trading as ptr
         assert report is None
         assert status == ptr.PRICE_PATH_NOT_YET_AVAILABLE
+
+
+@pytest.mark.regression
+class TestHistoricalEligibilityGating:
+    """Trade Postmortem Sprint 3A, Stage J — a permanently invalid trade
+    (incoherent timeline, unsupported market) never creates an outbox
+    row and never reaches the provider, even with a valid prior Sprint 2
+    report."""
+
+    def test_entry_after_exit_never_creates_outbox_or_calls_provider(self):
+        shared = _new_shared([{
+            "opened_at": dt.datetime(2026, 6, 5, tzinfo=dt.timezone.utc),
+            "closed_at": dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc),
+        }])
+        calls = {"n": 0}
+
+        def _bars(*a):
+            calls["n"] += 1
+            return _fake_bars()
+
+        report, status = _attempt(shared, fetch_bars_fn=_bars, fetch_splits_fn=lambda *a: [], fetch_dividends_fn=lambda *a: [])
+        import api.routers.paper_trading as ptr
+        assert report is None
+        assert status == ptr.PRICE_PATH_NOT_YET_AVAILABLE
+        assert calls["n"] == 0
+        assert shared["outbox_rows"] == {}
+
+    def test_unsupported_market_never_creates_outbox_or_calls_provider(self):
+        shared = _new_shared([{"market": "XX"}])
+        calls = {"n": 0}
+
+        def _bars(*a):
+            calls["n"] += 1
+            return _fake_bars()
+
+        report, status = _attempt(shared, fetch_bars_fn=_bars, fetch_splits_fn=lambda *a: [], fetch_dividends_fn=lambda *a: [])
+        import api.routers.paper_trading as ptr
+        assert report is None
+        assert status == ptr.PRICE_PATH_NOT_YET_AVAILABLE
+        assert calls["n"] == 0
+        assert shared["outbox_rows"] == {}
+
+    def test_non_finite_entry_price_never_creates_outbox(self):
+        shared = _new_shared([{"entry_price": float("nan")}])
+        report, status = _attempt(shared, fetch_bars_fn=lambda *a: _fake_bars(), fetch_splits_fn=lambda *a: [], fetch_dividends_fn=lambda *a: [])
+        import api.routers.paper_trading as ptr
+        assert report is None
+        assert status == ptr.PRICE_PATH_NOT_YET_AVAILABLE
+        assert shared["outbox_rows"] == {}
+
+    def test_valid_trade_with_missing_context_still_generates(self):
+        """Missing entry/exit snapshot caps report completeness (Sprint
+        2's own responsibility, unchanged) but never blocks price-path
+        market-data work — this trade's timeline/price/market are
+        otherwise perfectly valid."""
+        shared = _new_shared([{}])  # default fixture uses a LIMITED_EVIDENCE Sprint 2 seed report
+        report, status = _attempt(shared, fetch_bars_fn=lambda *a: _fake_bars(), fetch_splits_fn=lambda *a: [], fetch_dividends_fn=lambda *a: [])
+        import api.routers.paper_trading as ptr
+        assert status == ptr.PRICE_PATH_GENERATED
+        assert report is not None
