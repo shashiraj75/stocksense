@@ -82,12 +82,32 @@ _INSUFFICIENT_EVIDENCE_FALLBACK = "Insufficient evidence to determine this facto
 
 # data_completeness (price_path_acquisition's own real, already-
 # computed enum) -> this module's evidence_status. Anything NOT a key
-# in this dict — None, "", a typo, a genuinely new future value — falls
-# through to the explicit fail-closed branch in classify_acquired_
-# evidence, never silently to COMPLETE/CALCULATION_ELIGIBLE.
+# in this dict falls through to the explicit fail-closed branch in
+# classify_acquired_evidence, never silently to COMPLETE/
+# CALCULATION_ELIGIBLE.
+#
+# Stage J1B-Final-Reconciliation correction: "INVALID_SOURCE_DATA" is
+# deliberately NOT a key here. price_path_acquisition.
+# build_price_path_evidence has no production code path that ever
+# assigns that value (confirmed by direct inspection — grep the module,
+# there is no `STATUS_INVALID_SOURCE_DATA` assignment anywhere) — it was
+# never a real acquired-bundle state, only a value declared in price_
+# path_evidence.py's own STATUS_* enum and never produced. Presenting it
+# as an active, mapped classification target was itself a form of
+# fabrication: implying a live producer that does not exist. A
+# persisted row that somehow contains "INVALID_SOURCE_DATA" (legacy
+# data, external corruption) now correctly falls through to the SAME
+# fail-closed UNSUPPORTED_EVIDENCE_COMPLETENESS branch as any other
+# unrecognized value — there is no meaningful behavioral distinction
+# between "a value nothing ever produces" and "a value this mapping
+# doesn't recognize," so it does not need (and must not have) its own
+# entry. SOURCE_INVALID remains fully real and tested via the ONE
+# genuine live trigger for it: a caught PriceProviderAcquisitionError
+# with code PROVIDER_UNEXPECTED_COLUMN_SHAPE (see ProviderFailurePolicy
+# below) — a malformed PROVIDER RESPONSE exception, never a validated
+# bundle's own data_completeness field.
 _DATA_COMPLETENESS_TO_EVIDENCE_STATUS = {
     "UNAVAILABLE": SOURCE_UNAVAILABLE,
-    "INVALID_SOURCE_DATA": SOURCE_INVALID,
     "AMBIGUOUS_RESOLUTION": AMBIGUOUS_RESOLUTION,
     "PARTIAL": PARTIAL_EVIDENCE,
     "COMPLETE": CALCULATION_ELIGIBLE,
@@ -145,10 +165,20 @@ def classify_acquired_evidence(*, data_completeness: str | None) -> HistoricalEv
     already-computed field, never re-derived from bar counts here.
 
     FAIL-CLOSED: any value not in the known set (None, "", a typo, a
-    genuinely new future value this mapping hasn't been taught yet)
+    genuinely new future value this mapping hasn't been taught yet, OR
+    the never-produced "INVALID_SOURCE_DATA" legacy/corrupted value)
     returns UNSUPPORTED_EVIDENCE_COMPLETENESS with calculation_status=
     CALCULATION_UNAVAILABLE and fresh_persistence_permitted=False — never
-    silently treated as COMPLETE/CALCULATION_ELIGIBLE."""
+    silently treated as COMPLETE/CALCULATION_ELIGIBLE.
+
+    This function never returns evidence_status=SOURCE_INVALID — that
+    status exists solely for ProviderFailurePolicy (a caught provider
+    EXCEPTION, PROVIDER_UNEXPECTED_COLUMN_SHAPE), never for a bundle
+    that was successfully validated and returned. The live path still
+    handles a SOURCE_INVALID quality decision defensively (Stage 3's
+    no-report policy) in case a future acquisition-layer change ever
+    does produce one through this function, but no code path reaches
+    that branch today."""
     status = _DATA_COMPLETENESS_TO_EVIDENCE_STATUS.get(data_completeness)
 
     if status is None:
@@ -161,18 +191,10 @@ def classify_acquired_evidence(*, data_completeness: str | None) -> HistoricalEv
         # A zero-bar bundle (an honest "the provider ran and returned
         # nothing usable" manifest, never fabricated bars) IS an
         # immutable evidence record worth persisting — Stage 3's own
-        # explicit decision point. Distinct from SOURCE_INVALID, which
-        # represents data that failed validation and must never be
-        # persisted at all.
+        # explicit decision point.
         return HistoricalEvidenceQualityDecision(
             evidence_status=status, calculation_status=CALCULATION_UNAVAILABLE,
             fresh_persistence_permitted=True, report_completeness_ceiling="LIMITED_EVIDENCE",
-            reason_codes=(status,), limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
-        )
-    if status == SOURCE_INVALID:
-        return HistoricalEvidenceQualityDecision(
-            evidence_status=status, calculation_status=CALCULATION_UNAVAILABLE,
-            fresh_persistence_permitted=False, report_completeness_ceiling="LIMITED_EVIDENCE",
             reason_codes=(status,), limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
         )
     if status == AMBIGUOUS_RESOLUTION:
@@ -209,16 +231,30 @@ IMMEDIATE_FAILED_TERMINAL = "FAILED_TERMINAL"
 
 @dataclass(frozen=True)
 class ProviderFailurePolicy:
-    """Stage J1B-Assurance-Closure — the SINGLE typed mapping from a
-    provider error code to every lifecycle consequence. Every field here
-    is read and enforced by the live path (paper_trading.py); none is
-    merely informational."""
+    """Stage J1B-Final-Reconciliation — reduced to exactly the fields the
+    live path actually reads. A caught PriceProviderAcquisitionError has,
+    by construction, no validated PricePathEvidenceBundle at all: there
+    is categorically nothing to persist as evidence and no basis for a
+    report, for EVERY current provider error code — these are properties
+    of the exception path itself, not a per-code policy decision, so
+    they are not represented as separate fields here (an earlier draft
+    carried evidence_fresh_persistence_permitted/report_permitted/
+    limitations booleans that were always False/empty for every existing
+    code and were never actually read by the live path — advisory
+    fields, not load-bearing ones, removed rather than left implying a
+    variability that doesn't exist).
+
+    - evidence_status: classification only, drives sanitized log lines
+      (paper_trading.py's own log.warning call) — never persisted
+      verbatim as a report field, since no report exists on this path.
+    - sanitized_error_code: the ONLY field persisted durably — written
+      to paper_trade_postmortem_outbox.last_error_code by mark_
+      retryable_failure/mark_terminal_failure.
+    - immediate_outbox_outcome: drives the immediate retryable-vs-
+      terminal branch in the live path."""
     evidence_status: str
     immediate_outbox_outcome: str  # IMMEDIATE_FAILED_RETRYABLE | IMMEDIATE_FAILED_TERMINAL
-    evidence_fresh_persistence_permitted: bool
-    report_permitted: bool
     sanitized_error_code: str
-    limitations: tuple[str, ...] = field(default_factory=tuple)
 
 
 # Every PriceProviderAcquisitionError.code this codebase currently
@@ -234,32 +270,38 @@ class ProviderFailurePolicy:
 _PROVIDER_FAILURE_POLICIES = {
     "PROVIDER_FETCH_FAILED": ProviderFailurePolicy(
         evidence_status=SOURCE_UNAVAILABLE, immediate_outbox_outcome=IMMEDIATE_FAILED_RETRYABLE,
-        evidence_fresh_persistence_permitted=False, report_permitted=False,
-        sanitized_error_code="PROVIDER_FETCH_FAILED", limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
+        sanitized_error_code="PROVIDER_FETCH_FAILED",
     ),
     "PROVIDER_RESPONSE_TOO_LARGE": ProviderFailurePolicy(
         evidence_status=SOURCE_UNAVAILABLE, immediate_outbox_outcome=IMMEDIATE_FAILED_RETRYABLE,
-        evidence_fresh_persistence_permitted=False, report_permitted=False,
-        sanitized_error_code="PROVIDER_RESPONSE_TOO_LARGE", limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
+        sanitized_error_code="PROVIDER_RESPONSE_TOO_LARGE",
     ),
     "PROVIDER_UNEXPECTED_COLUMN_SHAPE": ProviderFailurePolicy(
         evidence_status=SOURCE_INVALID, immediate_outbox_outcome=IMMEDIATE_FAILED_RETRYABLE,
-        evidence_fresh_persistence_permitted=False, report_permitted=False,
-        sanitized_error_code="PROVIDER_UNEXPECTED_COLUMN_SHAPE", limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
+        sanitized_error_code="PROVIDER_UNEXPECTED_COLUMN_SHAPE",
     ),
 }
+# Unknown provider errors fail closed exactly as specified: classified
+# SOURCE_UNAVAILABLE (never assumed invalid without evidence), settle
+# IMMEDIATE_FAILED_RETRYABLE (never silently dropped, never assumed
+# permanently terminal for a code this module has never evaluated), and
+# never carry raw provider error text — PROVIDER_ACQUISITION_ERROR is a
+# fixed, sanitized generic code.
 _DEFAULT_PROVIDER_FAILURE_POLICY = ProviderFailurePolicy(
     evidence_status=SOURCE_UNAVAILABLE, immediate_outbox_outcome=IMMEDIATE_FAILED_RETRYABLE,
-    evidence_fresh_persistence_permitted=False, report_permitted=False,
-    sanitized_error_code="PROVIDER_ACQUISITION_ERROR", limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
+    sanitized_error_code="PROVIDER_ACQUISITION_ERROR",
 )
 
 
 def get_provider_failure_policy(*, error_code: str) -> ProviderFailurePolicy:
-    """A code this module hasn't seen before still fails closed (never
-    evidence persistence, never a report, immediately retryable never
-    silently terminal) via _DEFAULT_PROVIDER_FAILURE_POLICY, rather than
-    raising or silently permitting persistence."""
+    """A code this module hasn't seen before still fails closed
+    (immediately retryable, never silently terminal, sanitized generic
+    code) via _DEFAULT_PROVIDER_FAILURE_POLICY. Every caught-exception
+    path — known code or not — categorically has no validated evidence
+    bundle to persist and no basis for a report; that is a property of
+    calling this function AT ALL (from the except
+    PriceProviderAcquisitionError branch), not something any returned
+    ProviderFailurePolicy field expresses."""
     return _PROVIDER_FAILURE_POLICIES.get(error_code, _DEFAULT_PROVIDER_FAILURE_POLICY)
 
 

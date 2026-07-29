@@ -67,16 +67,23 @@ class TestProviderFailurePolicy:
         policy = get_provider_failure_policy(error_code="PROVIDER_FETCH_FAILED")
         assert policy.evidence_status == SOURCE_UNAVAILABLE
 
-    def test_fallback_text_is_exact(self):
-        policy = get_provider_failure_policy(error_code="PROVIDER_FETCH_FAILED")
-        assert policy.limitations == ("Insufficient evidence to determine this factor reliably.",)
+    def test_policy_has_exactly_three_load_bearing_fields(self):
+        """Stage J1B-Final-Reconciliation -- ProviderFailurePolicy was
+        reduced to exactly the fields the live path reads. A caught
+        provider exception categorically has no validated bundle to
+        persist and no basis for a report for every current code; that
+        is a property of the exception path itself, not a per-field
+        policy decision, so no separate persistence/report/limitations
+        fields exist to claim otherwise."""
+        import dataclasses
+        from services.postmortem.price_path_evidence_decision import ProviderFailurePolicy
+        field_names = {f.name for f in dataclasses.fields(ProviderFailurePolicy)}
+        assert field_names == {"evidence_status", "immediate_outbox_outcome", "sanitized_error_code"}
 
     @pytest.mark.parametrize("code", ["PROVIDER_FETCH_FAILED", "PROVIDER_RESPONSE_TOO_LARGE", "PROVIDER_UNEXPECTED_COLUMN_SHAPE"])
     def test_every_known_code_is_explicitly_mapped(self, code):
         policy = get_provider_failure_policy(error_code=code)
         assert policy.sanitized_error_code == code
-        assert policy.evidence_fresh_persistence_permitted is False
-        assert policy.report_permitted is False
 
     def test_source_invalid_vs_source_unavailable_distinguishable_in_policy(self):
         invalid_policy = get_provider_failure_policy(error_code="PROVIDER_UNEXPECTED_COLUMN_SHAPE")
@@ -85,10 +92,10 @@ class TestProviderFailurePolicy:
         assert unavailable_policy.evidence_status == SOURCE_UNAVAILABLE
         assert invalid_policy.evidence_status != unavailable_policy.evidence_status
 
-    def test_unrecognized_code_fails_closed_never_permits_persistence(self):
+    def test_unrecognized_code_fails_closed_with_sanitized_generic_code(self):
         policy = get_provider_failure_policy(error_code="SOME_FUTURE_CODE_NEVER_SEEN_BEFORE")
-        assert policy.evidence_fresh_persistence_permitted is False
-        assert policy.report_permitted is False
+        assert policy.sanitized_error_code == "PROVIDER_ACQUISITION_ERROR"
+        assert policy.evidence_status == SOURCE_UNAVAILABLE
         # still bounded/retryable never silently dropped -- not
         # immediately terminal for a code this module has never seen
         assert policy.immediate_outbox_outcome == IMMEDIATE_FAILED_RETRYABLE
@@ -118,9 +125,19 @@ class TestAcquiredEvidenceClassification:
         assert result.fresh_persistence_permitted is True
         assert result.report_completeness_ceiling == "LIMITED_EVIDENCE"
 
-    def test_invalid_source_data_is_source_invalid_and_never_persisted(self):
+    def test_legacy_invalid_source_data_value_falls_through_to_unsupported(self):
+        """Stage J1B-Final-Reconciliation -- INVALID_SOURCE_DATA is not a
+        mapped key: build_price_path_evidence never produces it (no
+        acquired-bundle producer exists), so a persisted row somehow
+        containing it (legacy data, external corruption) must fall
+        through to the SAME fail-closed UNSUPPORTED_EVIDENCE_
+        COMPLETENESS branch as any other unrecognized value -- never its
+        own SOURCE_INVALID classification, which is reserved exclusively
+        for ProviderFailurePolicy's genuine live trigger (a caught
+        PriceProviderAcquisitionError with code
+        PROVIDER_UNEXPECTED_COLUMN_SHAPE)."""
         result = classify_acquired_evidence(data_completeness="INVALID_SOURCE_DATA")
-        assert result.evidence_status == SOURCE_INVALID
+        assert result.evidence_status == UNSUPPORTED_EVIDENCE_COMPLETENESS
         assert result.calculation_status == CALCULATION_UNAVAILABLE
         assert result.fresh_persistence_permitted is False
         assert result.report_completeness_ceiling == "LIMITED_EVIDENCE"
@@ -145,6 +162,16 @@ class TestAcquiredEvidenceClassification:
         assert result.calculation_status == CALCULATION_ELIGIBLE
         assert result.fresh_persistence_permitted is True
         assert result.report_completeness_ceiling == "COMPLETE"
+
+    @pytest.mark.parametrize("data_completeness", [
+        "COMPLETE", "PARTIAL", "UNAVAILABLE", "AMBIGUOUS_RESOLUTION",
+        "INVALID_SOURCE_DATA", None, "", "GARBAGE",
+    ])
+    def test_never_returns_source_invalid_for_any_input(self, data_completeness):
+        """classify_acquired_evidence has no live path to SOURCE_INVALID
+        -- that status exists solely for ProviderFailurePolicy."""
+        result = classify_acquired_evidence(data_completeness=data_completeness)
+        assert result.evidence_status != SOURCE_INVALID
 
 
 @pytest.mark.unit
