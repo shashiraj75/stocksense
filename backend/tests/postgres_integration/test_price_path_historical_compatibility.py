@@ -1138,3 +1138,286 @@ class TestResetScopedToSingleTrade:
             assert count_a == 0, f"{table} left an orphan row for the resetting user"
             count_b = pg_conn.execute(f"SELECT count(*) FROM {table} WHERE user_id = %s", (unique_user_id_2,)).fetchone()[0]
             assert count_b > 0, f"{table} was incorrectly wiped for a DIFFERENT user's reset"
+
+
+def _set_trade_window(pg_conn, trade_id, entry_ts, exit_ts):
+    """Directly widens a real trade's opened_at/closed_at to a controlled
+    multi-day window -- paper_trades carries no immutability trigger
+    (unlike the snapshot/evidence/report tables), so a plain UPDATE is
+    sufficient here, distinct from the DELETE+reinsert pattern those
+    other tables require."""
+    pg_conn.execute(
+        "UPDATE paper_trades SET opened_at = %s, closed_at = %s WHERE id = %s",
+        (entry_ts, exit_ts, trade_id),
+    )
+
+
+@pytest.mark.timeout(30)
+class TestPersistedContaminationExclusion:
+    """Stage J Final-Closure-Correction, Stage 6 item 1 -- a provider
+    fixture returning a pre-entry bar, valid in-window bars, a post-exit
+    bar, AND a current-date bar outside the trade window must persist
+    ONLY the in-window bars."""
+
+    def test_only_in_window_bars_are_persisted(self, client, pg_conn, unique_user_id, monkeypatch):
+        monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
+        trade_id = _open_and_close(client, pg_conn, unique_user_id)
+
+        from services.market_hours import ET
+
+        entry_ts = dt.datetime(2026, 6, 1, 9, 30, tzinfo=ET)
+        exit_ts = dt.datetime(2026, 6, 3, 16, 0, tzinfo=ET)
+        _set_trade_window(pg_conn, trade_id, entry_ts, exit_ts)
+
+        import datetime as real_dt
+
+        today_outside_window = real_dt.date.today() + real_dt.timedelta(days=365)
+
+        def _contaminated_bars(*a, **k):
+            return [
+                {"date": dt.date(2026, 5, 29), "open": 90, "high": 92, "low": 89, "close": 91,
+                 "volume": 500, "adj_close": None, "dividend": 0.0},  # pre-entry
+                {"date": dt.date(2026, 6, 1), "open": 100, "high": 102, "low": 99, "close": 101,
+                 "volume": 500, "adj_close": None, "dividend": 0.0},  # valid
+                {"date": dt.date(2026, 6, 2), "open": 101, "high": 103, "low": 100, "close": 102,
+                 "volume": 500, "adj_close": None, "dividend": 0.0},  # valid
+                {"date": dt.date(2026, 6, 3), "open": 102, "high": 104, "low": 101, "close": 103,
+                 "volume": 500, "adj_close": None, "dividend": 0.0},  # valid
+                {"date": dt.date(2026, 6, 4), "open": 103, "high": 105, "low": 102, "close": 104,
+                 "volume": 500, "adj_close": None, "dividend": 0.0},  # post-exit
+                {"date": today_outside_window, "open": 200, "high": 210, "low": 190, "close": 205,
+                 "volume": 500, "adj_close": None, "dividend": 0.0},  # current-date, outside window
+            ]
+
+        from services.postmortem import price_path_acquisition
+        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _contaminated_bars)
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+
+        resp = _generate(client, unique_user_id, trade_id)
+        assert resp.status_code == 200
+        assert resp.json()["price_path_generation_status"] == "PRICE_PATH_GENERATED"
+
+        bars = pg_conn.execute(
+            "SELECT bars FROM paper_trade_price_path_evidence WHERE paper_trade_id = %s", (trade_id,)
+        ).fetchone()[0]
+        session_dates = sorted(b["session_date"] for b in bars)
+        assert session_dates == ["2026-06-01", "2026-06-02", "2026-06-03"]
+
+
+@pytest.mark.timeout(30)
+class TestBoundaryTouchPersistedAmbiguous:
+    """Stage J Final-Closure-Correction, Stage 6 item 2 -- target touched
+    only on the entry boundary bar, stop touched only on a later interior
+    bar (a DIFFERENT session) -- classify_touch_order's own rule 6
+    (boundary touch in a different bar from the other touch) makes this
+    genuinely BOUNDARY_BAR_AMBIGUOUS, distinct from a single-sided
+    boundary touch (which stays a definitive TARGET_ONLY/STOP_ONLY, per
+    the existing unit tests -- not duplicated here)."""
+
+    def test_boundary_and_interior_touch_on_different_bars_persists_ambiguous(
+        self, client, pg_conn, unique_user_id, monkeypatch,
+    ):
+        monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
+        trade_id = _open_and_close(client, pg_conn, unique_user_id, exit_price=101.0)
+
+        from services.market_hours import ET
+
+        entry_ts = dt.datetime(2026, 6, 1, 9, 30, tzinfo=ET)
+        exit_ts = dt.datetime(2026, 6, 4, 16, 0, tzinfo=ET)
+        _set_trade_window(pg_conn, trade_id, entry_ts, exit_ts)
+
+        pg_conn.execute("UPDATE paper_trades SET stop_loss = %s, target_price = %s WHERE id = %s", (90.0, 120.0, trade_id))
+
+        def _boundary_and_interior_bars(*a, **k):
+            return [
+                {"date": dt.date(2026, 6, 1), "open": 100, "high": 122, "low": 99, "close": 101,
+                 "volume": 500, "adj_close": None, "dividend": 0.0},  # entry boundary bar -- target(120) touched
+                {"date": dt.date(2026, 6, 2), "open": 101, "high": 103, "low": 100, "close": 102,
+                 "volume": 500, "adj_close": None, "dividend": 0.0},  # interior, no touch
+                {"date": dt.date(2026, 6, 3), "open": 102, "high": 104, "low": 85, "close": 100,
+                 "volume": 500, "adj_close": None, "dividend": 0.0},  # interior -- stop(90) touched
+                {"date": dt.date(2026, 6, 4), "open": 100, "high": 101, "low": 99, "close": 100.5,
+                 "volume": 500, "adj_close": None, "dividend": 0.0},  # exit boundary bar
+            ]
+
+        from services.postmortem import price_path_acquisition
+        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _boundary_and_interior_bars)
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+
+        resp = _generate(client, unique_user_id, trade_id)
+        assert resp.status_code == 200
+        assert resp.json()["price_path_generation_status"] == "PRICE_PATH_GENERATED"
+
+        structured_report, status = pg_conn.execute(
+            "SELECT structured_report, status FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()
+        assert structured_report["price_path"]["touch_order"] == "BOUNDARY_BAR_AMBIGUOUS"
+        assert status == "LIMITED_EVIDENCE"
+
+
+@pytest.mark.timeout(30)
+class TestBothSameBarPersistedAmbiguous:
+    """Stage J Final-Closure-Correction, Stage 6 item 3 -- stop and target
+    both touched within one INTERIOR daily bar -- BOTH_SAME_BAR_AMBIGUOUS,
+    persisted through the real endpoint, with independently valid MFE/MAE
+    still populated (excursion is computed independently of touch order)."""
+
+    def test_both_same_interior_bar_persists_ambiguous_with_excursion_populated(
+        self, client, pg_conn, unique_user_id, monkeypatch,
+    ):
+        monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
+        trade_id = _open_and_close(client, pg_conn, unique_user_id, exit_price=100.0)
+
+        from services.market_hours import ET
+
+        entry_ts = dt.datetime(2026, 6, 1, 9, 30, tzinfo=ET)
+        exit_ts = dt.datetime(2026, 6, 3, 16, 0, tzinfo=ET)
+        _set_trade_window(pg_conn, trade_id, entry_ts, exit_ts)
+        pg_conn.execute("UPDATE paper_trades SET stop_loss = %s, target_price = %s WHERE id = %s", (90.0, 120.0, trade_id))
+
+        def _both_same_bar(*a, **k):
+            return [
+                {"date": dt.date(2026, 6, 1), "open": 100, "high": 101, "low": 99, "close": 100.5,
+                 "volume": 500, "adj_close": None, "dividend": 0.0},
+                {"date": dt.date(2026, 6, 2), "open": 100, "high": 125, "low": 85, "close": 100,
+                 "volume": 500, "adj_close": None, "dividend": 0.0},  # interior -- BOTH touched here
+                {"date": dt.date(2026, 6, 3), "open": 100, "high": 101, "low": 99, "close": 100,
+                 "volume": 500, "adj_close": None, "dividend": 0.0},
+            ]
+
+        from services.postmortem import price_path_acquisition
+        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _both_same_bar)
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+
+        resp = _generate(client, unique_user_id, trade_id)
+        assert resp.status_code == 200
+        assert resp.json()["price_path_generation_status"] == "PRICE_PATH_GENERATED"
+
+        structured_report, status = pg_conn.execute(
+            "SELECT structured_report, status FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()
+        section = structured_report["price_path"]
+        assert section["touch_order"] == "BOTH_SAME_BAR_AMBIGUOUS"
+        assert status == "LIMITED_EVIDENCE"
+        assert section["mfe_abs"] == pytest.approx(25.0)  # interior high 125 - entry 100
+        assert section["mae_signed_abs"] == pytest.approx(-15.0)  # interior low 85 - entry 100
+
+
+@pytest.mark.timeout(30)
+class TestInvalidExitSnapshotThroughRealEndpoint:
+    """Stage J Final-Closure-Correction, Stage 6 item 4 -- a PRESENT_
+    INVALID exit snapshot (belongs to a different trade -- corrupted via
+    the same immutable DELETE+reinsert method the entry-snapshot
+    equivalent test in this file already uses) caps the report at
+    LIMITED_EVIDENCE with an explicit limitation, never fabricating an
+    exit rationale."""
+
+    def test_invalid_exit_snapshot_caps_report_and_never_fabricates_rationale(
+        self, client, pg_conn, unique_user_id, monkeypatch,
+    ):
+        from psycopg.types.json import Jsonb
+
+        monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
+        trade_id = _open_and_close(client, pg_conn, unique_user_id)
+
+        with pg_conn.cursor() as cur:
+            cur.execute("SELECT * FROM paper_trade_exit_snapshot WHERE paper_trade_id = %s", (trade_id,))
+            columns = [d.name for d in cur.description]
+            row = dict(zip(columns, cur.fetchone()))
+        row["paper_trade_id"] = row["paper_trade_id"] + 1_000_000_000  # belongs to a different (nonexistent) trade now
+        insert_columns = [c for c in columns if c not in ("id", "created_at")]
+        values = tuple(Jsonb(row[c]) if isinstance(row[c], (dict, list)) else row[c] for c in insert_columns)
+        pg_conn.execute("DELETE FROM paper_trade_exit_snapshot WHERE paper_trade_id = %s", (trade_id,))
+        pg_conn.execute(
+            f"INSERT INTO paper_trade_exit_snapshot ({', '.join(insert_columns)}) "
+            f"VALUES ({', '.join('%s' for _ in insert_columns)})",
+            values,
+        )
+
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+        resp = _generate(client, unique_user_id, trade_id)
+        assert resp.status_code == 200
+
+        status, evidence_gaps = pg_conn.execute(
+            "SELECT status, evidence_gaps FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()
+        assert status != "COMPLETE"
+        assert status == "LIMITED_EVIDENCE"
+        assert any("exit" in g.lower() for g in evidence_gaps)
+
+
+@pytest.mark.timeout(30)
+class TestFinalManifestIntegrityThroughRealPostgres:
+    """Stage J Final-Closure-Correction, Stage 6 item 5 -- persists
+    evidence, recomputes and verifies manifest_integrity_hash from the
+    actual PostgreSQL JSONB value (not an in-memory dict), then proves a
+    tampered COPY of that same manifest fails verification."""
+
+    def test_manifest_hash_verifies_from_real_jsonb_and_tamper_fails(
+        self, client, pg_conn, unique_user_id, monkeypatch,
+    ):
+        from services.postmortem.price_path_acquisition import verify_source_manifest_integrity
+
+        monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
+        trade_id = _open_and_close(client, pg_conn, unique_user_id)
+        entry_ts, exit_ts = pg_conn.execute(
+            "SELECT opened_at, closed_at FROM paper_trades WHERE id = %s", (trade_id,)
+        ).fetchone()
+        from services.market_hours import ET
+
+        entry_date = entry_ts.astimezone(ET).date()
+
+        def _bars_in_window(*a, **k):
+            return [{"date": entry_date, "open": 100.0, "high": 108.0, "low": 92.0, "close": 101.0,
+                      "volume": 500, "adj_close": None, "dividend": 0.0}]
+
+        from services.postmortem import price_path_acquisition
+        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _bars_in_window)
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+
+        resp = _generate(client, unique_user_id, trade_id)
+        assert resp.status_code == 200
+
+        manifest_from_db = pg_conn.execute(
+            "SELECT source_manifest FROM paper_trade_price_path_evidence WHERE paper_trade_id = %s", (trade_id,)
+        ).fetchone()[0]
+
+        assert verify_source_manifest_integrity(manifest_from_db) is True
+
+        tampered = dict(manifest_from_db)
+        tampered["unresolved_basis_limitations"] = tampered.get("unresolved_basis_limitations", []) + ["injected"]
+        assert verify_source_manifest_integrity(tampered) is False
+
+
+@pytest.mark.timeout(30)
+class TestNoBarsManifestConsistencyThroughRealPostgres:
+    """Stage J Final-Closure-Correction, Stage 6 item 6 -- for a
+    no-valid-bars acquisition, the persisted bundle's own `limitations`
+    column and its `source_manifest.unresolved_basis_limitations` must
+    match exactly, through real PostgreSQL storage (not just in-memory,
+    which TestBundleAndManifestLimitationsIdentical::test_no_bars already
+    proves at the unit level -- this is the real-JSONB-round-trip
+    counterpart)."""
+
+    def test_persisted_limitations_and_manifest_match(self, client, pg_conn, unique_user_id, monkeypatch):
+        monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
+        trade_id = _open_and_close(client, pg_conn, unique_user_id)
+
+        monkeypatch.setattr(
+            __import__("services.postmortem.price_path_acquisition", fromlist=["x"]),
+            "fetch_raw_daily_bars", _fake_none,
+        )
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+
+        resp = _generate(client, unique_user_id, trade_id)
+        assert resp.status_code == 200
+
+        limitations, manifest = pg_conn.execute(
+            "SELECT limitations, source_manifest FROM paper_trade_price_path_evidence WHERE paper_trade_id = %s",
+            (trade_id,),
+        ).fetchone()
+        assert list(limitations) == list(manifest["unresolved_basis_limitations"])
+        assert "no valid bars were returned by the provider for the requested window" in limitations
