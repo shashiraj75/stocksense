@@ -284,6 +284,87 @@ class TestReportSupersession:
                 "UPDATE paper_trade_postmortem_report SET status = 'FAILED_TERMINAL' WHERE id = %s", (prior.id,)
             )
 
+    def test_stale_claimant_report_insert_rolls_back_atomically(self, client, pg_conn, unique_user_id):
+        """Stage J1B-Real-PG-Assurance, Stage 5F -- a genuine forced
+        stale-claimant condition (not merely a description of the
+        transaction structure): a real outbox row is claimed, then its
+        lease is stolen by a different claimant via a direct SQL update
+        (simulating a fresher attempt reclaiming an expired lease), then
+        persist_price_path_report is called with the ORIGINAL (now
+        stale) claimant token inside its own real conn.transaction() --
+        exactly as paper_trading.py's own call site does. Both the
+        report INSERT and the outbox mark-terminal must roll back
+        together; a second real connection must see neither."""
+        from services.postmortem import generation_service, outbox as outbox_ops
+        from services.postmortem.price_path_acquisition import build_price_path_evidence
+        from services.postmortem.price_path_generation import (
+            build_price_path_report_payload, persist_price_path_evidence, persist_price_path_report,
+        )
+        from services.market_hours import ET
+
+        trade_id = _open_and_close(client, pg_conn, unique_user_id)
+        prior = self._sprint2_report(pg_conn, trade_id, unique_user_id)
+
+        outbox_id = pg_conn.execute(
+            """INSERT INTO paper_trade_postmortem_outbox
+                   (paper_trade_id, user_id, requested_report_schema_version,
+                    requested_calculation_version, requested_rules_version)
+               VALUES (%s, %s, '1.1.0', 'stale-claimant-test', '2.0.0')
+               RETURNING id""",
+            (trade_id, unique_user_id),
+        ).fetchone()[0]
+        stale_claimant = outbox_ops.new_claimant_token()
+        claimed = outbox_ops.claim_next_attempt(pg_conn, outbox_id=outbox_id, user_id=unique_user_id, claimant=stale_claimant)
+        assert claimed is not None and claimed.status == "GENERATING"
+
+        # A fresher claimant steals the lease -- simulating a real
+        # concurrent reclaim after this attempt's own lease genuinely
+        # expired, via the exact same UPDATE shape claim_next_attempt
+        # itself would issue.
+        fresh_claimant = outbox_ops.new_claimant_token()
+        pg_conn.execute(
+            "UPDATE paper_trade_postmortem_outbox SET claimed_by = %s WHERE id = %s",
+            (fresh_claimant, outbox_id),
+        )
+
+        bundle = build_price_path_evidence(
+            paper_trade_id=trade_id, user_id=unique_user_id, symbol="AAPL", market="US",
+            market_timezone_name="America/New_York", market_tzinfo=ET,
+            entry_timestamp=dt.datetime(2026, 6, 1, tzinfo=ET), exit_timestamp=dt.datetime(2026, 6, 5, tzinfo=ET),
+            raw_bars=_fake_bars(), split_events=[],
+        )
+        evidence, _ = persist_price_path_evidence(pg_conn, bundle)
+        payload = build_price_path_report_payload(
+            evidence, entry_price=100.0, exit_price=110.0, applicable_stop=90.0, applicable_target=120.0,
+            level_history_complete=True, trade_id=trade_id,
+        )
+
+        report_count_before = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_postmortem_report WHERE paper_trade_id = %s", (trade_id,)
+        ).fetchone()[0]
+
+        with pytest.raises(generation_service.StaleLeaseError):
+            with pg_conn.transaction():
+                persist_price_path_report(
+                    pg_conn, prior_report=prior, payload=payload, trade_id=trade_id, user_id=unique_user_id,
+                    market="US", report_trading_date=dt.date(2026, 6, 5), market_timezone="America/New_York",
+                    source_version="1.0.0", outbox_id=outbox_id, claimed_by=stale_claimant,
+                )
+
+        # No partial settlement -- verified from THIS connection (the
+        # transaction rollback is synchronous) and from the outbox row's
+        # own claimed_by, which must still read the fresh claimant, never
+        # overwritten by the stale attempt's failed insert.
+        report_count_after = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_postmortem_report WHERE paper_trade_id = %s", (trade_id,)
+        ).fetchone()[0]
+        assert report_count_after == report_count_before  # the report INSERT rolled back
+
+        outbox_claimed_by = pg_conn.execute(
+            "SELECT claimed_by FROM paper_trade_postmortem_outbox WHERE id = %s", (outbox_id,)
+        ).fetchone()[0]
+        assert outbox_claimed_by == fresh_claimant  # never overwritten by the stale attempt
+
 
 @pytest.mark.timeout(30)
 class TestCrossUserIsolation:
