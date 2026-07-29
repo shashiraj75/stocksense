@@ -1309,7 +1309,22 @@ def _attempt_price_path_enhancement(
         if acquisition_decision.acquisition_status == price_path_evidence_decision.COMPATIBLE_REPLAY:
             # 2B — evidence replay: zero provider calls, the persisted
             # evidence (same row, same hash) is used directly.
-            assert evidence is not None, "COMPATIBLE_REPLAY decision without compatible evidence present"
+            if evidence is None:
+                # Stage 2 — a contradictory internal state (COMPATIBLE_
+                # REPLAY decided, yet no evidence object present) must
+                # never crash the request via a bare assert, which
+                # optimized (`python -O`) execution would silently skip
+                # entirely. Fails closed exactly like a provider
+                # exception: no evidence, no report, sanitized retryable
+                # outcome, no internal detail exposed.
+                with _conn() as conn:
+                    outbox_ops.mark_retryable_failure(
+                        conn, outbox_id=outbox_id,
+                        error_code=price_path_evidence_decision.INTERNAL_INTEGRITY_VIOLATION,
+                        error_summary="CompatibleReplayMissingEvidence", claimed_by=claimant,
+                    )
+                log.warning("[price_path_internal_integrity_violation] trade_id=%s reason=replay_without_evidence", trade_id)
+                return None, PRICE_PATH_FAILED_RETRYABLE
             quality_decision = price_path_evidence_decision.classify_acquired_evidence(
                 data_completeness=evidence.data_completeness,
             )
@@ -1324,12 +1339,13 @@ def _attempt_price_path_enhancement(
                     fetch_splits_fn=fetch_splits_fn, fetch_dividends_fn=fetch_dividends_fn,
                 )
             except PriceProviderAcquisitionError as exc:
-                # Stage J1B-Fail-Closed-Hardening, Stage 5 — the SINGLE
-                # typed policy GOVERNS the lifecycle action; this is no
-                # longer classify-then-hard-code-the-same-action-anyway.
+                # Stage 1 — the policy's OWN immediate_outbox_outcome
+                # field, never an ambiguous two-boolean combination the
+                # live path had to independently resolve, determines the
+                # settlement.
                 policy = price_path_evidence_decision.get_provider_failure_policy(error_code=exc.code)
                 with _conn() as conn:
-                    if policy.terminal_permitted and not policy.retry_permitted:
+                    if policy.immediate_outbox_outcome == price_path_evidence_decision.IMMEDIATE_FAILED_TERMINAL:
                         outbox_ops.mark_terminal_failure(
                             conn, outbox_id=outbox_id, error_code=policy.sanitized_error_code,
                             error_summary=type(exc).__name__, claimed_by=claimant,
@@ -1360,6 +1376,26 @@ def _attempt_price_path_enhancement(
                     evidence, _created = price_path_generation.persist_price_path_evidence(conn, bundle)
             else:
                 evidence = bundle  # unpersisted — still carries source_version/data_completeness for the report
+
+        # Stage 3 (conservative invalid-bundle policy) — SOURCE_INVALID
+        # and UNSUPPORTED_EVIDENCE_COMPLETENESS must NEVER produce ANY
+        # report (complete or limited), unlike SOURCE_UNAVAILABLE's
+        # honest zero-bar manifest, which may. Applies identically
+        # whether this evidence came from a fresh acquisition (a bundle
+        # that failed validation) or a replay of already-persisted
+        # evidence whose own stored data_completeness now reclassifies
+        # this way (e.g. corrupted/legacy data) — the report-suppression
+        # rule protects report integrity regardless of provenance.
+        if quality_decision.evidence_status in (
+            price_path_evidence_decision.SOURCE_INVALID,
+            price_path_evidence_decision.UNSUPPORTED_EVIDENCE_COMPLETENESS,
+        ):
+            with _conn() as conn:
+                outbox_ops.mark_retryable_failure(
+                    conn, outbox_id=outbox_id, error_code=quality_decision.evidence_status,
+                    error_summary="InvalidOrUnsupportedEvidence", claimed_by=claimant,
+                )
+            return None, PRICE_PATH_FAILED_RETRYABLE
 
         # Stage 4 — calculation_status is now AUTHORITATIVE over whether
         # the actual MFE/MAE/touch calculator ever runs, not merely a
