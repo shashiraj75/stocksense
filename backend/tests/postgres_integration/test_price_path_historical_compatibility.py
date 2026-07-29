@@ -93,11 +93,26 @@ class TestMissingSnapshotCapsReportAtLimitedEvidence:
     def test_invalid_entry_snapshot_market_mismatch_produces_limited_evidence(self, client, pg_conn, unique_user_id):
         """A present-but-invalid row (wrong market — simulating a
         corrupted or cross-context row) must never be used, and must
-        still cap the ceiling exactly like a missing row."""
+        still cap the ceiling exactly like a missing row.
+
+        paper_trade_entry_snapshot rows are immutable at the database
+        level (a genuine Sprint 2 hardening trigger rejects UPDATE) --
+        the only way to substitute an invalid row is DELETE + re-INSERT
+        with the same column values except market, using the real row's
+        own data so every NOT NULL column stays populated."""
         trade_id = _open_and_close(client, pg_conn, unique_user_id)
+
+        with pg_conn.cursor() as cur:
+            cur.execute("SELECT * FROM paper_trade_entry_snapshot WHERE paper_trade_id = %s", (trade_id,))
+            columns = [d.name for d in cur.description]
+            row = dict(zip(columns, cur.fetchone()))
+        row["market"] = "IN" if row["market"] == "US" else "US"
+        insert_columns = [c for c in columns if c not in ("id", "created_at")]
+        pg_conn.execute("DELETE FROM paper_trade_entry_snapshot WHERE paper_trade_id = %s", (trade_id,))
         pg_conn.execute(
-            "UPDATE paper_trade_entry_snapshot SET market = 'IN' WHERE paper_trade_id = %s AND market = 'US'",
-            (trade_id,),
+            f"INSERT INTO paper_trade_entry_snapshot ({', '.join(insert_columns)}) "
+            f"VALUES ({', '.join('%s' for _ in insert_columns)})",
+            tuple(row[c] for c in insert_columns),
         )
 
         resp = _generate(client, unique_user_id, trade_id)
