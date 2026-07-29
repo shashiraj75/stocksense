@@ -183,19 +183,24 @@ class TestGenerateEndpointPricePathWiring:
 class TestTrueConcurrentGenerate:
     def test_two_simultaneous_generate_requests_one_provider_call_one_report(self, client, pg_conn, unique_user_id, monkeypatch):
         """TRUE concurrency: two real threads issue real HTTP requests
-        against the real TestClient/database simultaneously, released
-        together by a barrier — not a sequential simulation of a fake
-        row's status."""
+        against the real TestClient/database simultaneously (started
+        together, no artificial sequencing) — not a sequential
+        simulation of a fake row's status. Only the winning claimant
+        ever reaches the provider call at all (the loser is rejected at
+        the atomic outbox claim itself, before Phase 2) — a small sleep
+        inside the provider widens that request's own window without
+        requiring both threads to arrive, which a 2-party barrier would
+        incorrectly assume."""
         from services.postmortem import price_path_acquisition
+        import time as _time
 
         calls = {"n": 0}
         calls_lock = threading.Lock()
-        barrier = threading.Barrier(2, timeout=15)
 
         def _slow_bars(*a, **k):
             with calls_lock:
                 calls["n"] += 1
-            barrier.wait()  # both requests reach the provider call together
+            _time.sleep(0.3)  # widen the race window for the second thread
             return _fake_bars()
 
         monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _slow_bars)
@@ -225,6 +230,7 @@ class TestTrueConcurrentGenerate:
         # GENERATION_IN_PROGRESS/NOT_YET_AVAILABLE, never a duplicate
         # GENERATED). The key invariants are the DURABLE ones below.
         assert statuses.count("PRICE_PATH_GENERATED") <= 1
+        assert calls["n"] == 1  # exactly one provider invocation across both requests
 
         report_count = pg_conn.execute(
             "SELECT count(*) FROM paper_trade_postmortem_report "

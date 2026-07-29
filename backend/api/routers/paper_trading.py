@@ -2208,6 +2208,12 @@ def reset_portfolio(user_id: str = Depends(get_current_user_id), market: Literal
                 # immutable-by-UPDATE during normal lifecycle, but not
                 # absolutely immutable — an authorized reset may delete
                 # it, exactly like the entry snapshot already does.
+                # Trade Postmortem Sprint 3A — same orphan-prevention
+                # discipline for price-path evidence, which also carries
+                # its own user_id column and no FOREIGN KEY back to
+                # paper_trades. Deleted alongside the other durability
+                # tables, before paper_trades.
+                conn.execute("DELETE FROM paper_trade_price_path_evidence WHERE user_id = %s", (user_id,))
                 conn.execute("DELETE FROM paper_trade_postmortem_report WHERE user_id = %s", (user_id,))
                 conn.execute("DELETE FROM paper_trade_postmortem_outbox WHERE user_id = %s", (user_id,))
                 conn.execute("DELETE FROM paper_trade_exit_snapshot WHERE user_id = %s", (user_id,))
@@ -2258,6 +2264,13 @@ def reset_portfolio(user_id: str = Depends(get_current_user_id), market: Literal
             )
             conn.execute(
                 "DELETE FROM paper_trade_entry_snapshot WHERE user_id = %s AND market = %s",
+                (user_id, market)
+            )
+            # Trade Postmortem Sprint 3A — price-path evidence carries its
+            # own market column, scoped the same way as the other
+            # durability tables above.
+            conn.execute(
+                "DELETE FROM paper_trade_price_path_evidence WHERE user_id = %s AND market = %s",
                 (user_id, market)
             )
             conn.execute("DELETE FROM paper_trades WHERE user_id = %s AND market = %s", (user_id, market))
