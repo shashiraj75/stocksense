@@ -1099,17 +1099,22 @@ PRICE_PATH_NOT_YET_AVAILABLE = "PRICE_PATH_NOT_YET_AVAILABLE"  # no prior Sprint
 
 def _price_path_target_identity() -> tuple[str, str, str]:
     """The Sprint 3A target report identity, computable BEFORE
-    acquisition (never after) — price_path_acquisition.SOURCE_VERSION is
-    a static module-level constant for the lifetime of one deployment,
-    so the calculation_version suffix it produces is exactly the one any
+    acquisition (never after) — CURRENT_PRICE_PATH_SOURCE_IDENTITY is a
+    static, immutable value for the lifetime of one deployment, so the
+    calculation_version suffix it produces is exactly the one any
     successful acquisition under this deployment will also embed into
     its evidence's own source_version field. This is what lets the
     outbox row's requested_calculation_version be fixed at claim time,
-    matching Sprint 2's own static-identity convention exactly."""
-    from services.postmortem.price_path_acquisition import SOURCE_VERSION as PP_SOURCE_VERSION
+    matching Sprint 2's own static-identity convention exactly.
+
+    Stage J3 — reads from price_path_identity.CURRENT_PRICE_PATH_SOURCE_
+    IDENTITY, the SAME object load_generation_context's defaults now
+    reference, rather than a separately-imported SOURCE_VERSION alias —
+    one authoritative identity, not two things that happen to agree."""
+    from services.postmortem.price_path_identity import CURRENT_PRICE_PATH_SOURCE_IDENTITY
     return (
-        price_path_generation.PRICE_PATH_REPORT_SCHEMA_VERSION,
-        price_path_generation.price_path_calculation_suffix(PP_SOURCE_VERSION),
+        CURRENT_PRICE_PATH_SOURCE_IDENTITY.report_schema_version,
+        price_path_generation.price_path_calculation_suffix(CURRENT_PRICE_PATH_SOURCE_IDENTITY.source_version),
         ATTRIBUTION_RULES_VERSION,
     )
 
@@ -1391,6 +1396,30 @@ def _attempt_price_path_enhancement(
                     trade_id, policy.evidence_status,
                 )
                 return None, result_status
+
+            # Stage J3, Stage 5 — validate the FRESHLY BUILT bundle's own
+            # manifest before it is ever classified or persisted, exactly
+            # as a replayed row's manifest is validated before reuse.
+            # Under correct production code this should always pass (the
+            # same finalize_source_manifest call produces both); a
+            # failure here means a genuine internal bug in acquisition
+            # itself, not a data-quality condition classify_acquired_
+            # evidence is meant to describe — treated the same as any
+            # other fail-closed integrity violation: no persistence, no
+            # calculator, sanitized reason code.
+            from services.postmortem.price_path_acquisition import validate_manifest_compatibility as _validate_fresh_manifest
+            fresh_manifest_decision = _validate_fresh_manifest(bundle)
+            if not fresh_manifest_decision.compatible:
+                with _conn() as conn:
+                    outbox_ops.mark_retryable_failure(
+                        conn, outbox_id=outbox_id, error_code=fresh_manifest_decision.reason_code,
+                        error_summary="FreshManifestCompatibilityViolation", claimed_by=claimant,
+                    )
+                log.warning(
+                    "[price_path_fresh_manifest_integrity_violation] trade_id=%s reason=%s",
+                    trade_id, fresh_manifest_decision.reason_code,
+                )
+                return None, PRICE_PATH_FAILED_RETRYABLE
 
             # Stage 3 — CLASSIFY the freshly acquired bundle BEFORE any
             # persistence decision, never after. fresh_persistence_permitted

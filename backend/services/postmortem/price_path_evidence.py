@@ -31,7 +31,7 @@ import math
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
-EVIDENCE_BUNDLE_SCHEMA_VERSION = "1.0.0"
+from services.postmortem.price_path_identity import EVIDENCE_BUNDLE_SCHEMA_VERSION
 
 # The only bar interval this sprint acquires or supports — see module
 # docstring's source decision. A future sprint that adds a genuine

@@ -72,9 +72,16 @@ from services.postmortem.price_path_evidence import (
     PricePathEvidenceBundle,
     STATUS_COMPLETE,
 )
+# Stage J3 — the identity module is this package's one leaf: it has no
+# imports from price_path_generation (or any other price_path_* module),
+# so importing from it here is safe and cannot become circular.
+from services.postmortem.price_path_identity import (
+    CURRENT_PRICE_PATH_SOURCE_IDENTITY,
+    PRICE_PATH_REPORT_SCHEMA_VERSION,
+    SOURCE_ID_YFINANCE_DAILY,
+    SOURCE_VERSION,
+)
 from services.postmortem.report_store import PersistedReport
-
-PRICE_PATH_REPORT_SCHEMA_VERSION = "1.1.0"
 
 
 def price_path_calculation_suffix(source_version: str) -> str:
@@ -113,13 +120,24 @@ def load_generation_context(
     entry_timestamp: datetime, entry_price: float, exit_price: float | None,
     applicable_stop: float | None, applicable_target: float | None, exit_timestamp: datetime,
     level_history_complete: bool, prior_report: PersistedReport | None,
-    evidence_bundle_version: str = EVIDENCE_BUNDLE_SCHEMA_VERSION,
-    source_id: str = "yfinance_daily", source_version: str = "1.0.0",
+    evidence_bundle_version: str = CURRENT_PRICE_PATH_SOURCE_IDENTITY.evidence_bundle_version,
+    source_id: str = SOURCE_ID_YFINANCE_DAILY, source_version: str = SOURCE_VERSION,
 ) -> GenerationContext:
     """PHASE 1 — short read. This function's own database work is
     limited to the price-path evidence lookup (ownership/trade/snapshot
     loading is the caller's job, done via the existing
-    paper_trading.py helpers before calling this)."""
+    paper_trading.py helpers before calling this).
+
+    Stage J3 — these three defaults are now live references to
+    price_path_identity's CURRENT_PRICE_PATH_SOURCE_IDENTITY (or its own
+    constants), never bare literals. Before this fix, `source_id`/
+    `source_version` were independent hardcoded strings ("yfinance_daily"/
+    "1.0.0") that happened to agree with price_path_acquisition.
+    SOURCE_VERSION only because nobody had ever changed one without the
+    other — a real, structurally-unenforced drift risk. A caller that
+    omits these arguments now always gets "the current identity," never
+    a frozen historical one that a future version bump could silently
+    leave behind."""
     compatible = price_path_store.get_current_evidence(
         conn, paper_trade_id=trade_id, user_id=user_id,
         evidence_bundle_version=evidence_bundle_version, source_id=source_id, source_version=source_version,

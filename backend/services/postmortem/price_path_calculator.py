@@ -27,8 +27,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from services.postmortem.price_path_evidence import PricePathBar, PricePathEvidenceBundle
-
-RULES_VERSION = "1.0.0"
+from services.postmortem.price_path_identity import CALCULATION_RULES_VERSION as RULES_VERSION
 
 # --- Touch types (Stage 7) ---
 TOUCH_TYPE_NORMAL = "NORMAL"            # high/low crossed the level within the bar's ordinary range

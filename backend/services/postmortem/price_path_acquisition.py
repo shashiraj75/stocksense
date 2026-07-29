@@ -38,8 +38,18 @@ from services.postmortem.price_path_evidence import (
     UNADJUSTED,
     UNKNOWN_ADJUSTMENT,
 )
-
-SOURCE_ID_YFINANCE_DAILY = "yfinance_daily"
+# Stage J3 — every version constant below is now a re-export of
+# price_path_identity's own authoritative value, not an independent
+# literal. price_path_identity.py has zero imports from this module (or
+# any other price_path_* module), so this import direction is safe and
+# will never become circular.
+from services.postmortem.price_path_identity import (
+    BOUNDARY_POLICY_VERSION,
+    SOURCE_ID_YFINANCE_DAILY,
+    SOURCE_MANIFEST_SCHEMA_VERSION,
+    SOURCE_VERSION,
+    SYMBOL_NORMALIZATION_VERSION,
+)
 
 # Stage D0 terminology correction: yfinance is an unofficial, unlicensed
 # third-party dependency this codebase has never run a production-
@@ -51,20 +61,6 @@ SOURCE_ID_YFINANCE_DAILY = "yfinance_daily"
 # any other part of this codebase (P&L, execution, portfolio valuation).
 SOURCE_TYPE = "EXTERNAL_UNOFFICIAL_DAILY"
 SOURCE_SCOPE = "BOUNDED_EVIDENCE_ACQUISITION_ONLY"
-# Bumped whenever this module's acquisition/window-construction RULES
-# change (not the underlying provider's own data) — independent of
-# EVIDENCE_BUNDLE_SCHEMA_VERSION, which tracks the persisted shape.
-SOURCE_VERSION = "1.0.0"
-
-# Stage J-F3 — versions for manifest sub-concerns that evolve
-# independently of SOURCE_VERSION (which covers the acquisition
-# *ruleset* as a whole). Each is a distinct thing that could change on
-# its own: the manifest's own field set, the symbol-normalization rule
-# (_provider_symbol below), and the entry/exit boundary-inclusion rules
-# (_resolve_boundary_policies / services.postmortem.session_boundary).
-SOURCE_MANIFEST_SCHEMA_VERSION = "1.0.0"
-SYMBOL_NORMALIZATION_VERSION = "1.0.0"
-BOUNDARY_POLICY_VERSION = "1.0.0"
 
 _MARKET_SUFFIX = {"US": "", "IN": ".NS"}
 
@@ -369,11 +365,23 @@ def finalize_source_manifest(source_manifest: dict, final_limitations: list[str]
 
 
 def verify_source_manifest_integrity(manifest: dict) -> bool:
-    """Deterministic tamper-detection helper: recomputes the hash over
-    every field except `manifest_integrity_hash` and compares against the
-    stored value. Returns False (never raises) for a manifest missing the
-    hash field entirely — an unhashed manifest cannot be verified, not
-    trivially "valid"."""
+    """Deterministic CORRUPTION/DRIFT detection, not cryptographic
+    authentication. This recomputes an ordinary SHA-256 over every field
+    except `manifest_integrity_hash` and compares against the stored
+    value — it proves the manifest's OWN fields are still internally
+    self-consistent with its own recorded hash (catches accidental
+    corruption, a partial write, a manual SQL edit that touched fields
+    but not the hash, or a legacy row from before this hash existed).
+    It provides NO protection against an attacker capable of rewriting
+    BOTH the manifest content AND its stored hash together — that would
+    require a keyed MAC or a hash computed and verified against a
+    value the row's own writer cannot also control, neither of which
+    this function claims to be. Returns False (never raises) for a
+    manifest missing the hash field entirely — an unhashed manifest
+    cannot be verified, not trivially "valid". Verifies correctly
+    against a manifest that has round-tripped through PostgreSQL JSONB
+    storage (dict -> JSON -> dict), since it operates on whatever dict
+    it is actually given, not a cached in-memory original."""
     stored = manifest.get("manifest_integrity_hash")
     if not stored:
         return False
@@ -395,11 +403,15 @@ MANIFEST_INTEGRITY_VIOLATION = "MANIFEST_INTEGRITY_VIOLATION"
 # (paper_trade_id, evidence_bundle_version, source_id, source_version)
 # identity still matches.
 _REQUIRED_MANIFEST_FIELDS_FOR_REPLAY = (
-    "source_manifest_schema_version", "source_id", "source_type", "source_version",
-    "provider_symbol", "trade_symbol", "market", "interval",
-    "symbol_normalization_version", "boundary_policy_version",
-    "auto_adjust", "back_adjust", "actions", "repair", "prepost",
-    "provider_request_start", "manifest_integrity_hash",
+    "source_manifest_schema_version", "source_id", "source_type", "source_scope",
+    "production_authoritative", "source_version", "provider", "provider_library_version",
+    "interval", "auto_adjust", "back_adjust", "actions", "repair", "prepost",
+    "timezone_behavior", "raw_ohlc_basis_claim", "adjusted_close_available",
+    "split_event_manifest", "dividend_event_manifest", "provider_symbol", "trade_symbol",
+    "symbol_normalization_version", "market", "acquisition_mode",
+    "provider_request_start", "provider_exclusive_request_end", "end_widening_reason",
+    "boundary_policy_version", "requested_trading_weekday_count",
+    "unresolved_basis_limitations", "manifest_integrity_hash",
 )
 
 _SUPPORTED_SOURCE_MANIFEST_SCHEMA_VERSIONS = frozenset({SOURCE_MANIFEST_SCHEMA_VERSION})
@@ -473,6 +485,22 @@ def validate_manifest_compatibility(evidence) -> ManifestCompatibilityDecision:
                 False, MANIFEST_INTEGRITY_VIOLATION, f"manifest {key}={manifest[key]!r} does not match pinned {expected!r}"
             )
 
+    # Fixed-value contract checks (Stage J3, Stage 5 items 10-12) — these
+    # never vary by trade or acquisition; a manifest declaring anything
+    # else is corrupted or from a policy this codebase no longer runs.
+    if manifest.get("production_authoritative") is not False:
+        return ManifestCompatibilityDecision(
+            False, MANIFEST_INTEGRITY_VIOLATION, "manifest production_authoritative is not exactly False"
+        )
+    if manifest.get("source_scope") != SOURCE_SCOPE:
+        return ManifestCompatibilityDecision(
+            False, MANIFEST_INTEGRITY_VIOLATION, "manifest source_scope does not equal BOUNDED_EVIDENCE_ACQUISITION_ONLY"
+        )
+    if manifest.get("source_type") != SOURCE_TYPE:
+        return ManifestCompatibilityDecision(
+            False, MANIFEST_INTEGRITY_VIOLATION, "manifest source_type does not equal EXTERNAL_UNOFFICIAL_DAILY"
+        )
+
     # Identity fields must match the evidence row's OWN top-level
     # fields — never re-derived from current data (Stage 2 item 6); this
     # only ever compares the manifest against the SAME row's own other
@@ -495,6 +523,61 @@ def validate_manifest_compatibility(evidence) -> ManifestCompatibilityDecision:
         return ManifestCompatibilityDecision(
             False, MANIFEST_INTEGRITY_VIOLATION,
             "manifest provider_request_start does not match evidence requested_window_start",
+        )
+
+    # Stage 5 item 7 — provider-exclusive request end must equal
+    # requested_window_end + one calendar day, the exact widening
+    # fetch_raw_daily_bars actually applies (see finalize_source_manifest's
+    # own end_widening_reason text) — never a different, unexplained gap.
+    expected_exclusive_end = (evidence.requested_window_end + timedelta(days=1)).isoformat()
+    if manifest.get("provider_exclusive_request_end") != expected_exclusive_end:
+        return ManifestCompatibilityDecision(
+            False, MANIFEST_INTEGRITY_VIOLATION,
+            "manifest provider_exclusive_request_end does not equal requested_window_end + 1 day",
+        )
+
+    # Stage 5 item 8 — split/dividend dates must be valid ISO dates
+    # inside the requested window — never a date outside the window the
+    # evidence claims to cover, and never an unparseable value.
+    for manifest_key in ("split_event_manifest", "dividend_event_manifest"):
+        event_dates = manifest.get(manifest_key)
+        if not isinstance(event_dates, list):
+            return ManifestCompatibilityDecision(
+                False, MANIFEST_INTEGRITY_VIOLATION, f"manifest {manifest_key} is not a list"
+            )
+        for raw_date in event_dates:
+            try:
+                parsed = date.fromisoformat(raw_date)
+            except (TypeError, ValueError):
+                return ManifestCompatibilityDecision(
+                    False, MANIFEST_INTEGRITY_VIOLATION, f"manifest {manifest_key} contains a non-ISO-date value"
+                )
+            if not (evidence.requested_window_start <= parsed <= evidence.requested_window_end):
+                return ManifestCompatibilityDecision(
+                    False, MANIFEST_INTEGRITY_VIOLATION,
+                    f"manifest {manifest_key} contains a date outside the requested window",
+                )
+
+    # Stage 5 item 9 — manifest limitations must equal the evidence
+    # row's own persisted limitations exactly (both are built from the
+    # SAME final_limitations list at finalize_source_manifest time — see
+    # that function's own docstring; a divergence here means the row was
+    # corrupted after persistence, independent of the hash check above).
+    if list(manifest.get("unresolved_basis_limitations", [])) != list(evidence.limitations):
+        return ManifestCompatibilityDecision(
+            False, MANIFEST_INTEGRITY_VIOLATION,
+            "manifest unresolved_basis_limitations does not match evidence row's own limitations",
+        )
+
+    # adjusted_close_available must be a real bool, not a truthy stand-in
+    # (Stage 5's "type" requirement for this field).
+    if not isinstance(manifest.get("adjusted_close_available"), bool):
+        return ManifestCompatibilityDecision(
+            False, MANIFEST_INTEGRITY_VIOLATION, "manifest adjusted_close_available is not a boolean"
+        )
+    if not isinstance(manifest.get("provider_library_version"), str) or not manifest["provider_library_version"]:
+        return ManifestCompatibilityDecision(
+            False, MANIFEST_INTEGRITY_VIOLATION, "manifest provider_library_version is missing or not a string"
         )
 
     return ManifestCompatibilityDecision(True, None)
