@@ -19,7 +19,6 @@ from services.postmortem.price_path_evidence_decision import (
     SOURCE_UNAVAILABLE,
     UNSUPPORTED_EVIDENCE_COMPLETENESS,
     classify_acquired_evidence,
-    classify_provider_failure,
     classify_replay_or_acquisition,
     compute_report_completeness_ceiling,
     get_provider_failure_policy,
@@ -54,33 +53,26 @@ class TestAcquisitionDecision:
 
 
 @pytest.mark.unit
-class TestProviderFailureClassification:
-    def test_generic_fetch_failure_is_source_unavailable_not_invalid(self):
-        result = classify_provider_failure(error_code="PROVIDER_FETCH_FAILED")
-        assert result.evidence_status == SOURCE_UNAVAILABLE
-        assert result.calculation_status == CALCULATION_UNAVAILABLE
-        assert result.persistence_permitted is False
-        assert result.report_completeness_ceiling == "LIMITED_EVIDENCE"
+class TestProviderFailurePolicy:
+    """get_provider_failure_policy/ProviderFailurePolicy is the SOLE
+    provider-failure authority (Stage J1B-Assurance-Closure) -- an
+    earlier classify_provider_failure function duplicated this same
+    mapping but was never actually called by the live path, and was
+    removed rather than left as a second, unconsulted table."""
 
-    def test_unexpected_response_shape_is_source_invalid(self):
-        result = classify_provider_failure(error_code="PROVIDER_UNEXPECTED_COLUMN_SHAPE")
-        assert result.evidence_status == SOURCE_INVALID
+    def test_generic_fetch_failure_is_source_unavailable_not_invalid(self):
+        policy = get_provider_failure_policy(error_code="PROVIDER_FETCH_FAILED")
+        assert policy.evidence_status == SOURCE_UNAVAILABLE
 
     def test_fallback_text_is_exact(self):
-        result = classify_provider_failure(error_code="PROVIDER_FETCH_FAILED")
-        assert result.limitations == ("Insufficient evidence to determine this factor reliably.",)
-
-
-@pytest.mark.unit
-class TestProviderFailurePolicy:
-    """Stage 5 -- the SINGLE typed mapping that actually governs the
-    lifecycle outcome, not merely informs a log line."""
+        policy = get_provider_failure_policy(error_code="PROVIDER_FETCH_FAILED")
+        assert policy.limitations == ("Insufficient evidence to determine this factor reliably.",)
 
     @pytest.mark.parametrize("code", ["PROVIDER_FETCH_FAILED", "PROVIDER_RESPONSE_TOO_LARGE", "PROVIDER_UNEXPECTED_COLUMN_SHAPE"])
     def test_every_known_code_is_explicitly_mapped(self, code):
         policy = get_provider_failure_policy(error_code=code)
         assert policy.sanitized_error_code == code
-        assert policy.evidence_persistence_permitted is False
+        assert policy.evidence_fresh_persistence_permitted is False
         assert policy.report_permitted is False
 
     def test_source_invalid_vs_source_unavailable_distinguishable_in_policy(self):
@@ -92,7 +84,7 @@ class TestProviderFailurePolicy:
 
     def test_unrecognized_code_fails_closed_never_permits_persistence(self):
         policy = get_provider_failure_policy(error_code="SOME_FUTURE_CODE_NEVER_SEEN_BEFORE")
-        assert policy.evidence_persistence_permitted is False
+        assert policy.evidence_fresh_persistence_permitted is False
         assert policy.report_permitted is False
         assert policy.retry_permitted is True  # still safely retryable, never silently dropped
 
@@ -111,35 +103,35 @@ class TestAcquiredEvidenceClassification:
         result = classify_acquired_evidence(data_completeness="UNAVAILABLE")
         assert result.evidence_status == SOURCE_UNAVAILABLE
         assert result.calculation_status == CALCULATION_UNAVAILABLE
-        assert result.persistence_permitted is True
+        assert result.fresh_persistence_permitted is True
         assert result.report_completeness_ceiling == "LIMITED_EVIDENCE"
 
     def test_invalid_source_data_is_source_invalid_and_never_persisted(self):
         result = classify_acquired_evidence(data_completeness="INVALID_SOURCE_DATA")
         assert result.evidence_status == SOURCE_INVALID
         assert result.calculation_status == CALCULATION_UNAVAILABLE
-        assert result.persistence_permitted is False
+        assert result.fresh_persistence_permitted is False
         assert result.report_completeness_ceiling == "LIMITED_EVIDENCE"
 
     def test_ambiguous_resolution_still_permits_calculation(self):
         result = classify_acquired_evidence(data_completeness="AMBIGUOUS_RESOLUTION")
         assert result.evidence_status == AMBIGUOUS_RESOLUTION
         assert result.calculation_status == CALCULATION_ELIGIBLE
-        assert result.persistence_permitted is True
+        assert result.fresh_persistence_permitted is True
         assert result.report_completeness_ceiling == "LIMITED_EVIDENCE"
 
     def test_partial_completeness_still_eligible_but_capped(self):
         result = classify_acquired_evidence(data_completeness="PARTIAL")
         assert result.evidence_status == PARTIAL_EVIDENCE
         assert result.calculation_status == CALCULATION_ELIGIBLE
-        assert result.persistence_permitted is True
+        assert result.fresh_persistence_permitted is True
         assert result.report_completeness_ceiling == "LIMITED_EVIDENCE"
 
     def test_complete_is_fully_eligible(self):
         result = classify_acquired_evidence(data_completeness="COMPLETE")
         assert result.evidence_status == CALCULATION_ELIGIBLE
         assert result.calculation_status == CALCULATION_ELIGIBLE
-        assert result.persistence_permitted is True
+        assert result.fresh_persistence_permitted is True
         assert result.report_completeness_ceiling == "COMPLETE"
 
 
@@ -156,7 +148,7 @@ class TestFailClosedOnUnsupportedCompleteness:
         result = classify_acquired_evidence(data_completeness=bad_value)
         assert result.evidence_status == UNSUPPORTED_EVIDENCE_COMPLETENESS
         assert result.calculation_status == CALCULATION_UNAVAILABLE
-        assert result.persistence_permitted is False
+        assert result.fresh_persistence_permitted is False
         assert result.report_completeness_ceiling == "LIMITED_EVIDENCE"
         assert result.limitations == ("Insufficient evidence to determine this factor reliably.",)
 
@@ -186,3 +178,30 @@ class TestMinimumCeilingComposition:
 
     def test_no_inputs_defaults_complete(self):
         assert compute_report_completeness_ceiling() == "COMPLETE"
+
+
+@pytest.mark.unit
+class TestCeilingComposerFailsClosedOnUnknownInputs:
+    """Stage J1B-Assurance-Closure, Stage 2 -- the prior implementation
+    (`"LIMITED_EVIDENCE" if "LIMITED_EVIDENCE" in ceilings else
+    "COMPLETE"`) FAILED OPEN: any value that wasn't literally the string
+    "LIMITED_EVIDENCE" fell through to COMPLETE, including garbage no
+    caller ever intended as complete. Must fail closed instead."""
+
+    @pytest.mark.parametrize("bad_ceiling", [
+        None, "", "complete", "Complete", " COMPLETE", "COMPLETE ",
+        "UNKNOWN", "PARTIALLY_COMPLETE", 0, False, "limited_evidence",
+    ])
+    def test_unknown_ceiling_value_never_yields_complete(self, bad_ceiling):
+        assert compute_report_completeness_ceiling("COMPLETE", bad_ceiling) == "LIMITED_EVIDENCE"
+
+    def test_unknown_ceiling_alone_fails_closed(self):
+        assert compute_report_completeness_ceiling("GARBAGE") == "LIMITED_EVIDENCE"
+
+    def test_unknown_ceiling_among_many_complete_still_fails_closed(self):
+        assert compute_report_completeness_ceiling("COMPLETE", "COMPLETE", "COMPLETE", "TYPO") == "LIMITED_EVIDENCE"
+
+    def test_all_known_values_still_compose_correctly(self):
+        """Fail-closed handling must not break the ordinary two-value contract."""
+        assert compute_report_completeness_ceiling("COMPLETE", "COMPLETE") == "COMPLETE"
+        assert compute_report_completeness_ceiling("COMPLETE", "LIMITED_EVIDENCE") == "LIMITED_EVIDENCE"

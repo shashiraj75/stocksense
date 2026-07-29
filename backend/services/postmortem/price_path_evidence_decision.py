@@ -28,9 +28,16 @@ provenance defect (a replayed report could read provider_call_expected
      WHETHER the (replayed or freshly acquired) evidence is usable, and
      for what. Never claims acquisition provenance.
 
-Both are pure — no I/O, no database access, no provider calls. Callers
-gather the facts (a compatible-evidence lookup result, an acquired
-PricePathEvidenceBundle's own fields, a caught
+A third function, get_provider_failure_policy -> ProviderFailurePolicy,
+is the SOLE authority for a caught PriceProviderAcquisitionError (Stage
+J1B-Assurance-Closure correction — an earlier classify_provider_failure
+function duplicated this same error-code-to-evidence-status mapping but
+was never actually called by the live path; removed rather than left as
+a second, unconsulted classification table).
+
+All three are pure — no I/O, no database access, no provider calls.
+Callers gather the facts (a compatible-evidence lookup result, an
+acquired PricePathEvidenceBundle's own fields, a caught
 PriceProviderAcquisitionError's code) and pass them in; this module
 only classifies.
 """
@@ -73,14 +80,6 @@ PRICE_BASIS_INCOMPATIBLE_FUTURE_SCOPE = "PRICE_BASIS_INCOMPATIBLE"
 
 _INSUFFICIENT_EVIDENCE_FALLBACK = "Insufficient evidence to determine this factor reliably."
 
-# Provider error codes this module classifies as SOURCE_INVALID
-# (malformed/unexpected provider response shape) rather than the
-# generic SOURCE_UNAVAILABLE (no data at all, or a transient/network
-# failure). PROVIDER_FETCH_FAILED and PROVIDER_RESPONSE_TOO_LARGE are
-# transient/volume conditions, not evidence the provider's data was
-# wrong, so they classify as SOURCE_UNAVAILABLE.
-_SOURCE_INVALID_PROVIDER_CODES = frozenset({"PROVIDER_UNEXPECTED_COLUMN_SHAPE"})
-
 # data_completeness (price_path_acquisition's own real, already-
 # computed enum) -> this module's evidence_status. Anything NOT a key
 # in this dict — None, "", a typo, a genuinely new future value — falls
@@ -115,7 +114,7 @@ class HistoricalEvidenceQualityDecision:
     on HistoricalEvidenceAcquisitionDecision."""
     evidence_status: str
     calculation_status: str  # CALCULATION_ELIGIBLE | CALCULATION_UNAVAILABLE
-    persistence_permitted: bool
+    fresh_persistence_permitted: bool
     report_completeness_ceiling: str  # "COMPLETE" | "LIMITED_EVIDENCE"
     reason_codes: tuple[str, ...] = field(default_factory=tuple)
     limitations: tuple[str, ...] = field(default_factory=tuple)
@@ -139,21 +138,6 @@ def classify_replay_or_acquisition(
     )
 
 
-def classify_provider_failure(*, error_code: str) -> HistoricalEvidenceQualityDecision:
-    """Called from the caught PriceProviderAcquisitionError branch. A
-    transient/no-data provider outcome is NEVER treated as proof the
-    trade or symbol was invalid — it is a distinct, named, non-terminal
-    evidence-quality state. See ProviderFailurePolicy (this module) for
-    the mapping that actually GOVERNS the outbox lifecycle outcome;
-    this function only names WHAT happened to the evidence."""
-    status = SOURCE_INVALID if error_code in _SOURCE_INVALID_PROVIDER_CODES else SOURCE_UNAVAILABLE
-    return HistoricalEvidenceQualityDecision(
-        evidence_status=status, calculation_status=CALCULATION_UNAVAILABLE,
-        persistence_permitted=False, report_completeness_ceiling="LIMITED_EVIDENCE",
-        reason_codes=(status,), limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
-    )
-
-
 def classify_acquired_evidence(*, data_completeness: str | None) -> HistoricalEvidenceQualityDecision:
     """Called after a provider response was successfully validated into
     a PricePathEvidenceBundle (or after a compatible evidence row was
@@ -163,14 +147,14 @@ def classify_acquired_evidence(*, data_completeness: str | None) -> HistoricalEv
     FAIL-CLOSED: any value not in the known set (None, "", a typo, a
     genuinely new future value this mapping hasn't been taught yet)
     returns UNSUPPORTED_EVIDENCE_COMPLETENESS with calculation_status=
-    CALCULATION_UNAVAILABLE and persistence_permitted=False — never
+    CALCULATION_UNAVAILABLE and fresh_persistence_permitted=False — never
     silently treated as COMPLETE/CALCULATION_ELIGIBLE."""
     status = _DATA_COMPLETENESS_TO_EVIDENCE_STATUS.get(data_completeness)
 
     if status is None:
         return HistoricalEvidenceQualityDecision(
             evidence_status=UNSUPPORTED_EVIDENCE_COMPLETENESS, calculation_status=CALCULATION_UNAVAILABLE,
-            persistence_permitted=False, report_completeness_ceiling="LIMITED_EVIDENCE",
+            fresh_persistence_permitted=False, report_completeness_ceiling="LIMITED_EVIDENCE",
             reason_codes=(UNSUPPORTED_EVIDENCE_COMPLETENESS,), limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
         )
     if status == SOURCE_UNAVAILABLE:
@@ -182,31 +166,31 @@ def classify_acquired_evidence(*, data_completeness: str | None) -> HistoricalEv
         # persisted at all.
         return HistoricalEvidenceQualityDecision(
             evidence_status=status, calculation_status=CALCULATION_UNAVAILABLE,
-            persistence_permitted=True, report_completeness_ceiling="LIMITED_EVIDENCE",
+            fresh_persistence_permitted=True, report_completeness_ceiling="LIMITED_EVIDENCE",
             reason_codes=(status,), limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
         )
     if status == SOURCE_INVALID:
         return HistoricalEvidenceQualityDecision(
             evidence_status=status, calculation_status=CALCULATION_UNAVAILABLE,
-            persistence_permitted=False, report_completeness_ceiling="LIMITED_EVIDENCE",
+            fresh_persistence_permitted=False, report_completeness_ceiling="LIMITED_EVIDENCE",
             reason_codes=(status,), limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
         )
     if status == AMBIGUOUS_RESOLUTION:
         return HistoricalEvidenceQualityDecision(
             evidence_status=AMBIGUOUS_RESOLUTION, calculation_status=CALCULATION_ELIGIBLE,
-            persistence_permitted=True, report_completeness_ceiling="LIMITED_EVIDENCE",
+            fresh_persistence_permitted=True, report_completeness_ceiling="LIMITED_EVIDENCE",
             reason_codes=(AMBIGUOUS_RESOLUTION,), limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
         )
     if status == PARTIAL_EVIDENCE:
         return HistoricalEvidenceQualityDecision(
             evidence_status=PARTIAL_EVIDENCE, calculation_status=CALCULATION_ELIGIBLE,
-            persistence_permitted=True, report_completeness_ceiling="LIMITED_EVIDENCE",
+            fresh_persistence_permitted=True, report_completeness_ceiling="LIMITED_EVIDENCE",
             reason_codes=(PARTIAL_EVIDENCE,),
         )
     # status == CALCULATION_ELIGIBLE (data_completeness == "COMPLETE")
     return HistoricalEvidenceQualityDecision(
         evidence_status=CALCULATION_ELIGIBLE, calculation_status=CALCULATION_ELIGIBLE,
-        persistence_permitted=True, report_completeness_ceiling="COMPLETE",
+        fresh_persistence_permitted=True, report_completeness_ceiling="COMPLETE",
     )
 
 
@@ -220,7 +204,7 @@ class ProviderFailurePolicy:
     evidence_status: str
     retry_permitted: bool
     terminal_permitted: bool
-    evidence_persistence_permitted: bool
+    evidence_fresh_persistence_permitted: bool
     report_permitted: bool
     sanitized_error_code: str
     limitations: tuple[str, ...] = field(default_factory=tuple)
@@ -242,23 +226,23 @@ class ProviderFailurePolicy:
 _PROVIDER_FAILURE_POLICIES = {
     "PROVIDER_FETCH_FAILED": ProviderFailurePolicy(
         evidence_status=SOURCE_UNAVAILABLE, retry_permitted=True, terminal_permitted=True,
-        evidence_persistence_permitted=False, report_permitted=False,
+        evidence_fresh_persistence_permitted=False, report_permitted=False,
         sanitized_error_code="PROVIDER_FETCH_FAILED", limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
     ),
     "PROVIDER_RESPONSE_TOO_LARGE": ProviderFailurePolicy(
         evidence_status=SOURCE_UNAVAILABLE, retry_permitted=True, terminal_permitted=True,
-        evidence_persistence_permitted=False, report_permitted=False,
+        evidence_fresh_persistence_permitted=False, report_permitted=False,
         sanitized_error_code="PROVIDER_RESPONSE_TOO_LARGE", limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
     ),
     "PROVIDER_UNEXPECTED_COLUMN_SHAPE": ProviderFailurePolicy(
         evidence_status=SOURCE_INVALID, retry_permitted=True, terminal_permitted=True,
-        evidence_persistence_permitted=False, report_permitted=False,
+        evidence_fresh_persistence_permitted=False, report_permitted=False,
         sanitized_error_code="PROVIDER_UNEXPECTED_COLUMN_SHAPE", limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
     ),
 }
 _DEFAULT_PROVIDER_FAILURE_POLICY = ProviderFailurePolicy(
     evidence_status=SOURCE_UNAVAILABLE, retry_permitted=True, terminal_permitted=True,
-    evidence_persistence_permitted=False, report_permitted=False,
+    evidence_fresh_persistence_permitted=False, report_permitted=False,
     sanitized_error_code="PROVIDER_ACQUISITION_ERROR", limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
 )
 
@@ -270,6 +254,9 @@ def get_provider_failure_policy(*, error_code: str) -> ProviderFailurePolicy:
     return _PROVIDER_FAILURE_POLICIES.get(error_code, _DEFAULT_PROVIDER_FAILURE_POLICY)
 
 
+_KNOWN_CEILINGS = frozenset({"COMPLETE", "LIMITED_EVIDENCE"})
+
+
 def compute_report_completeness_ceiling(*ceilings: str) -> str:
     """Stage J3 — the final report status must never exceed the WEAKEST
     applicable ceiling. Every caller (trade-context ceiling from J1A,
@@ -277,5 +264,17 @@ def compute_report_completeness_ceiling(*ceilings: str) -> str:
     history ceiling) passes its own ceiling in; this is the single
     place \"minimum of all applicable ceilings\" is computed, so no
     caller can accidentally let a locally-COMPLETE value override an
-    upstream LIMITED_EVIDENCE one."""
+    upstream LIMITED_EVIDENCE one.
+
+    Stage J1B-Assurance-Closure correction: the prior implementation
+    (`"LIMITED_EVIDENCE" if "LIMITED_EVIDENCE" in ceilings else
+    "COMPLETE"`) FAILED OPEN — any unknown, null, empty, or malformed
+    ceiling value that was not literally the string "LIMITED_EVIDENCE"
+    fell through to "COMPLETE", including a value nobody actually
+    intended to be treated as complete. Now every input is validated
+    against the known two-value set; any unrecognized value fails
+    closed to LIMITED_EVIDENCE, exactly like an explicit
+    LIMITED_EVIDENCE input would."""
+    if any(c not in _KNOWN_CEILINGS for c in ceilings):
+        return "LIMITED_EVIDENCE"
     return "LIMITED_EVIDENCE" if "LIMITED_EVIDENCE" in ceilings else "COMPLETE"
