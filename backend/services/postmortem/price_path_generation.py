@@ -309,7 +309,7 @@ def persist_price_path_report(
     market: str, report_trading_date, market_timezone: str, source_version: str,
     outbox_id: int | None = None, claimed_by: str | None = None,
     trade_context_ceiling: str = "COMPLETE",
-    acquisition_decision=None, quality_decision=None,
+    acquisition_decision=None, quality_decision=None, trade_context_decision=None,
 ) -> tuple[PersistedReport, bool]:
     """PHASE 5 — short write. Merges the price-path payload additively
     on top of the prior report's own structured_report/evidence_items/
@@ -361,8 +361,27 @@ def persist_price_path_report(
     # identical decision fields; never an unrestricted raw provider
     # payload.
     extra_limitations = []
-    if acquisition_decision is not None or quality_decision is not None:
+    if acquisition_decision is not None or quality_decision is not None or trade_context_decision is not None:
         structured_report["price_path"] = dict(structured_report["price_path"])
+        if trade_context_decision is not None:
+            # Stage J Final Semantic Reconciliation, Stage 7 — J1A's own
+            # eligibility.reason_codes/limitations (MISSING_ENTRY_CONTEXT,
+            # ENTRY_CONTEXT_INVALID, MISSING_EXIT_CONTEXT,
+            # EXIT_CONTEXT_INVALID, etc.) were computed BEFORE acquisition
+            # ever ran and consulted only for trade_context_ceiling — the
+            # human-readable limitation text itself never reached
+            # evidence_gaps. A prior pass's real-PG test for the invalid-
+            # exit-snapshot scenario had to be weakened to a status-only
+            # assertion because of exactly this gap. Fixed: J1A's own
+            # reason codes/limitations are now persisted as their own
+            # structured block AND folded into evidence_gaps, the same
+            # deterministic way acquisition_decision/quality_decision
+            # already are — one mapping, not a second ad hoc path.
+            structured_report["price_path"]["trade_context_decision"] = {
+                "eligibility_status": trade_context_decision.eligibility_status,
+                "reason_codes": list(trade_context_decision.reason_codes),
+            }
+            extra_limitations.extend(trade_context_decision.limitations)
         if acquisition_decision is not None:
             structured_report["price_path"]["acquisition_decision"] = {
                 "acquisition_status": acquisition_decision.acquisition_status,
