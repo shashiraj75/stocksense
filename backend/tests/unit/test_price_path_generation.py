@@ -287,6 +287,63 @@ class TestPhase4BuildPayload:
         mfe_claim = next(c for c in payload.claims if c["factor"] == "mfe")
         assert mfe_claim["claim_text"] == INSUFFICIENT_EVIDENCE_SENTENCE
 
+    def test_both_same_bar_ambiguous_touch_order_downgrades_status_despite_complete_bundle(self):
+        """Stage J-F5 — a bundle can be data_completeness=COMPLETE with a
+        fully EXCURSION_COMPLETE MFE/MAE and STILL have an ambiguous touch
+        order (both stop and target crossed within one interior daily
+        bar). The report ceiling must reflect that ambiguity rather than
+        report COMPLETE while its own touch_order claim is
+        INSUFFICIENT_EVIDENCE-flavored — see build_price_path_report_
+        payload's _AMBIGUOUS_TOUCH_ORDERS set."""
+        conn = _EvidenceFakeConn()
+        # entry 6/1, exit 6/5; interior bar 6/3 has low=85 (below stop=90)
+        # AND high=125 (above target=120) — both crossed in the same bar.
+        bundle = _bundle(raw_bars=[
+            {"date": dt.date(2026, 6, 2), "open": 100.0, "high": 108.0, "low": 99.0, "close": 105.0, "volume": 500, "adj_close": None, "dividend": 0.0},
+            {"date": dt.date(2026, 6, 3), "open": 105.0, "high": 125.0, "low": 85.0, "close": 100.0, "volume": 500, "adj_close": None, "dividend": 0.0},
+        ])
+        evidence, _ = ppg.persist_price_path_evidence(conn, bundle)
+        payload = ppg.build_price_path_report_payload(
+            evidence, entry_price=100.0, exit_price=100.0, applicable_stop=90.0, applicable_target=120.0,
+            level_history_complete=True, trade_id=1,
+        )
+        from services.postmortem.price_path_calculator import BOTH_SAME_BAR_AMBIGUOUS
+
+        assert payload.price_path_section["touch_order"] == BOTH_SAME_BAR_AMBIGUOUS
+        assert payload.status == "LIMITED_EVIDENCE"
+        # The ambiguity must not suppress independently valid MFE/MAE —
+        # those are computed from `excursion`, independent of touch order,
+        # and remain real numbers, not nulled out.
+        assert payload.price_path_section["mfe_abs"] == pytest.approx(25.0)  # interior high 125 - entry 100
+        assert payload.price_path_section["mae_signed_abs"] == pytest.approx(-15.0)  # interior low 85 - entry 100
+
+    def test_clean_stop_only_touch_order_does_not_downgrade_status(self):
+        """Control case — STOP_ONLY is a definitive, non-ambiguous claim
+        and must not trigger the Stage J-F5 downgrade. Uses a fully
+        COMPLETE bundle (every session in [entry, exit] observed) so the
+        only variable under test is touch-order ambiguity, not an
+        unrelated PARTIAL-bundle ceiling."""
+        conn = _EvidenceFakeConn()
+        bundle = _bundle(
+            entry_timestamp=dt.datetime(2026, 6, 1, tzinfo=ET), exit_timestamp=dt.datetime(2026, 6, 3, tzinfo=ET),
+            raw_bars=[
+                {"date": dt.date(2026, 6, 1), "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 500, "adj_close": None, "dividend": 0.0},
+                {"date": dt.date(2026, 6, 2), "open": 100.0, "high": 108.0, "low": 85.0, "close": 95.0, "volume": 500, "adj_close": None, "dividend": 0.0},
+                {"date": dt.date(2026, 6, 3), "open": 95.0, "high": 96.0, "low": 94.0, "close": 95.0, "volume": 500, "adj_close": None, "dividend": 0.0},
+            ],
+        )
+        assert bundle.data_completeness == "COMPLETE"
+        evidence, _ = ppg.persist_price_path_evidence(conn, bundle)
+        payload = ppg.build_price_path_report_payload(
+            evidence, entry_price=100.0, exit_price=95.0, applicable_stop=90.0, applicable_target=120.0,
+            level_history_complete=True, trade_id=1,
+        )
+        from services.postmortem.price_path_calculator import EXCURSION_COMPLETE, STOP_ONLY
+
+        assert payload.price_path_section["touch_order"] == STOP_ONLY
+        assert payload.price_path_section["price_path_status"] == "COMPLETE"
+        assert payload.status == "COMPLETE"
+
 
 # --------------------------------------------------------------------
 # Phase 5 / Stage I supersession

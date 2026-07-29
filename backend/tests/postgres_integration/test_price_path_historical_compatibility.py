@@ -875,3 +875,266 @@ class TestContradictoryReplayStateFailsClosedThroughRealEndpoint:
         ).fetchone()
         assert outbox_status == "FAILED_RETRYABLE"
         assert error_code == "INTERNAL_INTEGRITY_VIOLATION"
+
+
+@pytest.mark.timeout(30)
+class TestSourceManifestPersistsAllFinalFields:
+    """Stage J-F7, item 1 -- the Stage J-F3 manifest fields (symbol
+    normalization version, provider-request-start, provider-exclusive-
+    end, end-widening reason, boundary-policy version, source-manifest
+    schema version, requested trading-weekday count, manifest integrity
+    hash) round-trip through real PostgreSQL JSONB storage, not just an
+    in-memory dataclass."""
+
+    def test_manifest_fields_survive_real_persistence(self, client, pg_conn, unique_user_id, monkeypatch):
+        monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
+        trade_id = _open_and_close(client, pg_conn, unique_user_id)
+        entry_ts, exit_ts = pg_conn.execute(
+            "SELECT opened_at, closed_at FROM paper_trades WHERE id = %s", (trade_id,)
+        ).fetchone()
+
+        from services.market_hours import ET
+
+        entry_date, exit_date = entry_ts.astimezone(ET).date(), exit_ts.astimezone(ET).date()
+
+        def _bars_in_window(*a, **k):
+            return [
+                {"date": entry_date, "open": 100.0, "high": 115.0, "low": 99.0, "close": 105.0,
+                 "volume": 500, "adj_close": None, "dividend": 0.0},
+            ]
+
+        from services.postmortem import price_path_acquisition
+        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _bars_in_window)
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+
+        resp = _generate(client, unique_user_id, trade_id)
+        assert resp.status_code == 200
+
+        manifest = pg_conn.execute(
+            "SELECT source_manifest FROM paper_trade_price_path_evidence WHERE paper_trade_id = %s", (trade_id,)
+        ).fetchone()[0]
+
+        for key in (
+            "source_manifest_schema_version", "trade_symbol", "provider_symbol",
+            "symbol_normalization_version", "market", "provider_request_start",
+            "provider_exclusive_request_end", "end_widening_reason", "boundary_policy_version",
+            "requested_trading_weekday_count", "manifest_integrity_hash",
+        ):
+            assert key in manifest, f"{key} missing from persisted source_manifest"
+        assert manifest["provider_exclusive_request_end"] == (exit_date + dt.timedelta(days=1)).isoformat()
+        assert manifest["provider_request_start"] == entry_date.isoformat()
+        assert manifest["market"] == "US"
+
+
+@pytest.mark.timeout(30)
+class TestCompatibleReplayPreservesManifestUnchanged:
+    """Stage J-F7, item 2 -- a compatible-replay report references the
+    SAME evidence row, whose manifest (including manifest_integrity_hash)
+    is never re-derived or mutated on replay."""
+
+    def test_replay_reuses_identical_persisted_manifest(self, client, pg_conn, unique_user_id, monkeypatch):
+        monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
+        trade_id = _open_and_close(client, pg_conn, unique_user_id)
+        entry_ts, exit_ts = pg_conn.execute(
+            "SELECT opened_at, closed_at FROM paper_trades WHERE id = %s", (trade_id,)
+        ).fetchone()
+
+        from services.market_hours import ET
+
+        entry_date = entry_ts.astimezone(ET).date()
+
+        def _bars_in_window(*a, **k):
+            return [
+                {"date": entry_date, "open": 100.0, "high": 115.0, "low": 99.0, "close": 105.0,
+                 "volume": 500, "adj_close": None, "dividend": 0.0},
+            ]
+
+        from services.postmortem import price_path_acquisition, price_path_store, price_path_evidence_decision
+
+        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _bars_in_window)
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+
+        bundle = price_path_acquisition.acquire_price_path_evidence(
+            paper_trade_id=trade_id, user_id=unique_user_id, symbol="AAPL", market="US",
+            market_timezone_name="America/New_York", market_tzinfo=ET,
+            entry_timestamp=entry_ts, exit_timestamp=exit_ts,
+            fetch_bars_fn=_bars_in_window, fetch_splits_fn=_fake_none, fetch_dividends_fn=_fake_none,
+        )
+        evidence, _ = price_path_store.persist_evidence(pg_conn, bundle)
+        manifest_before = evidence.source_manifest
+
+        def _raises(*a, **k):
+            raise AssertionError("provider must not be called on a compatible-replay path")
+
+        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _raises)
+        monkeypatch.setattr(price_path_acquisition, "fetch_split_events", _raises)
+        monkeypatch.setattr(price_path_acquisition, "fetch_dividend_events", _raises)
+
+        resp = _generate(client, unique_user_id, trade_id)
+        assert resp.status_code == 200
+        assert resp.json()["price_path_generation_status"] == "PRICE_PATH_GENERATED"
+
+        manifest_after, evidence_count = pg_conn.execute(
+            "SELECT source_manifest, "
+            "(SELECT count(*) FROM paper_trade_price_path_evidence WHERE paper_trade_id = %s) "
+            "FROM paper_trade_price_path_evidence WHERE paper_trade_id = %s", (trade_id, trade_id),
+        ).fetchone()
+        assert evidence_count == 1  # no second evidence row was ever acquired
+        assert manifest_after == manifest_before
+        assert manifest_after["manifest_integrity_hash"] == manifest_before["manifest_integrity_hash"]
+
+
+@pytest.mark.timeout(30)
+class TestSameDayTradePersistsNullExcursionAndLimitedEvidence:
+    """Stage J-F5/J-F7 item 4 -- a same-day (entry_date == exit_date)
+    trade has zero interior bars by construction (price_path_calculator's
+    boundary-contamination policy), so MFE/MAE must persist as real NULLs
+    in PostgreSQL, never a zero or a guessed value, and the report status
+    must be LIMITED_EVIDENCE."""
+
+    def test_same_day_trade_persists_null_excursion(self, client, pg_conn, unique_user_id, monkeypatch):
+        monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
+        # _open_and_close's buy+sell both execute "now" in the same test,
+        # so entry_date == exit_date already, with no artificial clock
+        # manipulation needed.
+        trade_id = _open_and_close(client, pg_conn, unique_user_id)
+        entry_ts, exit_ts = pg_conn.execute(
+            "SELECT opened_at, closed_at FROM paper_trades WHERE id = %s", (trade_id,)
+        ).fetchone()
+
+        from services.market_hours import ET
+
+        entry_date = entry_ts.astimezone(ET).date()
+        exit_date = exit_ts.astimezone(ET).date()
+        assert entry_date == exit_date, "test precondition: this must be a same-day trade"
+
+        def _same_day_bar(*a, **k):
+            return [{"date": entry_date, "open": 100.0, "high": 108.0, "low": 92.0, "close": 101.0,
+                      "volume": 500, "adj_close": None, "dividend": 0.0}]
+
+        from services.postmortem import price_path_acquisition
+        monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _same_day_bar)
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+
+        resp = _generate(client, unique_user_id, trade_id)
+        assert resp.status_code == 200
+        assert resp.json()["price_path_generation_status"] == "PRICE_PATH_GENERATED"
+
+        structured_report, status = pg_conn.execute(
+            "SELECT structured_report, status FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()
+        section = structured_report["price_path"]
+        assert section["mfe_abs"] is None
+        assert section["mae_signed_abs"] is None
+        assert section["mae_magnitude_abs"] is None
+        assert section["captured_mfe_pct"] is None
+        assert section["giveback_abs"] is None
+        assert status == "LIMITED_EVIDENCE"
+
+
+@pytest.mark.timeout(30)
+class TestLegacyInvalidSourceDataRowFallsThroughFailClosed:
+    """Stage J-F2/J-F7 item 8 -- a persisted evidence row carrying the
+    EXACT legacy value 'INVALID_SOURCE_DATA' (not an arbitrary garbage
+    string -- see TestUnsupportedCompletenessFailsClosedThroughRealReplay
+    for the general unrecognized-value case, not duplicated here) falls
+    through classify_acquired_evidence to UNSUPPORTED_EVIDENCE_
+    COMPLETENESS on replay, produces no report, and settles the outbox
+    FAILED_RETRYABLE under that status as its own sanitized error code."""
+
+    def test_legacy_invalid_source_data_value_fails_closed_through_real_replay(
+        self, client, pg_conn, unique_user_id, monkeypatch,
+    ):
+        from psycopg.types.json import Jsonb
+        from services.market_hours import ET
+        from services.postmortem import price_path_acquisition, price_path_store
+
+        monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
+        trade_id = _open_and_close(client, pg_conn, unique_user_id)
+        entry_ts, exit_ts = pg_conn.execute(
+            "SELECT opened_at, closed_at FROM paper_trades WHERE id = %s", (trade_id,)
+        ).fetchone()
+        entry_date, exit_date = entry_ts.astimezone(ET).date(), exit_ts.astimezone(ET).date()
+
+        def _bars_in_window(*a, **k):
+            return [{"date": entry_date, "open": 100.0, "high": 115.0, "low": 99.0, "close": 105.0,
+                      "volume": 500, "adj_close": None, "dividend": 0.0}]
+
+        bundle = price_path_acquisition.acquire_price_path_evidence(
+            paper_trade_id=trade_id, user_id=unique_user_id, symbol="AAPL", market="US",
+            market_timezone_name="America/New_York", market_tzinfo=ET,
+            entry_timestamp=entry_ts, exit_timestamp=exit_ts,
+            fetch_bars_fn=_bars_in_window, fetch_splits_fn=_fake_none, fetch_dividends_fn=_fake_none,
+        )
+        price_path_store.persist_evidence(pg_conn, bundle)
+
+        with pg_conn.cursor() as cur:
+            cur.execute("SELECT * FROM paper_trade_price_path_evidence WHERE paper_trade_id = %s", (trade_id,))
+            columns = [d.name for d in cur.description]
+            row = dict(zip(columns, cur.fetchone()))
+        row["data_completeness"] = "INVALID_SOURCE_DATA"  # the exact legacy value, per J-F2
+        insert_columns = [c for c in columns if c not in ("id", "created_at")]
+        values = tuple(Jsonb(row[c]) if isinstance(row[c], (dict, list)) else row[c] for c in insert_columns)
+        pg_conn.execute("DELETE FROM paper_trade_price_path_evidence WHERE paper_trade_id = %s", (trade_id,))
+        pg_conn.execute(
+            f"INSERT INTO paper_trade_price_path_evidence ({', '.join(insert_columns)}) "
+            f"VALUES ({', '.join('%s' for _ in insert_columns)})",
+            values,
+        )
+
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+        resp = _generate(client, unique_user_id, trade_id)
+        assert resp.status_code == 200
+        assert resp.json()["price_path_generation_status"] == "PRICE_PATH_FAILED_RETRYABLE"
+
+        report_count = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        assert report_count == 0
+
+        outbox_status, error_code = pg_conn.execute(
+            "SELECT status, last_error_code FROM paper_trade_postmortem_outbox "
+            "WHERE paper_trade_id = %s AND requested_report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()
+        assert outbox_status == "FAILED_RETRYABLE"
+        assert error_code == "UNSUPPORTED_EVIDENCE_COMPLETENESS"
+
+
+@pytest.mark.timeout(30)
+class TestResetScopedToSingleTrade:
+    """Stage J-F7 item 9 -- reset removes Stage J evidence/report/outbox
+    rows for the resetting user only; a second user's price-path rows
+    (evidence, report, outbox) are never touched. TestResetRemovesPrice
+    PathRowsWithoutOrphans (test_price_path_endpoint_lifecycle.py) already
+    proves the resetting user's own rows reach zero; this test adds the
+    cross-user non-interference proof that was missing."""
+
+    def test_reset_does_not_touch_another_users_price_path_rows(
+        self, client, pg_conn, unique_user_id, monkeypatch,
+    ):
+        import uuid
+
+        from tests.postgres_integration.conftest import SYNTHETIC_USER_PREFIX
+
+        unique_user_id_2 = f"{SYNTHETIC_USER_PREFIX}{uuid.uuid4().hex[:16]}"
+
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+        trade_a = _open_and_close(client, pg_conn, unique_user_id)
+        _generate(client, unique_user_id, trade_a)
+        trade_b = _open_and_close(client, pg_conn, unique_user_id_2)
+        _generate(client, unique_user_id_2, trade_b)
+
+        for table in ("paper_trade_price_path_evidence", "paper_trade_postmortem_outbox", "paper_trade_postmortem_report"):
+            count = pg_conn.execute(f"SELECT count(*) FROM {table} WHERE user_id = %s", (unique_user_id_2,)).fetchone()[0]
+            assert count > 0, f"test precondition failed: {table} has no rows for user B"
+
+        resp = client.post("/api/paper-trading/reset?market=ALL", headers=make_auth_header(unique_user_id))
+        assert resp.status_code == 200
+
+        for table in ("paper_trade_price_path_evidence", "paper_trade_postmortem_outbox", "paper_trade_postmortem_report"):
+            count_a = pg_conn.execute(f"SELECT count(*) FROM {table} WHERE user_id = %s", (unique_user_id,)).fetchone()[0]
+            assert count_a == 0, f"{table} left an orphan row for the resetting user"
+            count_b = pg_conn.execute(f"SELECT count(*) FROM {table} WHERE user_id = %s", (unique_user_id_2,)).fetchone()[0]
+            assert count_b > 0, f"{table} was incorrectly wiped for a DIFFERENT user's reset"

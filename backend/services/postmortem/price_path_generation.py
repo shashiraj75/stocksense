@@ -55,7 +55,11 @@ from services.postmortem.price_path_acquisition import (
     fetch_split_events,
 )
 from services.postmortem.price_path_calculator import (
+    BOTH_SAME_BAR_AMBIGUOUS,
+    BOUNDARY_BAR_AMBIGUOUS,
     EXCURSION_COMPLETE,
+    INSUFFICIENT_EVIDENCE as TOUCH_ORDER_INSUFFICIENT_EVIDENCE,
+    LEVEL_HISTORY_INCOMPLETE,
     RULES_VERSION as PRICE_PATH_CALC_RULES_VERSION,
     classify_touch_order,
     compute_excursion,
@@ -222,8 +226,28 @@ def build_price_path_report_payload(
         evidence_items.extend(dataclasses.asdict(i) for i in items)
         claims.append(dataclasses.asdict(claim))
 
+    # Stage J-F5 — touch-order ambiguity is a DISTINCT ceiling input from
+    # bundle/excursion completeness, not folded into either. A bundle can
+    # be data_completeness=COMPLETE with a fully EXCURSION_COMPLETE MFE/
+    # MAE and still have an ambiguous touch order (both levels touched in
+    # one daily bar, a touch landing only on a boundary bar, or an
+    # incomplete stop/target edit history) — that ambiguity must still
+    # downgrade the report ceiling, since "the report is COMPLETE" would
+    # otherwise silently imply the touch-order claim is definitive when
+    # it is explicitly not (see build_touch_order_claim, which already
+    # renders these as INSUFFICIENT_EVIDENCE-flavored claims — the report
+    # `status` field must not contradict its own claims). This does NOT
+    # null out or suppress mfe_abs/mae_signed_abs/etc — those come from
+    # `excursion`, computed independently of touch order, and remain
+    # populated below exactly as before; only the coarse status ceiling
+    # is affected.
+    _AMBIGUOUS_TOUCH_ORDERS = frozenset({
+        BOTH_SAME_BAR_AMBIGUOUS, BOUNDARY_BAR_AMBIGUOUS, LEVEL_HISTORY_INCOMPLETE, TOUCH_ORDER_INSUFFICIENT_EVIDENCE,
+    })
     status = "COMPLETE" if (
-        bundle.data_completeness == STATUS_COMPLETE and excursion.evidence_completeness == EXCURSION_COMPLETE
+        bundle.data_completeness == STATUS_COMPLETE
+        and excursion.evidence_completeness == EXCURSION_COMPLETE
+        and order not in _AMBIGUOUS_TOUCH_ORDERS
     ) else "LIMITED_EVIDENCE"
 
     section = {
