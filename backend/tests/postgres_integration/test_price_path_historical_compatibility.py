@@ -1277,7 +1277,7 @@ class TestBoundaryTouchPersistedAmbiguous:
 
         evidence = price_path_store.get_current_evidence(
             pg_conn, paper_trade_id=trade_id, user_id=unique_user_id,
-            evidence_bundle_version="1.0.0", source_id="yfinance_daily", source_version="1.0.0",
+            evidence_bundle_version="1.0.0", source_id="yfinance_daily", source_version="1.1.0",
         )
         assert evidence is not None
         payload = price_path_generation.build_price_path_report_payload(
@@ -1343,7 +1343,7 @@ class TestBothSameBarPersistedAmbiguous:
 
         evidence = price_path_store.get_current_evidence(
             pg_conn, paper_trade_id=trade_id, user_id=unique_user_id,
-            evidence_bundle_version="1.0.0", source_id="yfinance_daily", source_version="1.0.0",
+            evidence_bundle_version="1.0.0", source_id="yfinance_daily", source_version="1.1.0",
         )
         assert evidence is not None
         payload = price_path_generation.build_price_path_report_payload(
