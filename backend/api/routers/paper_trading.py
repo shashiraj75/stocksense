@@ -45,6 +45,7 @@ from services.postmortem import generation_service
 from services.postmortem import outbox as outbox_ops
 from services.postmortem import report_store
 from services.postmortem import price_path_generation
+from services.postmortem import price_path_eligibility
 from services.postmortem.idempotency import (
     OPERATION_TYPE_PAPER_BUY,
     OPERATION_TYPE_PAPER_SELL,
@@ -1195,8 +1196,6 @@ def _attempt_price_path_enhancement(
             record, owner = _row_to_closed_trade_record(row)
             if owner != user_id or record.status != "CLOSED":
                 return None, PRICE_PATH_NOT_YET_AVAILABLE
-            if record.entry_price is None or record.opened_at is None or record.closed_at is None:
-                return None, PRICE_PATH_NOT_YET_AVAILABLE
 
             prior_report = report_store.get_current_report(
                 conn, paper_trade_id=trade_id, user_id=user_id,
@@ -1205,6 +1204,28 @@ def _attempt_price_path_enhancement(
             )
             if prior_report is None:
                 return None, PRICE_PATH_NOT_YET_AVAILABLE  # Sprint 2 generation hasn't settled yet
+
+            # Trade Postmortem Sprint 3A, Stage J — one authoritative
+            # eligibility decision BEFORE any provider call, any replay
+            # lookup, or any outbox row is even created. A permanently
+            # invalid trade (incoherent timeline, corrupt price,
+            # unsupported market) never gets an outbox row at all — the
+            # simplest, safest way to guarantee it is never repeatedly
+            # retried (Stage J8 item 5's own explicit requirement).
+            # entry/exit snapshot presence is derived from the ALREADY-
+            # COMPUTED Sprint 2 report status (generation_service.py's
+            # own build_report_payload already sets LIMITED_EVIDENCE
+            # whenever either snapshot is missing) rather than re-
+            # querying both snapshot tables here.
+            historical_context_complete = prior_report.status == "COMPLETE"
+            eligibility = price_path_eligibility.evaluate_eligibility(
+                market=record.market, entry_price=record.entry_price, exit_price=record.exit_price,
+                opened_at=record.opened_at, closed_at=record.closed_at,
+                entry_snapshot_present=historical_context_complete,
+                exit_snapshot_present=historical_context_complete,
+            )
+            if not eligibility.acquisition_allowed:
+                return None, PRICE_PATH_NOT_YET_AVAILABLE
 
             tz = _REPORT_TIMEZONE.get(record.market)
             if tz is None:
