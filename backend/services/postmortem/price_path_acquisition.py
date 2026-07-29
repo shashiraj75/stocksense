@@ -55,6 +55,16 @@ SOURCE_SCOPE = "BOUNDED_EVIDENCE_ACQUISITION_ONLY"
 # EVIDENCE_BUNDLE_SCHEMA_VERSION, which tracks the persisted shape.
 SOURCE_VERSION = "1.0.0"
 
+# Stage J-F3 — versions for manifest sub-concerns that evolve
+# independently of SOURCE_VERSION (which covers the acquisition
+# *ruleset* as a whole). Each is a distinct thing that could change on
+# its own: the manifest's own field set, the symbol-normalization rule
+# (_provider_symbol below), and the entry/exit boundary-inclusion rules
+# (_resolve_boundary_policies / services.postmortem.session_boundary).
+SOURCE_MANIFEST_SCHEMA_VERSION = "1.0.0"
+SYMBOL_NORMALIZATION_VERSION = "1.0.0"
+BOUNDARY_POLICY_VERSION = "1.0.0"
+
 _MARKET_SUFFIX = {"US": "", "IN": ".NS"}
 
 # Stage D bounding: a single acquisition call must never request an
@@ -296,6 +306,42 @@ def fetch_split_events(
     return events
 
 
+def _count_requested_weekdays(entry_date: date, exit_date: date) -> int:
+    """Mon-Fri count within [entry_date, exit_date], inclusive. Deliberately
+    does NOT subtract market holidays — this codebase's holiday calendars
+    (services.market_hours.NSE_EXTRA_HOLIDAYS / _us_fixed_holidays) are
+    internal to that module and scoped to "is trading open right now"
+    checks, not a general date-range session-counter, and reusing them
+    here would silently couple this manifest's honesty to a calendar that
+    itself needs annual manual refresh. Naming this field
+    `requested_trading_weekday_count` rather than "expected trading
+    sessions" is the explicit, honest boundary: weekends are excluded,
+    holidays are not — never claim more precision than that."""
+    count = 0
+    d = entry_date
+    one_day = timedelta(days=1)
+    while d <= exit_date:
+        if d.weekday() < 5:
+            count += 1
+        d += one_day
+    return count
+
+
+def _compute_manifest_integrity_hash(manifest: dict) -> str:
+    """Separate from _compute_evidence_hash (bars only) — this covers the
+    manifest's own provenance/configuration fields, so a manifest could be
+    tampered with or corrupted independently of the bar data and still be
+    caught. `unresolved_basis_limitations` is excluded because it is the
+    same mutable list object as the bundle's own `limitations` field and
+    is still being appended to by the caller at the point this function
+    runs for the split-in-window/no-bars early-return paths — hashing a
+    not-yet-final list would make the hash non-reproducible for the exact
+    same acquisition. Every other field is fixed at this point."""
+    hashable = {k: v for k, v in manifest.items() if k != "unresolved_basis_limitations"}
+    canonical = json.dumps(hashable, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def _compute_evidence_hash(bars: list[PricePathBar]) -> str:
     """Deterministic for identical bars — same discipline as Sprint 2's
     report_store.compute_evidence_hash: sorted-key JSON of exactly the
@@ -366,12 +412,22 @@ def build_price_path_evidence(
     entry_date = entry_timestamp.astimezone(market_tzinfo).date()
     exit_date = exit_timestamp.astimezone(market_tzinfo).date()
 
+    # The +1-day widening fetch_raw_daily_bars actually sends as its
+    # provider `end=` argument (yfinance's start-inclusive/end-exclusive
+    # convention) — recomputed here (not passed in) because
+    # build_price_path_evidence is pure/no-I/O and must stay reproducible
+    # from persisted trade facts alone; this is the same arithmetic
+    # fetch_raw_daily_bars itself uses, so the manifest's disclosed value
+    # always matches what was actually requested.
+    provider_exclusive_request_end = exit_date + timedelta(days=1)
+
     limitations: list[str] = []
     any_adj_close = any(
         raw.get("adj_close") is not None and raw.get("adj_close") == raw.get("adj_close")  # NaN != NaN
         for raw in raw_bars
     )
     source_manifest = {
+        "source_manifest_schema_version": SOURCE_MANIFEST_SCHEMA_VERSION,
         "source_id": SOURCE_ID_YFINANCE_DAILY,
         "source_type": SOURCE_TYPE,
         "source_scope": SOURCE_SCOPE,
@@ -384,6 +440,7 @@ def build_price_path_evidence(
         "back_adjust": ACQUISITION_BACK_ADJUST,
         "actions": ACQUISITION_ACTIONS,
         "repair": ACQUISITION_REPAIR,
+        "prepost": ACQUISITION_PREPOST,
         "timezone_behavior": ACQUISITION_TIMEZONE_BEHAVIOR,
         # PROVIDER_RETURNED_UNADJUSTED_OHLC, not "raw exchange-authoritative
         # prices" — this codebase does not claim yfinance IS the exchange
@@ -396,13 +453,26 @@ def build_price_path_evidence(
         "split_event_manifest": [d.isoformat() for d in split_events],
         "dividend_event_manifest": [d.isoformat() for d in dividend_events],
         "provider_symbol": _provider_symbol(symbol, market),
+        "trade_symbol": symbol.upper(),
+        "symbol_normalization_version": SYMBOL_NORMALIZATION_VERSION,
+        "market": market,
         "acquisition_mode": "auto_adjust_false",
+        "provider_request_start": entry_date.isoformat(),
+        "provider_exclusive_request_end": provider_exclusive_request_end.isoformat(),
+        "end_widening_reason": (
+            "yfinance's Ticker.history() treats `end` as exclusive; widened by one day "
+            "purely so the exit session itself is included in the provider response — "
+            "requested_window_end on the bundle remains the original, non-widened exit date"
+        ),
+        "boundary_policy_version": BOUNDARY_POLICY_VERSION,
+        "requested_trading_weekday_count": _count_requested_weekdays(entry_date, exit_date),
         # Same list object as `limitations` below — appends made after
         # this point are visible through this key too, so the persisted
         # manifest always reflects the FINAL limitation set without a
         # second assignment at every return site.
         "unresolved_basis_limitations": limitations,
     }
+    source_manifest["manifest_integrity_hash"] = _compute_manifest_integrity_hash(source_manifest)
 
     if dividend_events:
         limitations.append(

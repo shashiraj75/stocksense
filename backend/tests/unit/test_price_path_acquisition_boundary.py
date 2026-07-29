@@ -54,6 +54,104 @@ class TestTerminologyCorrection:
 
 
 @pytest.mark.unit
+class TestSourceManifestCompleteness:
+    """Stage J-F3 — the source-manifest fields identified as genuinely
+    missing in the Stage J-F1 gap inventory: symbol normalization
+    version, provider-request-start, provider-exclusive-end, the
+    end-widening reason, boundary-policy version, the manifest's own
+    schema version, a requested-session count distinct from calendar
+    days, and a manifest-integrity hash separate from the bar-only
+    evidence_hash. Deterministic and reproducible from persisted trade
+    facts alone — no current universe lookup, no inferred rename."""
+
+    def _bundle(self, **overrides):
+        kwargs = dict(
+            paper_trade_id=1, user_id="u", symbol="aapl", market="US",
+            market_timezone_name="America/New_York", market_tzinfo=ET,
+            entry_timestamp=dt.datetime(2026, 6, 1, tzinfo=ET),
+            exit_timestamp=dt.datetime(2026, 6, 3, tzinfo=ET),
+            raw_bars=[
+                {"date": dt.date(2026, 6, 1), "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": None},
+                {"date": dt.date(2026, 6, 2), "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": None},
+                {"date": dt.date(2026, 6, 3), "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": None},
+            ],
+            split_events=[],
+        )
+        kwargs.update(overrides)
+        return build_price_path_evidence(**kwargs)
+
+    def test_symbol_and_market_fields_present(self):
+        manifest = self._bundle().source_manifest
+        assert manifest["trade_symbol"] == "AAPL"
+        assert manifest["provider_symbol"] == "AAPL"
+        assert manifest["market"] == "US"
+        assert manifest["symbol_normalization_version"] == "1.0.0"
+
+    def test_window_and_widening_fields_present(self):
+        manifest = self._bundle().source_manifest
+        assert manifest["provider_request_start"] == "2026-06-01"
+        # exit_date (2026-06-03) widened by one day for the provider's
+        # exclusive-end convention — never leaks into requested_window_end.
+        assert manifest["provider_exclusive_request_end"] == "2026-06-04"
+        assert "end_widening_reason" in manifest and manifest["end_widening_reason"]
+        assert manifest["boundary_policy_version"] == "1.0.0"
+
+    def test_original_requested_window_end_unaffected_by_widening(self):
+        bundle = self._bundle()
+        assert bundle.requested_window_end == dt.date(2026, 6, 3)
+
+    def test_schema_and_requested_session_count(self):
+        manifest = self._bundle().source_manifest
+        assert manifest["source_manifest_schema_version"] == "1.0.0"
+        # Mon 6/1, Tue 6/2, Wed 6/3 — all weekdays, no weekend to exclude.
+        assert manifest["requested_trading_weekday_count"] == 3
+
+    def test_prepost_argument_recorded(self):
+        manifest = self._bundle().source_manifest
+        assert manifest["prepost"] is False
+
+    def test_manifest_integrity_hash_present_and_deterministic(self):
+        m1 = self._bundle().source_manifest
+        m2 = self._bundle().source_manifest
+        assert m1["manifest_integrity_hash"]
+        assert m1["manifest_integrity_hash"] == m2["manifest_integrity_hash"]
+
+    def test_manifest_integrity_hash_changes_with_symbol(self):
+        h1 = self._bundle(symbol="aapl").source_manifest["manifest_integrity_hash"]
+        h2 = self._bundle(symbol="msft").source_manifest["manifest_integrity_hash"]
+        assert h1 != h2
+
+    def test_manifest_integrity_hash_distinct_from_bar_evidence_hash(self):
+        bundle = self._bundle()
+        assert bundle.source_manifest["manifest_integrity_hash"] != bundle.evidence_hash
+
+    def test_duplicate_provider_row_later_value_wins(self):
+        """Stage J-F4, item W16 — the acquisition-layer dedup itself
+        (build_price_path_evidence's `by_date` dict, distinct from
+        PricePathEvidenceBundle.__post_init__'s own duplicate-rejection
+        guard, which only ever sees the ALREADY-deduplicated result) has
+        never had a direct test proving which of two same-date rows
+        actually wins. A provider should never legitimately return two
+        rows for one date — this proves the defensive, deterministic
+        tie-break: the LATER row in raw_bars order overwrites the
+        earlier one."""
+        bundle = build_price_path_evidence(
+            paper_trade_id=1, user_id="u", symbol="AAPL", market="US",
+            market_timezone_name="America/New_York", market_tzinfo=ET,
+            entry_timestamp=dt.datetime(2026, 6, 2, tzinfo=ET),
+            exit_timestamp=dt.datetime(2026, 6, 2, tzinfo=ET),
+            raw_bars=[
+                {"date": dt.date(2026, 6, 2), "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": None},
+                {"date": dt.date(2026, 6, 2), "open": 10, "high": 20, "low": 5, "close": 15, "volume": None},
+            ],
+            split_events=[],
+        )
+        assert bundle.bars_observed == 1
+        assert bundle.bars[0].open == 10.0
+        assert bundle.bars[0].close == 15.0
+
+
+@pytest.mark.unit
 class TestNoProviderCallInsideCloseTransaction:
     """Stage D — source-level proof rather than a runtime mock: as of
     this checkpoint, close_service.py has no import of, or reference to,
