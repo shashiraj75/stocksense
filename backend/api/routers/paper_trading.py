@@ -44,6 +44,7 @@ from services.postmortem.exit_snapshot import CloseExitMechanism, ExitSnapshot
 from services.postmortem import generation_service
 from services.postmortem import outbox as outbox_ops
 from services.postmortem import report_store
+from services.postmortem import price_path_generation
 from services.postmortem.idempotency import (
     OPERATION_TYPE_PAPER_BUY,
     OPERATION_TYPE_PAPER_SELL,
@@ -1082,6 +1083,107 @@ def _attempt_best_effort_generation(*, user_id: str, trade_id: int, outbox_id: i
         log.warning("[postmortem_generation] best-effort generation attempt failed: %s", "unexpected_error")
 
 
+def _attempt_price_path_enhancement(
+    *, user_id: str, trade_id: int,
+    fetch_bars_fn=None, fetch_splits_fn=None, fetch_dividends_fn=None,
+):
+    """Trade Postmortem Sprint 3A, Stage H2 — additive, best-effort
+    price-path enhancement layered on top of an already-settled Sprint 2
+    report. Never raises (matches _attempt_best_effort_generation's own
+    contract); returns the enhanced PersistedReport on success, or None
+    if there is nothing to enhance yet (no prior Sprint 2 report) or the
+    attempt failed for any reason.
+
+    This does NOT claim or touch the outbox lease — that lease was
+    already claimed and settled by the Sprint 2 generation this builds
+    on top of (see generation_service.generate_and_persist's own
+    outbox_id/claimed_by contract). Price-path enhancement is a
+    supplementary step, not a competing claimant for the same slot.
+
+    Phase boundaries (Stage H1's five-phase design) are preserved
+    exactly: Phase 1 (short read) and Phase 3/5 (short writes) each get
+    their OWN `with _conn():` block; Phase 2 (provider acquisition) runs
+    entirely between them, with no database connection in scope at all,
+    so a slow or hanging provider can never hold a connection or a
+    transaction open. fetch_bars_fn/fetch_splits_fn/fetch_dividends_fn
+    default to the real network-calling functions when not supplied
+    (production behavior) — tests inject fakes instead of monkeypatching
+    module internals."""
+    from services.postmortem.price_path_acquisition import (
+        fetch_dividend_events, fetch_raw_daily_bars, fetch_split_events,
+    )
+    fetch_bars_fn = fetch_bars_fn or fetch_raw_daily_bars
+    fetch_splits_fn = fetch_splits_fn or fetch_split_events
+    fetch_dividends_fn = fetch_dividends_fn or fetch_dividend_events
+
+    try:
+        with _conn() as conn:
+            row = conn.execute(
+                f"SELECT {_POSTMORTEM_ROW_COLUMNS} FROM paper_trades WHERE id = %s", (trade_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            record, owner = _row_to_closed_trade_record(row)
+            if owner != user_id or record.status != "CLOSED":
+                return None
+            if record.entry_price is None or record.opened_at is None or record.closed_at is None:
+                return None
+
+            prior_report = report_store.get_current_report(
+                conn, paper_trade_id=trade_id, user_id=user_id,
+                report_schema_version=generation_service.REPORT_SCHEMA_VERSION,
+                calculation_version=CALCULATION_VERSION, attribution_rules_version=ATTRIBUTION_RULES_VERSION,
+            )
+            if prior_report is None:
+                return None  # nothing to enhance yet — Sprint 2 generation hasn't settled
+
+            tz = _REPORT_TIMEZONE.get(record.market)
+            if tz is None:
+                return None
+            market_timezone_name = "Asia/Kolkata" if record.market == "IN" else "America/New_York"
+
+            ctx = price_path_generation.load_generation_context(
+                conn, trade_id=trade_id, user_id=user_id, symbol=record.symbol, market=record.market,
+                market_timezone_name=market_timezone_name, entry_timestamp=record.opened_at,
+                entry_price=record.entry_price, exit_price=record.exit_price,
+                applicable_stop=record.stop_loss, applicable_target=record.target_price,
+                exit_timestamp=record.closed_at,
+                # Sprint 3A's own documented finding (price_path_calculator.
+                # CURRENT_LEVEL_HISTORY_FINDING) is LEVEL_HISTORY_ENDPOINTS_ONLY
+                # — this codebase cannot honestly claim full level history for
+                # any real trade yet.
+                level_history_complete=False, prior_report=prior_report,
+            )
+
+        evidence = ctx.compatible_evidence
+        if evidence is None:
+            # Phase 2 — deliberately outside any `with _conn():` block.
+            bundle = price_path_generation.acquire_evidence_outside_transaction(
+                ctx, market_tzinfo=tz, fetch_bars_fn=fetch_bars_fn,
+                fetch_splits_fn=fetch_splits_fn, fetch_dividends_fn=fetch_dividends_fn,
+            )
+            with _conn() as conn:
+                evidence, _created = price_path_generation.persist_price_path_evidence(conn, bundle)
+
+        payload = price_path_generation.build_price_path_report_payload(
+            evidence, entry_price=ctx.entry_price, exit_price=ctx.exit_price,
+            applicable_stop=ctx.applicable_stop, applicable_target=ctx.applicable_target,
+            level_history_complete=ctx.level_history_complete, trade_id=trade_id,
+        )
+
+        with _conn() as conn:
+            with conn.transaction():
+                enhanced, _created = price_path_generation.persist_price_path_report(
+                    conn, prior_report=prior_report, payload=payload, trade_id=trade_id, user_id=user_id,
+                    market=record.market, report_trading_date=prior_report.report_trading_date,
+                    market_timezone=market_timezone_name, source_version=evidence.source_version,
+                )
+        return enhanced
+    except Exception:
+        log.warning("[postmortem_price_path_generation] enhancement attempt failed: %s", "unexpected_error")
+        return None
+
+
 @dataclass
 class _IdempotencyReservation:
     """Outcome of `_resolve_idempotency_reservation` — what the caller
@@ -1799,6 +1901,16 @@ def paper_sell(trade_id: int, req: SellRequest, user_id: str = Depends(get_curre
     # is never allowed to turn this endpoint's response into an error.
     _attempt_best_effort_generation(user_id=user_id, trade_id=trade_id, outbox_id=result.outbox_id)
 
+    # Trade Postmortem Sprint 3A, Stage H2A — additive, best-effort
+    # price-path enhancement on top of whatever the Sprint 2 attempt
+    # above just settled. Off by default (see
+    # _trade_postmortem_price_path_enabled) since this is the first
+    # point in this codepath capable of a real external network call;
+    # like the Sprint 2 attempt above, failure here can never turn a
+    # successful sell into an HTTP error.
+    if _trade_postmortem_price_path_enabled():
+        _attempt_price_path_enhancement(user_id=user_id, trade_id=trade_id)
+
     return response
 
 
@@ -2103,6 +2215,22 @@ _TRADE_POSTMORTEM_DAILY_ENV_VAR = "TRADE_POSTMORTEM_DAILY_ENABLED"
 
 def _trade_postmortem_daily_enabled() -> bool:
     raw = os.getenv(_TRADE_POSTMORTEM_DAILY_ENV_VAR, "0").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+# Trade Postmortem Sprint 3A — separate, dedicated, off-by-default flag
+# for price-path enhancement specifically. Unlike the existing Sprint
+# 1/2 report generation above (pure computation from already-stored
+# data, no external calls), _attempt_price_path_enhancement makes a
+# REAL yfinance network call by default — a materially different risk
+# profile that must not silently start firing on production sell/
+# generate traffic just because this branch merged. Same accepted-value
+# convention as _trade_postmortem_daily_enabled.
+_TRADE_POSTMORTEM_PRICE_PATH_ENV_VAR = "TRADE_POSTMORTEM_PRICE_PATH_ENABLED"
+
+
+def _trade_postmortem_price_path_enabled() -> bool:
+    raw = os.getenv(_TRADE_POSTMORTEM_PRICE_PATH_ENV_VAR, "0").strip().lower()
     return raw in ("1", "true", "yes", "on")
 
 
@@ -2555,6 +2683,30 @@ class GenerateReportResponse(BaseModel):
     evidence_gap_count: int | None = None
 
 
+def _build_generate_response(*, trade_id: int, user_id: str, generation_status: str, report, generated: bool) -> "GenerateReportResponse":
+    """Trade Postmortem Sprint 3A, Stage H2B — shared response builder for
+    every /generate return site. When the price-path flag is enabled,
+    attempts additive enhancement on top of `report` and, on success,
+    returns the ENHANCED report's own version/status fields instead of
+    the plain Sprint 1/2 ones — `generation_status` (GENERATED/
+    ALREADY_COMPLETE) is left as the caller determined it, since price-
+    path enhancement is a supplementary step layered on an already-
+    settled Sprint 2 outcome, not a new generation-status classification
+    of its own."""
+    effective = report
+    if _trade_postmortem_price_path_enabled():
+        enhanced = _attempt_price_path_enhancement(user_id=user_id, trade_id=trade_id)
+        if enhanced is not None:
+            effective = enhanced
+    return GenerateReportResponse(
+        trade_id=trade_id, generation_status=generation_status, status=effective.status,
+        report_schema_version=effective.report_schema_version,
+        calculation_version=effective.calculation_version,
+        attribution_rules_version=effective.attribution_rules_version,
+        generated=generated, evidence_gap_count=len(effective.evidence_gaps),
+    )
+
+
 @router.post("/postmortem/{trade_id}/generate", response_model=GenerateReportResponse)
 def generate_trade_postmortem_endpoint(trade_id: int, user_id: str = Depends(get_current_user_id)):
     """
@@ -2628,76 +2780,80 @@ def generate_trade_postmortem_endpoint(trade_id: int, user_id: str = Depends(get
             calculation_version=CALCULATION_VERSION, attribution_rules_version=ATTRIBUTION_RULES_VERSION,
         )
         if existing_report is not None:
-            return GenerateReportResponse(
-                trade_id=trade_id, generation_status="ALREADY_COMPLETE", status=existing_report.status,
-                report_schema_version=existing_report.report_schema_version,
-                calculation_version=existing_report.calculation_version,
-                attribution_rules_version=existing_report.attribution_rules_version,
-                generated=False, evidence_gap_count=len(existing_report.evidence_gaps),
+            # settled = (generation_status, report, generated) — the
+            # price-path enhancement call happens AFTER this `with
+            # _conn():` block exits below; nothing in this branch
+            # returns directly.
+            settled = ("ALREADY_COMPLETE", existing_report, False)
+        else:
+            report, status_tag = _claim_and_run_generation(
+                conn, user_id=user_id, trade_id=trade_id, outbox_id=outbox_id
             )
 
-        report, status_tag = _claim_and_run_generation(
-            conn, user_id=user_id, trade_id=trade_id, outbox_id=outbox_id
-        )
+            if status_tag == "GENERATED":
+                settled = ("GENERATED", report, True)
 
-        if status_tag == "GENERATED":
-            return GenerateReportResponse(
-                trade_id=trade_id, generation_status="GENERATED", status=report.status,
-                report_schema_version=report.report_schema_version,
-                calculation_version=report.calculation_version,
-                attribution_rules_version=report.attribution_rules_version,
-                generated=True, evidence_gap_count=len(report.evidence_gaps),
-            )
-
-        if status_tag == "TERMINAL_NO_REPORT":
-            # Attempt limit exceeded (MAX_ATTEMPTS_BEFORE_TERMINAL) — a
-            # stable, honest terminal failure, never an infinite retry
-            # loop and never a fabricated report.
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "error_code": "GENERATION_ATTEMPTS_EXHAUSTED",
-                    "message": "report generation failed repeatedly for this trade and will not be retried automatically",
-                },
-            )
-
-        if status_tag == "NOTHING_TO_DO":
-            # Benign race: the row settled COMPLETE/LIMITED_EVIDENCE
-            # between our existing_report check above and the claim
-            # attempt (e.g. a concurrent best-effort generation from a
-            # /sell call finished in between). Re-check once — the
-            # report/outbox consistency invariant (Stage 3/8) guarantees
-            # it must exist now if the outbox truly settled terminal.
-            settled_report = report_store.get_current_report(
-                conn, paper_trade_id=trade_id, user_id=user_id,
-                report_schema_version=generation_service.REPORT_SCHEMA_VERSION,
-                calculation_version=CALCULATION_VERSION, attribution_rules_version=ATTRIBUTION_RULES_VERSION,
-            )
-            if settled_report is not None:
-                return GenerateReportResponse(
-                    trade_id=trade_id, generation_status="ALREADY_COMPLETE", status=settled_report.status,
-                    report_schema_version=settled_report.report_schema_version,
-                    calculation_version=settled_report.calculation_version,
-                    attribution_rules_version=settled_report.attribution_rules_version,
-                    generated=False, evidence_gap_count=len(settled_report.evidence_gaps),
+            elif status_tag == "TERMINAL_NO_REPORT":
+                # Attempt limit exceeded (MAX_ATTEMPTS_BEFORE_TERMINAL) —
+                # a stable, honest terminal failure, never an infinite
+                # retry loop and never a fabricated report.
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "error_code": "GENERATION_ATTEMPTS_EXHAUSTED",
+                        "message": "report generation failed repeatedly for this trade and will not be retried automatically",
+                    },
                 )
-            # Genuinely unexpected: outbox says terminal-complete but no
-            # report row exists for these versions — the exact
-            # report/outbox contradiction Stage 3/8 requires never
-            # silently accepting. Surfaced as a 500 with a stable error
-            # code rather than papered over with an IN_PROGRESS response.
-            log.warning("[postmortem_generation_terminal_failure] trade_id=%s outbox_id=%s error_code=%s",
-                        trade_id, outbox_id, "REPORT_OUTBOX_INCONSISTENCY")
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "error_code": "REPORT_OUTBOX_INCONSISTENCY",
-                    "message": "outbox settled without a corresponding persisted report",
-                },
-            )
 
-        # status_tag == "IN_PROGRESS" — another valid, non-expired lease
-        # currently owns this row; never run concurrent duplicate work.
-        return GenerateReportResponse(
-            trade_id=trade_id, generation_status=REPORT_GENERATION_IN_PROGRESS, generated=False,
-        )
+            elif status_tag == "NOTHING_TO_DO":
+                # Benign race: the row settled COMPLETE/LIMITED_EVIDENCE
+                # between our existing_report check above and the claim
+                # attempt (e.g. a concurrent best-effort generation from
+                # a /sell call finished in between). Re-check once — the
+                # report/outbox consistency invariant (Stage 3/8)
+                # guarantees it must exist now if the outbox truly
+                # settled terminal.
+                settled_report = report_store.get_current_report(
+                    conn, paper_trade_id=trade_id, user_id=user_id,
+                    report_schema_version=generation_service.REPORT_SCHEMA_VERSION,
+                    calculation_version=CALCULATION_VERSION, attribution_rules_version=ATTRIBUTION_RULES_VERSION,
+                )
+                if settled_report is None:
+                    # Genuinely unexpected: outbox says terminal-complete
+                    # but no report row exists for these versions — the
+                    # exact report/outbox contradiction Stage 3/8
+                    # requires never silently accepting. Surfaced as a
+                    # 500 with a stable error code rather than papered
+                    # over with an IN_PROGRESS response.
+                    log.warning("[postmortem_generation_terminal_failure] trade_id=%s outbox_id=%s error_code=%s",
+                                trade_id, outbox_id, "REPORT_OUTBOX_INCONSISTENCY")
+                    raise HTTPException(
+                        status_code=500,
+                        detail={
+                            "error_code": "REPORT_OUTBOX_INCONSISTENCY",
+                            "message": "outbox settled without a corresponding persisted report",
+                        },
+                    )
+                settled = ("ALREADY_COMPLETE", settled_report, False)
+
+            else:
+                # status_tag == "IN_PROGRESS" — another valid, non-
+                # expired lease currently owns this row; never run
+                # concurrent duplicate work, and never attempt price-
+                # path enhancement against a report that doesn't exist
+                # yet.
+                return GenerateReportResponse(
+                    trade_id=trade_id, generation_status=REPORT_GENERATION_IN_PROGRESS, generated=False,
+                )
+
+    # Trade Postmortem Sprint 3A, Stage H2B — price-path enhancement, if
+    # enabled, runs here: AFTER the `with _conn():` block above has
+    # released its connection, exactly matching the sell path's own
+    # post-commit discipline. `settled` is always bound by this point
+    # (every path that reaches here assigned it above; the only path
+    # that doesn't is the IN_PROGRESS early return).
+    generation_status, report, generated = settled
+    return _build_generate_response(
+        trade_id=trade_id, user_id=user_id, generation_status=generation_status,
+        report=report, generated=generated,
+    )

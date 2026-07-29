@@ -165,6 +165,20 @@ class TestPostmortemEndpoint:
         assert body["exit_mechanism"] == "MANUAL"
         assert body["auto_close_timing_evidence"] == "NOT_APPLICABLE"
 
+    def test_never_invokes_price_path_enhancement(self, client, monkeypatch):
+        """Trade Postmortem Sprint 3A, Stage H2C — GET remains read-only
+        even when the price-path flag is on: it must never acquire
+        market data, claim a lease, create evidence, or generate a
+        report."""
+        import api.routers.paper_trading as ptr
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+        spy_called = []
+        monkeypatch.setattr(ptr, "_attempt_price_path_enhancement", lambda **kw: spy_called.append(kw) or None)
+        resp, recorder = _get_postmortem(client, 1, [_row()])
+        assert resp.status_code == 200
+        assert spy_called == []
+        assert len(recorder.calls) == 2  # unchanged — no new query was added
+
     def test_auto_target_close_evidence(self, client):
         resp, _ = _get_postmortem(
             client, 1, [_row(exit_reason="TARGET_HIT", trade_management_mode="auto")]
