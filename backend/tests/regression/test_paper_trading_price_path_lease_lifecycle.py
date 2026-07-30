@@ -588,3 +588,89 @@ class TestContradictoryReplayStateFailsClosed:
         outbox_row = list(shared["outbox_rows"].values())[0]
         assert outbox_row["status"] == "FAILED_RETRYABLE"
         assert outbox_row["last_error_code"] == price_path_evidence_decision.INTERNAL_INTEGRITY_VIOLATION
+
+
+@pytest.mark.regression
+class TestForcedNaiveTimestampFailsClosedBeforeProviderIO:
+    """Stage J3B.2 -- test-only contradiction injection (never altering
+    production logic to make this naturally reachable): the real,
+    genuinely timezone-aware paper_trades.opened_at/closed_at are
+    preserved untouched; only load_generation_context's OWN RETURNED
+    GenerationContext is monkeypatched afterward to carry a naive
+    entry_timestamp, simulating a future internal caller that violates
+    the timezone-aware contract. Proves the Stage J3B.2 pre-I/O guard
+    (_require_timezone_aware_trade_timestamps, called at the top of
+    acquire_price_path_evidence) rejects it before any provider function
+    is ever invoked, and that the existing generic `except Exception`
+    handler in _attempt_price_path_enhancement settles this exactly like
+    any other internal failure -- sanitized error summary (exception
+    class name only, never the raw naive timestamp), retryable outbox,
+    zero evidence, zero report."""
+
+    def test_forced_naive_entry_timestamp_fails_closed_zero_provider_calls(self):
+        import dataclasses
+        from unittest.mock import patch
+
+        from services.postmortem import price_path_generation
+
+        shared = _new_shared([{}])  # genuinely timezone-aware opened_at/closed_at, per _trade_row's own defaults
+
+        def _raises(*a, **k):
+            raise AssertionError("provider must not be called when the pre-I/O guard rejects a naive timestamp")
+
+        real_loader = price_path_generation.load_generation_context
+
+        def _forced_naive_loader(*args, **kwargs):
+            ctx = real_loader(*args, **kwargs)
+            # The real opened_at/closed_at columns (and this trade's
+            # real, aware timestamps) are never touched -- only the
+            # in-memory GenerationContext this call returns is mutated,
+            # simulating a future internal caller passing a naive value.
+            naive_entry = ctx.entry_timestamp.replace(tzinfo=None)
+            return dataclasses.replace(ctx, entry_timestamp=naive_entry)
+
+        with patch.object(price_path_generation, "load_generation_context", side_effect=_forced_naive_loader):
+            report, status = _attempt(shared, fetch_bars_fn=_raises, fetch_splits_fn=_raises, fetch_dividends_fn=_raises)
+
+        import api.routers.paper_trading as ptr
+        assert report is None
+        assert status == ptr.PRICE_PATH_FAILED_RETRYABLE
+        assert len(shared["report_rows"]) == 1  # only the seeded Sprint 2 report
+        assert shared["evidence_rows"] == {}
+        outbox_row = list(shared["outbox_rows"].values())[0]
+        assert outbox_row["status"] == "FAILED_RETRYABLE"
+        assert outbox_row["last_error_code"] == ptr._PRICE_PATH_ERROR_CODE
+        # The real trade row itself is untouched -- opened_at/closed_at
+        # remain the genuinely aware timestamps _trade_row seeded.
+        real_trade = shared["trades"][1]
+        assert real_trade[10].tzinfo is not None  # opened_at
+        assert real_trade[11].tzinfo is not None  # closed_at
+
+    def test_forced_naive_exit_timestamp_fails_closed_zero_provider_calls(self):
+        import dataclasses
+        from unittest.mock import patch
+
+        from services.postmortem import price_path_generation
+
+        shared = _new_shared([{}])
+
+        def _raises(*a, **k):
+            raise AssertionError("provider must not be called when the pre-I/O guard rejects a naive timestamp")
+
+        real_loader = price_path_generation.load_generation_context
+
+        def _forced_naive_loader(*args, **kwargs):
+            ctx = real_loader(*args, **kwargs)
+            naive_exit = ctx.exit_timestamp.replace(tzinfo=None)
+            return dataclasses.replace(ctx, exit_timestamp=naive_exit)
+
+        with patch.object(price_path_generation, "load_generation_context", side_effect=_forced_naive_loader):
+            report, status = _attempt(shared, fetch_bars_fn=_raises, fetch_splits_fn=_raises, fetch_dividends_fn=_raises)
+
+        import api.routers.paper_trading as ptr
+        assert report is None
+        assert status == ptr.PRICE_PATH_FAILED_RETRYABLE
+        assert shared["evidence_rows"] == {}
+        outbox_row = list(shared["outbox_rows"].values())[0]
+        assert outbox_row["status"] == "FAILED_RETRYABLE"
+        assert outbox_row["last_error_code"] == ptr._PRICE_PATH_ERROR_CODE

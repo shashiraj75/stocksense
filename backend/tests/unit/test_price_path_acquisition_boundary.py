@@ -9,7 +9,10 @@ import inspect
 
 import pytest
 
-from services.market_hours import ET
+import os
+import time as time_module
+
+from services.market_hours import ET, IST
 from services.postmortem import close_service
 from services.postmortem.price_path_acquisition import (
     AcquisitionWindowTooLargeError,
@@ -34,6 +37,7 @@ from services.postmortem.price_path_acquisition import (
     validate_replay_compatibility,
     verify_source_manifest_integrity,
 )
+from services.postmortem.price_path_evidence import PricePathEvidenceError
 
 
 @pytest.mark.unit
@@ -774,3 +778,171 @@ class TestBasisCompatibilityClassification:
         first = evaluate_basis_compatibility(acquisition_mode="auto_adjust_true", split_events=[], bars_observed=5)
         second = evaluate_basis_compatibility(acquisition_mode="auto_adjust_true", split_events=[], bars_observed=5)
         assert first == second
+
+
+@pytest.mark.unit
+class TestNaiveTimestampPreIOGuardStageJ3B2:
+    """Stage J3B.2 -- the approved production correction: naive (or
+    effectively naive) entry/exit timestamps are now rejected BEFORE any
+    `.astimezone()` call, market-window construction, or provider I/O.
+    This is an input-contract guard, not timestamp repair -- it never
+    assumes UTC/IST/ET/host timezone and never attaches one."""
+
+    def _counting_fns(self):
+        calls = {"bars": 0, "splits": 0, "dividends": 0}
+
+        def fake_bars(symbol, start, end):
+            calls["bars"] += 1
+            return []
+
+        def fake_splits(symbol, start, end):
+            calls["splits"] += 1
+            return []
+
+        def fake_dividends(symbol, start, end):
+            calls["dividends"] += 1
+            return []
+
+        return calls, fake_bars, fake_splits, fake_dividends
+
+    def test_naive_entry_timestamp_rejected_zero_provider_calls(self):
+        calls, fake_bars, fake_splits, fake_dividends = self._counting_fns()
+        with pytest.raises(PricePathEvidenceError, match="entry_timestamp must be timezone-aware"):
+            acquire_price_path_evidence(
+                paper_trade_id=1, user_id="u", symbol="AAPL", market="US",
+                market_timezone_name="America/New_York", market_tzinfo=ET,
+                entry_timestamp=dt.datetime(2026, 6, 2, 9, 30),  # naive
+                exit_timestamp=dt.datetime(2026, 6, 2, 16, 0, tzinfo=ET),
+                fetch_bars_fn=fake_bars, fetch_splits_fn=fake_splits, fetch_dividends_fn=fake_dividends,
+            )
+        assert calls == {"bars": 0, "splits": 0, "dividends": 0}
+
+    def test_naive_exit_timestamp_rejected_zero_provider_calls(self):
+        calls, fake_bars, fake_splits, fake_dividends = self._counting_fns()
+        with pytest.raises(PricePathEvidenceError, match="exit_timestamp must be timezone-aware"):
+            acquire_price_path_evidence(
+                paper_trade_id=1, user_id="u", symbol="AAPL", market="US",
+                market_timezone_name="America/New_York", market_tzinfo=ET,
+                entry_timestamp=dt.datetime(2026, 6, 2, 9, 30, tzinfo=ET),
+                exit_timestamp=dt.datetime(2026, 6, 2, 16, 0),  # naive
+                fetch_bars_fn=fake_bars, fetch_splits_fn=fake_splits, fetch_dividends_fn=fake_dividends,
+            )
+        assert calls == {"bars": 0, "splits": 0, "dividends": 0}
+
+    def test_both_naive_rejected_zero_provider_calls(self):
+        calls, fake_bars, fake_splits, fake_dividends = self._counting_fns()
+        with pytest.raises(PricePathEvidenceError):
+            acquire_price_path_evidence(
+                paper_trade_id=1, user_id="u", symbol="AAPL", market="US",
+                market_timezone_name="America/New_York", market_tzinfo=ET,
+                entry_timestamp=dt.datetime(2026, 6, 2, 9, 30),
+                exit_timestamp=dt.datetime(2026, 6, 2, 16, 0),
+                fetch_bars_fn=fake_bars, fetch_splits_fn=fake_splits, fetch_dividends_fn=fake_dividends,
+            )
+        assert calls == {"bars": 0, "splits": 0, "dividends": 0}
+
+    def test_tzinfo_present_but_utcoffset_none_rejected_as_effectively_naive(self):
+        """A pathological but real datetime case: a tzinfo subclass whose
+        utcoffset() returns None (permitted by the datetime contract for
+        abstract/incomplete tzinfo implementations) must be treated the
+        same as a fully naive value -- never assumed to be UTC or any
+        other zone."""
+
+        class _BrokenTzinfo(dt.tzinfo):
+            def utcoffset(self, _dt):
+                return None
+
+            def dst(self, _dt):
+                return None
+
+            def tzname(self, _dt):
+                return "BROKEN"
+
+        calls, fake_bars, fake_splits, fake_dividends = self._counting_fns()
+        broken_ts = dt.datetime(2026, 6, 2, 9, 30, tzinfo=_BrokenTzinfo())
+        with pytest.raises(PricePathEvidenceError, match="entry_timestamp must be timezone-aware"):
+            acquire_price_path_evidence(
+                paper_trade_id=1, user_id="u", symbol="AAPL", market="US",
+                market_timezone_name="America/New_York", market_tzinfo=ET,
+                entry_timestamp=broken_ts,
+                exit_timestamp=dt.datetime(2026, 6, 2, 16, 0, tzinfo=ET),
+                fetch_bars_fn=fake_bars, fetch_splits_fn=fake_splits, fetch_dividends_fn=fake_dividends,
+            )
+        assert calls == {"bars": 0, "splits": 0, "dividends": 0}
+
+    def test_india_aware_timestamps_unchanged_normal_acquisition(self):
+        """Regular India acquisition with genuinely aware timestamps is
+        unaffected by this guard."""
+        calls, fake_bars, fake_splits, fake_dividends = self._counting_fns()
+        acquire_price_path_evidence(
+            paper_trade_id=1, user_id="u", symbol="RELIANCE", market="IN",
+            market_timezone_name="Asia/Kolkata", market_tzinfo=IST,
+            entry_timestamp=dt.datetime(2026, 6, 2, 9, 15, tzinfo=IST),
+            exit_timestamp=dt.datetime(2026, 6, 2, 15, 30, tzinfo=IST),
+            fetch_bars_fn=fake_bars, fetch_splits_fn=fake_splits, fetch_dividends_fn=fake_dividends,
+        )
+        assert calls == {"bars": 1, "splits": 1, "dividends": 1}
+
+    def test_us_aware_timestamps_unchanged_normal_acquisition(self):
+        """Regular US acquisition with genuinely aware timestamps is
+        unaffected by this guard."""
+        calls, fake_bars, fake_splits, fake_dividends = self._counting_fns()
+        acquire_price_path_evidence(
+            paper_trade_id=1, user_id="u", symbol="AAPL", market="US",
+            market_timezone_name="America/New_York", market_tzinfo=ET,
+            entry_timestamp=dt.datetime(2026, 6, 2, 9, 30, tzinfo=ET),
+            exit_timestamp=dt.datetime(2026, 6, 2, 16, 0, tzinfo=ET),
+            fetch_bars_fn=fake_bars, fetch_splits_fn=fake_splits, fetch_dividends_fn=fake_dividends,
+        )
+        assert calls == {"bars": 1, "splits": 1, "dividends": 1}
+
+    def test_build_price_path_evidence_rejects_naive_entry_before_manifest(self):
+        with pytest.raises(PricePathEvidenceError, match="entry_timestamp must be timezone-aware"):
+            build_price_path_evidence(
+                paper_trade_id=1, user_id="u", symbol="AAPL", market="US",
+                market_timezone_name="America/New_York", market_tzinfo=ET,
+                entry_timestamp=dt.datetime(2026, 6, 2, 9, 30),  # naive
+                exit_timestamp=dt.datetime(2026, 6, 2, 16, 0, tzinfo=ET),
+                raw_bars=[], split_events=[], dividend_events=[],
+            )
+
+    def test_build_price_path_evidence_rejects_naive_exit_before_manifest(self):
+        with pytest.raises(PricePathEvidenceError, match="exit_timestamp must be timezone-aware"):
+            build_price_path_evidence(
+                paper_trade_id=1, user_id="u", symbol="AAPL", market="US",
+                market_timezone_name="America/New_York", market_tzinfo=ET,
+                entry_timestamp=dt.datetime(2026, 6, 2, 9, 30, tzinfo=ET),
+                exit_timestamp=dt.datetime(2026, 6, 2, 16, 0),  # naive
+                raw_bars=[], split_events=[], dividend_events=[],
+            )
+
+    @pytest.mark.skipif(
+        not hasattr(time_module, "tzset"), reason="time.tzset() is unavailable on this platform (e.g. native Windows)",
+    )
+    def test_host_timezone_independence_after_fix(self):
+        """Same invalid (naive) input under two maximally-different host
+        timezones must raise the identical typed error and make zero
+        provider calls in both cases -- proving the fix is host-TZ
+        independent, unlike the pre-fix behavior it replaces."""
+        original_tz = os.environ.get("TZ")
+        naive_ts = dt.datetime(2026, 6, 2, 23, 30)
+
+        try:
+            for tz_name in ("UTC", "Pacific/Kiritimati"):
+                os.environ["TZ"] = tz_name
+                time_module.tzset()
+                calls, fake_bars, fake_splits, fake_dividends = self._counting_fns()
+                with pytest.raises(PricePathEvidenceError, match="entry_timestamp must be timezone-aware"):
+                    acquire_price_path_evidence(
+                        paper_trade_id=1, user_id="u", symbol="RELIANCE", market="IN",
+                        market_timezone_name="Asia/Kolkata", market_tzinfo=IST,
+                        entry_timestamp=naive_ts, exit_timestamp=naive_ts,
+                        fetch_bars_fn=fake_bars, fetch_splits_fn=fake_splits, fetch_dividends_fn=fake_dividends,
+                    )
+                assert calls == {"bars": 0, "splits": 0, "dividends": 0}, tz_name
+        finally:
+            if original_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = original_tz
+            time_module.tzset()

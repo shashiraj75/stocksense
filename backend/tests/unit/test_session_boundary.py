@@ -450,27 +450,20 @@ class TestNaiveTimestampCharacterizationStageJ3B1:
     @pytest.mark.skipif(
         not hasattr(time_module, "tzset"), reason="time.tzset() is unavailable on this platform (e.g. native Windows)",
     )
-    def test_naive_timestamp_fetch_window_depends_on_host_tz_before_final_rejection(self):
-        """Stage 6C -- demonstrates deterministically whether
-        acquire_price_path_evidence's date-window computation
-        (entry_timestamp.astimezone(market_tzinfo), price_path_acquisition.py
-        lines 965-966) is sensitive to the HOST PROCESS timezone when
-        given a naive timestamp. Controls TZ via time.tzset(), restores
-        it in finally, and never leaves the process timezone modified
-        after the test.
-
-        CONFIRMED, PRECISE CHARACTERIZATION (refines the Stage J3B
-        investigation's naive-timestamp finding): the final
-        PricePathEvidenceBundle DOES reject a naive entry/exit_timestamp
-        in __post_init__ (price_path_evidence.py), so acquisition
-        ultimately fails closed rather than silently persisting
-        wrong-window evidence. BUT the entry_date/exit_date used to call
-        fetch_bars_fn (i.e. the actual provider request window, were this
-        real yfinance rather than a fake) is computed via naive
-        `.astimezone(market_tzinfo)` BEFORE that rejection, and genuinely
-        differs by host TZ -- so a real provider call would already have
-        gone out with a host-TZ-dependent, incorrect window before the
-        request is ultimately discarded."""
+    def test_naive_timestamp_rejected_before_any_fetch_window_host_tz_independent(self):
+        """Stage J3B.2 -- SUPERSEDES the Stage J3B.1 characterization
+        that proved a naive timestamp reached `.astimezone(market_tzinfo)`
+        and could drive a real provider fetch with a host-TZ-dependent
+        window before PricePathEvidenceBundle.__post_init__ eventually
+        rejected it. The approved correction
+        (_require_timezone_aware_trade_timestamps, called at the very
+        start of acquire_price_path_evidence) now rejects the same naive
+        input BEFORE any `.astimezone()` call or provider I/O -- this
+        test proves NO fetch window is ever constructed, under two
+        maximally-different host timezones, both raising the identical
+        typed error. Controls TZ via time.tzset(), restores it in
+        finally, and never leaves the process timezone modified after
+        the test."""
         from services.market_hours import IST
         from services.postmortem.price_path_acquisition import acquire_price_path_evidence
         from services.postmortem.price_path_evidence import PricePathEvidenceError
@@ -489,7 +482,7 @@ class TestNaiveTimestampCharacterizationStageJ3B1:
         try:
             os.environ["TZ"] = "UTC"
             time_module.tzset()
-            with pytest.raises(PricePathEvidenceError):
+            with pytest.raises(PricePathEvidenceError, match="entry_timestamp must be timezone-aware"):
                 acquire_price_path_evidence(
                     paper_trade_id=1, user_id="u", symbol="RELIANCE", market="IN",
                     market_timezone_name="Asia/Kolkata", market_tzinfo=IST,
@@ -499,7 +492,7 @@ class TestNaiveTimestampCharacterizationStageJ3B1:
 
             os.environ["TZ"] = "Pacific/Kiritimati"  # UTC+14, maximally distant from UTC
             time_module.tzset()
-            with pytest.raises(PricePathEvidenceError):
+            with pytest.raises(PricePathEvidenceError, match="entry_timestamp must be timezone-aware"):
                 acquire_price_path_evidence(
                     paper_trade_id=1, user_id="u", symbol="RELIANCE", market="IN",
                     market_timezone_name="Asia/Kolkata", market_tzinfo=IST,
@@ -513,11 +506,8 @@ class TestNaiveTimestampCharacterizationStageJ3B1:
                 os.environ["TZ"] = original_tz
             time_module.tzset()
 
-        assert len(captured_windows) == 2
-        # Same naive input, different host TZ -> different provider
-        # request window -- confirmed at the fetch-window layer, even
-        # though the bundle itself is ultimately rejected both times.
-        assert captured_windows[0] != captured_windows[1]
+        # No fetch window constructed at all, under either host TZ.
+        assert captured_windows == []
 
 
 @pytest.mark.unit

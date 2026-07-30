@@ -353,3 +353,106 @@ class TestPostgresTimestampAwarenessInvariant:
         ).fetchone()
         assert opened_at.tzinfo is not None
         assert closed_at.tzinfo is not None
+
+
+@pytest.mark.timeout(30)
+class TestForcedNaiveTimestampRealPGAssurance:
+    """Stage J3B.2, Stage 6 -- real-PostgreSQL assurance for the pre-I/O
+    naive-timestamp guard, using the same test-only forced-naive
+    GenerationContext approach as the fake-conn regression test in
+    tests/regression/test_paper_trading_price_path_lease_lifecycle.py.
+    The real, persisted paper_trades.opened_at/closed_at are never
+    altered -- only load_generation_context's own RETURNED
+    GenerationContext is monkeypatched, simulating a future internal
+    caller violating the timezone-aware contract."""
+
+    def test_forced_naive_entry_timestamp_rejected_before_provider_io(self, client, pg_conn, unique_user_id, monkeypatch):
+        import dataclasses
+        from unittest.mock import patch
+
+        from services.postmortem import price_path_generation
+
+        monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
+        trade_id = _open_and_close_market(client, pg_conn, unique_user_id, market="US", symbol="AAPL", exit_price=101.0)
+
+        opened_at, closed_at = pg_conn.execute(
+            "SELECT opened_at, closed_at FROM paper_trades WHERE id = %s", (trade_id,)
+        ).fetchone()
+        assert opened_at.tzinfo is not None and closed_at.tzinfo is not None  # genuinely aware, unaltered
+
+        def _raises(*a, **k):
+            raise AssertionError("provider must not be called when the pre-I/O guard rejects a naive timestamp")
+
+        real_loader = price_path_generation.load_generation_context
+
+        def _forced_naive_loader(*args, **kwargs):
+            ctx = real_loader(*args, **kwargs)
+            return dataclasses.replace(ctx, entry_timestamp=ctx.entry_timestamp.replace(tzinfo=None))
+
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+        with patch.object(price_path_generation, "load_generation_context", side_effect=_forced_naive_loader):
+            with patch(
+                "services.postmortem.price_path_acquisition.fetch_raw_daily_bars", side_effect=_raises,
+            ), patch(
+                "services.postmortem.price_path_acquisition.fetch_split_events", side_effect=_raises,
+            ), patch(
+                "services.postmortem.price_path_acquisition.fetch_dividend_events", side_effect=_raises,
+            ):
+                resp = _generate(client, unique_user_id, trade_id)
+
+        assert resp.status_code == 200
+        assert resp.json()["price_path_generation_status"] == "PRICE_PATH_FAILED_RETRYABLE"
+
+        evidence_count = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_price_path_evidence WHERE paper_trade_id = %s", (trade_id,)
+        ).fetchone()[0]
+        assert evidence_count == 0
+
+        report_count = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_postmortem_report "
+            "WHERE paper_trade_id = %s AND report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        assert report_count == 0
+
+        outbox_status, error_code = pg_conn.execute(
+            "SELECT status, last_error_code FROM paper_trade_postmortem_outbox "
+            "WHERE paper_trade_id = %s AND requested_report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()
+        assert outbox_status == "FAILED_RETRYABLE"
+        assert error_code == "PRICE_PATH_GENERATION_ERROR"  # sanitized, never the raw naive timestamp
+
+        # The real, persisted trade row remains genuinely unchanged.
+        opened_at_after, closed_at_after = pg_conn.execute(
+            "SELECT opened_at, closed_at FROM paper_trades WHERE id = %s", (trade_id,)
+        ).fetchone()
+        assert opened_at_after == opened_at
+        assert closed_at_after == closed_at
+        assert opened_at_after.tzinfo is not None and closed_at_after.tzinfo is not None
+
+        # No transaction left open, no duplicate outbox row on a repeat
+        # request -- follows the existing retry/backoff contract (a
+        # retry before backoff elapses reports IN_PROGRESS-equivalent
+        # settlement, never a second outbox row for the same
+        # trade/schema/calc/rules identity).
+        outbox_row_count = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_postmortem_outbox "
+            "WHERE paper_trade_id = %s AND requested_report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        assert outbox_row_count == 1
+
+        with patch.object(price_path_generation, "load_generation_context", side_effect=_forced_naive_loader):
+            with patch(
+                "services.postmortem.price_path_acquisition.fetch_raw_daily_bars", side_effect=_raises,
+            ), patch(
+                "services.postmortem.price_path_acquisition.fetch_split_events", side_effect=_raises,
+            ), patch(
+                "services.postmortem.price_path_acquisition.fetch_dividend_events", side_effect=_raises,
+            ):
+                resp2 = _generate(client, unique_user_id, trade_id)
+        assert resp2.status_code == 200
+
+        outbox_row_count_after_retry = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_postmortem_outbox "
+            "WHERE paper_trade_id = %s AND requested_report_schema_version = '1.1.0'", (trade_id,)
+        ).fetchone()[0]
+        assert outbox_row_count_after_retry == 1  # still exactly one outbox row -- no duplicate
