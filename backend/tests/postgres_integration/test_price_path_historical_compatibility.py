@@ -1748,7 +1748,10 @@ class TestIndiaEvidenceReplay:
 
         monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
         trade_id = _open_and_close_market(client, pg_conn, unique_user_id, market="IN", symbol="RELIANCE", exit_price=101.0)
-        entry_ts = pg_conn.execute("SELECT opened_at FROM paper_trades WHERE id = %s", (trade_id,)).fetchone()[0]
+        opened_at, closed_at = pg_conn.execute(
+            "SELECT opened_at, closed_at FROM paper_trades WHERE id = %s", (trade_id,)
+        ).fetchone()
+        entry_ts = opened_at
         entry_date = entry_ts.astimezone(IST).date()
 
         def _bars(*a, **k):
@@ -1758,7 +1761,7 @@ class TestIndiaEvidenceReplay:
         bundle = price_path_acquisition.acquire_price_path_evidence(
             paper_trade_id=trade_id, user_id=unique_user_id, symbol="RELIANCE", market="IN",
             market_timezone_name="Asia/Kolkata", market_tzinfo=IST,
-            entry_timestamp=entry_ts, exit_timestamp=entry_ts,
+            entry_timestamp=opened_at, exit_timestamp=closed_at,
             fetch_bars_fn=_bars, fetch_splits_fn=_fake_none, fetch_dividends_fn=_fake_none,
         )
         evidence, _created = price_path_store.persist_evidence(pg_conn, bundle)
@@ -1881,7 +1884,10 @@ class TestUSEvidenceReplay:
 
         monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
         trade_id = _open_and_close_market(client, pg_conn, unique_user_id, market="US", symbol="AAPL", exit_price=101.0)
-        entry_ts = pg_conn.execute("SELECT opened_at FROM paper_trades WHERE id = %s", (trade_id,)).fetchone()[0]
+        opened_at, closed_at = pg_conn.execute(
+            "SELECT opened_at, closed_at FROM paper_trades WHERE id = %s", (trade_id,)
+        ).fetchone()
+        entry_ts = opened_at
         entry_date = entry_ts.astimezone(ET).date()
 
         def _bars(*a, **k):
@@ -1891,7 +1897,7 @@ class TestUSEvidenceReplay:
         bundle = price_path_acquisition.acquire_price_path_evidence(
             paper_trade_id=trade_id, user_id=unique_user_id, symbol="AAPL", market="US",
             market_timezone_name="America/New_York", market_tzinfo=ET,
-            entry_timestamp=entry_ts, exit_timestamp=entry_ts,
+            entry_timestamp=opened_at, exit_timestamp=closed_at,
             fetch_bars_fn=_bars, fetch_splits_fn=_fake_none, fetch_dividends_fn=_fake_none,
         )
         evidence, _created = price_path_store.persist_evidence(pg_conn, bundle)
