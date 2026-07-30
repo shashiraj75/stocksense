@@ -1267,3 +1267,131 @@ schedule a specific production fix, and does not change the
 architecture described earlier in this document. The confirmed
 naive-timestamp acquisition-API defect is flagged for a future,
 separately-approved production-fix stage — not fixed here.
+
+---
+
+## Stage J3B.2 — naive-timestamp pre-I/O validation guard (targeted
+## production correction)
+
+One narrowly approved production correction, closing exactly the
+confirmed defect Stage J3B.1 flagged above. No other production
+semantics changed.
+
+### The characterization result being corrected
+
+Stage J3B.1 confirmed that a naive entry/exit timestamp reached
+`entry_timestamp.astimezone(market_tzinfo)` inside both
+`acquire_price_path_evidence` and `build_price_path_evidence`, and that
+the resulting `entry_date`/`exit_date` (the actual outbound provider
+request window) was genuinely host-process-timezone-dependent, before
+`PricePathEvidenceBundle.__post_init__` eventually rejected the naive
+value in its own final validation.
+
+### The correction
+
+A new pure helper, `_require_timezone_aware_trade_timestamps(entry_timestamp,
+exit_timestamp)` (`services/postmortem/price_path_acquisition.py`), is
+called at the very start of both `acquire_price_path_evidence` and
+`build_price_path_evidence` — before any `.astimezone()` call,
+provider-symbol calculation, bounded-window calculation, manifest
+construction, boundary-policy resolution, or provider I/O
+(`fetch_bars_fn`/`fetch_splits_fn`/`fetch_dividends_fn`). It rejects a
+value that is not a `datetime`, whose `tzinfo is None`, or whose
+`tzinfo.utcoffset()` returns `None` (a pathological but real case
+under the `datetime` contract) — raising `PricePathEvidenceError` with
+a sanitized message identifying only `entry_timestamp` or
+`exit_timestamp` by name, never the raw value. This is an
+input-contract guard, not timestamp repair: it never assumes UTC, IST,
+ET, or the host timezone, never attaches a timezone, and never converts
+a naive value. `_resolve_boundary_policies`'s own existing behavior
+(catching `SessionBoundaryError` and returning `PARTIAL_UNKNOWN` when
+called directly and in isolation) is unchanged and still separately
+characterized by its own unit test — the production acquisition
+functions simply never reach it with a naive timestamp after this
+correction, since the guard now runs first.
+
+The existing generic `except Exception` handler in
+`_attempt_price_path_enhancement` (`api/routers/paper_trading.py`)
+already catches `PricePathEvidenceError` (it was never limited to
+`PriceProviderAcquisitionError`) and settles it exactly like any other
+internal failure — sanitized error summary (`type(exc).__name__` only,
+never the raw naive timestamp), `PRICE_PATH_FAILED_RETRYABLE`, no
+report, no evidence row. No change to that handler was needed.
+
+### Regular India/US session-boundary semantics — unchanged
+
+No change to `session_boundary.py`, `resolve_session`, `classify_entry_
+boundary`, `classify_exit_boundary`, `classify_same_day_trade`, or any
+DST/holiday/weekend calendar logic. All Stage J3B.1 unit and real-PG
+boundary tests (India exact/partial, US exact/partial, DST-adjacent
+spring/autumn) pass unchanged against the corrected code.
+
+### Defence in depth — final bundle validation retained
+
+`PricePathEvidenceBundle.__post_init__`'s own naive-timestamp rejection
+(`price_path_evidence.py`) is NOT removed or weakened. It remains a
+second, independent check — this correction adds a pre-I/O guard in
+front of it, it does not replace it.
+
+### Versioning decision — no version bumped
+
+`SOURCE_VERSION`, `EVIDENCE_BUNDLE_SCHEMA_VERSION`,
+`SOURCE_MANIFEST_SCHEMA_VERSION`, `BOUNDARY_POLICY_VERSION`,
+calculation-rules version, and report schema version are all
+unchanged. Rationale: this change does not alter any valid acquired
+evidence, persisted shape, session-boundary policy, or calculation
+semantics for a properly timezone-aware caller — every existing
+passing test (unit and real-PG) continues to pass byte-for-byte
+against the same manifest/evidence shape. It only moves the rejection
+of already-invalid input (a naive timestamp, which the bundle's own
+constructor already rejected) to the correct point before provider I/O
+runs. There is no persisted-evidence shape or replay-compatibility
+contract for a valid trade that this correction changes.
+
+### Early-close, Muhurat — unchanged, still unsupported
+
+No change. Both remain `KNOWN_LIMITATION`, exactly as characterized in
+the Stage J3B.1 addendum above.
+
+### DST-adjacent tests — unchanged, still passing
+
+The Stage J3B.1 spring/autumn DST-adjacent real-PG and unit tests are
+untouched and continue to pass against the corrected acquisition code
+(they use genuinely aware timestamps throughout, so the new guard never
+rejects them).
+
+### PostgreSQL endpoint timestamps — still timezone-aware
+
+The Stage J3B.1 PostgreSQL timestamp-awareness invariant
+(`paper_trades.opened_at`/`closed_at` always `tzinfo is not None`
+through the real endpoint) is re-verified unchanged by this phase's
+real-PG forced-naive test (Stage 6): the REAL persisted trade
+timestamps are never altered — only the in-memory
+`GenerationContext.entry_timestamp`/`exit_timestamp` returned by a
+test-only monkeypatched `load_generation_context` is mutated, to
+simulate a future internal caller violating the contract.
+
+### The fixed reusable-API risk is not evidence of a prior live-endpoint defect
+
+This correction closes a defect in the *reusable acquisition API*
+(`acquire_price_path_evidence`/`build_price_path_evidence`), reachable
+only if a caller passes a naive timestamp directly. The Stage J3B.1
+PostgreSQL timestamp-awareness invariant (unchanged, re-verified above)
+already established that the real `/generate` endpoint has never been
+shown to produce or pass along a naive timestamp. Fixing the reusable
+API's input contract is not evidence that the live endpoint was ever
+exposed to this defect — it closes the risk pre-emptively, for any
+future internal caller.
+
+### Verification
+
+Local: `pytest backend/tests -m "not postgres_integration"` →
+**4804 passed, 0 failed, 187 deselected**, 95.74s. Log at
+`/tmp/sprint3a-stage-j3b2-naive-timestamp-guard.log`.
+
+### Explicit non-claims
+
+This correction does not mark Stage J complete, does not implement
+early-close or Muhurat support, does not change touch-semantics, and
+does not change any evidence/report calculation. It is scoped to
+exactly one input-contract guard.
