@@ -31,6 +31,7 @@ from services.postmortem.price_path_evidence import (
     EXIT_BAR_PARTIAL_UNKNOWN,
     PricePathBar,
     PricePathEvidenceBundle,
+    PricePathEvidenceError,
     STATUS_AMBIGUOUS_RESOLUTION,
     STATUS_COMPLETE,
     STATUS_PARTIAL,
@@ -95,6 +96,26 @@ class PriceProviderAcquisitionError(RuntimeError):
 
 def _provider_symbol(symbol: str, market: str) -> str:
     return f"{symbol.upper()}{_MARKET_SUFFIX.get(market, '')}"
+
+
+def _require_timezone_aware_trade_timestamps(entry_timestamp, exit_timestamp) -> None:
+    """Stage J3B.2 — input-contract guard, not timestamp repair. Rejects
+    a naive (or effectively naive) entry/exit timestamp BEFORE any
+    `.astimezone()` call, provider I/O, or market-window construction —
+    closing the host-timezone-dependent fetch-window gap characterized
+    in Stage J3B.1 (a naive timestamp previously reached
+    `.astimezone(market_tzinfo)` and could drive a real provider fetch
+    with a wrong, host-TZ-dependent window before
+    PricePathEvidenceBundle.__post_init__ eventually rejected it).
+
+    Never assumes UTC, IST, ET, or the host timezone; never attaches a
+    timezone to a naive value; never converts. A value is rejected as
+    effectively naive both when `tzinfo is None` and when a `tzinfo`
+    object is present but its own `utcoffset()` returns None (a
+    pathological but real distinction per the datetime contract)."""
+    for name, ts in (("entry_timestamp", entry_timestamp), ("exit_timestamp", exit_timestamp)):
+        if not isinstance(ts, datetime) or ts.tzinfo is None or ts.utcoffset() is None:
+            raise PricePathEvidenceError(f"{name} must be timezone-aware")
 
 
 def _resolve_boundary_policies(
@@ -753,6 +774,8 @@ def build_price_path_evidence(
     AMBIGUOUS_RESOLUTION and adjustment_basis becomes UNKNOWN_ADJUSTMENT,
     with an explicit limitation string, rather than silently computing a
     corrupted MFE/MAE across the split boundary."""
+    _require_timezone_aware_trade_timestamps(entry_timestamp, exit_timestamp)
+
     if acquisition_timestamp is None:
         acquisition_timestamp = datetime.now(timezone.utc)
     if dividend_events is None:
@@ -961,6 +984,8 @@ def acquire_price_path_evidence(
     Callers MUST invoke this OUTSIDE any open database transaction
     (Stage 12) — this function never accepts a `conn` parameter, by
     design, so it cannot be called from inside one by accident."""
+    _require_timezone_aware_trade_timestamps(entry_timestamp, exit_timestamp)
+
     provider_symbol = _provider_symbol(symbol, market)
     entry_date = entry_timestamp.astimezone(market_tzinfo).date()
     exit_date = exit_timestamp.astimezone(market_tzinfo).date()
