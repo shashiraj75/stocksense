@@ -1121,3 +1121,149 @@ started this phase, per the explicit instruction not to begin
 touch-semantics work. India/US exact session-boundary real-PG proof
 (above) also remains, newly identified as open by this pass's own
 honest accounting.
+
+---
+
+## Stage J3B.1 — India/US session-boundary characterization and
+## real-PG assurance (results-only addendum)
+
+TEST-ONLY. Closes the "still not done this pass" gap recorded directly
+above (India/US exact-boundary and partial-session real-PG proof) and
+adds DST-adjacent-session, early-close, naive-timestamp, Muhurat, and
+PostgreSQL timestamp-awareness characterization. No production code
+changed. Architecture is unchanged; no fix is promised or implied by
+this addendum. Stage J remains **not** complete — see "Remaining Stage
+J scope" above, still fully outstanding.
+
+### Regular India boundary — proven
+
+Real-PG, via the actual `/generate` endpoint, explicit `opened_at`/
+`closed_at` overrides (never uncontrolled wall-clock), deterministic
+provider fixtures:
+
+- Exact 09:15 IST entry / exact 15:30 IST exit →
+  `ENTRY_BAR_INCLUDED_FULL` / `EXIT_BAR_INCLUDED_FULL`, persisted
+  `market=IN`, `provider_symbol=RELIANCE.NS`,
+  `market_timezone=Asia/Kolkata`, manifest integrity verified, full
+  evidence/report lifecycle succeeds
+  (`TestIndiaRealPGBoundaryProof::test_india_exact_full_session_boundary`).
+- One-second-after-open entry / one-second-before-close exit →
+  both `PARTIAL_UNKNOWN`, no fabricated full-boundary claim
+  (`test_india_partial_session_one_second_after_open`).
+- Confirmed repository holiday (`2026-01-15`, `NSE_EXTRA_HOLIDAYS`) →
+  `PARTIAL_UNKNOWN`, non-trading-day limitation present, no crash, no
+  live calendar lookup (`test_india_holiday_characterization`).
+
+### Regular US boundary — proven
+
+Same structure and guarantees, US market:
+
+- Exact 09:30 ET entry / exact 16:00 ET exit → both `INCLUDED_FULL`,
+  persisted `market=US`, unsuffixed `provider_symbol=AAPL`,
+  `market_timezone=America/New_York`
+  (`TestUSRealPGBoundaryProof::test_us_exact_full_session_boundary`).
+- One-second-after-open / one-second-before-close → both
+  `PARTIAL_UNKNOWN`
+  (`test_us_partial_session_one_second_after_open_and_before_close`).
+
+### DST-adjacent trading-session proof
+
+2026 spring (`2026-03-08`) and autumn (`2026-11-01`) transition dates
+determined programmatically via `zoneinfo` (never hardcoded, never
+assumed from memory) in both the unit and real-PG test files
+independently. The transition Sunday itself is never used as a
+session-boundary test, since the US market is closed that day. For the
+last trading session before and first trading session after each
+transition: 09:30 ET entry / 16:00 ET exit both still resolve to
+`INCLUDED_FULL`, and the persisted UTC offset genuinely differs across
+the transition as `ZoneInfo` determines (EST↔EDT), not a hardcoded
+assumption
+(`TestUSRealPGBoundaryProof::test_us_dst_adjacent_trading_sessions[spring|autumn]`,
+`TestDSTAssuranceStageJ3B1` unit tests). A separate, explicitly-labeled
+PURE timezone characterization (not a market-session test) proves
+`fold=0`/`fold=1` resolve to distinct UTC instants in the autumn
+ambiguous hour; no production code currently constructs times in that
+window, so this does not by itself justify a production change.
+
+### Early-close — remains a KNOWN_LIMITATION, not supported
+
+Confirmed unchanged: `resolve_session` always uses the standard close
+(16:00 US / 15:30 IST) regardless of any real early-close calendar;
+`EARLY_CLOSE_UNSUPPORTED` is present on every session resolution; a
+time after a real (unmodeled) early close but before the standard
+close is classified as ordinary intraday (`PARTIAL_UNKNOWN`), never as
+`EARLY_CLOSE_SUPPORTED`
+(`TestEarlyCloseKnownLimitationStageJ3B1`). No real early-close date
+was hardcoded — none is present as an authoritative deterministic
+repository fixture.
+
+### Muhurat/special-session — remains unsupported, now characterized
+
+`MUHURAT_SESSIONS` (`services/market_hours.py`) is confirmed consulted
+ONLY by `is_market_open()` (the live "is market open right now" check)
+— `session_boundary.py` never references it (proven by source-text
+inspection, not inference). The one deterministic repository entry
+(`2026-11-08`) is itself a Sunday in this codebase's own calendar, so
+price-path classification treats it as an ordinary non-trading day
+(`PARTIAL_UNKNOWN`), with no awareness that a real, brief Muhurat
+session occurs on it
+(`TestMuhuratSpecialSessionInventoryStageJ3B1`). Not implemented this
+phase, per instruction.
+
+### Naive-timestamp API characterization
+
+- `session_boundary.classify_entry_boundary`/`classify_exit_boundary`
+  reject naive input with `SessionBoundaryError` (confirmed, unit).
+- `price_path_acquisition._resolve_boundary_policies` catches that
+  error and returns `PARTIAL_UNKNOWN` for both sides without
+  propagating a typed failure or any limitation string distinguishing
+  "naive input" from "genuinely ambiguous timestamp" (confirmed, unit —
+  refines the Stage J3B investigation's framing of this as silent).
+- **Refined finding**: the final `PricePathEvidenceBundle` itself DOES
+  reject a naive `entry_timestamp`/`exit_timestamp` in its own
+  `__post_init__` (`price_path_evidence.py`), so acquisition ultimately
+  fails closed for a naive-timestamp call end-to-end — it does not
+  silently persist wrong-window evidence. This corrects the read-only
+  investigation's original framing, which had not yet traced execution
+  all the way to bundle construction.
+- **Confirmed, precise host-TZ dependency**: before that final
+  rejection, the entry_date/exit_date used to build the OUTBOUND
+  provider fetch window (`entry_timestamp.astimezone(market_tzinfo)`)
+  is computed from the naive timestamp using the HOST PROCESS
+  timezone, and a real provider call would go out with a
+  host-TZ-dependent, wrong window before the request is ultimately
+  discarded — proven by controlling `TZ` via `time.tzset()` under two
+  extreme host timezones and observing two different captured fetch
+  windows for the identical naive input, then restoring the original
+  TZ (`test_naive_timestamp_fetch_window_depends_on_host_tz_before_final_rejection`).
+
+### PostgreSQL timestamp-awareness invariant — holds today
+
+`paper_trades.opened_at`/`closed_at`, read back from a real PostgreSQL
+row through the actual endpoint, are always timezone-aware
+(`tzinfo is not None` for both) —
+`TestPostgresTimestampAwarenessInvariant::test_persisted_paper_trade_timestamps_are_always_timezone_aware`,
+passing on both PG15 and PG17. This distinguishes the naive-timestamp
+gap above as a **confirmed defect in the reusable acquisition API**
+(reachable only if a future caller passes a naive timestamp directly),
+**not a proven production endpoint exposure** — nothing in this
+addendum demonstrates the real endpoint can currently produce or pass
+along a naive timestamp.
+
+### Verification
+
+Local: `pytest backend/tests -m "not postgres_integration"` →
+**4793 passed, 0 failed, 186 deselected**, 92.83s.
+Real PostgreSQL (`backend_postgres_integration.yml`, run
+`30524175022`): **PG15 — 186 passed, 0 failed**; **PG17 — 186 passed,
+0 failed** (both up from the prior 178-test baseline by exactly the 8
+new real-PG tests added this phase; all prior replay, manifest, and
+concurrency tests retained and still passing).
+
+### Explicit non-claims
+
+This addendum does not mark Stage J complete, does not promise or
+schedule a specific production fix, and does not change the
+architecture described earlier in this document. The confirmed
+naive-timestamp acquisition-API defect is flagged for a future,
+separately-approved production-fix stage — not fixed here.
