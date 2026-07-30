@@ -288,9 +288,18 @@ class TestUSRealPGBoundaryProof:
         pre = previous_trading_session("US", transition_date)
         post = next_trading_session("US", transition_date)
 
-        monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
-
         for label, session_date in (("pre", pre), ("post", post)):
+            # Re-assert the flag OFF before every _open_and_close_market
+            # call, not just once before the loop -- otherwise the prior
+            # iteration's setenv("...", "1") (still in effect on this
+            # shared, function-scoped monkeypatch) leaks into this
+            # iteration's buy/sell and lets the close-service's own
+            # auto-generation-on-close fire using the STALE fetch mock,
+            # so this trade's report already exists before our explicit
+            # _generate() call below -- observed as a real CI failure
+            # (PRICE_PATH_ALREADY_COMPLETE instead of PRICE_PATH_GENERATED)
+            # the first time this loop omitted the per-iteration delenv.
+            monkeypatch.delenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", raising=False)
             trade_id = _open_and_close_market(client, pg_conn, unique_user_id, market="US", symbol="AAPL", exit_price=101.0)
             entry_ts = dt.datetime(session_date.year, session_date.month, session_date.day, 9, 30, 0, tzinfo=ET)
             exit_ts = dt.datetime(session_date.year, session_date.month, session_date.day, 16, 0, 0, tzinfo=ET)
