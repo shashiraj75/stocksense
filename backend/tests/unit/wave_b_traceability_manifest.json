@@ -308,5 +308,5 @@
       "status": "COLLECTED_LOCALLY_EXECUTION_PENDING_CI_DISPATCH"
     }
   ],
-  "status": "J4E RED-BASELINE COMPLETE (55/55). J4F traceability: ALL 20 of 20 WB-J4F IDs now have a runnable node (Batches G-I). Batch I (WB-J4F-13..20) is real-PostgreSQL level: collected locally (8/8), execution requires CI dispatch (no local Postgres available). J4F scenario-matrix target is 68; 20 represented so far \u2014 48 additional scenario-variant nodes still needed across concurrency/worker-lifecycle/failure-taxonomy/reconciliation/reset-race/observability before the matrix is complete."
+  "status": "J4E RED-BASELINE COMPLETE (55/55). J4F RED-BASELINE COMPLETE (68/68 scenarios; all 20 WB-J4F traceability IDs covered across Batches G-M). WB-J4F-13..20 are real-PostgreSQL-level (tests/postgres_integration/), collected locally, execution pending CI dispatch. Full 123-scenario Wave B red baseline (55 J4E + 68 J4F) is complete and locally verified. Next: push the test/spec-only baseline and dispatch PostgreSQL 15/17 CI per owner authorization, then reapply/reassess the preserved draft and implement."
 }

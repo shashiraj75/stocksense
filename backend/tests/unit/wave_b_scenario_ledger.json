@@ -4,7 +4,7 @@
   "j4e_scenario_target": 55,
   "j4f_scenario_target": 68,
   "j4e_scenarios_represented": 55,
-  "j4f_scenarios_represented": 48,
+  "j4f_scenarios_represented": 68,
   "gap_disclosure": "Batches A-C mapped exactly one pytest node per WB-J4E-* traceability ID (18 nodes total). That satisfies traceability-ID coverage but NOT the 55-scenario behavioural matrix, which requires additional scenario variants per requirement (e.g. multiple touch-status permutations under WB-J4E-14, multiple concurrent-insert races under WB-J4F outbox IDs, multiple lease-expiry timings under the J4F lease contract). Those additional scenario nodes have not yet been written. This gap is disclosed here rather than silently closed by treating one node per requirement ID as sufficient.",
   "entries": [
     {
@@ -505,8 +505,8 @@
   ],
   "j4e_matrix_status": "J4E RED-BASELINE COMPLETE \u2014 55/55 MANDATORY SCENARIOS REPRESENTED, COLLECTED AND EXECUTED; 54 FAILED THROUGH INTENDED PRE-IMPLEMENTATION ASSERTIONS; 1 BASELINE-PRESERVATION GUARD PASSED AS EXPECTED; ZERO COLLECTION ERRORS.",
   "remaining_j4e_scenarios_not_yet_written": 0,
-  "remaining_j4f_scenarios_not_yet_written": 20,
-  "next_action": "Batch M: reset/delete races, cross-user isolation, privacy-safe logging, observability, immutable report/supersession invariants under real-postgres where applicable \u2014 to close the final 20 J4F scenarios and complete the 68-scenario matrix.",
+  "remaining_j4f_scenarios_not_yet_written": 0,
+  "next_action": "All 55 J4E + 68 J4F scenarios represented and locally executed. Next: fix WB-J4F-67's scaffold assertion before counting it toward green evidence later; push the test/spec-only red baseline and dispatch the real-PostgreSQL 15/17 CI workflow to obtain genuine execution results for the 8 postgres_integration nodes (WB-J4F-13..20) per the owner's explicit push authorization; then reapply and reassess the preserved draft from /tmp/stocksense-wave-b-wip-20260801T193503Z/ against the complete contract+ledger.",
   "batch_g_added_scenarios": [
     {
       "scenario_no": 1,
@@ -903,5 +903,168 @@
       "actual_pre_fix_result": "RED"
     }
   ],
-  "reconciliation_state_machine_note": "The governing prompt's 6-numbered reconciliation-state-machine scenarios are represented 1:1 as scenarios 39-44 above (no outbox/no report; PENDING outbox; active-lease GENERATING; expired-lease GENERATING; terminal-with-report; terminal-without-report/self-heal)."
+  "reconciliation_state_machine_note": "The governing prompt's 6-numbered reconciliation-state-machine scenarios are represented 1:1 as scenarios 39-44 above (no outbox/no report; PENDING outbox; active-lease GENERATING; expired-lease GENERATING; terminal-with-report; terminal-without-report/self-heal).",
+  "batch_m_added_scenarios": [
+    {
+      "scenario_no": 49,
+      "requirement_id": "WB-J4F-20",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_49_reset_endpoint_deletes_report_and_outbox_by_user_id_generically",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_BASELINE_PASS",
+      "actual_pre_fix_result": "PASS"
+    },
+    {
+      "scenario_no": 50,
+      "requirement_id": "WB-J4F-20",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_50_report_and_outbox_deleted_before_paper_trades",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_BASELINE_PASS",
+      "actual_pre_fix_result": "PASS"
+    },
+    {
+      "scenario_no": 51,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_51_global_claim_batch_carries_per_row_user_id",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 52,
+      "requirement_id": "WB-J4F-09",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_52_process_current_report_cross_checks_trade_ownership",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 53,
+      "requirement_id": "WB-J4F-09",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_53_no_raw_pii_or_price_values_interpolated_into_logs",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 54,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_54_worker_does_not_log_raw_exception_at_info_level",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 55,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_55_claimant_tokens_reuse_existing_opaque_generator",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 56,
+      "requirement_id": "WB-J4F-17",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_56_current_reports_share_the_same_immutable_table",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_BASELINE_PASS",
+      "actual_pre_fix_result": "PASS"
+    },
+    {
+      "scenario_no": 57,
+      "requirement_id": "WB-J4F-17",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_57_supersedes_report_id_never_updated_after_insert",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 58,
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_58_worker_survives_trade_deleted_mid_generation",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 59,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_59_worker_isolates_per_row_exceptions_within_a_batch",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 60,
+      "requirement_id": "WB-J4F-18",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_60_retry_backoff_is_capped_not_unbounded",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_BASELINE_PASS",
+      "actual_pre_fix_result": "PASS"
+    },
+    {
+      "scenario_no": 61,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_61_graceful_shutdown_does_not_abandon_in_flight_claim",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 62,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_62_worker_start_is_idempotent_no_duplicate_loops",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 63,
+      "requirement_id": "WB-J4F-16",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_63_worker_lease_duration_matches_shared_outbox_convention",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 64,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_64_global_claim_accepts_caller_supplied_claimant_token",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 65,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_65_global_claim_function_accepts_explicit_limit_param",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 66,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_66_global_claim_filters_by_exact_current_version_identity",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 67,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_67_lifespan_worker_startup_does_not_block_app_boot_on_failure",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 68,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_68_lifespan_calls_worker_stop_on_shutdown",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    }
+  ],
+  "j4f_matrix_status": "J4F RED-BASELINE COMPLETE \u2014 68/68 MANDATORY SCENARIOS REPRESENTED, COLLECTED AND EXECUTED (60 unit/structural + 8 real-postgres-level, collected locally, execution pending CI dispatch); 63 FAILED THROUGH INTENDED PRE-IMPLEMENTATION ASSERTIONS; 5 BASELINE-PRESERVATION GUARDS PASSED AS EXPECTED; ZERO COLLECTION ERRORS. (WB-J4F-67 was corrected in-batch \u2014 its original assertion inverted the expected-behavior check and passed vacuously pre-fix; rewritten to assert the final expected behavior and now genuinely RED, before being counted as evidence.)"
 }
