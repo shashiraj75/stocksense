@@ -614,7 +614,7 @@
       "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_13_global_claim_function_exists",
       "level": "real-postgres",
       "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
-      "actual_pre_fix_result": "RED (collected locally; execution pending CI dispatch)"
+      "actual_pre_fix_result": "RED (confirmed on real PostgreSQL 15 AND 17, CI run 30716822323, genuine intended AssertionError, zero collection/infrastructure errors)"
     },
     {
       "scenario_no": 14,
@@ -622,7 +622,7 @@
       "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_14_simultaneous_claimants_never_both_claim_same_row",
       "level": "real-postgres",
       "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
-      "actual_pre_fix_result": "RED (collected locally; execution pending CI dispatch)"
+      "actual_pre_fix_result": "RED (confirmed on real PostgreSQL 15 AND 17, CI run 30716822323, genuine intended AssertionError, zero collection/infrastructure errors)"
     },
     {
       "scenario_no": 15,
@@ -630,7 +630,7 @@
       "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_15_distinct_rows_claimed_by_distinct_claimants",
       "level": "real-postgres",
       "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
-      "actual_pre_fix_result": "RED (collected locally; execution pending CI dispatch)"
+      "actual_pre_fix_result": "RED (confirmed on real PostgreSQL 15 AND 17, CI run 30716822323, genuine intended AssertionError, zero collection/infrastructure errors)"
     },
     {
       "scenario_no": 16,
@@ -638,7 +638,7 @@
       "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_16_active_lease_row_is_not_reclaimable",
       "level": "real-postgres",
       "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
-      "actual_pre_fix_result": "RED (collected locally; execution pending CI dispatch)"
+      "actual_pre_fix_result": "RED (confirmed on real PostgreSQL 15 AND 17, CI run 30716822323, genuine intended AssertionError, zero collection/infrastructure errors)"
     },
     {
       "scenario_no": 17,
@@ -646,7 +646,7 @@
       "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_17_expired_lease_row_is_reclaimable",
       "level": "real-postgres",
       "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
-      "actual_pre_fix_result": "RED (collected locally; execution pending CI dispatch)"
+      "actual_pre_fix_result": "RED (confirmed on real PostgreSQL 15 AND 17, CI run 30716822323, genuine intended AssertionError, zero collection/infrastructure errors)"
     },
     {
       "scenario_no": 18,
@@ -654,7 +654,7 @@
       "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_18_retry_backoff_delays_next_attempt",
       "level": "real-postgres",
       "pre_implementation_expectation": "EXPECTED_BASELINE_PASS",
-      "actual_pre_fix_result": "PENDING CI (exercises existing outbox.py retry-backoff behavior against a real trade/outbox row; expected to pass since outbox.py's backoff logic predates Wave B and is reused unchanged)"
+      "actual_pre_fix_result": "PASS (confirmed on real PostgreSQL 15 AND 17, CI run 30716822323 \u2014 EXPECTED_BASELINE_PASS, reuses existing outbox.py backoff logic unchanged)"
     },
     {
       "scenario_no": 19,
@@ -662,7 +662,7 @@
       "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_19_worker_enforces_max_attempt_terminalization",
       "level": "real-postgres",
       "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
-      "actual_pre_fix_result": "RED (collected locally; execution pending CI dispatch)"
+      "actual_pre_fix_result": "RED (confirmed on real PostgreSQL 15 AND 17, CI run 30716822323, genuine intended AssertionError, zero collection/infrastructure errors)"
     },
     {
       "scenario_no": 20,
@@ -670,7 +670,7 @@
       "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_20_global_claim_query_uses_index_not_seqscan",
       "level": "real-postgres",
       "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
-      "actual_pre_fix_result": "RED (collected locally; execution pending CI dispatch)"
+      "actual_pre_fix_result": "RED (confirmed on real PostgreSQL 15 AND 17, CI run 30716822323, genuine intended AssertionError, zero collection/infrastructure errors)"
     }
   ],
   "batch_j_added_scenarios": [
@@ -1066,5 +1066,13 @@
       "actual_pre_fix_result": "RED"
     }
   ],
-  "j4f_matrix_status": "J4F RED-BASELINE COMPLETE \u2014 68/68 MANDATORY SCENARIOS REPRESENTED, COLLECTED AND EXECUTED (60 unit/structural + 8 real-postgres-level, collected locally, execution pending CI dispatch); 63 FAILED THROUGH INTENDED PRE-IMPLEMENTATION ASSERTIONS; 5 BASELINE-PRESERVATION GUARDS PASSED AS EXPECTED; ZERO COLLECTION ERRORS. (WB-J4F-67 was corrected in-batch \u2014 its original assertion inverted the expected-behavior check and passed vacuously pre-fix; rewritten to assert the final expected behavior and now genuinely RED, before being counted as evidence.)"
+  "j4f_matrix_status": "J4F RED-BASELINE COMPLETE \u2014 68/68 MANDATORY SCENARIOS REPRESENTED, COLLECTED AND EXECUTED (60 unit/structural + 8 real-postgres-level, collected locally, execution pending CI dispatch); 63 FAILED THROUGH INTENDED PRE-IMPLEMENTATION ASSERTIONS; 5 BASELINE-PRESERVATION GUARDS PASSED AS EXPECTED; ZERO COLLECTION ERRORS. (WB-J4F-67 was corrected in-batch \u2014 its original assertion inverted the expected-behavior check and passed vacuously pre-fix; rewritten to assert the final expected behavior and now genuinely RED, before being counted as evidence.)",
+  "real_postgresql_ci_evidence": {
+    "workflow": "Backend PostgreSQL Integration Tests",
+    "first_dispatch_run_id": "30716679230",
+    "first_dispatch_result": "2 genuine pre-existing test-authoring bugs found (UnboundLocalError from a shadowing local `import importlib`; NotNullViolation on paper_trades.session_id) \u2014 NOT counted as red evidence; both fixed in commit 71be8c8 before recounting, per the mandate against counting collection/runtime-defect failures as valid red evidence.",
+    "corrected_dispatch_run_id": "30716822323",
+    "corrected_dispatch_result": "7/8 WB-J4F-13..20 nodes genuinely RED (AssertionError, module/function not yet defined) on BOTH PostgreSQL 15 and PostgreSQL 17; 1/8 (WB-J4F-18) genuinely PASSED on both \u2014 confirmed EXPECTED_BASELINE_PASS, exercising existing outbox.py retry-backoff logic against a real database, unchanged by Wave B. Zero collection errors, zero infrastructure failures on the corrected run.",
+    "pushed_head": "71be8c8cb0a1637c6e6e1a848a267ab2a7353ab1"
+  }
 }
