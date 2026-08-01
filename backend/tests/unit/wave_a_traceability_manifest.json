@@ -250,6 +250,173 @@
       "expected_behavior": "Re-running the full schema script (including the new columns, CHECK constraint, and trigger) against an already-migrated database is a no-op, never an error.",
       "expected_reason_code": null, "test_level": "postgres",
       "nodes": ["tests/postgres_integration/test_level_history_invariant_real_pg.py::TestSchemaIdempotency::test_schema_initialization_idempotent"]
+    },
+    {
+      "id": "WA-C01", "title": "Entry-snapshot governed fields",
+      "protected_function": "services.postmortem.entry_snapshot.build_entry_snapshot / api.routers.paper_trading._insert_entry_snapshot",
+      "expected_behavior": "A new governed buy stores level_history_contract_version='1' and all three initial per-level/aggregate flags FALSE in paper_trade_entry_snapshot; a legacy snapshot stays NULL for all four; the table remains immutable-by-UPDATE; schema re-init is idempotent; no existing row is backfilled.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": [
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestEntrySnapshotGovernedFields::test_new_governed_buy_stores_four_governed_entry_fields",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestEntrySnapshotGovernedFields::test_legacy_entry_snapshot_remains_null_for_new_fields",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestEntrySnapshotGovernedFields::test_entry_snapshot_cannot_be_updated",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestEntrySnapshotGovernedFields::test_schema_reinitialization_idempotent_after_entry_snapshot_columns",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestEntrySnapshotGovernedFields::test_no_existing_row_backfilled"
+      ]
+    },
+    {
+      "id": "WA-C02", "title": "Snapshot schema-version coexistence",
+      "protected_function": "services.postmortem.entry_snapshot.SNAPSHOT_SCHEMA_VERSION / services.postmortem.exit_snapshot.EXIT_SNAPSHOT_SCHEMA_VERSION",
+      "expected_behavior": "Every new entry/exit snapshot stamps 1.1.0; a pre-existing 1.0.0 row remains readable and untouched alongside a new 1.1.0 row for a different trade.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": [
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestSnapshotVersionCoexistence::test_new_entry_and_exit_snapshots_stamp_1_1_0",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestSnapshotVersionCoexistence::test_1_0_0_and_1_1_0_snapshots_coexist"
+      ]
+    },
+    {
+      "id": "WA-C03", "title": "Explicit transaction boundary",
+      "protected_function": "api.routers.paper_trading.edit_trade",
+      "expected_behavior": "edit_trade wraps its full read-modify-write in an explicit conn.transaction(), so the FOR UPDATE row lock is actually held under the autocommit=True pool -- proven indirectly by the deterministic concurrency and rollback tests below (a transaction-less implementation could not pass either).",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": [
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExplicitTransactionAndConcurrency::test_wa_c04_deterministic_concurrent_stop_and_target_preserved",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExplicitTransactionAndConcurrency::test_wa_c05_rollback_on_cash_adjustment_failure_preserves_trade_and_cash"
+      ]
+    },
+    {
+      "id": "WA-C04", "title": "Deterministic concurrent stop+target preservation",
+      "protected_function": "api.routers.paper_trading.edit_trade",
+      "expected_behavior": "A row lock explicitly held open on a separate real connection forces genuine overlap between two concurrent editors; both survive, final stop_loss/target_price equal the submitted values, both per-level flags and the aggregate are TRUE. Concurrent identical edits remain idempotent.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": [
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExplicitTransactionAndConcurrency::test_wa_c04_deterministic_concurrent_stop_and_target_preserved",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExplicitTransactionAndConcurrency::test_wa_c04_concurrent_identical_edits_remain_idempotent"
+      ]
+    },
+    {
+      "id": "WA-C05", "title": "Transaction rollback",
+      "protected_function": "api.routers.paper_trading.edit_trade",
+      "expected_behavior": "A genuine PostgreSQL error on the entry-price cash-adjustment statement (the last statement in the transaction) rolls back the earlier stop/target UPDATE in the same transaction -- both trade state and portfolio cash are preserved exactly as before the request.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": ["tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExplicitTransactionAndConcurrency::test_wa_c05_rollback_on_cash_adjustment_failure_preserves_trade_and_cash"]
+    },
+    {
+      "id": "WA-C06", "title": "Exact governed tuple consistency",
+      "protected_function": "services.postgres_store (chk_paper_trades_governed_level_history_tuple)",
+      "expected_behavior": "For a governed version '1' row, stop_modified_after_entry/target_modified_after_entry/levels_modified_after_entry must all be NOT NULL and the aggregate must equal exactly the logical OR of the two per-level flags -- not merely 'per-level TRUE implies aggregate TRUE'.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": [
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_insert_false_false_true_rejected",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_update_removing_aggregate_while_per_level_true_rejected"
+      ]
+    },
+    {
+      "id": "WA-C07", "title": "INSERT enforcement of the exact governed tuple",
+      "protected_function": "services.postgres_store (chk_paper_trades_governed_level_history_tuple, chk_paper_trades_level_history_contract_version)",
+      "expected_behavior": "Every invalid governed tuple (FALSE/FALSE/TRUE, FALSE/FALSE/NULL, TRUE/FALSE/FALSE, FALSE/TRUE/FALSE, NULL/FALSE/FALSE, FALSE/NULL/FALSE, partial NULL, unsupported version) is rejected on INSERT.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": [
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_insert_false_false_true_rejected",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_insert_false_false_null_rejected",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_insert_true_false_false_rejected",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_insert_false_true_false_rejected",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_insert_null_false_false_rejected",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_insert_false_null_false_rejected",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_insert_partial_null_rejected",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_insert_unsupported_version_rejected"
+      ]
+    },
+    {
+      "id": "WA-C08", "title": "UPDATE enforcement of the exact governed tuple",
+      "protected_function": "services.postgres_store.enforce_paper_trade_level_history_invariant / chk_paper_trades_governed_level_history_tuple",
+      "expected_behavior": "An UPDATE that would produce an invalid governed tuple (aggregate TRUE with both per-level FALSE, aggregate reset to FALSE while a per-level flag is TRUE, mutating a supported version) is rejected.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": [
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_update_to_false_false_true_rejected",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_update_removing_aggregate_while_per_level_true_rejected",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_update_mutating_supported_version_rejected"
+      ]
+    },
+    {
+      "id": "WA-C09", "title": "Cross-user/nonexistent indistinguishability",
+      "protected_function": "api.routers.paper_trading.edit_trade",
+      "expected_behavior": "Owner+existing succeeds; owner+nonexistent and other-user+existing return the IDENTICAL stable 404 result; market/status differences never create an existence oracle; a rejected edit mutates nothing.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": [
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestPrivacySafeAuthorizationMatrix::test_owner_existing_trade_succeeds",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestPrivacySafeAuthorizationMatrix::test_owner_nonexistent_trade_returns_stable_not_found",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestPrivacySafeAuthorizationMatrix::test_other_user_existing_trade_returns_identical_result",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestPrivacySafeAuthorizationMatrix::test_market_and_status_differences_do_not_create_existence_oracle",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestPrivacySafeAuthorizationMatrix::test_rejected_edit_does_not_mutate_trade_snapshot_or_portfolio",
+        "tests/postgres_integration/test_level_history_invariant_real_pg.py::TestAuthorization::test_cross_user_stop_edit_rejected"
+      ]
+    },
+    {
+      "id": "WA-C10", "title": "Endpoint-aware touch eligibility",
+      "protected_function": "services.postmortem.governed_price_path_conclusions.classify_governed_level_touch",
+      "expected_behavior": "Missing/malformed endpoint evidence always falls back; governed-unmodified with null/null endpoints falls back (no level configured throughout); SUPPORTED_TOUCH requires identical non-null endpoints consistent with the observed crossing value.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e38_crossing_plus_governed_unmodified_is_supported",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e_governed_unmodified_but_endpoints_null_null_falls_back",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_f1_missing_entry_snapshot_falls_back",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_f2_missing_exit_snapshot_falls_back",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_f3_both_snapshots_missing_falls_back",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_f4_malformed_endpoint_value_falls_back"
+      ]
+    },
+    {
+      "id": "WA-C11", "title": "Endpoint-aware order eligibility",
+      "protected_function": "services.postmortem.governed_price_path_conclusions.classify_governed_order",
+      "expected_behavior": "An ordered conclusion requires BOTH levels to independently pass endpoint-aware eligibility; contradictory evidence for either level forces ORDER_UNAVAILABLE even when both levels are GOVERNED_UNMODIFIED and a safe order pattern exists.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_target_safely_before_stop_when_both_governed_unmodified",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_stop_safely_before_target_when_both_governed_unmodified",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_ordered_pattern_falls_back_when_endpoint_evidence_contradicts"
+      ]
+    },
+    {
+      "id": "WA-C12", "title": "Governed contradiction handling",
+      "protected_function": "services.postmortem.governed_price_path_conclusions._endpoint_consistency_status",
+      "expected_behavior": "A GOVERNED_UNMODIFIED level whose endpoints show a difference (differing values, null-to-value, value-to-null) is CONTRADICTORY_ENDPOINT_EVIDENCE, distinct from the generic INSUFFICIENT_EVIDENCE fallback.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_f5_governed_false_differing_endpoints_is_contradiction",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_f6_governed_false_null_to_value_is_contradiction",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_f7_governed_false_value_to_null_is_contradiction",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_f8_identical_endpoints_inconsistent_with_observed_value_is_contradiction"
+      ]
+    },
+    {
+      "id": "WA-C13", "title": "Exact-type/hostile-subclass hardening",
+      "protected_function": "services.postmortem.level_history_eligibility / services.postmortem.governed_price_path_conclusions",
+      "expected_behavior": "str/int/float subclasses, bools in numeric positions, and whitespace-only strings are all rejected via exact type() checks rather than isinstance, across classify_level_history_status, classify_endpoint_evidence, classify_price_basis_eligibility, and the two conclusion dataclasses.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_str_subclass_invariant_version_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_whitespace_only_invariant_version_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_int_subclass_endpoint_value_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_float_subclass_endpoint_value_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_bool_endpoint_value_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_str_subclass_price_basis_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_whitespace_only_price_basis_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_governed_order_invalid_status_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_governed_order_empty_detail_rejected"
+      ]
+    },
+    {
+      "id": "WA-C14", "title": "Legacy snapshot and row preservation",
+      "protected_function": "services.postmortem.entry_snapshot / services.postgres_store",
+      "expected_behavior": "A legacy entry snapshot and its linked legacy paper_trades row are never backfilled by re-running schema init; a 1.0.0-versioned snapshot remains readable unchanged alongside new 1.1.0 rows.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": [
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestEntrySnapshotGovernedFields::test_legacy_entry_snapshot_remains_null_for_new_fields",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestEntrySnapshotGovernedFields::test_no_existing_row_backfilled",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestSnapshotVersionCoexistence::test_1_0_0_and_1_1_0_snapshots_coexist",
+        "tests/postgres_integration/test_level_history_invariant_real_pg.py::TestNewTradeInitialization::test_legacy_fixture_remains_all_null"
+      ]
     }
   ]
 }
