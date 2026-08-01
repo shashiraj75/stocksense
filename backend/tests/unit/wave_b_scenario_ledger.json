@@ -4,7 +4,7 @@
   "j4e_scenario_target": 55,
   "j4f_scenario_target": 68,
   "j4e_scenarios_represented": 55,
-  "j4f_scenarios_represented": 38,
+  "j4f_scenarios_represented": 48,
   "gap_disclosure": "Batches A-C mapped exactly one pytest node per WB-J4E-* traceability ID (18 nodes total). That satisfies traceability-ID coverage but NOT the 55-scenario behavioural matrix, which requires additional scenario variants per requirement (e.g. multiple touch-status permutations under WB-J4E-14, multiple concurrent-insert races under WB-J4F outbox IDs, multiple lease-expiry timings under the J4F lease contract). Those additional scenario nodes have not yet been written. This gap is disclosed here rather than silently closed by treating one node per requirement ID as sufficient.",
   "entries": [
     {
@@ -505,8 +505,8 @@
   ],
   "j4e_matrix_status": "J4E RED-BASELINE COMPLETE \u2014 55/55 MANDATORY SCENARIOS REPRESENTED, COLLECTED AND EXECUTED; 54 FAILED THROUGH INTENDED PRE-IMPLEMENTATION ASSERTIONS; 1 BASELINE-PRESERVATION GUARD PASSED AS EXPECTED; ZERO COLLECTION ERRORS.",
   "remaining_j4e_scenarios_not_yet_written": 0,
-  "remaining_j4f_scenarios_not_yet_written": 30,
-  "next_action": "Batch L: exactly-once persisted effect, report-exists reconciliation (6-scenario state machine), report/outbox atomicity, stale-worker rollback. Then Batch M (reset/delete races, cross-user isolation, observability) to close the remaining 30 J4F scenarios.",
+  "remaining_j4f_scenarios_not_yet_written": 20,
+  "next_action": "Batch M: reset/delete races, cross-user isolation, privacy-safe logging, observability, immutable report/supersession invariants under real-postgres where applicable \u2014 to close the final 20 J4F scenarios and complete the 68-scenario matrix.",
   "batch_g_added_scenarios": [
     {
       "scenario_no": 1,
@@ -820,5 +820,88 @@
       "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
       "actual_pre_fix_result": "RED"
     }
-  ]
+  ],
+  "batch_l_added_scenarios": [
+    {
+      "scenario_no": 39,
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_39_reconciliation_scenario_1_no_outbox_no_report_generates",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 40,
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_40_reconciliation_scenario_2_pending_outbox_claims_and_generates",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 41,
+      "requirement_id": "WB-J4F-16",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_41_reconciliation_scenario_3_active_lease_generating_is_skipped",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 42,
+      "requirement_id": "WB-J4F-17",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_42_reconciliation_scenario_4_expired_lease_is_reclaimed",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 43,
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_43_reconciliation_scenario_5_terminal_with_report_returns_existing",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 44,
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_44_reconciliation_scenario_6_terminal_without_report_self_heals",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 45,
+      "requirement_id": "WB-J4F-17",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_45_exactly_once_effect_relies_on_shared_persist_report",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 46,
+      "requirement_id": "WB-J4F-17",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_46_report_and_outbox_settlement_share_one_transaction",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 47,
+      "requirement_id": "WB-J4F-16",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_47_stale_worker_settlement_is_rejected_not_silently_applied",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 48,
+      "requirement_id": "WB-J4F-16",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_48_stale_worker_rejection_leaves_outbox_row_untouched",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    }
+  ],
+  "reconciliation_state_machine_note": "The governing prompt's 6-numbered reconciliation-state-machine scenarios are represented 1:1 as scenarios 39-44 above (no outbox/no report; PENDING outbox; active-lease GENERATING; expired-lease GENERATING; terminal-with-report; terminal-without-report/self-heal)."
 }
