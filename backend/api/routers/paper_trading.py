@@ -2319,16 +2319,25 @@ def paper_sell(trade_id: int, req: SellRequest, user_id: str = Depends(get_curre
     # like the Sprint 2 attempt above, failure here can never turn a
     # successful sell into an HTTP error.
     if _trade_postmortem_price_path_enabled():
-        _attempt_price_path_enhancement(user_id=user_id, trade_id=trade_id)
+        _enhanced_report, _price_path_status = _attempt_price_path_enhancement(user_id=user_id, trade_id=trade_id)
 
         # Wave B, Stage J4F — close-time best-effort current (1.2.0)
         # governed report generation via the shared orchestrator (the
         # SAME process_current_report the explicit POST recovery
         # endpoint and the background worker also call). Gated behind
         # the same existing flag as the price-path enhancement above —
-        # no new flag activation this wave. Never allowed to turn a
-        # successful sell into an HTTP error.
-        _attempt_current_report_generation(user_id=user_id, trade_id=trade_id)
+        # no new flag activation this wave. Only attempted when the
+        # price-path enhancement above actually settled into a real
+        # evidence-bearing outcome this cycle (GENERATED/ALREADY_
+        # COMPLETE) — never on IN_PROGRESS/FAILED_RETRYABLE/
+        # FAILED_TERMINAL/NOT_YET_AVAILABLE, which would otherwise cause
+        # a SECOND, redundant provider acquisition attempt for the exact
+        # same trade in the exact same request (a real regression this
+        # guard prevents — confirmed against price-path Wave A's own
+        # frozen provider-call-count regression tests). Never allowed to
+        # turn a successful sell into an HTTP error.
+        if _price_path_status in (PRICE_PATH_GENERATED, PRICE_PATH_ALREADY_COMPLETE):
+            _attempt_current_report_generation(user_id=user_id, trade_id=trade_id)
 
     return response
 
@@ -3197,7 +3206,12 @@ def _build_generate_response(*, trade_id: int, user_id: str, generation_status: 
         # GET exposure this wave) — it exists so the explicit POST
         # recovery path reaches the SAME orchestrator close-time
         # best-effort generation and the background worker will also use.
-        _attempt_current_report_generation(user_id=user_id, trade_id=trade_id)
+        # Only attempted when the price-path enhancement above actually
+        # settled into a real evidence-bearing outcome this cycle — see
+        # the matching guard/comment at the /sell call site for why
+        # (avoids a redundant second provider acquisition attempt).
+        if price_path_status in (PRICE_PATH_GENERATED, PRICE_PATH_ALREADY_COMPLETE):
+            _attempt_current_report_generation(user_id=user_id, trade_id=trade_id)
 
     return GenerateReportResponse(
         trade_id=trade_id, generation_status=effective_generation_status, status=effective.status,
