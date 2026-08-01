@@ -84,7 +84,9 @@ def claim_next_current_outbox_batch(
                last_error_code = CASE WHEN (o.attempt_count + 1 > %(max_attempts)s) THEN 'MAX_ATTEMPTS_EXCEEDED' ELSE o.last_error_code END,
                last_error_summary = CASE WHEN (o.attempt_count + 1 > %(max_attempts)s)
                                           THEN 'exceeded max attempts before terminal' ELSE o.last_error_summary END
-           WHERE o.id IN (
+           FROM paper_trades t
+           WHERE t.id = o.paper_trade_id
+             AND o.id IN (
                SELECT id FROM paper_trade_postmortem_outbox
                WHERE requested_report_schema_version = %(schema_version)s
                  AND requested_calculation_version = %(calculation_version)s
@@ -98,7 +100,7 @@ def claim_next_current_outbox_batch(
                LIMIT %(limit)s
                FOR UPDATE SKIP LOCKED
            )
-           RETURNING o.id, o.paper_trade_id, o.user_id, o.status""",
+           RETURNING o.id, o.paper_trade_id, o.user_id, o.status, t.market""",
         {
             "max_attempts": outbox_ops.MAX_ATTEMPTS_BEFORE_TERMINAL, "lease_seconds": WORKER_LEASE_DURATION_SECONDS,
             "claimant": claimant, "schema_version": schema_version, "calculation_version": calculation_version,
@@ -106,16 +108,27 @@ def claim_next_current_outbox_batch(
         },
     ).fetchall()
     return [
-        {"outbox_id": r[0], "trade_id": r[1], "user_id": r[2], "status": r[3]}
+        {"outbox_id": r[0], "trade_id": r[1], "user_id": r[2], "status": r[3], "market": r[4]}
         for r in rows
     ]
 
 
-async def _process_claimed_row(row: dict, claimant: str, *, market_tzinfo, market_timezone_name, conn_factory) -> None:
+async def _process_claimed_row(row: dict, claimant: str, *, market_tzinfo_by_market: dict, conn_factory) -> None:
     """Per-row isolation: an exception processing one claimed row must
-    never abort the rest of the batch."""
+    never abort the rest of the batch. The market/timezone used for
+    THIS row is resolved from the claimed row's OWN market column
+    (returned by the claim query's join to paper_trades), never from an
+    external per-poll-cycle assumption — a claimed batch is not
+    guaranteed to be single-market, so using one fixed timezone for the
+    whole batch would silently misattribute session boundaries for any
+    row belonging to a different market."""
     if row["status"] == "FAILED_TERMINAL":
         return
+    tz_entry = market_tzinfo_by_market.get(row["market"])
+    if tz_entry is None:
+        log.warning("[outbox_worker] unsupported market for outbox_id=%s — skipping", row["outbox_id"])
+        return
+    market_tzinfo, market_timezone_name = tz_entry
     try:
         await asyncio.to_thread(
             process_current_report,
@@ -127,7 +140,7 @@ async def _process_claimed_row(row: dict, claimant: str, *, market_tzinfo, marke
         log.warning("[outbox_worker] row processing failed outbox_id=%s", row["outbox_id"])
 
 
-async def _poll_once(conn_factory, *, market_tzinfo, market_timezone_name, batch_size: int = CLAIM_BATCH_SIZE) -> int:
+async def _poll_once(conn_factory, *, market_tzinfo_by_market: dict, batch_size: int = CLAIM_BATCH_SIZE) -> int:
     claimant = outbox_ops.new_claimant_token()
     try:
         with conn_factory() as conn:
@@ -138,8 +151,7 @@ async def _poll_once(conn_factory, *, market_tzinfo, market_timezone_name, batch
 
     for row in batch:
         await _process_claimed_row(
-            row, claimant, market_tzinfo=market_tzinfo, market_timezone_name=market_timezone_name,
-            conn_factory=conn_factory,
+            row, claimant, market_tzinfo_by_market=market_tzinfo_by_market, conn_factory=conn_factory,
         )
     return len(batch)
 
@@ -149,13 +161,10 @@ async def _worker_loop(conn_factory, *, market_tzinfo_by_market: dict, poll_inte
     assert _STOP_EVENT is not None
     try:
         while not _STOP_EVENT.is_set():
-            for market, (tzinfo, tz_name) in market_tzinfo_by_market.items():
-                if _STOP_EVENT.is_set():
-                    break
-                try:
-                    await _poll_once(conn_factory, market_tzinfo=tzinfo, market_timezone_name=tz_name)
-                except Exception:
-                    log.warning("[outbox_worker] poll cycle failed for market=%s", market)
+            try:
+                await _poll_once(conn_factory, market_tzinfo_by_market=market_tzinfo_by_market)
+            except Exception:
+                log.warning("[outbox_worker] poll cycle failed")
             # No database connection is held across this sleep — the
             # claim/process cycle above has already released its
             # connection back to the pool by this point. stop_
