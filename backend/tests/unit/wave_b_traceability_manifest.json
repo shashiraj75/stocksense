@@ -46,8 +46,14 @@
     {"id": "WB-J4E-09", "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_09_payload_reads_snapshot_governed_fields_not_mutable_row", "batch": "B", "status": "RED"},
     {"id": "WB-J4E-10", "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_10_legacy_no_snapshot_never_fabricates_governed_false", "batch": "B", "status": "RED"},
     {"id": "WB-J4E-11", "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_11_structured_report_has_four_required_subsections", "batch": "B", "status": "RED"},
-    {"id": "WB-J4E-12", "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_12_version_and_provenance_carries_exact_triple", "batch": "B", "status": "RED"}
+    {"id": "WB-J4E-12", "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_12_version_and_provenance_carries_exact_triple", "batch": "B", "status": "RED"},
+    {"id": "WB-J4E-13", "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_13_canonical_fallback_sentence_matches_evidence_module", "batch": "C", "status": "RED"},
+    {"id": "WB-J4E-14", "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_14_no_bars_claim_makes_no_positive_assertion", "batch": "C", "status": "RED"},
+    {"id": "WB-J4E-15", "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_15_claim_ids_deterministic_and_collision_safe", "batch": "C", "status": "RED"},
+    {"id": "WB-J4E-16", "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_16_claim_referential_integrity_within_report", "batch": "C", "status": "RED"},
+    {"id": "WB-J4E-17", "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_17_supersession_predecessor_is_deterministic_single_and_same_trade", "batch": "C", "status": "RED"},
+    {"id": "WB-J4E-18", "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_18_version_scoped_report_api_exists_for_all_three_identities", "batch": "C", "status": "RED"}
   ],
   "j4f_requirements": [],
-  "status": "BATCH_B_RED — 12 of 18 WB-J4E IDs + 0 of 20 WB-J4F IDs have runnable red nodes; remaining batches (C-J) pending in subsequent execution turns"
+  "status": "BATCH_C_RED — all 18 of 18 WB-J4E TRACEABILITY IDs have runnable red nodes (18 pytest nodes total). This is the traceability-ID family only, NOT the 55-scenario J4E behavioural matrix — see wave_b_scenario_ledger.json for the honest gap. WB-J4F traceability (0 of 20) and the 68-scenario J4F matrix remain entirely outstanding."
 }
