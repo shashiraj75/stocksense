@@ -170,10 +170,16 @@ class TestPaperTradingProvenance:
         resp, made = _buy(client, body)
         assert resp.status_code == 200
         _, params = _insert_call(made)
-        # Last 12 bound params are the new provenance columns in INSERT
-        # column order; every one must be None when nothing was supplied.
-        new_provenance_params = params[-12:]
+        # Stage J4D appended 4 more bound params after the 12 provenance
+        # columns (level_history_contract_version, stop_modified_after_
+        # entry, target_modified_after_entry, levels_modified_after_entry)
+        # — those are ALWAYS explicitly set on a new trade, never None, so
+        # they're excluded from this null-provenance check and asserted
+        # separately below.
+        new_provenance_params = params[-16:-4]
         assert all(p is None for p in new_provenance_params), new_provenance_params
+        governance_params = params[-4:]
+        assert governance_params == ("1", False, False, False)
 
     # ── execution_slippage_pct ───────────────────────────────────────────────
 
@@ -186,7 +192,7 @@ class TestPaperTradingProvenance:
         resp, made = _buy(client, body)
         assert resp.status_code == 200
         _, params = _insert_call(made)
-        assert params[-2] == pytest.approx(10.0)
+        assert params[-6] == pytest.approx(10.0)
 
     def test_execution_slippage_null_without_reference_price(self, client):
         body = {
@@ -196,7 +202,7 @@ class TestPaperTradingProvenance:
         resp, made = _buy(client, body)
         assert resp.status_code == 200
         _, params = _insert_call(made)
-        assert params[-2] is None
+        assert params[-6] is None
 
     def test_execution_slippage_null_without_recommendation_source_even_with_reference_price(self, client):
         """A reference price alone is not enough — recommendation_source
@@ -209,7 +215,7 @@ class TestPaperTradingProvenance:
         resp, made = _buy(client, body)
         assert resp.status_code == 200
         _, params = _insert_call(made)
-        assert params[-2] is None
+        assert params[-6] is None
 
     @pytest.mark.parametrize("bad_price", [0.0, -50.0])
     def test_execution_slippage_null_for_non_positive_reference_price(self, client, bad_price):
@@ -221,7 +227,7 @@ class TestPaperTradingProvenance:
         resp, made = _buy(client, body)
         assert resp.status_code == 200
         _, params = _insert_call(made)
-        assert params[-2] is None
+        assert params[-6] is None
 
     def test_execution_slippage_handles_division_safely_no_crash(self, client):
         """Regression guard: a reference price of exactly 0 must never reach
@@ -249,7 +255,7 @@ class TestPaperTradingProvenance:
         resp, made = _buy(client, body)
         assert resp.status_code == 200
         _, params = _insert_call(made)
-        assert params[-1] is None
+        assert params[-5] is None
 
     # ── levels_modified_after_entry ──────────────────────────────────────────
 
@@ -263,6 +269,16 @@ class TestPaperTradingProvenance:
         ):
             return client.patch("/api/paper-trading/trade/1", json=body, headers=_auth())
 
+    # Stage J4D — edit_trade's single UPDATE now ALWAYS includes the
+    # stop_modified_after_entry/target_modified_after_entry/levels_
+    # modified_after_entry columns via a NULL-safe CASE expression
+    # (never a conditional two-branch SQL string), so "was the flag set"
+    # is now proven via the bound CASE-condition params — params[2] is
+    # stop_changed, params[3] is target_changed, params[4] is the
+    # aggregate condition — rather than substring-matching the SQL text.
+    def _update_call(self, recorder):
+        return next(c for c in recorder.calls if "UPDATE paper_trades SET stop_loss" in c[0])
+
     def test_levels_modified_after_entry_set_when_stop_loss_genuinely_changes(self, client):
         # SELECT shape: user_id, status, entry_price, quantity, market, stop_loss, target_price
         recorder = _RecordingConn(fetchone_results=[("user-aaa", "OPEN", 100.0, 1, "US", 90.0, 120.0)])
@@ -271,15 +287,21 @@ class TestPaperTradingProvenance:
         update_calls = [c for c in recorder.calls if "UPDATE paper_trades SET stop_loss" in c[0]]
         assert len(update_calls) == 1
         sql, params = update_calls[0]
-        assert "levels_modified_after_entry = TRUE" in sql
+        new_stop, new_target, stop_changed, target_changed, aggregate_changed, trade_id = params
+        assert stop_changed is True
+        assert target_changed is False
+        assert aggregate_changed is True
         assert 95.0 in params and 120.0 in params
 
     def test_levels_modified_after_entry_set_when_target_price_genuinely_changes(self, client):
         recorder = _RecordingConn(fetchone_results=[("user-aaa", "OPEN", 100.0, 1, "US", 90.0, 120.0)])
         resp = self._edit(client, recorder, {"stop_loss": 90.0, "target_price": 150.0})
         assert resp.status_code == 200
-        sql, params = next(c for c in recorder.calls if "UPDATE paper_trades SET stop_loss" in c[0])
-        assert "levels_modified_after_entry = TRUE" in sql
+        _, params = self._update_call(recorder)
+        _, _, stop_changed, target_changed, aggregate_changed, _ = params
+        assert stop_changed is False
+        assert target_changed is True
+        assert aggregate_changed is True
 
     def test_levels_modified_after_entry_not_set_on_noop_edit(self, client):
         """Resubmitting the exact same stop_loss/target_price must not set
@@ -287,8 +309,9 @@ class TestPaperTradingProvenance:
         recorder = _RecordingConn(fetchone_results=[("user-aaa", "OPEN", 100.0, 1, "US", 90.0, 120.0)])
         resp = self._edit(client, recorder, {"stop_loss": 90.0, "target_price": 120.0})
         assert resp.status_code == 200
-        sql, params = next(c for c in recorder.calls if "UPDATE paper_trades SET stop_loss" in c[0])
-        assert "levels_modified_after_entry" not in sql
+        _, params = self._update_call(recorder)
+        _, _, stop_changed, target_changed, aggregate_changed, _ = params
+        assert stop_changed is False and target_changed is False and aggregate_changed is False
 
     def test_levels_modified_after_entry_not_set_on_entry_price_only_correction(self, client):
         """An entry_price-only correction — the client resubmits the SAME
@@ -299,8 +322,9 @@ class TestPaperTradingProvenance:
             "stop_loss": 90.0, "target_price": 120.0, "entry_price": 105.0,
         })
         assert resp.status_code == 200
-        sql, params = next(c for c in recorder.calls if "UPDATE paper_trades SET stop_loss" in c[0])
-        assert "levels_modified_after_entry" not in sql
+        _, params = self._update_call(recorder)
+        _, _, stop_changed, target_changed, aggregate_changed, _ = params
+        assert stop_changed is False and target_changed is False and aggregate_changed is False
 
     def test_entry_price_only_request_with_omitted_levels_preserves_stored_stop_loss_and_target(self, client):
         """The real-world entry-price-only case: the request body genuinely
@@ -312,11 +336,11 @@ class TestPaperTradingProvenance:
         recorder = _RecordingConn(fetchone_results=[("user-aaa", "OPEN", 100.0, 1, "US", 90.0, 120.0)])
         resp = self._edit(client, recorder, {"entry_price": 105.0})
         assert resp.status_code == 200
-        sql, params = next(c for c in recorder.calls if "UPDATE paper_trades SET stop_loss" in c[0])
-        assert "levels_modified_after_entry" not in sql
+        _, params = self._update_call(recorder)
+        _, _, stop_changed, target_changed, aggregate_changed, _ = params
+        assert stop_changed is False and target_changed is False and aggregate_changed is False
         # The stored levels must be preserved verbatim, not nulled out.
         assert 90.0 in params and 120.0 in params
-        assert None not in params
 
     def test_explicit_null_stop_loss_still_clears_it_and_counts_as_a_genuine_change(self, client):
         """A client that explicitly sends {"stop_loss": null, ...} — not
@@ -327,8 +351,9 @@ class TestPaperTradingProvenance:
         recorder = _RecordingConn(fetchone_results=[("user-aaa", "OPEN", 100.0, 1, "US", 90.0, 120.0)])
         resp = self._edit(client, recorder, {"stop_loss": None, "target_price": 120.0})
         assert resp.status_code == 200
-        sql, params = next(c for c in recorder.calls if "UPDATE paper_trades SET stop_loss" in c[0])
-        assert "levels_modified_after_entry = TRUE" in sql
+        _, params = self._update_call(recorder)
+        _, _, stop_changed, target_changed, aggregate_changed, _ = params
+        assert stop_changed is True and aggregate_changed is True
         assert None in params and 120.0 in params
 
     def test_entry_price_only_omission_does_not_touch_target_price_either(self, client):
@@ -337,37 +362,38 @@ class TestPaperTradingProvenance:
         recorder = _RecordingConn(fetchone_results=[("user-aaa", "OPEN", 250.0, 2, "IN", 200.0, 300.0)])
         resp = self._edit(client, recorder, {"entry_price": 260.0})
         assert resp.status_code == 200
-        sql, params = next(c for c in recorder.calls if "UPDATE paper_trades SET stop_loss" in c[0])
-        assert "levels_modified_after_entry" not in sql
+        _, params = self._update_call(recorder)
+        _, _, stop_changed, target_changed, aggregate_changed, _ = params
+        assert stop_changed is False and target_changed is False and aggregate_changed is False
         assert 200.0 in params and 300.0 in params
 
     def test_levels_modified_after_entry_never_reverts_to_false(self, client):
         """Once a genuine change has set the flag TRUE, a later no-op edit
-        must never write FALSE — the code only ever omits the column from
-        the UPDATE (leaving whatever value is already stored) or sets it
-        TRUE; it never sets FALSE anywhere."""
-        # First edit: genuine stop_loss change (stored levels are now
-        # effectively TRUE from the DB's point of view — simulated here by
-        # feeding the SECOND edit's SELECT the already-changed values).
+        must never write FALSE — the CASE expression's ELSE branch always
+        preserves whatever value is already stored; the writer never binds
+        a literal FALSE for a real change, only TRUE or "leave it alone"."""
+        # First edit: genuine stop_loss change.
         recorder1 = _RecordingConn(fetchone_results=[("user-aaa", "OPEN", 100.0, 1, "US", 90.0, 120.0)])
         resp1 = self._edit(client, recorder1, {"stop_loss": 95.0, "target_price": 120.0})
         assert resp1.status_code == 200
-        sql1, _ = next(c for c in recorder1.calls if "UPDATE paper_trades SET stop_loss" in c[0])
-        assert "levels_modified_after_entry = TRUE" in sql1
+        _, params1 = self._update_call(recorder1)
+        assert params1[2] is True  # stop_changed
 
         # Second edit: no-op relative to the now-current (95.0, 120.0)
-        # stored values — must not touch the flag at all, so whatever TRUE
-        # value the first edit set survives untouched.
+        # stored values — the CASE condition is False, so the ELSE branch
+        # (preserve existing column value) applies; whatever TRUE the
+        # first edit set survives untouched at the database level.
         recorder2 = _RecordingConn(fetchone_results=[("user-aaa", "OPEN", 100.0, 1, "US", 95.0, 120.0)])
         resp2 = self._edit(client, recorder2, {"stop_loss": 95.0, "target_price": 120.0})
         assert resp2.status_code == 200
-        sql2, _ = next(c for c in recorder2.calls if "UPDATE paper_trades SET stop_loss" in c[0])
-        assert "levels_modified_after_entry" not in sql2
+        _, params2 = self._update_call(recorder2)
+        assert params2[2] is False and params2[3] is False and params2[4] is False
 
     def test_no_code_path_ever_writes_levels_modified_after_entry_false(self):
-        """Static guard: the source never contains a literal
-        `levels_modified_after_entry = FALSE` — the column is only ever
-        set TRUE or left untouched, guaranteeing monotonicity by
+        """Static guard: the source never binds a literal
+        `levels_modified_after_entry` to a hardcoded FALSE — the column is
+        only ever set TRUE (via the CASE expression's THEN branch) or left
+        untouched (its ELSE branch), guaranteeing monotonicity by
         construction rather than by test coverage alone."""
         import pathlib
         import api.routers.paper_trading as pt
@@ -406,3 +432,12 @@ class TestPaperTradingProvenance:
         body = resp.json()
         assert body["trades"][0]["symbol"] == "AAPL"
         assert body["trades"][0]["realized_pnl"] == 10.0
+
+    def test_level_history_contract_version_constant_matches_j4c_semantic_layer(self):
+        """api.routers.paper_trading._LEVEL_HISTORY_CONTRACT_VERSION is
+        deliberately re-declared (not imported) so this writer module has
+        no dependency on the J4C semantic layer — this regression test is
+        what keeps the two string literals from silently drifting apart."""
+        from api.routers.paper_trading import _LEVEL_HISTORY_CONTRACT_VERSION
+        from services.postmortem.level_history_eligibility import LEVEL_HISTORY_CONTRACT_VERSION_1
+        assert _LEVEL_HISTORY_CONTRACT_VERSION == LEVEL_HISTORY_CONTRACT_VERSION_1

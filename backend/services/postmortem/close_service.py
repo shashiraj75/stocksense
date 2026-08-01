@@ -171,6 +171,7 @@ _EXIT_SNAPSHOT_COLUMNS = (
     "exit_price", "exit_quantity", "closed_at",
     "final_stop_loss", "final_target_price", "trailing_stop_level", "time_exit_rule", "market_close_rule",
     "management_mode", "levels_modified_after_entry",
+    "level_history_contract_version", "final_stop_modified_after_entry", "final_target_modified_after_entry",
     "source_request_id", "trigger_observation_timestamp", "trigger_observation_price",
     "trigger_timing_verification", "source_metadata",
 )
@@ -187,6 +188,8 @@ def _exit_snapshot_values(snapshot: ExitSnapshot) -> tuple:
         snapshot.final_stop_loss, snapshot.final_target_price, snapshot.trailing_stop_level,
         snapshot.time_exit_rule, snapshot.market_close_rule,
         snapshot.management_mode, snapshot.levels_modified_after_entry,
+        snapshot.level_history_contract_version, snapshot.final_stop_modified_after_entry,
+        snapshot.final_target_modified_after_entry,
         snapshot.source_request_id, snapshot.trigger_observation_timestamp,
         snapshot.trigger_observation_price, snapshot.trigger_timing_verification,
         _json.dumps(snapshot.source_metadata) if snapshot.source_metadata is not None else None,
@@ -290,14 +293,18 @@ def close_paper_trade(
     with conn.transaction():
         row = conn.execute(
             """SELECT user_id, symbol, quantity, entry_price, status, market,
-                      stop_loss, target_price, trade_management_mode
+                      stop_loss, target_price, trade_management_mode,
+                      levels_modified_after_entry, level_history_contract_version,
+                      stop_modified_after_entry, target_modified_after_entry
                FROM paper_trades WHERE id = %s FOR UPDATE""",
             (trade_id,),
         ).fetchone()
         if row is None:
             raise TradeNotFoundError(trade_id)
 
-        owner, symbol, qty, entry_price, status, market, stop_loss, target_price, mgmt_mode = row
+        (owner, symbol, qty, entry_price, status, market, stop_loss, target_price, mgmt_mode,
+         levels_modified_after_entry, level_history_contract_version,
+         stop_modified_after_entry, target_modified_after_entry) = row
 
         if owner != user_id:
             raise TradeNotOwnedError(trade_id)
@@ -366,6 +373,10 @@ def close_paper_trade(
             final_stop_loss=stop_loss,
             final_target_price=target_price,
             management_mode=mgmt_mode,
+            levels_modified_after_entry=levels_modified_after_entry,
+            level_history_contract_version=level_history_contract_version,
+            final_stop_modified_after_entry=stop_modified_after_entry,
+            final_target_modified_after_entry=target_modified_after_entry,
             source_request_id=source_request_id,
             source_metadata=exit_metadata,
         )

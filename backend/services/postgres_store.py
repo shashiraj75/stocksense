@@ -299,6 +299,76 @@ ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS model_version TEXT;
 ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS execution_slippage_pct DOUBLE PRECISION;
 ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS signal_override BOOLEAN;
 ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS levels_modified_after_entry BOOLEAN;
+-- Trade Postmortem Sprint 3A, Stage J4D — durable level-history write
+-- invariant. All three columns are nullable and purely additive: every
+-- existing row reads back NULL/NULL/NULL (UNKNOWN_OR_LEGACY under the
+-- Stage J4C semantic contract), exactly like a legacy row, never
+-- backfilled. New trades explicitly initialize level_history_contract_
+-- version='1', stop_modified_after_entry=FALSE, target_modified_after_
+-- entry=FALSE at INSERT time (see api/routers/paper_trading.py's
+-- paper_buy). The BEFORE UPDATE trigger below (trg_paper_trades_level_
+-- history_invariant) is the durable enforcement point — it, not any one
+-- API route, is what makes the invariant "database bypass resistant":
+-- version immutability, TRUE-never-reverts, governed value-change-
+-- requires-matching-flag, and aggregate/per-level consistency all hold
+-- for ANY authoritative UPDATE to this table, not only ones issued
+-- through PATCH /trade/{id}.
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS level_history_contract_version TEXT;
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS stop_modified_after_entry BOOLEAN;
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS target_modified_after_entry BOOLEAN;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_paper_trades_level_history_contract_version'
+    ) THEN
+        ALTER TABLE paper_trades ADD CONSTRAINT chk_paper_trades_level_history_contract_version
+            CHECK (level_history_contract_version IS NULL OR level_history_contract_version = '1');
+    END IF;
+END $$;
+
+-- BEFORE UPDATE only (never fires on INSERT — a brand-new governed row's
+-- initial FALSE/FALSE/FALSE/'1' quadruple is the authoritative writer's
+-- own responsibility, not this trigger's). OLD.* is therefore always a
+-- pre-existing row on every invocation, which is what makes "IS
+-- DISTINCT FROM OLD.level_history_contract_version" a safe immutability
+-- check rather than a spurious rejection of the very first write.
+CREATE OR REPLACE FUNCTION enforce_paper_trade_level_history_invariant() RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.level_history_contract_version IS DISTINCT FROM OLD.level_history_contract_version THEN
+        RAISE EXCEPTION 'level_history_contract_version is immutable once set (paper_trade id=%)', OLD.id;
+    END IF;
+
+    IF OLD.stop_modified_after_entry IS TRUE AND NEW.stop_modified_after_entry IS NOT TRUE THEN
+        RAISE EXCEPTION 'stop_modified_after_entry cannot revert from TRUE (paper_trade id=%)', OLD.id;
+    END IF;
+    IF OLD.target_modified_after_entry IS TRUE AND NEW.target_modified_after_entry IS NOT TRUE THEN
+        RAISE EXCEPTION 'target_modified_after_entry cannot revert from TRUE (paper_trade id=%)', OLD.id;
+    END IF;
+
+    IF NEW.level_history_contract_version IS NOT NULL THEN
+        IF NEW.stop_loss IS DISTINCT FROM OLD.stop_loss AND NEW.stop_modified_after_entry IS NOT TRUE THEN
+            RAISE EXCEPTION 'governed stop_loss change requires stop_modified_after_entry=TRUE in the same update (paper_trade id=%)', OLD.id;
+        END IF;
+        IF NEW.target_price IS DISTINCT FROM OLD.target_price AND NEW.target_modified_after_entry IS NOT TRUE THEN
+            RAISE EXCEPTION 'governed target_price change requires target_modified_after_entry=TRUE in the same update (paper_trade id=%)', OLD.id;
+        END IF;
+    END IF;
+
+    IF (NEW.stop_modified_after_entry IS TRUE OR NEW.target_modified_after_entry IS TRUE)
+       AND NEW.levels_modified_after_entry IS NOT TRUE THEN
+        RAISE EXCEPTION 'levels_modified_after_entry must be TRUE whenever a per-level flag is TRUE (paper_trade id=%)', OLD.id;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_paper_trades_level_history_invariant ON paper_trades;
+CREATE TRIGGER trg_paper_trades_level_history_invariant
+    BEFORE UPDATE ON paper_trades
+    FOR EACH ROW EXECUTE FUNCTION enforce_paper_trade_level_history_invariant();
+
 -- Per-user Paper Trading notification preference — gates both the trade
 -- notifier's proximity/auto-close emails and (client-side) whether the
 -- Notifications toggle asks for browser permission. Paper Trading only;
@@ -494,6 +564,14 @@ CREATE TABLE IF NOT EXISTS paper_trade_exit_snapshot (
     market_close_rule               TEXT,
     management_mode                 TEXT NOT NULL,
     levels_modified_after_entry     BOOLEAN,
+    -- Stage J4D — final per-level history state at close, captured in
+    -- the SAME transaction as the paper_trades close UPDATE (see
+    -- close_service.py). NULL for a legacy trade (level_history_
+    -- contract_version was never set), exactly like the paper_trades
+    -- row it was read from at close time.
+    level_history_contract_version  TEXT,
+    final_stop_modified_after_entry BOOLEAN,
+    final_target_modified_after_entry BOOLEAN,
 
     source_request_id               TEXT,
     trigger_observation_timestamp   TIMESTAMPTZ,
@@ -506,6 +584,11 @@ CREATE TABLE IF NOT EXISTS paper_trade_exit_snapshot (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trade_exit_snapshot_trade ON paper_trade_exit_snapshot(paper_trade_id);
 CREATE INDEX IF NOT EXISTS idx_paper_trade_exit_snapshot_user ON paper_trade_exit_snapshot(user_id, symbol, market);
+-- Stage J4D additive columns for a table that may already exist from an
+-- earlier deployment (same idempotent pattern as paper_trades above).
+ALTER TABLE paper_trade_exit_snapshot ADD COLUMN IF NOT EXISTS level_history_contract_version TEXT;
+ALTER TABLE paper_trade_exit_snapshot ADD COLUMN IF NOT EXISTS final_stop_modified_after_entry BOOLEAN;
+ALTER TABLE paper_trade_exit_snapshot ADD COLUMN IF NOT EXISTS final_target_modified_after_entry BOOLEAN;
 
 -- Database-level immutability — identical pattern to
 -- trg_paper_trade_entry_snapshot_immutable above. INSERT and DELETE are

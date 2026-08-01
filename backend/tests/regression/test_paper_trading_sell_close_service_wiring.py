@@ -59,6 +59,8 @@ def _new_trade(**overrides) -> dict:
         id=1, user_id="user-aaa", symbol="AAPL", quantity=10, entry_price=100.0,
         status="OPEN", market="US", stop_loss=90.0, target_price=130.0,
         trade_management_mode="manual",
+        levels_modified_after_entry=None, level_history_contract_version=None,
+        stop_modified_after_entry=None, target_modified_after_entry=None,
     )
     base.update(overrides)
     return base
@@ -104,6 +106,8 @@ class _FakeConn:
                     trade["user_id"], trade["symbol"], trade["quantity"], trade["entry_price"],
                     trade["status"], trade["market"], trade["stop_loss"], trade["target_price"],
                     trade["trade_management_mode"],
+                    trade["levels_modified_after_entry"], trade["level_history_contract_version"],
+                    trade["stop_modified_after_entry"], trade["target_modified_after_entry"],
                 )
 
         if stripped.startswith("UPDATE paper_trades SET exit_price"):

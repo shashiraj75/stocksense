@@ -78,6 +78,14 @@ SELL_RESPONSE_SCHEMA_VERSION = "1.0.0"
 STARTING_CASH_IN = 1_000_000.0  # ₹10,00,000 virtual cash
 STARTING_CASH_US = 100_000.0    # $100,000 virtual cash — separate ledger, not a currency conversion of the above
 
+# Trade Postmortem Sprint 3A, Stage J4D — the one durable level-history
+# contract version this codebase currently issues to new trades. Kept in
+# sync with services.postmortem.level_history_eligibility.
+# LEVEL_HISTORY_CONTRACT_VERSION_1 by a dedicated regression test rather
+# than an import, so this writer module has no dependency on the J4C
+# semantic layer.
+_LEVEL_HISTORY_CONTRACT_VERSION = "1"
+
 _CASH_COL = {"IN": "cash", "US": "cash_usd"}
 _STARTING = {"IN": STARTING_CASH_IN, "US": STARTING_CASH_US}
 _SYMBOL = {"IN": "₹", "US": "$"}
@@ -1977,6 +1985,14 @@ def paper_buy(request: Request, req: BuyRequest, user_id: str = Depends(get_curr
                     execution_slippage_pct = round((req.price - ref_price) / ref_price * 100, 4)
                 signal_override = None
 
+                # Trade Postmortem Sprint 3A, Stage J4D — every NEW trade is
+                # created under the current durable level-history contract
+                # version, with both per-level flags and the aggregate
+                # explicitly FALSE (never NULL) from the moment of creation.
+                # This one INSERT is the ONLY place a governed trade's
+                # invariant identity is ever established; the trg_paper_
+                # trades_level_history_invariant trigger then enforces it
+                # for the rest of that row's lifetime.
                 row = conn.execute(
                     """INSERT INTO paper_trades
                        (session_id, user_id, symbol, market, quantity, entry_price, signal, horizon,
@@ -1985,9 +2001,12 @@ def paper_buy(request: Request, req: BuyRequest, user_id: str = Depends(get_curr
                         recommendation_generated_at, recommendation_reference_price,
                         recommendation_entry_low, recommendation_entry_high,
                         recommendation_original_stop_loss, recommendation_original_target,
-                        model_version, execution_slippage_pct, signal_override)
+                        model_version, execution_slippage_pct, signal_override,
+                        level_history_contract_version, stop_modified_after_entry,
+                        target_modified_after_entry, levels_modified_after_entry)
                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                               %s, %s, %s, %s)
                        RETURNING id""",
                     (user_id, user_id, req.symbol.upper(), req.market, req.quantity,
                      req.price, req.signal, req.horizon, req.stop_loss, req.target_price, req.trade_management_mode,
@@ -1995,7 +2014,8 @@ def paper_buy(request: Request, req: BuyRequest, user_id: str = Depends(get_curr
                      req.recommendation_generated_at, req.recommendation_reference_price,
                      req.recommendation_entry_low, req.recommendation_entry_high,
                      req.recommendation_original_stop_loss, req.recommendation_original_target,
-                     req.model_version, execution_slippage_pct, signal_override)
+                     req.model_version, execution_slippage_pct, signal_override,
+                     _LEVEL_HISTORY_CONTRACT_VERSION, False, False, False)
                 ).fetchone()
                 trade_id = row[0]
 
@@ -2257,9 +2277,17 @@ def paper_sell(trade_id: int, req: SellRequest, user_id: str = Depends(get_curre
 @router.patch("/trade/{trade_id}")
 def edit_trade(trade_id: int, req: EditRequest, user_id: str = Depends(get_current_user_id)):
     with _conn() as conn:
+        # Trade Postmortem Sprint 3A, Stage J4D — FOR UPDATE takes a row
+        # lock for the remainder of this transaction, closing the
+        # concurrency gap the pre-J4D version of this endpoint had: two
+        # concurrent PATCH requests reading stale old_stop_loss/
+        # old_target_price values could otherwise race, with the second
+        # writer's UPDATE overwriting the first writer's genuine edit (a
+        # classic lost update) since neither request's UPDATE was ever
+        # conditioned on the values it read.
         trade = conn.execute(
             "SELECT user_id, status, entry_price, quantity, market, stop_loss, target_price "
-            "FROM paper_trades WHERE id = %s",
+            "FROM paper_trades WHERE id = %s FOR UPDATE",
             (trade_id,)
         ).fetchone()
         if trade is None:
@@ -2289,25 +2317,26 @@ def edit_trade(trade_id: int, req: EditRequest, user_id: str = Depends(get_curre
         new_stop_loss = req.stop_loss if "stop_loss" in req.model_fields_set else old_stop_loss
         new_target_price = req.target_price if "target_price" in req.model_fields_set else old_target_price
 
-        # levels_modified_after_entry is set TRUE only when stop_loss or
-        # target_price GENUINELY changes from its previously stored value —
-        # an entry_price-only correction (omitted or resubmitted-identical)
-        # or a no-op edit must not set it. Once TRUE it must never revert:
-        # the "unchanged" branch below simply never touches the column
-        # again (rather than writing FALSE), so a prior TRUE always
-        # survives a later no-op edit.
-        levels_changed = (new_stop_loss != old_stop_loss) or (new_target_price != old_target_price)
-        if levels_changed:
-            conn.execute(
-                "UPDATE paper_trades SET stop_loss = %s, target_price = %s, "
-                "levels_modified_after_entry = TRUE WHERE id = %s",
-                (new_stop_loss, new_target_price, trade_id)
-            )
-        else:
-            conn.execute(
-                "UPDATE paper_trades SET stop_loss = %s, target_price = %s WHERE id = %s",
-                (new_stop_loss, new_target_price, trade_id)
-            )
+        # Stage J4D — stop and target are evaluated INDEPENDENTLY (the
+        # aggregate levels_modified_after_entry alone could never tell
+        # which level actually changed). Each CASE below leaves the
+        # existing column value — TRUE, FALSE, or a legacy NULL —
+        # completely untouched when that specific level is unchanged, and
+        # sets it to TRUE (never anything else) when it genuinely
+        # changed. This single UPDATE statement is what the trg_paper_
+        # trades_level_history_invariant trigger requires: a governed
+        # row's stop_loss/target_price change must be accompanied by the
+        # matching per-level flag becoming TRUE in the SAME statement.
+        stop_changed = new_stop_loss != old_stop_loss
+        target_changed = new_target_price != old_target_price
+        conn.execute(
+            "UPDATE paper_trades SET stop_loss = %s, target_price = %s, "
+            "stop_modified_after_entry = CASE WHEN %s THEN TRUE ELSE stop_modified_after_entry END, "
+            "target_modified_after_entry = CASE WHEN %s THEN TRUE ELSE target_modified_after_entry END, "
+            "levels_modified_after_entry = CASE WHEN %s THEN TRUE ELSE levels_modified_after_entry END "
+            "WHERE id = %s",
+            (new_stop_loss, new_target_price, stop_changed, target_changed, stop_changed or target_changed, trade_id)
+        )
 
         if req.entry_price and req.entry_price > 0 and req.entry_price != old_entry:
             cash_delta = (old_entry - req.entry_price) * qty
