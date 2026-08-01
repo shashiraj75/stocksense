@@ -2223,6 +2223,23 @@ def paper_sell(trade_id: int, req: SellRequest, user_id: str = Depends(get_curre
                 detail=f"{trade_market_probe[0]} market is closed — orders are paused until it reopens",
             )
 
+        # Wave B, Stage J4F — atomic close-to-current-outbox creation.
+        # Computed BEFORE the transaction (pure, no I/O) so the exact
+        # version identity is available to pass explicitly into
+        # close_paper_trade — the DB helper itself never reads a feature
+        # flag or env var. Gated behind the SAME existing flag as the
+        # rest of this wave's generation wiring (no new flag activation).
+        _request_current_outbox = _trade_postmortem_price_path_enabled()
+        _current_schema_v = _current_calc_v = _current_rules_v = None
+        if _request_current_outbox:
+            from services.postmortem.current_report_generation import current_target_identity
+            from services.postmortem.deterministic import CALCULATION_VERSION as _base_calc_v
+            from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION as _num_rules_v
+            from services.postmortem.price_path_generation import SOURCE_VERSION as _src_v
+            _current_schema_v, _current_calc_v, _current_rules_v = current_target_identity(
+                base_calculation_version=_base_calc_v, numerical_rules_version=_num_rules_v, source_version=_src_v,
+            )
+
         try:
             with conn.transaction():
                 result = close_paper_trade(
@@ -2242,6 +2259,10 @@ def paper_sell(trade_id: int, req: SellRequest, user_id: str = Depends(get_curre
                     source_request_id=(
                         _metrics.hash_key_prefix(req.idempotency_key) if close_idempotency_enforced else None
                     ),
+                    request_current_report_outbox=_request_current_outbox,
+                    current_report_schema_version=_current_schema_v,
+                    current_calculation_version=_current_calc_v,
+                    current_rules_version=_current_rules_v,
                 )
                 cash_col = _CASH_COL[result.market]
                 conn.execute(
