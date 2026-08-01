@@ -252,6 +252,11 @@ class TestConcurrency:
 
 class TestAuthorization:
     def test_cross_user_stop_edit_rejected(self, client, pg_conn, unique_user_id):
+        # Wave A closure correction — edit_trade's lookup is now scoped
+        # by id AND user_id together, so a cross-user edit returns the
+        # SAME stable 404 as a nonexistent trade (see the dedicated
+        # WA-C09 matrix in test_wave_a_closure_correction_real_pg.py for
+        # the full indistinguishability proof).
         ensure_portfolio(pg_conn, unique_user_id)
         trade_id = _insert_governed_trade(pg_conn, unique_user_id)
         other_user = unique_user_id + "-other"
@@ -259,7 +264,8 @@ class TestAuthorization:
             f"/api/paper-trading/trade/{trade_id}", json={"stop_loss": 85.0},
             headers=make_auth_header(other_user),
         )
-        assert resp.status_code == 403
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Trade not found"
         flags = _fetch_flags(pg_conn, trade_id)
         assert flags["stop_modified"] is False
         assert flags["stop_loss"] == 90.0
