@@ -4,76 +4,557 @@
   "j4e_scenario_target": 55,
   "j4f_scenario_target": 68,
   "j4e_scenarios_represented": 55,
-  "j4f_scenarios_represented": 0,
+  "j4f_scenarios_represented": 6,
   "gap_disclosure": "Batches A-C mapped exactly one pytest node per WB-J4E-* traceability ID (18 nodes total). That satisfies traceability-ID coverage but NOT the 55-scenario behavioural matrix, which requires additional scenario variants per requirement (e.g. multiple touch-status permutations under WB-J4E-14, multiple concurrent-insert races under WB-J4F outbox IDs, multiple lease-expiry timings under the J4F lease contract). Those additional scenario nodes have not yet been written. This gap is disclosed here rather than silently closed by treating one node per requirement ID as sufficient.",
   "entries": [
-    {"scenario_no": 1, "requirement_id": "WB-J4E-01", "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_01_governed_report_identity_module_exists", "level": "unit", "pre_fix_result": "RED", "intended_failure_reason": "current_report_generation module does not exist", "post_fix_result": "PENDING"},
-    {"scenario_no": 2, "requirement_id": "WB-J4E-02", "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_02_report_schema_version_1_2_0_constant_exists", "level": "unit", "pre_fix_result": "RED", "intended_failure_reason": "GOVERNED_PRICE_PATH_REPORT_SCHEMA_VERSION not defined", "post_fix_result": "PENDING"},
-    {"scenario_no": 3, "requirement_id": "WB-J4E-03", "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_03_governed_price_path_rules_version_constant_exists", "level": "unit", "pre_fix_result": "RED", "intended_failure_reason": "GOVERNED_PRICE_PATH_RULES_VERSION not defined", "post_fix_result": "PENDING"},
-    {"scenario_no": 4, "requirement_id": "WB-J4E-04", "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_04_governed_claim_rules_version_constant_exists", "level": "unit", "pre_fix_result": "RED", "intended_failure_reason": "GOVERNED_PRICE_PATH_CLAIM_RULES_VERSION not defined", "post_fix_result": "PENDING"},
-    {"scenario_no": 5, "requirement_id": "WB-J4E-05", "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_05_governed_calculation_version_format", "level": "unit", "pre_fix_result": "RED", "intended_failure_reason": "governed_calculation_version not defined", "post_fix_result": "PENDING"},
-    {"scenario_no": 6, "requirement_id": "WB-J4E-06", "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_06_governed_claims_module_does_not_import_legacy_touch_authority", "level": "unit", "pre_fix_result": "RED", "intended_failure_reason": "governed_price_path_claims module does not exist", "post_fix_result": "PENDING"},
-    {"scenario_no": 7, "requirement_id": "WB-J4E-07", "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_07_build_governed_price_path_payload_exists", "level": "unit", "pre_fix_result": "RED", "intended_failure_reason": "build_governed_price_path_payload not defined", "post_fix_result": "PENDING"},
-    {"scenario_no": 8, "requirement_id": "WB-J4E-08", "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_08_no_bundle_produces_no_bars_not_fabricated_touch", "level": "unit", "pre_fix_result": "RED", "intended_failure_reason": "builder not defined, cannot exercise no-bundle path", "post_fix_result": "PENDING"},
-    {"scenario_no": 9, "requirement_id": "WB-J4E-09", "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_09_payload_reads_snapshot_governed_fields_not_mutable_row", "level": "unit/structural", "pre_fix_result": "RED", "intended_failure_reason": "module does not exist", "post_fix_result": "PENDING"},
-    {"scenario_no": 10, "requirement_id": "WB-J4E-10", "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_10_legacy_no_snapshot_never_fabricates_governed_false", "level": "unit", "pre_fix_result": "RED", "intended_failure_reason": "build_current_report_payload not defined", "post_fix_result": "PENDING"},
-    {"scenario_no": 11, "requirement_id": "WB-J4E-11", "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_11_structured_report_has_four_required_subsections", "level": "unit", "pre_fix_result": "RED", "intended_failure_reason": "CurrentReportPayload not defined", "post_fix_result": "PENDING"},
-    {"scenario_no": 12, "requirement_id": "WB-J4E-12", "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_12_version_and_provenance_carries_exact_triple", "level": "unit", "pre_fix_result": "RED", "intended_failure_reason": "build_current_report_payload not defined", "post_fix_result": "PENDING"},
-    {"scenario_no": 13, "requirement_id": "WB-J4E-13", "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_13_canonical_fallback_sentence_matches_evidence_module", "level": "unit", "pre_fix_result": "RED", "intended_failure_reason": "governed_price_path_claims module does not exist", "post_fix_result": "PENDING"},
-    {"scenario_no": 14, "requirement_id": "WB-J4E-14", "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_14_no_bars_claim_makes_no_positive_assertion", "level": "unit", "pre_fix_result": "RED", "intended_failure_reason": "build_governed_touch_claim not defined", "post_fix_result": "PENDING"},
-    {"scenario_no": 15, "requirement_id": "WB-J4E-15", "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_15_claim_ids_deterministic_and_collision_safe", "level": "unit", "pre_fix_result": "RED", "intended_failure_reason": "build_governed_touch_claim not defined", "post_fix_result": "PENDING"},
-    {"scenario_no": 16, "requirement_id": "WB-J4E-16", "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_16_claim_referential_integrity_within_report", "level": "unit", "pre_fix_result": "RED", "intended_failure_reason": "build_governed_price_path_payload not defined", "post_fix_result": "PENDING"},
-    {"scenario_no": 17, "requirement_id": "WB-J4E-17", "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_17_supersession_predecessor_is_deterministic_single_and_same_trade", "level": "unit", "pre_fix_result": "RED", "intended_failure_reason": "persist_current_report not defined", "post_fix_result": "PENDING"},
-    {"scenario_no": 18, "requirement_id": "WB-J4E-18", "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_18_version_scoped_report_api_exists_for_all_three_identities", "level": "unit/real-postgres(pending)", "pre_fix_result": "RED", "intended_failure_reason": "persist_current_report not defined; real-PG coexistence proof not yet written", "post_fix_result": "PENDING"}
+    {
+      "scenario_no": 1,
+      "requirement_id": "WB-J4E-01",
+      "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_01_governed_report_identity_module_exists",
+      "level": "unit",
+      "intended_failure_reason": "current_report_generation module does not exist",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 2,
+      "requirement_id": "WB-J4E-02",
+      "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_02_report_schema_version_1_2_0_constant_exists",
+      "level": "unit",
+      "intended_failure_reason": "GOVERNED_PRICE_PATH_REPORT_SCHEMA_VERSION not defined",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 3,
+      "requirement_id": "WB-J4E-03",
+      "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_03_governed_price_path_rules_version_constant_exists",
+      "level": "unit",
+      "intended_failure_reason": "GOVERNED_PRICE_PATH_RULES_VERSION not defined",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 4,
+      "requirement_id": "WB-J4E-04",
+      "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_04_governed_claim_rules_version_constant_exists",
+      "level": "unit",
+      "intended_failure_reason": "GOVERNED_PRICE_PATH_CLAIM_RULES_VERSION not defined",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 5,
+      "requirement_id": "WB-J4E-05",
+      "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_05_governed_calculation_version_format",
+      "level": "unit",
+      "intended_failure_reason": "governed_calculation_version not defined",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 6,
+      "requirement_id": "WB-J4E-06",
+      "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_06_governed_claims_module_does_not_import_legacy_touch_authority",
+      "level": "unit",
+      "intended_failure_reason": "governed_price_path_claims module does not exist",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 7,
+      "requirement_id": "WB-J4E-07",
+      "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_07_build_governed_price_path_payload_exists",
+      "level": "unit",
+      "intended_failure_reason": "build_governed_price_path_payload not defined",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 8,
+      "requirement_id": "WB-J4E-08",
+      "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_08_no_bundle_produces_no_bars_not_fabricated_touch",
+      "level": "unit",
+      "intended_failure_reason": "builder not defined, cannot exercise no-bundle path",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 9,
+      "requirement_id": "WB-J4E-09",
+      "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_09_payload_reads_snapshot_governed_fields_not_mutable_row",
+      "level": "unit/structural",
+      "intended_failure_reason": "module does not exist",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 10,
+      "requirement_id": "WB-J4E-10",
+      "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_10_legacy_no_snapshot_never_fabricates_governed_false",
+      "level": "unit",
+      "intended_failure_reason": "build_current_report_payload not defined",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 11,
+      "requirement_id": "WB-J4E-11",
+      "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_11_structured_report_has_four_required_subsections",
+      "level": "unit",
+      "intended_failure_reason": "CurrentReportPayload not defined",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 12,
+      "requirement_id": "WB-J4E-12",
+      "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_12_version_and_provenance_carries_exact_triple",
+      "level": "unit",
+      "intended_failure_reason": "build_current_report_payload not defined",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 13,
+      "requirement_id": "WB-J4E-13",
+      "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_13_canonical_fallback_sentence_matches_evidence_module",
+      "level": "unit",
+      "intended_failure_reason": "governed_price_path_claims module does not exist",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 14,
+      "requirement_id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_14_no_bars_claim_makes_no_positive_assertion",
+      "level": "unit",
+      "intended_failure_reason": "build_governed_touch_claim not defined",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 15,
+      "requirement_id": "WB-J4E-15",
+      "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_15_claim_ids_deterministic_and_collision_safe",
+      "level": "unit",
+      "intended_failure_reason": "build_governed_touch_claim not defined",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 16,
+      "requirement_id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_16_claim_referential_integrity_within_report",
+      "level": "unit",
+      "intended_failure_reason": "build_governed_price_path_payload not defined",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 17,
+      "requirement_id": "WB-J4E-17",
+      "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_17_supersession_predecessor_is_deterministic_single_and_same_trade",
+      "level": "unit",
+      "intended_failure_reason": "persist_current_report not defined",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 18,
+      "requirement_id": "WB-J4E-18",
+      "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_18_version_scoped_report_api_exists_for_all_three_identities",
+      "level": "unit/real-postgres(pending)",
+      "intended_failure_reason": "persist_current_report not defined; real-PG coexistence proof not yet written",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    }
   ],
   "batch_d_added_scenarios": [
-    {"scenario_no": 19, "requirement_id": "WB-J4E-14", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[NO_VALUE_SUPPLIED]", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 20, "requirement_id": "WB-J4E-14", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[NO_COMPATIBLE_CROSSING]", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 21, "requirement_id": "WB-J4E-14", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[SUPPORTED_TOUCH]", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 22, "requirement_id": "WB-J4E-14", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[INCOMPATIBLE_BASIS]", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 23, "requirement_id": "WB-J4E-14", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[NO_BARS]", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 24, "requirement_id": "WB-J4E-14", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[INSUFFICIENT_EVIDENCE]", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 25, "requirement_id": "WB-J4E-14", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[CONTRADICTORY_ENDPOINT_EVIDENCE]", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 26, "requirement_id": "WB-J4E-16", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[NEITHER_OBSERVED]", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 27, "requirement_id": "WB-J4E-16", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[TARGET_ONLY_OBSERVED]", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 28, "requirement_id": "WB-J4E-16", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[STOP_ONLY_OBSERVED]", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 29, "requirement_id": "WB-J4E-16", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[TARGET_SAFELY_BEFORE_STOP]", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 30, "requirement_id": "WB-J4E-16", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[STOP_SAFELY_BEFORE_TARGET]", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 31, "requirement_id": "WB-J4E-16", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[SAME_BAR_ORDER_UNKNOWN]", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 32, "requirement_id": "WB-J4E-16", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[ORDER_UNAVAILABLE]", "level": "unit", "pre_fix_result": "RED"}
+    {
+      "scenario_no": 19,
+      "requirement_id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[NO_VALUE_SUPPLIED]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 20,
+      "requirement_id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[NO_COMPATIBLE_CROSSING]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 21,
+      "requirement_id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[SUPPORTED_TOUCH]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 22,
+      "requirement_id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[INCOMPATIBLE_BASIS]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 23,
+      "requirement_id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[NO_BARS]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 24,
+      "requirement_id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[INSUFFICIENT_EVIDENCE]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 25,
+      "requirement_id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[CONTRADICTORY_ENDPOINT_EVIDENCE]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 26,
+      "requirement_id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[NEITHER_OBSERVED]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 27,
+      "requirement_id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[TARGET_ONLY_OBSERVED]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 28,
+      "requirement_id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[STOP_ONLY_OBSERVED]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 29,
+      "requirement_id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[TARGET_SAFELY_BEFORE_STOP]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 30,
+      "requirement_id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[STOP_SAFELY_BEFORE_TARGET]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 31,
+      "requirement_id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[SAME_BAR_ORDER_UNKNOWN]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 32,
+      "requirement_id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[ORDER_UNAVAILABLE]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    }
   ],
   "batch_e_added_scenarios": [
-    {"scenario_no": 33, "requirement_id": "WB-J4E-11", "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_11_variant_weakest_ceiling_wins_no_bundle[False-True]", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 34, "requirement_id": "WB-J4E-11", "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_11_variant_weakest_ceiling_wins_no_bundle[False-False]", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 35, "requirement_id": "WB-J4E-17", "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_17_variant_persist_current_report_is_idempotent_on_replay", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 36, "requirement_id": "WB-J4E-17", "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_17_variant_supersession_never_cross_trade_or_cross_user", "level": "unit/structural", "pre_fix_result": "RED"},
-    {"scenario_no": 37, "requirement_id": "WB-J4E-18", "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_18_variant_1_0_0_report_untouched_after_1_2_0_persist", "level": "unit(pending real-pg proof)", "pre_fix_result": "RED"},
-    {"scenario_no": 38, "requirement_id": "WB-J4E-18", "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_18_variant_1_1_0_report_untouched_after_1_2_0_persist", "level": "unit(pending real-pg proof)", "pre_fix_result": "RED"}
+    {
+      "scenario_no": 33,
+      "requirement_id": "WB-J4E-11",
+      "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_11_variant_weakest_ceiling_wins_no_bundle[False-True]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 34,
+      "requirement_id": "WB-J4E-11",
+      "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_11_variant_weakest_ceiling_wins_no_bundle[False-False]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 35,
+      "requirement_id": "WB-J4E-17",
+      "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_17_variant_persist_current_report_is_idempotent_on_replay",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 36,
+      "requirement_id": "WB-J4E-17",
+      "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_17_variant_supersession_never_cross_trade_or_cross_user",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 37,
+      "requirement_id": "WB-J4E-18",
+      "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_18_variant_1_0_0_report_untouched_after_1_2_0_persist",
+      "level": "unit(pending real-pg proof)",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 38,
+      "requirement_id": "WB-J4E-18",
+      "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_18_variant_1_1_0_report_untouched_after_1_2_0_persist",
+      "level": "unit(pending real-pg proof)",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    }
   ],
   "batch_e_structural_invariant_checks_not_counted_toward_red_matrix": [
-    {"node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_18_variant_latest_report_prefers_1_2_0_once_it_exists", "note": "Verifies existing frozen report_store.get_latest_report_for_trade ORDER BY already supports 1.2.0 preference — PASSES against pre-fix code since this behavior predates Wave B; kept as a regression guard, not a red scenario."}
+    {
+      "scenario_no": "N/A (baseline-preservation, not one of the 55)",
+      "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_18_variant_latest_report_prefers_1_2_0_once_it_exists",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_BASELINE_PASS",
+      "actual_pre_fix_result": "PASS",
+      "why_expected_to_pass": "report_store.get_latest_report_for_trade's ORDER BY report_schema_version DESC, generated_at DESC clause was written in an earlier sprint (predates Wave B) and is version-value-agnostic \u2014 it will prefer '1.2.0' the moment such a row exists without any code change, exactly as it already prefers '1.1.0' over '1.0.0' today.",
+      "what_it_protects": "Guards against a future Wave B change accidentally narrowing or hardcoding that ORDER BY clause (e.g. to a fixed list of known versions) in a way that would stop preferring a new, not-yet-invented version string.",
+      "why_it_does_not_reduce_required_coverage": "It verifies a PRE-EXISTING invariant this module must not regress \u2014 it proves nothing about the NEW 1.2.0 writer/reader code that Wave B must still add. All 55 J4E scenarios exercising the new 1.2.0 surface remain required and are tracked separately below.",
+      "counts_as_test_first_red_evidence": false
+    }
   ],
   "batch_f_added_scenarios": [
-    {"scenario_no": 39, "requirement_id": "WB-J4E-17", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_39_persist_current_report_accepts_outbox_linkage_params", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 40, "requirement_id": "WB-J4E-17", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_40_persist_current_report_raises_on_stale_lease", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 41, "requirement_id": "WB-J4E-11", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_41_current_report_reuses_shared_evidence_hash_function", "level": "unit/structural", "pre_fix_result": "RED"},
-    {"scenario_no": 42, "requirement_id": "WB-J4E-11", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_42_current_report_payload_exposes_warnings_field", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 43, "requirement_id": "WB-J4E-11", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_43_current_report_payload_exposes_evidence_gaps_field", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 44, "requirement_id": "WB-J4E-12", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_44_report_trading_date_uses_close_date", "level": "unit/structural", "pre_fix_result": "RED"},
-    {"scenario_no": 45, "requirement_id": "WB-J4E-12", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_45_market_timezone_is_caller_supplied_not_hardcoded", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 46, "requirement_id": "WB-J4E-17", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_46_persist_current_report_relies_on_db_unique_index_not_app_lock", "level": "unit/structural", "pre_fix_result": "RED"},
-    {"scenario_no": 47, "requirement_id": "WB-J4E-05", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_47_governed_calculation_version_is_pure_and_stable", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 48, "requirement_id": "WB-J4E-05", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_48_governed_calculation_version_is_sensitive_to_numerical_rules", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 49, "requirement_id": "WB-J4E-05", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_49_governed_calculation_version_is_sensitive_to_source_version", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 50, "requirement_id": "WB-J4E-18", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_50_current_report_lookup_reuses_shared_user_scoped_function", "level": "unit/structural", "pre_fix_result": "RED"},
-    {"scenario_no": 51, "requirement_id": "WB-J4E-10", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_51_process_current_report_rejects_ownership_mismatch", "level": "unit/structural", "pre_fix_result": "RED"},
-    {"scenario_no": 52, "requirement_id": "WB-J4E-10", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_52_process_current_report_handles_open_trade_honestly", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 53, "requirement_id": "WB-J4E-06", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_53_governed_rule_ids_do_not_collide_with_legacy_rule_ids", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 54, "requirement_id": "WB-J4E-13", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_54_fallback_claim_uses_insufficient_evidence_class", "level": "unit", "pre_fix_result": "RED"},
-    {"scenario_no": 55, "requirement_id": "WB-J4E-13", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_55_supported_touch_claim_confidence_not_not_assessable", "level": "unit", "pre_fix_result": "RED"}
+    {
+      "scenario_no": 39,
+      "requirement_id": "WB-J4E-17",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_39_persist_current_report_accepts_outbox_linkage_params",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 40,
+      "requirement_id": "WB-J4E-17",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_40_persist_current_report_raises_on_stale_lease",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 41,
+      "requirement_id": "WB-J4E-11",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_41_current_report_reuses_shared_evidence_hash_function",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 42,
+      "requirement_id": "WB-J4E-11",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_42_current_report_payload_exposes_warnings_field",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 43,
+      "requirement_id": "WB-J4E-11",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_43_current_report_payload_exposes_evidence_gaps_field",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 44,
+      "requirement_id": "WB-J4E-12",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_44_report_trading_date_uses_close_date",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 45,
+      "requirement_id": "WB-J4E-12",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_45_market_timezone_is_caller_supplied_not_hardcoded",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 46,
+      "requirement_id": "WB-J4E-17",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_46_persist_current_report_relies_on_db_unique_index_not_app_lock",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 47,
+      "requirement_id": "WB-J4E-05",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_47_governed_calculation_version_is_pure_and_stable",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 48,
+      "requirement_id": "WB-J4E-05",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_48_governed_calculation_version_is_sensitive_to_numerical_rules",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 49,
+      "requirement_id": "WB-J4E-05",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_49_governed_calculation_version_is_sensitive_to_source_version",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 50,
+      "requirement_id": "WB-J4E-18",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_50_current_report_lookup_reuses_shared_user_scoped_function",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 51,
+      "requirement_id": "WB-J4E-10",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_51_process_current_report_rejects_ownership_mismatch",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 52,
+      "requirement_id": "WB-J4E-10",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_52_process_current_report_handles_open_trade_honestly",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 53,
+      "requirement_id": "WB-J4E-06",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_53_governed_rule_ids_do_not_collide_with_legacy_rule_ids",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 54,
+      "requirement_id": "WB-J4E-13",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_54_fallback_claim_uses_insufficient_evidence_class",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 55,
+      "requirement_id": "WB-J4E-13",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_55_supported_touch_claim_confidence_not_not_assessable",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    }
   ],
-  "j4e_matrix_status": "COMPLETE — all 55 mandatory J4E scenarios represented by runnable, individually-collected, individually-executed pytest nodes; all confirmed RED via intended assertions against pre-fix code (HEAD c91b7d8e6bdb694c069f716ab04777b5700336c4); zero import/collection failures counted as red evidence (one genuine collection SyntaxError was caught and fixed in Batch F before being counted).",
+  "j4e_matrix_status": "J4E RED-BASELINE COMPLETE \u2014 55/55 MANDATORY SCENARIOS REPRESENTED, COLLECTED AND EXECUTED; 54 FAILED THROUGH INTENDED PRE-IMPLEMENTATION ASSERTIONS; 1 BASELINE-PRESERVATION GUARD PASSED AS EXPECTED; ZERO COLLECTION ERRORS.",
   "remaining_j4e_scenarios_not_yet_written": 0,
-  "remaining_j4f_scenarios_not_yet_written": 68,
-  "next_action": "Batch G onward: begin the WB-J4F-01..20 traceability family and its 68-scenario matrix (atomic close-to-outbox creation, exact version-scoped lookups, shared orchestrator reuse, global PostgreSQL claim/lease contract, background worker lifecycle, failure taxonomy, report-exists reconciliation, reset/delete races, observability)."
+  "remaining_j4f_scenarios_not_yet_written": 62,
+  "next_action": "Batch H onward: exact version-scoped lookup + shared orchestrator reuse (WB-J4F-07..); then global PostgreSQL claim/lease/concurrency (real-postgres level), background worker lifecycle, failure taxonomy, report-exists reconciliation, reset/delete races, observability to close the remaining 62 J4F scenarios.",
+  "batch_g_added_scenarios": [
+    {
+      "scenario_no": 1,
+      "requirement_id": "WB-J4F-01",
+      "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_01_close_paper_trade_accepts_explicit_current_outbox_request",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 2,
+      "requirement_id": "WB-J4F-02",
+      "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_02_current_outbox_insert_helper_exists_and_is_idempotent",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 3,
+      "requirement_id": "WB-J4F-03",
+      "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_03_current_outbox_insert_happens_inside_close_transaction",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 4,
+      "requirement_id": "WB-J4F-04",
+      "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_04_current_outbox_identity_is_caller_supplied_not_env_read",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 5,
+      "requirement_id": "WB-J4F-05",
+      "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_05_duplicate_close_never_double_inserts_current_outbox",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 6,
+      "requirement_id": "WB-J4F-06",
+      "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_06_current_outbox_creatable_outside_close_time_for_backfill",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    }
+  ]
 }

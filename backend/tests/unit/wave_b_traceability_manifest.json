@@ -54,6 +54,13 @@
     {"id": "WB-J4E-17", "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_17_supersession_predecessor_is_deterministic_single_and_same_trade", "batch": "C", "status": "RED"},
     {"id": "WB-J4E-18", "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_18_version_scoped_report_api_exists_for_all_three_identities", "batch": "C", "status": "RED"}
   ],
-  "j4f_requirements": [],
-  "status": "BATCH_C_RED — all 18 of 18 WB-J4E TRACEABILITY IDs have runnable red nodes (18 pytest nodes total). This is the traceability-ID family only, NOT the 55-scenario J4E behavioural matrix — see wave_b_scenario_ledger.json for the honest gap. WB-J4F traceability (0 of 20) and the 68-scenario J4F matrix remain entirely outstanding."
+  "j4f_requirements": [
+    {"id": "WB-J4F-01", "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_01_close_paper_trade_accepts_explicit_current_outbox_request", "batch": "G", "status": "RED"},
+    {"id": "WB-J4F-02", "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_02_current_outbox_insert_helper_exists_and_is_idempotent", "batch": "G", "status": "RED"},
+    {"id": "WB-J4F-03", "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_03_current_outbox_insert_happens_inside_close_transaction", "batch": "G", "status": "RED"},
+    {"id": "WB-J4F-04", "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_04_current_outbox_identity_is_caller_supplied_not_env_read", "batch": "G", "status": "RED"},
+    {"id": "WB-J4F-05", "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_05_duplicate_close_never_double_inserts_current_outbox", "batch": "G", "status": "RED"},
+    {"id": "WB-J4F-06", "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_06_current_outbox_creatable_outside_close_time_for_backfill", "batch": "G", "status": "RED"}
+  ],
+  "status": "J4E RED-BASELINE COMPLETE (55/55 scenarios). J4F traceability in progress: 6 of 20 WB-J4F IDs have runnable red nodes (Batch G). J4F scenario-matrix target is 68; 6 represented so far — see wave_b_scenario_ledger.json for the honest running count."
 }
