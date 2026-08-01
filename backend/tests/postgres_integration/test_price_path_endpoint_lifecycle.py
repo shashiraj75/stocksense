@@ -145,7 +145,14 @@ class TestGenerateEndpointPricePathWiring:
         report_count = pg_conn.execute(
             "SELECT count(*) FROM paper_trade_postmortem_report WHERE paper_trade_id = %s", (trade_id,)
         ).fetchone()[0]
-        assert report_count == 2  # Sprint 2 + price-path
+        # Wave B, Stage J4F — a genuine PRICE_PATH_GENERATED/ALREADY_COMPLETE
+        # outcome now also triggers the shared 1.2.0 governed-report
+        # orchestrator (current_report_generation.process_current_report),
+        # additively, on top of the existing Sprint 2 (1.0.0) + price-path
+        # (1.1.0) reports — 3 report rows, not 2, is the correct current
+        # count for this scenario; this is the intended new behavior, not
+        # a regression.
+        assert report_count == 3  # Sprint 2 + price-path + current (governed)
 
     def test_repeated_generate_makes_no_second_provider_call(self, client, pg_conn, unique_user_id, monkeypatch):
         from services.postmortem import price_path_acquisition
@@ -167,7 +174,9 @@ class TestGenerateEndpointPricePathWiring:
         report_count = pg_conn.execute(
             "SELECT count(*) FROM paper_trade_postmortem_report WHERE paper_trade_id = %s", (trade_id,)
         ).fetchone()[0]
-        assert report_count == 2
+        # Wave B, Stage J4F — see the matching comment above: 3 report
+        # rows (1.0.0 + 1.1.0 + 1.2.0) is the correct current count.
+        assert report_count == 3
 
     def test_cross_user_generate_indistinguishable_from_nonexistent(self, client, pg_conn, unique_user_id):
         victim_id = f"{unique_user_id}-victim"

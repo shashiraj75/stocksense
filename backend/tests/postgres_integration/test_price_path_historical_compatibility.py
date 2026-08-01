@@ -2187,7 +2187,13 @@ class TestLegacyAndCurrentEvidenceCoexistence:
             "SELECT id, report_schema_version, calculation_version, supersedes_report_id "
             "FROM paper_trade_postmortem_report WHERE paper_trade_id = %s ORDER BY id", (trade_id,),
         ).fetchall()
-        assert len(reports) == 3  # Sprint 2 + old price-path (seeded) + current price-path
+        # Wave B, Stage J4F — a genuine PRICE_PATH_GENERATED outcome also
+        # triggers the shared 1.2.0 governed-report orchestrator here
+        # (flag is re-enabled above), additively producing a 4th report
+        # row on top of Sprint 2 (1.0.0) + seeded old price-path (1.1.0)
+        # + current price-path (1.1.0) — the intended new behavior, not
+        # a regression.
+        assert len(reports) == 4  # Sprint 2 + old price-path (seeded) + current price-path + current governed (1.2.0)
 
         by_id = {r[0]: r for r in reports}
         assert sprint2_report_id in by_id  # Sprint 2 report untouched
