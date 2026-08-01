@@ -66,7 +66,7 @@
       "expected_reason_code": null, "test_level": "unit",
       "nodes": [
         "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e_no_value_supplied",
-        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e_no_compatible_crossing",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e_no_compatible_crossing_governed_unmodified_is_definitive",
         "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e37_crossing_plus_modified_without_temporal_proof_falls_back",
         "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e41_contradictory_history_falls_back",
         "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e43_incompatible_basis_prevents_any_crossing_conclusion",
@@ -498,14 +498,15 @@
     {
       "id": "WA-C21", "title": "Shared touch/order eligibility path",
       "protected_function": "services.postmortem.governed_price_path_conclusions.classify_governed_order (calls classify_governed_level_touch per side)",
-      "expected_behavior": "classify_governed_order derives each side's eligibility via classify_governed_level_touch itself -- the exact same function used standalone -- never a second, independently-implemented eligibility path. Ordered patterns (target-before-stop/stop-before-target) require both per-level touches SUPPORTED.",
+      "expected_behavior": "classify_governed_order derives each side's eligibility via classify_governed_level_touch itself -- the exact same function used standalone -- never a second, independently-implemented eligibility path. Ordered and same-bar patterns require both per-level touches SUPPORTED; single-sided/neither-observed patterns are decided via _side_is_trustworthy/_side_is_definitive_negative, which (per WA-C25) consume only the resulting conclusion, never raw level-history/endpoint/basis inputs a second time.",
       "expected_reason_code": null, "test_level": "unit",
       "nodes": [
         "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_target_safely_before_stop_when_both_governed_unmodified",
         "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_stop_safely_before_target_when_both_governed_unmodified",
         "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_ordered_pattern_falls_back_when_either_level_not_governed_unmodified",
         "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_ordered_pattern_falls_back_when_endpoint_evidence_contradicts",
-        "tests/unit/test_j4c_semantic_contract.py::TestFinalHeadAssuranceAnchor::test_shared_eligibility_path_produces_consistent_touch_and_order_results"
+        "tests/unit/test_j4c_semantic_contract.py::TestFinalHeadAssuranceAnchor::test_shared_eligibility_path_produces_consistent_touch_and_order_results",
+        "tests/unit/test_j4c_semantic_contract.py::TestSingleSourcePerLevelEligibility::test_order_classification_performs_no_post_classification_reinterpretation"
       ]
     },
     {
@@ -523,13 +524,42 @@
     },
     {
       "id": "WA-C23", "title": "Final-HEAD non-PostgreSQL assurance",
-      "protected_function": "services.postmortem.governed_price_path_conclusions (module-level, this closure-correction pass)",
-      "expected_behavior": "The corrected governed-order eligibility design remains fully unwired (no report/claim/API/frontend caller) and internally consistent (the order classifier's per-level result agrees with the standalone touch classifier for identical inputs) at the final closure-correction HEAD.",
+      "protected_function": "services.postmortem.governed_price_path_conclusions (module-level, single-source eligibility closure-correction pass)",
+      "expected_behavior": "The corrected governed-order eligibility design remains fully unwired (no report/claim/API/frontend caller) and internally consistent (the order classifier's per-level result agrees with the standalone touch classifier for identical inputs, and never reinterprets raw level-history after the two per-level conclusions are built) at the final single-source-eligibility closure-correction HEAD.",
       "expected_reason_code": null, "test_level": "unit",
       "nodes": [
         "tests/unit/test_j4c_semantic_contract.py::TestFinalHeadAssuranceAnchor::test_governed_order_still_unwired_at_final_head",
         "tests/unit/test_j4c_semantic_contract.py::TestFinalHeadAssuranceAnchor::test_shared_eligibility_path_produces_consistent_touch_and_order_results",
-        "tests/unit/test_j4c_semantic_contract.py::TestNoFabrication::test_no_prohibited_claim_strings_in_module_source"
+        "tests/unit/test_j4c_semantic_contract.py::TestNoFabrication::test_no_prohibited_claim_strings_in_module_source",
+        "tests/unit/test_j4c_semantic_contract.py::TestSingleSourcePerLevelEligibility::test_definitive_negative_helper_accepts_only_one_conclusion_argument"
+      ]
+    },
+    {
+      "id": "WA-C24", "title": "No-crossing requires governed-unmodified history",
+      "protected_function": "services.postmortem.governed_price_path_conclusions.classify_governed_level_touch",
+      "expected_behavior": "GOVERNED_TOUCH_NO_COMPATIBLE_CROSSING (a definitive governed negative) is returned only when level_history_status is exactly LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED. No-crossing under unknown/legacy, modified-after-entry, or contradictory history returns GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE with the exact canonical fallback sentence instead. NO_VALUE_SUPPLIED remains independent of history status under all three families.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e_no_compatible_crossing_governed_unmodified_is_definitive",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e_no_compatible_crossing_unknown_legacy_is_insufficient",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e_no_compatible_crossing_modified_after_entry_is_insufficient",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e_no_compatible_crossing_contradictory_history_is_insufficient",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e_no_value_supplied_independent_of_history_governed",
+        "tests/unit/test_j4c_semantic_contract.py::TestSingleSourcePerLevelEligibility::test_no_compatible_crossing_never_returned_for_non_governed_history"
+      ]
+    },
+    {
+      "id": "WA-C25", "title": "Order uses conclusion-only eligibility",
+      "protected_function": "services.postmortem.governed_price_path_conclusions._side_is_definitive_negative / _side_is_trustworthy",
+      "expected_behavior": "The definitive-negative/trustworthy helpers accept exactly one parameter (the GovernedLevelTouchConclusion itself) -- no raw level_history_status, endpoint value, snapshot flag, price-basis status, bars-available flag, or observation is consulted after the per-level conclusion is constructed. Target-only, stop-only, and neither-observed order conclusions are decided solely from the resulting conclusion status.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestSingleSourcePerLevelEligibility::test_definitive_negative_helper_accepts_only_one_conclusion_argument",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f6_target_only_with_stop_governed_unmodified_no_crossing",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f8_target_only_but_stop_modified_history_no_crossing_is_unavailable",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f9_stop_only_with_target_modified_history_no_crossing_is_unavailable",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_neither_observed",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f26_neither_observed_but_incomplete_evidence_is_unavailable"
       ]
     }
   ]
