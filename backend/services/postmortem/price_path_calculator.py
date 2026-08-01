@@ -416,15 +416,29 @@ class SessionAttributionError(ValueError):
     as safe/interior."""
 
 
+def _safe_str_member(value, allowed: frozenset) -> bool:
+    """Stage J4B.2 — total membership test: returns True only when
+    `value` is an exact `str` AND is a member of `allowed`. Never raises
+    TypeError for an unhashable `value` (list/dict/set), and never
+    treats a non-str (including a str subclass masquerading via a
+    hostile __eq__/__hash__) as a match. This is the single shared
+    guard used everywhere this module previously did a bare
+    `value not in some_frozenset`, which raised an uncontrolled
+    TypeError for any unhashable input."""
+    return type(value) is str and value in allowed
+
+
 def _validate_boundary_policies(bundle: PricePathEvidenceBundle) -> None:
+    if not isinstance(bundle, PricePathEvidenceBundle):
+        raise SessionAttributionError("bundle must be a PricePathEvidenceBundle")
+    if type(bundle.requested_window_start) is not date or type(bundle.requested_window_end) is not date:
+        raise SessionAttributionError("requested_window_start/end must be exact datetime.date values")
     if bundle.requested_window_start > bundle.requested_window_end:
-        raise SessionAttributionError(
-            f"requested_window_start {bundle.requested_window_start} follows requested_window_end {bundle.requested_window_end}"
-        )
-    if bundle.entry_bar_policy not in _VALID_ENTRY_BAR_POLICIES:
-        raise SessionAttributionError(f"unrecognized entry_bar_policy {bundle.entry_bar_policy!r}")
-    if bundle.exit_bar_policy not in _VALID_EXIT_BAR_POLICIES:
-        raise SessionAttributionError(f"unrecognized exit_bar_policy {bundle.exit_bar_policy!r}")
+        raise SessionAttributionError("requested_window_start follows requested_window_end")
+    if not _safe_str_member(bundle.entry_bar_policy, _VALID_ENTRY_BAR_POLICIES):
+        raise SessionAttributionError("unrecognized entry_bar_policy")
+    if not _safe_str_member(bundle.exit_bar_policy, _VALID_EXIT_BAR_POLICIES):
+        raise SessionAttributionError("unrecognized exit_bar_policy")
 
 
 def classify_bar_session_attribution(bundle: PricePathEvidenceBundle, bar: PricePathBar) -> str:
@@ -443,6 +457,10 @@ def classify_bar_session_attribution(bundle: PricePathEvidenceBundle, bar: Price
     SAME_DAY_INCLUDED_FULL (both INCLUDED_FULL) and
     SAME_DAY_PARTIAL_UNKNOWN (every other combination)."""
     _validate_boundary_policies(bundle)
+    if not isinstance(bar, PricePathBar):
+        raise SessionAttributionError("bar must be a PricePathBar")
+    if type(bar.session_date) is not date:
+        raise SessionAttributionError("bar.session_date must be an exact datetime.date value")
 
     entry_date = bundle.requested_window_start
     exit_date = bundle.requested_window_end
@@ -479,12 +497,14 @@ def is_safely_attributable_session(session_attribution: str) -> bool:
     """INTERIOR and any INCLUDED_FULL session attribution is safely
     attributable; any PARTIAL_UNKNOWN attribution is observed but never
     safely attributable. An unrecognized value ALWAYS raises
-    SessionAttributionError — never silently returns False."""
-    if session_attribution in _SAFELY_ATTRIBUTABLE_SESSION_ATTRIBUTIONS:
+    SessionAttributionError — never silently returns False. An
+    unhashable `session_attribution` (list/dict/set) never raises a raw
+    TypeError; it is simply treated as unrecognized."""
+    if _safe_str_member(session_attribution, _SAFELY_ATTRIBUTABLE_SESSION_ATTRIBUTIONS):
         return True
-    if session_attribution in _PARTIAL_SESSION_ATTRIBUTIONS:
+    if _safe_str_member(session_attribution, _PARTIAL_SESSION_ATTRIBUTIONS):
         return False
-    raise SessionAttributionError(f"unrecognized session_attribution {session_attribution!r}")
+    raise SessionAttributionError("unrecognized session_attribution")
 
 
 # --- Supplied numerical value / level-kind validation (Stage J4B.1, Stage 3) ---
@@ -500,10 +520,12 @@ SUPPLIED_AT_CALCULATION = "SUPPLIED_AT_CALCULATION"
 
 
 def _validate_level_kind(level_kind) -> str:
-    if level_kind not in _VALID_LEVEL_KINDS:
-        raise NumericalCrossingContractError(
-            INVALID_LEVEL_KIND, f"level_kind must be TARGET_VALUE or STOP_VALUE, got {level_kind!r}"
-        )
+    """Total over any input, including unhashable objects (list/dict/
+    set) and hostile objects with a raising __hash__/__eq__/__repr__ —
+    the type(...) is str check short-circuits before any set membership
+    or interpolation of the invalid value is ever attempted."""
+    if not _safe_str_member(level_kind, _VALID_LEVEL_KINDS):
+        raise NumericalCrossingContractError(INVALID_LEVEL_KIND, "level_kind must be TARGET_VALUE or STOP_VALUE")
     return level_kind
 
 
@@ -521,11 +543,22 @@ def _validate_supplied_numerical_value(supplied_level_value, level_kind: str) ->
         raise NumericalCrossingContractError(
             INVALID_SUPPLIED_VALUE_TYPE, f"supplied_level_value must not be a bool for level_kind {level_kind}"
         )
-    if not isinstance(supplied_level_value, (int, float)):
+    if type(supplied_level_value) not in (int, float):
+        # Exact built-in int/float only -- a numeric subclass (e.g. a
+        # custom int subclass) is rejected even though isinstance()
+        # would have accepted it, per the declared exact-type contract.
         raise NumericalCrossingContractError(
-            INVALID_SUPPLIED_VALUE_TYPE, f"supplied_level_value must be int or float for level_kind {level_kind}"
+            INVALID_SUPPLIED_VALUE_TYPE, f"supplied_level_value must be an exact int or float for level_kind {level_kind}"
         )
-    value = float(supplied_level_value)
+    try:
+        value = float(supplied_level_value)
+    except OverflowError:
+        # An int too large for finite float representation (e.g. 10**400)
+        # -- never a raw OverflowError escape; this IS a non-finite
+        # value by the same contract NaN/inf already fall under.
+        raise NumericalCrossingContractError(
+            NON_FINITE_SUPPLIED_VALUE, f"supplied_level_value is too large to represent as a finite float for level_kind {level_kind}"
+        )
     if math.isnan(value):
         raise NumericalCrossingContractError(NON_FINITE_SUPPLIED_VALUE, f"supplied_level_value is NaN for level_kind {level_kind}")
     if math.isinf(value):
@@ -591,7 +624,7 @@ class NumericalCrossingObservationContext:
             raise NumericalCrossingContractError(INVALID_OBSERVATION_CONTEXT, "paper_trade_id must be a positive int")
         if not isinstance(self.symbol, str) or not self.symbol:
             raise NumericalCrossingContractError(INVALID_OBSERVATION_CONTEXT, "symbol must be a non-empty string")
-        if self.market not in _VALID_MARKETS:
+        if not _safe_str_member(self.market, _VALID_MARKETS):
             raise NumericalCrossingContractError(INVALID_OBSERVATION_CONTEXT, "market must be exactly IN or US")
         for field_name in (
             "evidence_bundle_version", "source_id", "source_version",
@@ -606,11 +639,13 @@ class NumericalCrossingObservationContext:
                 raise NumericalCrossingContractError(
                     INVALID_OBSERVATION_CONTEXT, f"{hash_field} must be a lowercase 64-character SHA-256 hex string"
                 )
+        if type(self.requested_window_start) is not date or type(self.requested_window_end) is not date:
+            raise NumericalCrossingContractError(INVALID_OBSERVATION_CONTEXT, "requested_window_start/end must be exact datetime.date values")
         if self.requested_window_start > self.requested_window_end:
             raise NumericalCrossingContractError(INVALID_OBSERVATION_CONTEXT, "requested_window_start must not follow requested_window_end")
-        if self.entry_bar_policy not in _VALID_ENTRY_BAR_POLICIES:
+        if not _safe_str_member(self.entry_bar_policy, _VALID_ENTRY_BAR_POLICIES):
             raise NumericalCrossingContractError(INVALID_OBSERVATION_CONTEXT, "entry_bar_policy is not a recognized value")
-        if self.exit_bar_policy not in _VALID_EXIT_BAR_POLICIES:
+        if not _safe_str_member(self.exit_bar_policy, _VALID_EXIT_BAR_POLICIES):
             raise NumericalCrossingContractError(INVALID_OBSERVATION_CONTEXT, "exit_bar_policy is not a recognized value")
 
 
@@ -642,10 +677,19 @@ def _crossing_evidence_id(paper_trade_id: int, session_date: date, level_kind: s
 
 
 def _parse_crossing_evidence_id(evidence_id) -> tuple[int, date, str]:
-    match = _CROSSING_EVIDENCE_ID_RE.match(evidence_id) if isinstance(evidence_id, str) else None
+    """Total: never echoes the malformed input in its error message
+    (only the stable reason code), and never lets a syntactically
+    plausible but calendar-impossible date (e.g. month 13, day 32)
+    escape as a raw ValueError from date.fromisoformat — the regex only
+    constrains digit COUNT, not valid calendar ranges."""
+    match = _CROSSING_EVIDENCE_ID_RE.match(evidence_id) if type(evidence_id) is str else None
     if match is None:
-        raise NumericalCrossingContractError(INVALID_CROSSING_EVIDENCE_ID, f"malformed crossing evidence ID: {evidence_id!r}")
-    return int(match.group("trade_id")), date.fromisoformat(match.group("date")), match.group("level_kind")
+        raise NumericalCrossingContractError(INVALID_CROSSING_EVIDENCE_ID, "malformed crossing evidence ID")
+    try:
+        parsed_date = date.fromisoformat(match.group("date"))
+    except ValueError:
+        raise NumericalCrossingContractError(INVALID_CROSSING_EVIDENCE_ID, "crossing evidence ID contains an impossible calendar date")
+    return int(match.group("trade_id")), parsed_date, match.group("level_kind")
 
 
 def _validate_crossing_evidence_id(evidence_id, *, expected_trade_id: int, expected_session_date: date, expected_level_kind: str) -> None:
@@ -715,10 +759,12 @@ class NumericalLevelCrossingObservation:
     partial_boundary_crossing_observed: bool
 
     def _validate_group(self, *, crossing_type, session, bar, evidence_id, attribution, allowed_attributions, group_name):
-        if crossing_type not in (CROSSING_TYPE_NORMAL, CROSSING_TYPE_GAP_THROUGH):
+        if not _safe_str_member(crossing_type, frozenset({CROSSING_TYPE_NORMAL, CROSSING_TYPE_GAP_THROUGH})):
             raise NumericalCrossingContractError(INCONSISTENT_CROSSING_OBSERVATION, f"{group_name} group crossing_type must be NORMAL or GAP_THROUGH")
-        if attribution not in allowed_attributions:
+        if not _safe_str_member(attribution, allowed_attributions):
             raise NumericalCrossingContractError(INCONSISTENT_CROSSING_OBSERVATION, f"{group_name} group attribution is not permitted for this group")
+        if type(session) is not date:
+            raise NumericalCrossingContractError(INCONSISTENT_CROSSING_OBSERVATION, f"{group_name} group session must be an exact datetime.date value")
         if not isinstance(bar, PricePathBar):
             raise NumericalCrossingContractError(INCONSISTENT_CROSSING_OBSERVATION, f"{group_name} group bar must be a PricePathBar")
         if session != bar.session_date:
@@ -737,10 +783,13 @@ class NumericalLevelCrossingObservation:
     def __post_init__(self):
         if not isinstance(self.context, NumericalCrossingObservationContext):
             raise NumericalCrossingContractError(INCONSISTENT_CROSSING_OBSERVATION, "context must be a NumericalCrossingObservationContext")
-        if self.level_kind not in _VALID_LEVEL_KINDS:
+        if not _safe_str_member(self.level_kind, _VALID_LEVEL_KINDS):
             raise NumericalCrossingContractError(INCONSISTENT_CROSSING_OBSERVATION, "level_kind is not recognized")
         if self.supplied_value_basis != SUPPLIED_AT_CALCULATION:
             raise NumericalCrossingContractError(INCONSISTENT_CROSSING_OBSERVATION, "supplied_value_basis must be SUPPLIED_AT_CALCULATION")
+        for bool_field_name in ("value_supplied", "crossed_anywhere", "partial_boundary_crossing_observed"):
+            if not isinstance(getattr(self, bool_field_name), bool):
+                raise NumericalCrossingContractError(INCONSISTENT_CROSSING_OBSERVATION, f"{bool_field_name} must be an exact bool")
 
         group_fields = (
             self.first_observed_session, self.first_observed_bar, self.first_observed_evidence_id, self.first_observed_session_attribution,
@@ -884,14 +933,29 @@ def observe_numerical_level_crossing(
     calls sorted() — PricePathEvidenceBundle.__post_init__ already
     rejects duplicate/out-of-order bars, so re-sorting here would only
     hide an upstream evidence-contract violation. Never accepts, reads,
-    or is influenced by any level-history input."""
+    or is influenced by any level-history input.
+
+    Validation order (Stage J4B.2, Stage 4A): (1) level_kind,
+    (2) supplied value, (3) bundle type, (4) observation context,
+    (5) every-bar attribution, (6) crossing calculation. A `bundle`
+    that is not a PricePathEvidenceBundle (including None) raises
+    NumericalCrossingContractError here — never a raw AttributeError
+    from touching a nonexistent attribute."""
     normalized_value = _validate_supplied_numerical_value(supplied_level_value, level_kind)
+    if not isinstance(bundle, PricePathEvidenceBundle):
+        raise NumericalCrossingContractError(INVALID_OBSERVATION_CONTEXT, "bundle must be a PricePathEvidenceBundle")
     context = _build_observation_context(bundle)
+
+    # Every bar is attributed BEFORE any crossing calculation begins,
+    # regardless of whether a value was supplied at all (Stage J4B.2,
+    # Stage 4A/Group C) -- an unrecognized boundary policy or an
+    # out-of-window bar must fail closed even on the no-value path,
+    # since attribution validates bundle integrity independent of
+    # whether there is anything to cross.
+    attributions = [classify_bar_session_attribution(bundle, bar) for bar in bundle.bars]
 
     if normalized_value is None:
         return _no_value_observation(context, level_kind)
-
-    attributions = [classify_bar_session_attribution(bundle, bar) for bar in bundle.bars]
 
     first_observed = None
     first_observed_type = CROSSING_TYPE_NOT_OBSERVED
@@ -997,6 +1061,27 @@ def _classify_pattern(
     return stop_before_target
 
 
+def _validate_summary_inputs(target_observation, stop_observation) -> None:
+    """Stage J4B.2, Stage 4E — the ONE pure summary-input validator,
+    executed at the VERY BEGINNING of summarize_observed_numerical_
+    crossings, before any pattern calculation, date comparison, or flag
+    calculation — and reused as defence-in-depth inside
+    ObservedNumericalCrossingSummary.__post_init__. Validates exact
+    observation object type first (so a hostile non-instance object,
+    including None, never reaches attribute access), then level_kind
+    position, then exact context equality."""
+    if not isinstance(target_observation, NumericalLevelCrossingObservation):
+        raise NumericalCrossingContractError(MIXED_OBSERVATION_CONTEXT, "target_observation must be a NumericalLevelCrossingObservation")
+    if not isinstance(stop_observation, NumericalLevelCrossingObservation):
+        raise NumericalCrossingContractError(MIXED_OBSERVATION_CONTEXT, "stop_observation must be a NumericalLevelCrossingObservation")
+    if target_observation.level_kind != TARGET_VALUE:
+        raise NumericalCrossingContractError(MIXED_OBSERVATION_CONTEXT, "target_observation must be a TARGET_VALUE observation")
+    if stop_observation.level_kind != STOP_VALUE:
+        raise NumericalCrossingContractError(MIXED_OBSERVATION_CONTEXT, "stop_observation must be a STOP_VALUE observation")
+    if target_observation.context != stop_observation.context:
+        raise NumericalCrossingContractError(MIXED_OBSERVATION_CONTEXT, "target and stop observations must share an identical immutable context")
+
+
 def _compute_expected_patterns(
     target_observation: "NumericalLevelCrossingObservation", stop_observation: "NumericalLevelCrossingObservation",
 ) -> tuple[str, str]:
@@ -1047,17 +1132,14 @@ class ObservedNumericalCrossingSummary:
     partial_boundary_observation_present: bool
 
     def __post_init__(self):
-        if not isinstance(self.target_observation, NumericalLevelCrossingObservation) or self.target_observation.level_kind != TARGET_VALUE:
-            raise NumericalCrossingContractError(MIXED_OBSERVATION_CONTEXT, "target_observation must be a TARGET_VALUE observation")
-        if not isinstance(self.stop_observation, NumericalLevelCrossingObservation) or self.stop_observation.level_kind != STOP_VALUE:
-            raise NumericalCrossingContractError(MIXED_OBSERVATION_CONTEXT, "stop_observation must be a STOP_VALUE observation")
-        if self.target_observation.context != self.stop_observation.context:
-            raise NumericalCrossingContractError(MIXED_OBSERVATION_CONTEXT, "target and stop observations must share an identical immutable context")
+        _validate_summary_inputs(self.target_observation, self.stop_observation)
 
-        if self.any_observation_pattern not in _ANY_OBSERVATION_PATTERNS:
+        if not _safe_str_member(self.any_observation_pattern, _ANY_OBSERVATION_PATTERNS):
             raise NumericalCrossingContractError(INCONSISTENT_CROSSING_SUMMARY, "any_observation_pattern is not a supported value")
-        if self.safely_attributable_pattern not in _SAFELY_ATTRIBUTABLE_PATTERNS:
+        if not _safe_str_member(self.safely_attributable_pattern, _SAFELY_ATTRIBUTABLE_PATTERNS):
             raise NumericalCrossingContractError(INCONSISTENT_CROSSING_SUMMARY, "safely_attributable_pattern is not a supported value")
+        if not isinstance(self.partial_boundary_observation_present, bool):
+            raise NumericalCrossingContractError(INCONSISTENT_CROSSING_SUMMARY, "partial_boundary_observation_present must be an exact bool")
 
         expected_any, expected_safe = _compute_expected_patterns(self.target_observation, self.stop_observation)
         if self.any_observation_pattern != expected_any:
@@ -1074,12 +1156,17 @@ def summarize_observed_numerical_crossings(
     target_observation: NumericalLevelCrossingObservation,
     stop_observation: NumericalLevelCrossingObservation,
 ) -> ObservedNumericalCrossingSummary:
-    """Stage J4B, Stage 6 (hardened Stage J4B.1, Stage 11) — pure, no
-    I/O, no level-history input of any kind (no parameter for it exists
-    on this function's signature). Anti-mixing enforcement happens
-    inside ObservedNumericalCrossingSummary's own __post_init__ — a
-    reversed or cross-context pair raises NumericalCrossingContractError
-    before this function can return a value."""
+    """Stage J4B, Stage 6 (hardened Stage J4B.1/J4B.2, Stage 11/4E) —
+    pure, no I/O, no level-history input of any kind (no parameter for
+    it exists on this function's signature). Validates BOTH inputs via
+    _validate_summary_inputs at the very beginning, before any pattern
+    calculation, date comparison, or flag calculation — a reversed,
+    non-instance, or cross-context pair raises
+    NumericalCrossingContractError immediately, never reaching
+    attribute access on an untrusted object. The same validator runs
+    again inside ObservedNumericalCrossingSummary.__post_init__ as
+    defence-in-depth."""
+    _validate_summary_inputs(target_observation, stop_observation)
     any_pattern, safe_pattern = _compute_expected_patterns(target_observation, stop_observation)
     partial_present = target_observation.partial_boundary_crossing_observed or stop_observation.partial_boundary_crossing_observed
     return ObservedNumericalCrossingSummary(
