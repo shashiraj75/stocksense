@@ -263,6 +263,10 @@ def close_paper_trade(
     closed_at: datetime | None = None,
     source_request_id: str | None = None,
     exit_metadata: dict | None = None,
+    request_current_report_outbox: bool = False,
+    current_report_schema_version: str | None = None,
+    current_calculation_version: str | None = None,
+    current_rules_version: str | None = None,
 ) -> CloseResult:
     """The one authoritative close path. `conn` is an already-acquired
     connection from the caller's own pool (this module has no pool of its
@@ -388,6 +392,24 @@ def close_paper_trade(
         )
         if outbox_created:
             log.info("[postmortem_outbox_created] trade_id=%s outbox_id=%s", trade_id, outbox_id)
+
+        # Wave B, Stage J4F — atomic close-to-current-outbox creation.
+        # The caller (paper_trading.py) explicitly opts in and supplies
+        # the exact current (1.2.0) version identity; this module never
+        # reads a feature flag or environment variable itself, matching
+        # the governing prompt's "no env-var reads inside the DB helper"
+        # requirement. Inserted in the SAME transaction as the legacy
+        # 1.0.0 outbox row above, so a crash between the two can never
+        # happen — both durably exist or neither does.
+        if request_current_report_outbox:
+            from services.postmortem.current_report_generation import insert_current_outbox_record
+            insert_current_outbox_record(
+                conn, trade_id=trade_id, user_id=user_id,
+                schema_version=current_report_schema_version,
+                calculation_version=current_calculation_version,
+                rules_version=current_rules_version,
+                source_request_id=source_request_id,
+            )
 
     log.info("[trade_close_completed] trade_id=%s outbox_id=%s", trade_id, outbox_id)
     return CloseResult(

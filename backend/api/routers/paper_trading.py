@@ -1114,6 +1114,34 @@ def _attempt_best_effort_generation(*, user_id: str, trade_id: int, outbox_id: i
         log.warning("[postmortem_generation] best-effort generation attempt failed: %s", "unexpected_error")
 
 
+def _attempt_current_report_generation(*, user_id: str, trade_id: int) -> None:
+    """Wave B, Stage J4F — best-effort invocation of the ONE shared
+    current (1.2.0) governed-report orchestrator
+    (current_report_generation.process_current_report), used identically
+    here (close-time), from the explicit POST recovery endpoint (see
+    _build_generate_response), and by the background outbox worker.
+    Never allowed to turn a successful sell or a /generate call into an
+    HTTP error — matches _attempt_best_effort_generation's own contract."""
+    from services.postmortem.current_report_generation import process_current_report
+
+    try:
+        with _conn() as conn:
+            row = conn.execute("SELECT market FROM paper_trades WHERE id = %s", (trade_id,)).fetchone()
+        if row is None:
+            return
+        market = row[0]
+        tz = _REPORT_TIMEZONE.get(market)
+        if tz is None:
+            return
+        market_timezone_name = "Asia/Kolkata" if market == "IN" else "America/New_York"
+        process_current_report(
+            _conn, trade_id=trade_id, user_id=user_id,
+            market_tzinfo=tz, market_timezone_name=market_timezone_name,
+        )
+    except Exception:
+        log.warning("[current_report_generation] best-effort generation attempt failed: %s", "unexpected_error")
+
+
 # Trade Postmortem Sprint 3A, Stage H2 durable-lifecycle correction —
 # the price-path attempt is now a genuine leased outbox lifecycle, not
 # an unleased best-effort helper. Stable status vocabulary this
@@ -2293,6 +2321,15 @@ def paper_sell(trade_id: int, req: SellRequest, user_id: str = Depends(get_curre
     if _trade_postmortem_price_path_enabled():
         _attempt_price_path_enhancement(user_id=user_id, trade_id=trade_id)
 
+        # Wave B, Stage J4F — close-time best-effort current (1.2.0)
+        # governed report generation via the shared orchestrator (the
+        # SAME process_current_report the explicit POST recovery
+        # endpoint and the background worker also call). Gated behind
+        # the same existing flag as the price-path enhancement above —
+        # no new flag activation this wave. Never allowed to turn a
+        # successful sell into an HTTP error.
+        _attempt_current_report_generation(user_id=user_id, trade_id=trade_id)
+
     return response
 
 
@@ -3153,6 +3190,14 @@ def _build_generate_response(*, trade_id: int, user_id: str, generation_status: 
         # exposed separately so a failed attempt is never silently
         # represented as the Sprint 2 report being ALREADY_COMPLETE for
         # the price-path dimension too (finding #10).
+
+        # Wave B, Stage J4F — best-effort current (1.2.0) governed report
+        # generation via the shared orchestrator. Additive only: does not
+        # change this endpoint's existing response shape/fields (no new
+        # GET exposure this wave) — it exists so the explicit POST
+        # recovery path reaches the SAME orchestrator close-time
+        # best-effort generation and the background worker will also use.
+        _attempt_current_report_generation(user_id=user_id, trade_id=trade_id)
 
     return GenerateReportResponse(
         trade_id=trade_id, generation_status=effective_generation_status, status=effective.status,
