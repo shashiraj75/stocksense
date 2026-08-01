@@ -43,9 +43,17 @@ from services.postmortem.price_path_calculator import (
     NumericalCrossingObservationContext,
     NumericalLevelCrossingObservation,
     ObservedNumericalCrossingSummary,
+    SESSION_ATTRIBUTION_ENTRY_INCLUDED_FULL,
+    SESSION_ATTRIBUTION_ENTRY_PARTIAL_UNKNOWN,
+    SESSION_ATTRIBUTION_EXIT_INCLUDED_FULL,
+    SESSION_ATTRIBUTION_EXIT_PARTIAL_UNKNOWN,
+    SESSION_ATTRIBUTION_INTERIOR,
+    SESSION_ATTRIBUTION_SAME_DAY_INCLUDED_FULL,
+    SESSION_ATTRIBUTION_SAME_DAY_PARTIAL_UNKNOWN,
     STOP_VALUE,
     TARGET_VALUE,
     SessionAttributionError,
+    _classify_session_attribution_fields,
     _crossing_evidence_id,
     _parse_crossing_evidence_id,
     _validate_crossing_evidence_id,
@@ -739,3 +747,291 @@ class TestGroupEExactGroupIdentity:
         from services.postmortem.price_path_calculator import CROSSING_TYPE_GAP_THROUGH
         with pytest.raises(NumericalCrossingContractError):
             dataclasses.replace(obs, first_safely_attributable_crossing_type=CROSSING_TYPE_GAP_THROUGH)
+
+
+# ============================================================================
+# STAGE J4B.3 -- I-01 through I-04 (context-derived attribution, five-field
+# identity, evidence-ID factory totality, exact context types)
+# ============================================================================
+@pytest.mark.unit
+class TestI01ContextDerivedAttribution:
+    """Group A -- an observation whose stored attribution does not match
+    the EXACT attribution the immutable context's own window/policy
+    fields would derive for that bar's session_date must be rejected,
+    even when the claimed attribution belongs to a broad allowed
+    category."""
+
+    def _observation(self):
+        bars = [_raw(_D(1), 100, 101, 99, 100), _raw(_D(2), 100, 150, 99, 100),
+                _raw(_D(3), 100, 101, 99, 100), _raw(_D(4), 100, 101, 99, 100)]
+        bundle = _us_bundle(_US_ENTRY_INTERIOR, _US_EXIT_INTERIOR, bars)
+        return observe_numerical_level_crossing(bundle, 120.0, TARGET_VALUE)
+
+    def test_a01_interior_bar_labelled_entry_included_full_rejected(self):
+        obs = self._observation()
+        assert obs.first_observed_session == _D(2)
+        assert obs.first_observed_session_attribution == SESSION_ATTRIBUTION_INTERIOR
+        with pytest.raises(NumericalCrossingContractError) as exc_info:
+            dataclasses.replace(obs, first_observed_session_attribution=SESSION_ATTRIBUTION_ENTRY_INCLUDED_FULL)
+        assert exc_info.value.reason_code == INCONSISTENT_CROSSING_OBSERVATION
+
+    def test_a02_interior_bar_labelled_exit_included_full_rejected(self):
+        obs = self._observation()
+        with pytest.raises(NumericalCrossingContractError):
+            dataclasses.replace(obs, first_observed_session_attribution=SESSION_ATTRIBUTION_EXIT_INCLUDED_FULL)
+
+    def _entry_bar_observation(self):
+        bars = [_raw(_D(1), 100, 150, 99, 100), _raw(_D(2), 100, 101, 99, 100),
+                _raw(_D(3), 100, 101, 99, 100), _raw(_D(4), 100, 101, 99, 100)]
+        bundle = _us_bundle(_US_ENTRY_INTERIOR, _US_EXIT_INTERIOR, bars)
+        return observe_numerical_level_crossing(bundle, 120.0, TARGET_VALUE)
+
+    def test_a03_entry_bar_labelled_interior_rejected(self):
+        obs = self._entry_bar_observation()
+        assert obs.first_observed_session_attribution == SESSION_ATTRIBUTION_ENTRY_INCLUDED_FULL
+        with pytest.raises(NumericalCrossingContractError):
+            dataclasses.replace(obs, first_observed_session_attribution=SESSION_ATTRIBUTION_INTERIOR)
+
+    def test_a04_entry_bar_labelled_exit_included_full_rejected(self):
+        obs = self._entry_bar_observation()
+        with pytest.raises(NumericalCrossingContractError):
+            dataclasses.replace(obs, first_observed_session_attribution=SESSION_ATTRIBUTION_EXIT_INCLUDED_FULL)
+
+    def _exit_bar_observation(self):
+        bars = [_raw(_D(1), 100, 101, 99, 100), _raw(_D(2), 100, 101, 99, 100),
+                _raw(_D(3), 100, 101, 99, 100), _raw(_D(4), 100, 150, 99, 100)]
+        bundle = _us_bundle(_US_ENTRY_INTERIOR, _US_EXIT_INTERIOR, bars)
+        return observe_numerical_level_crossing(bundle, 120.0, TARGET_VALUE)
+
+    def test_a05_exit_bar_labelled_interior_rejected(self):
+        obs = self._exit_bar_observation()
+        assert obs.first_observed_session_attribution == SESSION_ATTRIBUTION_EXIT_INCLUDED_FULL
+        with pytest.raises(NumericalCrossingContractError):
+            dataclasses.replace(obs, first_observed_session_attribution=SESSION_ATTRIBUTION_INTERIOR)
+
+    def test_a06_exit_bar_labelled_entry_included_full_rejected(self):
+        obs = self._exit_bar_observation()
+        with pytest.raises(NumericalCrossingContractError):
+            dataclasses.replace(obs, first_observed_session_attribution=SESSION_ATTRIBUTION_ENTRY_INCLUDED_FULL)
+
+    def test_a07_same_day_partial_bar_labelled_same_day_included_full_rejected(self):
+        bundle = _us_bundle(_US_ENTRY_PARTIAL, dt.datetime(2026, 6, 1, 15, 0, tzinfo=ET), [_raw(_D(1), 100, 150, 99, 100)])
+        obs = observe_numerical_level_crossing(bundle, 120.0, TARGET_VALUE)
+        assert obs.first_observed_session_attribution == SESSION_ATTRIBUTION_SAME_DAY_PARTIAL_UNKNOWN
+        with pytest.raises(NumericalCrossingContractError):
+            dataclasses.replace(obs, first_observed_session_attribution=SESSION_ATTRIBUTION_SAME_DAY_INCLUDED_FULL)
+
+    def test_a08_same_day_full_bar_labelled_same_day_partial_unknown_rejected(self):
+        bundle = _us_bundle(_US_ENTRY_INTERIOR, dt.datetime(2026, 6, 1, 16, 0, tzinfo=ET), [_raw(_D(1), 100, 150, 99, 100)])
+        obs = observe_numerical_level_crossing(bundle, 120.0, TARGET_VALUE)
+        assert obs.first_observed_session_attribution == SESSION_ATTRIBUTION_SAME_DAY_INCLUDED_FULL
+        with pytest.raises(NumericalCrossingContractError):
+            dataclasses.replace(obs, first_observed_session_attribution=SESSION_ATTRIBUTION_SAME_DAY_PARTIAL_UNKNOWN)
+
+    def test_a09_out_of_window_attached_bar_rejected(self):
+        obs = self._observation()
+        out_of_window_bar = dataclasses.replace(obs.first_observed_bar, session_date=_D(20))
+        with pytest.raises(NumericalCrossingContractError):
+            dataclasses.replace(obs, first_observed_bar=out_of_window_bar, first_observed_session=_D(20),
+                                 first_observed_evidence_id=f"NUMERICAL-CROSSING-1-{_D(20).isoformat()}-TARGET_VALUE")
+
+    def test_helper_field_based_matches_bundle_based_classifier(self):
+        """Proof (Correction: 'same matrix') -- the shared field-based
+        helper and the public bundle/bar classifier agree on every
+        recognized case, since the latter now delegates to the former."""
+        bars = [_raw(_D(1), 100, 101, 99, 100), _raw(_D(2), 100, 101, 99, 100),
+                _raw(_D(3), 100, 101, 99, 100), _raw(_D(4), 100, 101, 99, 100)]
+        bundle = _us_bundle(_US_ENTRY_INTERIOR, _US_EXIT_INTERIOR, bars)
+        for bar in bundle.bars:
+            via_classifier = classify_bar_session_attribution(bundle, bar)
+            via_helper = _classify_session_attribution_fields(
+                requested_window_start=bundle.requested_window_start, requested_window_end=bundle.requested_window_end,
+                entry_bar_policy=bundle.entry_bar_policy, exit_bar_policy=bundle.exit_bar_policy,
+                session_date=bar.session_date,
+            )
+            assert via_classifier == via_helper
+
+
+@pytest.mark.unit
+class TestI02FiveFieldIdentity:
+    def _observation_entry_included_full(self):
+        bars = [_raw(_D(1), 100, 150, 99, 100), _raw(_D(2), 100, 101, 99, 100),
+                _raw(_D(3), 100, 101, 99, 100), _raw(_D(4), 100, 101, 99, 100)]
+        bundle = _us_bundle(_US_ENTRY_INTERIOR, _US_EXIT_INTERIOR, bars)
+        return observe_numerical_level_crossing(bundle, 120.0, TARGET_VALUE)
+
+    def test_b10_first_observed_safe_identity_with_differing_attribution_rejected(self):
+        """first_observed is ENTRY_INCLUDED_FULL (safely attributable) --
+        the safe group must exactly match ALL five fields including
+        session_attribution, not just session/bar/evidence_id/crossing_type."""
+        obs = self._observation_entry_included_full()
+        assert obs.first_observed_session_attribution == SESSION_ATTRIBUTION_ENTRY_INCLUDED_FULL
+        assert obs.first_safely_attributable_session == obs.first_observed_session
+        with pytest.raises(NumericalCrossingContractError) as exc_info:
+            dataclasses.replace(obs, first_safely_attributable_session_attribution=SESSION_ATTRIBUTION_INTERIOR)
+        assert exc_info.value.reason_code == INCONSISTENT_CROSSING_OBSERVATION
+
+    def test_b11_first_observed_partial_identity_with_differing_attribution_rejected(self):
+        bundle = _us_bundle(_US_ENTRY_PARTIAL, _US_EXIT_INTERIOR, [
+            _raw(_D(1), 100, 150, 99, 100), _raw(_D(2), 100, 101, 99, 100),
+            _raw(_D(3), 100, 101, 99, 100), _raw(_D(4), 100, 101, 99, 100),
+        ])
+        obs = observe_numerical_level_crossing(bundle, 120.0, TARGET_VALUE)
+        assert obs.first_observed_session_attribution == SESSION_ATTRIBUTION_ENTRY_PARTIAL_UNKNOWN
+        assert obs.first_partial_boundary_session == obs.first_observed_session
+        with pytest.raises(NumericalCrossingContractError) as exc_info:
+            dataclasses.replace(obs, first_partial_boundary_session_attribution=SESSION_ATTRIBUTION_EXIT_PARTIAL_UNKNOWN)
+        assert exc_info.value.reason_code == INCONSISTENT_CROSSING_OBSERVATION
+
+
+@pytest.mark.unit
+class TestI03EvidenceIdFactoryTotality:
+    def test_c12_bool_paper_trade_id_rejected(self):
+        with pytest.raises(NumericalCrossingContractError) as exc_info:
+            _crossing_evidence_id(True, _D(1), TARGET_VALUE)
+        assert exc_info.value.reason_code == INVALID_CROSSING_EVIDENCE_ID
+
+    def test_c13_zero_paper_trade_id_rejected(self):
+        with pytest.raises(NumericalCrossingContractError):
+            _crossing_evidence_id(0, _D(1), TARGET_VALUE)
+
+    def test_c14_negative_paper_trade_id_rejected(self):
+        with pytest.raises(NumericalCrossingContractError):
+            _crossing_evidence_id(-1, _D(1), TARGET_VALUE)
+
+    def test_c15_int_subclass_paper_trade_id_rejected(self):
+        class _IntLike(int):
+            pass
+        with pytest.raises(NumericalCrossingContractError):
+            _crossing_evidence_id(_IntLike(1), _D(1), TARGET_VALUE)
+
+    def test_c16_none_session_date_rejected(self):
+        with pytest.raises(NumericalCrossingContractError):
+            _crossing_evidence_id(1, None, TARGET_VALUE)
+
+    def test_c17_datetime_session_date_rejected(self):
+        with pytest.raises(NumericalCrossingContractError):
+            _crossing_evidence_id(1, dt.datetime(2026, 6, 1, tzinfo=ET), TARGET_VALUE)
+
+    def test_c18_date_subclass_session_date_rejected(self):
+        class _DateLike(dt.date):
+            pass
+        with pytest.raises(NumericalCrossingContractError):
+            _crossing_evidence_id(1, _DateLike(2026, 6, 1), TARGET_VALUE)
+
+    def test_c19_string_session_date_rejected(self):
+        with pytest.raises(NumericalCrossingContractError):
+            _crossing_evidence_id(1, "2026-06-01", TARGET_VALUE)
+
+    def test_c20_invalid_level_kind_rejected(self):
+        with pytest.raises(NumericalCrossingContractError) as exc_info:
+            _crossing_evidence_id(1, _D(1), "NOT_A_KIND")
+        assert exc_info.value.reason_code == INVALID_CROSSING_EVIDENCE_ID
+
+    def test_c21_string_subclass_level_kind_rejected(self):
+        class _StrLike(str):
+            pass
+        with pytest.raises(NumericalCrossingContractError):
+            _crossing_evidence_id(1, _D(1), _StrLike(TARGET_VALUE))
+
+    def test_c22_unhashable_level_kind_rejected_without_raw_typeerror(self):
+        with pytest.raises(NumericalCrossingContractError):
+            _crossing_evidence_id(1, _D(1), ["unhashable"])
+
+    def test_c23_invalid_values_not_reproduced_in_error_text(self):
+        with pytest.raises(NumericalCrossingContractError) as exc_info:
+            _crossing_evidence_id(-999999, _D(1), TARGET_VALUE)
+        assert "999999" not in str(exc_info.value)
+
+    def test_valid_id_still_generated_unchanged(self):
+        assert _crossing_evidence_id(1, _D(1), TARGET_VALUE) == f"NUMERICAL-CROSSING-1-{_D(1).isoformat()}-TARGET_VALUE"
+
+
+@pytest.mark.unit
+class TestI04ExactContextTypes:
+    def _valid_kwargs(self, **overrides):
+        kwargs = dict(
+            paper_trade_id=1, symbol="AAPL", market="US",
+            evidence_bundle_version="1.0.0", source_id="yfinance_daily", source_version="1.1.0",
+            evidence_hash="a" * 64, source_manifest_integrity_hash="b" * 64,
+            bar_interval="1d", price_adjustment_basis=UNADJUSTED, market_timezone="America/New_York",
+            requested_window_start=_D(1), requested_window_end=_D(4),
+            entry_bar_policy="ENTRY_BAR_INCLUDED_FULL", exit_bar_policy="EXIT_BAR_INCLUDED_FULL",
+        )
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_d24_int_subclass_paper_trade_id_rejected(self):
+        class _IntLike(int):
+            pass
+        with pytest.raises(NumericalCrossingContractError) as exc_info:
+            NumericalCrossingObservationContext(**self._valid_kwargs(paper_trade_id=_IntLike(1)))
+        assert exc_info.value.reason_code == INVALID_OBSERVATION_CONTEXT
+
+    def test_d25_string_subclass_symbol_rejected(self):
+        class _StrLike(str):
+            pass
+        with pytest.raises(NumericalCrossingContractError):
+            NumericalCrossingObservationContext(**self._valid_kwargs(symbol=_StrLike("AAPL")))
+
+    def test_d26_empty_symbol_rejected(self):
+        with pytest.raises(NumericalCrossingContractError):
+            NumericalCrossingObservationContext(**self._valid_kwargs(symbol=""))
+
+    def test_d27_whitespace_only_symbol_rejected(self):
+        with pytest.raises(NumericalCrossingContractError):
+            NumericalCrossingObservationContext(**self._valid_kwargs(symbol="   "))
+
+    @pytest.mark.parametrize("field_name", [
+        "evidence_bundle_version", "source_id", "source_version",
+        "bar_interval", "price_adjustment_basis", "market_timezone",
+    ])
+    def test_d28_every_identity_string_field_rejects_empty(self, field_name):
+        with pytest.raises(NumericalCrossingContractError):
+            NumericalCrossingObservationContext(**self._valid_kwargs(**{field_name: ""}))
+
+    @pytest.mark.parametrize("field_name", [
+        "evidence_bundle_version", "source_id", "source_version",
+        "bar_interval", "price_adjustment_basis", "market_timezone",
+    ])
+    def test_d29_every_identity_string_field_rejects_whitespace_only(self, field_name):
+        with pytest.raises(NumericalCrossingContractError):
+            NumericalCrossingObservationContext(**self._valid_kwargs(**{field_name: "   "}))
+
+    @pytest.mark.parametrize("field_name", [
+        "evidence_bundle_version", "source_id", "source_version",
+        "bar_interval", "price_adjustment_basis", "market_timezone",
+    ])
+    def test_d30_every_identity_string_field_rejects_string_subclass(self, field_name):
+        class _StrLike(str):
+            pass
+        with pytest.raises(NumericalCrossingContractError):
+            NumericalCrossingObservationContext(**self._valid_kwargs(**{field_name: _StrLike("valid_value")}))
+
+    @pytest.mark.parametrize("hash_field", ["evidence_hash", "source_manifest_integrity_hash"])
+    def test_d31_both_hash_fields_reject_string_subclass(self, hash_field):
+        class _StrLike(str):
+            pass
+        with pytest.raises(NumericalCrossingContractError):
+            NumericalCrossingObservationContext(**self._valid_kwargs(**{hash_field: _StrLike("a" * 64)}))
+
+    def test_d32_requested_window_datetime_values_remain_rejected(self):
+        with pytest.raises(NumericalCrossingContractError):
+            NumericalCrossingObservationContext(**self._valid_kwargs(requested_window_start=dt.datetime(2026, 6, 1, tzinfo=ET)))
+
+    def test_d33_requested_window_date_subclass_remains_rejected(self):
+        class _DateLike(dt.date):
+            pass
+        with pytest.raises(NumericalCrossingContractError):
+            NumericalCrossingObservationContext(**self._valid_kwargs(requested_window_end=_DateLike(2026, 6, 4)))
+
+    def test_d34_policy_string_subclass_remains_rejected(self):
+        class _StrLike(str):
+            pass
+        with pytest.raises(NumericalCrossingContractError):
+            NumericalCrossingObservationContext(**self._valid_kwargs(entry_bar_policy=_StrLike("ENTRY_BAR_INCLUDED_FULL")))
+
+    def test_valid_context_still_constructs(self):
+        ctx = NumericalCrossingObservationContext(**self._valid_kwargs())
+        assert ctx.paper_trade_id == 1
+        assert ctx.symbol == "AAPL"

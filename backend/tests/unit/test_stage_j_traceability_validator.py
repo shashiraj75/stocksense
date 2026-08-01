@@ -139,3 +139,114 @@ class TestStageJTraceabilityValidator:
             assert row[reason_idx] == "EXCURSION_NO_INTERIOR_BARS", (
                 f"row {n} reason code is {row[reason_idx]!r}, expected EXCURSION_NO_INTERIOR_BARS"
             )
+
+
+# ============================================================================
+# Stage J4B.3 -- executable requirement-to-test traceability (I-05).
+#
+# Separates STATIC proof (a manifest-cited node exists / would be
+# collected) from RUNTIME proof (it actually ran and passed, per a
+# JUnit XML report). These tests exercise the parsing/validation LOGIC
+# in j4b3_traceability_helper.py against small synthetic fixtures --
+# they never shell out to pytest themselves (that would either be a
+# per-row subprocess loop, explicitly prohibited, or a self-referential
+# full-suite run from inside the suite itself). The actual external
+# `pytest --collect-only` run and the actual full-suite JUnit run are
+# performed once, externally, as part of Stage 12 local verification --
+# their real output is what the manifest is validated against there,
+# not fabricated here.
+# ============================================================================
+import json as _json
+import tempfile as _tempfile
+
+from tests.unit.j4b3_traceability_helper import (
+    check_manifest_ids_unique,
+    load_manifest,
+    parse_collect_only_output,
+    parse_junit_xml,
+    validate_runtime,
+    validate_static,
+)
+
+_MANIFEST_PATH = Path(__file__).resolve().parent / "j4b3_traceability_manifest.json"
+
+
+@pytest.mark.unit
+class TestJ4B3TraceabilityHelper:
+    def test_manifest_is_valid_json_with_required_keys(self):
+        manifest = load_manifest(_MANIFEST_PATH)
+        assert manifest["stage"] == "J4B.3"
+        assert isinstance(manifest["requirements"], list)
+        for req in manifest["requirements"]:
+            for key in ("id", "title", "protected_function", "expected_behavior", "nodes"):
+                assert key in req, f"requirement missing key {key!r}: {req.get('id')}"
+
+    def test_manifest_ids_appear_exactly_once(self):
+        manifest = load_manifest(_MANIFEST_PATH)
+        errors = check_manifest_ids_unique(manifest)
+        assert errors == []
+        ids = [req["id"] for req in manifest["requirements"]]
+        assert ids == sorted(set(ids), key=ids.index)  # no duplicates, preserves order
+        assert set(ids) == {"I-01", "I-02", "I-03", "I-04", "I-05", "I-06"}
+
+    def test_parse_collect_only_output_extracts_node_ids(self):
+        sample = (
+            "tests/unit/test_foo.py::TestBar::test_baz\n"
+            "tests/unit/test_foo.py::TestBar::test_qux[param-a]\n"
+            "\n"
+            "3 tests collected in 0.01s\n"
+        )
+        nodes = parse_collect_only_output(sample)
+        assert nodes == {
+            "tests/unit/test_foo.py::TestBar::test_baz",
+            "tests/unit/test_foo.py::TestBar::test_qux[param-a]",
+        }
+
+    def test_static_validation_detects_missing_node(self):
+        manifest = {"requirements": [{
+            "id": "X-01", "nodes": ["backend/tests/unit/test_nonexistent_file.py::TestX::test_missing"],
+        }]}
+        collected = {"backend/tests/unit/test_price_path_calculator.py::TestReal::test_present"}
+        errors = validate_static(manifest, collected, repo_root=Path(__file__).resolve().parents[3])
+        assert any("cited node not found in collection" in e for e in errors)
+
+    def test_static_validation_accepts_parametrized_prefix_match(self):
+        manifest = {"requirements": [{
+            "id": "X-02", "nodes": ["backend/tests/unit/test_price_path_calculator.py::TestReal::test_param"],
+        }]}
+        collected = {"backend/tests/unit/test_price_path_calculator.py::TestReal::test_param[case-a]"}
+        errors = validate_static(manifest, collected, repo_root=Path(__file__).resolve().parents[3])
+        assert not any("cited node not found in collection" in e for e in errors)
+
+    def test_parse_junit_xml_extracts_outcomes(self):
+        xml_text = """<?xml version="1.0"?>
+<testsuites>
+  <testsuite name="pytest">
+    <testcase classname="tests.unit.test_foo.TestBar" name="test_pass" file="tests/unit/test_foo.py"></testcase>
+    <testcase classname="tests.unit.test_foo.TestBar" name="test_fail" file="tests/unit/test_foo.py">
+      <failure message="boom">traceback</failure>
+    </testcase>
+    <testcase classname="tests.unit.test_foo.TestBar" name="test_skip" file="tests/unit/test_foo.py">
+      <skipped message="skipped"></skipped>
+    </testcase>
+  </testsuite>
+</testsuites>"""
+        with _tempfile.NamedTemporaryFile(mode="w", suffix=".xml", delete=False) as f:
+            f.write(xml_text)
+            path = f.name
+        results = parse_junit_xml(path)
+        assert results["tests/unit/test_foo.py::TestBar::test_pass"] == "passed"
+        assert results["tests/unit/test_foo.py::TestBar::test_fail"] == "failed"
+        assert results["tests/unit/test_foo.py::TestBar::test_skip"] == "skipped"
+
+    def test_runtime_validation_detects_failed_node(self):
+        manifest = {"requirements": [{"id": "X-03", "nodes": ["tests/unit/test_foo.py::TestBar::test_fail"]}]}
+        junit_results = {"tests/unit/test_foo.py::TestBar::test_fail": "failed"}
+        errors = validate_runtime(manifest, junit_results)
+        assert any("did not pass" in e for e in errors)
+
+    def test_runtime_validation_detects_skipped_node(self):
+        manifest = {"requirements": [{"id": "X-04", "nodes": ["tests/unit/test_foo.py::TestBar::test_skip"]}]}
+        junit_results = {"tests/unit/test_foo.py::TestBar::test_skip": "skipped"}
+        errors = validate_runtime(manifest, junit_results)
+        assert any("was skipped" in e for e in errors)
