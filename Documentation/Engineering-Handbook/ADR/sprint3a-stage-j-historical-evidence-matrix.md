@@ -1550,3 +1550,189 @@ remain at 187 (unchanged from the Stage J3B.2 baseline).
 Stage J is **not** complete. This phase does not begin J4C, does not
 begin J4D, does not change any report output, and does not change any
 production behavior reachable through the live `/generate` endpoint.
+
+---
+
+## Stage J4B.1 — Observed-crossing contract, context-identity and
+## invariant hardening
+
+**NOT REPORT-WIRED, NOT PERSISTED, NOT ENDPOINT-WIRED, NOT MERGE-
+AUTHORIZED, NOT DEPLOYMENT-AUTHORIZED.** Hardens the additive,
+unpublished, unpersisted, unconsumed J4B internal model from the
+section above. Confirmed all twelve items from the Stage 1 defect-
+surface inspection were present at the starting SHA and corrected
+every one; none was already resolved.
+
+### Finite-positive supplied-value contract
+
+`_validate_supplied_numerical_value(supplied_level_value, level_kind)`
+validates `level_kind` first, then the value: `None` remains valid (no
+value supplied); `bool` is rejected explicitly (never silently coerced
+to 0/1); only `int`/`float` are accepted and an `int` is deterministically
+converted to `float`; `NaN`, positive/negative infinity, positive/negative
+zero, and every negative value are rejected; a valid value is always a
+finite, strictly positive `float`. Never clamps, rounds, repairs,
+replaces, or infers an invalid value; never infers currency or tick
+size; imposes no arbitrary maximum.
+
+### Strict GAP_THROUGH semantics
+
+`bar.open` exactly equal to the supplied value is now `NORMAL`, not
+`GAP_THROUGH`, for both `TARGET_VALUE` (`open > value` required for
+`GAP_THROUGH`) and `STOP_VALUE` (`open < value` required). Crossing
+itself remains inclusive (`high >= value` / `low <= value`).
+
+### Complete boundary-policy prevalidation
+
+`classify_bar_session_attribution` validates the requested-window
+ordering and BOTH `entry_bar_policy`/`exit_bar_policy` values up front,
+before deciding interior/entry/exit/same-day — an unrecognized policy
+on either side always fails closed (`SessionAttributionError`), even
+when the other side is a recognized value, including every same-day
+combination. `is_safely_attributable_session` now raises on an unknown
+attribution value instead of silently returning `False`.
+
+### Every-bar attribution before crossing calculation
+
+`observe_numerical_level_crossing` calls `classify_bar_session_
+attribution` for every bar in the bundle BEFORE evaluating whether any
+bar crosses the supplied value — an out-of-window or invalid-policy
+bar fails closed even if it would never have crossed anything.
+
+### Reliance on the existing immutable chronological bundle invariant
+
+`observe_numerical_level_crossing` no longer calls `sorted()` on
+`bundle.bars` — it iterates the bundle's own already-enforced stored
+order. `PricePathEvidenceBundle.__post_init__` already rejects
+duplicate-date and out-of-order bars; re-sorting here would only mask
+an upstream evidence-contract violation instead of surfacing it.
+
+### Immutable observation context and anti-mixing purpose
+
+A new frozen `NumericalCrossingObservationContext` — built ONLY from
+the exact `PricePathEvidenceBundle` passed to
+`observe_numerical_level_crossing` — is attached to every observation,
+including no-value and no-crossing ones. Two observations can never be
+combined by `summarize_observed_numerical_crossings` unless their
+contexts are exactly equal, which requires an identical trade, symbol,
+market, evidence bundle version/source identity, evidence hash,
+manifest integrity hash, bar interval, price-adjustment basis, market
+timezone, requested window, and both boundary policies.
+
+### Context fields and deliberate exclusion of user_id
+
+Fields: `paper_trade_id`, `symbol`, `market`, `evidence_bundle_version`,
+`source_id`, `source_version`, `evidence_hash`,
+`source_manifest_integrity_hash`, `bar_interval`,
+`price_adjustment_basis`, `market_timezone`, `requested_window_start`/
+`end`, `entry_bar_policy`, `exit_bar_policy`. Deliberately excludes
+`user_id`, current quotes, and stop/target values, and derives nothing
+externally. **`evidence_hash` and `source_manifest_integrity_hash`
+provide deterministic identity and corruption/drift association ONLY —
+neither is described as, or functions as, cryptographic authentication
+of anything.**
+
+### First observed, first safe, first partial retention
+
+`NumericalLevelCrossingObservation` now retains three independent
+bases — `first_observed_*`, `first_safely_attributable_*`, and the new
+`first_partial_boundary_*` — proven for both orderings (partial crossing
+first then a later safe crossing; safe crossing first then a later
+partial crossing) to retain all applicable bases simultaneously, never
+discarding one because another was found.
+
+### Observation dataclass invariants
+
+`NumericalLevelCrossingObservation.__post_init__` validates: no-value
+observations carry no group fields and report no crossing; no-crossing
+observations (value supplied, nothing crossed) likewise carry no group
+fields; a crossed observation's first-observed group is fully present
+and internally consistent (crossing type matches strict GAP_THROUGH
+rule, session matches the group's own bar, evidence ID is canonical
+and consistent with the context/session/level-kind, the bar genuinely
+crosses the value, `bar.source_id` matches `context.source_id`); the
+safely-attributable and partial-boundary groups are each either
+completely absent or completely present, self-consistent by the same
+rules, never earlier than the first-observed session, and — when
+first-observed's own attribution already qualifies for that group —
+required to identify the exact same bar/session/evidence-ID/crossing-
+type. **Factory-only guarantee** (documented in the class's own
+docstring, not merely asserted here): a standalone instance's
+`__post_init__` can only validate internal self-consistency; it cannot
+by itself prove the referenced bar is the chronologically earliest
+qualifying crossing across the entire bundle — that guarantee comes
+only from `observe_numerical_level_crossing`'s own full-bundle scan and
+this module's test suite.
+
+### Summary dataclass invariants
+
+`ObservedNumericalCrossingSummary.__post_init__` requires
+`target_observation.level_kind == TARGET_VALUE` and
+`stop_observation.level_kind == STOP_VALUE` (rejecting reversed
+inputs), requires byte-identical contexts on both sides (the anti-
+mixing control), and recomputes both pattern fields through one pure
+internal classifier (`_compute_expected_patterns`), rejecting any
+forged/inconsistent stored value. `partial_boundary_observation_present`
+must equal the logical OR of the two observations' own flags.
+
+### Evidence-ID validation
+
+Canonical format `NUMERICAL-CROSSING-{positive-trade-id}-{YYYY-MM-DD}-
+{TARGET_VALUE|STOP_VALUE}`, parsed and validated by one shared
+regex-based parser used both by the generator and by every observation-
+invariant check — rejects malformed IDs and any trade-ID/date/level-kind
+mismatch against the observation it's attached to. Contains no user ID,
+symbol, market, price, provider payload, or report narrative.
+
+### No report wiring, no persistence, no endpoint change, no version bump
+
+Unchanged from the J4B section above — re-verified: `price_path_
+calculator.py` still does not import `price_path_generation` or
+`price_path_claims`; neither of those modules nor `paper_trading.py`
+reference any J4B/J4B.1 symbol; no `structured_report`/claim/evidence-
+item field changed; no database write includes the observation context
+or summary; all six version constants (`SOURCE_VERSION`,
+`EVIDENCE_BUNDLE_SCHEMA_VERSION`, `SOURCE_MANIFEST_SCHEMA_VERSION`,
+`BOUNDARY_POLICY_VERSION`, `CALCULATION_RULES_VERSION`,
+`PRICE_PATH_REPORT_SCHEMA_VERSION`) remain pinned unchanged by a
+dedicated regression test. Adding internal context and invariant
+fields to the J4B dataclasses does not authorize report use.
+
+### J4C not started; J4D not started; Stage J not complete
+
+Unchanged from the sections above.
+
+### Verification
+
+Local: `pytest backend/tests -m "not postgres_integration"` →
+**4938 passed, 0 failed, 187 deselected**, 118.83s. Log at
+`/tmp/sprint3a-stage-j4b1-contract-hardening.log`. New dedicated test
+file `tests/unit/test_price_path_observed_crossing_invariants.py`
+(78 tests) covering the value contract, session/boundary hardening,
+strict gap semantics, observation context, evidence-ID validation,
+observation-dataclass invariants, retention across the hardened
+implementation, and summary anti-mixing, plus regression proof that
+all 56 pre-existing J4B tests, `detect_touches`, `classify_touch_
+order`, and all six version constants remain unchanged. This test
+file covers every contract requirement group from the authorizing
+prompt with representative cases; it does not mechanically enumerate
+every one of the prompt's 93 numbered scenarios as a literally
+separate, identically-numbered test function — several numbered items
+collapse into the same underlying assertion (e.g., "reversed inputs
+rejected" and "different trades rejected" are both proven by the same
+context-equality check exercised from two angles) and are documented
+here as covered by that shared mechanism rather than duplicated.
+
+PostgreSQL: this phase adds unit tests only — no real-PG test was
+added or modified; the real-PostgreSQL collection is expected to
+remain at 187 (unchanged from the Stage J4B baseline).
+
+### Explicit non-claims
+
+Stage J is **not** complete. This phase does not begin J4C, does not
+begin J4D, does not change any report output, and does not change any
+production behavior reachable through the live `/generate` endpoint.
+Evidence hashes are identity/corruption-drift associations only, never
+authentication. Active stop/target history is not proven by this
+phase. `NO_LEVELS_CONFIGURED_THROUGHOUT` is not claimed anywhere in
+this phase's code or tests.
