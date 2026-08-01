@@ -1088,5 +1088,39 @@
       "Fix (commit de58b24): updated the 3 stale count assertions with explanatory comments.",
       "Run 30718307152 (third post-implementation dispatch): SUCCESS \u2014 zero failures on both PostgreSQL 15 and 17."
     ]
+  },
+  "gate5_adversarial_audit": {
+    "perspectives_run": [
+      "implementer (self-review during implementation)",
+      "independent reviewer (fresh-eyes code inspection post-implementation)",
+      "no-fabrication auditor (canonical fallback string identity, honest NO_BARS/LIMITED_EVIDENCE verified)",
+      "versioning auditor (1.0.0/1.1.0/1.2.0 constants confirmed independently unchanged)",
+      "PostgreSQL auditor (SKIP LOCKED claim pattern, UPDATE...FROM join correctness verified via real CI)",
+      "concurrency auditor",
+      "crash-recovery auditor (StaleLeaseError propagation, lease reclaim verified)",
+      "security/privacy auditor (no raw PII/price f-string logging, opaque claimant tokens verified)",
+      "operations auditor",
+      "compatibility auditor (no frozen file/constant mutated)",
+      "reset/delete auditor (generic user_id-scoped DELETE confirmed to already cover 1.2.0 tables)",
+      "product owner (no new GET exposure, no frontend change, no flag activation, scope matches contract)"
+    ],
+    "findings": [
+      {
+        "perspective": "concurrency auditor",
+        "classification": "BLOCKING",
+        "summary": "outbox_worker's poll loop applied ONE market_tzinfo/market_timezone_name to an ENTIRE claimed batch, but claim_next_current_outbox_batch never filtered by market \u2014 a claimed batch could contain trades from either market, silently misattributing session-boundary timezone semantics for any row not matching the current loop iteration's assumed market.",
+        "fix_commit": "d647648",
+        "verification": "Full J4F local matrix (60/60) + full non-PostgreSQL suite (2818/1/0) + PostgreSQL 15+17 CI run 30718595833 all green after the fix."
+      },
+      {
+        "perspective": "operations auditor",
+        "classification": "BLOCKING",
+        "summary": "close_service.py's request_current_report_outbox parameter (implemented + unit-tested in Batch G) was never actually invoked with True from any real call site \u2014 the atomic close-to-outbox creation capability was dead code; the background worker had nothing to durably recover from when the close-time synchronous best-effort attempt didn't run or settle.",
+        "fix_commit": "6c6c981",
+        "verification": "Same verification set as above; PostgreSQL 15+17 CI run 30718595833 green."
+      }
+    ],
+    "false_positives_or_nonblocking": [],
+    "re_audit_status": "Both BLOCKING findings corrected in the SAME pass they were discovered in and re-verified green (non-PostgreSQL suite + real PostgreSQL 15/17 CI) before being recorded here \u2014 a formal second full audit pass was not separately re-run given the findings were narrow and immediately fixed/verified; this is disclosed rather than silently treated as a full independent re-audit round."
   }
 }
