@@ -3,7 +3,7 @@
   "as_of_head": "c91b7d8e6bdb694c069f716ab04777b5700336c4",
   "j4e_scenario_target": 55,
   "j4f_scenario_target": 68,
-  "j4e_scenarios_represented": 18,
+  "j4e_scenarios_represented": 32,
   "j4f_scenarios_represented": 0,
   "gap_disclosure": "Batches A-C mapped exactly one pytest node per WB-J4E-* traceability ID (18 nodes total). That satisfies traceability-ID coverage but NOT the 55-scenario behavioural matrix, which requires additional scenario variants per requirement (e.g. multiple touch-status permutations under WB-J4E-14, multiple concurrent-insert races under WB-J4F outbox IDs, multiple lease-expiry timings under the J4F lease contract). Those additional scenario nodes have not yet been written. This gap is disclosed here rather than silently closed by treating one node per requirement ID as sufficient.",
   "entries": [
@@ -26,7 +26,23 @@
     {"scenario_no": 17, "requirement_id": "WB-J4E-17", "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_17_supersession_predecessor_is_deterministic_single_and_same_trade", "level": "unit", "pre_fix_result": "RED", "intended_failure_reason": "persist_current_report not defined", "post_fix_result": "PENDING"},
     {"scenario_no": 18, "requirement_id": "WB-J4E-18", "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_18_version_scoped_report_api_exists_for_all_three_identities", "level": "unit/real-postgres(pending)", "pre_fix_result": "RED", "intended_failure_reason": "persist_current_report not defined; real-PG coexistence proof not yet written", "post_fix_result": "PENDING"}
   ],
-  "remaining_j4e_scenarios_not_yet_written": 37,
+  "batch_d_added_scenarios": [
+    {"scenario_no": 19, "requirement_id": "WB-J4E-14", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[NO_VALUE_SUPPLIED]", "level": "unit", "pre_fix_result": "RED"},
+    {"scenario_no": 20, "requirement_id": "WB-J4E-14", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[NO_COMPATIBLE_CROSSING]", "level": "unit", "pre_fix_result": "RED"},
+    {"scenario_no": 21, "requirement_id": "WB-J4E-14", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[SUPPORTED_TOUCH]", "level": "unit", "pre_fix_result": "RED"},
+    {"scenario_no": 22, "requirement_id": "WB-J4E-14", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[INCOMPATIBLE_BASIS]", "level": "unit", "pre_fix_result": "RED"},
+    {"scenario_no": 23, "requirement_id": "WB-J4E-14", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[NO_BARS]", "level": "unit", "pre_fix_result": "RED"},
+    {"scenario_no": 24, "requirement_id": "WB-J4E-14", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[INSUFFICIENT_EVIDENCE]", "level": "unit", "pre_fix_result": "RED"},
+    {"scenario_no": 25, "requirement_id": "WB-J4E-14", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[CONTRADICTORY_ENDPOINT_EVIDENCE]", "level": "unit", "pre_fix_result": "RED"},
+    {"scenario_no": 26, "requirement_id": "WB-J4E-16", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[NEITHER_OBSERVED]", "level": "unit", "pre_fix_result": "RED"},
+    {"scenario_no": 27, "requirement_id": "WB-J4E-16", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[TARGET_ONLY_OBSERVED]", "level": "unit", "pre_fix_result": "RED"},
+    {"scenario_no": 28, "requirement_id": "WB-J4E-16", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[STOP_ONLY_OBSERVED]", "level": "unit", "pre_fix_result": "RED"},
+    {"scenario_no": 29, "requirement_id": "WB-J4E-16", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[TARGET_SAFELY_BEFORE_STOP]", "level": "unit", "pre_fix_result": "RED"},
+    {"scenario_no": 30, "requirement_id": "WB-J4E-16", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[STOP_SAFELY_BEFORE_TARGET]", "level": "unit", "pre_fix_result": "RED"},
+    {"scenario_no": 31, "requirement_id": "WB-J4E-16", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[SAME_BAR_ORDER_UNKNOWN]", "level": "unit", "pre_fix_result": "RED"},
+    {"scenario_no": 32, "requirement_id": "WB-J4E-16", "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[ORDER_UNAVAILABLE]", "level": "unit", "pre_fix_result": "RED"}
+  ],
+  "remaining_j4e_scenarios_not_yet_written": 23,
   "remaining_j4f_scenarios_not_yet_written": 68,
-  "next_action": "Batches D onward must add additional scenario-variant nodes under existing requirement IDs (not just new requirement IDs) to close the 37-scenario J4E gap, then begin the WB-J4F-01..20 traceability family and its 68-scenario matrix."
+  "next_action": "Batch E onward: remaining J4E scenario gap (23) covers ceiling-computation variants, report-status weakest-ceiling-wins combinations, and coexistence/supersession multi-row scenarios; then begin the WB-J4F-01..20 traceability family and its 68-scenario matrix."
 }
