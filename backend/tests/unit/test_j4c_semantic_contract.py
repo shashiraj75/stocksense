@@ -57,6 +57,7 @@ from services.postmortem.governed_price_path_conclusions import (
     GOVERNED_ORDER_TARGET_ONLY_OBSERVED,
     GOVERNED_ORDER_TARGET_SAFELY_BEFORE_STOP,
     GOVERNED_ORDER_UNAVAILABLE,
+    GOVERNED_TOUCH_CONTRADICTORY_ENDPOINT_EVIDENCE,
     GOVERNED_TOUCH_INCOMPATIBLE_BASIS,
     GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE,
     GOVERNED_TOUCH_NO_BARS,
@@ -279,6 +280,7 @@ class TestGovernedTouchConclusions:
         result = classify_governed_level_touch(
             level_kind=TARGET_VALUE, observation=target_obs, level_history_status=LEVEL_HISTORY_STATUS_UNKNOWN_OR_LEGACY,
             price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+            entry_snapshot_present=True, exit_snapshot_present=True,
         )
         assert result.status == GOVERNED_TOUCH_NO_VALUE_SUPPLIED
 
@@ -287,6 +289,7 @@ class TestGovernedTouchConclusions:
         result = classify_governed_level_touch(
             level_kind=TARGET_VALUE, observation=target_obs, level_history_status=LEVEL_HISTORY_STATUS_UNKNOWN_OR_LEGACY,
             price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+            entry_snapshot_present=True, exit_snapshot_present=True,
         )
         assert result.status == GOVERNED_TOUCH_NO_COMPATIBLE_CROSSING
 
@@ -295,6 +298,7 @@ class TestGovernedTouchConclusions:
         result = classify_governed_level_touch(
             level_kind=TARGET_VALUE, observation=target_obs, level_history_status=LEVEL_HISTORY_STATUS_UNKNOWN_OR_LEGACY,
             price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+            entry_snapshot_present=True, exit_snapshot_present=True,
         )
         assert result.status == GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE
         assert result.detail == CANONICAL_FALLBACK
@@ -304,6 +308,7 @@ class TestGovernedTouchConclusions:
         result = classify_governed_level_touch(
             level_kind=TARGET_VALUE, observation=target_obs, level_history_status=LEVEL_HISTORY_STATUS_MODIFIED_AFTER_ENTRY,
             price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+            entry_snapshot_present=True, exit_snapshot_present=True,
         )
         assert result.status == GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE
         assert result.detail == CANONICAL_FALLBACK
@@ -313,14 +318,106 @@ class TestGovernedTouchConclusions:
         result = classify_governed_level_touch(
             level_kind=TARGET_VALUE, observation=target_obs, level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
             price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+            entry_snapshot_present=True, exit_snapshot_present=True, entry_value=120.0, exit_value=120.0,
         )
         assert result.status == GOVERNED_TOUCH_SUPPORTED
+
+    def test_e_governed_unmodified_but_endpoints_null_null_falls_back(self):
+        """Gate 1F item 9 — governed FALSE with null/null endpoints means
+        no level was configured throughout, which cannot support a touch
+        of a DIFFERENT supplied numerical value."""
+        target_obs, _ = _target_and_stop_observations()
+        result = classify_governed_level_touch(
+            level_kind=TARGET_VALUE, observation=target_obs, level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+            entry_snapshot_present=True, exit_snapshot_present=True,
+        )
+        assert result.status == GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE
+        assert result.detail == CANONICAL_FALLBACK
+
+    def test_f1_missing_entry_snapshot_falls_back(self):
+        target_obs, _ = _target_and_stop_observations()
+        result = classify_governed_level_touch(
+            level_kind=TARGET_VALUE, observation=target_obs, level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+            entry_snapshot_present=False, exit_snapshot_present=True, exit_value=120.0,
+        )
+        assert result.status == GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE
+        assert result.detail == CANONICAL_FALLBACK
+
+    def test_f2_missing_exit_snapshot_falls_back(self):
+        target_obs, _ = _target_and_stop_observations()
+        result = classify_governed_level_touch(
+            level_kind=TARGET_VALUE, observation=target_obs, level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+            entry_snapshot_present=True, exit_snapshot_present=False, entry_value=120.0,
+        )
+        assert result.status == GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE
+        assert result.detail == CANONICAL_FALLBACK
+
+    def test_f3_both_snapshots_missing_falls_back(self):
+        target_obs, _ = _target_and_stop_observations()
+        result = classify_governed_level_touch(
+            level_kind=TARGET_VALUE, observation=target_obs, level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+            entry_snapshot_present=False, exit_snapshot_present=False,
+        )
+        assert result.status == GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE
+        assert result.detail == CANONICAL_FALLBACK
+
+    def test_f4_malformed_endpoint_value_falls_back(self):
+        target_obs, _ = _target_and_stop_observations()
+        result = classify_governed_level_touch(
+            level_kind=TARGET_VALUE, observation=target_obs, level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+            entry_snapshot_present=True, exit_snapshot_present=True, entry_value=float("nan"), exit_value=120.0,
+        )
+        assert result.status == GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE
+        assert result.detail == CANONICAL_FALLBACK
+
+    def test_f5_governed_false_differing_endpoints_is_contradiction(self):
+        target_obs, _ = _target_and_stop_observations()
+        result = classify_governed_level_touch(
+            level_kind=TARGET_VALUE, observation=target_obs, level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+            entry_snapshot_present=True, exit_snapshot_present=True, entry_value=100.0, exit_value=120.0,
+        )
+        assert result.status == GOVERNED_TOUCH_CONTRADICTORY_ENDPOINT_EVIDENCE
+        assert result.detail == CANONICAL_FALLBACK
+
+    def test_f6_governed_false_null_to_value_is_contradiction(self):
+        target_obs, _ = _target_and_stop_observations()
+        result = classify_governed_level_touch(
+            level_kind=TARGET_VALUE, observation=target_obs, level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+            entry_snapshot_present=True, exit_snapshot_present=True, entry_value=None, exit_value=120.0,
+        )
+        assert result.status == GOVERNED_TOUCH_CONTRADICTORY_ENDPOINT_EVIDENCE
+
+    def test_f7_governed_false_value_to_null_is_contradiction(self):
+        target_obs, _ = _target_and_stop_observations()
+        result = classify_governed_level_touch(
+            level_kind=TARGET_VALUE, observation=target_obs, level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+            entry_snapshot_present=True, exit_snapshot_present=True, entry_value=120.0, exit_value=None,
+        )
+        assert result.status == GOVERNED_TOUCH_CONTRADICTORY_ENDPOINT_EVIDENCE
+
+    def test_f8_identical_endpoints_inconsistent_with_observed_value_is_contradiction(self):
+        target_obs, _ = _target_and_stop_observations()
+        result = classify_governed_level_touch(
+            level_kind=TARGET_VALUE, observation=target_obs, level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+            entry_snapshot_present=True, exit_snapshot_present=True, entry_value=99.0, exit_value=99.0,
+        )
+        assert result.status == GOVERNED_TOUCH_CONTRADICTORY_ENDPOINT_EVIDENCE
 
     def test_e41_contradictory_history_falls_back(self):
         target_obs, _ = _target_and_stop_observations()
         result = classify_governed_level_touch(
             level_kind=TARGET_VALUE, observation=target_obs, level_history_status=LEVEL_HISTORY_STATUS_CONTRADICTORY,
             price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+            entry_snapshot_present=True, exit_snapshot_present=True,
         )
         assert result.status == GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE
         assert result.detail == CANONICAL_FALLBACK
@@ -330,6 +427,7 @@ class TestGovernedTouchConclusions:
         result = classify_governed_level_touch(
             level_kind=TARGET_VALUE, observation=target_obs, level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
             price_basis_status=PRICE_BASIS_INCOMPATIBLE, bars_available=True,
+            entry_snapshot_present=True, exit_snapshot_present=True,
         )
         assert result.status == GOVERNED_TOUCH_INCOMPATIBLE_BASIS
         assert result.detail == CANONICAL_FALLBACK
@@ -339,6 +437,7 @@ class TestGovernedTouchConclusions:
         result = classify_governed_level_touch(
             level_kind=TARGET_VALUE, observation=target_obs, level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
             price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=False,
+            entry_snapshot_present=True, exit_snapshot_present=True,
         )
         assert result.status == GOVERNED_TOUCH_NO_BARS
         assert result.detail == CANONICAL_FALLBACK
@@ -384,6 +483,8 @@ class TestGovernedOrderConclusions:
             stop_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
             target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
             target_bars_available=True, stop_bars_available=True,
+            target_entry_value=120.0, target_exit_value=120.0,
+            stop_entry_value=80.0, stop_exit_value=80.0,
         )
         assert result.status == GOVERNED_ORDER_TARGET_SAFELY_BEFORE_STOP
 
@@ -401,8 +502,27 @@ class TestGovernedOrderConclusions:
             stop_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
             target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
             target_bars_available=True, stop_bars_available=True,
+            target_entry_value=120.0, target_exit_value=120.0,
+            stop_entry_value=80.0, stop_exit_value=80.0,
         )
         assert result.status == GOVERNED_ORDER_STOP_SAFELY_BEFORE_TARGET
+
+    def test_f_ordered_pattern_falls_back_when_endpoint_evidence_contradicts(self):
+        """Gate 1F correction — even with both levels GOVERNED_UNMODIFIED
+        and a safely observed order, contradictory endpoint evidence for
+        either level still forces ORDER_UNAVAILABLE."""
+        target_obs, stop_obs = _target_and_stop_observations()
+        summary = self._summary(target_obs, stop_obs)
+        result = classify_governed_order(
+            summary=summary, target_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            stop_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
+            target_bars_available=True, stop_bars_available=True,
+            target_entry_value=100.0, target_exit_value=120.0,  # differing endpoints -- contradiction
+            stop_entry_value=80.0, stop_exit_value=80.0,
+        )
+        assert result.status == GOVERNED_ORDER_UNAVAILABLE
+        assert result.detail == CANONICAL_FALLBACK
 
     def test_f_ordered_pattern_falls_back_when_either_level_not_governed_unmodified(self):
         target_obs, stop_obs = _target_and_stop_observations()

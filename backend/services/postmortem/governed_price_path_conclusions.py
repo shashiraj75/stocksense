@@ -32,8 +32,18 @@ from services.postmortem.price_path_calculator import (
     SAFE_PATTERN_STOP_SAFE_BAR_BEFORE_TARGET_SAFE_BAR,
 )
 from services.postmortem.level_history_eligibility import (
+    ENDPOINT_EVIDENCE_BOTH_SNAPSHOTS_MISSING,
+    ENDPOINT_EVIDENCE_DIFFERENT_NONNULL_VALUES,
+    ENDPOINT_EVIDENCE_ENTRY_SNAPSHOT_MISSING,
+    ENDPOINT_EVIDENCE_EXIT_SNAPSHOT_MISSING,
+    ENDPOINT_EVIDENCE_IDENTICAL_NONNULL_VALUES,
+    ENDPOINT_EVIDENCE_MALFORMED_VALUE,
+    ENDPOINT_EVIDENCE_NO_LEVEL_VALUES_AT_OBSERVED_ENDPOINTS,
+    ENDPOINT_EVIDENCE_NULL_TO_VALUE,
+    ENDPOINT_EVIDENCE_VALUE_TO_NULL,
     LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
     PRICE_BASIS_COMPATIBLE,
+    classify_endpoint_evidence,
 )
 
 # Gate 1K — the ONE canonical fallback sentence. Never paraphrased.
@@ -55,10 +65,26 @@ GOVERNED_TOUCH_SUPPORTED = "SUPPORTED_TOUCH"
 GOVERNED_TOUCH_INCOMPATIBLE_BASIS = "INCOMPATIBLE_BASIS"
 GOVERNED_TOUCH_NO_BARS = "NO_BARS"
 GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
+GOVERNED_TOUCH_CONTRADICTORY_ENDPOINT_EVIDENCE = "CONTRADICTORY_ENDPOINT_EVIDENCE"
 
 ALL_GOVERNED_TOUCH_STATUSES = frozenset({
     GOVERNED_TOUCH_NO_VALUE_SUPPLIED, GOVERNED_TOUCH_NO_COMPATIBLE_CROSSING, GOVERNED_TOUCH_SUPPORTED,
     GOVERNED_TOUCH_INCOMPATIBLE_BASIS, GOVERNED_TOUCH_NO_BARS, GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE,
+    GOVERNED_TOUCH_CONTRADICTORY_ENDPOINT_EVIDENCE,
+})
+
+# Endpoint statuses that already mean "we cannot even classify the
+# level's endpoint evidence" — always fall back regardless of level
+# history (Gate 1F correction, items 1-4).
+_ENDPOINT_EVIDENCE_UNUSABLE = frozenset({
+    ENDPOINT_EVIDENCE_ENTRY_SNAPSHOT_MISSING, ENDPOINT_EVIDENCE_EXIT_SNAPSHOT_MISSING,
+    ENDPOINT_EVIDENCE_BOTH_SNAPSHOTS_MISSING, ENDPOINT_EVIDENCE_MALFORMED_VALUE,
+})
+# Endpoint statuses that, for a GOVERNED_UNMODIFIED level, are logically
+# impossible — the flag says "never changed" but the endpoints
+# themselves show a difference (items 5-7).
+_ENDPOINT_EVIDENCE_CONTRADICTS_UNMODIFIED = frozenset({
+    ENDPOINT_EVIDENCE_NULL_TO_VALUE, ENDPOINT_EVIDENCE_VALUE_TO_NULL, ENDPOINT_EVIDENCE_DIFFERENT_NONNULL_VALUES,
 })
 
 
@@ -75,19 +101,60 @@ class GovernedLevelTouchConclusion:
             raise GovernedConclusionContractError(INVALID_GOVERNED_INPUT, "detail must be a non-empty string")
         fallback_statuses = frozenset({
             GOVERNED_TOUCH_INCOMPATIBLE_BASIS, GOVERNED_TOUCH_NO_BARS, GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE,
+            GOVERNED_TOUCH_CONTRADICTORY_ENDPOINT_EVIDENCE,
         })
         if self.status in fallback_statuses and self.detail != CANONICAL_FALLBACK:
             raise GovernedConclusionContractError(INVALID_GOVERNED_INPUT, "fallback conclusions must use the exact canonical fallback sentence")
 
 
+def _endpoint_consistency_status(
+    *, level_history_status: str, endpoint_status: str, observed_value: float | None, entry_value, exit_value,
+):
+    """Returns None when endpoint evidence is consistent enough to
+    proceed to the safe-attribution check; otherwise returns the
+    GOVERNED_TOUCH_* fallback status that applies. Gate 1F correction,
+    items 1-9."""
+    if endpoint_status in _ENDPOINT_EVIDENCE_UNUSABLE:
+        return GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE
+
+    if level_history_status != LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED:
+        # Endpoint evidence is only cross-checked against a GOVERNED_
+        # UNMODIFIED level (the only status that claims the level never
+        # changed) — legacy/modified/contradictory already fall back
+        # for their own reason, checked by the caller.
+        return None
+
+    if endpoint_status in _ENDPOINT_EVIDENCE_CONTRADICTS_UNMODIFIED:
+        # The flag says "never changed" but the endpoints disagree with
+        # each other — a logically impossible governed state (items 5-7).
+        return GOVERNED_TOUCH_CONTRADICTORY_ENDPOINT_EVIDENCE
+
+    if endpoint_status == ENDPOINT_EVIDENCE_NO_LEVEL_VALUES_AT_OBSERVED_ENDPOINTS:
+        # No level was configured throughout — cannot support a touch of
+        # a DIFFERENT supplied numerical value (item 9).
+        return GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE
+
+    if endpoint_status == ENDPOINT_EVIDENCE_IDENTICAL_NONNULL_VALUES:
+        # Supported only when the observed/supplied crossing value is
+        # consistent with that (unchanging) endpoint value (item 8).
+        if observed_value is None or entry_value is None or observed_value != entry_value:
+            return GOVERNED_TOUCH_CONTRADICTORY_ENDPOINT_EVIDENCE
+        return None
+
+    return None
+
+
 def classify_governed_level_touch(
     *, level_kind: str, observation: NumericalLevelCrossingObservation, level_history_status: str,
     price_basis_status: str, bars_available: bool,
+    entry_snapshot_present: bool, exit_snapshot_present: bool, entry_value=None, exit_value=None,
 ) -> GovernedLevelTouchConclusion:
     if not isinstance(observation, NumericalLevelCrossingObservation):
         raise GovernedConclusionContractError(INVALID_GOVERNED_INPUT, "observation must be a NumericalLevelCrossingObservation")
     if not isinstance(bars_available, bool):
         raise GovernedConclusionContractError(INVALID_GOVERNED_INPUT, "bars_available must be an exact bool")
+    if not isinstance(entry_snapshot_present, bool) or not isinstance(exit_snapshot_present, bool):
+        raise GovernedConclusionContractError(INVALID_GOVERNED_INPUT, "entry_snapshot_present/exit_snapshot_present must be exact bool")
 
     if not bars_available:
         return GovernedLevelTouchConclusion(level_kind=level_kind, status=GOVERNED_TOUCH_NO_BARS, detail=CANONICAL_FALLBACK)
@@ -106,10 +173,26 @@ def classify_governed_level_touch(
             detail="no compatible crossing of the supplied value was observed in the acquired evidence window",
         )
 
+    # Gate 1F correction — endpoint evidence is now consulted explicitly,
+    # BEFORE the safe-attribution check, for every crossing-observed
+    # case (not only GOVERNED_UNMODIFIED — a missing/malformed snapshot
+    # always falls back regardless of level history, items 1-4).
+    endpoint_status = classify_endpoint_evidence(
+        entry_snapshot_present=entry_snapshot_present, exit_snapshot_present=exit_snapshot_present,
+        entry_value=entry_value, exit_value=exit_value,
+    )
+    endpoint_fallback = _endpoint_consistency_status(
+        level_history_status=level_history_status, endpoint_status=endpoint_status,
+        observed_value=observation.supplied_level_value, entry_value=entry_value, exit_value=exit_value,
+    )
+    if endpoint_fallback is not None:
+        return GovernedLevelTouchConclusion(level_kind=level_kind, status=endpoint_fallback, detail=CANONICAL_FALLBACK)
+
     if level_history_status == LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED and observation.first_safely_attributable_session is not None:
         return GovernedLevelTouchConclusion(
             level_kind=level_kind, status=GOVERNED_TOUCH_SUPPORTED,
-            detail="crossing observed on a safely attributable bar for a level reliably unmodified since entry",
+            detail="crossing observed on a safely attributable bar for a level reliably unmodified since entry, "
+                   "consistent with the entry/exit endpoint evidence",
         )
 
     # Crossing observed but either the level's history cannot be
@@ -152,6 +235,10 @@ class GovernedOrderConclusion:
 def classify_governed_order(
     *, summary: ObservedNumericalCrossingSummary, target_level_history_status: str, stop_level_history_status: str,
     target_price_basis_status: str, stop_price_basis_status: str, target_bars_available: bool, stop_bars_available: bool,
+    target_entry_snapshot_present: bool = True, target_exit_snapshot_present: bool = True,
+    target_entry_value=None, target_exit_value=None,
+    stop_entry_snapshot_present: bool = True, stop_exit_snapshot_present: bool = True,
+    stop_entry_value=None, stop_exit_value=None,
 ) -> GovernedOrderConclusion:
     if not isinstance(summary, ObservedNumericalCrossingSummary):
         raise GovernedConclusionContractError(INVALID_GOVERNED_INPUT, "summary must be an ObservedNumericalCrossingSummary")
@@ -162,6 +249,31 @@ def classify_governed_order(
         return GovernedOrderConclusion(status=GOVERNED_ORDER_UNAVAILABLE, detail=CANONICAL_FALLBACK)
     if target_price_basis_status != PRICE_BASIS_COMPATIBLE or stop_price_basis_status != PRICE_BASIS_COMPATIBLE:
         return GovernedOrderConclusion(status=GOVERNED_ORDER_UNAVAILABLE, detail=CANONICAL_FALLBACK)
+
+    # Gate 1F correction — each level's endpoint evidence must
+    # independently satisfy active-level eligibility before an ordered
+    # (target-before-stop / stop-before-target) conclusion is permitted;
+    # missing or contradictory evidence for EITHER level makes order
+    # unavailable, checked below only for the ordered-pattern branch
+    # (same-bar/neither/single-sided conclusions don't depend on it).
+    target_endpoint_status = classify_endpoint_evidence(
+        entry_snapshot_present=target_entry_snapshot_present, exit_snapshot_present=target_exit_snapshot_present,
+        entry_value=target_entry_value, exit_value=target_exit_value,
+    )
+    stop_endpoint_status = classify_endpoint_evidence(
+        entry_snapshot_present=stop_entry_snapshot_present, exit_snapshot_present=stop_exit_snapshot_present,
+        entry_value=stop_entry_value, exit_value=stop_exit_value,
+    )
+    target_endpoint_fallback = _endpoint_consistency_status(
+        level_history_status=target_level_history_status, endpoint_status=target_endpoint_status,
+        observed_value=summary.target_observation.supplied_level_value,
+        entry_value=target_entry_value, exit_value=target_exit_value,
+    )
+    stop_endpoint_fallback = _endpoint_consistency_status(
+        level_history_status=stop_level_history_status, endpoint_status=stop_endpoint_status,
+        observed_value=summary.stop_observation.supplied_level_value,
+        entry_value=stop_entry_value, exit_value=stop_exit_value,
+    )
 
     pattern = summary.safely_attributable_pattern
 
@@ -201,6 +313,12 @@ def classify_governed_order(
         and stop_level_history_status == LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED
     )
     if not both_governed_unmodified:
+        return GovernedOrderConclusion(status=GOVERNED_ORDER_UNAVAILABLE, detail=CANONICAL_FALLBACK)
+
+    # Gate 1F correction — even with both levels GOVERNED_UNMODIFIED,
+    # contradictory or unusable endpoint evidence for EITHER level still
+    # makes the order conclusion unavailable.
+    if target_endpoint_fallback is not None or stop_endpoint_fallback is not None:
         return GovernedOrderConclusion(status=GOVERNED_ORDER_UNAVAILABLE, detail=CANONICAL_FALLBACK)
 
     if pattern == SAFE_PATTERN_TARGET_SAFE_BAR_BEFORE_STOP_SAFE_BAR:
