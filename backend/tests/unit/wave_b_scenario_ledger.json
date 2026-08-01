@@ -4,7 +4,7 @@
   "j4e_scenario_target": 55,
   "j4f_scenario_target": 68,
   "j4e_scenarios_represented": 55,
-  "j4f_scenarios_represented": 12,
+  "j4f_scenarios_represented": 20,
   "gap_disclosure": "Batches A-C mapped exactly one pytest node per WB-J4E-* traceability ID (18 nodes total). That satisfies traceability-ID coverage but NOT the 55-scenario behavioural matrix, which requires additional scenario variants per requirement (e.g. multiple touch-status permutations under WB-J4E-14, multiple concurrent-insert races under WB-J4F outbox IDs, multiple lease-expiry timings under the J4F lease contract). Those additional scenario nodes have not yet been written. This gap is disclosed here rather than silently closed by treating one node per requirement ID as sufficient.",
   "entries": [
     {
@@ -505,8 +505,8 @@
   ],
   "j4e_matrix_status": "J4E RED-BASELINE COMPLETE \u2014 55/55 MANDATORY SCENARIOS REPRESENTED, COLLECTED AND EXECUTED; 54 FAILED THROUGH INTENDED PRE-IMPLEMENTATION ASSERTIONS; 1 BASELINE-PRESERVATION GUARD PASSED AS EXPECTED; ZERO COLLECTION ERRORS.",
   "remaining_j4e_scenarios_not_yet_written": 0,
-  "remaining_j4f_scenarios_not_yet_written": 56,
-  "next_action": "Batch I: global PostgreSQL claim, concurrency, active/expired lease, backoff, max-attempt behavior (real-postgres level, WB-J4F-13..).",
+  "remaining_j4f_scenarios_not_yet_written": 48,
+  "next_action": "Batch J: background worker startup/shutdown, bounded polling, batch size, DB-outage backoff, no-connection-during-sleep/provider-IO. Then Batch K (failure taxonomy/LIMITED_EVIDENCE/sanitized errors/unsupported identity), Batch L (exactly-once effect/reconciliation/atomicity/stale-worker rollback), Batch M (reset/delete races, isolation, privacy, observability) to close the remaining 48 J4F scenarios before CI dispatch.",
   "batch_g_added_scenarios": [
     {
       "scenario_no": 1,
@@ -605,6 +605,72 @@
       "level": "unit",
       "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
       "actual_pre_fix_result": "RED"
+    }
+  ],
+  "batch_i_added_scenarios": [
+    {
+      "scenario_no": 13,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_13_global_claim_function_exists",
+      "level": "real-postgres",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED (collected locally; execution pending CI dispatch)"
+    },
+    {
+      "scenario_no": 14,
+      "requirement_id": "WB-J4F-14",
+      "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_14_simultaneous_claimants_never_both_claim_same_row",
+      "level": "real-postgres",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED (collected locally; execution pending CI dispatch)"
+    },
+    {
+      "scenario_no": 15,
+      "requirement_id": "WB-J4F-15",
+      "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_15_distinct_rows_claimed_by_distinct_claimants",
+      "level": "real-postgres",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED (collected locally; execution pending CI dispatch)"
+    },
+    {
+      "scenario_no": 16,
+      "requirement_id": "WB-J4F-16",
+      "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_16_active_lease_row_is_not_reclaimable",
+      "level": "real-postgres",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED (collected locally; execution pending CI dispatch)"
+    },
+    {
+      "scenario_no": 17,
+      "requirement_id": "WB-J4F-17",
+      "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_17_expired_lease_row_is_reclaimable",
+      "level": "real-postgres",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED (collected locally; execution pending CI dispatch)"
+    },
+    {
+      "scenario_no": 18,
+      "requirement_id": "WB-J4F-18",
+      "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_18_retry_backoff_delays_next_attempt",
+      "level": "real-postgres",
+      "pre_implementation_expectation": "EXPECTED_BASELINE_PASS",
+      "actual_pre_fix_result": "PENDING CI (exercises existing outbox.py retry-backoff behavior against a real trade/outbox row; expected to pass since outbox.py's backoff logic predates Wave B and is reused unchanged)"
+    },
+    {
+      "scenario_no": 19,
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_19_worker_enforces_max_attempt_terminalization",
+      "level": "real-postgres",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED (collected locally; execution pending CI dispatch)"
+    },
+    {
+      "scenario_no": 20,
+      "requirement_id": "WB-J4F-20",
+      "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_20_global_claim_query_uses_index_not_seqscan",
+      "level": "real-postgres",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED (collected locally; execution pending CI dispatch)"
     }
   ]
 }
