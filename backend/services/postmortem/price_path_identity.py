@@ -85,3 +85,45 @@ CURRENT_PRICE_PATH_SOURCE_IDENTITY = PricePathSourceIdentity(
     report_schema_version=PRICE_PATH_REPORT_SCHEMA_VERSION,
     calculation_rules_version=CALCULATION_RULES_VERSION,
 )
+
+# Wave B, Stage J4E — the new CURRENT governed report identity. Distinct
+# from (never overwrites) the historical 1.0.0 (Sprint 2 base) and 1.1.0
+# (legacy price-path, still detect_touches/classify_touch_order-
+# authoritative) report_schema_version identities above, both of which
+# remain permanently readable and reproducible. A 1.2.0 report is the
+# ONLY report_schema_version whose price_path section is built from
+# services.postmortem.governed_price_path_conclusions (classify_
+# governed_level_touch / classify_governed_order) and services.
+# postmortem.governed_price_path_claims — never detect_touches,
+# classify_touch_order, or build_touch_order_claim.
+GOVERNED_PRICE_PATH_REPORT_SCHEMA_VERSION = "1.2.0"
+
+# The Wave A/J4C semantic-rules identity actually used to derive the
+# governed touch/order conclusions in a 1.2.0 report — independent of
+# CALCULATION_RULES_VERSION above (which governs price_path_calculator's
+# raw numerical crossing/excursion math, unchanged since Stage J3 and
+# still used to compute the RAW observations a 1.2.0 report also
+# reports). Bump this, not CALCULATION_RULES_VERSION, if governed_
+# price_path_conclusions.py's eligibility semantics ever change.
+GOVERNED_PRICE_PATH_RULES_VERSION = "2.0.0"
+
+# The claim-authoring rules used to turn a GovernedLevelTouchConclusion/
+# GovernedOrderConclusion into persisted PostmortemClaim/EvidenceItem
+# objects (services.postmortem.governed_price_path_claims) — independent
+# of price_path_claims.RULES_VERSION, which remains the legacy 1.1.0
+# claim-rules identity.
+GOVERNED_PRICE_PATH_CLAIM_RULES_VERSION = "2.0.0"
+
+
+def governed_calculation_version(*, base_calculation_version: str, numerical_rules_version: str, source_version: str) -> str:
+    """The ONE authoritative formatter for a 1.2.0 report's persisted
+    `calculation_version` string — every axis that can materially change
+    a governed report's results is encoded here exactly once, so no call
+    site hand-assembles this format independently.
+
+    <base_calculation_version>+price_path:<numerical_rules_version>+governed:<GOVERNED_PRICE_PATH_RULES_VERSION>+src:<source_version>
+    """
+    return (
+        f"{base_calculation_version}+price_path:{numerical_rules_version}"
+        f"+governed:{GOVERNED_PRICE_PATH_RULES_VERSION}+src:{source_version}"
+    )

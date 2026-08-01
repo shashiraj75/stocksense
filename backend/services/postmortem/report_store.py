@@ -192,3 +192,21 @@ def get_latest_report_for_trade(conn, *, paper_trade_id: int, user_id: str) -> P
         (paper_trade_id, user_id),
     ).fetchone()
     return _row_to_report(row) if row else None
+
+
+def get_latest_predecessor_report(conn, *, paper_trade_id: int, user_id: str, exclude_report_schema_version: str) -> PersistedReport | None:
+    """Wave B, Stage J4E — the deterministic supersession-predecessor
+    lookup: the most recent report for this trade whose report_schema_
+    version is NOT the caller's own target version (so a report can
+    never supersede a same-version sibling, and a retried/idempotent
+    call for the SAME version never picks up a stale predecessor from
+    an earlier attempt at that same version). Preferring the highest
+    remaining schema_version, then most recent generated_at, exactly
+    mirrors get_latest_report_for_trade's own ordering."""
+    row = conn.execute(
+        f"""SELECT {_REPORT_COLUMNS} FROM paper_trade_postmortem_report
+            WHERE paper_trade_id = %s AND user_id = %s AND report_schema_version != %s
+            ORDER BY report_schema_version DESC, generated_at DESC LIMIT 1""",
+        (paper_trade_id, user_id, exclude_report_schema_version),
+    ).fetchone()
+    return _row_to_report(row) if row else None
