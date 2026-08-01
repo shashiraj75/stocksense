@@ -283,7 +283,7 @@ class TestSnapshotsCloseAndReset:
             headers=make_auth_header(unique_user_id),
         )
         assert buy_resp.status_code == 200
-        trade_id = buy_resp.json()["trade"]["id"]
+        trade_id = buy_resp.json()["trade_id"]
 
         edit_resp = client.patch(
             f"/api/paper-trading/trade/{trade_id}", json={"stop_loss": 85.0},

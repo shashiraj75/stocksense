@@ -1246,7 +1246,17 @@ class TestBoundaryTouchPersistedAmbiguous:
         exit_ts = dt.datetime(2026, 6, 4, 16, 0, tzinfo=ET)
         _set_trade_window(pg_conn, trade_id, entry_ts, exit_ts)
 
-        pg_conn.execute("UPDATE paper_trades SET stop_loss = %s, target_price = %s WHERE id = %s", (90.0, 120.0, trade_id))
+        # Stage J4D — a real trade opened through /buy is now a governed
+        # row (level_history_contract_version='1'); this fixture setup
+        # genuinely changes stop_loss/target_price from whatever /buy set,
+        # so the governed trigger correctly requires the matching per-
+        # level flags to be set in the SAME statement.
+        pg_conn.execute(
+            "UPDATE paper_trades SET stop_loss = %s, target_price = %s, "
+            "stop_modified_after_entry = TRUE, target_modified_after_entry = TRUE, "
+            "levels_modified_after_entry = TRUE WHERE id = %s",
+            (90.0, 120.0, trade_id),
+        )
 
         def _boundary_and_interior_bars(*a, **k):
             return [
@@ -1315,7 +1325,17 @@ class TestBothSameBarPersistedAmbiguous:
         entry_ts = dt.datetime(2026, 6, 1, 9, 30, tzinfo=ET)
         exit_ts = dt.datetime(2026, 6, 3, 16, 0, tzinfo=ET)
         _set_trade_window(pg_conn, trade_id, entry_ts, exit_ts)
-        pg_conn.execute("UPDATE paper_trades SET stop_loss = %s, target_price = %s WHERE id = %s", (90.0, 120.0, trade_id))
+        # Stage J4D — a real trade opened through /buy is now a governed
+        # row (level_history_contract_version='1'); this fixture setup
+        # genuinely changes stop_loss/target_price from whatever /buy set,
+        # so the governed trigger correctly requires the matching per-
+        # level flags to be set in the SAME statement.
+        pg_conn.execute(
+            "UPDATE paper_trades SET stop_loss = %s, target_price = %s, "
+            "stop_modified_after_entry = TRUE, target_modified_after_entry = TRUE, "
+            "levels_modified_after_entry = TRUE WHERE id = %s",
+            (90.0, 120.0, trade_id),
+        )
 
         def _both_same_bar(*a, **k):
             return [
