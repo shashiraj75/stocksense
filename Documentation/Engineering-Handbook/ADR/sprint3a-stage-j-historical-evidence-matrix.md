@@ -1981,3 +1981,164 @@ remain at 187 (unchanged from the Stage J4B/J4B.1 baseline).
 Stage J is **not** complete. This phase does not begin J4C, does not
 begin J4D, does not change any report output, and does not change any
 production behavior reachable through the live `/generate` endpoint.
+
+---
+
+## Stage J4B.3 — Final internal observed-crossing contract, test-intent
+## and traceability closure
+
+**NOT REPORT-WIRED, NOT CLAIM-WIRED, NOT PERSISTED, NOT API-EXPOSED,
+NOT FRONTEND-CONSUMED, NOT MERGE-AUTHORIZED, NOT DEPLOYMENT-AUTHORIZED,
+NOT FEATURE-FLAG-AUTHORIZED.** Closes the five internal-contract gaps
+(I-01 through I-05) and one test-governance gap (I-06) confirmed open
+during the Stage J4B.3-R whole-feature reconciliation.
+
+### Shared field-based attribution helper
+
+`_classify_session_attribution_fields(*, requested_window_start,
+requested_window_end, entry_bar_policy, exit_bar_policy, session_date)`
+is the ONE implementation of the attribution matrix — plain field
+values only, never a `PricePathEvidenceBundle` or a
+`NumericalCrossingObservationContext` passed by duck-typing. Both
+`classify_bar_session_attribution` (which validates the real
+bundle/bar object types first, then delegates) and
+`NumericalLevelCrossingObservation._validate_group` (which derives the
+expected attribution from `self.context`'s own four field values plus
+the group's own bar's `session_date`) call this same helper — the
+matrix is never duplicated. `test_helper_field_based_matches_bundle_
+based_classifier` proves both call sites agree on every recognized
+case.
+
+**Correction to a prior (chat-only, never-persisted-to-this-ADR)
+claim**: an earlier reconciliation response stated that
+`classify_bar_session_attribution(context, bar)` "would work through
+duck typing." That claim was incorrect — the public classifier's own
+contract requires a real `PricePathEvidenceBundle`/`PricePathBar` (it
+now explicitly validates `isinstance(bundle, PricePathEvidenceBundle)`
+and `isinstance(bar, PricePathBar)`), and passing a
+`NumericalCrossingObservationContext` to it was never actually
+attempted or safe. The correct design — implemented here — is the
+separate field-based helper, which both call sites use without either
+needing to satisfy the other's object-identity contract.
+
+### Exact context-derived attribution (I-01)
+
+`_validate_group` now validates `session`/`bar` first, derives the
+EXACT expected attribution via the shared helper, and requires
+`attribution == expected_attribution` before checking whether that
+(now-verified) attribution is permitted for the specific group
+(first-observed / safely-attributable / partial-boundary). A forged
+observation labeling an interior bar `ENTRY_INCLUDED_FULL` (or any of
+the eight other confirmed-red scenarios) is rejected with
+`NumericalCrossingContractError(INCONSISTENT_CROSSING_OBSERVATION)`.
+An impossible forged state that the shared helper itself cannot
+classify (e.g. an out-of-window session date) is translated into the
+same governed error — never a raw `SessionAttributionError` escaping
+an observation's own invariant validation.
+
+### Five-field group identity (I-02)
+
+The first-observed-already-safe and first-observed-already-partial
+identity comparisons now compare all five fields — session, bar,
+evidence ID, crossing type, AND session attribution — closing the gap
+where a forged group could match on the other four fields while
+silently disagreeing on the shared bar's actual attribution.
+
+### Evidence-ID factory totality (I-03)
+
+`_crossing_evidence_id` now independently validates `paper_trade_id`
+(exact positive `int`, bool excluded by the same `type() is int`
+check), `session_date` (exact `datetime.date`, rejects
+`datetime.datetime` and `date` subclasses), and `level_kind` (exact
+recognized `str`) before formatting — raising
+`NumericalCrossingContractError(INVALID_CROSSING_EVIDENCE_ID)` rather
+than relying entirely on caller discipline. The canonical generated
+format and the existing parser/validator behavior are unchanged.
+
+### Exact observation-context types (I-04)
+
+`NumericalCrossingObservationContext.__post_init__` now uses exact-type
+(`type(x) is int` / `type(x) is str`) checks for `paper_trade_id` and
+every identity string field (`symbol`, `evidence_bundle_version`,
+`source_id`, `source_version`, `bar_interval`, `price_adjustment_basis`,
+`market_timezone`), consistent with the discipline already used for
+`market`/policies/dates — closing the prior inconsistency where those
+eight fields alone still used `isinstance` (subclass-accepting) and
+only rejected the truly-empty string, not whitespace-only content.
+`symbol.strip()`/`value.strip()` are used only for the non-blank
+*check* — the original valid value is never mutated or trimmed when
+constructing the context. Both hash fields already required exact
+`str` + regex match; now explicitly re-confirmed exact-type (not
+merely `isinstance`).
+
+### Corrected test intent (I-06)
+
+Five tests in `test_price_path_observed_crossing.py` —
+`TestSessionAttributionAlgorithm::test_unknown_entry_boundary_policy_fails_closed`,
+`::test_unknown_exit_boundary_policy_fails_closed`,
+`::test_unknown_same_day_boundary_policy_combination_fails_closed`,
+`TestCrossingDetectionMatrix::test_25_unknown_entry_boundary_policy_fails_closed`,
+`::test_26_unknown_exit_boundary_policy_fails_closed` — previously used
+duck-typed `_FakeBundle`/`_FakeBar` objects that, since the J4B.2
+bundle/bar `isinstance` type-check gate, were caught at that gate
+rather than reaching the policy-validation branch their names/docstrings
+describe (they still passed, since any `SessionAttributionError`
+satisfied their assertion, but were no longer testing what they
+claimed). Each is corrected to use a real `PricePathEvidenceBundle`
+forged via `dataclasses.replace` on an already-valid bundle (the
+bundle's own `__post_init__` does not validate boundary-policy string
+values), genuinely reaching the policy-validation branch, with the
+original `pytest.raises(SessionAttributionError)` assertion preserved
+unchanged and a docstring recording the correction.
+
+### Static collection proof versus runtime JUnit proof (I-05)
+
+A new machine-readable manifest (`tests/unit/j4b3_traceability_manifest.json`)
+lists I-01 through I-06 exactly once each, with every cited pytest node
+ID, protected function, and expected behavior/reason code. A new pure
+helper (`tests/unit/j4b3_traceability_helper.py`) separates two
+DISTINCT proofs, never conflating one for the other:
+
+- **Static**: `validate_static` checks that every manifest-cited file
+  exists and every cited node ID appears in a `pytest --collect-only`
+  output (parametrized nodes may satisfy an unparameterized cited
+  prefix only via an exact `cited_node + "["` match — no other fuzzy
+  matching is permitted).
+- **Runtime**: `validate_runtime` checks, against a JUnit XML report,
+  that every manifest-cited node actually ran, passed, and was not
+  skipped.
+
+`--collect-only` output is never treated as proof of a passing run.
+Historical (pre-J4B.3) ADR-cited PostgreSQL test rows are NOT
+retroactively re-verified by this manifest or helper — their recorded
+evidence remains the actual workflow/job IDs and pass counts from the
+phase that executed them (see the corresponding Stage J3x/J4x sections
+above); this manifest covers only the six J4B.3 requirement IDs.
+
+### Reconciliation-matrix terminology corrections
+
+Per the Stage J4B.3-R reconciliation: any FUTURE present-state
+description of "no numerical value present at the observed entry/exit
+endpoints" must use **`NO_LEVEL_VALUES_AT_OBSERVED_ENDPOINTS`**, never
+the stronger `NO_LEVELS_CONFIGURED` (which implies definitive
+knowledge beyond what endpoint-only evidence supports).
+**`NO_LEVELS_CONFIGURED_THROUGHOUT` remains unclaimed anywhere in this
+codebase** — it requires the J4D write-invariant, not yet built. Phase
+ownership is normalized: **J4D** = the future level-history
+write-invariant (initializing new trades, auditing every writer,
+prohibiting TRUE→FALSE reset); **J4E** = report/claim/structured-report
+wiring.
+
+### No report wiring; no persistence; no version bump; J4C not started
+
+Re-verified unchanged: `price_path_calculator.py` still does not
+import `price_path_generation`/`price_path_claims`; the six version
+constants remain pinned; no database write, API response, or frontend
+file was touched this phase. J4C (active-level eligibility, governed
+conclusions) has not begun.
+
+### Explicit non-claims
+
+Stage J is **not** complete. This phase does not begin J4C, does not
+begin J4D, does not change any report output, and does not change any
+production behavior reachable through the live `/generate` endpoint.
