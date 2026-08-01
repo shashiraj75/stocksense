@@ -284,14 +284,70 @@ class TestGovernedTouchConclusions:
         )
         assert result.status == GOVERNED_TOUCH_NO_VALUE_SUPPLIED
 
-    def test_e_no_compatible_crossing(self):
+    def test_e_no_compatible_crossing_governed_unmodified_is_definitive(self):
+        # Mandatory Correction 1 (3rd pass) — NO_COMPATIBLE_CROSSING is a
+        # DEFINITIVE governed negative and is only ever returned when the
+        # level history is reliably GOVERNED_UNMODIFIED.
         target_obs, _ = _target_and_stop_observations(target=500.0)  # never reached by these bars
+        result = classify_governed_level_touch(
+            level_kind=TARGET_VALUE, observation=target_obs, level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+            entry_snapshot_present=True, exit_snapshot_present=True, entry_value=500.0, exit_value=500.0,
+        )
+        assert result.status == GOVERNED_TOUCH_NO_COMPATIBLE_CROSSING
+
+    def test_e_no_compatible_crossing_unknown_legacy_is_insufficient(self):
+        # Mandatory red test #2 — unknown/legacy history with no
+        # crossing must return INSUFFICIENT_EVIDENCE, never a definitive
+        # NO_COMPATIBLE_CROSSING (the checked value's historical validity
+        # is unproven under unknown/legacy history).
+        target_obs, _ = _target_and_stop_observations(target=500.0)
         result = classify_governed_level_touch(
             level_kind=TARGET_VALUE, observation=target_obs, level_history_status=LEVEL_HISTORY_STATUS_UNKNOWN_OR_LEGACY,
             price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
             entry_snapshot_present=True, exit_snapshot_present=True,
         )
-        assert result.status == GOVERNED_TOUCH_NO_COMPATIBLE_CROSSING
+        assert result.status == GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE
+        assert result.detail == CANONICAL_FALLBACK
+
+    def test_e_no_compatible_crossing_modified_after_entry_is_insufficient(self):
+        # Mandatory red test #3 — modified-after-entry history (no
+        # temporal level history available) with no crossing must also
+        # return INSUFFICIENT_EVIDENCE — never infer the checked endpoint
+        # value was the level's value for the whole window.
+        target_obs, _ = _target_and_stop_observations(target=500.0)
+        result = classify_governed_level_touch(
+            level_kind=TARGET_VALUE, observation=target_obs, level_history_status=LEVEL_HISTORY_STATUS_MODIFIED_AFTER_ENTRY,
+            price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+            entry_snapshot_present=True, exit_snapshot_present=True,
+        )
+        assert result.status == GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE
+        assert result.detail == CANONICAL_FALLBACK
+
+    def test_e_no_compatible_crossing_contradictory_history_is_insufficient(self):
+        target_obs, _ = _target_and_stop_observations(target=500.0)
+        result = classify_governed_level_touch(
+            level_kind=TARGET_VALUE, observation=target_obs, level_history_status=LEVEL_HISTORY_STATUS_CONTRADICTORY,
+            price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+            entry_snapshot_present=True, exit_snapshot_present=True,
+        )
+        assert result.status == GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE
+        assert result.detail == CANONICAL_FALLBACK
+
+    def test_e_no_value_supplied_independent_of_history_governed(self):
+        # Mandatory red test #5 — NO_VALUE_SUPPLIED stays independent of
+        # level-history status under all three history families.
+        target_obs, _ = _target_and_stop_observations(target=None)
+        for history in (
+            LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED, LEVEL_HISTORY_STATUS_UNKNOWN_OR_LEGACY,
+            LEVEL_HISTORY_STATUS_MODIFIED_AFTER_ENTRY,
+        ):
+            result = classify_governed_level_touch(
+                level_kind=TARGET_VALUE, observation=target_obs, level_history_status=history,
+                price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+                entry_snapshot_present=True, exit_snapshot_present=True,
+            )
+            assert result.status == GOVERNED_TOUCH_NO_VALUE_SUPPLIED, history
 
     def test_e36_crossing_plus_unknown_history_falls_back(self):
         target_obs, _ = _target_and_stop_observations()
@@ -715,6 +771,50 @@ class TestGovernedOrderConclusions:
         )
         assert result.status == GOVERNED_ORDER_TARGET_ONLY_OBSERVED
 
+    def test_f6_target_only_with_stop_governed_unmodified_no_crossing(self):
+        # Mandatory red test #6 — target SUPPORTED + stop a genuine
+        # GOVERNED_UNMODIFIED definitive no-crossing (not merely no
+        # value supplied) => TARGET_ONLY_OBSERVED.
+        target_obs, stop_obs = _target_and_stop_observations(stop=1.0)  # stop supplied, never crosses
+        summary = self._summary(target_obs, stop_obs)
+        result = classify_governed_order(
+            summary=summary, target_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            stop_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
+            target_bars_available=True, stop_bars_available=True,
+            target_entry_value=120.0, target_exit_value=120.0,
+            stop_entry_value=1.0, stop_exit_value=1.0,
+        )
+        assert result.status == GOVERNED_ORDER_TARGET_ONLY_OBSERVED
+
+    def test_f8_target_only_but_stop_modified_history_no_crossing_is_unavailable(self):
+        # Mandatory red test #8.
+        target_obs, stop_obs = _target_and_stop_observations(stop=1.0)
+        summary = self._summary(target_obs, stop_obs)
+        result = classify_governed_order(
+            summary=summary, target_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            stop_level_history_status=LEVEL_HISTORY_STATUS_MODIFIED_AFTER_ENTRY,
+            target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
+            target_bars_available=True, stop_bars_available=True,
+            target_entry_value=120.0, target_exit_value=120.0,
+        )
+        assert result.status == GOVERNED_ORDER_UNAVAILABLE
+        assert result.detail == CANONICAL_FALLBACK
+
+    def test_f9_stop_only_with_target_modified_history_no_crossing_is_unavailable(self):
+        # Mandatory red test #9 — symmetric case.
+        target_obs, stop_obs = _target_and_stop_observations(target=500.0)
+        summary = self._summary(target_obs, stop_obs)
+        result = classify_governed_order(
+            summary=summary, target_level_history_status=LEVEL_HISTORY_STATUS_MODIFIED_AFTER_ENTRY,
+            stop_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
+            target_bars_available=True, stop_bars_available=True,
+            stop_entry_value=80.0, stop_exit_value=80.0,
+        )
+        assert result.status == GOVERNED_ORDER_UNAVAILABLE
+        assert result.detail == CANONICAL_FALLBACK
+
     def test_f17_target_only_but_stop_entry_snapshot_missing_is_unavailable(self):
         # The stop side has a value supplied that never crosses, but its
         # entry snapshot is missing -- that missing evidence makes the
@@ -1117,3 +1217,72 @@ class TestFinalHeadAssuranceAnchor:
         # standalone touch classifier's result (both call the identical
         # function under Mandatory Correction 1).
         assert order.status == GOVERNED_ORDER_UNAVAILABLE  # stop side history unknown with a supplied value
+
+
+# ============================= SINGLE-SOURCE ELIGIBILITY (WA-C24/WA-C25) =============================
+
+class TestSingleSourcePerLevelEligibility:
+    def test_definitive_negative_helper_accepts_only_one_conclusion_argument(self):
+        """Mandatory red test #13 — the private single-source eligibility
+        helper must accept exactly one parameter (the conclusion itself),
+        never a second raw level_history_status/endpoint/basis input."""
+        import inspect
+        from services.postmortem import governed_price_path_conclusions as mod
+        sig = inspect.signature(mod._side_is_definitive_negative)
+        assert list(sig.parameters) == ["touch"]
+        sig2 = inspect.signature(mod._side_is_trustworthy)
+        assert list(sig2.parameters) == ["touch"]
+
+    def test_no_compatible_crossing_never_returned_for_non_governed_history(self):
+        """Mandatory red test #15 — standalone classify_governed_level_
+        touch never exposes NO_COMPATIBLE_CROSSING for unknown, legacy,
+        contradictory or modified-after-entry history."""
+        target_obs, _ = _target_and_stop_observations(target=500.0)
+        for history in (
+            LEVEL_HISTORY_STATUS_UNKNOWN_OR_LEGACY, LEVEL_HISTORY_STATUS_MODIFIED_AFTER_ENTRY,
+            LEVEL_HISTORY_STATUS_CONTRADICTORY,
+        ):
+            result = classify_governed_level_touch(
+                level_kind=TARGET_VALUE, observation=target_obs, level_history_status=history,
+                price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+                entry_snapshot_present=True, exit_snapshot_present=True,
+            )
+            assert result.status != GOVERNED_TOUCH_NO_COMPATIBLE_CROSSING, history
+            assert result.status == GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE
+            assert result.detail == CANONICAL_FALLBACK
+
+    def test_order_classification_performs_no_post_classification_reinterpretation(self):
+        """Mandatory red test #14 — once target_touch/stop_touch exist,
+        classify_governed_order's result is fully determined by those two
+        conclusions alone: two calls with identical resulting touch
+        statuses but DIFFERENT raw level_history_status/endpoint inputs
+        (that still produce the SAME touch conclusion) must produce the
+        SAME order result, proving no raw-history reinterpretation
+        happens after the per-level conclusions are built."""
+        target_obs, stop_obs = _target_and_stop_observations(stop=None)
+        summary = self._make_summary(target_obs, stop_obs)
+
+        # Call A: stop side is UNKNOWN_OR_LEGACY (irrelevant, since
+        # NO_VALUE_SUPPLIED is independent of history).
+        result_a = classify_governed_order(
+            summary=summary, target_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            stop_level_history_status=LEVEL_HISTORY_STATUS_UNKNOWN_OR_LEGACY,
+            target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
+            target_bars_available=True, stop_bars_available=True,
+            target_entry_value=120.0, target_exit_value=120.0,
+        )
+        # Call B: stop side is MODIFIED_AFTER_ENTRY instead -- still
+        # produces GOVERNED_TOUCH_NO_VALUE_SUPPLIED (no value was ever
+        # supplied for the stop observation in either call), so the
+        # order result must be identical.
+        result_b = classify_governed_order(
+            summary=summary, target_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            stop_level_history_status=LEVEL_HISTORY_STATUS_MODIFIED_AFTER_ENTRY,
+            target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
+            target_bars_available=True, stop_bars_available=True,
+            target_entry_value=120.0, target_exit_value=120.0,
+        )
+        assert result_a.status == result_b.status == GOVERNED_ORDER_TARGET_ONLY_OBSERVED
+
+    def _make_summary(self, target_obs, stop_obs):
+        return summarize_observed_numerical_crossings(target_obs, stop_obs)
