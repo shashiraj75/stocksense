@@ -183,28 +183,33 @@ class TestSessionAttributionAlgorithm:
         assert classify_bar_session_attribution(bundle, bundle.bars[-1]) == SESSION_ATTRIBUTION_EXIT_INCLUDED_FULL
 
     def test_unknown_entry_boundary_policy_fails_closed(self):
-        fake_bundle = _FakeBundle(
-            requested_window_start=_D(1), requested_window_end=_D(4),
-            entry_bar_policy="SOMETHING_UNRECOGNIZED", exit_bar_policy="EXIT_BAR_INCLUDED_FULL",
-        )
+        """Stage J4B.3 test-intent correction (I-06): the prior
+        _FakeBundle-based construction now hits the J4B.2
+        isinstance(bundle, PricePathEvidenceBundle) type-check gate
+        before ever reaching policy validation, so it no longer proves
+        what this test's name claims. A real PricePathEvidenceBundle,
+        forged via dataclasses.replace (PricePathEvidenceBundle's own
+        __post_init__ does not validate boundary-policy string values),
+        genuinely reaches the policy-validation branch instead."""
+        base = _us_bundle(_US_ENTRY_INTERIOR, _US_EXIT_INTERIOR, _four_day_bars())
+        forged = dataclasses.replace(base, entry_bar_policy="SOMETHING_UNRECOGNIZED")
         with pytest.raises(SessionAttributionError):
-            classify_bar_session_attribution(fake_bundle, _FakeBar(session_date=_D(1)))
+            classify_bar_session_attribution(forged, forged.bars[0])
 
     def test_unknown_exit_boundary_policy_fails_closed(self):
-        fake_bundle = _FakeBundle(
-            requested_window_start=_D(1), requested_window_end=_D(4),
-            entry_bar_policy="ENTRY_BAR_INCLUDED_FULL", exit_bar_policy="SOMETHING_UNRECOGNIZED",
-        )
+        """Stage J4B.3 test-intent correction (I-06) -- see
+        test_unknown_entry_boundary_policy_fails_closed's docstring."""
+        base = _us_bundle(_US_ENTRY_INTERIOR, _US_EXIT_INTERIOR, _four_day_bars())
+        forged = dataclasses.replace(base, exit_bar_policy="SOMETHING_UNRECOGNIZED")
         with pytest.raises(SessionAttributionError):
-            classify_bar_session_attribution(fake_bundle, _FakeBar(session_date=_D(4)))
+            classify_bar_session_attribution(forged, forged.bars[-1])
 
     def test_unknown_same_day_boundary_policy_combination_fails_closed(self):
-        fake_bundle = _FakeBundle(
-            requested_window_start=_D(1), requested_window_end=_D(1),
-            entry_bar_policy="SOMETHING_UNRECOGNIZED", exit_bar_policy="SOMETHING_ELSE_UNRECOGNIZED",
-        )
+        """Stage J4B.3 test-intent correction (I-06) -- see above."""
+        base = _us_bundle(_US_ENTRY_INTERIOR, dt.datetime(2026, 6, 1, 16, 0, tzinfo=ET), [_raw(_D(1), 100, 101, 99, 100)])
+        forged = dataclasses.replace(base, entry_bar_policy="SOMETHING_UNRECOGNIZED", exit_bar_policy="SOMETHING_ELSE_UNRECOGNIZED")
         with pytest.raises(SessionAttributionError):
-            classify_bar_session_attribution(fake_bundle, _FakeBar(session_date=_D(1)))
+            classify_bar_session_attribution(forged, forged.bars[0])
 
     def test_duplicate_bars_still_rejected_by_existing_bundle_invariant(self):
         """#27 -- this phase adds no new duplicate/ordering guard; the
@@ -493,20 +498,20 @@ class TestCrossingDetectionMatrix:
         assert obs.first_safely_attributable_session == _D(2)
 
     def test_25_unknown_entry_boundary_policy_fails_closed(self):
-        fake_bundle = _FakeBundle(
-            requested_window_start=_D(1), requested_window_end=_D(4),
-            entry_bar_policy="MADE_UP_POLICY", exit_bar_policy="EXIT_BAR_INCLUDED_FULL",
-        )
+        """Stage J4B.3 test-intent correction (I-06) -- see
+        TestSessionAttributionAlgorithm.test_unknown_entry_boundary_policy_fails_closed's
+        docstring above for the rationale."""
+        base = _us_bundle(_US_ENTRY_INTERIOR, _US_EXIT_INTERIOR, _four_day_bars())
+        forged = dataclasses.replace(base, entry_bar_policy="MADE_UP_POLICY")
         with pytest.raises(SessionAttributionError):
-            classify_bar_session_attribution(fake_bundle, _FakeBar(session_date=_D(1)))
+            classify_bar_session_attribution(forged, forged.bars[0])
 
     def test_26_unknown_exit_boundary_policy_fails_closed(self):
-        fake_bundle = _FakeBundle(
-            requested_window_start=_D(1), requested_window_end=_D(4),
-            entry_bar_policy="ENTRY_BAR_INCLUDED_FULL", exit_bar_policy="MADE_UP_POLICY",
-        )
+        """Stage J4B.3 test-intent correction (I-06) -- see above."""
+        base = _us_bundle(_US_ENTRY_INTERIOR, _US_EXIT_INTERIOR, _four_day_bars())
+        forged = dataclasses.replace(base, exit_bar_policy="MADE_UP_POLICY")
         with pytest.raises(SessionAttributionError):
-            classify_bar_session_attribution(fake_bundle, _FakeBar(session_date=_D(4)))
+            classify_bar_session_attribution(forged, forged.bars[-1])
 
     def test_28_india_bundle_attribution(self):
         bars = [_raw(_D(1), 2800, 2850, 2790, 2820), _raw(_D(2), 2800, 2900, 2790, 2820),
