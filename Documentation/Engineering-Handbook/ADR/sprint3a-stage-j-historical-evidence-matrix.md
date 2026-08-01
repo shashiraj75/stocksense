@@ -2142,3 +2142,225 @@ conclusions) has not begun.
 Stage J is **not** complete. This phase does not begin J4C, does not
 begin J4D, does not change any report output, and does not change any
 production behavior reachable through the live `/generate` endpoint.
+
+---
+
+## Wave A — Stage J4C semantic contract + Stage J4D durable write invariant
+
+**IMPLEMENTED, UNIT AND REGRESSION TESTED, REAL-POSTGRESQL VERIFIED,
+NOT REPORT-WIRED, NOT CLAIM-WIRED, NOT PERSISTED-REPORT-WIRED, NOT
+READ-API-EXPOSED, NOT FRONTEND-CONSUMED.**
+
+### J4B.3 disposition (accepted, frozen)
+
+The prior J4B.3 evidence-only checkpoint found that test-first commit
+`08f7f12` (parent `e57abc72876947066c1de88c193692ca7f20f96c`, the
+correct pre-fix J4B.2 checkpoint) was genuinely test/governance-only,
+but could not independently collect against its parent — it imports
+`_classify_session_attribution_fields`, a symbol only introduced by the
+*next* commit (`dd98d7d`). This is a **process/test-ordering
+deviation**, not a functional defect in the frozen J4B.3
+implementation: the final J4B.3 code HEAD
+(`a925117bbf8e19ee209a4eac1c8843610a8e5fab`) remained exhaustively
+green — 5097 non-PostgreSQL passed / 0 failed, 187 passed on both
+PostgreSQL 15 and 17 (workflow `30701143190`), all 50 J4B.3 manifest
+nodes existed/ran/passed. **STAGE J4B.3 IMPLEMENTATION COMPLETE AND
+SPECIFICATION FROZEN — RETROSPECTIVE PRE-FIX RED-STATE PROOF
+UNAVAILABLE DUE TO TEST-COMMIT COLLECTION DEPENDENCY; PROCESS
+DEVIATION DISCLOSED AND ACCEPTED.** No history was rewritten, no
+compatibility shim was introduced, and no J4B.3 production code was
+reopened to manufacture a historical red state — Wave A proceeds
+directly from the accepted frozen J4B.3 contract.
+
+### Stage J4C — active-level eligibility and governed-conclusion semantic contract
+
+Two new pure, deterministic modules under `services/postmortem/`, both
+unwired (no caller in report generation, claims, persistence, API, or
+frontend code — confirmed by repository-wide grep excluding tests and
+the modules' own definitions):
+
+**`level_history_eligibility.py`** — level-history STATUS,
+independent of the raw J4B crossing observation:
+`classify_level_history_status(*, invariant_version, level_modified_flag)`
+returns one of five statuses: `UNKNOWN_OR_LEGACY` (historical NULL, or
+an untrusted legacy FALSE with no governed version),
+`MODIFIED_AFTER_ENTRY` (TRUE, trusted even on a legacy row — a directly
+observed future edit is reliable regardless of version),
+`GOVERNED_UNMODIFIED` (FALSE, only under a supported invariant
+version), `CONTRADICTORY` (invalid type, unsupported version, or a
+governed row with a NULL per-level flag — an impossible state under the
+J4D invariant), `REQUIRED_EVIDENCE_MISSING`. The same module's
+`classify_endpoint_evidence` distinguishes nine endpoint shapes
+(missing snapshots, null/null, null-to-value, value-to-null, identical
+values, different values, malformed/non-finite) and deliberately proves
+nothing about *when* or *how many times* a value changed — identical
+endpoints never imply unchanged-throughout, endpoint absence never
+implies absence-throughout.
+`is_no_level_configured_throughout_eligible` gates the future
+`NO_LEVEL_CONFIGURED_THROUGHOUT` conclusion (not emitted anywhere in
+Wave A) to exactly the case Gate 1F requires: supported invariant
+version + per-level FALSE + both endpoints null.
+`classify_price_basis_eligibility` maps `price_adjustment_basis` to
+COMPATIBLE/INCOMPATIBLE/UNKNOWN/CORRUPT_OR_CONTRADICTORY/
+EVIDENCE_UNAVAILABLE, never fetching an alternate provider or falling
+back to a current price.
+
+**`governed_price_path_conclusions.py`** — maps a raw J4B
+`ObservedNumericalCrossingSummary` plus the two J4C eligibility inputs
+onto a GOVERNED conclusion. `classify_governed_level_touch` only
+returns `SUPPORTED_TOUCH` when the level history is
+`GOVERNED_UNMODIFIED` *and* the crossing was safely attributable —
+every other crossing-observed case (unknown/legacy, modified,
+contradictory, required-evidence-missing, or partial-boundary-only)
+falls back to the exact canonical sentence
+`"Insufficient evidence to determine this factor reliably."`, enforced
+by dataclass `__post_init__` (a fallback status constructed with any
+other detail string raises). `classify_governed_order` reuses the
+J4B `safely_attributable_pattern` (same-bar → `SAME_BAR_ORDER_UNKNOWN`,
+never inferred from candle direction; partial-boundary-only →
+`ORDER_UNAVAILABLE`) and additionally requires **both** target and stop
+level-history status to be `GOVERNED_UNMODIFIED` before returning a
+positive order conclusion — the aggregate `levels_modified_after_entry`
+flag alone can never satisfy this, by construction (the functions
+never accept an aggregate parameter at all).
+
+Old/new transition: `detect_touches`/`classify_touch_order` (the
+pre-J4C model) are unchanged this Wave and remain the sole authority
+for the current report version. The new J4C model becomes the sole
+authority only for a future report version Wave B introduces via an
+atomic calculation/report-schema version bump; the two conclusion sets
+must never both be emitted for the same report identity. Existing
+historical reports remain immutable and readable regardless.
+
+59 new unit tests in `test_j4c_semantic_contract.py` (Gate 1M batches
+A/B); all pre-existing observed-crossing/boundary/traceability tests
+(362 nodes) remain green with zero regression.
+
+### Stage J4D — durable level-history write invariant
+
+**Writer inventory** (repository-wide grep across all four SQL verbs,
+confirmed exhaustive — see the Wave A prompt-response transcript for
+the full table): the only authoritative post-entry stop/target editor
+is `edit_trade` (`PATCH /trade/{id}`, `api/routers/paper_trading.py`).
+It previously used a non-atomic SELECT-then-UPDATE (a real lost-update
+race) and a single combined aggregate flag with no per-level
+distinction. `close_paper_trade`'s SELECT never fetched
+`levels_modified_after_entry`, and its `build_exit_snapshot` call
+omitted it entirely — **`paper_trade_exit_snapshot.levels_modified_
+after_entry` was always NULL in production, regardless of a trade's
+actual edit history**, until this Wave. `buy_trade`'s INSERT never
+initialized any governed field. `trade_notifier.py`'s
+`target_notified_at`/`stop_notified_at` UPDATEs never touch
+stop/target and needed no change (used as the trigger's negative test
+case). No production seeding writer exists outside these paths.
+
+**Schema** (additive, nullable, idempotent — `services/postgres_store.py`):
+`paper_trades.level_history_contract_version` (TEXT, CHECK constrained
+to NULL or `'1'`), `stop_modified_after_entry` /
+`target_modified_after_entry` (BOOLEAN); mirrored final-state columns
+`level_history_contract_version` / `final_stop_modified_after_entry` /
+`final_target_modified_after_entry` on `paper_trade_exit_snapshot`. No
+`DEFAULT FALSE` and no backfill DML anywhere — every existing row reads
+back NULL/NULL/NULL, exactly like before.
+
+**Database enforcement** — `BEFORE UPDATE` trigger
+`trg_paper_trades_level_history_invariant` (following this schema's
+existing `CREATE OR REPLACE FUNCTION` / `DROP TRIGGER IF EXISTS` /
+`CREATE TRIGGER` immutability pattern), all comparisons `IS DISTINCT
+FROM`-safe: version immutable once set (NULL cannot silently become
+governed, governed cannot change or revert to NULL); either per-level
+TRUE can never revert; a governed row's `stop_loss`/`target_price`
+change is rejected unless the matching per-level flag becomes TRUE in
+the *same* statement; the aggregate must be TRUE whenever either
+per-level flag is TRUE. This makes the invariant database-bypass-
+resistant — it holds for any authoritative UPDATE, not only ones
+issued through the one API route.
+
+**Writers updated**: `buy_trade`'s INSERT now explicitly writes
+`level_history_contract_version='1', stop_modified_after_entry=FALSE,
+target_modified_after_entry=FALSE, levels_modified_after_entry=FALSE`
+for every new trade. `edit_trade` now takes a `SELECT ... FOR UPDATE`
+row lock (closing the lost-update race) and issues one NULL-safe
+`CASE`-based UPDATE per level — a level's flag column is left
+*completely untouched* (preserving TRUE, FALSE, or a legacy NULL)
+when that specific level didn't change, and set to TRUE (never
+anything else, never a literal FALSE anywhere in this code path) when
+it did — independently for stop and target. `close_paper_trade` reads
+the governed fields under the same row lock as the close UPDATE and
+threads them into the exit snapshot, fixing the always-NULL gap above.
+
+**Legacy preservation**: a legacy trade's `level_history_contract_
+version` stays NULL forever (the trigger rejects any UPDATE attempting
+to change it); a directly observed legacy stop/target edit may still
+set that level's flag NULL→TRUE (and the aggregate NULL→TRUE) — that
+is real positive evidence, trusted regardless of governance — but an
+unedited legacy per-level flag remains NULL indefinitely, never
+inferred to `GOVERNED_UNMODIFIED`.
+
+**Entry-snapshot scope decision (disclosed, deliberate)**: Wave A adds
+the governed fields to `paper_trade_exit_snapshot` (final state) but
+**not** to `paper_trade_entry_snapshot`. At entry time a governed
+trade's per-level state is trivially FALSE by construction (set
+atomically in the same INSERT as the trade row, before any edit is
+possible) — fully reconstructable from `paper_trades.level_history_
+contract_version` alone, so no information is lost. This avoids a
+high-risk hand-counted-placeholder edit to `paper_trade_entry_snapshot`'s
+existing 35-column INSERT (which has no column/value/placeholder parity
+assertion, unlike the exit-snapshot INSERT's already-hardened
+generated-from-one-list pattern). Left as an open item for Wave B to
+decide whether duplicating it into the entry snapshot is worth pursuing.
+
+**Real PostgreSQL verification** (`tests/postgres_integration/test_
+level_history_invariant_real_pg.py`, never mocks `_conn`): schema
+re-initialization idempotency; new-trade initialization; every trigger
+rejection path (version immutability, TRUE-never-reverts ×2, governed
+value-change-without-flag ×2, aggregate/per-level consistency,
+unsupported version on INSERT via the CHECK constraint); a correctly
+shaped governed change succeeding; an unrelated notifier-style UPDATE
+never misclassified as a level modification; legacy-row positive
+evidence and version-immutability; real multi-threaded concurrent
+stop+target and concurrent-identical edits through the actual HTTP
+endpoint (not a mocked connection) proving no lost TRUE; cross-user and
+nonexistent-trade authorization: proving the 403/404 rejection leaves
+every governed field untouched; a full buy→edit→sell HTTP flow proving
+the exit snapshot's governed columns are populated correctly; and
+owner-scoped reset.
+
+**Version decision for Wave B (documented, not applied)**: Wave A
+leaves `CALCULATION_VERSION`, `PRICE_PATH_REPORT_SCHEMA_VERSION`, and
+`ATTRIBUTION_RULES_VERSION` unchanged. Wave B must mint new values for
+whichever of these the J4C governed-conclusion wiring touches, coexist
+with every already-persisted historical version, and perform the
+atomic report-version bump described in the J4C old/new transition
+section above — none of that happens in Wave A.
+
+### Wave A traceability
+
+`tests/unit/wave_a_traceability_manifest.json` — 25 requirement IDs
+(`J4C-01`..`J4C-12`, `J4D-01`..`J4D-13`) mapping to 43 exact pytest
+node IDs across unit, regression, and real-PostgreSQL tiers, separate
+from the frozen J4B.3 manifest. Validated via the existing J4B.3
+traceability helper (`j4b3_traceability_helper.py`, itself generic —
+not specific to the J4B.3 manifest): 0 static errors, every node
+collects.
+
+### No report/claim/API/frontend wiring; no version bump; no PR/merge/deployment
+
+Confirmed unchanged this Wave: no production report-generation, claim,
+persistence-read, API response, or frontend path references any J4C
+symbol (`level_history_eligibility`, `governed_price_path_
+conclusions`) — repository-wide grep, zero matches outside tests and
+the modules' own definitions. `price_path_generation.py`,
+`price_path_claims.py`, `price_path_identity.py`, `report_store.py`,
+`outbox.py`, and every frontend file are untouched. All version
+constants remain pinned. No PR opened, no merge, no deployment, no
+feature flag enabled/changed.
+
+### Explicit non-claims (Wave A)
+
+Wave A is not complete Stage J. It does not wire J4C conclusions into
+any report, claim, or persisted output; it does not expose them via
+API or frontend; it does not perform the Wave B report-version bump;
+and it does not begin Wave B or Wave C. The entry-snapshot scope
+decision above is an explicit, disclosed limitation, not a silent
+gap.
