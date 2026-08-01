@@ -4,7 +4,7 @@
   "j4e_scenario_target": 55,
   "j4f_scenario_target": 68,
   "j4e_scenarios_represented": 55,
-  "j4f_scenarios_represented": 20,
+  "j4f_scenarios_represented": 30,
   "gap_disclosure": "Batches A-C mapped exactly one pytest node per WB-J4E-* traceability ID (18 nodes total). That satisfies traceability-ID coverage but NOT the 55-scenario behavioural matrix, which requires additional scenario variants per requirement (e.g. multiple touch-status permutations under WB-J4E-14, multiple concurrent-insert races under WB-J4F outbox IDs, multiple lease-expiry timings under the J4F lease contract). Those additional scenario nodes have not yet been written. This gap is disclosed here rather than silently closed by treating one node per requirement ID as sufficient.",
   "entries": [
     {
@@ -505,8 +505,8 @@
   ],
   "j4e_matrix_status": "J4E RED-BASELINE COMPLETE \u2014 55/55 MANDATORY SCENARIOS REPRESENTED, COLLECTED AND EXECUTED; 54 FAILED THROUGH INTENDED PRE-IMPLEMENTATION ASSERTIONS; 1 BASELINE-PRESERVATION GUARD PASSED AS EXPECTED; ZERO COLLECTION ERRORS.",
   "remaining_j4e_scenarios_not_yet_written": 0,
-  "remaining_j4f_scenarios_not_yet_written": 48,
-  "next_action": "Batch J: background worker startup/shutdown, bounded polling, batch size, DB-outage backoff, no-connection-during-sleep/provider-IO. Then Batch K (failure taxonomy/LIMITED_EVIDENCE/sanitized errors/unsupported identity), Batch L (exactly-once effect/reconciliation/atomicity/stale-worker rollback), Batch M (reset/delete races, isolation, privacy, observability) to close the remaining 48 J4F scenarios before CI dispatch.",
+  "remaining_j4f_scenarios_not_yet_written": 38,
+  "next_action": "Batch K: failure taxonomy (LIMITED_EVIDENCE/RETRYABLE/TERMINAL classification), sanitized error storage, unsupported-identity handling. Then Batch L (exactly-once effect, report-exists reconciliation, report/outbox atomicity, stale-worker rollback) and Batch M (reset/delete races, cross-user isolation, observability) to close the remaining 38 J4F scenarios.",
   "batch_g_added_scenarios": [
     {
       "scenario_no": 1,
@@ -671,6 +671,88 @@
       "level": "real-postgres",
       "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
       "actual_pre_fix_result": "RED (collected locally; execution pending CI dispatch)"
+    }
+  ],
+  "batch_j_added_scenarios": [
+    {
+      "scenario_no": 21,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_21_outbox_worker_module_exists",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 22,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_22_worker_is_flag_gated",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 23,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_23_worker_exposes_a_start_function",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 24,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_24_worker_exposes_a_graceful_stop_function",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 25,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_25_worker_poll_has_bounded_batch_size_parameter",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 26,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_26_worker_poll_interval_is_named_not_bare_magic_number",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 27,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_27_worker_does_not_hold_connection_across_sleep",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 28,
+      "requirement_id": "WB-J4F-09",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_28_worker_delegates_provider_acquisition_outside_any_conn_block",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 29,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_29_worker_backs_off_on_database_outage",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 30,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_30_worker_logs_lifecycle_events",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
     }
   ]
 }
