@@ -791,7 +791,9 @@ _ENTRY_SNAPSHOT_COLUMNS = (
     "confidence_score, technical_signal, technical_rsi, technical_macd_diff, "
     "fundamental_score, sentiment_score, sentiment_label, "
     "market_regime_trend, market_regime_score_adj, market_regime_reason, "
-    "recommendation_reasoning, model_version, verification_levels"
+    "recommendation_reasoning, model_version, verification_levels, "
+    "level_history_contract_version, initial_stop_modified_after_entry, "
+    "initial_target_modified_after_entry, initial_levels_modified_after_entry"
 )
 
 
@@ -809,7 +811,10 @@ def _parse_entry_evidence_timestamp(value: str | None):
     return ts
 
 
-def _build_snapshot_for_buy(*, trade_id: int, user_id: str, symbol: str, market: str, req: "BuyRequest") -> EntrySnapshot:
+def _build_snapshot_for_buy(
+    *, trade_id: int, user_id: str, symbol: str, market: str, req: "BuyRequest",
+    level_history_contract_version: str | None = None,
+) -> EntrySnapshot:
     """Builds the immutable entry snapshot for a newly created trade from
     the Buy request — pure construction, no I/O (see
     services/postmortem/entry_snapshot.py for the calculation logic this
@@ -855,7 +860,10 @@ def _build_snapshot_for_buy(*, trade_id: int, user_id: str, symbol: str, market:
     if not isinstance(trade_id, int) or trade_id <= 0:
         raise ValueError(f"invalid trade_id for entry snapshot: {trade_id!r}")
 
-    return build_entry_snapshot(paper_trade_id=trade_id, user_id=user_id, symbol=symbol, market=market, ctx=ctx)
+    return build_entry_snapshot(
+        paper_trade_id=trade_id, user_id=user_id, symbol=symbol, market=market, ctx=ctx,
+        level_history_contract_version=level_history_contract_version,
+    )
 
 
 def _json_field(value):
@@ -883,7 +891,8 @@ def _fetch_entry_snapshot(conn, trade_id: int) -> EntrySnapshot | None:
      confidence, tech_signal, tech_rsi, tech_macd,
      fund_score, sent_score, sent_label,
      regime_trend, regime_adj, regime_reason,
-     reasoning, model_version, verification_levels) = row
+     reasoning, model_version, verification_levels,
+     level_history_contract_version, initial_stop_modified, initial_target_modified, initial_levels_modified) = row
     return EntrySnapshot(
         paper_trade_id=ptid, user_id=uid, symbol=sym, market=mkt,
         snapshot_schema_version=schema_version, evidence_source=evidence_source,
@@ -902,31 +911,43 @@ def _fetch_entry_snapshot(conn, trade_id: int) -> EntrySnapshot | None:
         market_regime_trend=regime_trend, market_regime_score_adj=regime_adj, market_regime_reason=regime_reason,
         recommendation_reasoning=_json_field(reasoning), model_version=model_version,
         verification_levels=_json_field(verification_levels) or {},
+        level_history_contract_version=level_history_contract_version,
+        initial_stop_modified_after_entry=initial_stop_modified,
+        initial_target_modified_after_entry=initial_target_modified,
+        initial_levels_modified_after_entry=initial_levels_modified,
     )
 
 
 def _insert_entry_snapshot(conn, snapshot: EntrySnapshot) -> None:
+    values = (
+        snapshot.paper_trade_id, snapshot.user_id, snapshot.symbol, snapshot.market,
+        snapshot.snapshot_schema_version, snapshot.evidence_source,
+        snapshot.daily_pick_run_id, snapshot.daily_pick_rank, snapshot.recommendation_signal,
+        snapshot.recommendation_generated_at, snapshot.recommendation_reference_price,
+        snapshot.recommendation_entry_low, snapshot.recommendation_entry_high,
+        snapshot.simulated_execution_price, snapshot.execution_slippage_pct, snapshot.execution_range_position,
+        snapshot.recommended_stop_loss, snapshot.recommended_target_price,
+        snapshot.user_selected_stop_loss, snapshot.user_selected_target_price,
+        snapshot.user_overrode_recommendation, snapshot.reward_to_risk_ratio,
+        snapshot.confidence_score, snapshot.technical_signal, snapshot.technical_rsi, snapshot.technical_macd_diff,
+        snapshot.fundamental_score, snapshot.sentiment_score, snapshot.sentiment_label,
+        snapshot.market_regime_trend, snapshot.market_regime_score_adj, snapshot.market_regime_reason,
+        json.dumps(snapshot.recommendation_reasoning) if snapshot.recommendation_reasoning is not None else None,
+        snapshot.model_version,
+        json.dumps(snapshot.verification_levels),
+        snapshot.level_history_contract_version,
+        snapshot.initial_stop_modified_after_entry,
+        snapshot.initial_target_modified_after_entry,
+        snapshot.initial_levels_modified_after_entry,
+    )
+    # Stage J4D-closure hardening: derive the placeholder count from the
+    # bound-value tuple itself rather than hand-counting `%s` characters —
+    # exactly the class of bug the exit-snapshot INSERT was already
+    # hardened against (see close_service.py's _exit_snapshot_values).
+    placeholders = ", ".join(["%s"] * len(values))
     conn.execute(
-        f"""INSERT INTO paper_trade_entry_snapshot ({_ENTRY_SNAPSHOT_COLUMNS})
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-        (
-            snapshot.paper_trade_id, snapshot.user_id, snapshot.symbol, snapshot.market,
-            snapshot.snapshot_schema_version, snapshot.evidence_source,
-            snapshot.daily_pick_run_id, snapshot.daily_pick_rank, snapshot.recommendation_signal,
-            snapshot.recommendation_generated_at, snapshot.recommendation_reference_price,
-            snapshot.recommendation_entry_low, snapshot.recommendation_entry_high,
-            snapshot.simulated_execution_price, snapshot.execution_slippage_pct, snapshot.execution_range_position,
-            snapshot.recommended_stop_loss, snapshot.recommended_target_price,
-            snapshot.user_selected_stop_loss, snapshot.user_selected_target_price,
-            snapshot.user_overrode_recommendation, snapshot.reward_to_risk_ratio,
-            snapshot.confidence_score, snapshot.technical_signal, snapshot.technical_rsi, snapshot.technical_macd_diff,
-            snapshot.fundamental_score, snapshot.sentiment_score, snapshot.sentiment_label,
-            snapshot.market_regime_trend, snapshot.market_regime_score_adj, snapshot.market_regime_reason,
-            json.dumps(snapshot.recommendation_reasoning) if snapshot.recommendation_reasoning is not None else None,
-            snapshot.model_version,
-            json.dumps(snapshot.verification_levels),
-        )
+        f"INSERT INTO paper_trade_entry_snapshot ({_ENTRY_SNAPSHOT_COLUMNS}) VALUES ({placeholders})",
+        values,
     )
 
 
@@ -2022,6 +2043,7 @@ def paper_buy(request: Request, req: BuyRequest, user_id: str = Depends(get_curr
                 snapshot = _build_snapshot_for_buy(
                     trade_id=trade_id, user_id=user_id, symbol=req.symbol.upper(),
                     market=req.market, req=req,
+                    level_history_contract_version=_LEVEL_HISTORY_CONTRACT_VERSION,
                 )
                 try:
                     _insert_entry_snapshot(conn, snapshot)
@@ -2274,80 +2296,103 @@ def paper_sell(trade_id: int, req: SellRequest, user_id: str = Depends(get_curre
     return response
 
 
+# Wave A closure correction — the SAME stable, privacy-safe "trade not
+# found" response used for both a genuinely nonexistent trade and a
+# cross-user trade, matching the existing close path's own pattern (see
+# close_service.py's TradeNotFoundError handling): identical status
+# code and identical body in both cases, so a caller can never use this
+# endpoint as an existence oracle for another user's trade.
+def _edit_trade_not_found() -> HTTPException:
+    return HTTPException(status_code=404, detail="Trade not found")
+
+
 @router.patch("/trade/{trade_id}")
 def edit_trade(trade_id: int, req: EditRequest, user_id: str = Depends(get_current_user_id)):
+    # Wave A closure correction — this pool's connections are
+    # autocommit=True (see _get_pool()), under which every individual
+    # `conn.execute(...)` call commits and releases its locks
+    # immediately by itself; a bare `with _conn() as conn:` block does
+    # NOT keep a `SELECT ... FOR UPDATE` row lock held across the later
+    # statements in this function. An explicit `with conn.transaction():`
+    # is required for the lock to actually serialize concurrent editors
+    # of the same trade — without it, two concurrent PATCH requests can
+    # each read the pre-edit row, each believe their own change is the
+    # only one, and race exactly as before this Wave's FOR UPDATE was
+    # added (the lock was real but scoped to a single already-committed
+    # statement, not to this function's overall read-modify-write).
     with _conn() as conn:
-        # Trade Postmortem Sprint 3A, Stage J4D — FOR UPDATE takes a row
-        # lock for the remainder of this transaction, closing the
-        # concurrency gap the pre-J4D version of this endpoint had: two
-        # concurrent PATCH requests reading stale old_stop_loss/
-        # old_target_price values could otherwise race, with the second
-        # writer's UPDATE overwriting the first writer's genuine edit (a
-        # classic lost update) since neither request's UPDATE was ever
-        # conditioned on the values it read.
-        trade = conn.execute(
-            "SELECT user_id, status, entry_price, quantity, market, stop_loss, target_price "
-            "FROM paper_trades WHERE id = %s FOR UPDATE",
-            (trade_id,)
-        ).fetchone()
-        if trade is None:
-            raise HTTPException(status_code=404, detail="Trade not found")
-        if trade[0] != user_id:
-            raise HTTPException(status_code=403, detail="Not your trade")
-        if trade[1] != "OPEN":
-            raise HTTPException(status_code=400, detail="Cannot edit a closed trade")
+        with conn.transaction():
+            # Wave A closure correction — scoped by BOTH trade_id AND
+            # user_id in the SAME lookup (rather than a separate
+            # ownership check after an unscoped SELECT), so a
+            # nonexistent trade and another user's trade are
+            # indistinguishable from this query's own result shape
+            # onward: both simply return no row, never proceeding to
+            # branch on a fetched-but-mismatched owner.
+            trade = conn.execute(
+                "SELECT status, entry_price, quantity, market, stop_loss, target_price "
+                "FROM paper_trades WHERE id = %s AND user_id = %s FOR UPDATE",
+                (trade_id, user_id)
+            ).fetchone()
+            if trade is None:
+                raise _edit_trade_not_found()
+            if trade[0] != "OPEN":
+                raise HTTPException(status_code=400, detail="Cannot edit a closed trade")
 
-        old_entry, qty, trade_market, old_stop_loss, old_target_price = trade[2], trade[3], trade[4], trade[5], trade[6]
-        if trade_market not in _CASH_COL:
-            raise HTTPException(status_code=500, detail=f"Trade has an unrecognized market '{trade_market}' — cannot determine which cash ledger to adjust")
-        cash_col = _CASH_COL[trade_market]
+            old_entry, qty, trade_market, old_stop_loss, old_target_price = trade[1], trade[2], trade[3], trade[4], trade[5]
+            if trade_market not in _CASH_COL:
+                raise HTTPException(status_code=500, detail=f"Trade has an unrecognized market '{trade_market}' — cannot determine which cash ledger to adjust")
+            cash_col = _CASH_COL[trade_market]
 
-        # Learning Alpha Engine remediation, Phase 1 (corrected per review):
-        #
-        # Partial-PATCH semantics: EditRequest.stop_loss/target_price both
-        # default to None, so a request body that OMITS a field is
-        # indistinguishable from one that explicitly submits null — UNLESS
-        # we check model_fields_set (which JSON keys the client actually
-        # sent), not just the resolved attribute value. An entry_price-only
-        # request (stop_loss/target_price omitted) must preserve the
-        # currently stored levels, not wipe them to NULL; an explicit
-        # `{"stop_loss": null, ...}` still clears that level, matching this
-        # endpoint's pre-existing behavior for a client that does that on
-        # purpose.
-        new_stop_loss = req.stop_loss if "stop_loss" in req.model_fields_set else old_stop_loss
-        new_target_price = req.target_price if "target_price" in req.model_fields_set else old_target_price
+            # Learning Alpha Engine remediation, Phase 1 (corrected per review):
+            #
+            # Partial-PATCH semantics: EditRequest.stop_loss/target_price both
+            # default to None, so a request body that OMITS a field is
+            # indistinguishable from one that explicitly submits null — UNLESS
+            # we check model_fields_set (which JSON keys the client actually
+            # sent), not just the resolved attribute value. An entry_price-only
+            # request (stop_loss/target_price omitted) must preserve the
+            # currently stored levels, not wipe them to NULL; an explicit
+            # `{"stop_loss": null, ...}` still clears that level, matching this
+            # endpoint's pre-existing behavior for a client that does that on
+            # purpose.
+            new_stop_loss = req.stop_loss if "stop_loss" in req.model_fields_set else old_stop_loss
+            new_target_price = req.target_price if "target_price" in req.model_fields_set else old_target_price
 
-        # Stage J4D — stop and target are evaluated INDEPENDENTLY (the
-        # aggregate levels_modified_after_entry alone could never tell
-        # which level actually changed). Each CASE below leaves the
-        # existing column value — TRUE, FALSE, or a legacy NULL —
-        # completely untouched when that specific level is unchanged, and
-        # sets it to TRUE (never anything else) when it genuinely
-        # changed. This single UPDATE statement is what the trg_paper_
-        # trades_level_history_invariant trigger requires: a governed
-        # row's stop_loss/target_price change must be accompanied by the
-        # matching per-level flag becoming TRUE in the SAME statement.
-        stop_changed = new_stop_loss != old_stop_loss
-        target_changed = new_target_price != old_target_price
-        conn.execute(
-            "UPDATE paper_trades SET stop_loss = %s, target_price = %s, "
-            "stop_modified_after_entry = CASE WHEN %s THEN TRUE ELSE stop_modified_after_entry END, "
-            "target_modified_after_entry = CASE WHEN %s THEN TRUE ELSE target_modified_after_entry END, "
-            "levels_modified_after_entry = CASE WHEN %s THEN TRUE ELSE levels_modified_after_entry END "
-            "WHERE id = %s",
-            (new_stop_loss, new_target_price, stop_changed, target_changed, stop_changed or target_changed, trade_id)
-        )
-
-        if req.entry_price and req.entry_price > 0 and req.entry_price != old_entry:
-            cash_delta = (old_entry - req.entry_price) * qty
+            # Stage J4D — stop and target are evaluated INDEPENDENTLY (the
+            # aggregate levels_modified_after_entry alone could never tell
+            # which level actually changed). Each CASE below leaves the
+            # existing column value — TRUE, FALSE, or a legacy NULL —
+            # completely untouched when that specific level is unchanged, and
+            # sets it to TRUE (never anything else) when it genuinely
+            # changed. This single UPDATE statement is what the trg_paper_
+            # trades_level_history_invariant trigger requires: a governed
+            # row's stop_loss/target_price change must be accompanied by the
+            # matching per-level flag becoming TRUE in the SAME statement.
+            # Scoped by user_id again (defense in depth — the FOR UPDATE
+            # lock already guarantees this row is the one this user owns).
+            stop_changed = new_stop_loss != old_stop_loss
+            target_changed = new_target_price != old_target_price
             conn.execute(
-                "UPDATE paper_trades SET entry_price = %s WHERE id = %s",
-                (req.entry_price, trade_id)
+                "UPDATE paper_trades SET stop_loss = %s, target_price = %s, "
+                "stop_modified_after_entry = CASE WHEN %s THEN TRUE ELSE stop_modified_after_entry END, "
+                "target_modified_after_entry = CASE WHEN %s THEN TRUE ELSE target_modified_after_entry END, "
+                "levels_modified_after_entry = CASE WHEN %s THEN TRUE ELSE levels_modified_after_entry END "
+                "WHERE id = %s AND user_id = %s",
+                (new_stop_loss, new_target_price, stop_changed, target_changed, stop_changed or target_changed,
+                 trade_id, user_id)
             )
-            conn.execute(
-                f"UPDATE paper_portfolio SET {cash_col} = {cash_col} + %s, updated_at = now() WHERE user_id = %s",
-                (cash_delta, user_id)
-            )
+
+            if req.entry_price and req.entry_price > 0 and req.entry_price != old_entry:
+                cash_delta = (old_entry - req.entry_price) * qty
+                conn.execute(
+                    "UPDATE paper_trades SET entry_price = %s WHERE id = %s AND user_id = %s",
+                    (req.entry_price, trade_id, user_id)
+                )
+                conn.execute(
+                    f"UPDATE paper_portfolio SET {cash_col} = {cash_col} + %s, updated_at = now() WHERE user_id = %s",
+                    (cash_delta, user_id)
+                )
 
     return {"message": "Trade updated", "trade_id": trade_id}
 

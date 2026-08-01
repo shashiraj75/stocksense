@@ -281,24 +281,24 @@ class TestPaperTradingProvenance:
 
     def test_levels_modified_after_entry_set_when_stop_loss_genuinely_changes(self, client):
         # SELECT shape: user_id, status, entry_price, quantity, market, stop_loss, target_price
-        recorder = _RecordingConn(fetchone_results=[("user-aaa", "OPEN", 100.0, 1, "US", 90.0, 120.0)])
+        recorder = _RecordingConn(fetchone_results=[("OPEN", 100.0, 1, "US", 90.0, 120.0)])
         resp = self._edit(client, recorder, {"stop_loss": 95.0, "target_price": 120.0})
         assert resp.status_code == 200
         update_calls = [c for c in recorder.calls if "UPDATE paper_trades SET stop_loss" in c[0]]
         assert len(update_calls) == 1
         sql, params = update_calls[0]
-        new_stop, new_target, stop_changed, target_changed, aggregate_changed, trade_id = params
+        new_stop, new_target, stop_changed, target_changed, aggregate_changed, trade_id, edit_user_id = params
         assert stop_changed is True
         assert target_changed is False
         assert aggregate_changed is True
         assert 95.0 in params and 120.0 in params
 
     def test_levels_modified_after_entry_set_when_target_price_genuinely_changes(self, client):
-        recorder = _RecordingConn(fetchone_results=[("user-aaa", "OPEN", 100.0, 1, "US", 90.0, 120.0)])
+        recorder = _RecordingConn(fetchone_results=[("OPEN", 100.0, 1, "US", 90.0, 120.0)])
         resp = self._edit(client, recorder, {"stop_loss": 90.0, "target_price": 150.0})
         assert resp.status_code == 200
         _, params = self._update_call(recorder)
-        _, _, stop_changed, target_changed, aggregate_changed, _ = params
+        _, _, stop_changed, target_changed, aggregate_changed, _, _ = params
         assert stop_changed is False
         assert target_changed is True
         assert aggregate_changed is True
@@ -306,24 +306,24 @@ class TestPaperTradingProvenance:
     def test_levels_modified_after_entry_not_set_on_noop_edit(self, client):
         """Resubmitting the exact same stop_loss/target_price must not set
         the flag."""
-        recorder = _RecordingConn(fetchone_results=[("user-aaa", "OPEN", 100.0, 1, "US", 90.0, 120.0)])
+        recorder = _RecordingConn(fetchone_results=[("OPEN", 100.0, 1, "US", 90.0, 120.0)])
         resp = self._edit(client, recorder, {"stop_loss": 90.0, "target_price": 120.0})
         assert resp.status_code == 200
         _, params = self._update_call(recorder)
-        _, _, stop_changed, target_changed, aggregate_changed, _ = params
+        _, _, stop_changed, target_changed, aggregate_changed, _, _ = params
         assert stop_changed is False and target_changed is False and aggregate_changed is False
 
     def test_levels_modified_after_entry_not_set_on_entry_price_only_correction(self, client):
         """An entry_price-only correction — the client resubmits the SAME
         stop_loss/target_price it already has stored, and only entry_price
         differs — must not set the flag."""
-        recorder = _RecordingConn(fetchone_results=[("user-aaa", "OPEN", 100.0, 1, "US", 90.0, 120.0)])
+        recorder = _RecordingConn(fetchone_results=[("OPEN", 100.0, 1, "US", 90.0, 120.0)])
         resp = self._edit(client, recorder, {
             "stop_loss": 90.0, "target_price": 120.0, "entry_price": 105.0,
         })
         assert resp.status_code == 200
         _, params = self._update_call(recorder)
-        _, _, stop_changed, target_changed, aggregate_changed, _ = params
+        _, _, stop_changed, target_changed, aggregate_changed, _, _ = params
         assert stop_changed is False and target_changed is False and aggregate_changed is False
 
     def test_entry_price_only_request_with_omitted_levels_preserves_stored_stop_loss_and_target(self, client):
@@ -333,11 +333,11 @@ class TestPaperTradingProvenance:
         than the "resubmitted" test above). Must preserve the stored
         90.0/120.0, never wipe them to NULL, and must not set
         levels_modified_after_entry."""
-        recorder = _RecordingConn(fetchone_results=[("user-aaa", "OPEN", 100.0, 1, "US", 90.0, 120.0)])
+        recorder = _RecordingConn(fetchone_results=[("OPEN", 100.0, 1, "US", 90.0, 120.0)])
         resp = self._edit(client, recorder, {"entry_price": 105.0})
         assert resp.status_code == 200
         _, params = self._update_call(recorder)
-        _, _, stop_changed, target_changed, aggregate_changed, _ = params
+        _, _, stop_changed, target_changed, aggregate_changed, _, _ = params
         assert stop_changed is False and target_changed is False and aggregate_changed is False
         # The stored levels must be preserved verbatim, not nulled out.
         assert 90.0 in params and 120.0 in params
@@ -348,22 +348,22 @@ class TestPaperTradingProvenance:
         distinct from omission (tested above) and remains supported; a
         stored 90.0 -> explicit None is a genuine change, so
         levels_modified_after_entry IS set."""
-        recorder = _RecordingConn(fetchone_results=[("user-aaa", "OPEN", 100.0, 1, "US", 90.0, 120.0)])
+        recorder = _RecordingConn(fetchone_results=[("OPEN", 100.0, 1, "US", 90.0, 120.0)])
         resp = self._edit(client, recorder, {"stop_loss": None, "target_price": 120.0})
         assert resp.status_code == 200
         _, params = self._update_call(recorder)
-        _, _, stop_changed, target_changed, aggregate_changed, _ = params
+        _, _, stop_changed, target_changed, aggregate_changed, _, _ = params
         assert stop_changed is True and aggregate_changed is True
         assert None in params and 120.0 in params
 
     def test_entry_price_only_omission_does_not_touch_target_price_either(self, client):
         """Same as the stop_loss case, but confirms target_price alone is
         also preserved (not just stop_loss) when both are omitted."""
-        recorder = _RecordingConn(fetchone_results=[("user-aaa", "OPEN", 250.0, 2, "IN", 200.0, 300.0)])
+        recorder = _RecordingConn(fetchone_results=[("OPEN", 250.0, 2, "IN", 200.0, 300.0)])
         resp = self._edit(client, recorder, {"entry_price": 260.0})
         assert resp.status_code == 200
         _, params = self._update_call(recorder)
-        _, _, stop_changed, target_changed, aggregate_changed, _ = params
+        _, _, stop_changed, target_changed, aggregate_changed, _, _ = params
         assert stop_changed is False and target_changed is False and aggregate_changed is False
         assert 200.0 in params and 300.0 in params
 
@@ -373,7 +373,7 @@ class TestPaperTradingProvenance:
         preserves whatever value is already stored; the writer never binds
         a literal FALSE for a real change, only TRUE or "leave it alone"."""
         # First edit: genuine stop_loss change.
-        recorder1 = _RecordingConn(fetchone_results=[("user-aaa", "OPEN", 100.0, 1, "US", 90.0, 120.0)])
+        recorder1 = _RecordingConn(fetchone_results=[("OPEN", 100.0, 1, "US", 90.0, 120.0)])
         resp1 = self._edit(client, recorder1, {"stop_loss": 95.0, "target_price": 120.0})
         assert resp1.status_code == 200
         _, params1 = self._update_call(recorder1)
@@ -383,7 +383,7 @@ class TestPaperTradingProvenance:
         # stored values — the CASE condition is False, so the ELSE branch
         # (preserve existing column value) applies; whatever TRUE the
         # first edit set survives untouched at the database level.
-        recorder2 = _RecordingConn(fetchone_results=[("user-aaa", "OPEN", 100.0, 1, "US", 95.0, 120.0)])
+        recorder2 = _RecordingConn(fetchone_results=[("OPEN", 100.0, 1, "US", 95.0, 120.0)])
         resp2 = self._edit(client, recorder2, {"stop_loss": 95.0, "target_price": 120.0})
         assert resp2.status_code == 200
         _, params2 = self._update_call(recorder2)

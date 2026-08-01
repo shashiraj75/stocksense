@@ -112,6 +112,8 @@ class TestSnapshotInsertFailureRollsBack:
                 fundamental_score=None, sentiment_score=None, sentiment_label=None, market_regime_trend=None,
                 market_regime_score_adj=None, market_regime_reason=None, recommendation_reasoning=None,
                 model_version=None, verification_levels={},
+                level_history_contract_version=None, initial_stop_modified_after_entry=None,
+                initial_target_modified_after_entry=None, initial_levels_modified_after_entry=None,
             )
             with pytest.raises(psycopg.errors.NotNullViolation):
                 _buy(client, unique_user_id, idempotency_key=key)

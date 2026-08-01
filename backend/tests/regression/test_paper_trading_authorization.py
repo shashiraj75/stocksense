@@ -192,15 +192,39 @@ class TestPaperTradingAuth:
         assert "not found" in resp.json()["detail"].lower()
 
     def test_edit_cross_user_blocked(self, client):
+        # Wave A closure correction — edit_trade's lookup is now scoped by
+        # BOTH id AND user_id in the SAME query ("WHERE id = %s AND
+        # user_id = %s"), so a real database returns NO row for another
+        # user's trade — indistinguishable from a nonexistent trade_id,
+        # matching the same privacy-safe pattern as test_sell_cross_user_
+        # blocked above. The queued fetchone result of None simulates
+        # exactly that real-database behavior.
         with patch.object(
             __import__("api.routers.paper_trading", fromlist=["_conn"]),
             "_conn",
-            lambda: _fake_conn(fetchone_results=[("user-victim", "OPEN", 100.0, 1, "US")]),
+            lambda: _fake_conn(fetchone_results=[None]),
         ):
             resp = client.patch(
                 "/api/paper-trading/trade/1", json={"stop_loss": 90.0}, headers=_auth("user-attacker")
             )
-        assert resp.status_code == 403
+        assert resp.status_code == 404
+        assert "not found" in resp.json()["detail"].lower()
+
+    def test_edit_nonexistent_trade_returns_identical_result_to_cross_user(self, client):
+        """The frozen Wave A contract requires a nonexistent trade and a
+        cross-user trade to be indistinguishable — same status, same
+        stable body — so this asserts the identical shape as the
+        cross-user case above, not merely "some 404"."""
+        with patch.object(
+            __import__("api.routers.paper_trading", fromlist=["_conn"]),
+            "_conn",
+            lambda: _fake_conn(fetchone_results=[None]),
+        ):
+            resp = client.patch(
+                "/api/paper-trading/trade/999999", json={"stop_loss": 90.0}, headers=_auth("user-attacker")
+            )
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Trade not found"
 
     def test_reset_scopes_only_to_authenticated_user(self, client):
         recorded = {}

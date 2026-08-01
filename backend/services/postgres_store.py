@@ -325,6 +325,32 @@ BEGIN
         ALTER TABLE paper_trades ADD CONSTRAINT chk_paper_trades_level_history_contract_version
             CHECK (level_history_contract_version IS NULL OR level_history_contract_version = '1');
     END IF;
+
+    -- Wave A closure correction — exact governed tuple invariant. Applies
+    -- on BOTH INSERT and UPDATE (CHECK constraints, unlike a BEFORE
+    -- UPDATE trigger, evaluate on every row-affecting statement). For a
+    -- governed version '1' row this rejects any tuple where a per-level
+    -- flag is NULL, or where the aggregate is not EXACTLY the logical OR
+    -- of the two per-level flags in either direction — not merely "per-
+    -- level TRUE implies aggregate TRUE" (which the existing trigger
+    -- already enforces) but the full equality, catching e.g. an
+    -- aggregate TRUE with both per-level flags FALSE, or a NULL
+    -- aggregate on an otherwise-populated governed row. A legacy row
+    -- (version IS NULL) is completely unconstrained by this check.
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_paper_trades_governed_level_history_tuple'
+    ) THEN
+        ALTER TABLE paper_trades ADD CONSTRAINT chk_paper_trades_governed_level_history_tuple
+            CHECK (
+                level_history_contract_version IS DISTINCT FROM '1'
+                OR (
+                    stop_modified_after_entry IS NOT NULL
+                    AND target_modified_after_entry IS NOT NULL
+                    AND levels_modified_after_entry IS NOT NULL
+                    AND levels_modified_after_entry = (stop_modified_after_entry OR target_modified_after_entry)
+                )
+            );
+    END IF;
 END $$;
 
 -- BEFORE UPDATE only (never fires on INSERT — a brand-new governed row's
@@ -486,10 +512,25 @@ CREATE TABLE IF NOT EXISTS paper_trade_entry_snapshot (
     -- this stage (see entry_snapshot.py's module docstring).
     verification_levels             JSONB NOT NULL,
 
+    -- Wave A closure correction — immutable governed level-history
+    -- evidence at entry time. NULL for a legacy trade (mirrors the
+    -- paper_trades row's own legacy NULL state at the moment this
+    -- snapshot was written); for a governed trade, always version='1'
+    -- and all three booleans FALSE (entry-time state is FALSE by
+    -- construction). Never backfilled onto existing rows.
+    level_history_contract_version         TEXT,
+    initial_stop_modified_after_entry      BOOLEAN,
+    initial_target_modified_after_entry    BOOLEAN,
+    initial_levels_modified_after_entry    BOOLEAN,
+
     created_at                      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trade_entry_snapshot_trade ON paper_trade_entry_snapshot(paper_trade_id);
 CREATE INDEX IF NOT EXISTS idx_paper_trade_entry_snapshot_user ON paper_trade_entry_snapshot(user_id, symbol, market);
+ALTER TABLE paper_trade_entry_snapshot ADD COLUMN IF NOT EXISTS level_history_contract_version TEXT;
+ALTER TABLE paper_trade_entry_snapshot ADD COLUMN IF NOT EXISTS initial_stop_modified_after_entry BOOLEAN;
+ALTER TABLE paper_trade_entry_snapshot ADD COLUMN IF NOT EXISTS initial_target_modified_after_entry BOOLEAN;
+ALTER TABLE paper_trade_entry_snapshot ADD COLUMN IF NOT EXISTS initial_levels_modified_after_entry BOOLEAN;
 
 -- Migration-verification hardening gate — database-level immutability.
 -- Application code never issues an UPDATE against this table (verified:

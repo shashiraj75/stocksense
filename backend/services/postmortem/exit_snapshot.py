@@ -45,7 +45,13 @@ from enum import Enum
 
 from services.postmortem.deterministic import Outcome
 
-EXIT_SNAPSHOT_SCHEMA_VERSION = "1.0.0"
+# Wave A closure correction — same rationale as entry_snapshot.py's
+# SNAPSHOT_SCHEMA_VERSION bump: the persisted shape gained governed
+# level-history fields in this Wave, so every NEW exit snapshot from
+# here on stamps "1.1.0"; already-persisted "1.0.0" rows are never
+# rewritten.
+EXIT_SNAPSHOT_SCHEMA_VERSION_1_0_0 = "1.0.0"
+EXIT_SNAPSHOT_SCHEMA_VERSION = "1.1.0"
 
 
 class CloseExitMechanism(str, Enum):
