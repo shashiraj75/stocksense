@@ -1395,3 +1395,158 @@ This correction does not mark Stage J complete, does not implement
 early-close or Muhurat support, does not change touch-semantics, and
 does not change any evidence/report calculation. It is scoped to
 exactly one input-contract guard.
+
+---
+
+## Stage J4B — Observed numerical-crossing and session-attribution core
+
+**IMPLEMENTED, UNIT-TESTED, NOT REPORT-WIRED, NOT PERSISTED, NOT
+ENDPOINT-VERIFIED.** Purely additive internal model in
+`services/postmortem/price_path_calculator.py`. Nothing above the new
+section is changed; `price_path_generation.py`, `price_path_claims.py`,
+and `paper_trading.py` do not import or reference anything below it —
+`TouchResult`, `detect_touches`, `classify_touch_order`,
+`build_touch_order_claim`, and every persisted report/claim/evidence-item
+shape remain byte-for-byte unchanged, proven by dedicated regression
+assertions (see Verification below).
+
+### The new observed numerical-crossing model
+
+Describes ONLY what immutable daily OHLC bars prove about two SUPPLIED
+numerical values — deliberately never "stop"/"target LEVELS" being
+active, never "touched" in the governed sense, never that the trade
+should have closed. Terminology throughout: "numerical value,"
+"crossed," "crossing observation," "safely attributable crossing,"
+"partial-boundary observation" — never "touch" as the primary term (the
+two new dataclasses' own field names are structurally proven never to
+contain the substring "touch").
+
+### Session-attribution contract
+
+`classify_bar_session_attribution(bundle, bar)` — pure, classifies a
+single bar's `session_date` against ONLY
+`bundle.requested_window_start`/`requested_window_end` and
+`bundle.entry_bar_policy`/`exit_bar_policy`. Never consults `bars[0]`,
+`bars[-1]`, `observed_window_start`/`end`, or raw array position — this
+is the direct fix, for this new layer only, of the Stage J4A finding #2
+defect (`detect_touches`'s own array-position heuristic is unchanged
+and untouched). Seven typed attribution values:
+`INTERIOR`, `ENTRY_INCLUDED_FULL`, `EXIT_INCLUDED_FULL`,
+`SAME_DAY_INCLUDED_FULL`, `ENTRY_PARTIAL_UNKNOWN`,
+`EXIT_PARTIAL_UNKNOWN`, `SAME_DAY_PARTIAL_UNKNOWN`. Fails closed
+(`SessionAttributionError`) on any unrecognized boundary-policy value —
+never silently treated as interior.
+
+### First observed versus first safely attributable crossing
+
+`observe_numerical_level_crossing(bundle, supplied_level_value,
+level_kind)` retains BOTH independently (Stage J4A finding #5): the
+first crossing of any kind anywhere in the bundle, and the first later
+crossing whose session attribution is safely attributable (`INTERIOR`
+or any `INCLUDED_FULL`). An earlier crossing observed only in a
+`PARTIAL_UNKNOWN` boundary bar is never discarded merely because a
+later safely-attributable bar also crosses the same value —
+`partial_boundary_crossing_observed` stays `True` in that case even
+though a `first_safely_attributable_*` basis was found elsewhere.
+Proven directly by dedicated tests for both orderings (partial-then-
+safe and safe-then-partial).
+
+### INCLUDED_FULL versus PARTIAL_UNKNOWN handling
+
+`INTERIOR` and any `INCLUDED_FULL` attribution (entry, exit, or
+same-day) is safely attributable to the holding period; any
+`PARTIAL_UNKNOWN` attribution is observed but never safely
+attributable — `is_safely_attributable_session()` encodes this
+directly, exercised across the full unit matrix including exact-open,
+exact-close, and same-day full/partial sessions.
+
+### No dependency on level history
+
+`observe_numerical_level_crossing` and
+`summarize_observed_numerical_crossings` accept no level-history
+parameter of any kind — proven structurally via `inspect.signature` in
+the test suite, not merely by omission at call sites. The observed-
+crossing summary's allowed pattern vocabulary (`NO_NUMERICAL_VALUES_
+SUPPLIED`, `NEITHER_NUMERICAL_VALUE_CROSSED`,
+`TARGET_VALUE_ONLY_CROSSED`, `STOP_VALUE_ONLY_CROSSED`,
+`BOTH_VALUES_SAME_BAR`, `TARGET_VALUE_BAR_BEFORE_STOP_VALUE_BAR`,
+`STOP_VALUE_BAR_BEFORE_TARGET_VALUE_BAR`, and the parallel
+safely-attributable set) deliberately never uses `NO_LEVELS_CONFIGURED`,
+`TARGET_ONLY`, `STOP_ONLY`, `TARGET_BEFORE_STOP`, or `STOP_BEFORE_TARGET`
+— those remain governed touch conclusions reserved for the corrected
+J4C/J4D contract established in the Stage J4A.1 addendum above.
+
+### No report wiring, no persistence
+
+`price_path_calculator.py` is structurally proven (source-text
+inspection) never to import `price_path_generation` or
+`price_path_claims`; those two modules and `paper_trading.py` are
+structurally proven never to reference any J4B symbol
+(`observe_numerical_level_crossing`,
+`summarize_observed_numerical_crossings`,
+`classify_bar_session_attribution`,
+`NumericalLevelCrossingObservation`, `ObservedNumericalCrossingSummary`).
+Nothing is persisted to `structured_report`, no new claim or
+evidence-item type is emitted through the live path, and the API
+response/frontend output are unaffected.
+
+### No version bump
+
+`SOURCE_VERSION`, `EVIDENCE_BUNDLE_SCHEMA_VERSION`,
+`SOURCE_MANIFEST_SCHEMA_VERSION`, `BOUNDARY_POLICY_VERSION`,
+`CALCULATION_RULES_VERSION`, and `PRICE_PATH_REPORT_SCHEMA_VERSION` are
+all unchanged, confirmed by a dedicated regression assertion pinning
+their exact current values. Rationale: J4B creates a new internal
+deterministic observation model but does not persist, expose, or
+consume it anywhere in the live report path — there is no persisted
+shape, calculation output, or API contract for a real trade that this
+phase alters in any way.
+
+### J4C remains blocked; J4D remains separate
+
+J4C (versioned report fields + governed conclusion) remains blocked
+pending the corrected governed-conclusion contract from the Stage
+J4A.1 addendum above — specifically:
+
+1. Absent values at both endpoints (entry and exit) do not prove that
+   no level existed throughout the holding period — `NO_LEVELS_
+   CONFIGURED_THROUGHOUT` is a distinct, stronger claim than "not
+   present in the two snapshots we happen to have."
+2. A present snapshot containing `NULL` for a stop/target field is not
+   itself missing evidence — it may be a genuine, intentionally-absent
+   level, not a data gap.
+3. `NO_LEVELS_CONFIGURED_THROUGHOUT` remains unreachable before J4D:
+   proving a level was never configured across the ENTIRE holding
+   period (not just at the two snapshot endpoints) requires the same
+   kind of governed write-invariant J4D is scoped to establish for
+   `levels_modified_after_entry` — it cannot be inferred from the
+   endpoints-only evidence available today.
+
+J4D (the separate, later write-invariant correction enabling
+`VERIFIED_UNCHANGED_THROUGHOUT`) remains untouched and unscheduled by
+this phase.
+
+### Verification
+
+Local: `pytest backend/tests -m "not postgres_integration"` →
+**4860 passed, 0 failed, 187 deselected**, 120.43s. Log at
+`/tmp/sprint3a-stage-j4b-observed-crossing.log`. Dedicated new test
+file `tests/unit/test_price_path_observed_crossing.py` (56 tests): the
+full session-attribution algorithm, the required 30-item crossing-
+detection matrix (India and US, exact-boundary, partial-boundary,
+gap-through, missing provider bars, fail-closed unrecognized policy),
+and Stage 8 compatibility assertions proving `detect_touches`/
+`classify_touch_order`/`build_price_path_report_payload` outputs,
+the price_path rule registry, and all six version constants are
+unchanged. No existing unit test was weakened, deleted, or had its
+expected output rewritten.
+
+PostgreSQL: this phase adds unit tests only — no real-PG test was
+added or modified, and the real-PostgreSQL collection is expected to
+remain at 187 (unchanged from the Stage J3B.2 baseline).
+
+### Explicit non-claims
+
+Stage J is **not** complete. This phase does not begin J4C, does not
+begin J4D, does not change any report output, and does not change any
+production behavior reachable through the live `/generate` endpoint.
