@@ -4,7 +4,7 @@
   "j4e_scenario_target": 55,
   "j4f_scenario_target": 68,
   "j4e_scenarios_represented": 55,
-  "j4f_scenarios_represented": 30,
+  "j4f_scenarios_represented": 38,
   "gap_disclosure": "Batches A-C mapped exactly one pytest node per WB-J4E-* traceability ID (18 nodes total). That satisfies traceability-ID coverage but NOT the 55-scenario behavioural matrix, which requires additional scenario variants per requirement (e.g. multiple touch-status permutations under WB-J4E-14, multiple concurrent-insert races under WB-J4F outbox IDs, multiple lease-expiry timings under the J4F lease contract). Those additional scenario nodes have not yet been written. This gap is disclosed here rather than silently closed by treating one node per requirement ID as sufficient.",
   "entries": [
     {
@@ -505,8 +505,8 @@
   ],
   "j4e_matrix_status": "J4E RED-BASELINE COMPLETE \u2014 55/55 MANDATORY SCENARIOS REPRESENTED, COLLECTED AND EXECUTED; 54 FAILED THROUGH INTENDED PRE-IMPLEMENTATION ASSERTIONS; 1 BASELINE-PRESERVATION GUARD PASSED AS EXPECTED; ZERO COLLECTION ERRORS.",
   "remaining_j4e_scenarios_not_yet_written": 0,
-  "remaining_j4f_scenarios_not_yet_written": 38,
-  "next_action": "Batch K: failure taxonomy (LIMITED_EVIDENCE/RETRYABLE/TERMINAL classification), sanitized error storage, unsupported-identity handling. Then Batch L (exactly-once effect, report-exists reconciliation, report/outbox atomicity, stale-worker rollback) and Batch M (reset/delete races, cross-user isolation, observability) to close the remaining 38 J4F scenarios.",
+  "remaining_j4f_scenarios_not_yet_written": 30,
+  "next_action": "Batch L: exactly-once persisted effect, report-exists reconciliation (6-scenario state machine), report/outbox atomicity, stale-worker rollback. Then Batch M (reset/delete races, cross-user isolation, observability) to close the remaining 30 J4F scenarios.",
   "batch_g_added_scenarios": [
     {
       "scenario_no": 1,
@@ -750,6 +750,72 @@
       "scenario_no": 30,
       "requirement_id": "WB-J4F-13",
       "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_30_worker_logs_lifecycle_events",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    }
+  ],
+  "batch_k_added_scenarios": [
+    {
+      "scenario_no": 31,
+      "requirement_id": "WB-J4F-18",
+      "node": "tests/unit/test_wave_b_j4f_batch_k_failure_taxonomy.py::test_wb_j4f_31_empty_but_successful_acquisition_completes_limited_not_retryable",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 32,
+      "requirement_id": "WB-J4F-18",
+      "node": "tests/unit/test_wave_b_j4f_batch_k_failure_taxonomy.py::test_wb_j4f_32_provider_network_error_is_retryable_not_terminal",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 33,
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/unit/test_wave_b_j4f_batch_k_failure_taxonomy.py::test_wb_j4f_33_missing_trade_is_terminal_not_retryable",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 34,
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/unit/test_wave_b_j4f_batch_k_failure_taxonomy.py::test_wb_j4f_34_ownership_mismatch_is_terminal",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 35,
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/unit/test_wave_b_j4f_batch_k_failure_taxonomy.py::test_wb_j4f_35_unsupported_identity_is_terminal_with_specific_error_code",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 36,
+      "requirement_id": "WB-J4F-18",
+      "node": "tests/unit/test_wave_b_j4f_batch_k_failure_taxonomy.py::test_wb_j4f_36_error_codes_are_enumerated_not_raw_exception_text",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 37,
+      "requirement_id": "WB-J4F-18",
+      "node": "tests/unit/test_wave_b_j4f_batch_k_failure_taxonomy.py::test_wb_j4f_37_error_summary_never_interpolates_raw_provider_response",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 38,
+      "requirement_id": "WB-J4F-18",
+      "node": "tests/unit/test_wave_b_j4f_batch_k_failure_taxonomy.py::test_wb_j4f_38_limited_evidence_completion_still_persists_a_report",
       "level": "unit/structural",
       "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
       "actual_pre_fix_result": "RED"
