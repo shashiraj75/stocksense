@@ -127,6 +127,26 @@ class TestSuppliedValueContract:
 # ============================================================================
 # SESSION AND BOUNDARY CONTRACT
 # ============================================================================
+def _forge_bundle(base_bundle, **overrides):
+    """Stage J4B.2 -- since classify_bar_session_attribution now
+    validates `isinstance(bundle, PricePathEvidenceBundle)` before
+    anything else, a plain duck-typed _FakeBundle can no longer reach
+    the POLICY-validation branch (it is correctly rejected earlier, at
+    the type-check gate -- see TestFunctionBoundaryTotality below for
+    that gate's own dedicated tests). To exercise policy/window
+    validation specifically, forge a REAL PricePathEvidenceBundle via
+    dataclasses.replace on an already-valid instance -- the bundle's
+    own __post_init__ does not validate boundary-policy STRING values
+    (only OHLC/duplicate/ordering invariants), so this legitimately
+    produces a real, isinstance-passing bundle carrying an invalid
+    policy for the test to exercise."""
+    return dataclasses.replace(base_bundle, **overrides)
+
+
+def _forge_bar(base_bar, **overrides):
+    return dataclasses.replace(base_bar, **overrides)
+
+
 @pytest.mark.unit
 class TestSessionBoundaryHardening:
     def test_unknown_attribution_to_is_safely_attributable_raises(self):
@@ -134,36 +154,28 @@ class TestSessionBoundaryHardening:
             is_safely_attributable_session("NOT_A_REAL_ATTRIBUTION")
 
     def test_unknown_entry_policy_on_interior_bar_bundle_fails_before_crossing(self):
-        fake_bundle = _FakeBundle(
-            requested_window_start=_D(1), requested_window_end=_D(4),
-            entry_bar_policy="MADE_UP", exit_bar_policy="EXIT_BAR_INCLUDED_FULL",
-        )
+        base = _us_bundle(_US_ENTRY_INTERIOR, _US_EXIT_INTERIOR, _four_day_bars())
+        forged = _forge_bundle(base, entry_bar_policy="MADE_UP")
         with pytest.raises(SessionAttributionError):
-            classify_bar_session_attribution(fake_bundle, _FakeBar(session_date=_D(2)))
+            classify_bar_session_attribution(forged, forged.bars[1])
 
     def test_unknown_exit_policy_on_interior_bar_bundle_fails_before_crossing(self):
-        fake_bundle = _FakeBundle(
-            requested_window_start=_D(1), requested_window_end=_D(4),
-            entry_bar_policy="ENTRY_BAR_INCLUDED_FULL", exit_bar_policy="MADE_UP",
-        )
+        base = _us_bundle(_US_ENTRY_INTERIOR, _US_EXIT_INTERIOR, _four_day_bars())
+        forged = _forge_bundle(base, exit_bar_policy="MADE_UP")
         with pytest.raises(SessionAttributionError):
-            classify_bar_session_attribution(fake_bundle, _FakeBar(session_date=_D(2)))
+            classify_bar_session_attribution(forged, forged.bars[1])
 
     def test_same_day_unknown_entry_plus_recognized_partial_exit_fails(self):
-        fake_bundle = _FakeBundle(
-            requested_window_start=_D(1), requested_window_end=_D(1),
-            entry_bar_policy="MADE_UP", exit_bar_policy="EXIT_BAR_PARTIAL_UNKNOWN",
-        )
+        base = _us_bundle(_US_ENTRY_PARTIAL, dt.datetime(2026, 6, 1, 15, 0, tzinfo=ET), [_raw(_D(1), 100, 101, 99, 100)])
+        forged = _forge_bundle(base, entry_bar_policy="MADE_UP")
         with pytest.raises(SessionAttributionError):
-            classify_bar_session_attribution(fake_bundle, _FakeBar(session_date=_D(1)))
+            classify_bar_session_attribution(forged, forged.bars[0])
 
     def test_same_day_recognized_partial_entry_plus_unknown_exit_fails(self):
-        fake_bundle = _FakeBundle(
-            requested_window_start=_D(1), requested_window_end=_D(1),
-            entry_bar_policy="ENTRY_BAR_PARTIAL_UNKNOWN", exit_bar_policy="MADE_UP",
-        )
+        base = _us_bundle(_US_ENTRY_PARTIAL, dt.datetime(2026, 6, 1, 15, 0, tzinfo=ET), [_raw(_D(1), 100, 101, 99, 100)])
+        forged = _forge_bundle(base, exit_bar_policy="MADE_UP")
         with pytest.raises(SessionAttributionError):
-            classify_bar_session_attribution(fake_bundle, _FakeBar(session_date=_D(1)))
+            classify_bar_session_attribution(forged, forged.bars[0])
 
     def test_same_day_both_recognized_full_is_included_full(self):
         bundle = _us_bundle(_US_ENTRY_INTERIOR, dt.datetime(2026, 6, 1, 16, 0, tzinfo=ET), [_raw(_D(1), 100, 101, 99, 100)])
@@ -176,32 +188,70 @@ class TestSessionBoundaryHardening:
         ("ENTRY_BAR_PARTIAL_UNKNOWN", "EXIT_BAR_PARTIAL_UNKNOWN"),
     ])
     def test_all_other_recognized_same_day_combinations_are_partial_unknown(self, entry_policy, exit_policy):
-        fake_bundle = _FakeBundle(
-            requested_window_start=_D(1), requested_window_end=_D(1),
-            entry_bar_policy=entry_policy, exit_bar_policy=exit_policy,
-        )
+        base = _us_bundle(_US_ENTRY_PARTIAL, dt.datetime(2026, 6, 1, 15, 0, tzinfo=ET), [_raw(_D(1), 100, 101, 99, 100)])
+        forged = _forge_bundle(base, entry_bar_policy=entry_policy, exit_bar_policy=exit_policy)
         from services.postmortem.price_path_calculator import SESSION_ATTRIBUTION_SAME_DAY_PARTIAL_UNKNOWN
-        assert classify_bar_session_attribution(fake_bundle, _FakeBar(session_date=_D(1))) == SESSION_ATTRIBUTION_SAME_DAY_PARTIAL_UNKNOWN
+        assert classify_bar_session_attribution(forged, forged.bars[0]) == SESSION_ATTRIBUTION_SAME_DAY_PARTIAL_UNKNOWN
 
     def test_out_of_window_crossing_bar_fails(self):
-        fake_bundle = _FakeBundle(
-            requested_window_start=_D(1), requested_window_end=_D(4),
-            entry_bar_policy="ENTRY_BAR_INCLUDED_FULL", exit_bar_policy="EXIT_BAR_INCLUDED_FULL",
-        )
+        base = _us_bundle(_US_ENTRY_INTERIOR, _US_EXIT_INTERIOR, _four_day_bars())
+        out_of_window_bar = _forge_bar(base.bars[0], session_date=_D(10))
         with pytest.raises(SessionAttributionError):
-            classify_bar_session_attribution(fake_bundle, _FakeBar(session_date=_D(10)))
+            classify_bar_session_attribution(base, out_of_window_bar)
 
     def test_out_of_window_non_crossing_bar_also_fails(self):
         """Same assertion as above -- classify_bar_session_attribution
         has no concept of 'crossing' at all, so an out-of-window bar
         fails identically regardless of whether it would have crossed
         anything."""
-        fake_bundle = _FakeBundle(
-            requested_window_start=_D(1), requested_window_end=_D(4),
-            entry_bar_policy="ENTRY_BAR_INCLUDED_FULL", exit_bar_policy="EXIT_BAR_INCLUDED_FULL",
-        )
+        base = _us_bundle(_US_ENTRY_INTERIOR, _US_EXIT_INTERIOR, _four_day_bars())
+        out_of_window_bar = _forge_bar(base.bars[0], session_date=_D(11))
         with pytest.raises(SessionAttributionError):
-            classify_bar_session_attribution(fake_bundle, _FakeBar(session_date=_D(11)))
+            classify_bar_session_attribution(base, out_of_window_bar)
+
+
+@pytest.mark.unit
+class TestFunctionBoundaryTotality:
+    """Stage J4B.2, Group B -- an object that is NOT a real
+    PricePathEvidenceBundle/PricePathBar must never reach attribute
+    access on classify_bar_session_attribution/
+    observe_numerical_level_crossing; it must raise the governed typed
+    error at the type-check gate, never a raw AttributeError."""
+
+    def test_none_bundle_to_observe_numerical_level_crossing_raises_governed_error(self):
+        with pytest.raises(NumericalCrossingContractError) as exc_info:
+            observe_numerical_level_crossing(None, 120.0, TARGET_VALUE)
+        assert exc_info.value.reason_code == INVALID_OBSERVATION_CONTEXT
+
+    def test_invalid_bundle_object_to_observe_numerical_level_crossing_raises_governed_error(self):
+        with pytest.raises(NumericalCrossingContractError) as exc_info:
+            observe_numerical_level_crossing("not a bundle", 120.0, TARGET_VALUE)
+        assert exc_info.value.reason_code == INVALID_OBSERVATION_CONTEXT
+
+    def test_none_bundle_to_classify_bar_session_attribution_raises_session_attribution_error(self):
+        with pytest.raises(SessionAttributionError):
+            classify_bar_session_attribution(None, _FakeBar(session_date=_D(1)))
+
+    def test_invalid_bundle_to_classify_bar_session_attribution_raises_session_attribution_error(self):
+        with pytest.raises(SessionAttributionError):
+            classify_bar_session_attribution(_FakeBundle(
+                requested_window_start=_D(1), requested_window_end=_D(4),
+                entry_bar_policy="ENTRY_BAR_INCLUDED_FULL", exit_bar_policy="EXIT_BAR_INCLUDED_FULL",
+            ), _FakeBar(session_date=_D(2)))
+
+    def test_invalid_bar_to_classify_bar_session_attribution_raises_session_attribution_error(self):
+        base = _us_bundle(_US_ENTRY_INTERIOR, _US_EXIT_INTERIOR, _four_day_bars())
+        with pytest.raises(SessionAttributionError):
+            classify_bar_session_attribution(base, "not a bar")
+
+    def test_unhashable_attribution_to_is_safely_attributable_raises_session_attribution_error_not_typeerror(self):
+        with pytest.raises(SessionAttributionError):
+            is_safely_attributable_session(["unhashable"])
+
+    def test_invalid_attribution_not_rendered_into_message(self):
+        with pytest.raises(SessionAttributionError) as exc_info:
+            is_safely_attributable_session("DO_NOT_RENDER_SECRET_CANARY")
+        assert "DO_NOT_RENDER_SECRET_CANARY" not in str(exc_info.value)
 
     def test_stored_chronological_order_used_without_sorting(self):
         """observe_numerical_level_crossing must not call sorted() on
