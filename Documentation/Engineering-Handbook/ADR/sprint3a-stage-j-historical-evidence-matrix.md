@@ -2297,18 +2297,23 @@ is real positive evidence, trusted regardless of governance — but an
 unedited legacy per-level flag remains NULL indefinitely, never
 inferred to `GOVERNED_UNMODIFIED`.
 
-**Entry-snapshot scope decision (disclosed, deliberate)**: Wave A adds
-the governed fields to `paper_trade_exit_snapshot` (final state) but
-**not** to `paper_trade_entry_snapshot`. At entry time a governed
-trade's per-level state is trivially FALSE by construction (set
-atomically in the same INSERT as the trade row, before any edit is
-possible) — fully reconstructable from `paper_trades.level_history_
-contract_version` alone, so no information is lost. This avoids a
-high-risk hand-counted-placeholder edit to `paper_trade_entry_snapshot`'s
-existing 35-column INSERT (which has no column/value/placeholder parity
-assertion, unlike the exit-snapshot INSERT's already-hardened
-generated-from-one-list pattern). Left as an open item for Wave B to
-decide whether duplicating it into the entry snapshot is worth pursuing.
+**Entry-snapshot governed fields (correction applied)**: an earlier
+Wave A pass deferred this, reasoning that a governed trade's entry-time
+per-level state is trivially FALSE and reconstructable from `paper_
+trades.level_history_contract_version` alone. That reasoning is no
+longer the shipped design — `paper_trade_entry_snapshot` now carries
+its own `level_history_contract_version`, `initial_stop_modified_
+after_entry`, `initial_target_modified_after_entry`, and `initial_
+levels_modified_after_entry` columns, populated atomically at INSERT
+time (NULL for a legacy trade, `'1'`/`FALSE`/`FALSE`/`FALSE` for a
+governed one), immutable-by-UPDATE, never backfilled onto existing
+rows. The entry-snapshot INSERT was also hardened to derive its
+placeholder count from the bound-value tuple rather than a hand-
+counted `%s` string, matching the exit-snapshot INSERT's existing
+generated-from-one-list pattern. **Wave B must consume these four
+immutable fields when constructing the versioned governed report — it
+does not need to decide whether to add them, because they already
+exist.**
 
 **Real PostgreSQL verification** (`tests/postgres_integration/test_
 level_history_invariant_real_pg.py`, never mocks `_conn`): schema
@@ -2361,6 +2366,105 @@ feature flag enabled/changed.
 Wave A is not complete Stage J. It does not wire J4C conclusions into
 any report, claim, or persisted output; it does not expose them via
 API or frontend; it does not perform the Wave B report-version bump;
-and it does not begin Wave B or Wave C. The entry-snapshot scope
-decision above is an explicit, disclosed limitation, not a silent
-gap.
+and it does not begin Wave B or Wave C.
+
+---
+
+## Wave A — final semantic and assurance closure (2nd correction pass)
+
+**IMPLEMENTED, UNIT-TESTED, NOT REPORT-WIRED.** A narrowly bounded
+correction to `governed_price_path_conclusions.py` only — no schema,
+writer, transaction, or privacy change (those closed in the prior
+correction pass and are not reopened here).
+
+### Mandatory Correction 1 — one shared per-level eligibility path
+
+`classify_governed_order` no longer runs a second, independent
+eligibility check. For each side it now calls `classify_governed_
+level_touch` — the exact same function used standalone for a single-
+level touch conclusion — and treats that `GovernedLevelTouchConclusion`
+as the sole source of truth for whether that side's evidence is
+trustworthy. There is exactly one place in this module that decides
+"is this level's evidence good enough to say anything," and both the
+touch and the order classifiers consume it.
+
+### Mandatory Correction 2 — endpoint-aware governed order
+
+Before this pass, `classify_governed_order` gated ONLY the two ordered
+patterns (`TARGET_SAFELY_BEFORE_STOP`/`STOP_SAFELY_BEFORE_TARGET`) on
+endpoint/history eligibility — `TARGET_ONLY_OBSERVED`,
+`STOP_ONLY_OBSERVED`, `SAME_BAR_ORDER_UNKNOWN`, and `NEITHER_OBSERVED`
+were all returned unconditionally from the raw J4B pattern alone,
+confirmed by direct source review before this pass began. Every one of
+those four conclusions is now gated too:
+
+- a side's touch conclusion is a **definitive negative** only when it
+  is `NO_VALUE_SUPPLIED` (nothing configured at all — governance-
+  independent), or `NO_COMPATIBLE_CROSSING` **under a GOVERNED_
+  UNMODIFIED history** (the checked value is reliably known to be the
+  level's true value for the whole window, and it genuinely never
+  crossed) — `NO_COMPATIBLE_CROSSING` under unknown/legacy/modified/
+  contradictory history is NOT trustworthy negative evidence, since the
+  checked value's historical validity is itself unproven;
+- `TARGET_ONLY_OBSERVED`/`STOP_ONLY_OBSERVED` require the "only"
+  side's touch to be `SUPPORTED` and the other side's touch to be a
+  definitive negative;
+- `SAME_BAR_ORDER_UNKNOWN` requires BOTH sides' touches `SUPPORTED`;
+- `NEITHER_OBSERVED` requires BOTH sides' touches to be definitive
+  negatives;
+- partial-boundary-only evidence still never produces a definitive
+  order (unchanged from the prior pass);
+- the two ordered patterns still require both touches `SUPPORTED`
+  (unchanged in effect, now expressed through the shared eligibility
+  path rather than a separate `both_governed_unmodified` check plus a
+  duplicate endpoint check).
+
+`classify_governed_level_touch` itself was also corrected: endpoint
+evidence is now consulted **before** the crossed-anywhere check, not
+after it (moved up past `NO_VALUE_SUPPLIED` but before `NO_COMPATIBLE_
+CROSSING`) — a level that never crosses is not automatically trustworthy
+just because it never crossed; a missing snapshot or a governed-
+unmodified level whose endpoints contradict each other still makes
+that level's evidence untrustworthy regardless of the crossing outcome.
+
+### Mandatory Correction 3 — exact public-contract validation
+
+`level_kind` is now validated at both `classify_governed_level_touch`'s
+entry and `GovernedLevelTouchConclusion.__post_init__` (direct
+construction) — exact `str`, non-whitespace, member of the already-
+canonical J4B vocabulary (`price_path_calculator.TARGET_VALUE`/
+`STOP_VALUE`) only; a garbage value is rejected with `GovernedConclusion
+ContractError`/`INVALID_LEVEL_KIND`, never stored verbatim (a
+pre-existing test previously asserted the opposite — corrected).
+`observation`/`summary` now require the exact expected class (`type(x)
+is ...`, not `isinstance`) — a hostile subclass is rejected even though
+it would satisfy `isinstance`. `level_history_status`/`price_basis_
+status` inputs are now validated against their own canonical status
+sets at both classifier entry points. A positive `SUPPORTED_TOUCH`/
+non-`ORDER_UNAVAILABLE` conclusion can no longer be constructed with the
+canonical fallback sentence as its detail (the inverse of the existing
+"fallback must use the exact sentence" rule).
+
+### Traceability
+
+`wave_a_traceability_manifest.json` gains WA-C15..WA-C23 (9 more
+requirement IDs, 48 total) covering canonical level-kind validation,
+exact governed-classifier input types, target-only/stop-only/same-bar/
+neither-observed full eligibility, the shared touch/order eligibility
+path, invalid-status rejection, and this pass's final-HEAD non-
+PostgreSQL assurance.
+
+### No database/schema/writer/transaction/privacy regression
+
+Confirmed unchanged this pass: `postgres_store.py`, `paper_trading.py`,
+`entry_snapshot.py`, `exit_snapshot.py`, `close_service.py` are
+untouched — the governed schema, trigger, CHECK constraint, explicit
+transaction, deterministic concurrency, rollback, and privacy-safe
+lookup behavior from the prior correction pass are unchanged and were
+not reopened.
+
+### Explicit non-claims (this pass)
+
+Still not complete Stage J; still no report/claim/API/frontend wiring;
+still no Wave B report-version bump; still does not begin Wave B or
+Wave C.
