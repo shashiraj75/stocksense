@@ -3,7 +3,7 @@
   "as_of_head": "c91b7d8e6bdb694c069f716ab04777b5700336c4",
   "j4e_scenario_target": 55,
   "j4f_scenario_target": 68,
-  "j4e_scenarios_represented": 38,
+  "j4e_scenarios_represented": 55,
   "j4f_scenarios_represented": 0,
   "gap_disclosure": "Batches A-C mapped exactly one pytest node per WB-J4E-* traceability ID (18 nodes total). That satisfies traceability-ID coverage but NOT the 55-scenario behavioural matrix, which requires additional scenario variants per requirement (e.g. multiple touch-status permutations under WB-J4E-14, multiple concurrent-insert races under WB-J4F outbox IDs, multiple lease-expiry timings under the J4F lease contract). Those additional scenario nodes have not yet been written. This gap is disclosed here rather than silently closed by treating one node per requirement ID as sufficient.",
   "entries": [
@@ -53,7 +53,27 @@
   "batch_e_structural_invariant_checks_not_counted_toward_red_matrix": [
     {"node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_18_variant_latest_report_prefers_1_2_0_once_it_exists", "note": "Verifies existing frozen report_store.get_latest_report_for_trade ORDER BY already supports 1.2.0 preference — PASSES against pre-fix code since this behavior predates Wave B; kept as a regression guard, not a red scenario."}
   ],
-  "remaining_j4e_scenarios_not_yet_written": 17,
+  "batch_f_added_scenarios": [
+    {"scenario_no": 39, "requirement_id": "WB-J4E-17", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_39_persist_current_report_accepts_outbox_linkage_params", "level": "unit", "pre_fix_result": "RED"},
+    {"scenario_no": 40, "requirement_id": "WB-J4E-17", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_40_persist_current_report_raises_on_stale_lease", "level": "unit", "pre_fix_result": "RED"},
+    {"scenario_no": 41, "requirement_id": "WB-J4E-11", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_41_current_report_reuses_shared_evidence_hash_function", "level": "unit/structural", "pre_fix_result": "RED"},
+    {"scenario_no": 42, "requirement_id": "WB-J4E-11", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_42_current_report_payload_exposes_warnings_field", "level": "unit", "pre_fix_result": "RED"},
+    {"scenario_no": 43, "requirement_id": "WB-J4E-11", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_43_current_report_payload_exposes_evidence_gaps_field", "level": "unit", "pre_fix_result": "RED"},
+    {"scenario_no": 44, "requirement_id": "WB-J4E-12", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_44_report_trading_date_uses_close_date", "level": "unit/structural", "pre_fix_result": "RED"},
+    {"scenario_no": 45, "requirement_id": "WB-J4E-12", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_45_market_timezone_is_caller_supplied_not_hardcoded", "level": "unit", "pre_fix_result": "RED"},
+    {"scenario_no": 46, "requirement_id": "WB-J4E-17", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_46_persist_current_report_relies_on_db_unique_index_not_app_lock", "level": "unit/structural", "pre_fix_result": "RED"},
+    {"scenario_no": 47, "requirement_id": "WB-J4E-05", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_47_governed_calculation_version_is_pure_and_stable", "level": "unit", "pre_fix_result": "RED"},
+    {"scenario_no": 48, "requirement_id": "WB-J4E-05", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_48_governed_calculation_version_is_sensitive_to_numerical_rules", "level": "unit", "pre_fix_result": "RED"},
+    {"scenario_no": 49, "requirement_id": "WB-J4E-05", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_49_governed_calculation_version_is_sensitive_to_source_version", "level": "unit", "pre_fix_result": "RED"},
+    {"scenario_no": 50, "requirement_id": "WB-J4E-18", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_50_current_report_lookup_reuses_shared_user_scoped_function", "level": "unit/structural", "pre_fix_result": "RED"},
+    {"scenario_no": 51, "requirement_id": "WB-J4E-10", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_51_process_current_report_rejects_ownership_mismatch", "level": "unit/structural", "pre_fix_result": "RED"},
+    {"scenario_no": 52, "requirement_id": "WB-J4E-10", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_52_process_current_report_handles_open_trade_honestly", "level": "unit", "pre_fix_result": "RED"},
+    {"scenario_no": 53, "requirement_id": "WB-J4E-06", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_53_governed_rule_ids_do_not_collide_with_legacy_rule_ids", "level": "unit", "pre_fix_result": "RED"},
+    {"scenario_no": 54, "requirement_id": "WB-J4E-13", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_54_fallback_claim_uses_insufficient_evidence_class", "level": "unit", "pre_fix_result": "RED"},
+    {"scenario_no": 55, "requirement_id": "WB-J4E-13", "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_55_supported_touch_claim_confidence_not_not_assessable", "level": "unit", "pre_fix_result": "RED"}
+  ],
+  "j4e_matrix_status": "COMPLETE — all 55 mandatory J4E scenarios represented by runnable, individually-collected, individually-executed pytest nodes; all confirmed RED via intended assertions against pre-fix code (HEAD c91b7d8e6bdb694c069f716ab04777b5700336c4); zero import/collection failures counted as red evidence (one genuine collection SyntaxError was caught and fixed in Batch F before being counted).",
+  "remaining_j4e_scenarios_not_yet_written": 0,
   "remaining_j4f_scenarios_not_yet_written": 68,
-  "next_action": "Batch F: remaining 17 J4E scenarios (concurrent-generation race idempotency, evidence-hash stability, warnings/evidence_gaps propagation, market/timezone/report_trading_date correctness) to close the 55-scenario J4E matrix; then begin the WB-J4F-01..20 traceability family and its 68-scenario matrix."
+  "next_action": "Batch G onward: begin the WB-J4F-01..20 traceability family and its 68-scenario matrix (atomic close-to-outbox creation, exact version-scoped lookups, shared orchestrator reuse, global PostgreSQL claim/lease contract, background worker lifecycle, failure taxonomy, report-exists reconciliation, reset/delete races, observability)."
 }
