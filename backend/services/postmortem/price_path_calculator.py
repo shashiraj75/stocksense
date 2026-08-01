@@ -441,37 +441,48 @@ def _validate_boundary_policies(bundle: PricePathEvidenceBundle) -> None:
         raise SessionAttributionError("unrecognized exit_bar_policy")
 
 
-def classify_bar_session_attribution(bundle: PricePathEvidenceBundle, bar: PricePathBar) -> str:
-    """Stage J4B, Stage 3 (hardened Stage J4B.1, Stage 5) — pure
-    classification of a single bar's session_date against ONLY
-    bundle.requested_window_start/end and bundle.entry_bar_policy/
-    exit_bar_policy. Never consults bars[0], bars[-1], observed_window_
-    start/end, or raw array position. Validates the window ordering and
-    BOTH boundary-policy values up front, before deciding whether the
-    bar is interior, entry, exit, or same-day — an unrecognized policy
-    on either side always fails closed, even when the other side is a
-    recognized value.
+def _classify_session_attribution_fields(
+    *, requested_window_start, requested_window_end, entry_bar_policy, exit_bar_policy, session_date,
+) -> str:
+    """Stage J4B.3 — the ONE shared, field-based implementation of the
+    session-attribution matrix. Takes only plain field values (never a
+    PricePathEvidenceBundle or a PricePathBar), so it can be safely
+    reused both by classify_bar_session_attribution (the public,
+    bundle/bar-validating classifier) and by
+    NumericalLevelCrossingObservation._validate_group (which only ever
+    has a NumericalCrossingObservationContext + a bar's own
+    session_date, never a real bundle) — closing the Stage J4B.2 gap
+    where _validate_group checked category membership only, never
+    re-derived the exact expected attribution.
 
-    Same-day matrix (Stage J4B.1, Stage 5): the only two reachable
-    outcomes for two already-validated recognized policies are
-    SAME_DAY_INCLUDED_FULL (both INCLUDED_FULL) and
-    SAME_DAY_PARTIAL_UNKNOWN (every other combination)."""
-    _validate_boundary_policies(bundle)
-    if not isinstance(bar, PricePathBar):
-        raise SessionAttributionError("bar must be a PricePathBar")
-    if type(bar.session_date) is not date:
-        raise SessionAttributionError("bar.session_date must be an exact datetime.date value")
+    Requires exact `datetime.date` values (rejects `datetime.datetime`
+    and `date` subclasses) and exact recognized `str` policy values;
+    validates both policies and the window ordering before classifying
+    the date. Implements the current same-day matrix (only
+    SAME_DAY_INCLUDED_FULL when both sides are INCLUDED_FULL, else
+    SAME_DAY_PARTIAL_UNKNOWN) and multi-day interior/entry/exit
+    behavior UNCHANGED from the prior classify_bar_session_attribution
+    implementation. Raises SessionAttributionError with sanitized
+    messages (no invalid value's contents rendered) for every
+    failure — an out-of-window session_date always fails closed."""
+    if type(requested_window_start) is not date or type(requested_window_end) is not date:
+        raise SessionAttributionError("requested_window_start/end must be exact datetime.date values")
+    if requested_window_start > requested_window_end:
+        raise SessionAttributionError("requested_window_start follows requested_window_end")
+    if not _safe_str_member(entry_bar_policy, _VALID_ENTRY_BAR_POLICIES):
+        raise SessionAttributionError("unrecognized entry_bar_policy")
+    if not _safe_str_member(exit_bar_policy, _VALID_EXIT_BAR_POLICIES):
+        raise SessionAttributionError("unrecognized exit_bar_policy")
+    if type(session_date) is not date:
+        raise SessionAttributionError("session_date must be an exact datetime.date value")
 
-    entry_date = bundle.requested_window_start
-    exit_date = bundle.requested_window_end
-    session_date = bar.session_date
+    entry_date = requested_window_start
+    exit_date = requested_window_end
 
     if entry_date == exit_date:
         if session_date != entry_date:
-            raise SessionAttributionError(
-                f"bar session_date {session_date} is outside the single-day requested window {entry_date}"
-            )
-        if bundle.entry_bar_policy == _ENTRY_BAR_POLICY_INCLUDED_FULL and bundle.exit_bar_policy == _EXIT_BAR_POLICY_INCLUDED_FULL:
+            raise SessionAttributionError("session_date is outside the single-day requested window")
+        if entry_bar_policy == _ENTRY_BAR_POLICY_INCLUDED_FULL and exit_bar_policy == _EXIT_BAR_POLICY_INCLUDED_FULL:
             return SESSION_ATTRIBUTION_SAME_DAY_INCLUDED_FULL
         return SESSION_ATTRIBUTION_SAME_DAY_PARTIAL_UNKNOWN
 
@@ -479,17 +490,36 @@ def classify_bar_session_attribution(bundle: PricePathEvidenceBundle, bar: Price
         return SESSION_ATTRIBUTION_INTERIOR
 
     if session_date == entry_date:
-        if bundle.entry_bar_policy == _ENTRY_BAR_POLICY_INCLUDED_FULL:
+        if entry_bar_policy == _ENTRY_BAR_POLICY_INCLUDED_FULL:
             return SESSION_ATTRIBUTION_ENTRY_INCLUDED_FULL
         return SESSION_ATTRIBUTION_ENTRY_PARTIAL_UNKNOWN
 
     if session_date == exit_date:
-        if bundle.exit_bar_policy == _EXIT_BAR_POLICY_INCLUDED_FULL:
+        if exit_bar_policy == _EXIT_BAR_POLICY_INCLUDED_FULL:
             return SESSION_ATTRIBUTION_EXIT_INCLUDED_FULL
         return SESSION_ATTRIBUTION_EXIT_PARTIAL_UNKNOWN
 
-    raise SessionAttributionError(
-        f"bar session_date {session_date} is outside the requested window [{entry_date}, {exit_date}]"
+    raise SessionAttributionError("session_date is outside the requested window")
+
+
+def classify_bar_session_attribution(bundle: PricePathEvidenceBundle, bar: PricePathBar) -> str:
+    """Stage J4B, Stage 3 (hardened Stage J4B.1, Stage 5; refactored
+    Stage J4B.3) — validates the ACTUAL bundle/bar object boundaries
+    (real types, not duck-typed), then delegates the attribution
+    calculation itself to the single shared
+    _classify_session_attribution_fields helper — never duplicates the
+    matrix. Never consults bars[0], bars[-1], observed_window_start/end,
+    or raw array position."""
+    _validate_boundary_policies(bundle)
+    if not isinstance(bar, PricePathBar):
+        raise SessionAttributionError("bar must be a PricePathBar")
+    if type(bar.session_date) is not date:
+        raise SessionAttributionError("bar.session_date must be an exact datetime.date value")
+
+    return _classify_session_attribution_fields(
+        requested_window_start=bundle.requested_window_start, requested_window_end=bundle.requested_window_end,
+        entry_bar_policy=bundle.entry_bar_policy, exit_bar_policy=bundle.exit_bar_policy,
+        session_date=bar.session_date,
     )
 
 
@@ -620,10 +650,16 @@ class NumericalCrossingObservationContext:
     exit_bar_policy: str
 
     def __post_init__(self):
-        if not isinstance(self.paper_trade_id, int) or isinstance(self.paper_trade_id, bool) or self.paper_trade_id <= 0:
-            raise NumericalCrossingContractError(INVALID_OBSERVATION_CONTEXT, "paper_trade_id must be a positive int")
-        if not isinstance(self.symbol, str) or not self.symbol:
-            raise NumericalCrossingContractError(INVALID_OBSERVATION_CONTEXT, "symbol must be a non-empty string")
+        # Stage J4B.3, Stage 5 — every identity field below now requires
+        # an EXACT built-in type (never a subclass, e.g. a custom int
+        # or str subclass with a hostile __eq__/__repr__) and, for
+        # string fields, rejects both a truly-empty string and a
+        # whitespace-only string (the original value is never mutated
+        # or trimmed -- only rejected when invalid).
+        if type(self.paper_trade_id) is not int or self.paper_trade_id <= 0:
+            raise NumericalCrossingContractError(INVALID_OBSERVATION_CONTEXT, "paper_trade_id must be an exact positive int")
+        if type(self.symbol) is not str or not self.symbol.strip():
+            raise NumericalCrossingContractError(INVALID_OBSERVATION_CONTEXT, "symbol must be an exact, non-blank string")
         if not _safe_str_member(self.market, _VALID_MARKETS):
             raise NumericalCrossingContractError(INVALID_OBSERVATION_CONTEXT, "market must be exactly IN or US")
         for field_name in (
@@ -631,11 +667,11 @@ class NumericalCrossingObservationContext:
             "bar_interval", "price_adjustment_basis", "market_timezone",
         ):
             value = getattr(self, field_name)
-            if not isinstance(value, str) or not value:
-                raise NumericalCrossingContractError(INVALID_OBSERVATION_CONTEXT, f"{field_name} must be a non-empty string")
+            if type(value) is not str or not value.strip():
+                raise NumericalCrossingContractError(INVALID_OBSERVATION_CONTEXT, f"{field_name} must be an exact, non-blank string")
         for hash_field in ("evidence_hash", "source_manifest_integrity_hash"):
             value = getattr(self, hash_field)
-            if not isinstance(value, str) or not _SHA256_HEX_RE.match(value):
+            if type(value) is not str or not _SHA256_HEX_RE.match(value):
                 raise NumericalCrossingContractError(
                     INVALID_OBSERVATION_CONTEXT, f"{hash_field} must be a lowercase 64-character SHA-256 hex string"
                 )
@@ -669,10 +705,23 @@ _CROSSING_EVIDENCE_ID_RE = re.compile(
 )
 
 
-def _crossing_evidence_id(paper_trade_id: int, session_date: date, level_kind: str) -> str:
+def _crossing_evidence_id(paper_trade_id, session_date, level_kind) -> str:
     """Deterministic — contains ONLY paper_trade_id, session_date, and
     level kind. Never a user ID, symbol, market, price, provider
-    payload, or report narrative."""
+    payload, or report narrative.
+
+    Stage J4B.3, Stage 4 — total: independently validates every
+    argument BEFORE formatting, rather than relying entirely on caller
+    discipline. Every invalid input raises NumericalCrossingContractError
+    (INVALID_CROSSING_EVIDENCE_ID) — never a raw TypeError, ValueError,
+    AttributeError, or OverflowError, and never exposes the invalid
+    value or its representation in the message."""
+    if type(paper_trade_id) is not int or paper_trade_id <= 0:
+        raise NumericalCrossingContractError(INVALID_CROSSING_EVIDENCE_ID, "paper_trade_id must be an exact positive int")
+    if type(session_date) is not date:
+        raise NumericalCrossingContractError(INVALID_CROSSING_EVIDENCE_ID, "session_date must be an exact datetime.date value")
+    if not _safe_str_member(level_kind, _VALID_LEVEL_KINDS):
+        raise NumericalCrossingContractError(INVALID_CROSSING_EVIDENCE_ID, "level_kind must be TARGET_VALUE or STOP_VALUE")
     return f"NUMERICAL-CROSSING-{paper_trade_id}-{session_date.isoformat()}-{level_kind}"
 
 
@@ -759,16 +808,43 @@ class NumericalLevelCrossingObservation:
     partial_boundary_crossing_observed: bool
 
     def _validate_group(self, *, crossing_type, session, bar, evidence_id, attribution, allowed_attributions, group_name):
-        if not _safe_str_member(crossing_type, frozenset({CROSSING_TYPE_NORMAL, CROSSING_TYPE_GAP_THROUGH})):
-            raise NumericalCrossingContractError(INCONSISTENT_CROSSING_OBSERVATION, f"{group_name} group crossing_type must be NORMAL or GAP_THROUGH")
-        if not _safe_str_member(attribution, allowed_attributions):
-            raise NumericalCrossingContractError(INCONSISTENT_CROSSING_OBSERVATION, f"{group_name} group attribution is not permitted for this group")
+        # Session and bar are validated FIRST (Stage J4B.3, Stage 2) --
+        # only once both are known-good do we derive the EXACT expected
+        # attribution from the immutable context + the attached bar's
+        # own session_date, using the single shared field-based helper
+        # (never classify_bar_session_attribution directly -- that
+        # function's contract requires a real PricePathEvidenceBundle,
+        # which NumericalCrossingObservationContext is not and must
+        # never be duck-typed as).
         if type(session) is not date:
             raise NumericalCrossingContractError(INCONSISTENT_CROSSING_OBSERVATION, f"{group_name} group session must be an exact datetime.date value")
         if not isinstance(bar, PricePathBar):
             raise NumericalCrossingContractError(INCONSISTENT_CROSSING_OBSERVATION, f"{group_name} group bar must be a PricePathBar")
         if session != bar.session_date:
             raise NumericalCrossingContractError(INCONSISTENT_CROSSING_OBSERVATION, f"{group_name} group session does not match its own bar.session_date")
+
+        try:
+            expected_attribution = _classify_session_attribution_fields(
+                requested_window_start=self.context.requested_window_start, requested_window_end=self.context.requested_window_end,
+                entry_bar_policy=self.context.entry_bar_policy, exit_bar_policy=self.context.exit_bar_policy,
+                session_date=session,
+            )
+        except SessionAttributionError:
+            # An impossible forged-object attribution state (e.g. a
+            # session_date the context's own window/policy fields could
+            # never legitimately classify) is translated into this
+            # module's own governed contract error -- never a raw
+            # SessionAttributionError leaking out of an observation's
+            # own invariant validation.
+            raise NumericalCrossingContractError(INCONSISTENT_CROSSING_OBSERVATION, f"{group_name} group session cannot be classified from the immutable context")
+
+        if not _safe_str_member(attribution, frozenset({expected_attribution})):
+            raise NumericalCrossingContractError(INCONSISTENT_CROSSING_OBSERVATION, f"{group_name} group attribution does not match the exact context-derived attribution")
+        if not _safe_str_member(attribution, allowed_attributions):
+            raise NumericalCrossingContractError(INCONSISTENT_CROSSING_OBSERVATION, f"{group_name} group attribution is not permitted for this group")
+
+        if not _safe_str_member(crossing_type, frozenset({CROSSING_TYPE_NORMAL, CROSSING_TYPE_GAP_THROUGH})):
+            raise NumericalCrossingContractError(INCONSISTENT_CROSSING_OBSERVATION, f"{group_name} group crossing_type must be NORMAL or GAP_THROUGH")
         if bar.source_id != self.context.source_id:
             raise NumericalCrossingContractError(INCONSISTENT_CROSSING_OBSERVATION, f"{group_name} group bar.source_id does not match context.source_id")
         if not _bar_crosses(bar, self.level_kind, self.supplied_level_value):
@@ -861,10 +937,18 @@ class NumericalLevelCrossingObservation:
             if self.first_safely_attributable_session < self.first_observed_session:
                 raise NumericalCrossingContractError(INCONSISTENT_CROSSING_OBSERVATION, "safely-attributable session precedes first-observed session")
             if self.first_observed_session_attribution in _SAFELY_ATTRIBUTABLE_SESSION_ATTRIBUTIONS:
+                # Five-field exact identity (Stage J4B.3, Stage 3):
+                # session, bar, evidence ID, crossing type, AND session
+                # attribution -- omitting attribution would let a forged
+                # safe group match on the other four fields while
+                # silently disagreeing on what attribution the shared
+                # first-observed bar actually has.
                 if (self.first_safely_attributable_session, self.first_safely_attributable_bar,
-                        self.first_safely_attributable_evidence_id, self.first_safely_attributable_crossing_type) != (
+                        self.first_safely_attributable_evidence_id, self.first_safely_attributable_crossing_type,
+                        self.first_safely_attributable_session_attribution) != (
                     self.first_observed_session, self.first_observed_bar,
                     self.first_observed_evidence_id, self.first_observed_crossing_type,
+                    self.first_observed_session_attribution,
                 ):
                     raise NumericalCrossingContractError(INCONSISTENT_CROSSING_OBSERVATION, "first-observed is already safely attributable but safe group identifies a different bar")
         elif self.first_safely_attributable_crossing_type != CROSSING_TYPE_NOT_OBSERVED:
@@ -892,10 +976,14 @@ class NumericalLevelCrossingObservation:
             if self.first_partial_boundary_session < self.first_observed_session:
                 raise NumericalCrossingContractError(INCONSISTENT_CROSSING_OBSERVATION, "partial-boundary session precedes first-observed session")
             if self.first_observed_session_attribution in _PARTIAL_SESSION_ATTRIBUTIONS:
+                # Five-field exact identity, same rationale as the safe
+                # group above.
                 if (self.first_partial_boundary_session, self.first_partial_boundary_bar,
-                        self.first_partial_boundary_evidence_id, self.first_partial_boundary_crossing_type) != (
+                        self.first_partial_boundary_evidence_id, self.first_partial_boundary_crossing_type,
+                        self.first_partial_boundary_session_attribution) != (
                     self.first_observed_session, self.first_observed_bar,
                     self.first_observed_evidence_id, self.first_observed_crossing_type,
+                    self.first_observed_session_attribution,
                 ):
                     raise NumericalCrossingContractError(INCONSISTENT_CROSSING_OBSERVATION, "first-observed is already partial but partial group identifies a different bar")
         elif self.first_partial_boundary_crossing_type != CROSSING_TYPE_NOT_OBSERVED:
