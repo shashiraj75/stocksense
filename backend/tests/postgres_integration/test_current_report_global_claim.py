@@ -19,6 +19,7 @@ expiry races, concurrent claimants) can only be proven against a real
 database, never a mock (per the governing prompt's explicit
 prohibition on claiming PostgreSQL red proof from mocks).
 """
+import importlib
 import importlib.util
 import threading
 import time
@@ -35,7 +36,6 @@ pytestmark = pytest.mark.postgres_integration
 def _module_or_none(dotted_name: str):
     if importlib.util.find_spec(dotted_name) is None:
         return None
-    import importlib
     return importlib.import_module(dotted_name)
 
 
@@ -122,10 +122,11 @@ def test_wb_j4f_17_expired_lease_row_is_reclaimable(pg_conn):
 def test_wb_j4f_18_retry_backoff_delays_next_attempt(pg_conn):
     from services.postmortem import outbox as outbox_ops
 
+    _user_id = f"pg-integration-test-user-{uuid.uuid4().hex[:8]}"
     trade_id_row = pg_conn.execute(
-        "INSERT INTO paper_trades (user_id, symbol, market, quantity, entry_price, status, trade_management_mode, opened_at) "
-        "VALUES (%s, 'AAPL', 'US', 1, 100.0, 'CLOSED', 'MANUAL', now()) RETURNING id",
-        (f"pg-integration-test-user-{uuid.uuid4().hex[:8]}",),
+        "INSERT INTO paper_trades (session_id, user_id, symbol, market, quantity, entry_price, status, trade_management_mode, opened_at) "
+        "VALUES (%s, %s, 'AAPL', 'US', 1, 100.0, 'CLOSED', 'MANUAL', now()) RETURNING id",
+        (_user_id, _user_id),
     ).fetchone()
     pg_conn.commit()
     trade_id = trade_id_row[0]
