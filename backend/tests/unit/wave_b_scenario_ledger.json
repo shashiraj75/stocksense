@@ -1074,5 +1074,19 @@
     "corrected_dispatch_run_id": "30716822323",
     "corrected_dispatch_result": "7/8 WB-J4F-13..20 nodes genuinely RED (AssertionError, module/function not yet defined) on BOTH PostgreSQL 15 and PostgreSQL 17; 1/8 (WB-J4F-18) genuinely PASSED on both \u2014 confirmed EXPECTED_BASELINE_PASS, exercising existing outbox.py retry-backoff logic against a real database, unchanged by Wave B. Zero collection errors, zero infrastructure failures on the corrected run.",
     "pushed_head": "71be8c8cb0a1637c6e6e1a848a267ab2a7353ab1"
+  },
+  "implementation_green_evidence": {
+    "workflow": "Backend PostgreSQL Integration Tests",
+    "green_run_id": "30718307152",
+    "pushed_head": "de58b24e61b7bffed6d1e23c34a7615ec8e095af",
+    "result": "SUCCESS on BOTH PostgreSQL 15 and 17 \u2014 full workflow, including all pre-existing (Wave A/Sprint 3A) regression suites and all 8 WB-J4F-13..20 real-postgres nodes, now genuinely GREEN post-implementation.",
+    "regression_history": [
+      "Run 30716822323 (red baseline dispatch, pre-implementation): 7/8 WB-J4F-13..20 RED as intended, 1/8 baseline-pass \u2014 correct pre-implementation state.",
+      "Run 30717901956 (first post-implementation dispatch): 6 pre-existing Wave A regression tests broke \u2014 root cause: new close-time/POST-recovery wiring called the 1.2.0 orchestrator unconditionally, causing redundant provider acquisition on non-settled price-path cycles.",
+      "Fix (commit 9cd7919): gated both call sites on the price-path enhancement's own PRICE_PATH_GENERATED/ALREADY_COMPLETE outcome.",
+      "Run 30718093504 (second post-implementation dispatch): reduced to 3 failures, all stale pre-Wave-B report-count assertions (correctly expected 2/3 reports, Wave B's additive 1.2.0 report legitimately makes it 3/4) \u2014 not regressions.",
+      "Fix (commit de58b24): updated the 3 stale count assertions with explanatory comments.",
+      "Run 30718307152 (third post-implementation dispatch): SUCCESS \u2014 zero failures on both PostgreSQL 15 and 17."
+    ]
   }
 }
