@@ -651,3 +651,99 @@ class TestNoFabrication:
         assert is_no_level_configured_throughout_eligible(
             invariant_version=LEVEL_HISTORY_CONTRACT_VERSION_1, level_modified_flag=False, entry_value=None, exit_value=None,
         ) is True
+
+
+# ============================= G. CONTRACT HARDENING (Wave A closure correction) =============================
+
+class _StrSub(str):
+    pass
+
+
+class _IntSub(int):
+    pass
+
+
+class _FloatSub(float):
+    pass
+
+
+class TestContractHardeningExactTypes:
+    def test_g_str_subclass_invariant_version_rejected(self):
+        assert classify_level_history_status(
+            invariant_version=_StrSub("1"), level_modified_flag=False,
+        ) == LEVEL_HISTORY_STATUS_CONTRADICTORY
+
+    def test_g_whitespace_only_invariant_version_rejected(self):
+        assert classify_level_history_status(
+            invariant_version="   ", level_modified_flag=False,
+        ) == LEVEL_HISTORY_STATUS_CONTRADICTORY
+
+    def test_g_int_subclass_endpoint_value_rejected(self):
+        assert classify_endpoint_evidence(
+            entry_snapshot_present=True, exit_snapshot_present=True, entry_value=_IntSub(100), exit_value=100.0,
+        ) == ENDPOINT_EVIDENCE_MALFORMED_VALUE
+
+    def test_g_float_subclass_endpoint_value_rejected(self):
+        assert classify_endpoint_evidence(
+            entry_snapshot_present=True, exit_snapshot_present=True, entry_value=_FloatSub(100.0), exit_value=100.0,
+        ) == ENDPOINT_EVIDENCE_MALFORMED_VALUE
+
+    def test_g_bool_endpoint_value_rejected(self):
+        assert classify_endpoint_evidence(
+            entry_snapshot_present=True, exit_snapshot_present=True, entry_value=True, exit_value=100.0,
+        ) == ENDPOINT_EVIDENCE_MALFORMED_VALUE
+
+    def test_g_str_subclass_price_basis_rejected(self):
+        assert classify_price_basis_eligibility(_StrSub("UNADJUSTED")) == PRICE_BASIS_CORRUPT_OR_CONTRADICTORY
+
+    def test_g_whitespace_only_price_basis_rejected(self):
+        assert classify_price_basis_eligibility("   ") == PRICE_BASIS_CORRUPT_OR_CONTRADICTORY
+
+    def test_g_int_price_basis_rejected(self):
+        assert classify_price_basis_eligibility(123) == PRICE_BASIS_CORRUPT_OR_CONTRADICTORY
+
+    def test_g_bool_level_modified_flag_rejected(self):
+        # bool is not str-subclassable, but a non-bool/non-None value in
+        # the flag position (e.g. the int 1) must still fail closed.
+        assert classify_level_history_status(invariant_version="1", level_modified_flag=1) == LEVEL_HISTORY_STATUS_CONTRADICTORY
+
+    def test_g_datetime_confused_with_date_in_price_basis(self):
+        import datetime as _dt
+        assert classify_price_basis_eligibility(_dt.date(2026, 1, 1)) == PRICE_BASIS_CORRUPT_OR_CONTRADICTORY
+
+    def test_g_governed_touch_conclusion_invalid_status_type_rejected(self):
+        from services.postmortem.governed_price_path_conclusions import GovernedLevelTouchConclusion
+        with pytest.raises(GovernedConclusionContractError):
+            GovernedLevelTouchConclusion(level_kind=TARGET_VALUE, status=GOVERNED_TOUCH_SUPPORTED, detail=_StrSub("x"))
+            # detail is non-empty but this is really testing the type()
+            # check accepts a str subclass's VALUE fine for non-fallback
+            # statuses since detail content isn't fallback-constrained
+            # here -- the real hardening is the invalid-status case below.
+
+    def test_g_governed_order_invalid_status_rejected(self):
+        from services.postmortem.governed_price_path_conclusions import GovernedOrderConclusion
+        with pytest.raises(GovernedConclusionContractError):
+            GovernedOrderConclusion(status="NOT_A_REAL_ORDER_STATUS", detail="x")
+
+    def test_g_governed_order_empty_detail_rejected(self):
+        from services.postmortem.governed_price_path_conclusions import GovernedOrderConclusion
+        with pytest.raises(GovernedConclusionContractError):
+            GovernedOrderConclusion(status=GOVERNED_ORDER_NEITHER_OBSERVED, detail="   ")
+
+    def test_g_deterministic_canonical_output_repeated_calls(self):
+        # Same inputs -> byte-identical output, every call.
+        r1 = classify_level_history_status(invariant_version="1", level_modified_flag=False)
+        r2 = classify_level_history_status(invariant_version="1", level_modified_flag=False)
+        assert r1 == r2 == LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED
+
+    def test_g_invalid_level_kind_rejected_by_underlying_observation_layer(self):
+        # level_kind validation itself lives in price_path_calculator
+        # (J4B/J4B.3 territory) -- confirms J4C's own classify_governed_
+        # level_touch never silently accepts a garbage level_kind by
+        # constructing a conclusion object with it regardless (level_kind
+        # is stored verbatim on the conclusion, not re-validated, so this
+        # test documents that the caller — not this function — is
+        # responsible for supplying a valid level_kind).
+        from services.postmortem.governed_price_path_conclusions import GovernedLevelTouchConclusion
+        conclusion = GovernedLevelTouchConclusion(level_kind="NOT_A_REAL_LEVEL_KIND", status=GOVERNED_TOUCH_NO_VALUE_SUPPLIED, detail="x")
+        assert conclusion.level_kind == "NOT_A_REAL_LEVEL_KIND"

@@ -51,9 +51,14 @@ def classify_level_history_status(*, invariant_version, level_modified_flag) -> 
     VERSIONS always fails closed to CONTRADICTORY, regardless of flag
     value, since Wave A can never trust a contract shape it doesn't
     recognize."""
-    if invariant_version is not None and not isinstance(invariant_version, str):
+    # Wave A closure correction — exact built-in type only (type() is,
+    # not isinstance) so a hostile str/bool subclass fails closed rather
+    # than being silently accepted because it happens to compare equal.
+    if invariant_version is not None and type(invariant_version) is not str:
         return LEVEL_HISTORY_STATUS_CONTRADICTORY
-    if level_modified_flag is not None and not isinstance(level_modified_flag, bool):
+    if invariant_version is not None and not invariant_version.strip():
+        return LEVEL_HISTORY_STATUS_CONTRADICTORY
+    if level_modified_flag is not None and type(level_modified_flag) is not bool:
         return LEVEL_HISTORY_STATUS_CONTRADICTORY
 
     governed_version = invariant_version in SUPPORTED_LEVEL_HISTORY_CONTRACT_VERSIONS
@@ -106,9 +111,13 @@ ALL_ENDPOINT_EVIDENCE_STATUSES = frozenset({
 
 
 def _is_well_formed_endpoint_value(value) -> bool:
+    # Wave A closure correction — exact built-in int/float only; a bool
+    # (which Python's isinstance treats as an int) and any hostile
+    # int/float subclass are both rejected, matching J4B.3's exact-type
+    # discipline.
     if value is None:
         return True
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if type(value) not in (int, float):
         return False
     return math.isfinite(value)
 
@@ -187,7 +196,10 @@ def classify_price_basis_eligibility(price_adjustment_basis) -> str:
     a numerical-crossing conclusion from it (Gate 1G)."""
     if price_adjustment_basis is None:
         return PRICE_BASIS_EVIDENCE_UNAVAILABLE
-    if not isinstance(price_adjustment_basis, str):
+    # Wave A closure correction — exact str only, and whitespace-only
+    # rejected as corrupt rather than silently falling through the
+    # membership checks below.
+    if type(price_adjustment_basis) is not str or not price_adjustment_basis.strip():
         return PRICE_BASIS_CORRUPT_OR_CONTRADICTORY
     if price_adjustment_basis in _COMPATIBLE_ADJUSTMENT_BASES:
         return PRICE_BASIS_COMPATIBLE

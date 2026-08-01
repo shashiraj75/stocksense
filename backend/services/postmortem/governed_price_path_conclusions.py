@@ -97,7 +97,7 @@ class GovernedLevelTouchConclusion:
     def __post_init__(self):
         if self.status not in ALL_GOVERNED_TOUCH_STATUSES:
             raise GovernedConclusionContractError(INVALID_GOVERNED_INPUT, "status is not a recognized governed touch conclusion")
-        if not isinstance(self.detail, str) or not self.detail.strip():
+        if type(self.detail) is not str or not self.detail.strip():
             raise GovernedConclusionContractError(INVALID_GOVERNED_INPUT, "detail must be a non-empty string")
         fallback_statuses = frozenset({
             GOVERNED_TOUCH_INCOMPATIBLE_BASIS, GOVERNED_TOUCH_NO_BARS, GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE,
@@ -226,7 +226,7 @@ class GovernedOrderConclusion:
     def __post_init__(self):
         if self.status not in ALL_GOVERNED_ORDER_STATUSES:
             raise GovernedConclusionContractError(INVALID_GOVERNED_INPUT, "status is not a recognized governed order conclusion")
-        if not isinstance(self.detail, str) or not self.detail.strip():
+        if type(self.detail) is not str or not self.detail.strip():
             raise GovernedConclusionContractError(INVALID_GOVERNED_INPUT, "detail must be a non-empty string")
         if self.status == GOVERNED_ORDER_UNAVAILABLE and self.detail != CANONICAL_FALLBACK:
             raise GovernedConclusionContractError(INVALID_GOVERNED_INPUT, "ORDER_UNAVAILABLE must use the exact canonical fallback sentence")
