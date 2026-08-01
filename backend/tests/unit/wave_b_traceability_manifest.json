@@ -1,0 +1,47 @@
+{
+  "wave": "Wave B — Stage J4E + J4F",
+  "frozen_at_head": "c91b7d8e6bdb694c069f716ab04777b5700336c4",
+  "merge_base": "a71872641657169da1d5c2f5e9511393d7f0bb9d",
+  "contract": {
+    "report_schema_version": "1.2.0",
+    "governed_price_path_rules_version": "2.0.0",
+    "governed_price_path_claim_rules_version": "2.0.0",
+    "calculation_version_format": "<base>+price_path:<numerical_rules>+governed:<governed_rules>+src:<source_version>",
+    "sole_semantic_authority": [
+      "services.postmortem.governed_price_path_conclusions.classify_governed_level_touch",
+      "services.postmortem.governed_price_path_conclusions.classify_governed_order"
+    ],
+    "prohibited_semantic_authority": [
+      "services.postmortem.price_path_calculator.detect_touches",
+      "services.postmortem.price_path_claims.classify_touch_order",
+      "services.postmortem.price_path_claims.build_touch_order_claim"
+    ]
+  },
+  "affected_surface_inventory": {
+    "report_identities": ["paper_trade_postmortem_report.report_schema_version=1.2.0"],
+    "calculation_identities": ["governed_calculation_version() output"],
+    "claim_rule_identities": ["GOVERNED_PRICE_PATH_CLAIM_RULES_VERSION=2.0.0"],
+    "report_writers": ["services/postmortem/current_report_generation.py:persist_current_report"],
+    "report_readers": ["services/postmortem/report_store.py:get_current_report,get_latest_report_for_trade,get_latest_predecessor_report"],
+    "outbox_writers": ["services/postmortem/current_report_generation.py:insert_current_outbox_record", "services/postmortem/close_service.py:close_paper_trade (pending wiring)"],
+    "outbox_claimers": ["services/postmortem/outbox.py:claim_next_attempt (per-trade)", "new global cross-user claim (pending)"],
+    "close_time_generation": ["api/routers/paper_trading.py:/sell handler (pending wiring)"],
+    "explicit_post_recovery": ["api/routers/paper_trading.py:POST /postmortem/{trade_id}/generate (pending wiring)"],
+    "startup_lifespan_integration": ["api/main.py:lifespan (pending wiring)"],
+    "reset_delete_paths": ["not yet inventoried — pending"],
+    "database_transactions": ["current_report_generation.process_current_report 5-phase boundary"],
+    "provider_io_boundaries": ["price_path_generation.acquire_evidence_outside_transaction (reused, no conn held)"],
+    "feature_flags": ["TRADE_POSTMORTEM_PRICE_PATH_ENABLED (existing, reused; no new flag activation this wave)"],
+    "historical_compatibility": ["1.0.0 (generation_service)", "1.1.0 (price_path_generation, legacy detect_touches authority)", "1.2.0 (current_report_generation, governed authority)"]
+  },
+  "j4e_requirements": [
+    {"id": "WB-J4E-01", "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_01_governed_report_identity_module_exists", "batch": "A", "status": "RED"},
+    {"id": "WB-J4E-02", "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_02_report_schema_version_1_2_0_constant_exists", "batch": "A", "status": "RED"},
+    {"id": "WB-J4E-03", "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_03_governed_price_path_rules_version_constant_exists", "batch": "A", "status": "RED"},
+    {"id": "WB-J4E-04", "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_04_governed_claim_rules_version_constant_exists", "batch": "A", "status": "RED"},
+    {"id": "WB-J4E-05", "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_05_governed_calculation_version_format", "batch": "A", "status": "RED"},
+    {"id": "WB-J4E-06", "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_06_governed_claims_module_does_not_import_legacy_touch_authority", "batch": "A", "status": "RED"}
+  ],
+  "j4f_requirements": [],
+  "status": "BATCH_A_RED — 6 of 18 WB-J4E IDs + 0 of 20 WB-J4F IDs have runnable red nodes; remaining batches (B-J) pending in subsequent execution turns"
+}
