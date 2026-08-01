@@ -4,7 +4,7 @@
   "j4e_scenario_target": 55,
   "j4f_scenario_target": 68,
   "j4e_scenarios_represented": 55,
-  "j4f_scenarios_represented": 6,
+  "j4f_scenarios_represented": 12,
   "gap_disclosure": "Batches A-C mapped exactly one pytest node per WB-J4E-* traceability ID (18 nodes total). That satisfies traceability-ID coverage but NOT the 55-scenario behavioural matrix, which requires additional scenario variants per requirement (e.g. multiple touch-status permutations under WB-J4E-14, multiple concurrent-insert races under WB-J4F outbox IDs, multiple lease-expiry timings under the J4F lease contract). Those additional scenario nodes have not yet been written. This gap is disclosed here rather than silently closed by treating one node per requirement ID as sufficient.",
   "entries": [
     {
@@ -505,8 +505,8 @@
   ],
   "j4e_matrix_status": "J4E RED-BASELINE COMPLETE \u2014 55/55 MANDATORY SCENARIOS REPRESENTED, COLLECTED AND EXECUTED; 54 FAILED THROUGH INTENDED PRE-IMPLEMENTATION ASSERTIONS; 1 BASELINE-PRESERVATION GUARD PASSED AS EXPECTED; ZERO COLLECTION ERRORS.",
   "remaining_j4e_scenarios_not_yet_written": 0,
-  "remaining_j4f_scenarios_not_yet_written": 62,
-  "next_action": "Batch H onward: exact version-scoped lookup + shared orchestrator reuse (WB-J4F-07..); then global PostgreSQL claim/lease/concurrency (real-postgres level), background worker lifecycle, failure taxonomy, report-exists reconciliation, reset/delete races, observability to close the remaining 62 J4F scenarios.",
+  "remaining_j4f_scenarios_not_yet_written": 56,
+  "next_action": "Batch I: global PostgreSQL claim, concurrency, active/expired lease, backoff, max-attempt behavior (real-postgres level, WB-J4F-13..).",
   "batch_g_added_scenarios": [
     {
       "scenario_no": 1,
@@ -553,6 +553,56 @@
       "requirement_id": "WB-J4F-06",
       "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_06_current_outbox_creatable_outside_close_time_for_backfill",
       "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    }
+  ],
+  "batch_h_added_scenarios": [
+    {
+      "scenario_no": 7,
+      "requirement_id": "WB-J4F-07",
+      "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_07_current_outbox_lookup_is_exact_version_scoped_not_latest",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 8,
+      "requirement_id": "WB-J4F-08",
+      "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_08_worker_claim_lookup_will_be_version_scoped",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 9,
+      "requirement_id": "WB-J4F-09",
+      "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_09_shared_orchestrator_function_exists",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 10,
+      "requirement_id": "WB-J4F-10",
+      "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_10_paper_trading_close_time_path_calls_shared_orchestrator",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 11,
+      "requirement_id": "WB-J4F-11",
+      "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_11_post_generate_endpoint_calls_shared_orchestrator",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "actual_pre_fix_result": "RED"
+    },
+    {
+      "scenario_no": 12,
+      "requirement_id": "WB-J4F-12",
+      "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_12_background_worker_will_call_shared_orchestrator",
+      "level": "unit",
       "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
       "actual_pre_fix_result": "RED"
     }

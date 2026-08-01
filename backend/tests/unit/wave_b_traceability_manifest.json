@@ -1,5 +1,5 @@
 {
-  "wave": "Wave B — Stage J4E + J4F",
+  "wave": "Wave B \u2014 Stage J4E + J4F",
   "frozen_at_head": "c91b7d8e6bdb694c069f716ab04777b5700336c4",
   "merge_base": "a71872641657169da1d5c2f5e9511393d7f0bb9d",
   "contract": {
@@ -18,49 +18,239 @@
     ]
   },
   "affected_surface_inventory": {
-    "report_identities": ["paper_trade_postmortem_report.report_schema_version=1.2.0"],
-    "calculation_identities": ["governed_calculation_version() output"],
-    "claim_rule_identities": ["GOVERNED_PRICE_PATH_CLAIM_RULES_VERSION=2.0.0"],
-    "report_writers": ["services/postmortem/current_report_generation.py:persist_current_report"],
-    "report_readers": ["services/postmortem/report_store.py:get_current_report,get_latest_report_for_trade,get_latest_predecessor_report"],
-    "outbox_writers": ["services/postmortem/current_report_generation.py:insert_current_outbox_record", "services/postmortem/close_service.py:close_paper_trade (pending wiring)"],
-    "outbox_claimers": ["services/postmortem/outbox.py:claim_next_attempt (per-trade)", "new global cross-user claim (pending)"],
-    "close_time_generation": ["api/routers/paper_trading.py:/sell handler (pending wiring)"],
-    "explicit_post_recovery": ["api/routers/paper_trading.py:POST /postmortem/{trade_id}/generate (pending wiring)"],
-    "startup_lifespan_integration": ["api/main.py:lifespan (pending wiring)"],
-    "reset_delete_paths": ["not yet inventoried — pending"],
-    "database_transactions": ["current_report_generation.process_current_report 5-phase boundary"],
-    "provider_io_boundaries": ["price_path_generation.acquire_evidence_outside_transaction (reused, no conn held)"],
-    "feature_flags": ["TRADE_POSTMORTEM_PRICE_PATH_ENABLED (existing, reused; no new flag activation this wave)"],
-    "historical_compatibility": ["1.0.0 (generation_service)", "1.1.0 (price_path_generation, legacy detect_touches authority)", "1.2.0 (current_report_generation, governed authority)"]
+    "report_identities": [
+      "paper_trade_postmortem_report.report_schema_version=1.2.0"
+    ],
+    "calculation_identities": [
+      "governed_calculation_version() output"
+    ],
+    "claim_rule_identities": [
+      "GOVERNED_PRICE_PATH_CLAIM_RULES_VERSION=2.0.0"
+    ],
+    "report_writers": [
+      "services/postmortem/current_report_generation.py:persist_current_report"
+    ],
+    "report_readers": [
+      "services/postmortem/report_store.py:get_current_report,get_latest_report_for_trade,get_latest_predecessor_report"
+    ],
+    "outbox_writers": [
+      "services/postmortem/current_report_generation.py:insert_current_outbox_record",
+      "services/postmortem/close_service.py:close_paper_trade (pending wiring)"
+    ],
+    "outbox_claimers": [
+      "services/postmortem/outbox.py:claim_next_attempt (per-trade)",
+      "new global cross-user claim (pending)"
+    ],
+    "close_time_generation": [
+      "api/routers/paper_trading.py:/sell handler (pending wiring)"
+    ],
+    "explicit_post_recovery": [
+      "api/routers/paper_trading.py:POST /postmortem/{trade_id}/generate (pending wiring)"
+    ],
+    "startup_lifespan_integration": [
+      "api/main.py:lifespan (pending wiring)"
+    ],
+    "reset_delete_paths": [
+      "not yet inventoried \u2014 pending"
+    ],
+    "database_transactions": [
+      "current_report_generation.process_current_report 5-phase boundary"
+    ],
+    "provider_io_boundaries": [
+      "price_path_generation.acquire_evidence_outside_transaction (reused, no conn held)"
+    ],
+    "feature_flags": [
+      "TRADE_POSTMORTEM_PRICE_PATH_ENABLED (existing, reused; no new flag activation this wave)"
+    ],
+    "historical_compatibility": [
+      "1.0.0 (generation_service)",
+      "1.1.0 (price_path_generation, legacy detect_touches authority)",
+      "1.2.0 (current_report_generation, governed authority)"
+    ]
   },
   "j4e_requirements": [
-    {"id": "WB-J4E-01", "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_01_governed_report_identity_module_exists", "batch": "A", "status": "RED"},
-    {"id": "WB-J4E-02", "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_02_report_schema_version_1_2_0_constant_exists", "batch": "A", "status": "RED"},
-    {"id": "WB-J4E-03", "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_03_governed_price_path_rules_version_constant_exists", "batch": "A", "status": "RED"},
-    {"id": "WB-J4E-04", "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_04_governed_claim_rules_version_constant_exists", "batch": "A", "status": "RED"},
-    {"id": "WB-J4E-05", "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_05_governed_calculation_version_format", "batch": "A", "status": "RED"},
-    {"id": "WB-J4E-06", "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_06_governed_claims_module_does_not_import_legacy_touch_authority", "batch": "A", "status": "RED"},
-    {"id": "WB-J4E-07", "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_07_build_governed_price_path_payload_exists", "batch": "B", "status": "RED"},
-    {"id": "WB-J4E-08", "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_08_no_bundle_produces_no_bars_not_fabricated_touch", "batch": "B", "status": "RED"},
-    {"id": "WB-J4E-09", "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_09_payload_reads_snapshot_governed_fields_not_mutable_row", "batch": "B", "status": "RED"},
-    {"id": "WB-J4E-10", "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_10_legacy_no_snapshot_never_fabricates_governed_false", "batch": "B", "status": "RED"},
-    {"id": "WB-J4E-11", "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_11_structured_report_has_four_required_subsections", "batch": "B", "status": "RED"},
-    {"id": "WB-J4E-12", "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_12_version_and_provenance_carries_exact_triple", "batch": "B", "status": "RED"},
-    {"id": "WB-J4E-13", "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_13_canonical_fallback_sentence_matches_evidence_module", "batch": "C", "status": "RED"},
-    {"id": "WB-J4E-14", "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_14_no_bars_claim_makes_no_positive_assertion", "batch": "C", "status": "RED"},
-    {"id": "WB-J4E-15", "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_15_claim_ids_deterministic_and_collision_safe", "batch": "C", "status": "RED"},
-    {"id": "WB-J4E-16", "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_16_claim_referential_integrity_within_report", "batch": "C", "status": "RED"},
-    {"id": "WB-J4E-17", "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_17_supersession_predecessor_is_deterministic_single_and_same_trade", "batch": "C", "status": "RED"},
-    {"id": "WB-J4E-18", "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_18_version_scoped_report_api_exists_for_all_three_identities", "batch": "C", "status": "RED"}
+    {
+      "id": "WB-J4E-01",
+      "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_01_governed_report_identity_module_exists",
+      "batch": "A",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4E-02",
+      "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_02_report_schema_version_1_2_0_constant_exists",
+      "batch": "A",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4E-03",
+      "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_03_governed_price_path_rules_version_constant_exists",
+      "batch": "A",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4E-04",
+      "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_04_governed_claim_rules_version_constant_exists",
+      "batch": "A",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4E-05",
+      "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_05_governed_calculation_version_format",
+      "batch": "A",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4E-06",
+      "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_06_governed_claims_module_does_not_import_legacy_touch_authority",
+      "batch": "A",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4E-07",
+      "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_07_build_governed_price_path_payload_exists",
+      "batch": "B",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4E-08",
+      "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_08_no_bundle_produces_no_bars_not_fabricated_touch",
+      "batch": "B",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4E-09",
+      "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_09_payload_reads_snapshot_governed_fields_not_mutable_row",
+      "batch": "B",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4E-10",
+      "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_10_legacy_no_snapshot_never_fabricates_governed_false",
+      "batch": "B",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4E-11",
+      "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_11_structured_report_has_four_required_subsections",
+      "batch": "B",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4E-12",
+      "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_12_version_and_provenance_carries_exact_triple",
+      "batch": "B",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4E-13",
+      "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_13_canonical_fallback_sentence_matches_evidence_module",
+      "batch": "C",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_14_no_bars_claim_makes_no_positive_assertion",
+      "batch": "C",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4E-15",
+      "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_15_claim_ids_deterministic_and_collision_safe",
+      "batch": "C",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_16_claim_referential_integrity_within_report",
+      "batch": "C",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4E-17",
+      "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_17_supersession_predecessor_is_deterministic_single_and_same_trade",
+      "batch": "C",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4E-18",
+      "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_18_version_scoped_report_api_exists_for_all_three_identities",
+      "batch": "C",
+      "status": "RED"
+    }
   ],
   "j4f_requirements": [
-    {"id": "WB-J4F-01", "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_01_close_paper_trade_accepts_explicit_current_outbox_request", "batch": "G", "status": "RED"},
-    {"id": "WB-J4F-02", "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_02_current_outbox_insert_helper_exists_and_is_idempotent", "batch": "G", "status": "RED"},
-    {"id": "WB-J4F-03", "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_03_current_outbox_insert_happens_inside_close_transaction", "batch": "G", "status": "RED"},
-    {"id": "WB-J4F-04", "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_04_current_outbox_identity_is_caller_supplied_not_env_read", "batch": "G", "status": "RED"},
-    {"id": "WB-J4F-05", "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_05_duplicate_close_never_double_inserts_current_outbox", "batch": "G", "status": "RED"},
-    {"id": "WB-J4F-06", "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_06_current_outbox_creatable_outside_close_time_for_backfill", "batch": "G", "status": "RED"}
+    {
+      "id": "WB-J4F-01",
+      "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_01_close_paper_trade_accepts_explicit_current_outbox_request",
+      "batch": "G",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4F-02",
+      "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_02_current_outbox_insert_helper_exists_and_is_idempotent",
+      "batch": "G",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4F-03",
+      "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_03_current_outbox_insert_happens_inside_close_transaction",
+      "batch": "G",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4F-04",
+      "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_04_current_outbox_identity_is_caller_supplied_not_env_read",
+      "batch": "G",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4F-05",
+      "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_05_duplicate_close_never_double_inserts_current_outbox",
+      "batch": "G",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4F-06",
+      "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_06_current_outbox_creatable_outside_close_time_for_backfill",
+      "batch": "G",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4F-07",
+      "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_07_current_outbox_lookup_is_exact_version_scoped_not_latest",
+      "batch": "H",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4F-08",
+      "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_08_worker_claim_lookup_will_be_version_scoped",
+      "batch": "H",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4F-09",
+      "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_09_shared_orchestrator_function_exists",
+      "batch": "H",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4F-10",
+      "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_10_paper_trading_close_time_path_calls_shared_orchestrator",
+      "batch": "H",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4F-11",
+      "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_11_post_generate_endpoint_calls_shared_orchestrator",
+      "batch": "H",
+      "status": "RED"
+    },
+    {
+      "id": "WB-J4F-12",
+      "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_12_background_worker_will_call_shared_orchestrator",
+      "batch": "H",
+      "status": "RED"
+    }
   ],
-  "status": "J4E RED-BASELINE COMPLETE (55/55 scenarios). J4F traceability in progress: 6 of 20 WB-J4F IDs have runnable red nodes (Batch G). J4F scenario-matrix target is 68; 6 represented so far — see wave_b_scenario_ledger.json for the honest running count."
+  "status": "J4E RED-BASELINE COMPLETE (55/55). J4F traceability: 12 of 20 WB-J4F IDs have runnable red nodes (Batches G-H). J4F scenario-matrix target is 68; 12 represented so far."
 }
