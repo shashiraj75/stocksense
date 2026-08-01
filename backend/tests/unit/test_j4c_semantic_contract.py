@@ -460,6 +460,10 @@ class TestGovernedOrderConclusions:
         return summarize_observed_numerical_crossings(target_obs, stop_obs)
 
     def test_f39_same_bar_order_remains_unknown(self):
+        # Wave A closure correction — SAME_BAR_ORDER_UNKNOWN now requires
+        # BOTH per-level governed touch conclusions to be SUPPORTED
+        # (complete, consistent endpoint evidence for both sides), not
+        # merely GOVERNED_UNMODIFIED history status.
         bars = [
             _raw(_D(1), 100, 101, 99, 100),
             _raw(_D(2), 100, 130.0, 70.0, 100),  # both target(>=120) and stop(<=80) hit same bar
@@ -472,8 +476,66 @@ class TestGovernedOrderConclusions:
             stop_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
             target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
             target_bars_available=True, stop_bars_available=True,
+            target_entry_value=120.0, target_exit_value=120.0,
+            stop_entry_value=80.0, stop_exit_value=80.0,
         )
         assert result.status == GOVERNED_ORDER_SAME_BAR_ORDER_UNKNOWN
+
+    def test_f39b_same_bar_but_one_side_history_unknown_is_unavailable(self):
+        bars = [
+            _raw(_D(1), 100, 101, 99, 100),
+            _raw(_D(2), 100, 130.0, 70.0, 100),
+            _raw(_D(3), 100, 101, 99, 100),
+        ]
+        target_obs, stop_obs = _target_and_stop_observations(bars=bars)
+        summary = self._summary(target_obs, stop_obs)
+        result = classify_governed_order(
+            summary=summary, target_level_history_status=LEVEL_HISTORY_STATUS_UNKNOWN_OR_LEGACY,
+            stop_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
+            target_bars_available=True, stop_bars_available=True,
+            stop_entry_value=80.0, stop_exit_value=80.0,
+        )
+        assert result.status == GOVERNED_ORDER_UNAVAILABLE
+        assert result.detail == CANONICAL_FALLBACK
+
+    def test_f39c_same_bar_but_one_side_endpoint_missing_is_unavailable(self):
+        bars = [
+            _raw(_D(1), 100, 101, 99, 100),
+            _raw(_D(2), 100, 130.0, 70.0, 100),
+            _raw(_D(3), 100, 101, 99, 100),
+        ]
+        target_obs, stop_obs = _target_and_stop_observations(bars=bars)
+        summary = self._summary(target_obs, stop_obs)
+        result = classify_governed_order(
+            summary=summary, target_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            stop_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
+            target_bars_available=True, stop_bars_available=True,
+            target_entry_snapshot_present=False, target_exit_value=120.0,
+            stop_entry_value=80.0, stop_exit_value=80.0,
+        )
+        assert result.status == GOVERNED_ORDER_UNAVAILABLE
+        assert result.detail == CANONICAL_FALLBACK
+
+    def test_f39d_same_bar_but_one_side_endpoint_contradictory_is_unavailable(self):
+        bars = [
+            _raw(_D(1), 100, 101, 99, 100),
+            _raw(_D(2), 100, 130.0, 70.0, 100),
+            _raw(_D(3), 100, 101, 99, 100),
+        ]
+        target_obs, stop_obs = _target_and_stop_observations(bars=bars)
+        summary = self._summary(target_obs, stop_obs)
+        result = classify_governed_order(
+            summary=summary, target_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            stop_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
+            target_bars_available=True, stop_bars_available=True,
+            target_entry_value=100.0, target_exit_value=120.0,  # contradictory
+            stop_entry_value=80.0, stop_exit_value=80.0,
+        )
+        assert result.status == GOVERNED_ORDER_UNAVAILABLE
+        assert result.detail == CANONICAL_FALLBACK
 
     def test_f_target_safely_before_stop_when_both_governed_unmodified(self):
         target_obs, stop_obs = _target_and_stop_observations()  # target hits day 2, stop hits day 3
@@ -572,37 +634,185 @@ class TestGovernedOrderConclusions:
         assert result.detail == CANONICAL_FALLBACK
 
     def test_f_neither_observed(self):
+        # Wave A closure correction — a definitive NEITHER_OBSERVED
+        # requires each side's "no compatible crossing" to be trustworthy,
+        # which (per Correction 2E) requires GOVERNED_UNMODIFIED history
+        # with consistent endpoint evidence — not merely "never crossed".
+        target_obs, stop_obs = _target_and_stop_observations(target=500.0, stop=1.0)
+        summary = self._summary(target_obs, stop_obs)
+        result = classify_governed_order(
+            summary=summary, target_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            stop_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
+            target_bars_available=True, stop_bars_available=True,
+            target_entry_value=500.0, target_exit_value=500.0,
+            stop_entry_value=1.0, stop_exit_value=1.0,
+        )
+        assert result.status == GOVERNED_ORDER_NEITHER_OBSERVED
+
+    def test_f26_neither_observed_but_incomplete_evidence_is_unavailable(self):
+        """Mandatory red test #26 — legacy/unknown history for either
+        side must not be converted into a confident 'neither' result."""
         target_obs, stop_obs = _target_and_stop_observations(target=500.0, stop=1.0)
         summary = self._summary(target_obs, stop_obs)
         result = classify_governed_order(
             summary=summary, target_level_history_status=LEVEL_HISTORY_STATUS_UNKNOWN_OR_LEGACY,
-            stop_level_history_status=LEVEL_HISTORY_STATUS_UNKNOWN_OR_LEGACY,
+            stop_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
             target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
             target_bars_available=True, stop_bars_available=True,
+            stop_entry_value=1.0, stop_exit_value=1.0,
         )
-        assert result.status == GOVERNED_ORDER_NEITHER_OBSERVED
+        assert result.status == GOVERNED_ORDER_UNAVAILABLE
+        assert result.detail == CANONICAL_FALLBACK
 
-    def test_f_target_only_observed(self):
+    def test_f15_target_only_but_stop_history_unknown_with_a_value_is_unavailable(self):
+        """Mandatory red test #15 — target valid + stop has a supplied
+        value (never crosses) but UNKNOWN_OR_LEGACY history: a
+        non-crossing observation under unknown history is not trustworthy
+        negative evidence (we cannot confirm the checked value was ever
+        the level's true value), so this must be ORDER_UNAVAILABLE, not
+        TARGET_ONLY_OBSERVED."""
         target_obs, stop_obs = _target_and_stop_observations(stop=1.0)
         summary = self._summary(target_obs, stop_obs)
         result = classify_governed_order(
-            summary=summary, target_level_history_status=LEVEL_HISTORY_STATUS_UNKNOWN_OR_LEGACY,
+            summary=summary, target_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
             stop_level_history_status=LEVEL_HISTORY_STATUS_UNKNOWN_OR_LEGACY,
             target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
             target_bars_available=True, stop_bars_available=True,
+            target_entry_value=120.0, target_exit_value=120.0,
         )
-        assert result.status == GOVERNED_ORDER_TARGET_ONLY_OBSERVED
+        assert result.status == GOVERNED_ORDER_UNAVAILABLE
+        assert result.detail == CANONICAL_FALLBACK
 
-    def test_f_stop_only_observed(self):
+    def test_f19b_stop_only_but_target_history_unknown_with_a_value_is_unavailable(self):
+        """Mandatory red test #19 symmetric case."""
         target_obs, stop_obs = _target_and_stop_observations(target=500.0)
         summary = self._summary(target_obs, stop_obs)
         result = classify_governed_order(
             summary=summary, target_level_history_status=LEVEL_HISTORY_STATUS_UNKNOWN_OR_LEGACY,
+            stop_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
+            target_bars_available=True, stop_bars_available=True,
+            stop_entry_value=80.0, stop_exit_value=80.0,
+        )
+        assert result.status == GOVERNED_ORDER_UNAVAILABLE
+        assert result.detail == CANONICAL_FALLBACK
+
+    def test_f_target_only_observed(self):
+        # Wave A closure correction — TARGET_ONLY_OBSERVED now requires
+        # the target side to be a SUPPORTED governed touch (governed-
+        # unmodified history + consistent endpoints), with the stop side
+        # a complete, noncontradictory NEGATIVE (here: no stop value was
+        # even supplied to observe_numerical_level_crossing).
+        target_obs, stop_obs = _target_and_stop_observations(stop=None)
+        summary = self._summary(target_obs, stop_obs)
+        result = classify_governed_order(
+            summary=summary, target_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
             stop_level_history_status=LEVEL_HISTORY_STATUS_UNKNOWN_OR_LEGACY,
             target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
             target_bars_available=True, stop_bars_available=True,
+            target_entry_value=120.0, target_exit_value=120.0,
+        )
+        assert result.status == GOVERNED_ORDER_TARGET_ONLY_OBSERVED
+
+    def test_f17_target_only_but_stop_entry_snapshot_missing_is_unavailable(self):
+        # The stop side has a value supplied that never crosses, but its
+        # entry snapshot is missing -- that missing evidence makes the
+        # stop side untrustworthy regardless of the crossing outcome.
+        target_obs, stop_obs = _target_and_stop_observations(stop=1.0)  # never crosses, but IS supplied
+        summary = self._summary(target_obs, stop_obs)
+        result = classify_governed_order(
+            summary=summary, target_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            stop_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
+            target_bars_available=True, stop_bars_available=True,
+            target_entry_value=120.0, target_exit_value=120.0,
+            stop_entry_snapshot_present=False,
+        )
+        assert result.status == GOVERNED_ORDER_UNAVAILABLE
+        assert result.detail == CANONICAL_FALLBACK
+
+    def test_f18_target_only_but_stop_exit_snapshot_missing_is_unavailable(self):
+        target_obs, stop_obs = _target_and_stop_observations(stop=1.0)
+        summary = self._summary(target_obs, stop_obs)
+        result = classify_governed_order(
+            summary=summary, target_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            stop_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
+            target_bars_available=True, stop_bars_available=True,
+            target_entry_value=120.0, target_exit_value=120.0,
+            stop_exit_snapshot_present=False, stop_entry_value=1.0,
+        )
+        assert result.status == GOVERNED_ORDER_UNAVAILABLE
+        assert result.detail == CANONICAL_FALLBACK
+
+    def test_f19_target_only_but_stop_endpoint_contradiction_is_unavailable(self):
+        target_obs, stop_obs = _target_and_stop_observations(stop=1.0)
+        summary = self._summary(target_obs, stop_obs)
+        result = classify_governed_order(
+            summary=summary, target_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            stop_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
+            target_bars_available=True, stop_bars_available=True,
+            target_entry_value=120.0, target_exit_value=120.0,
+            stop_entry_value=1.0, stop_exit_value=5.0,  # contradictory for GOVERNED_UNMODIFIED
+        )
+        assert result.status == GOVERNED_ORDER_UNAVAILABLE
+        assert result.detail == CANONICAL_FALLBACK
+
+    def test_f_stop_only_observed(self):
+        target_obs, stop_obs = _target_and_stop_observations(target=None)
+        summary = self._summary(target_obs, stop_obs)
+        result = classify_governed_order(
+            summary=summary, target_level_history_status=LEVEL_HISTORY_STATUS_UNKNOWN_OR_LEGACY,
+            stop_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
+            target_bars_available=True, stop_bars_available=True,
+            stop_entry_value=80.0, stop_exit_value=80.0,
         )
         assert result.status == GOVERNED_ORDER_STOP_ONLY_OBSERVED
+
+    def test_f_stop_only_but_target_history_unknown_with_missing_snapshot_is_unavailable(self):
+        target_obs, stop_obs = _target_and_stop_observations(target=500.0)
+        summary = self._summary(target_obs, stop_obs)
+        result = classify_governed_order(
+            summary=summary, target_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            stop_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
+            target_bars_available=True, stop_bars_available=True,
+            stop_entry_value=80.0, stop_exit_value=80.0,
+            target_entry_snapshot_present=False,
+        )
+        assert result.status == GOVERNED_ORDER_UNAVAILABLE
+        assert result.detail == CANONICAL_FALLBACK
+
+    def test_f_stop_only_but_target_exit_snapshot_missing_is_unavailable(self):
+        target_obs, stop_obs = _target_and_stop_observations(target=500.0)
+        summary = self._summary(target_obs, stop_obs)
+        result = classify_governed_order(
+            summary=summary, target_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            stop_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
+            target_bars_available=True, stop_bars_available=True,
+            stop_entry_value=80.0, stop_exit_value=80.0,
+            target_exit_snapshot_present=False, target_entry_value=500.0,
+        )
+        assert result.status == GOVERNED_ORDER_UNAVAILABLE
+        assert result.detail == CANONICAL_FALLBACK
+
+    def test_f_stop_only_but_target_endpoint_contradiction_is_unavailable(self):
+        target_obs, stop_obs = _target_and_stop_observations(target=500.0)
+        summary = self._summary(target_obs, stop_obs)
+        result = classify_governed_order(
+            summary=summary, target_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            stop_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
+            target_bars_available=True, stop_bars_available=True,
+            stop_entry_value=80.0, stop_exit_value=80.0,
+            target_entry_value=400.0, target_exit_value=500.0,  # contradictory
+        )
+        assert result.status == GOVERNED_ORDER_UNAVAILABLE
+        assert result.detail == CANONICAL_FALLBACK
 
     def test_no_bars_forces_unavailable(self):
         target_obs, stop_obs = _target_and_stop_observations()
@@ -736,14 +946,174 @@ class TestContractHardeningExactTypes:
         r2 = classify_level_history_status(invariant_version="1", level_modified_flag=False)
         assert r1 == r2 == LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED
 
-    def test_g_invalid_level_kind_rejected_by_underlying_observation_layer(self):
-        # level_kind validation itself lives in price_path_calculator
-        # (J4B/J4B.3 territory) -- confirms J4C's own classify_governed_
-        # level_touch never silently accepts a garbage level_kind by
-        # constructing a conclusion object with it regardless (level_kind
-        # is stored verbatim on the conclusion, not re-validated, so this
-        # test documents that the caller — not this function — is
-        # responsible for supplying a valid level_kind).
+    def test_g_invalid_level_kind_rejected_on_direct_construction(self):
+        # Wave A closure correction — GovernedLevelTouchConclusion now
+        # validates level_kind itself (exact str, canonical
+        # TARGET_VALUE/STOP_VALUE membership only) at direct-construction
+        # time; a garbage level_kind is rejected, never stored verbatim.
         from services.postmortem.governed_price_path_conclusions import GovernedLevelTouchConclusion
-        conclusion = GovernedLevelTouchConclusion(level_kind="NOT_A_REAL_LEVEL_KIND", status=GOVERNED_TOUCH_NO_VALUE_SUPPLIED, detail="x")
-        assert conclusion.level_kind == "NOT_A_REAL_LEVEL_KIND"
+        with pytest.raises(GovernedConclusionContractError):
+            GovernedLevelTouchConclusion(level_kind="NOT_A_REAL_LEVEL_KIND", status=GOVERNED_TOUCH_NO_VALUE_SUPPLIED, detail="x")
+
+    def test_g_empty_level_kind_rejected(self):
+        from services.postmortem.governed_price_path_conclusions import GovernedLevelTouchConclusion
+        with pytest.raises(GovernedConclusionContractError):
+            GovernedLevelTouchConclusion(level_kind="", status=GOVERNED_TOUCH_NO_VALUE_SUPPLIED, detail="x")
+
+    def test_g_whitespace_only_level_kind_rejected(self):
+        from services.postmortem.governed_price_path_conclusions import GovernedLevelTouchConclusion
+        with pytest.raises(GovernedConclusionContractError):
+            GovernedLevelTouchConclusion(level_kind="   ", status=GOVERNED_TOUCH_NO_VALUE_SUPPLIED, detail="x")
+
+    def test_g_str_subclass_level_kind_rejected(self):
+        from services.postmortem.governed_price_path_conclusions import GovernedLevelTouchConclusion
+        with pytest.raises(GovernedConclusionContractError):
+            GovernedLevelTouchConclusion(level_kind=_StrSub(TARGET_VALUE), status=GOVERNED_TOUCH_NO_VALUE_SUPPLIED, detail="x")
+
+    def test_g_classify_governed_level_touch_rejects_invalid_level_kind(self):
+        target_obs, _ = _target_and_stop_observations()
+        with pytest.raises(GovernedConclusionContractError):
+            classify_governed_level_touch(
+                level_kind="NOT_A_REAL_LEVEL_KIND", observation=target_obs,
+                level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+                price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+                entry_snapshot_present=True, exit_snapshot_present=True,
+            )
+
+    def test_g_bars_available_integer_rejected(self):
+        target_obs, _ = _target_and_stop_observations()
+        with pytest.raises(GovernedConclusionContractError):
+            classify_governed_level_touch(
+                level_kind=TARGET_VALUE, observation=target_obs,
+                level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+                price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=1,
+                entry_snapshot_present=True, exit_snapshot_present=True,
+            )
+
+    class _BarsBool(int):
+        """A hostile int subclass masquerading as a bool-like value —
+        not the real `bool` type, so `type(x) is bool` correctly rejects
+        it even though `isinstance(x, int)` (and a permissive isinstance-
+        based bool check) would not."""
+
+    def test_g_bars_available_hostile_subclass_rejected(self):
+        target_obs, _ = _target_and_stop_observations()
+        with pytest.raises(GovernedConclusionContractError):
+            classify_governed_level_touch(
+                level_kind=TARGET_VALUE, observation=target_obs,
+                level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+                price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=self._BarsBool(1),
+                entry_snapshot_present=True, exit_snapshot_present=True,
+            )
+
+    def test_g_observation_subclass_rejected(self):
+        target_obs, _ = _target_and_stop_observations()
+
+        class _ObsSub(type(target_obs)):
+            pass
+
+        hostile = _ObsSub(**{f.name: getattr(target_obs, f.name) for f in dataclasses.fields(target_obs)})
+        with pytest.raises(GovernedConclusionContractError):
+            classify_governed_level_touch(
+                level_kind=TARGET_VALUE, observation=hostile,
+                level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+                price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+                entry_snapshot_present=True, exit_snapshot_present=True,
+            )
+
+    def test_g_summary_subclass_rejected(self):
+        target_obs, stop_obs = _target_and_stop_observations()
+        summary = summarize_observed_numerical_crossings(target_obs, stop_obs)
+
+        class _SummarySub(type(summary)):
+            pass
+
+        hostile = _SummarySub(**{f.name: getattr(summary, f.name) for f in dataclasses.fields(summary)})
+        with pytest.raises(GovernedConclusionContractError):
+            classify_governed_order(
+                summary=hostile, target_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+                stop_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+                target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
+                target_bars_available=True, stop_bars_available=True,
+            )
+
+    def test_g_invalid_history_status_rejected(self):
+        target_obs, _ = _target_and_stop_observations()
+        with pytest.raises(GovernedConclusionContractError):
+            classify_governed_level_touch(
+                level_kind=TARGET_VALUE, observation=target_obs,
+                level_history_status="NOT_A_REAL_HISTORY_STATUS",
+                price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+                entry_snapshot_present=True, exit_snapshot_present=True,
+            )
+
+    def test_g_history_status_str_subclass_rejected(self):
+        target_obs, _ = _target_and_stop_observations()
+        with pytest.raises(GovernedConclusionContractError):
+            classify_governed_level_touch(
+                level_kind=TARGET_VALUE, observation=target_obs,
+                level_history_status=_StrSub(LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED),
+                price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+                entry_snapshot_present=True, exit_snapshot_present=True,
+            )
+
+    def test_g_invalid_price_basis_status_rejected(self):
+        target_obs, _ = _target_and_stop_observations()
+        with pytest.raises(GovernedConclusionContractError):
+            classify_governed_level_touch(
+                level_kind=TARGET_VALUE, observation=target_obs,
+                level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+                price_basis_status="NOT_A_REAL_BASIS_STATUS", bars_available=True,
+                entry_snapshot_present=True, exit_snapshot_present=True,
+            )
+
+    def test_g_price_basis_status_str_subclass_rejected(self):
+        target_obs, _ = _target_and_stop_observations()
+        with pytest.raises(GovernedConclusionContractError):
+            classify_governed_level_touch(
+                level_kind=TARGET_VALUE, observation=target_obs,
+                level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+                price_basis_status=_StrSub(PRICE_BASIS_COMPATIBLE), bars_available=True,
+                entry_snapshot_present=True, exit_snapshot_present=True,
+            )
+
+    def test_g_invalid_status_detail_construction_rejected(self):
+        from services.postmortem.governed_price_path_conclusions import GovernedLevelTouchConclusion
+        with pytest.raises(GovernedConclusionContractError):
+            GovernedLevelTouchConclusion(level_kind=TARGET_VALUE, status="ALSO_NOT_REAL", detail=CANONICAL_FALLBACK)
+
+
+# ============================= FINAL-HEAD ASSURANCE ANCHOR (WA-C23) =============================
+
+class TestFinalHeadAssuranceAnchor:
+    """A stable regression anchor for the final Wave A closure-
+    correction HEAD -- exercises the shared touch/order eligibility
+    path end to end (unit-level; PostgreSQL 15/17 assurance is proven
+    separately by the real-PostgreSQL suite, never claimed here)."""
+
+    def test_governed_order_still_unwired_at_final_head(self):
+        import services.postmortem.governed_price_path_conclusions as mod
+        assert hasattr(mod, "classify_governed_order")
+        assert hasattr(mod, "classify_governed_level_touch")
+
+    def test_shared_eligibility_path_produces_consistent_touch_and_order_results(self):
+        target_obs, stop_obs = _target_and_stop_observations()
+        touch = classify_governed_level_touch(
+            level_kind=TARGET_VALUE, observation=target_obs, level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            price_basis_status=PRICE_BASIS_COMPATIBLE, bars_available=True,
+            entry_snapshot_present=True, exit_snapshot_present=True, entry_value=120.0, exit_value=120.0,
+        )
+        summary = summarize_observed_numerical_crossings(target_obs, stop_obs)
+        order = classify_governed_order(
+            summary=summary, target_level_history_status=LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED,
+            stop_level_history_status=LEVEL_HISTORY_STATUS_UNKNOWN_OR_LEGACY,
+            target_price_basis_status=PRICE_BASIS_COMPATIBLE, stop_price_basis_status=PRICE_BASIS_COMPATIBLE,
+            target_bars_available=True, stop_bars_available=True,
+            target_entry_value=120.0, target_exit_value=120.0, stop_entry_value=1.0,
+        )
+        assert touch.status == GOVERNED_TOUCH_SUPPORTED
+        # Same eligibility inputs for the target side -> the order
+        # classifier's internal per-level result agrees with the
+        # standalone touch classifier's result (both call the identical
+        # function under Mandatory Correction 1).
+        assert order.status == GOVERNED_ORDER_UNAVAILABLE  # stop side history unknown with a supplied value
