@@ -40,8 +40,14 @@
     {"id": "WB-J4E-03", "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_03_governed_price_path_rules_version_constant_exists", "batch": "A", "status": "RED"},
     {"id": "WB-J4E-04", "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_04_governed_claim_rules_version_constant_exists", "batch": "A", "status": "RED"},
     {"id": "WB-J4E-05", "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_05_governed_calculation_version_format", "batch": "A", "status": "RED"},
-    {"id": "WB-J4E-06", "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_06_governed_claims_module_does_not_import_legacy_touch_authority", "batch": "A", "status": "RED"}
+    {"id": "WB-J4E-06", "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_06_governed_claims_module_does_not_import_legacy_touch_authority", "batch": "A", "status": "RED"},
+    {"id": "WB-J4E-07", "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_07_build_governed_price_path_payload_exists", "batch": "B", "status": "RED"},
+    {"id": "WB-J4E-08", "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_08_no_bundle_produces_no_bars_not_fabricated_touch", "batch": "B", "status": "RED"},
+    {"id": "WB-J4E-09", "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_09_payload_reads_snapshot_governed_fields_not_mutable_row", "batch": "B", "status": "RED"},
+    {"id": "WB-J4E-10", "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_10_legacy_no_snapshot_never_fabricates_governed_false", "batch": "B", "status": "RED"},
+    {"id": "WB-J4E-11", "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_11_structured_report_has_four_required_subsections", "batch": "B", "status": "RED"},
+    {"id": "WB-J4E-12", "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_12_version_and_provenance_carries_exact_triple", "batch": "B", "status": "RED"}
   ],
   "j4f_requirements": [],
-  "status": "BATCH_A_RED — 6 of 18 WB-J4E IDs + 0 of 20 WB-J4F IDs have runnable red nodes; remaining batches (B-J) pending in subsequent execution turns"
+  "status": "BATCH_B_RED — 12 of 18 WB-J4E IDs + 0 of 20 WB-J4F IDs have runnable red nodes; remaining batches (C-J) pending in subsequent execution turns"
 }
