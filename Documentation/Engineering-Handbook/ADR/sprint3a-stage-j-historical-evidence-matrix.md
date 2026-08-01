@@ -2468,3 +2468,67 @@ not reopened.
 Still not complete Stage J; still no report/claim/API/frontend wiring;
 still no Wave B report-version bump; still does not begin Wave B or
 Wave C.
+
+---
+
+## Wave A — final single-source per-level eligibility correction (3rd pass)
+
+**IMPLEMENTED, UNIT-TESTED, NOT REPORT-WIRED.** A single, narrowly
+bounded correction to `governed_price_path_conclusions.py` — no other
+production file touched.
+
+### The contradiction
+
+Independent review found that, despite the 2nd pass's own docstring
+claim of "exactly one source of truth," `classify_governed_level_
+touch` still returned `GOVERNED_TOUCH_NO_COMPATIBLE_CROSSING` for
+**any** level-history status once `crossed_anywhere` was false — the
+`GOVERNED_UNMODIFIED` gate only guarded the `SUPPORTED` branch, not the
+no-crossing branch. `classify_governed_order` then compensated by
+passing the raw `level_history_status` into `_side_is_definitive_
+negative(touch, side_level_history_status)` *after* the per-level
+conclusion already existed — a second, independently-implemented
+eligibility check occupying the same role the conclusion's own status
+was supposed to occupy alone. Confirmed by the pre-existing `test_e_no_
+compatible_crossing`, which explicitly asserted `LEVEL_HISTORY_STATUS_
+UNKNOWN_OR_LEGACY` + no crossing produced `NO_COMPATIBLE_CROSSING`.
+
+### The correction
+
+`GOVERNED_TOUCH_NO_COMPATIBLE_CROSSING` is now itself the definitive-
+negative signal: `classify_governed_level_touch` only returns it when
+`level_history_status == LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED`.
+Every other valid history state (unknown/legacy, modified-after-entry,
+contradictory) with no crossing now returns `GOVERNED_TOUCH_
+INSUFFICIENT_EVIDENCE` with the exact canonical fallback sentence.
+`GOVERNED_TOUCH_NO_VALUE_SUPPLIED` remains independent of history —
+nothing was ever configured for that side, so there is no historical
+validity in question at all.
+
+`_side_is_definitive_negative`/`_side_is_trustworthy` in `classify_
+governed_order` now accept exactly one parameter — the `GovernedLevel
+TouchConclusion` itself — proven by a dedicated `inspect.signature`
+test. No raw level-history, endpoint, basis, snapshot, or bars-
+available input is consulted after the two per-level conclusions
+(`target_touch`, `stop_touch`) are built; every order conclusion
+(target-only, stop-only, same-bar, neither-observed, and the two
+ordered patterns) is decided from those two conclusions' status values
+alone.
+
+### Traceability
+
+`WA-C21` corrected to describe the conclusion-only design accurately.
+Adds `WA-C24` (no-crossing requires governed-unmodified history) and
+`WA-C25` (order uses conclusion-only eligibility) — 50 requirement IDs
+total, 0 duplicates, 0 static errors, 0 combined runtime errors against
+the complete non-PostgreSQL suite plus PostgreSQL 15 and 17.
+
+### No regression outside this one function's semantics
+
+Confirmed unchanged: `paper_trading.py`, `postgres_store.py`, `entry_
+snapshot.py`, `exit_snapshot.py`, `close_service.py`, `price_path_
+generation.py`, `price_path_claims.py`, `price_path_identity.py`,
+`report_store.py`, `outbox.py`, every frontend and workflow file — zero
+diff against the prior-pass HEAD. Version constants unchanged. Still no
+report/claim/API/frontend wiring; still no PR, merge, deployment, or
+feature-flag activation; still does not begin Wave B.
