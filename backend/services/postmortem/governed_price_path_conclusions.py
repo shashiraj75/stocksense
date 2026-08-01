@@ -21,6 +21,25 @@ GovernedLevelTouchConclusion classify_governed_level_touch itself
 produces for each side. There is exactly one source of truth for
 "is this level's evidence trustworthy enough to say anything at all."
 
+Wave A closure correction (3rd pass) — the 2nd pass's own single-
+source claim was not yet fully honest: GOVERNED_TOUCH_NO_COMPATIBLE_
+CROSSING could still be produced under ANY level-history status (the
+crossed-anywhere check ran unconditionally, before the GOVERNED_
+UNMODIFIED gate that only guarded SUPPORTED), and the order classifier
+then reinterpreted the raw level_history_status a second time via
+`_side_is_definitive_negative(touch, side_level_history_status)` to
+decide whether that NO_COMPATIBLE_CROSSING was actually trustworthy —
+a second eligibility path in every practical sense, even though it
+never produced a different STATUS value. Corrected: NO_COMPATIBLE_
+CROSSING is now itself the definitive-negative signal — classify_
+governed_level_touch only returns it when the level history is
+GOVERNED_UNMODIFIED; any other history state with no crossing returns
+GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE instead. `_side_is_definitive_
+negative`/`_side_is_trustworthy` now take ONLY a GovernedLevelTouch
+Conclusion — no raw level-history, endpoint, basis, snapshot, or
+bars-available input — so the order classifier truly cannot
+reinterpret anything after the two per-level conclusions are built.
+
 Pure, deterministic, no I/O. Produces no free-text reasoning as a
 source of truth — every conclusion is a stable enum value; `detail` is
 descriptive only and, for every fallback conclusion, is set to exactly
@@ -167,6 +186,29 @@ class GovernedLevelTouchConclusion:
         return self.status == GOVERNED_TOUCH_SUPPORTED
 
 
+# Mandatory Correction 2 (single-source eligibility) — a per-level
+# DEFINITIVE NEGATIVE is derivable entirely from the touch conclusion's
+# own status; no raw level-history, endpoint, basis, snapshot, or
+# bars-available input is consulted here. This is safe ONLY because
+# classify_governed_level_touch (Mandatory Correction 1, above) already
+# guarantees GOVERNED_TOUCH_NO_COMPATIBLE_CROSSING is never returned
+# unless the level history was GOVERNED_UNMODIFIED and every other
+# eligibility check already passed — by the time a conclusion exists,
+# its status alone fully encodes that fact. GOVERNED_TOUCH_NO_VALUE_
+# SUPPLIED is a definitive negative unconditionally (nothing was ever
+# configured for that side, so there is no historical validity in
+# question at all). No other touch status — including NO_COMPATIBLE_
+# CROSSING under unknown/legacy/modified/contradictory history, which
+# now itself resolves to GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE — is ever
+# a definitive negative.
+def _side_is_definitive_negative(touch: GovernedLevelTouchConclusion) -> bool:
+    return touch.status in (GOVERNED_TOUCH_NO_VALUE_SUPPLIED, GOVERNED_TOUCH_NO_COMPATIBLE_CROSSING)
+
+
+def _side_is_trustworthy(touch: GovernedLevelTouchConclusion) -> bool:
+    return touch.is_supported or _side_is_definitive_negative(touch)
+
+
 def _endpoint_consistency_status(
     *, level_history_status: str, endpoint_status: str, observed_value: float | None, entry_value, exit_value,
 ):
@@ -256,10 +298,24 @@ def classify_governed_level_touch(
         return GovernedLevelTouchConclusion(level_kind=level_kind, status=endpoint_fallback, detail=CANONICAL_FALLBACK)
 
     if not observation.crossed_anywhere:
-        return GovernedLevelTouchConclusion(
-            level_kind=level_kind, status=GOVERNED_TOUCH_NO_COMPATIBLE_CROSSING,
-            detail="no compatible crossing of the supplied value was observed in the acquired evidence window",
-        )
+        # Mandatory Correction 1 (single-source eligibility) —
+        # NO_COMPATIBLE_CROSSING is a DEFINITIVE governed negative: it
+        # asserts the checked value was the level's one true value for
+        # the whole evidence window and it genuinely never crossed. That
+        # assertion is only honest when the level history is reliably
+        # GOVERNED_UNMODIFIED. Under any other valid history state
+        # (unknown/legacy, modified-after-entry without temporal proof,
+        # or contradictory/required-evidence-missing) the level's true
+        # value for that window is not established, so a non-crossing
+        # observation of THIS supplied value proves nothing — fall back
+        # instead of fabricating a negative claim.
+        if level_history_status == LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED:
+            return GovernedLevelTouchConclusion(
+                level_kind=level_kind, status=GOVERNED_TOUCH_NO_COMPATIBLE_CROSSING,
+                detail="no compatible crossing of the supplied value was observed in the acquired evidence window, "
+                       "for a level reliably unmodified since entry",
+            )
+        return GovernedLevelTouchConclusion(level_kind=level_kind, status=GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE, detail=CANONICAL_FALLBACK)
 
     if level_history_status == LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED and observation.first_safely_attributable_session is not None:
         return GovernedLevelTouchConclusion(
@@ -317,12 +373,15 @@ def classify_governed_order(
 ) -> GovernedOrderConclusion:
     """Mandatory Correction 1/2 — derives a GovernedLevelTouchConclusion
     for EACH side via classify_governed_level_touch (the exact same
-    function used standalone for a single-level touch conclusion), and
-    requires BOTH per-level conclusions to be SUPPORTED before returning
-    ANY non-ORDER_UNAVAILABLE status — not only the two ordered
-    (target-before-stop/stop-before-target) patterns, but also the
-    single-sided (target-only/stop-only), same-bar, and neither-observed
-    conclusions."""
+    function used standalone for a single-level touch conclusion), then
+    consults ONLY those two conclusions' own status values (never the
+    raw level_history_status/endpoint/basis/bars-available inputs again)
+    to decide every governed order conclusion: the two ordered
+    (target-before-stop/stop-before-target) and same-bar patterns
+    require BOTH per-level conclusions SUPPORTED; the single-sided
+    (target-only/stop-only) and neither-observed patterns require the
+    relevant side(s) SUPPORTED and/or the other side(s) a definitive
+    negative, per _side_is_trustworthy/_side_is_definitive_negative."""
     if type(summary) is not ObservedNumericalCrossingSummary:
         raise GovernedConclusionContractError(INVALID_GOVERNED_INPUT, "summary must be exactly an ObservedNumericalCrossingSummary")
     if type(target_bars_available) is not bool or type(stop_bars_available) is not bool:
@@ -350,39 +409,13 @@ def classify_governed_order(
         entry_value=stop_entry_value, exit_value=stop_exit_value,
     )
 
-    # A side whose touch conclusion legitimately means "nothing to
-    # report" is a DEFINITIVE NEGATIVE only in two cases:
-    #   - NO_VALUE_SUPPLIED: nothing was ever configured for this side at
-    #     all — governance-independent, since there is no value whose
-    #     historical validity could even be in question.
-    #   - NO_COMPATIBLE_CROSSING *under a GOVERNED_UNMODIFIED level
-    #     history*: the supplied value is reliably known to be the value
-    #     held by that level for the entire window, and it genuinely
-    #     never crossed.
-    # NO_COMPATIBLE_CROSSING under an unknown/legacy/modified/
-    # contradictory history is NOT a trustworthy negative — a level that
-    # might have held a different value at some point cannot be
-    # confidently said to have "never been hit" just because the CURRENT
-    # supplied value didn't cross; any other touch status (a fallback)
-    # is never trustworthy either way.
-    def _side_is_definitive_negative(touch: GovernedLevelTouchConclusion, side_level_history_status: str) -> bool:
-        if touch.status == GOVERNED_TOUCH_NO_VALUE_SUPPLIED:
-            return True
-        if touch.status == GOVERNED_TOUCH_NO_COMPATIBLE_CROSSING:
-            return side_level_history_status == LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED
-        return False
-
-    def _side_is_trustworthy(touch: GovernedLevelTouchConclusion, side_level_history_status: str) -> bool:
-        return touch.is_supported or _side_is_definitive_negative(touch, side_level_history_status)
-
     pattern = summary.safely_attributable_pattern
 
     if pattern == SAFE_PATTERN_NO_NUMERICAL_VALUES_SUPPLIED:
         # Correction 2E — a definitive NEITHER_OBSERVED still requires
         # complete, noncontradictory evidence for both sides (here, that
         # simply means neither side raised a genuine evidence gap).
-        if not (_side_is_trustworthy(target_touch, target_level_history_status)
-                and _side_is_trustworthy(stop_touch, stop_level_history_status)):
+        if not (_side_is_trustworthy(target_touch) and _side_is_trustworthy(stop_touch)):
             return GovernedOrderConclusion(status=GOVERNED_ORDER_UNAVAILABLE, detail=CANONICAL_FALLBACK)
         return GovernedOrderConclusion(status=GOVERNED_ORDER_NEITHER_OBSERVED, detail="no numerical level value was supplied for either factor")
 
@@ -392,25 +425,23 @@ def classify_governed_order(
             # observation, but it must never become a definitive order
             # (Gate 1I "partial-boundary evidence", Correction 2F).
             return GovernedOrderConclusion(status=GOVERNED_ORDER_UNAVAILABLE, detail=CANONICAL_FALLBACK)
-        if not (_side_is_trustworthy(target_touch, target_level_history_status)
-                and _side_is_trustworthy(stop_touch, stop_level_history_status)):
+        if not (_side_is_trustworthy(target_touch) and _side_is_trustworthy(stop_touch)):
             return GovernedOrderConclusion(status=GOVERNED_ORDER_UNAVAILABLE, detail=CANONICAL_FALLBACK)
         return GovernedOrderConclusion(status=GOVERNED_ORDER_NEITHER_OBSERVED, detail="no compatible crossing of either supplied value was safely observed")
 
     if pattern == SAFE_PATTERN_TARGET_VALUE_ONLY_SAFELY_ATTRIBUTABLE:
         # Correction 2A — TARGET_ONLY requires the target side to be a
         # SUPPORTED governed touch, and the stop side to be a definitive
-        # negative (no value supplied, or no crossing under a GOVERNED_
-        # UNMODIFIED history) — never an unknown/legacy/modified/
-        # missing-snapshot/malformed/contradictory/basis-incompatible
-        # stop side.
-        if target_touch.is_supported and _side_is_definitive_negative(stop_touch, stop_level_history_status):
+        # negative per its own conclusion status alone — never an
+        # unknown/legacy/modified/missing-snapshot/malformed/
+        # contradictory/basis-incompatible stop side.
+        if target_touch.is_supported and _side_is_definitive_negative(stop_touch):
             return GovernedOrderConclusion(status=GOVERNED_ORDER_TARGET_ONLY_OBSERVED, detail="only the target value was safely observed to cross")
         return GovernedOrderConclusion(status=GOVERNED_ORDER_UNAVAILABLE, detail=CANONICAL_FALLBACK)
 
     if pattern == SAFE_PATTERN_STOP_VALUE_ONLY_SAFELY_ATTRIBUTABLE:
         # Correction 2B — exact symmetric rule.
-        if stop_touch.is_supported and _side_is_definitive_negative(target_touch, target_level_history_status):
+        if stop_touch.is_supported and _side_is_definitive_negative(target_touch):
             return GovernedOrderConclusion(status=GOVERNED_ORDER_STOP_ONLY_OBSERVED, detail="only the stop value was safely observed to cross")
         return GovernedOrderConclusion(status=GOVERNED_ORDER_UNAVAILABLE, detail=CANONICAL_FALLBACK)
 
