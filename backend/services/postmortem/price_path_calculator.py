@@ -24,7 +24,7 @@ in-trade portion of that session.
 
 import math
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 
 from services.postmortem.price_path_evidence import PricePathBar, PricePathEvidenceBundle
 from services.postmortem.price_path_identity import CALCULATION_RULES_VERSION as RULES_VERSION
@@ -302,3 +302,347 @@ def classify_touch_order(
     if target_touch.first_observed_bar.session_date < stop_touch.first_observed_bar.session_date:
         return TARGET_BEFORE_STOP
     return STOP_BEFORE_TARGET
+
+
+# ============================================================================
+# Stage J4B — Observed numerical-crossing and session-attribution core.
+#
+# IMPLEMENTED, UNIT-TESTED, NOT REPORT-WIRED, NOT PERSISTED, NOT
+# ENDPOINT-VERIFIED. Purely additive: nothing above this line is
+# changed, and price_path_generation.py / price_path_claims.py /
+# paper_trading.py do not import or call anything below this line in
+# this phase — TouchResult, detect_touches, classify_touch_order,
+# build_touch_order_claim, and every persisted report/claim/evidence-item
+# shape remain byte-for-byte unchanged.
+#
+# This section describes ONLY what immutable daily OHLC bars prove about
+# two SUPPLIED numerical values — it deliberately never calls them
+# "stop"/"target LEVELS" being ACTIVE, and never claims a value was
+# touched, triggered, achieved, or that the trade should have closed.
+# Whether a supplied numerical value was the genuinely active configured
+# stop/target throughout the holding period is a separate, later
+# (J4C/J4D) governed conclusion this module does not make — see the
+# Stage J ADR's J4A/J4A.1/J4B sections for the full layering rationale
+# and the still-unresolved level-history write-invariant constraints.
+# ============================================================================
+
+# --- Session attribution (Stage J4B, Stage 3) ---
+SESSION_ATTRIBUTION_INTERIOR = "INTERIOR"
+SESSION_ATTRIBUTION_ENTRY_INCLUDED_FULL = "ENTRY_INCLUDED_FULL"
+SESSION_ATTRIBUTION_EXIT_INCLUDED_FULL = "EXIT_INCLUDED_FULL"
+SESSION_ATTRIBUTION_SAME_DAY_INCLUDED_FULL = "SAME_DAY_INCLUDED_FULL"
+SESSION_ATTRIBUTION_ENTRY_PARTIAL_UNKNOWN = "ENTRY_PARTIAL_UNKNOWN"
+SESSION_ATTRIBUTION_EXIT_PARTIAL_UNKNOWN = "EXIT_PARTIAL_UNKNOWN"
+SESSION_ATTRIBUTION_SAME_DAY_PARTIAL_UNKNOWN = "SAME_DAY_PARTIAL_UNKNOWN"
+
+_SAFELY_ATTRIBUTABLE_SESSION_ATTRIBUTIONS = frozenset({
+    SESSION_ATTRIBUTION_INTERIOR,
+    SESSION_ATTRIBUTION_ENTRY_INCLUDED_FULL,
+    SESSION_ATTRIBUTION_EXIT_INCLUDED_FULL,
+    SESSION_ATTRIBUTION_SAME_DAY_INCLUDED_FULL,
+})
+
+_ENTRY_BAR_POLICY_INCLUDED_FULL = "ENTRY_BAR_INCLUDED_FULL"
+_ENTRY_BAR_POLICY_PARTIAL_UNKNOWN = "ENTRY_BAR_PARTIAL_UNKNOWN"
+_EXIT_BAR_POLICY_INCLUDED_FULL = "EXIT_BAR_INCLUDED_FULL"
+_EXIT_BAR_POLICY_PARTIAL_UNKNOWN = "EXIT_BAR_PARTIAL_UNKNOWN"
+
+
+class SessionAttributionError(ValueError):
+    """Raised when a bar's session_date falls outside the requested
+    window, or maps to an entry/exit boundary-policy value this function
+    does not recognize — fails closed rather than silently treating an
+    unrecognized policy as interior (safely-attributable) evidence."""
+
+
+def classify_bar_session_attribution(bundle: PricePathEvidenceBundle, bar: PricePathBar) -> str:
+    """Stage J4B, Stage 3 — pure classification of a single bar's
+    session_date against ONLY bundle.requested_window_start/end and
+    bundle.entry_bar_policy/exit_bar_policy. Never consults bars[0],
+    bars[-1], observed_window_start/end, or raw array position — those
+    are acquisition-time/array artifacts, not the governed boundary-
+    policy facts this function is required to use (Stage J4A finding #2,
+    the exact defect this function corrects for the crossing-observation
+    layer without touching detect_touches's own, still-unchanged,
+    array-position behavior)."""
+    entry_date = bundle.requested_window_start
+    exit_date = bundle.requested_window_end
+    session_date = bar.session_date
+
+    if entry_date == exit_date:
+        if session_date != entry_date:
+            raise SessionAttributionError(
+                f"bar session_date {session_date} is outside the single-day requested window {entry_date}"
+            )
+        entry_policy = bundle.entry_bar_policy
+        exit_policy = bundle.exit_bar_policy
+        if entry_policy == _ENTRY_BAR_POLICY_INCLUDED_FULL and exit_policy == _EXIT_BAR_POLICY_INCLUDED_FULL:
+            return SESSION_ATTRIBUTION_SAME_DAY_INCLUDED_FULL
+        if entry_policy == _ENTRY_BAR_POLICY_PARTIAL_UNKNOWN or exit_policy == _EXIT_BAR_POLICY_PARTIAL_UNKNOWN:
+            return SESSION_ATTRIBUTION_SAME_DAY_PARTIAL_UNKNOWN
+        raise SessionAttributionError(
+            f"unrecognized same-day boundary-policy combination: entry={entry_policy!r} exit={exit_policy!r}"
+        )
+
+    if entry_date < session_date < exit_date:
+        return SESSION_ATTRIBUTION_INTERIOR
+
+    if session_date == entry_date:
+        if bundle.entry_bar_policy == _ENTRY_BAR_POLICY_INCLUDED_FULL:
+            return SESSION_ATTRIBUTION_ENTRY_INCLUDED_FULL
+        if bundle.entry_bar_policy == _ENTRY_BAR_POLICY_PARTIAL_UNKNOWN:
+            return SESSION_ATTRIBUTION_ENTRY_PARTIAL_UNKNOWN
+        raise SessionAttributionError(f"unrecognized entry_bar_policy {bundle.entry_bar_policy!r}")
+
+    if session_date == exit_date:
+        if bundle.exit_bar_policy == _EXIT_BAR_POLICY_INCLUDED_FULL:
+            return SESSION_ATTRIBUTION_EXIT_INCLUDED_FULL
+        if bundle.exit_bar_policy == _EXIT_BAR_POLICY_PARTIAL_UNKNOWN:
+            return SESSION_ATTRIBUTION_EXIT_PARTIAL_UNKNOWN
+        raise SessionAttributionError(f"unrecognized exit_bar_policy {bundle.exit_bar_policy!r}")
+
+    raise SessionAttributionError(
+        f"bar session_date {session_date} is outside the requested window [{entry_date}, {exit_date}]"
+    )
+
+
+def is_safely_attributable_session(session_attribution: str) -> bool:
+    """INTERIOR and any INCLUDED_FULL (entry, exit, or same-day) session
+    attribution is safely attributable to the holding period; any
+    PARTIAL_UNKNOWN attribution is observed but never safely
+    attributable."""
+    return session_attribution in _SAFELY_ATTRIBUTABLE_SESSION_ATTRIBUTIONS
+
+
+# --- Numerical crossing observation (Stage J4B, Stage 4) ---
+TARGET_VALUE = "TARGET_VALUE"
+STOP_VALUE = "STOP_VALUE"
+
+CROSSING_TYPE_NORMAL = "NORMAL"
+CROSSING_TYPE_GAP_THROUGH = "GAP_THROUGH"
+CROSSING_TYPE_NOT_OBSERVED = "NOT_OBSERVED"
+
+SUPPLIED_AT_CALCULATION = "SUPPLIED_AT_CALCULATION"
+
+
+@dataclass(frozen=True)
+class NumericalLevelCrossingObservation:
+    """Stage J4B, Stage 4 — describes ONLY what immutable daily OHLC
+    bars prove about a SUPPLIED numerical value. Never claims the
+    supplied value was an active configured stop/target level throughout
+    the holding period, that it was "touched" in the governed sense, or
+    that the trade should have closed — those are distinct, later
+    (J4C/J4D) governed conclusions this object does not make.
+
+    `first_observed_*` is the earliest crossing found anywhere in the
+    bundle, regardless of session attribution. `first_safely_
+    attributable_*` is the earliest crossing whose session attribution
+    is safely attributable (INTERIOR or any INCLUDED_FULL) — these two
+    may point at different bars, and BOTH are always retained (Stage
+    J4A finding #5): an earlier PARTIAL_UNKNOWN-bar crossing is never
+    discarded merely because a later safely-attributable bar also
+    crosses the same value."""
+
+    level_kind: str
+    supplied_level_value: float | None
+    supplied_value_basis: str
+    value_supplied: bool
+    crossed_anywhere: bool
+
+    first_observed_crossing_type: str
+    first_observed_session: date | None
+    first_observed_bar: PricePathBar | None
+    first_observed_evidence_id: str | None
+    first_observed_session_attribution: str | None
+
+    first_safely_attributable_crossing_type: str
+    first_safely_attributable_session: date | None
+    first_safely_attributable_bar: PricePathBar | None
+    first_safely_attributable_evidence_id: str | None
+    first_safely_attributable_session_attribution: str | None
+
+    partial_boundary_crossing_observed: bool
+
+
+def _no_value_observation(level_kind: str) -> NumericalLevelCrossingObservation:
+    return NumericalLevelCrossingObservation(
+        level_kind=level_kind, supplied_level_value=None, supplied_value_basis=SUPPLIED_AT_CALCULATION,
+        value_supplied=False, crossed_anywhere=False,
+        first_observed_crossing_type=CROSSING_TYPE_NOT_OBSERVED, first_observed_session=None,
+        first_observed_bar=None, first_observed_evidence_id=None, first_observed_session_attribution=None,
+        first_safely_attributable_crossing_type=CROSSING_TYPE_NOT_OBSERVED, first_safely_attributable_session=None,
+        first_safely_attributable_bar=None, first_safely_attributable_evidence_id=None,
+        first_safely_attributable_session_attribution=None,
+        partial_boundary_crossing_observed=False,
+    )
+
+
+def _crossing_evidence_id(paper_trade_id: int, session_date: date, level_kind: str) -> str:
+    """Deterministic — contains paper_trade_id, session_date, and level
+    kind, per Stage J4B, Stage 4's explicit requirement."""
+    return f"NUMERICAL-CROSSING-{paper_trade_id}-{session_date.isoformat()}-{level_kind}"
+
+
+def observe_numerical_level_crossing(
+    bundle: PricePathEvidenceBundle, supplied_level_value: float | None, level_kind: str,
+) -> NumericalLevelCrossingObservation:
+    """Stage J4B, Stage 5 — pure, no I/O: no provider call, no current
+    quote, no stock-universe lookup, no database or network access.
+    Scans bundle.bars in deterministic ascending session-date order.
+    Never accepts, reads, or is influenced by any level-history input —
+    this function's signature has no such parameter by construction."""
+    if level_kind not in (TARGET_VALUE, STOP_VALUE):
+        raise SessionAttributionError(f"unrecognized level_kind {level_kind!r}")
+
+    if supplied_level_value is None:
+        return _no_value_observation(level_kind)
+
+    ordered_bars = sorted(bundle.bars, key=lambda b: b.session_date)
+
+    first_observed = None
+    first_observed_type = CROSSING_TYPE_NOT_OBSERVED
+    first_observed_attribution = None
+    first_safe = None
+    first_safe_type = CROSSING_TYPE_NOT_OBSERVED
+    first_safe_attribution = None
+    partial_boundary_crossing_observed = False
+
+    for bar in ordered_bars:
+        if level_kind == TARGET_VALUE:
+            crossed = bar.high >= supplied_level_value
+            gapped = bar.open >= supplied_level_value
+        else:
+            crossed = bar.low <= supplied_level_value
+            gapped = bar.open <= supplied_level_value
+        if not crossed:
+            continue
+
+        attribution = classify_bar_session_attribution(bundle, bar)
+        crossing_type = CROSSING_TYPE_GAP_THROUGH if gapped else CROSSING_TYPE_NORMAL
+        safely_attributable = is_safely_attributable_session(attribution)
+
+        if first_observed is None:
+            first_observed = bar
+            first_observed_type = crossing_type
+            first_observed_attribution = attribution
+
+        if not safely_attributable:
+            partial_boundary_crossing_observed = True
+        elif first_safe is None:
+            first_safe = bar
+            first_safe_type = crossing_type
+            first_safe_attribution = attribution
+
+    return NumericalLevelCrossingObservation(
+        level_kind=level_kind, supplied_level_value=supplied_level_value, supplied_value_basis=SUPPLIED_AT_CALCULATION,
+        value_supplied=True, crossed_anywhere=first_observed is not None,
+        first_observed_crossing_type=first_observed_type,
+        first_observed_session=(first_observed.session_date if first_observed is not None else None),
+        first_observed_bar=first_observed,
+        first_observed_evidence_id=(
+            _crossing_evidence_id(bundle.paper_trade_id, first_observed.session_date, level_kind)
+            if first_observed is not None else None
+        ),
+        first_observed_session_attribution=first_observed_attribution,
+        first_safely_attributable_crossing_type=first_safe_type,
+        first_safely_attributable_session=(first_safe.session_date if first_safe is not None else None),
+        first_safely_attributable_bar=first_safe,
+        first_safely_attributable_evidence_id=(
+            _crossing_evidence_id(bundle.paper_trade_id, first_safe.session_date, level_kind)
+            if first_safe is not None else None
+        ),
+        first_safely_attributable_session_attribution=first_safe_attribution,
+        partial_boundary_crossing_observed=partial_boundary_crossing_observed,
+    )
+
+
+# --- Observed crossing summary (Stage J4B, Stage 6) ---
+PATTERN_NO_NUMERICAL_VALUES_SUPPLIED = "NO_NUMERICAL_VALUES_SUPPLIED"
+PATTERN_NEITHER_NUMERICAL_VALUE_CROSSED = "NEITHER_NUMERICAL_VALUE_CROSSED"
+PATTERN_TARGET_VALUE_ONLY_CROSSED = "TARGET_VALUE_ONLY_CROSSED"
+PATTERN_STOP_VALUE_ONLY_CROSSED = "STOP_VALUE_ONLY_CROSSED"
+PATTERN_BOTH_VALUES_SAME_BAR = "BOTH_VALUES_SAME_BAR"
+PATTERN_TARGET_VALUE_BAR_BEFORE_STOP_VALUE_BAR = "TARGET_VALUE_BAR_BEFORE_STOP_VALUE_BAR"
+PATTERN_STOP_VALUE_BAR_BEFORE_TARGET_VALUE_BAR = "STOP_VALUE_BAR_BEFORE_TARGET_VALUE_BAR"
+
+SAFE_PATTERN_NO_NUMERICAL_VALUES_SUPPLIED = "NO_NUMERICAL_VALUES_SUPPLIED"
+SAFE_PATTERN_NEITHER_SAFELY_ATTRIBUTABLE = "NEITHER_SAFELY_ATTRIBUTABLE"
+SAFE_PATTERN_TARGET_VALUE_ONLY_SAFELY_ATTRIBUTABLE = "TARGET_VALUE_ONLY_SAFELY_ATTRIBUTABLE"
+SAFE_PATTERN_STOP_VALUE_ONLY_SAFELY_ATTRIBUTABLE = "STOP_VALUE_ONLY_SAFELY_ATTRIBUTABLE"
+SAFE_PATTERN_BOTH_VALUES_SAME_SAFE_BAR = "BOTH_VALUES_SAME_SAFE_BAR"
+SAFE_PATTERN_TARGET_SAFE_BAR_BEFORE_STOP_SAFE_BAR = "TARGET_SAFE_BAR_BEFORE_STOP_SAFE_BAR"
+SAFE_PATTERN_STOP_SAFE_BAR_BEFORE_TARGET_SAFE_BAR = "STOP_SAFE_BAR_BEFORE_TARGET_SAFE_BAR"
+
+
+@dataclass(frozen=True)
+class ObservedNumericalCrossingSummary:
+    """Stage J4B, Stage 6 — derivable SOLELY from the two crossing
+    observations passed in; accepts no level-history input whatsoever.
+    Deliberately never uses NO_LEVELS_CONFIGURED, TARGET_ONLY,
+    STOP_ONLY, TARGET_BEFORE_STOP, or STOP_BEFORE_TARGET — those are
+    governed touch conclusions reserved for the later, level-history-
+    aware J4C/J4D phase, not bare observations about the bars alone."""
+
+    target_observation: NumericalLevelCrossingObservation
+    stop_observation: NumericalLevelCrossingObservation
+    any_observation_pattern: str
+    safely_attributable_pattern: str
+    partial_boundary_observation_present: bool
+
+
+def _classify_pattern(
+    target_hit: bool, stop_hit: bool, target_date: date | None, stop_date: date | None, *,
+    neither: str, target_only: str, stop_only: str, same_bar: str, target_before_stop: str, stop_before_target: str,
+) -> str:
+    if not target_hit and not stop_hit:
+        return neither
+    if target_hit and not stop_hit:
+        return target_only
+    if stop_hit and not target_hit:
+        return stop_only
+    if target_date == stop_date:
+        return same_bar
+    if target_date < stop_date:
+        return target_before_stop
+    return stop_before_target
+
+
+def summarize_observed_numerical_crossings(
+    target_observation: NumericalLevelCrossingObservation,
+    stop_observation: NumericalLevelCrossingObservation,
+) -> ObservedNumericalCrossingSummary:
+    """Stage J4B, Stage 6 — pure, no I/O, no level-history input of any
+    kind (no parameter for it exists on this function's signature)."""
+    partial_boundary_present = (
+        target_observation.partial_boundary_crossing_observed
+        or stop_observation.partial_boundary_crossing_observed
+    )
+
+    if not target_observation.value_supplied and not stop_observation.value_supplied:
+        any_pattern = PATTERN_NO_NUMERICAL_VALUES_SUPPLIED
+        safe_pattern = SAFE_PATTERN_NO_NUMERICAL_VALUES_SUPPLIED
+    else:
+        any_pattern = _classify_pattern(
+            target_observation.crossed_anywhere, stop_observation.crossed_anywhere,
+            target_observation.first_observed_session, stop_observation.first_observed_session,
+            neither=PATTERN_NEITHER_NUMERICAL_VALUE_CROSSED, target_only=PATTERN_TARGET_VALUE_ONLY_CROSSED,
+            stop_only=PATTERN_STOP_VALUE_ONLY_CROSSED, same_bar=PATTERN_BOTH_VALUES_SAME_BAR,
+            target_before_stop=PATTERN_TARGET_VALUE_BAR_BEFORE_STOP_VALUE_BAR,
+            stop_before_target=PATTERN_STOP_VALUE_BAR_BEFORE_TARGET_VALUE_BAR,
+        )
+        target_safe = target_observation.first_safely_attributable_session is not None
+        stop_safe = stop_observation.first_safely_attributable_session is not None
+        safe_pattern = _classify_pattern(
+            target_safe, stop_safe,
+            target_observation.first_safely_attributable_session, stop_observation.first_safely_attributable_session,
+            neither=SAFE_PATTERN_NEITHER_SAFELY_ATTRIBUTABLE, target_only=SAFE_PATTERN_TARGET_VALUE_ONLY_SAFELY_ATTRIBUTABLE,
+            stop_only=SAFE_PATTERN_STOP_VALUE_ONLY_SAFELY_ATTRIBUTABLE, same_bar=SAFE_PATTERN_BOTH_VALUES_SAME_SAFE_BAR,
+            target_before_stop=SAFE_PATTERN_TARGET_SAFE_BAR_BEFORE_STOP_SAFE_BAR,
+            stop_before_target=SAFE_PATTERN_STOP_SAFE_BAR_BEFORE_TARGET_SAFE_BAR,
+        )
+
+    return ObservedNumericalCrossingSummary(
+        target_observation=target_observation, stop_observation=stop_observation,
+        any_observation_pattern=any_pattern, safely_attributable_pattern=safe_pattern,
+        partial_boundary_observation_present=partial_boundary_present,
+    )
