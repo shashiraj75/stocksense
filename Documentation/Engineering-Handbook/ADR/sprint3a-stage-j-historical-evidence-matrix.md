@@ -1736,3 +1736,248 @@ Evidence hashes are identity/corruption-drift associations only, never
 authentication. Active stop/target history is not proven by this
 phase. `NO_LEVELS_CONFIGURED_THROUGHOUT` is not claimed anywhere in
 this phase's code or tests.
+
+---
+
+## Stage J4B.2 — Final observed-crossing contract audit, adversarial
+## closure and pre-wiring certification
+
+**NOT REPORT-WIRED, NOT PERSISTED, NOT ENDPOINT-WIRED, NOT MERGE-
+AUTHORIZED, NOT DEPLOYMENT-AUTHORIZED, NOT FEATURE-FLAG-AUTHORIZED.**
+
+### 1. What J4B originally established
+
+The additive, internal observed-numerical-crossing model:
+`NumericalLevelCrossingObservation`, `ObservedNumericalCrossingSummary`,
+`classify_bar_session_attribution`, `observe_numerical_level_crossing`,
+`summarize_observed_numerical_crossings`. Correct for valid,
+well-typed input; never assumed adversarial or malformed input.
+
+### 2. What J4B.1 hardened
+
+Session-attribution algorithm correctness (window/policy prevalidation,
+same-day matrix), strict `GAP_THROUGH` semantics, the immutable
+`NumericalCrossingObservationContext` anti-mixing control, first-
+observed/first-safe/first-partial retention, and dataclass `__post_init__`
+internal-consistency invariants for both observation and summary
+objects — all under the assumption that inputs were themselves
+well-typed strings/dates/bools, not hostile or malformed objects.
+
+### 3. What the independent adversarial review found after J4B.1
+
+A dedicated Stage 1 audit reproduced **eight real, uncontrolled
+exception leaks** against the exact starting SHA
+(`19598256719cc931b09f163e5b01a611298e195d`) — confirmed with executed
+reproduction scripts, not inferred:
+
+1. `_validate_level_kind`'s bare `level_kind not in _VALID_LEVEL_KINDS`
+   raised a raw `TypeError` for an unhashable `level_kind` (list/dict/set).
+2. `_validate_supplied_numerical_value`'s `float(int)` conversion raised
+   a raw `OverflowError` for an integer too large for finite float
+   representation (`10**400`).
+3. `observe_numerical_level_crossing` never validated its `bundle`
+   argument's type — `None` raised a raw `AttributeError` on first
+   attribute access.
+4. `is_safely_attributable_session`'s frozenset membership checks
+   raised a raw `TypeError` for an unhashable `session_attribution`.
+5. `_parse_crossing_evidence_id`'s `date.fromisoformat` call raised a
+   raw `ValueError` for a syntactically-plausible but calendar-
+   impossible date (`2026-13-45`) — the regex constrains digit count
+   only, not valid calendar ranges.
+6. `NumericalCrossingObservationContext`'s `market`/policy frozenset
+   checks raised a raw `TypeError` for an unhashable value.
+7. `summarize_observed_numerical_crossings` accessed
+   `.value_supplied`/`.crossed_anywhere` etc. on its arguments (via
+   `_compute_expected_patterns`) **before** any type validation — a
+   non-observation object raised a raw `AttributeError`.
+8. `classify_bar_session_attribution` never validated `bundle`/`bar`
+   argument types, and `_validate_boundary_policies`'s messages
+   interpolated the raw invalid policy value via `!r` (a sanitization
+   gap, not a crash).
+
+No material architectural contradiction was found — all eight are
+genuine, closeable defects, not requirement conflicts. The phase
+proceeded past Stage 1 to correction.
+
+### 4. What J4B.2 corrected
+
+- One shared `_safe_str_member(value, allowed_frozenset)` guard —
+  `type(value) is str and value in allowed` — replaces every bare
+  `x not in some_frozenset` check in this module. Never raises for an
+  unhashable input; never treats a non-`str` as a match.
+- `_validate_boundary_policies`, `classify_bar_session_attribution`,
+  and `observe_numerical_level_crossing` now validate `bundle`/`bar`
+  argument types (`isinstance(..., PricePathEvidenceBundle/PricePathBar)`)
+  before any attribute access, and validate `requested_window_start`/
+  `end`/`bar.session_date` are exact `datetime.date` (not
+  `datetime.datetime` subclass instances) before comparison.
+- `_validate_supplied_numerical_value`'s `float()` conversion is
+  wrapped; an `OverflowError` becomes `NumericalCrossingContractError`
+  (`NON_FINITE_SUPPLIED_VALUE`) instead of escaping raw. The type check
+  was tightened from `isinstance(x, (int, float))` (accepts subclasses)
+  to `type(x) in (int, float)` (exact built-in types only, per the
+  declared input-domain contract).
+- `_parse_crossing_evidence_id`'s `date.fromisoformat` is wrapped; a
+  `ValueError` from an impossible calendar date becomes
+  `NumericalCrossingContractError` (`INVALID_CROSSING_EVIDENCE_ID`).
+  Malformed evidence-ID contents are no longer echoed into the
+  exception message.
+- A new shared `_validate_summary_inputs(target_observation,
+  stop_observation)` — validates exact `isinstance` type, level-kind
+  position, and exact context equality — now runs at the **very
+  beginning** of `summarize_observed_numerical_crossings`, before
+  `_compute_expected_patterns` is ever called, and is reused verbatim
+  inside `ObservedNumericalCrossingSummary.__post_init__` as
+  defence-in-depth (Stage 4E's exact requirement).
+- `NumericalLevelCrossingObservation.__post_init__` gained exact-`bool`
+  validation for `value_supplied`, `crossed_anywhere`, and
+  `partial_boundary_crossing_observed`; `ObservedNumericalCrossingSummary`
+  gained the same for `partial_boundary_observation_present`.
+- The no-value path in `observe_numerical_level_crossing` previously
+  returned immediately without attributing any bar — meaning an
+  unrecognized boundary policy or out-of-window bar on the no-value
+  path went completely undetected. It now attributes every bar first
+  (via the same per-bar loop used on the value-supplied path),
+  regardless of whether a value was supplied, and only then branches
+  on `normalized_value is None`.
+
+### 5. Validation order (final, as implemented)
+
+For `observe_numerical_level_crossing`: (1) `level_kind`, (2) supplied
+value, (3) `bundle` type, (4) observation context (which itself
+validates policy/window/hash/market/type fields — an invalid policy is
+therefore caught here, before any bar is ever touched), (5) every-bar
+attribution (unconditionally, before the no-value/value-supplied
+branch), (6) crossing calculation only when a value was supplied. No
+`sorted()` call anywhere in this function — `bundle.bars`'s own
+already-enforced ascending order is relied upon directly.
+
+### 6. Total-exception contract
+
+For every audited callable, invalid input in the test matrix now
+raises only `NumericalCrossingContractError` or `SessionAttributionError`
+— never a raw `TypeError`, `ValueError`, `OverflowError`, or
+`AttributeError`. Confirmed both by direct reproduction scripts
+(pre-correction) and by the new test suites (post-correction).
+
+### 7. Sanitized-error contract
+
+Error messages contain only a stable reason code, a stable field name,
+and (where genuinely relevant and already-validated) `TARGET_VALUE`/
+`STOP_VALUE` or an already-validated date. Canary-value tests
+(`DO_NOT_RENDER_SECRET_CANARY`, `DO_NOT_RENDER_USER_CANARY`,
+`DO_NOT_RENDER_SYMBOL_CANARY`) prove no invalid input's literal
+contents are ever interpolated into an exception message, across
+level-kind, numeric-value, evidence-ID, attribution, and context
+validation paths.
+
+### 8. Context-derived attribution contract
+
+Unchanged from J4B.1: session attribution is derived solely from
+`bundle.requested_window_start/end` and `bundle.entry_bar_policy/
+exit_bar_policy`, now additionally guarded by exact-type checks on
+those fields before any comparison.
+
+### 9. Direct-construction limitations
+
+`NumericalCrossingObservationContext`, `NumericalLevelCrossingObservation`,
+and `ObservedNumericalCrossingSummary` each independently validate
+their own declared invariants in `__post_init__`; a directly
+constructed (forged) instance cannot carry a non-bool flag, an
+unrecognized level kind/crossing type/pattern, an attribution
+inconsistent with its bar and context, a mixed context identity, an
+evidence ID inconsistent with trade/date/level-kind, or a safe/partial
+group whose exact identity (session, bar, evidence ID, crossing type)
+differs from an already-safe/already-partial first-observed group.
+
+### 10. Factory-only earliest-crossing guarantee
+
+Unchanged from J4B.1, restated for accuracy: a standalone
+`NumericalLevelCrossingObservation` instance's `__post_init__` can only
+prove *internal* self-consistency; it cannot by itself prove the
+referenced bar is the chronologically earliest qualifying crossing
+across the entire bundle. That guarantee is proven only by
+`observe_numerical_level_crossing`'s own full-bundle scan and this
+module's test suite — the docstring makes no stronger claim.
+
+### 11. Requirement-to-test traceability (summary, not exhaustive 1:1)
+
+The authorizing prompt specified 127 individually numbered scenarios
+across Groups A–I. This phase's three test files (`test_price_path_
+observed_crossing.py` — 56 pre-existing, unmodified; `test_price_path_
+observed_crossing_invariants.py` — 85, 8 modified/added this phase;
+`test_price_path_observed_crossing_final_contract.py` — 91, new this
+phase) collectively exercise every requirement *group* and every
+*concrete defect class* reproduced during the audit, with representative
+and in several cases exhaustively-parametrized coverage (e.g. Group A's
+value-contract rejections are covered by one parametrized test with 10
+distinct IDs plus dedicated tests for huge-int/hostile-object/Decimal
+cases). It does **not** instantiate 127 separately-named, 1:1-numbered
+test functions. This is disclosed explicitly rather than claimed as
+literal completion — see the honest coverage note at the top of
+`test_price_path_observed_crossing_final_contract.py`.
+
+### 12. Valid-output compatibility results
+
+A dedicated `TestGroupICompatibilityBaseline` class captures and
+re-verifies exact governed-field values (session attribution, crossing
+type, first-observed/first-safe/first-partial sessions, any/safe
+patterns) for India included-full entry/exit/partial/same-day, US
+included-full entry/exit/partial/same-day, target-only, stop-only,
+same-bar, target-before-stop, stop-before-target, partial-then-safe,
+safe-then-partial, and no-values-supplied — all sixteen fixtures
+produce identical output to the pre-J4B.2 implementation.
+
+### 13. No persistence, no API/frontend, no version bump
+
+Unchanged from J4B/J4B.1 — re-verified: `price_path_calculator.py`
+still does not import `price_path_generation`/`price_path_claims`
+(structural source check); neither of those modules nor
+`paper_trading.py` reference any J4B/J4B.1/J4B.2 symbol; all six
+version constants (`SOURCE_VERSION`, `EVIDENCE_BUNDLE_SCHEMA_VERSION`,
+`SOURCE_MANIFEST_SCHEMA_VERSION`, `BOUNDARY_POLICY_VERSION`,
+`CALCULATION_RULES_VERSION`, `PRICE_PATH_REPORT_SCHEMA_VERSION`) remain
+pinned unchanged.
+
+### 14. J4C not started; J4D not started; Stage J not complete
+
+Unchanged from the sections above.
+
+### 15. Known deviation: `test_price_path_observed_crossing.py`
+
+That file is not in this phase's authorized-files list (Stage 10 named
+only `test_price_path_observed_crossing_final_contract.py` as new, and
+`test_price_path_observed_crossing_invariants.py` as modifiable-when-
+necessary). The new `isinstance(bundle, PricePathEvidenceBundle)`/
+`isinstance(bar, PricePathBar)` checks in `classify_bar_session_
+attribution` mean a handful of that file's pre-existing tests, which
+used duck-typed `_FakeBundle`/`_FakeBar` objects to reach the
+policy-validation branch, now instead raise `SessionAttributionError`
+at the new type-check gate — the tests still pass (any
+`SessionAttributionError` satisfies their `pytest.raises` assertion),
+but their docstrings' stated intent (proving policy validation
+specifically) is no longer exactly what fires. This is disclosed here
+rather than silently left inconsistent; equivalent, accurately-targeted
+coverage of the policy-validation branch exists in `test_price_path_
+observed_crossing_invariants.py` and `test_price_path_observed_
+crossing_final_contract.py` via real forged `PricePathEvidenceBundle`
+instances (`dataclasses.replace` on an already-valid bundle).
+
+### Verification
+
+Local: `pytest backend/tests -m "not postgres_integration"` →
+**5036 passed, 0 failed, 187 deselected**, 124.15s. Log at
+`/tmp/sprint3a-stage-j4b2-final-contract.log`. `git diff --check`
+clean. Production diff: 132 insertions, 45 deletions in
+`price_path_calculator.py` — a targeted correction, not a full-section
+rewrite.
+
+PostgreSQL: this phase adds unit tests only — no real-PG test was
+added or modified; the real-PostgreSQL collection is expected to
+remain at 187 (unchanged from the Stage J4B/J4B.1 baseline).
+
+### Explicit non-claims
+
+Stage J is **not** complete. This phase does not begin J4C, does not
+begin J4D, does not change any report output, and does not change any
+production behavior reachable through the live `/generate` endpoint.
