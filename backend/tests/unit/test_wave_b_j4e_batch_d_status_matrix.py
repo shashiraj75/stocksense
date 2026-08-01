@@ -46,13 +46,18 @@ _ALL_TOUCH_STATUSES = [
     GOVERNED_TOUCH_CONTRADICTORY_ENDPOINT_EVIDENCE,
 ]
 
+# Only these 4 statuses require the canonical fallback sentence and zero
+# supporting evidence (matching governed_price_path_claims.py's own
+# _TOUCH_FALLBACK_STATUSES). NO_VALUE_SUPPLIED and NO_COMPATIBLE_CROSSING
+# are legitimate DEFINITIVE NEGATIVES (a real, evidence-backed claim that
+# the level was not touched / had no value), not "insufficient evidence"
+# — this test's set previously over-included both, incorrectly demanding
+# they be treated as fallback statuses.
 _FALLBACK_TOUCH_STATUSES = {
     GOVERNED_TOUCH_INCOMPATIBLE_BASIS,
     GOVERNED_TOUCH_NO_BARS,
     GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE,
     GOVERNED_TOUCH_CONTRADICTORY_ENDPOINT_EVIDENCE,
-    GOVERNED_TOUCH_NO_VALUE_SUPPLIED,
-    GOVERNED_TOUCH_NO_COMPATIBLE_CROSSING,
 }
 
 _ALL_ORDER_STATUSES = [

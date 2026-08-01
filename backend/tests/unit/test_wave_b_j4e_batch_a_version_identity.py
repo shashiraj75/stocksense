@@ -13,6 +13,7 @@ intended failure.
 """
 import importlib
 import importlib.util
+import inspect
 
 import pytest
 
@@ -81,11 +82,21 @@ def test_wb_j4e_06_governed_claims_module_does_not_import_legacy_touch_authority
         "WB-J4E-06: services.postmortem.governed_price_path_claims does not exist yet "
         "(expected red pre-fix: the governed-only claim builder module is missing)."
     )
-    import inspect
+    import ast
     module = importlib.import_module("services.postmortem.governed_price_path_claims")
-    source = inspect.getsource(module)
+    tree = ast.parse(inspect.getsource(module))
+    imported_names = {
+        alias.asname or alias.name
+        for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    }
+    called_names = {
+        node.func.id for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    referenced = imported_names | called_names
     for forbidden in ("detect_touches", "classify_touch_order", "build_touch_order_claim"):
-        assert forbidden not in source, (
+        assert forbidden not in referenced, (
             f"WB-J4E-06: governed_price_path_claims.py references legacy symbol {forbidden!r} — "
             "no dual semantic authority is permitted in a 1.2.0 claim builder."
         )

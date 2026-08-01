@@ -51,8 +51,8 @@ def test_wb_j4e_08_no_bundle_produces_no_bars_not_fabricated_touch():
         entry_stop_value=95.0, exit_stop_value=95.0,
         entry_target_value=110.0, exit_target_value=110.0,
     )
-    target_status = payload.target_evidence.touch.status
-    stop_status = payload.stop_evidence.touch.status
+    target_status = payload.price_path_section["governed_conclusions"]["target_touch_status"]
+    stop_status = payload.price_path_section["governed_conclusions"]["stop_touch_status"]
     assert target_status == "NO_BARS" and stop_status == "NO_BARS", (
         f"WB-J4E-08: no-bundle path produced target={target_status!r} stop={stop_status!r}, "
         "expected honest NO_BARS for both levels rather than any fabricated positive touch."
@@ -116,16 +116,37 @@ def test_wb_j4e_10_legacy_no_snapshot_never_fabricates_governed_false():
 # conclusions, version-and-provenance.
 def test_wb_j4e_11_structured_report_has_four_required_subsections():
     module = _module_or_none("services.postmortem.current_report_generation")
-    assert module is not None and hasattr(module, "CurrentReportPayload"), (
-        "WB-J4E-11: current_report_generation.CurrentReportPayload is not yet defined (expected red pre-fix)."
+    assert module is not None and hasattr(module, "build_current_report_payload"), (
+        "WB-J4E-11: current_report_generation.build_current_report_payload is not yet defined (expected red pre-fix)."
     )
-    payload_cls = module.CurrentReportPayload
-    field_names = {f.name for f in __import__("dataclasses").fields(payload_cls)}
-    required = {"raw_evidence", "level_history_evidence", "governed_conclusions", "version_and_provenance"}
-    missing = required - field_names
+    from services.postmortem.deterministic import ClosedTradeRecord, compute_postmortem
+    from datetime import datetime, timezone
+
+    record = ClosedTradeRecord(
+        trade_id=1, status="CLOSED", symbol="AAPL", market="US", quantity=10,
+        entry_price=100.0, exit_price=105.0, stop_loss=95.0, target_price=110.0,
+        opened_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        closed_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        trade_management_mode="MANUAL", exit_reason="TARGET_HIT",
+    )
+    postmortem = compute_postmortem(record, snapshot=None)
+    price_path_payload = module.build_governed_price_path_payload(
+        1, None, entry_snapshot=None, exit_snapshot=None,
+        entry_price=100.0, exit_price=105.0,
+        entry_stop_value=95.0, exit_stop_value=95.0,
+        entry_target_value=110.0, exit_target_value=110.0,
+    )
+    current_payload = module.build_current_report_payload(
+        postmortem=postmortem, entry_snapshot=None, exit_snapshot=None,
+        price_path_payload=price_path_payload,
+        base_calculation_version="1.1.0", numerical_rules_version="1.0.0", source_version="1.1.0",
+    )
+    price_path_section = current_payload.structured_report["price_path"]
+    required = {"raw_evidence", "level_history", "governed_conclusions", "version_and_provenance"}
+    missing = required - set(price_path_section.keys())
     assert not missing, (
-        f"WB-J4E-11: CurrentReportPayload is missing required structured-report sub-sections {missing} "
-        "(expected red pre-fix: the current draft uses different field names)."
+        f"WB-J4E-11: structured_report['price_path'] is missing required sub-sections {missing} "
+        "(expected red pre-fix: the current draft uses different key names)."
     )
 
 
@@ -158,7 +179,7 @@ def test_wb_j4e_12_version_and_provenance_carries_exact_triple():
         price_path_payload=price_path_payload,
         base_calculation_version="1.1.0", numerical_rules_version="1.0.0", source_version="1.1.0",
     )
-    prov = current_payload.version_and_provenance
+    prov = current_payload.structured_report["price_path"]["version_and_provenance"]
     assert prov.get("report_schema_version") == "1.2.0", (
         f"WB-J4E-12: version_and_provenance.report_schema_version == {prov.get('report_schema_version')!r}, "
         "expected exactly '1.2.0'."

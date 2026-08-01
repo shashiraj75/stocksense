@@ -96,8 +96,8 @@ def test_wb_j4e_16_claim_referential_integrity_within_report():
         entry_stop_value=95.0, exit_stop_value=95.0,
         entry_target_value=110.0, exit_target_value=110.0,
     )
-    evidence_ids = {e.evidence_id for e in payload.target_evidence.evidence_items + payload.stop_evidence.evidence_items}
-    for claim in (payload.target_claim, payload.stop_claim):
+    evidence_ids = {e.evidence_id for e in payload.evidence_items}
+    for claim in payload.claims:
         for eid in claim.supporting_evidence_ids:
             assert eid in evidence_ids, (
                 f"WB-J4E-16: claim {claim.claim_id!r} cites evidence_id {eid!r} not present in this report's own evidence_items."

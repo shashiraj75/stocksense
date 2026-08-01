@@ -261,9 +261,9 @@ def test_wb_j4e_54_fallback_claim_uses_insufficient_evidence_class():
 
     conclusion = GovernedLevelTouchConclusion(level_kind=TARGET_VALUE, status="NO_BARS", detail=CANONICAL_FALLBACK)
     _, claim = module.build_governed_touch_claim(1, TARGET_VALUE, conclusion)
-    assert claim.evidence_class == EvidenceClass.INSUFFICIENT_EVIDENCE, (
+    assert claim.evidence_class == EvidenceClass.INSUFFICIENT_EVIDENCE.value, (
         f"WB-J4E-54: fallback claim evidence_class={claim.evidence_class!r}, expected "
-        "EvidenceClass.INSUFFICIENT_EVIDENCE exactly."
+        "EvidenceClass.INSUFFICIENT_EVIDENCE.value exactly."
     )
 
 
@@ -280,7 +280,7 @@ def test_wb_j4e_55_supported_touch_claim_confidence_not_not_assessable():
 
     conclusion = GovernedLevelTouchConclusion(level_kind=TARGET_VALUE, status=GOVERNED_TOUCH_SUPPORTED, detail="touched")
     _, claim = module.build_governed_touch_claim(1, TARGET_VALUE, conclusion)
-    assert claim.confidence != ConfidenceBand.NOT_ASSESSABLE, (
-        f"WB-J4E-55: a genuine SUPPORTED_TOUCH claim has confidence={claim.confidence!r}; "
+    assert claim.confidence_band != ConfidenceBand.NOT_ASSESSABLE.value, (
+        f"WB-J4E-55: a genuine SUPPORTED_TOUCH claim has confidence_band={claim.confidence_band!r}; "
         "NOT_ASSESSABLE is reserved for the fallback/insufficient-evidence case."
     )
