@@ -2364,6 +2364,51 @@ def load_picks_from_db(market: str = "IN") -> dict | None:
     return None
 
 
+def get_picks_status_metadata(market: str = "IN") -> dict | None:
+    """
+    Lightweight status-only lookup for GET /api/picks/status — added 2026-08
+    (Supabase egress incident). Extracts only the handful of small fields
+    /status actually needs (generated_at + premarket_* metadata) via
+    Postgres JSONB path operators (->>), so the per-pick objects, factor
+    z-scores, and evidence text that make up the bulk of the payload's bytes
+    are never transferred over the wire — unlike load_picks_from_db, which
+    reads the entire JSONB column.
+
+    Same `status = 'success'` filter as load_picks_from_db, so this reports
+    metadata for exactly the same row that endpoint would return the full
+    payload for — never a failed/partial attempt.
+
+    Returns None (never a fabricated/empty dict) when no successful row exists.
+    """
+    try:
+        with _get_pool().connection() as conn:
+            row = conn.execute(
+                """
+                SELECT payload->>'generated_at'                AS generated_at,
+                       COALESCE(payload->>'base_generated_at',
+                                payload->>'generated_at')       AS base_generated_at,
+                       payload->>'premarket_finalized_at'       AS premarket_finalized_at,
+                       payload->>'premarket_status'             AS premarket_status,
+                       payload->>'premarket_finalizer_version'  AS premarket_finalizer_version
+                FROM daily_picks_cache
+                WHERE market = %s AND status = 'success'
+                ORDER BY generated_at DESC LIMIT 1
+                """,
+                (market,),
+            ).fetchone()
+        if row:
+            return {
+                "generated_at": row[0],
+                "base_generated_at": row[1],
+                "premarket_finalized_at": row[2],
+                "premarket_status": row[3],
+                "premarket_finalizer_version": row[4],
+            }
+    except Exception as e:
+        print(f"[postgres_store] get_picks_status_metadata error: {e}")
+    return None
+
+
 def get_daily_picks_performance(horizon: str, window_days: int = 90, market: str | None = None) -> list[dict]:
     """All daily-pick predictions in the window, joined with outcomes if resolved.
 

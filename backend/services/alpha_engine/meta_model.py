@@ -80,7 +80,11 @@ def train(horizon: str, market: str = "IN") -> bool:
         from sklearn.model_selection import cross_val_score
         from services.alpha_engine.store import get_training_data
 
-        data = get_training_data(horizon, market=market)
+        # force_fresh=True: an actual model retrain must always see the true
+        # current data, never store.get_training_data's TTL-cached snapshot
+        # (added 2026-08 for diagnostic/count-only callers) — numerical
+        # training behavior must never change as a result of that cache.
+        data = get_training_data(horizon, market=market, force_fresh=True)
         if len(data) < MIN_ROWS:
             log.info(f"[meta_model] {market}/{horizon}: only {len(data)} rows (need {MIN_ROWS}) — skipping")
             return False

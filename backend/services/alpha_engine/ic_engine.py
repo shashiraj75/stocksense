@@ -257,10 +257,21 @@ def get_ic_values(horizon: str, market: str = "IN") -> dict[str, float]:
 
 
 def invalidate_cache():
-    """Force IC recomputation on next call (called after new outcomes are logged)."""
+    """Force IC recomputation on next call (called after new outcomes are logged).
+
+    Also clears alpha_engine.store's shared training-data cache — without
+    this, weight_adapter's count_training_rows() would keep reading a
+    training-data snapshot from before the new outcomes this invalidation
+    is responding to.
+    """
     global _cache, _cache_expiry, _live_ic_cache, _live_ic_cache_expiry
     with _lock:
         _cache = {}
         _cache_expiry = {}
         _live_ic_cache = {}
         _live_ic_cache_expiry = {}
+    try:
+        from services.alpha_engine.store import invalidate_training_data_cache
+        invalidate_training_data_cache()
+    except Exception:
+        pass

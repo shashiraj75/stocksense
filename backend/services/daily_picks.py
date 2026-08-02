@@ -2029,11 +2029,34 @@ _picks_cache_fetch_locks: dict[str, threading.Lock] = {
 }
 
 
+# Lightweight status-metadata cache — separate from _picks_cache above
+# because it holds a tiny dict (generated_at + premarket_* fields), not the
+# full payload, and is populated by a different, much cheaper Postgres query
+# (get_picks_status_metadata, a JSONB path-projection SELECT rather than a
+# full-column read). Added 2026-08 (Supabase egress incident): GET
+# /api/picks/status must never load the complete Daily Picks JSONB payload,
+# even on a cold process cache — see picks_has_today_lightweight below.
+_picks_metadata_cache: dict[str, dict] = {}
+_picks_metadata_cache_expiry: dict[str, float] = {}
+_picks_metadata_fetch_locks: dict[str, threading.Lock] = {
+    "IN": threading.Lock(),
+    "US": threading.Lock(),
+}
+_EMPTY_PICKS_METADATA = {
+    "generated_at": None, "base_generated_at": None,
+    "premarket_finalized_at": None, "premarket_status": None,
+    "premarket_finalizer_version": None,
+}
+
+
 def _invalidate_cached_picks(market: str) -> None:
-    """Drop the cached payload for a market so the next read is durable."""
+    """Drop the cached payload AND cached status-metadata for a market so
+    the next read of either is durable."""
     with _picks_cache_lock:
         _picks_cache.pop(market, None)
         _picks_cache_expiry.pop(market, None)
+        _picks_metadata_cache.pop(market, None)
+        _picks_metadata_cache_expiry.pop(market, None)
 
 
 def _fresh_cached_picks(market: str) -> dict | None:
@@ -2093,6 +2116,85 @@ def get_cached_picks(market: str = "IN") -> dict | None:
         return data
 
 
+def _fresh_cached_picks_metadata(market: str) -> dict | None:
+    with _picks_cache_lock:
+        cached = _picks_metadata_cache.get(market)
+        expiry = _picks_metadata_cache_expiry.get(market, 0)
+        if cached is not None and time.monotonic() < expiry:
+            return cached
+    return None
+
+
+def get_picks_status_metadata(market: str = "IN") -> dict:
+    """
+    Lightweight status-only lookup for GET /api/picks/status — never loads
+    the complete Daily Picks JSONB payload (all per-pick objects, factor
+    z-scores, evidence text), even on a cold process cache. Added 2026-08
+    (Supabase egress incident): /status previously called
+    picks_generated_today() (a full-payload read via get_cached_picks) for
+    every request, and for US additionally called get_cached_picks("US") a
+    second time directly for premarket_* fields.
+
+    Same stampede-safe per-market fetch-lock pattern as get_cached_picks.
+    Always returns a dict (never None) — _EMPTY_PICKS_METADATA when nothing
+    is cached/persisted yet, never fabricated non-None values.
+    """
+    hit = _fresh_cached_picks_metadata(market)
+    if hit is not None:
+        return hit
+
+    fetch_lock = _picks_metadata_fetch_locks.setdefault(market, threading.Lock())
+    with fetch_lock:
+        hit = _fresh_cached_picks_metadata(market)
+        if hit is not None:
+            return hit
+
+        meta = None
+        if os.getenv("USE_POSTGRES") == "1":
+            try:
+                from services.postgres_store import get_picks_status_metadata as _pg_status_meta
+                meta = _pg_status_meta(market)
+            except Exception as e:
+                log.warning(f"[picks] [{market}] Postgres status metadata load failed: {e}")
+
+        if meta is None:
+            # Local/disk-only dev fallback: this file read is not a durable
+            # network egress concern the way the Postgres full-payload read
+            # is, so it's fine to derive metadata from the full local
+            # payload here rather than adding a second on-disk format.
+            data = get_cached_picks(market)
+            meta = _picks_metadata_from_payload(data) if data else dict(_EMPTY_PICKS_METADATA)
+
+        with _picks_cache_lock:
+            _picks_metadata_cache[market] = meta
+            _picks_metadata_cache_expiry[market] = time.monotonic() + _PICKS_CACHE_TTL_SECONDS
+
+        return meta
+
+
+def _picks_metadata_from_payload(data: dict) -> dict:
+    return {
+        "generated_at": data.get("generated_at"),
+        "base_generated_at": data.get("base_generated_at") or data.get("generated_at"),
+        "premarket_finalized_at": data.get("premarket_finalized_at"),
+        "premarket_status": data.get("premarket_status"),
+        "premarket_finalizer_version": data.get("premarket_finalizer_version"),
+    }
+
+
+def _is_generated_today(generated_at_iso: str | None, market: str) -> bool:
+    """Shared date-comparison core of picks_generated_today /
+    picks_has_today_lightweight — own market's local trading-day date,
+    IST for IN, DST-aware US/Eastern for US."""
+    if not generated_at_iso:
+        return False
+    try:
+        generated_at = datetime.fromisoformat(generated_at_iso.replace("Z", "+00:00"))
+        return _market_local_date(generated_at, market) >= _market_local_date(datetime.now(timezone.utc), market)
+    except Exception:
+        return False
+
+
 def picks_generated_today(market: str = "IN") -> bool:
     """Return True if a genuinely SUCCESSFUL generation exists for today
     (own market's local trading-day date). IN uses IST, US uses DST-aware
@@ -2110,13 +2212,19 @@ def picks_generated_today(market: str = "IN") -> bool:
     save_picks_to_db/load_picks_from_db docstrings in postgres_store.py.
     """
     data = get_cached_picks(market)
-    if not data or not data.get("generated_at"):
+    if not data:
         return False
-    try:
-        generated_at = datetime.fromisoformat(data["generated_at"].replace("Z", "+00:00"))
-        return _market_local_date(generated_at, market) >= _market_local_date(datetime.now(timezone.utc), market)
-    except Exception:
-        return False
+    return _is_generated_today(data.get("generated_at"), market)
+
+
+def picks_has_today_lightweight(market: str = "IN") -> bool:
+    """Same semantics/result as picks_generated_today(), but backed by
+    get_picks_status_metadata() — never loads the full payload. Used by
+    GET /api/picks/status; picks_generated_today() itself is unchanged and
+    still used by generation/catch-up callers that need the full payload
+    anyway."""
+    meta = get_picks_status_metadata(market)
+    return _is_generated_today(meta.get("generated_at"), market)
 
 
 # Bounded, safe error categories for public API exposure — never a raw
@@ -2147,7 +2255,7 @@ def _categorize_error(error_text: str | None) -> str | None:
     return "unknown"
 
 
-def get_generation_attempt_status(market: str = "IN") -> dict:
+def get_generation_attempt_status(market: str = "IN", metadata_only: bool = False) -> dict:
     """
     Failure-safe publication contract (US Daily Picks generation-reliability
     incident, 2026-07-22) — combines the last known-good SUCCESSFUL payload
@@ -2157,6 +2265,14 @@ def get_generation_attempt_status(market: str = "IN") -> dict:
     public-safe summary. Used by both GET /api/picks/daily (to layer
     stale/attempt metadata onto the served payload) and GET
     /api/picks/status (Phase 7 observability fields).
+
+    metadata_only=True (used by GET /api/picks/status — 2026-08 Supabase
+    egress incident): sources generated_at from get_picks_status_metadata()
+    instead of get_cached_picks(). Every field below is derived from
+    generated_at alone, so this is a zero-behavior-change swap — GET
+    /api/picks/daily still passes metadata_only=False (its default) since it
+    already needs the full payload for the response body itself, at which
+    point reusing that same read here costs nothing extra.
 
     Never raises — any lookup failure degrades to a field being None/False,
     never breaks the caller.
@@ -2172,11 +2288,17 @@ def get_generation_attempt_status(market: str = "IN") -> dict:
         "serving_stale_payload": False,
     }
 
-    data = get_cached_picks(market)
-    if data and data.get("generated_at"):
+    if metadata_only:
+        meta = get_picks_status_metadata(market)
+        generated_at_iso = meta.get("generated_at")
+    else:
+        data = get_cached_picks(market)
+        generated_at_iso = data.get("generated_at") if data else None
+
+    if generated_at_iso:
         try:
-            generated_at = datetime.fromisoformat(data["generated_at"].replace("Z", "+00:00"))
-            result["last_successful_generated_at"] = data["generated_at"]
+            generated_at = datetime.fromisoformat(generated_at_iso.replace("Z", "+00:00"))
+            result["last_successful_generated_at"] = generated_at_iso
             result["last_successful_session_date"] = _market_local_date(generated_at, market).isoformat()
             today_local = _market_local_date(datetime.now(timezone.utc), market)
             is_today = _market_local_date(generated_at, market) >= today_local
