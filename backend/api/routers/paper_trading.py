@@ -3203,6 +3203,37 @@ CurrentReportAvailability = Literal[
 ]
 CurrentReportStatus = Literal["COMPLETE", "LIMITED_EVIDENCE"]
 
+
+class ReportSourceManifest(BaseModel):
+    """Typed model for paper_trade_postmortem_report.source_manifest —
+    the REPORT row's own smaller manifest (built by
+    generation_service.py and extended by price_path_generation.py),
+    NOT the larger linked price-path-EVIDENCE provider manifest built
+    by price_path_acquisition.py (source_id, provider_library_version,
+    etc. — a separate, linked, immutable record; exposing it through
+    this response is tracked as NONBLOCKING BACKLOG, see
+    Trade-Postmortem-Wave-C-WC-K-14-Provenance-Inventory.md).
+
+    exit_evidence_rules_version/phase1_calculation_version/
+    attribution_rules_version are required on every Sprint-2-or-later
+    report (generation_service.py always sets them).
+    exit_snapshot_schema_version is null whenever no exit snapshot
+    exists. price_path_calculation_version is HISTORICAL-OPTIONAL —
+    absent on any report that predates or never received a price-path
+    enhancement; it must never be synthesized when missing.
+
+    `extra="allow"` preserves any additional JSON-safe keys a future
+    persisted report might carry, for forward compatibility, without
+    requiring this model to enumerate every possible future field."""
+
+    model_config = {"extra": "allow"}
+
+    exit_snapshot_schema_version: str | None = None
+    exit_evidence_rules_version: str
+    phase1_calculation_version: str
+    attribution_rules_version: str
+    price_path_calculation_version: str | None = None
+
 _READY_ONLY_FIELDS = (
     "report_schema_version", "calculation_version", "attribution_rules_version",
     "evidence_bundle_version", "market", "report_trading_date", "market_timezone",
@@ -3228,7 +3259,7 @@ class CurrentReportReadResponse(BaseModel):
     evidence_items: list | None = None
     evidence_gaps: list | None = None
     warnings: list | None = None
-    source_manifest: dict | None = None
+    source_manifest: ReportSourceManifest | None = None
     supersedes_report_id: int | None = None
 
     @model_validator(mode="after")

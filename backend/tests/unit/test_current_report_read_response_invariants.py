@@ -28,7 +28,10 @@ _REPRESENTATIVE_VALUES = {
     "evidence_items": [{"id": "e1"}],
     "evidence_gaps": ["gap-1"],
     "warnings": ["warning-1"],
-    "source_manifest": {"k": "v"},
+    "source_manifest": {
+        "exit_snapshot_schema_version": "1.0.0", "exit_evidence_rules_version": "1.0.0",
+        "phase1_calculation_version": "1.0.0", "attribution_rules_version": "1.0.0",
+    },
     "supersedes_report_id": 42,
 }
 
@@ -39,7 +42,10 @@ _READY_KWARGS = dict(
     market="US", report_trading_date="2026-06-01", market_timezone="America/New_York",
     status="COMPLETE", generated_at=datetime.datetime(2026, 6, 1, tzinfo=datetime.timezone.utc),
     structured_report={"x": 1}, claims=[], evidence_items=[], evidence_gaps=[], warnings=[],
-    source_manifest={},
+    source_manifest={
+        "exit_snapshot_schema_version": None, "exit_evidence_rules_version": "1.0.0",
+        "phase1_calculation_version": "1.0.0", "attribution_rules_version": "1.0.0",
+    },
 )
 
 _NON_READY_STATES = (
@@ -96,6 +102,23 @@ class TestNonReadyStatesExposeNoReportPayload:
         assert production_fields == test_fields, (
             f"drift detected — missing from test: {production_fields - test_fields}; "
             f"extra in test (not in production): {test_fields - production_fields}"
+        )
+
+    def test_drift_guard_ready_only_fields_exactly_match_the_model_field_set(self):
+        """Companion guard on the OTHER side: _READY_ONLY_FIELDS itself
+        must exactly equal every CurrentReportReadResponse field except
+        trade_id and availability (which are present in every response,
+        READY or not). A field added to the model without adding it to
+        _READY_ONLY_FIELDS would silently escape the non-READY leakage
+        check entirely — this fails loudly instead."""
+        model_fields = set(CurrentReportReadResponse.model_fields)
+        always_present = {"trade_id", "availability"}
+        report_only_model_fields = model_fields - always_present
+        assert set(_READY_ONLY_FIELDS) == report_only_model_fields, (
+            f"drift detected — model field(s) missing from _READY_ONLY_FIELDS: "
+            f"{report_only_model_fields - set(_READY_ONLY_FIELDS)}; "
+            f"_READY_ONLY_FIELDS entries not on the model: "
+            f"{set(_READY_ONLY_FIELDS) - report_only_model_fields}"
         )
 
 
@@ -158,7 +181,10 @@ class TestFailClosedConversionBoundary:
             evidence_items: list | None = field(default_factory=list)
             evidence_gaps: list | None = field(default_factory=list)
             warnings: list | None = field(default_factory=list)
-            source_manifest: dict | None = field(default_factory=dict)
+            source_manifest: dict | None = field(default_factory=lambda: {
+                "exit_snapshot_schema_version": None, "exit_evidence_rules_version": "1.0.0",
+                "phase1_calculation_version": "1.0.0", "attribution_rules_version": "1.0.0",
+            })
             supersedes_report_id: int | None = None
 
         kwargs = dict(generated_at=datetime.datetime(2026, 6, 1, tzinfo=datetime.timezone.utc))
