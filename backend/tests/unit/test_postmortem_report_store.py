@@ -152,3 +152,32 @@ class TestGetCurrentReport:
             report_schema_version="1.0.0", calculation_version="2.0.0", attribution_rules_version="2.0.0",
         )
         assert found is None
+
+
+@pytest.mark.unit
+class TestReportColumnsOrderingWaveC:
+    """WC-K-14 guard — _REPORT_COLUMNS and _row_to_report's tuple
+    unpack must stay in lockstep. A silent drift between them (adding a
+    column to one but not the other) is exactly the defect class real
+    PostgreSQL caught during Wave C: six hand-written fake-connection
+    fixtures across the test suite hardcoded a 19-column row shape and
+    broke the instant a 20th (generated_at) column was added here."""
+
+    def test_report_columns_ends_with_generated_at_then_supersedes_report_id(self):
+        from services.postmortem.report_store import _REPORT_COLUMNS
+        columns = [c.strip() for c in _REPORT_COLUMNS.split(",")]
+        assert columns[-2:] == ["generated_at", "supersedes_report_id"]
+
+    def test_row_to_report_maps_generated_at_and_supersedes_id_by_position(self):
+        from services.postmortem.report_store import _REPORT_COLUMNS, _row_to_report
+        columns = [c.strip() for c in _REPORT_COLUMNS.split(",")]
+        assert len(columns) == 20, (
+            f"expected exactly 20 persisted columns, found {len(columns)} — "
+            "if this genuinely changes, _row_to_report's unpack and every "
+            "hand-written fake-connection test fixture must be updated together"
+        )
+        stamp = dt.datetime(2026, 6, 1, 12, 0, 0, tzinfo=dt.timezone.utc)
+        row = tuple(range(1, 19)) + (stamp, 999)  # generated_at, supersedes_report_id
+        report = _row_to_report(row)
+        assert report.generated_at == stamp
+        assert report.supersedes_report_id == 999

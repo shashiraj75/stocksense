@@ -19,7 +19,7 @@ simply inserts a new row under its own key.
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 
 @dataclass(frozen=True)
@@ -43,7 +43,7 @@ class PersistedReport:
     evidence_gaps: list
     warnings: list
     supersedes_report_id: int | None = None
-    generated_at: object = None
+    generated_at: datetime | None = None
 
 
 def compute_evidence_hash(evidence_items: list, claims: list) -> str:
