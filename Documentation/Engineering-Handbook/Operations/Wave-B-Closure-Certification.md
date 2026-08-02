@@ -271,3 +271,105 @@ COMPLETE because the proof-suitability matrix honestly discloses 43 of
 123 scenarios as REQUIRES_COMPANION (structural-only proof, no
 behavioural/async/real-PostgreSQL companion yet) — this is the sole
 remaining mandatory gate.
+
+---
+
+## Final Update — 123/123 Scenario Adjudication Complete, Zero Open Gates
+
+**Starting HEAD this pass:** `81fb75095f0aa0f1bafcca5aa3559f47adf4d2c1`
+**Previous executable SHA:** `bb87672e662fc62dc7e93bee54062545c0f30868`
+**Final executable/traceability SHA:** `296c00c70927de8b76724c1dc82a1457b68cf7b9`
+**Final documentation-only SHA:** (this commit)
+
+### 43-scenario adjudication result
+
+All 43 scenarios previously flagged `REQUIRES_COMPANION` were
+individually adjudicated against their actual invariant text and
+current test body (not merely re-labeled). Disposition:
+
+- **28** were already self-adequate behavioural tests — the prior
+  classifier mistook a collection-safety existence guard for
+  inadequate proof, even though the rest of the test body calls the
+  real production function and asserts on real output.
+- **3** (`WB-J4F-04/06/07`) are proven by an existing real-PostgreSQL
+  companion test added earlier in this closure arc.
+- **1** (`WB-J4E-07`) is proven by its own neighboring scenario, which
+  calls the identical function for real.
+- **11** are genuinely, individually-justified `STRUCTURAL_SUFFICIENT`
+  invariants (exact version constants, import/dependency boundaries,
+  dataclass field presence, canonical-string identity,
+  rule-registry non-collision) — each carries its own written,
+  scenario-specific justification, not generic boilerplate.
+- **0** were invalid mappings requiring correction.
+- **0** new production defects were exposed by this adjudication pass.
+
+**No new test files were required.** This pass corrected the matrix's
+own classification accuracy; the underlying test suite (27 companion
+tests added across Sections 8A–8I/8K in the prior passes) was already
+adequate.
+
+### Final 123-scenario totals
+
+**J4E: 18/18 requirement IDs, 55/55 scenarios.**
+**J4F: 20/20 requirement IDs, 68/68 scenarios.**
+**Combined: 123/123 scenarios with adequate proof appropriate to each invariant.**
+
+- ADEQUATE: **123**
+- REQUIRES_COMPANION: **0**
+- INSUFFICIENT: **0**
+
+### Non-PostgreSQL assurance at `296c00c`
+
+**5367 passed, 1 skipped, 0 failed** (259 deselected, postgres_integration-only).
+
+### PostgreSQL assurance at `296c00c`
+
+Workflow `Backend PostgreSQL Integration Tests`, run `30753380433`,
+head SHA confirmed `296c00c70927de8b76724c1dc82a1457b68cf7b9`.
+
+| | PostgreSQL 15 | PostgreSQL 17 |
+|---|---|---|
+| tests | 259 | 259 |
+| failures/errors/skipped | 0/0/0 | 0/0/0 |
+
+Confirmed from downloaded JUnit XML artifacts.
+
+### Bounded audit result
+
+No production code changed in this pass — no new production defect
+found. All 6 BLOCKING findings from the formal 12-perspective re-audit
+(`Wave-B-Formal-12-Perspective-Reaudit.md`) remain closed. **0 open
+BLOCKING findings.**
+
+### Protected artifacts / owner-controlled actions
+
+Protected runtime artifacts untouched. No pull request. No merge. No
+owner-triggered production deployment. No automatic-preview evidence
+gathered this pass. `TRADE_POSTMORTEM_PRICE_PATH_ENABLED` remains
+default-off; no feature flag activated.
+
+### Remaining Wave C dependencies (unchanged)
+
+Persisted current-report read API; authorization-safe retrieval;
+report-list/trade-link frontend integration; Postmortem frontend
+presentation, API types, unit/component tests, typecheck, production
+build; feature-flag UI gating; production worker-capacity/timeout
+validation; operational observability/alerting; owner-authorized PR,
+merge, deployment; Railway/Vercel verification; feature-flag activation
+decision; production health verification; rollback/disablement
+procedure.
+
+### Final classification
+
+**WAVE B COMPLETE** — all 123 scenarios have proof appropriate to
+their actual invariant (80 already-behavioural/real-PostgreSQL/async,
+43 newly and individually adjudicated as either self-adequate,
+existing-companion-proven, or genuinely-justified-structural), every
+structural invariant carries its own written justification, every
+runtime invariant has genuine behavioural, async, or real-PostgreSQL
+proof, zero REQUIRES_COMPANION or INSUFFICIENT scenarios remain,
+traceability is internally consistent (16/16 validator checks green),
+the formal 12-perspective re-audit has zero open BLOCKING findings,
+and final exact-head non-PostgreSQL and PostgreSQL 15/17 assurance are
+green at SHA `296c00c70927de8b76724c1dc82a1457b68cf7b9` — **ready for
+owner review before Wave C.**
