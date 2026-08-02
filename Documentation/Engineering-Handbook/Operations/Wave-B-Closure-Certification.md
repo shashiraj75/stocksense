@@ -145,3 +145,129 @@ coexistence, traceability, formal re-audit, complete non-PostgreSQL
 assurance, and PostgreSQL 15/17 exact-head assurance are all complete
 at SHA `25a4f5fccdd78c0701ecceb68af3fac3981e8e12` — ready for owner
 review before Wave C.
+
+---
+
+## Update — Proof-Suitability Matrix, Formal Re-Audit Closure Pass
+
+**True final executable/traceability SHA this pass:**
+
+```
+bb87672e662fc62dc7e93bee54062545c0f30868
+```
+
+This supersedes the earlier "True final executable assurance SHA"
+recorded above — that SHA (`25a4f5f`) reflected the state before this
+pass's work. Between `25a4f5f` and `bb87672`, 5 commits landed:
+
+- `61bbc93` — provider-mock fix (found by real CI dispatch)
+- `0addffd` — removed a duplicate `CURRENT_REPORT_*` constant block
+  that silently shadowed the canonical outcome vocabulary (a genuine
+  production defect, found by real-PostgreSQL CI execution), plus
+  renamed `governed_price_path_claims.py`'s `RULE_REGISTRY` section
+  to avoid a namespace collision with the legacy `price_path_claims.py`
+- `9ea571a`, `f25ac53` — 27 new real-PostgreSQL/async behavioral tests
+  across Sections 8A–8I and 8K (endpoint provenance, six-state
+  reconciliation, settlement, market-local date, five-phase connection
+  boundary, worker lifecycle edge cases, close-to-outbox atomicity,
+  global claim/lease, supersession/coexistence, reset/cross-user
+  isolation)
+- `bb87672` — the 123-scenario proof-suitability matrix
+  (`wave_b_proof_suitability_matrix.json`), 5 additional traceability-
+  validator cross-checks, and the formal 12-perspective re-audit
+  record (`Wave-B-Formal-12-Perspective-Reaudit.md`)
+
+### Non-PostgreSQL assurance at `bb87672`
+
+- Command: `pytest tests -m "not postgres_integration"`
+- Result: **5364 passed, 1 skipped, 0 failed** (259 deselected,
+  postgres_integration-only)
+
+### PostgreSQL assurance at `bb87672`
+
+Workflow `Backend PostgreSQL Integration Tests`, run `30752145859`,
+head SHA confirmed `bb87672e662fc62dc7e93bee54062545c0f30868`.
+
+| | PostgreSQL 15 | PostgreSQL 17 |
+|---|---|---|
+| tests | 259 | 259 |
+| failures/errors/skipped | 0/0/0 | 0/0/0 |
+
+Confirmed from downloaded JUnit XML artifacts, not merely the
+workflow's green summary.
+
+### J4E / J4F traceability (exact wording)
+
+**J4E: 18/18 requirement IDs, 55/55 scenarios.**
+**J4F: 20/20 requirement IDs, 68/68 scenarios.**
+**Combined: 123/123 scenarios represented, collected, and executed.**
+
+### Proof-suitability matrix totals (honest, not rounded up)
+
+- BEHAVIOURAL_UNIT / MIXED_WITH_BEHAVIOURAL_COMPANION (ADEQUATE): **80 of 123**
+- STRUCTURAL_SUFFICIENT, REQUIRES_COMPANION (disclosed gap, not closed): **43 of 123**
+- INSUFFICIENT_PLACEHOLDER (forbidden classification): **0**
+
+The 43-scenario gap is NOT treated as closed. See
+`backend/tests/unit/wave_b_proof_suitability_matrix.json`'s own
+`honest_disclosure` field for the exact list and reasoning. Converting
+all 43 into adequate behavioural/async/real-PostgreSQL proof was not
+completed in this closure arc.
+
+### Formal 12-perspective re-audit
+
+See `Documentation/Engineering-Handbook/ADR/Wave-B-Formal-12-Perspective-Reaudit.md`
+for the complete record. Summary: 6 perspectives PASS (no findings), 6
+perspectives CLOSED (1 BLOCKING finding each, all corrected and
+re-verified). **Zero BLOCKING findings remain open.**
+
+### Genuine production defects found and fixed, cumulative (all commits)
+
+1. Immutable entry/exit endpoint collapse (`7e30f82`)
+2. Invalid outbox settlement status `'SUCCEEDED'` (`7e30f82`)
+3. Non-market-local report trading date (`7e30f82`)
+4. Phase 3/4/5 sharing one connection scope (`7e30f82`)
+5. Unsafe worker-shutdown timeout losing task tracking (`7e30f82`)
+6. Missing terminal-success/missing-report integrity-contradiction
+   outcome (`7e30f82`)
+7. Duplicate `CURRENT_REPORT_*` constant shadowing (`0addffd`)
+8. `RULE_REGISTRY` section-namespace collision (`0addffd`)
+9. Worker per-market timezone misattribution across a mixed batch
+   (`d647648`, prior pass)
+10. Dead atomic close-to-outbox wiring — implemented but never invoked
+    (`6c6c981`, prior pass)
+
+All 10 corrected and re-verified green on the full non-PostgreSQL
+suite and PostgreSQL 15/17.
+
+### Owner-controlled actions
+
+No pull request opened. No merge. No deployment (Railway or Vercel).
+No environment variable changed. No Trade Postmortem feature flag
+activated (`TRADE_POSTMORTEM_PRICE_PATH_ENABLED` remains default-off).
+No production database access or write. Protected runtime artifacts
+untouched.
+
+### Remaining Wave C dependencies (unchanged)
+
+Persisted current-report read API; authorization-safe retrieval;
+report-list/trade-link frontend integration; Postmortem frontend
+presentation, API types, unit/component tests, typecheck, production
+build; feature-flag UI gating; production worker-capacity/timeout
+validation; operational observability/alerting; owner-authorized PR,
+merge, deployment; Railway/Vercel verification; feature-flag activation
+decision; production health verification; rollback/disablement
+procedure.
+
+### Classification
+
+**REQUEST CHANGES** — the governed report/claim contract, versioned
+persistence, durable lifecycle, concurrency, crash recovery, failure
+handling, historical coexistence, and the formal 12-perspective
+re-audit (zero open BLOCKING findings) are all complete and green on
+both the full non-PostgreSQL suite and PostgreSQL 15/17 at SHA
+`bb87672e662fc62dc7e93bee54062545c0f30868`. Wave B is not classified
+COMPLETE because the proof-suitability matrix honestly discloses 43 of
+123 scenarios as REQUIRES_COMPANION (structural-only proof, no
+behavioural/async/real-PostgreSQL companion yet) — this is the sole
+remaining mandatory gate.
