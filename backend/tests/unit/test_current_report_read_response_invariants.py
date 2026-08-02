@@ -7,7 +7,30 @@ import datetime
 import pytest
 from pydantic import ValidationError
 
-from api.routers.paper_trading import CurrentReportReadResponse
+from api.routers.paper_trading import _READY_ONLY_FIELDS, CurrentReportReadResponse
+
+# One valid, non-null representative value for EVERY field in the
+# production _READY_ONLY_FIELDS inventory — imported directly from
+# production rather than a second hand-maintained list, so this test
+# module cannot silently drift from the real leak-check surface.
+_REPRESENTATIVE_VALUES = {
+    "report_schema_version": "1.2.0",
+    "calculation_version": "calc-v1",
+    "attribution_rules_version": "rules-v1",
+    "evidence_bundle_version": "ev-v1",
+    "market": "US",
+    "report_trading_date": datetime.date(2026, 6, 1),
+    "market_timezone": "America/New_York",
+    "status": "COMPLETE",
+    "generated_at": datetime.datetime(2026, 6, 1, tzinfo=datetime.timezone.utc),
+    "structured_report": {"x": 1},
+    "claims": [{"id": "c1"}],
+    "evidence_items": [{"id": "e1"}],
+    "evidence_gaps": ["gap-1"],
+    "warnings": ["warning-1"],
+    "source_manifest": {"k": "v"},
+    "supersedes_report_id": 42,
+}
 
 _READY_KWARGS = dict(
     trade_id=1, availability="READY",
@@ -57,17 +80,23 @@ class TestNonReadyStatesExposeNoReportPayload:
         CurrentReportReadResponse(trade_id=1, availability=state)  # must not raise
 
     @pytest.mark.parametrize("state", _NON_READY_STATES)
-    @pytest.mark.parametrize("leaked_field,leaked_value", [
-        ("structured_report", {"x": 1}),
-        ("claims", []),
-        ("report_schema_version", "1.2.0"),
-        ("status", "COMPLETE"),
-        ("generated_at", datetime.datetime(2026, 6, 1, tzinfo=datetime.timezone.utc)),
-        ("source_manifest", {}),
-    ])
-    def test_non_ready_state_leaking_any_report_field_is_rejected(self, state, leaked_field, leaked_value):
+    @pytest.mark.parametrize("leaked_field", _READY_ONLY_FIELDS)
+    def test_non_ready_state_leaking_any_report_field_is_rejected(self, state, leaked_field):
+        leaked_value = _REPRESENTATIVE_VALUES[leaked_field]
         with pytest.raises(ValidationError, match="must not carry report"):
             CurrentReportReadResponse(trade_id=1, availability=state, **{leaked_field: leaked_value})
+
+    def test_drift_guard_representative_values_exactly_match_production_inventory(self):
+        """Every _READY_ONLY_FIELDS entry must have a representative
+        test value, and no test-only field may exist outside that
+        production inventory — these two lists must never silently
+        diverge."""
+        production_fields = set(_READY_ONLY_FIELDS)
+        test_fields = set(_REPRESENTATIVE_VALUES)
+        assert production_fields == test_fields, (
+            f"drift detected — missing from test: {production_fields - test_fields}; "
+            f"extra in test (not in production): {test_fields - production_fields}"
+        )
 
 
 @pytest.mark.unit
