@@ -3379,8 +3379,22 @@ class CurrentReportReadResponse(BaseModel):
     status: CurrentReportStatus | None = None
     generated_at: datetime | None = None
     structured_report: dict | None = None
-    claims: list[PostmortemClaimModel] | None = None
-    evidence_items: list[EvidenceItemModel] | None = None
+    # NOTE: NOT yet typed as list[PostmortemClaimModel]/list[EvidenceItemModel].
+    # Real-PostgreSQL CI (run 30768906338, the immediately following
+    # dispatch after wiring those typed models in) failed
+    # test_ready_report_returns_persisted_complete_or_limited_evidence
+    # and test_disabled_owned_trade_with_persisted_report_exposes_no_
+    # report_contents: a REAL end-to-end generated report (via /sell
+    # with the price-path capability on) produced claims/evidence_items
+    # that failed validation against those models and fell through the
+    # fail-closed boundary to INTEGRITY_CONTRADICTION — i.e. the models
+    # do not yet accurately describe every real shape the production
+    # price-path claim/evidence builders (governed_price_path_claims.py,
+    # price_path_claims.py) actually emit. Reverted to list | None
+    # rather than ship a change that breaks real reports; the typed
+    # models above are defined but unused pending that investigation.
+    claims: list | None = None
+    evidence_items: list | None = None
     evidence_gaps: list[str] | None = None
     warnings: list[str] | None = None
     source_manifest: ReportSourceManifest | None = None

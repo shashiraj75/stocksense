@@ -881,37 +881,10 @@ def test_claims_and_evidence_items_round_trip_adversarial_marker_values(
     assert body["warnings"] == ["marker-warning"]
 
 
-def test_malformed_claim_missing_rule_id_fails_closed(client, pg_conn, unique_user_id, monkeypatch):
-    from services.postmortem.current_report_generation import current_target_identity
-    from services.postmortem.deterministic import CALCULATION_VERSION
-    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
-    from services.postmortem import report_store
-
-    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # flag OFF at close
-    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
-    malformed_claim = {
-        "claim_id": "CLM-malformed", "report_section": "x", "factor": "x",
-        "claim_text": "x", "evidence_class": "SUPPORTING_EVIDENCE", "confidence_band": "HIGH",
-        "supporting_evidence_ids": [], "opposing_evidence_ids": [], "missing_evidence": [],
-        "contradiction_flags": [],
-        # rule_id and rule_version intentionally omitted — malformed.
-    }
-    schema_v, calc_v, rules_v = current_target_identity(
-        base_calculation_version=CALCULATION_VERSION,
-        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
-    )
-    report_store.persist_report(
-        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
-        report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
-        report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
-        evidence_bundle_version="malformed-claim-test", status="COMPLETE",
-        structured_report={"marker": "malformed-claim-test"}, evidence_items=[], claims=[malformed_claim],
-        source_manifest={
-            "has_entry_snapshot": True, "has_exit_snapshot": False,
-            "exit_snapshot_schema_version": None, "exit_trigger_timing_verification": None,
-            "exit_evidence_rules_version": "1.0.0", "phase1_calculation_version": "1.0.0",
-            "attribution_rules_version": "1.0.0",
-        },
-        evidence_gaps=[], warnings=[],
-    )
-    _assert_fails_closed_to_integrity_contradiction(client, unique_user_id, trade_id, ["CLM-malformed"])
+# NOTE: a malformed-claim fail-closed test previously lived here,
+# relying on claims being typed as list[PostmortemClaimModel]. That
+# typing was reverted (see the NOTE on CurrentReportReadResponse.claims
+# in api/routers/paper_trading.py) after real-PostgreSQL CI proved the
+# model didn't yet match every real production shape — removed along
+# with it, since claims is untyped list | None again and no longer
+# rejects a malformed claim shape at this layer.
