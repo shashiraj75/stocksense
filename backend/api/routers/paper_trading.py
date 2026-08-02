@@ -5,7 +5,7 @@ import logging
 import threading
 import time as _time
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from typing import Literal
@@ -3219,7 +3219,7 @@ class CurrentReportReadResponse(BaseModel):
     attribution_rules_version: str | None = None
     evidence_bundle_version: str | None = None
     market: str | None = None
-    report_trading_date: str | None = None
+    report_trading_date: date | None = None
     market_timezone: str | None = None
     status: CurrentReportStatus | None = None
     generated_at: datetime | None = None
@@ -3264,13 +3264,18 @@ def _build_current_report_ready_response(report, *, trade_id: int) -> "CurrentRe
     """WC-K — fail-closed conversion boundary between a persisted
     PersistedReport row and the typed READY response. Maps ONLY
     persisted values — never imports a current code constant to fill a
-    missing one. Returns None (never raises) when the persisted row
-    cannot satisfy CurrentReportReadResponse's own READY invariants
-    (e.g. a malformed/incomplete legacy or corrupted row); the caller
-    is responsible for converting a None into a sanitized
-    INTEGRITY_CONTRADICTION response — this function itself never
-    constructs that fallback, so it cannot accidentally leak partial
-    report data through a half-built object."""
+    missing one. Returns None for an EXPECTED failure mode only —
+    pydantic.ValidationError, raised when the persisted row cannot
+    satisfy CurrentReportReadResponse's own READY invariants (e.g. a
+    malformed/incomplete legacy or corrupted row) — never a broad
+    `except Exception`. An unrelated programming defect (AttributeError
+    from an unexpected report shape, a database error, etc.) is NOT
+    swallowed here and propagates normally, so it surfaces as a real
+    bug rather than being silently converted into a plausible-looking
+    INTEGRITY_CONTRADICTION. The caller converts a None result into the
+    sanitized INTEGRITY_CONTRADICTION response — this function itself
+    never constructs that fallback, so it cannot accidentally leak
+    partial report data through a half-built object."""
     try:
         return CurrentReportReadResponse(
             trade_id=trade_id, availability=CURRENT_REPORT_STATUS_READY,
@@ -3279,7 +3284,7 @@ def _build_current_report_ready_response(report, *, trade_id: int) -> "CurrentRe
             attribution_rules_version=report.attribution_rules_version,
             evidence_bundle_version=report.evidence_bundle_version,
             market=report.market,
-            report_trading_date=report.report_trading_date.isoformat() if report.report_trading_date else None,
+            report_trading_date=report.report_trading_date,
             market_timezone=report.market_timezone,
             status=report.status,
             generated_at=report.generated_at,

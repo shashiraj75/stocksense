@@ -160,10 +160,13 @@ class TestFailClosedConversionBoundary:
         )
         assert result is None
 
-    def test_none_result_never_leaks_via_an_uncaught_exception_type(self):
-        """The helper's contract is: return None, never raise. Any
-        exception escaping here would become an unhandled 500 at the
-        route layer."""
+    def test_pydantic_validation_error_is_caught_and_returns_none(self):
+        """The helper's contract is narrower than 'never raises': it
+        catches pydantic.ValidationError specifically (the expected
+        failure mode for a malformed persisted row) and returns None.
+        It does NOT catch Exception broadly — an unrelated programming
+        defect must still propagate rather than being silently
+        converted into a plausible-looking INTEGRITY_CONTRADICTION."""
         from api.routers.paper_trading import _build_current_report_ready_response
 
         try:
@@ -171,5 +174,21 @@ class TestFailClosedConversionBoundary:
                 self._fake_report(status="BOGUS", generated_at=None), trade_id=1,
             )
         except Exception as exc:  # noqa: BLE001 — this IS the assertion
-            pytest.fail(f"_build_current_report_ready_response must never raise, raised {type(exc).__name__}: {exc}")
+            pytest.fail(
+                f"a malformed-status ValidationError should be caught and return None, "
+                f"but {type(exc).__name__} escaped instead: {exc}"
+            )
         assert result is None
+
+    def test_a_genuine_attribute_error_is_not_swallowed(self):
+        """An object missing an expected attribute entirely (a real
+        programming defect, not a validation failure of PERSISTED
+        VALUES) must propagate as AttributeError, not be silently
+        converted into a fabricated INTEGRITY_CONTRADICTION."""
+        from api.routers.paper_trading import _build_current_report_ready_response
+
+        class _BrokenReport:
+            """Deliberately missing every expected attribute."""
+
+        with pytest.raises(AttributeError):
+            _build_current_report_ready_response(_BrokenReport(), trade_id=1)
