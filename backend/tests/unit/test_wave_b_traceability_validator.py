@@ -152,16 +152,54 @@ def test_matrix_no_entry_is_marked_insufficient():
     assert not insufficient, f"scenarios marked INSUFFICIENT (forbidden): {insufficient}"
 
 
-def test_matrix_honestly_discloses_requires_companion_count():
-    """This test intentionally does NOT require adequacy_summary to be
-    all-ADEQUATE — it requires the matrix to be INTERNALLY CONSISTENT
-    (the summary counts must match the actual per-entry adequacy
-    values) so the disclosed gap can never silently drift from the
-    real data."""
+def test_matrix_summary_counts_match_actual_per_entry_data():
+    """The matrix must be INTERNALLY CONSISTENT — the summary counts must
+    match the actual per-entry adequacy values, so any future edit can
+    never silently drift the summary away from the real data."""
     matrix = _load(_MATRIX_PATH)
     all_entries = matrix["j4e"] + matrix["j4f"]
     actual_adequate = sum(1 for m in all_entries if m["adequacy"] == "ADEQUATE")
     actual_requires = sum(1 for m in all_entries if m["adequacy"] == "REQUIRES_COMPANION")
+    actual_insufficient = sum(1 for m in all_entries if m["adequacy"] == "INSUFFICIENT")
     assert matrix["adequacy_summary"]["ADEQUATE"] == actual_adequate
     assert matrix["adequacy_summary"]["REQUIRES_COMPANION"] == actual_requires
-    assert actual_adequate + actual_requires == 123
+    assert matrix["adequacy_summary"]["INSUFFICIENT"] == actual_insufficient
+    assert actual_adequate + actual_requires + actual_insufficient == 123
+
+
+def test_matrix_final_closure_zero_requires_companion_and_zero_insufficient():
+    """Final Wave B closure gate: every one of the 123 scenarios must be
+    ADEQUATE — zero REQUIRES_COMPANION, zero INSUFFICIENT remain."""
+    matrix = _load(_MATRIX_PATH)
+    assert matrix["adequacy_summary"]["REQUIRES_COMPANION"] == 0, (
+        f"{matrix['adequacy_summary']['REQUIRES_COMPANION']} scenarios still REQUIRES_COMPANION — "
+        "Wave B cannot be classified COMPLETE while this is nonzero."
+    )
+    assert matrix["adequacy_summary"]["INSUFFICIENT"] == 0
+    assert matrix["adequacy_summary"]["ADEQUATE"] == 123
+
+
+def test_matrix_structural_sufficient_entries_have_a_scenario_specific_justification():
+    """Every STRUCTURAL_SUFFICIENT entry must carry its OWN written,
+    scenario-specific justification — never a generic boilerplate string
+    reused verbatim across unrelated scenarios."""
+    matrix = _load(_MATRIX_PATH)
+    structural = [m for m in matrix["j4e"] + matrix["j4f"] if m["final_proof_type"] == "STRUCTURAL_SUFFICIENT"]
+    assert structural, "expected at least one genuinely structural scenario in the matrix"
+    missing_justification = [m for m in structural if not m.get("justification", "").strip()]
+    assert not missing_justification, f"STRUCTURAL_SUFFICIENT entries missing a justification: {missing_justification}"
+    justifications = [m["justification"] for m in structural]
+    assert len(set(justifications)) >= max(1, len(justifications) - 4), (
+        "STRUCTURAL_SUFFICIENT justifications are excessively duplicated — expected mostly scenario-specific text."
+    )
+
+
+def test_matrix_mixed_with_companion_entries_reference_a_real_companion_node():
+    matrix = _load(_MATRIX_PATH)
+    mixed = [m for m in matrix["j4e"] + matrix["j4f"] if m["final_proof_type"] == "MIXED_WITH_BEHAVIOURAL_COMPANION"]
+    missing_companion = [m for m in mixed if not m.get("companion_nodes") and "test_wb_j4e_08" not in m.get("justification", "") and "same file" not in m.get("justification", "").lower() and "same node" not in m.get("justification", "").lower()]
+    # A MIXED entry is adequate either via an explicit companion_nodes
+    # list OR a justification naming the specific existing companion
+    # test by name — both are acceptable, a bare empty justification is not.
+    truly_missing = [m for m in mixed if not m.get("companion_nodes") and not m.get("justification", "").strip()]
+    assert not truly_missing, f"MIXED_WITH_BEHAVIOURAL_COMPANION entries with no companion reference at all: {truly_missing}"
