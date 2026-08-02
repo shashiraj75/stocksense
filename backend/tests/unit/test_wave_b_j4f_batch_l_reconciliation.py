@@ -11,7 +11,10 @@ matching the governing prompt's 6-numbered-scenario requirement:
   3. outbox row GENERATING (active lease), no report -> skip (in progress)
   4. outbox row GENERATING (expired lease), no report -> reclaim and generate
   5. outbox row terminal (COMPLETE/LIMITED_EVIDENCE), report EXISTS -> return existing, no regeneration
-  6. outbox row terminal, report MISSING (inconsistent state) -> self-heal by regenerating, never crash
+  6. outbox row terminal, report MISSING (inconsistent state) -> integrity
+     contradiction, detected and surfaced, never fabricated by regenerating
+     a second "success" under an already-terminal-success row (corrected
+     during Wave B closure — see CURRENT_REPORT_INTEGRITY_CONTRADICTION)
 
 Written and run against genuine PRE-FIX production code. Absent
 module/symbols are probed via importlib.util.find_spec / getattr so
@@ -80,10 +83,17 @@ def test_wb_j4f_43_reconciliation_scenario_5_terminal_with_report_returns_existi
 
 # Reconciliation scenario 6 — outbox row terminal but the report row is
 # MISSING (an inconsistent state, e.g. from a partial manual DB
-# intervention) -> must self-heal by regenerating, never raise an
-# unhandled exception or return a phantom success.
-def test_wb_j4f_44_reconciliation_scenario_6_terminal_without_report_self_heals():
-    _require_orchestrator()
+# intervention) -> must be detected as an integrity contradiction and
+# surfaced distinctly, NEVER silently self-healed by regenerating a
+# second "success" under a row that already claims one happened, and
+# never raising an unhandled exception either.
+def test_wb_j4f_44_reconciliation_scenario_6_terminal_without_report_is_integrity_contradiction():
+    module = _require_orchestrator()
+    assert hasattr(module, "CURRENT_REPORT_INTEGRITY_CONTRADICTION"), (
+        "WB-J4F-44: current_report_generation.CURRENT_REPORT_INTEGRITY_CONTRADICTION is not yet "
+        "defined — the reconciliation contract must distinguish a terminal-success outbox row with a "
+        "missing report from a normal generation attempt, never silently regenerate under it."
+    )
 
 
 # WB-J4F-45 — exactly-once persisted effect: two concurrent
