@@ -43,6 +43,7 @@ class PersistedReport:
     evidence_gaps: list
     warnings: list
     supersedes_report_id: int | None = None
+    generated_at: object = None
 
 
 def compute_evidence_hash(evidence_items: list, claims: list) -> str:
@@ -58,13 +59,13 @@ _REPORT_COLUMNS = (
     "id, paper_trade_id, user_id, market, report_trading_date, market_timezone, "
     "report_schema_version, calculation_version, attribution_rules_version, evidence_bundle_version, "
     "evidence_hash, status, structured_report, evidence_items, claims, source_manifest, "
-    "evidence_gaps, warnings, supersedes_report_id"
+    "evidence_gaps, warnings, generated_at, supersedes_report_id"
 )
 
 
 def _row_to_report(row) -> PersistedReport:
     (rid, trade_id, user_id, market, trading_date, tz, schema_v, calc_v, rules_v, bundle_v,
-     ev_hash, status, structured, ev_items, claims, manifest, gaps, warnings, supersedes_id) = row
+     ev_hash, status, structured, ev_items, claims, manifest, gaps, warnings, generated_at, supersedes_id) = row
     return PersistedReport(
         id=rid, paper_trade_id=trade_id, user_id=user_id, market=market,
         report_trading_date=trading_date, market_timezone=tz,
@@ -72,7 +73,7 @@ def _row_to_report(row) -> PersistedReport:
         evidence_bundle_version=bundle_v, evidence_hash=ev_hash, status=status,
         structured_report=structured, evidence_items=ev_items, claims=claims,
         source_manifest=manifest, evidence_gaps=gaps, warnings=warnings,
-        supersedes_report_id=supersedes_id,
+        generated_at=generated_at, supersedes_report_id=supersedes_id,
     )
 
 

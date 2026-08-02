@@ -132,7 +132,8 @@ class _FakeConn:
             shared["next_report_id"] += 1
             row = (new_id, paper_trade_id, user_id, market, trading_date, tz, schema_v, calc_v, rules_v,
                    bundle_v, ev_hash, status, _json.loads(structured), _json.loads(ev_items),
-                   _json.loads(claims), _json.loads(manifest), _json.loads(gaps), _json.loads(warnings), supersedes_id)
+                   _json.loads(claims), _json.loads(manifest), _json.loads(gaps), _json.loads(warnings),
+                   dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc), supersedes_id)
             shared["report_rows"][new_id] = row
             return row
 
@@ -206,7 +207,8 @@ def _new_shared(trades: list[dict], *, sprint2_report=True) -> dict:
         shared["report_rows"][1] = (
             1, 1, "user-aaa", "US", dt.date(2026, 6, 4), "America/New_York",
             "1.0.0", "1.1.0", "2.0.0", "1.0.0", "deadbeef", "LIMITED_EVIDENCE",
-            {"trade_id": 1}, [], [], {}, [], [], None,
+            {"trade_id": 1}, [], [], {}, [], [],
+            dt.datetime(2026, 6, 4, tzinfo=dt.timezone.utc), None,
         )
         shared["next_report_id"] = 2
     return shared

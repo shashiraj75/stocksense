@@ -189,7 +189,8 @@ class _FakeConn:
             shared["next_report_id"] += 1
             row = (new_id, paper_trade_id, user_id, market, trading_date, tz, schema_v, calc_v, rules_v,
                    bundle_v, ev_hash, status, _json.loads(structured), _json.loads(ev_items),
-                   _json.loads(claims), _json.loads(manifest), _json.loads(gaps), _json.loads(warnings), supersedes_id)
+                   _json.loads(claims), _json.loads(manifest), _json.loads(gaps), _json.loads(warnings),
+                   dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc), supersedes_id)
             shared["report_rows"][new_id] = row
             return row
 

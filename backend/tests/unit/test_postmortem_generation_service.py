@@ -179,7 +179,8 @@ class _FakeConn:
             self.next_id += 1
             row = (new_id, paper_trade_id, user_id, market, trading_date, tz, schema_v, calc_v, rules_v,
                    bundle_v, ev_hash, status, json.loads(structured), json.loads(ev_items),
-                   json.loads(claims), json.loads(manifest), json.loads(gaps), json.loads(warnings), supersedes_id)
+                   json.loads(claims), json.loads(manifest), json.loads(gaps), json.loads(warnings),
+                   dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc), supersedes_id)
             self.report_rows[new_id] = row
             self._pending = row
             return self

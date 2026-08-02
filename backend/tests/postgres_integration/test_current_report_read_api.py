@@ -118,6 +118,18 @@ def test_ready_report_returns_persisted_complete_or_limited_evidence(client, pg_
     assert body["status"] in ("COMPLETE", "LIMITED_EVIDENCE")
     assert body["structured_report"] is not None
     assert "price_path" in body["structured_report"]
+    # WC-K-13 — generated_at must be the real persisted immutable
+    # report timestamp, never fabricated from request time.
+    assert body["generated_at"] is not None
+    row = pg_conn.execute(
+        "SELECT generated_at FROM paper_trade_postmortem_report WHERE paper_trade_id = %s", (trade_id,),
+    ).fetchone()
+    persisted_generated_at = row[0]
+    assert datetime.fromisoformat(body["generated_at"]) == persisted_generated_at.astimezone(timezone.utc), (
+        "response generated_at must equal the persisted report row's own generated_at column, not current time"
+    )
+    # WC-K-11 — authenticated response must never be safe for a shared cache.
+    assert resp.headers.get("cache-control") == "private, no-store"
 
 
 def test_terminal_outbox_missing_report_is_integrity_contradiction(client, pg_conn, unique_user_id):

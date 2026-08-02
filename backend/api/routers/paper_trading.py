@@ -6,7 +6,7 @@ import threading
 import time as _time
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Literal
 from services.auth import get_current_user_id
@@ -3211,7 +3211,7 @@ class CurrentReportReadResponse(BaseModel):
 
 
 @router.get("/{trade_id}/current-report", response_model=CurrentReportReadResponse)
-def get_current_governed_report(trade_id: int, user_id: str = Depends(get_current_user_id)):
+def get_current_governed_report(trade_id: int, response: Response, user_id: str = Depends(get_current_user_id)):
     """WC-K-01/02/03/04/05/06/07/08/09/10 — the canonical, side-effect-
     free read for the current (1.2.0) governed Postmortem report.
 
@@ -3222,7 +3222,11 @@ def get_current_governed_report(trade_id: int, user_id: str = Depends(get_curren
 
     Ownership uses the SAME indistinguishable-404 convention as
     GET /postmortem/{trade_id} above — a trade belonging to another
-    user is never distinguishable from a nonexistent trade_id."""
+    user is never distinguishable from a nonexistent trade_id.
+
+    WC-K-11: authenticated per-user data — never safe for a shared
+    cache to store or replay across users."""
+    response.headers["Cache-Control"] = "private, no-store"
     with _conn() as conn:
         trade_row = conn.execute(
             "SELECT user_id, status, market FROM paper_trades WHERE id = %s", (trade_id,),
@@ -3255,6 +3259,7 @@ def get_current_governed_report(trade_id: int, user_id: str = Depends(get_curren
                 report_trading_date=report.report_trading_date.isoformat() if report.report_trading_date else None,
                 market_timezone=report.market_timezone,
                 status=report.status,
+                generated_at=report.generated_at.isoformat() if report.generated_at else None,
                 structured_report=report.structured_report,
                 claims=report.claims,
                 evidence_items=report.evidence_items,
