@@ -66,6 +66,10 @@ def test_unauthenticated_request_is_rejected(client, pg_conn, unique_user_id):
 def test_nonexistent_trade_returns_404(client, pg_conn, unique_user_id):
     resp = _current_report(client, unique_user_id, 999_999_999)
     assert resp.status_code == 404
+    # WC-K-11 — a header set on FastAPI's injected Response does NOT
+    # survive a raised HTTPException; this proves the route carries the
+    # cache policy explicitly on its 404 path too, not only on 200s.
+    assert resp.headers.get("cache-control") == "private, no-store"
 
 
 def test_another_users_trade_is_indistinguishable_from_nonexistent(client, pg_conn, unique_user_id):
@@ -81,6 +85,8 @@ def test_another_users_trade_is_indistinguishable_from_nonexistent(client, pg_co
     assert resp_attacker.json() == resp_nonexistent.json(), (
         "another user's trade must be byte-for-byte indistinguishable from a nonexistent trade_id"
     )
+    assert resp_attacker.headers.get("cache-control") == "private, no-store"
+    assert resp_attacker.headers.get("cache-control") == resp_nonexistent.headers.get("cache-control")
 
 
 # ============================= WC-K-06 — availability-state mapping ============================= #
@@ -93,6 +99,7 @@ def test_open_owned_trade_is_not_eligible(client, pg_conn, unique_user_id, monke
     resp = _current_report(client, unique_user_id, trade_id)
     assert resp.status_code == 200
     assert resp.json()["availability"] == "NOT_ELIGIBLE"
+    assert resp.headers.get("cache-control") == "private, no-store"
 
 
 def test_closed_trade_no_outbox_no_report_is_not_available(client, pg_conn, unique_user_id, monkeypatch):
@@ -107,6 +114,7 @@ def test_closed_trade_no_outbox_no_report_is_not_available(client, pg_conn, uniq
     body = resp.json()
     assert body["availability"] == "NOT_AVAILABLE"
     assert body["structured_report"] is None
+    assert resp.headers.get("cache-control") == "private, no-store"
 
 
 def test_ready_report_returns_persisted_complete_or_limited_evidence(client, pg_conn, unique_user_id, monkeypatch):
@@ -160,6 +168,7 @@ def test_terminal_outbox_missing_report_is_integrity_contradiction(client, pg_co
     resp = _current_report(client, unique_user_id, trade_id)
     assert resp.status_code == 200
     assert resp.json()["availability"] == "INTEGRITY_CONTRADICTION"
+    assert resp.headers.get("cache-control") == "private, no-store"
 
 
 def test_terminal_failure_outbox_is_reported(client, pg_conn, unique_user_id, monkeypatch):
@@ -187,6 +196,7 @@ def test_terminal_failure_outbox_is_reported(client, pg_conn, unique_user_id, mo
     assert body["availability"] == "TERMINAL_FAILURE"
     # WC-K-09 — no raw error code/exception leaked to the client.
     assert "MAX_ATTEMPTS_EXCEEDED" not in str(body)
+    assert resp.headers.get("cache-control") == "private, no-store"
 
 
 def test_pending_outbox_is_processing(client, pg_conn, unique_user_id, monkeypatch):
@@ -211,6 +221,7 @@ def test_pending_outbox_is_processing(client, pg_conn, unique_user_id, monkeypat
     resp = _current_report(client, unique_user_id, trade_id)
     assert resp.status_code == 200
     assert resp.json()["availability"] == "PROCESSING"
+    assert resp.headers.get("cache-control") == "private, no-store"
 
 
 # ============================= WC-K-05 — side-effect-free proof ============================= #
@@ -355,6 +366,7 @@ def test_disabled_owned_trade_with_persisted_report_exposes_no_report_contents(c
 def test_disabled_nonexistent_trade_still_returns_404(client, pg_conn, unique_user_id):
     resp = _current_report(client, unique_user_id, 999_999_999)
     assert resp.status_code == 404
+    assert resp.headers.get("cache-control") == "private, no-store"
 
 
 def test_disabled_other_users_trade_is_still_indistinguishable_from_nonexistent(client, pg_conn, unique_user_id):

@@ -3190,6 +3190,12 @@ CURRENT_REPORT_STATUS_TERMINAL_FAILURE = "TERMINAL_FAILURE"
 CURRENT_REPORT_STATUS_INTEGRITY_CONTRADICTION = "INTEGRITY_CONTRADICTION"
 CURRENT_REPORT_STATUS_FEATURE_DISABLED = "FEATURE_DISABLED"
 
+# WC-K-11 — a header set on FastAPI's injected `Response` parameter does
+# NOT survive a raised HTTPException (FastAPI builds an independent
+# response for the exception), so every HTTPException this route raises
+# must carry this policy explicitly via headers=_NO_STORE_HEADERS.
+_NO_STORE_HEADERS = {"Cache-Control": "private, no-store"}
+
 
 class CurrentReportReadResponse(BaseModel):
     trade_id: int
@@ -3226,14 +3232,18 @@ def get_current_governed_report(trade_id: int, response: Response, user_id: str 
     user is never distinguishable from a nonexistent trade_id.
 
     WC-K-11: authenticated per-user data — never safe for a shared
-    cache to store or replay across users."""
+    cache to store or replay across users. A header set on the injected
+    `Response` does NOT survive a raised HTTPException (FastAPI builds
+    an independent response for it), so every raise below carries the
+    same policy explicitly via `headers=_NO_STORE_HEADERS` — otherwise
+    only the normal (non-exception) return path would be protected."""
     response.headers["Cache-Control"] = "private, no-store"
     with _conn() as conn:
         trade_row = conn.execute(
             "SELECT user_id, status, market FROM paper_trades WHERE id = %s", (trade_id,),
         ).fetchone()
         if trade_row is None or trade_row[0] != user_id:
-            raise HTTPException(status_code=404, detail="Trade not found")
+            raise HTTPException(status_code=404, detail="Trade not found", headers=_NO_STORE_HEADERS)
         trade_owner, trade_status, trade_market = trade_row
 
         # WC-K-15: capability is evaluated only AFTER ownership is
