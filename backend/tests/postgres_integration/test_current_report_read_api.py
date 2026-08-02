@@ -146,6 +146,38 @@ def test_ready_report_returns_persisted_complete_or_limited_evidence(client, pg_
     assert resp.headers.get("cache-control") == "private, no-store"
 
 
+# ============================= WC-K-14 — persisted version provenance ============================= #
+
+def test_evidence_bundle_version_reflects_the_persisted_row_not_a_code_constant(client, pg_conn, unique_user_id, monkeypatch):
+    """Adversarial proof: current_target_identity() (built from CURRENT
+    code constants) is used only to LOCATE the current report row — the
+    response's evidence_bundle_version must come from that row's own
+    persisted column, never be synthesized from a currently-imported
+    constant. Directly UPDATEs the already-generated report's
+    evidence_bundle_version to a marker value no code constant could
+    ever equal, then proves the API reflects exactly that value."""
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)
+
+    ready_resp = _current_report(client, unique_user_id, trade_id)
+    assert ready_resp.json()["availability"] == "READY"
+
+    marker = "9.9.9-persisted-provenance-adversarial-marker"
+    pg_conn.execute(
+        "UPDATE paper_trade_postmortem_report SET evidence_bundle_version = %s WHERE paper_trade_id = %s",
+        (marker, trade_id),
+    )
+
+    resp = _current_report(client, unique_user_id, trade_id)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["availability"] == "READY"
+    assert body["evidence_bundle_version"] == marker, (
+        "evidence_bundle_version must be read from the persisted report row, "
+        "never fabricated from a current code constant"
+    )
+
+
 def test_terminal_outbox_missing_report_is_integrity_contradiction(client, pg_conn, unique_user_id, monkeypatch):
     from services.postmortem.current_report_generation import current_target_identity
     from services.postmortem.deterministic import CALCULATION_VERSION

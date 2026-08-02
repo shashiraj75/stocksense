@@ -3203,6 +3203,7 @@ class CurrentReportReadResponse(BaseModel):
     report_schema_version: str | None = None
     calculation_version: str | None = None
     attribution_rules_version: str | None = None
+    evidence_bundle_version: str | None = None
     market: str | None = None
     report_trading_date: str | None = None
     market_timezone: str | None = None
@@ -3275,6 +3276,7 @@ def get_current_governed_report(trade_id: int, response: Response, user_id: str 
                 report_schema_version=report.report_schema_version,
                 calculation_version=report.calculation_version,
                 attribution_rules_version=report.attribution_rules_version,
+                evidence_bundle_version=report.evidence_bundle_version,
                 market=report.market,
                 report_trading_date=report.report_trading_date.isoformat() if report.report_trading_date else None,
                 market_timezone=report.market_timezone,
