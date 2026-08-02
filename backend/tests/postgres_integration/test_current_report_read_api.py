@@ -214,7 +214,13 @@ def test_evidence_bundle_version_reflects_the_persisted_row_not_a_code_constant(
         "evidence_bundle_version must be read from the persisted report row, "
         "never fabricated from a current code constant"
     )
-    assert "price_path" in body["structured_report"]
+    # Round-trip proof against the REAL captured body — note price-path
+    # enhancement is not guaranteed on every real generation (eligibility
+    # can vary), so this asserts exact equality with whatever real_row
+    # actually captured, rather than assuming a "price_path" key exists.
+    assert body["structured_report"] == real_structured
+    assert body["claims"] == real_claims
+    assert body["evidence_items"] == real_evidence_items
 
 
 def test_terminal_outbox_missing_report_is_integrity_contradiction(client, pg_conn, unique_user_id, monkeypatch):
