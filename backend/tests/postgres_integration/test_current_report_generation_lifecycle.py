@@ -30,14 +30,29 @@ def _fake_none(*a, **k):
 @pytest.fixture(autouse=True)
 def _patch_price_path_provider(monkeypatch):
     """Every test in this file exercises process_current_report's REAL
-    Phase 2 acquisition path — mocked here (matching
-    test_price_path_endpoint_lifecycle.py's own established convention)
-    so it never makes a live network call regardless of the synthetic
-    trade's symbol/market combination."""
-    from services.postmortem import price_path_acquisition
-    monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _fake_none)
-    monkeypatch.setattr(price_path_acquisition, "fetch_split_events", _fake_none)
-    monkeypatch.setattr(price_path_acquisition, "fetch_dividend_events", _fake_none)
+    Phase 2 acquisition path — mocked here so it never makes a live
+    network call regardless of the synthetic trade's symbol/market
+    combination.
+
+    acquire_evidence_outside_transaction's fetch_bars_fn/fetch_splits_fn/
+    fetch_dividends_fn default parameters are bound at price_path_
+    generation.py's OWN module-import time — a frozen function default,
+    immune to patching the module attribute afterward (patching
+    price_path_generation.fetch_raw_daily_bars does NOT change the
+    already-evaluated default baked into acquire_evidence_outside_
+    transaction's __defaults__). The reliable interception point is
+    acquire_price_path_evidence itself, called by NAME (a live global
+    lookup on every call, not a frozen default) from inside acquire_
+    evidence_outside_transaction — wrapping it here forces the fake
+    fetch functions regardless of whatever fetch_bars_fn/etc. the
+    caller would otherwise have used."""
+    from services.postmortem import price_path_generation
+    from services.postmortem.price_path_acquisition import acquire_price_path_evidence as _real_acquire
+
+    def _fake_acquire(*, fetch_bars_fn=None, fetch_splits_fn=None, fetch_dividends_fn=None, **kwargs):
+        return _real_acquire(fetch_bars_fn=_fake_none, fetch_splits_fn=_fake_none, fetch_dividends_fn=_fake_none, **kwargs)
+
+    monkeypatch.setattr(price_path_generation, "acquire_price_path_evidence", _fake_acquire)
 
 
 def _make_conn_factory(pg_database_url):
