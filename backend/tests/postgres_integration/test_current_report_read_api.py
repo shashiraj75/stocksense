@@ -1,0 +1,278 @@
+"""
+Wave C, Gate WC-K — real-PostgreSQL behavioral proof for the
+authorization-safe, side-effect-free current-report read API:
+GET /api/paper-trading/{trade_id}/current-report.
+"""
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+import psycopg
+import pytest
+
+from tests.postgres_integration.conftest import ensure_portfolio, make_auth_header
+
+pytestmark = pytest.mark.postgres_integration
+
+_ET = ZoneInfo("America/New_York")
+
+
+def _fake_none(*a, **k):
+    return []
+
+
+@pytest.fixture(autouse=True)
+def _patch_price_path_provider(monkeypatch):
+    from services.postmortem import price_path_generation
+    from services.postmortem.price_path_acquisition import acquire_price_path_evidence as _real_acquire
+
+    def _fake_acquire(*, fetch_bars_fn=None, fetch_splits_fn=None, fetch_dividends_fn=None, **kwargs):
+        return _real_acquire(fetch_bars_fn=_fake_none, fetch_splits_fn=_fake_none, fetch_dividends_fn=_fake_none, **kwargs)
+
+    monkeypatch.setattr(price_path_generation, "acquire_price_path_evidence", _fake_acquire)
+
+
+def _buy(client, user_id, **overrides):
+    body = {"symbol": "AAPL", "market": "US", "quantity": 1, "price": 100.0}
+    body.update(overrides)
+    return client.post("/api/paper-trading/buy", json=body, headers=make_auth_header(user_id))
+
+
+def _sell(client, user_id, trade_id, **overrides):
+    body = {"price": 108.0, "exit_reason": "MANUAL"}
+    body.update(overrides)
+    return client.post(f"/api/paper-trading/sell/{trade_id}", json=body, headers=make_auth_header(user_id))
+
+
+def _current_report(client, user_id, trade_id):
+    return client.get(f"/api/paper-trading/{trade_id}/current-report", headers=make_auth_header(user_id))
+
+
+def _open_and_close(client, pg_conn, user_id):
+    ensure_portfolio(pg_conn, user_id, cash_usd=1_000_000.0)
+    trade_id = _buy(client, user_id).json()["trade_id"]
+    resp = _sell(client, user_id, trade_id)
+    assert resp.status_code == 200
+    return trade_id
+
+
+# ============================= WC-K-02/03 — auth and ownership ============================= #
+
+def test_unauthenticated_request_is_rejected(client, pg_conn, unique_user_id):
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)
+    resp = client.get(f"/api/paper-trading/{trade_id}/current-report")
+    assert resp.status_code in (401, 403), f"expected 401/403 for an unauthenticated request, got {resp.status_code}"
+
+
+def test_nonexistent_trade_returns_404(client, pg_conn, unique_user_id):
+    resp = _current_report(client, unique_user_id, 999_999_999)
+    assert resp.status_code == 404
+
+
+def test_another_users_trade_is_indistinguishable_from_nonexistent(client, pg_conn, unique_user_id):
+    victim_id = f"{unique_user_id}-victim"
+    trade_id = _open_and_close(client, pg_conn, victim_id)
+
+    attacker_id = f"{unique_user_id}-attacker"
+    resp_attacker = _current_report(client, attacker_id, trade_id)
+    resp_nonexistent = _current_report(client, attacker_id, 999_999_999)
+
+    assert resp_attacker.status_code == 404
+    assert resp_attacker.status_code == resp_nonexistent.status_code
+    assert resp_attacker.json() == resp_nonexistent.json(), (
+        "another user's trade must be byte-for-byte indistinguishable from a nonexistent trade_id"
+    )
+
+
+# ============================= WC-K-06 — availability-state mapping ============================= #
+
+def test_open_owned_trade_is_not_eligible(client, pg_conn, unique_user_id):
+    ensure_portfolio(pg_conn, unique_user_id, cash_usd=1_000_000.0)
+    trade_id = _buy(client, unique_user_id).json()["trade_id"]
+
+    resp = _current_report(client, unique_user_id, trade_id)
+    assert resp.status_code == 200
+    assert resp.json()["availability"] == "NOT_ELIGIBLE"
+
+
+def test_closed_trade_no_outbox_no_report_is_not_available(client, pg_conn, unique_user_id):
+    """flag disabled (default in this test env unless a test enables it) — /sell
+    never creates a current outbox row, so a fresh closed trade with no
+    explicit generation request shows NOT_AVAILABLE, never a fabricated report."""
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)
+    resp = _current_report(client, unique_user_id, trade_id)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["availability"] == "NOT_AVAILABLE"
+    assert body["structured_report"] is None
+
+
+def test_ready_report_returns_persisted_complete_or_limited_evidence(client, pg_conn, unique_user_id, monkeypatch):
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)
+
+    resp = _current_report(client, unique_user_id, trade_id)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["availability"] == "READY"
+    assert body["report_schema_version"] == "1.2.0"
+    assert body["status"] in ("COMPLETE", "LIMITED_EVIDENCE")
+    assert body["structured_report"] is not None
+    assert "price_path" in body["structured_report"]
+
+
+def test_terminal_outbox_missing_report_is_integrity_contradiction(client, pg_conn, unique_user_id):
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)
+    schema_v, calc_v, rules_v = current_target_identity(
+        base_calculation_version=CALCULATION_VERSION,
+        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+    )
+    pg_conn.execute(
+        """INSERT INTO paper_trade_postmortem_outbox
+           (paper_trade_id, user_id, requested_report_schema_version, requested_calculation_version,
+            requested_rules_version, status, completed_at)
+           VALUES (%s, %s, %s, %s, %s, 'COMPLETE', now())""",
+        (trade_id, unique_user_id, schema_v, calc_v, rules_v),
+    )
+
+    resp = _current_report(client, unique_user_id, trade_id)
+    assert resp.status_code == 200
+    assert resp.json()["availability"] == "INTEGRITY_CONTRADICTION"
+
+
+def test_terminal_failure_outbox_is_reported(client, pg_conn, unique_user_id):
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)
+    schema_v, calc_v, rules_v = current_target_identity(
+        base_calculation_version=CALCULATION_VERSION,
+        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+    )
+    pg_conn.execute(
+        """INSERT INTO paper_trade_postmortem_outbox
+           (paper_trade_id, user_id, requested_report_schema_version, requested_calculation_version,
+            requested_rules_version, status, completed_at, last_error_code)
+           VALUES (%s, %s, %s, %s, %s, 'FAILED_TERMINAL', now(), 'MAX_ATTEMPTS_EXCEEDED')""",
+        (trade_id, unique_user_id, schema_v, calc_v, rules_v),
+    )
+
+    resp = _current_report(client, unique_user_id, trade_id)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["availability"] == "TERMINAL_FAILURE"
+    # WC-K-09 — no raw error code/exception leaked to the client.
+    assert "MAX_ATTEMPTS_EXCEEDED" not in str(body)
+
+
+def test_pending_outbox_is_processing(client, pg_conn, unique_user_id):
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)
+    schema_v, calc_v, rules_v = current_target_identity(
+        base_calculation_version=CALCULATION_VERSION,
+        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+    )
+    pg_conn.execute(
+        """INSERT INTO paper_trade_postmortem_outbox
+           (paper_trade_id, user_id, requested_report_schema_version, requested_calculation_version,
+            requested_rules_version, status)
+           VALUES (%s, %s, %s, %s, %s, 'PENDING')""",
+        (trade_id, unique_user_id, schema_v, calc_v, rules_v),
+    )
+
+    resp = _current_report(client, unique_user_id, trade_id)
+    assert resp.status_code == 200
+    assert resp.json()["availability"] == "PROCESSING"
+
+
+# ============================= WC-K-05 — side-effect-free proof ============================= #
+
+def test_get_never_calls_provider_acquisition(client, pg_conn, unique_user_id, monkeypatch):
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "0")
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)
+
+    calls = {"n": 0}
+    from services.postmortem import price_path_generation
+
+    def _counting_acquire(**kwargs):
+        calls["n"] += 1
+        raise AssertionError("GET must never call acquire_price_path_evidence")
+
+    monkeypatch.setattr(price_path_generation, "acquire_price_path_evidence", _counting_acquire)
+
+    resp = _current_report(client, unique_user_id, trade_id)
+    assert resp.status_code == 200
+    assert calls["n"] == 0, "GET /current-report must never trigger provider acquisition."
+
+
+def test_get_inserts_no_outbox_row_and_no_report_row(client, pg_conn, unique_user_id):
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)
+
+    before_outbox = pg_conn.execute(
+        "SELECT count(*) FROM paper_trade_postmortem_outbox WHERE paper_trade_id = %s", (trade_id,),
+    ).fetchone()[0]
+    before_report = pg_conn.execute(
+        "SELECT count(*) FROM paper_trade_postmortem_report WHERE paper_trade_id = %s AND report_schema_version = '1.2.0'",
+        (trade_id,),
+    ).fetchone()[0]
+
+    for _ in range(3):
+        resp = _current_report(client, unique_user_id, trade_id)
+        assert resp.status_code == 200
+
+    after_outbox = pg_conn.execute(
+        "SELECT count(*) FROM paper_trade_postmortem_outbox WHERE paper_trade_id = %s", (trade_id,),
+    ).fetchone()[0]
+    after_report = pg_conn.execute(
+        "SELECT count(*) FROM paper_trade_postmortem_report WHERE paper_trade_id = %s AND report_schema_version = '1.2.0'",
+        (trade_id,),
+    ).fetchone()[0]
+
+    assert after_outbox == before_outbox, "GET must never insert an outbox row."
+    assert after_report == before_report, "GET must never insert a report row."
+
+
+def test_get_does_not_mutate_trade_row(client, pg_conn, unique_user_id):
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)
+    before = pg_conn.execute(
+        "SELECT status, exit_price, closed_at FROM paper_trades WHERE id = %s", (trade_id,),
+    ).fetchone()
+
+    for _ in range(3):
+        _current_report(client, unique_user_id, trade_id)
+
+    after = pg_conn.execute(
+        "SELECT status, exit_price, closed_at FROM paper_trades WHERE id = %s", (trade_id,),
+    ).fetchone()
+    assert before == after, "GET must never mutate the trade row."
+
+
+# ============================= WC-K-10 — historical-version isolation ============================= #
+
+def test_historical_1_1_0_report_never_returned_as_current(client, pg_conn, unique_user_id):
+    from services.postmortem import report_store
+
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)
+    report_store.persist_report(
+        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+        report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
+        report_schema_version="1.1.0", calculation_version="1.1.0-legacy-test", attribution_rules_version="1.1.0-legacy-test",
+        evidence_bundle_version="1.0.0", status="COMPLETE", structured_report={"legacy": True}, evidence_items=[], claims=[],
+        source_manifest={}, evidence_gaps=[], warnings=[],
+    )
+
+    resp = _current_report(client, unique_user_id, trade_id)
+    assert resp.status_code == 200
+    body = resp.json()
+    # No 1.2.0 report was ever generated for this trade — the legacy 1.1.0
+    # row must never be silently presented as the current report.
+    assert body["report_schema_version"] != "1.1.0"
+    if body["structured_report"] is not None:
+        assert body["structured_report"].get("legacy") is not True

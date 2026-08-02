@@ -45,6 +45,7 @@ from services.postmortem import generation_service
 from services.postmortem import outbox as outbox_ops
 from services.postmortem import report_store
 from services.postmortem import price_path_generation
+from services.postmortem.current_report_generation import current_target_identity
 from services.postmortem import price_path_eligibility
 from services.postmortem import price_path_evidence_decision
 from services.postmortem.idempotency import (
@@ -3170,6 +3171,124 @@ def get_trade_postmortem(trade_id: int, user_id: str = Depends(get_current_user_
     )
 
 
+# ============================= Wave C — current (1.2.0) governed report read API ============================= #
+# Gate 'WC-K — Backend Read Contract'. Deliberately a NEW, distinct route
+# from GET /postmortem/{trade_id} above (Sprint 1 basic deterministic
+# analytics, a materially different response shape) — repurposing that
+# route would silently break existing clients depending on its shape.
+# This endpoint is side-effect-free: it reads persisted trade/report/
+# outbox state only, NEVER calls process_current_report, NEVER acquires
+# provider evidence, NEVER claims or settles an outbox row, NEVER writes
+# anything. See test_current_report_read_api.py's own
+# "no side effects" assertions for the enforced proof.
+
+CURRENT_REPORT_STATUS_READY = "READY"
+CURRENT_REPORT_STATUS_PROCESSING = "PROCESSING"
+CURRENT_REPORT_STATUS_NOT_ELIGIBLE = "NOT_ELIGIBLE"
+CURRENT_REPORT_STATUS_NOT_AVAILABLE = "NOT_AVAILABLE"
+CURRENT_REPORT_STATUS_TERMINAL_FAILURE = "TERMINAL_FAILURE"
+CURRENT_REPORT_STATUS_INTEGRITY_CONTRADICTION = "INTEGRITY_CONTRADICTION"
+
+
+class CurrentReportReadResponse(BaseModel):
+    trade_id: int
+    availability: str
+    report_schema_version: str | None = None
+    calculation_version: str | None = None
+    attribution_rules_version: str | None = None
+    market: str | None = None
+    report_trading_date: str | None = None
+    market_timezone: str | None = None
+    status: str | None = None
+    generated_at: str | None = None
+    structured_report: dict | None = None
+    claims: list | None = None
+    evidence_items: list | None = None
+    evidence_gaps: list | None = None
+    warnings: list | None = None
+    source_manifest: dict | None = None
+    supersedes_report_id: int | None = None
+
+
+@router.get("/{trade_id}/current-report", response_model=CurrentReportReadResponse)
+def get_current_governed_report(trade_id: int, user_id: str = Depends(get_current_user_id)):
+    """WC-K-01/02/03/04/05/06/07/08/09/10 — the canonical, side-effect-
+    free read for the current (1.2.0) governed Postmortem report.
+
+    Never generates, regenerates, claims, or settles anything — reads
+    ONLY the persisted `paper_trades`, `paper_trade_postmortem_report`,
+    and `paper_trade_postmortem_outbox` rows for this exact trade_id/
+    user_id/current-version-identity, in one connection, then returns.
+
+    Ownership uses the SAME indistinguishable-404 convention as
+    GET /postmortem/{trade_id} above — a trade belonging to another
+    user is never distinguishable from a nonexistent trade_id."""
+    with _conn() as conn:
+        trade_row = conn.execute(
+            "SELECT user_id, status, market FROM paper_trades WHERE id = %s", (trade_id,),
+        ).fetchone()
+        if trade_row is None or trade_row[0] != user_id:
+            raise HTTPException(status_code=404, detail="Trade not found")
+        trade_owner, trade_status, trade_market = trade_row
+
+        if trade_status != "CLOSED":
+            return CurrentReportReadResponse(trade_id=trade_id, availability=CURRENT_REPORT_STATUS_NOT_ELIGIBLE)
+
+        from services.postmortem.deterministic import CALCULATION_VERSION as _base_calc_v
+        from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION as _num_rules_v
+        from services.postmortem.price_path_generation import SOURCE_VERSION as _src_v
+        schema_v, calc_v, rules_v = current_target_identity(
+            base_calculation_version=_base_calc_v, numerical_rules_version=_num_rules_v, source_version=_src_v,
+        )
+
+        report = report_store.get_current_report(
+            conn, paper_trade_id=trade_id, user_id=user_id,
+            report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+        )
+        if report is not None:
+            return CurrentReportReadResponse(
+                trade_id=trade_id, availability=CURRENT_REPORT_STATUS_READY,
+                report_schema_version=report.report_schema_version,
+                calculation_version=report.calculation_version,
+                attribution_rules_version=report.attribution_rules_version,
+                market=report.market,
+                report_trading_date=report.report_trading_date.isoformat() if report.report_trading_date else None,
+                market_timezone=report.market_timezone,
+                status=report.status,
+                structured_report=report.structured_report,
+                claims=report.claims,
+                evidence_items=report.evidence_items,
+                evidence_gaps=report.evidence_gaps,
+                warnings=report.warnings,
+                source_manifest=report.source_manifest,
+                supersedes_report_id=report.supersedes_report_id,
+            )
+
+        # No report exists yet — check the current-version outbox row
+        # (if one exists) to distinguish PROCESSING / TERMINAL_FAILURE /
+        # INTEGRITY_CONTRADICTION from genuinely NOT_AVAILABLE (never
+        # requested at all). This is a pure read of the outbox row's own
+        # status column — never a claim, never a settlement.
+        outbox_row = conn.execute(
+            """SELECT status FROM paper_trade_postmortem_outbox
+               WHERE paper_trade_id = %s AND user_id = %s AND requested_report_schema_version = %s
+                 AND requested_calculation_version = %s AND requested_rules_version = %s""",
+            (trade_id, user_id, schema_v, calc_v, rules_v),
+        ).fetchone()
+
+        if outbox_row is None:
+            return CurrentReportReadResponse(trade_id=trade_id, availability=CURRENT_REPORT_STATUS_NOT_AVAILABLE)
+
+        outbox_status = outbox_row[0]
+        if outbox_status in ("PENDING", "GENERATING", "FAILED_RETRYABLE"):
+            return CurrentReportReadResponse(trade_id=trade_id, availability=CURRENT_REPORT_STATUS_PROCESSING)
+        if outbox_status == "FAILED_TERMINAL":
+            return CurrentReportReadResponse(trade_id=trade_id, availability=CURRENT_REPORT_STATUS_TERMINAL_FAILURE)
+        # outbox_status in ("COMPLETE", "LIMITED_EVIDENCE") but no report
+        # row exists — the exact integrity-contradiction condition
+        # current_report_generation.process_current_report itself
+        # detects and refuses to silently regenerate under.
+        return CurrentReportReadResponse(trade_id=trade_id, availability=CURRENT_REPORT_STATUS_INTEGRITY_CONTRADICTION)
 
 
 class GenerateReportResponse(BaseModel):
