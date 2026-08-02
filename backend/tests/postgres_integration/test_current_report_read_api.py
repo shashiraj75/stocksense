@@ -411,8 +411,8 @@ def test_malformed_status_at_current_identity_fails_closed_to_integrity_contradi
     from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
     from services.postmortem import report_store
 
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # flag OFF at close — no auto-generation
     monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
-    trade_id = _open_and_close(client, pg_conn, unique_user_id)
 
     schema_v, calc_v, rules_v = current_target_identity(
         base_calculation_version=CALCULATION_VERSION,
@@ -448,8 +448,8 @@ def test_malformed_report_causes_no_mutation_or_recovery(client, pg_conn, unique
     from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
     from services.postmortem import report_store
 
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # flag OFF at close — no auto-generation
     monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
-    trade_id = _open_and_close(client, pg_conn, unique_user_id)
 
     schema_v, calc_v, rules_v = current_target_identity(
         base_calculation_version=CALCULATION_VERSION,
