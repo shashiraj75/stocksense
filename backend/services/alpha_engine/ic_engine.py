@@ -84,11 +84,41 @@ ACADEMIC_PRIOR_IC: dict[str, dict[str, dict[str, float]]] = {
 }
 
 
+_live_ic_cache: dict[tuple[str, str], dict[str, float] | None] = {}
+_live_ic_cache_expiry: dict[tuple[str, str], float] = {}
+
+
 def _compute_live_ic(horizon: str, market: str) -> dict[str, float] | None:
     """
     Compute IC from logged predictions + actual outcomes, for one market.
     Returns None if fewer than MIN_REAL_DATA_ROWS pairs are available.
+
+    Cached per (market, horizon) for CACHE_TTL seconds — this is the function
+    behind the full predictions/outcomes join (get_training_data), and prior
+    to 2026-08 it was called uncached from shadow_ic_available() (a purely
+    diagnostic call site, see that function's docstring) on every Daily Picks
+    generation, which was a major contributor to the 2026-08 Supabase egress
+    incident. Caching here changes nothing about the returned IC values
+    themselves — only how often they're recomputed from Postgres.
     """
+    cache_key = (market, horizon)
+    now = time.time()
+    with _lock:
+        if cache_key in _live_ic_cache and now < _live_ic_cache_expiry.get(cache_key, 0):
+            return _live_ic_cache[cache_key]
+
+    result = _compute_live_ic_uncached(horizon, market)
+
+    with _lock:
+        _live_ic_cache[cache_key] = result
+        _live_ic_cache_expiry[cache_key] = now + CACHE_TTL
+
+    return result
+
+
+def _compute_live_ic_uncached(horizon: str, market: str) -> dict[str, float] | None:
+    """Uncached implementation — see _compute_live_ic, the cached entry point
+    every caller should use instead of calling this directly."""
     try:
         import numpy as np
         from services.alpha_engine.store import get_training_data
@@ -228,7 +258,9 @@ def get_ic_values(horizon: str, market: str = "IN") -> dict[str, float]:
 
 def invalidate_cache():
     """Force IC recomputation on next call (called after new outcomes are logged)."""
-    global _cache, _cache_expiry
+    global _cache, _cache_expiry, _live_ic_cache, _live_ic_cache_expiry
     with _lock:
         _cache = {}
         _cache_expiry = {}
+        _live_ic_cache = {}
+        _live_ic_cache_expiry = {}

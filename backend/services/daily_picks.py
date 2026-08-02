@@ -18,6 +18,7 @@ import logging
 import os
 import random
 import re
+import threading
 import time
 import uuid as _uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1910,32 +1911,92 @@ def _generate_picks_inner(
         else:
             log.warning(f"[picks] [{market}] Postgres save returned False — picks not durably persisted.")
 
+    # Invalidate the read-side TTL cache so the very next request sees this
+    # payload rather than a stale cached one for up to _PICKS_CACHE_TTL_SECONDS.
+    _invalidate_cached_picks(market)
+
     return payload, persisted_at
+
+
+# Bounded, market-isolated, thread-safe TTL cache in front of get_cached_picks's
+# Postgres read. Added 2026-08 (Supabase egress incident): /api/picks/daily and
+# /api/picks/status had zero server-side cache, so every request — including
+# frontend polling as often as every 15s — re-read the full picks JSONB blob
+# from Postgres. See _invalidate_cached_picks, called immediately after a
+# successful persist, for the primary consistency mechanism; the TTL below is
+# only a safety net for any gap around that invalidation.
+_PICKS_CACHE_TTL_SECONDS = 60
+_picks_cache: dict[str, dict] = {}
+_picks_cache_expiry: dict[str, float] = {}
+_picks_cache_lock = threading.Lock()
+_picks_cache_fetch_locks: dict[str, threading.Lock] = {
+    "IN": threading.Lock(),
+    "US": threading.Lock(),
+}
+
+
+def _invalidate_cached_picks(market: str) -> None:
+    """Drop the cached payload for a market so the next read is durable."""
+    with _picks_cache_lock:
+        _picks_cache.pop(market, None)
+        _picks_cache_expiry.pop(market, None)
+
+
+def _fresh_cached_picks(market: str) -> dict | None:
+    with _picks_cache_lock:
+        cached = _picks_cache.get(market)
+        expiry = _picks_cache_expiry.get(market, 0)
+        if cached is not None and time.monotonic() < expiry:
+            return cached
+    return None
 
 
 def get_cached_picks(market: str = "IN") -> dict | None:
     """
     Return today's picks for a market. Reads from Postgres first (survives
     Render redeploys), falls back to local disk cache.
-    """
-    # Postgres first
-    if os.getenv("USE_POSTGRES") == "1":
-        try:
-            from services.postgres_store import load_picks_from_db
-            data = load_picks_from_db(market=market)
-            if data:
-                return data
-        except Exception as e:
-            log.warning(f"[picks] [{market}] Postgres load failed, falling back to disk: {e}")
 
-    # Disk fallback
-    try:
-        with open(_cache_file(market)) as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return None
-    except Exception:
-        return None
+    A short-TTL in-process cache sits in front of the durable read (see
+    _PICKS_CACHE_TTL_SECONDS above) — concurrent callers during a cache miss
+    share one in-flight fetch via a per-market lock rather than each issuing
+    their own Postgres round-trip (no cache stampede).
+    """
+    hit = _fresh_cached_picks(market)
+    if hit is not None:
+        return hit
+
+    fetch_lock = _picks_cache_fetch_locks.setdefault(market, threading.Lock())
+    with fetch_lock:
+        # Another thread may have populated the cache while we waited on the lock.
+        hit = _fresh_cached_picks(market)
+        if hit is not None:
+            return hit
+
+        data = None
+        # Postgres first
+        if os.getenv("USE_POSTGRES") == "1":
+            try:
+                from services.postgres_store import load_picks_from_db
+                data = load_picks_from_db(market=market)
+            except Exception as e:
+                log.warning(f"[picks] [{market}] Postgres load failed, falling back to disk: {e}")
+
+        # Disk fallback
+        if data is None:
+            try:
+                with open(_cache_file(market)) as f:
+                    data = json.load(f)
+            except FileNotFoundError:
+                data = None
+            except Exception:
+                data = None
+
+        if data is not None:
+            with _picks_cache_lock:
+                _picks_cache[market] = data
+                _picks_cache_expiry[market] = time.monotonic() + _PICKS_CACHE_TTL_SECONDS
+
+        return data
 
 
 def picks_generated_today(market: str = "IN") -> bool:
