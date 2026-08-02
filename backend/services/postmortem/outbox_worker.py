@@ -178,29 +178,62 @@ async def _worker_loop(conn_factory, *, market_tzinfo_by_market: dict, poll_inte
 
 def start_outbox_worker(conn_factory, *, market_tzinfo_by_market: dict, poll_interval_seconds: int = POLL_INTERVAL_SECONDS) -> asyncio.Task | None:
     """Idempotent: calling this twice without an intervening stop_
-    never spawns a second concurrent poll loop. Flag-gating is the
-    CALLER's responsibility (api/main.py checks TRADE_POSTMORTEM_
-    PRICE_PATH_ENABLED before calling this), matching every other
-    flag-gated background loop already in that module."""
+    never spawns a second concurrent poll loop — checked against the
+    SAME module-global _TASK reference stop_outbox_worker's timeout
+    path deliberately never discards while that task (or its underlying
+    asyncio.to_thread generation call) might still be running. Flag-
+    gating is the CALLER's responsibility (api/main.py checks
+    TRADE_POSTMORTEM_PRICE_PATH_ENABLED before calling this), matching
+    every other flag-gated background loop already in that module."""
     global _TASK, _STOP_EVENT
     if _TASK is not None and not _TASK.done():
         return _TASK
     _STOP_EVENT = asyncio.Event()
-    _TASK = asyncio.create_task(_worker_loop(conn_factory, market_tzinfo_by_market=market_tzinfo_by_market, poll_interval_seconds=poll_interval_seconds))
+    task = asyncio.create_task(_worker_loop(conn_factory, market_tzinfo_by_market=market_tzinfo_by_market, poll_interval_seconds=poll_interval_seconds))
+    _TASK = task
+
+    def _clear_on_done(finished_task, *, _expected=task):
+        # Only clear module state if the GLOBAL _TASK is still exactly
+        # the task that just finished — a done callback firing after a
+        # later start_outbox_worker() call replaced _TASK with a NEW
+        # task must never clobber that newer task's state (a race the
+        # prior implementation's unconditional `_TASK = None` did not
+        # guard against).
+        global _TASK, _STOP_EVENT
+        if _TASK is _expected:
+            _TASK = None
+            _STOP_EVENT = None
+        if finished_task.cancelled():
+            return
+        exc = finished_task.exception()
+        if exc is not None:
+            log.warning("[outbox_worker] worker loop task ended with an unhandled exception")
+
+    task.add_done_callback(_clear_on_done)
     return _TASK
 
 
 async def stop_outbox_worker() -> None:
     """Graceful shutdown — signals the loop to stop AFTER its current
-    in-flight claim/process cycle finishes (never cancels a task mid-
-    transaction while holding a lease)."""
-    global _TASK, _STOP_EVENT
+    in-flight claim/process cycle finishes. Deliberately uses
+    asyncio.shield so a timeout here never cancels the underlying task —
+    process_current_report's own work may be running inside
+    asyncio.to_thread, which cannot be forcibly cancelled once started
+    (the OS thread keeps running regardless), so cancelling the
+    wrapping asyncio.Task would only ORPHAN that work while this
+    function falsely reported the worker as stopped. On timeout, the
+    authoritative _TASK reference is deliberately RETAINED (never
+    cleared here) so a caller cannot mistake 'we stopped waiting' for
+    'the worker actually stopped' — state is cleared exactly once, by
+    the task's own done-callback (see start_outbox_worker), whenever
+    the task genuinely finishes, even long after this function returns."""
     if _STOP_EVENT is not None:
         _STOP_EVENT.set()
     if _TASK is not None:
         try:
-            await asyncio.wait_for(_TASK, timeout=WORKER_LEASE_DURATION_SECONDS + POLL_INTERVAL_SECONDS)
+            await asyncio.wait_for(asyncio.shield(_TASK), timeout=WORKER_LEASE_DURATION_SECONDS + POLL_INTERVAL_SECONDS)
         except asyncio.TimeoutError:
-            log.warning("[outbox_worker] stop timed out waiting for in-flight cycle")
-    _TASK = None
-    _STOP_EVENT = None
+            log.warning(
+                "[outbox_worker] stop timed out waiting for in-flight cycle — worker task is still "
+                "tracked and will be cleared by its own completion callback once it genuinely finishes"
+            )

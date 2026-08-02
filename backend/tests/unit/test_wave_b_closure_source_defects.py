@@ -23,10 +23,20 @@ def _make_entry_snapshot(**overrides):
     base = dict(
         paper_trade_id=1, user_id="u1", symbol="AAPL", market="US",
         snapshot_schema_version="1.0.0", evidence_source="DAILY_PICK",
-        simulated_execution_price=100.0,
+        daily_pick_run_id=None, daily_pick_rank=None, recommendation_signal=None,
+        recommendation_generated_at=None, recommendation_reference_price=None,
+        recommendation_entry_low=None, recommendation_entry_high=None,
+        simulated_execution_price=100.0, execution_slippage_pct=None, execution_range_position=None,
+        recommended_stop_loss=95.0, recommended_target_price=110.0,
         user_selected_stop_loss=95.0, user_selected_target_price=110.0,
+        user_overrode_recommendation=False, reward_to_risk_ratio=None, confidence_score=None,
+        technical_signal=None, technical_rsi=None, technical_macd_diff=None,
+        fundamental_score=None, sentiment_score=None, sentiment_label=None,
+        market_regime_trend=None, market_regime_score_adj=None, market_regime_reason=None,
+        recommendation_reasoning=None, model_version=None, verification_levels={},
         level_history_contract_version="1.0.0",
         initial_stop_modified_after_entry=False, initial_target_modified_after_entry=False,
+        initial_levels_modified_after_entry=False,
     )
     base.update(overrides)
     return EntrySnapshot(**base)
@@ -39,9 +49,12 @@ def _make_exit_snapshot(**overrides):
         closure_classification="MANUAL", exit_mechanism="MANUAL", exit_mechanism_raw="MANUAL",
         exit_price=108.0, exit_quantity=10, closed_at=datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc),
         final_stop_loss=97.0, final_target_price=108.0,
+        trailing_stop_level=None, time_exit_rule=None, market_close_rule=None,
         management_mode="MANUAL", levels_modified_after_entry=True,
         level_history_contract_version="1.0.0",
         final_stop_modified_after_entry=True, final_target_modified_after_entry=True,
+        source_request_id=None, trigger_observation_timestamp=None, trigger_observation_price=None,
+        trigger_timing_verification=None, source_metadata=None,
     )
     base.update(overrides)
     return ExitSnapshot(**base)

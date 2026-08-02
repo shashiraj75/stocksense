@@ -79,6 +79,12 @@ CURRENT_REPORT_GENERATION_IN_PROGRESS = "CURRENT_REPORT_GENERATION_IN_PROGRESS"
 CURRENT_REPORT_FAILED_RETRYABLE = "CURRENT_REPORT_FAILED_RETRYABLE"
 CURRENT_REPORT_FAILED_TERMINAL = "CURRENT_REPORT_FAILED_TERMINAL"
 CURRENT_REPORT_NOT_YET_AVAILABLE = "CURRENT_REPORT_NOT_YET_AVAILABLE"
+# A terminal-success (COMPLETE/LIMITED_EVIDENCE) outbox row whose report
+# is genuinely missing — an inconsistent state (e.g. manual DB
+# intervention). Never silently regenerated (that would fabricate a
+# second "success" under a row that already claims one happened) —
+# surfaced distinctly for operational remediation instead.
+CURRENT_REPORT_INTEGRITY_CONTRADICTION = "CURRENT_REPORT_INTEGRITY_CONTRADICTION"
 
 
 def current_target_identity(*, base_calculation_version: str, numerical_rules_version: str, source_version: str) -> tuple[str, str, str]:
@@ -643,11 +649,58 @@ def process_current_report(
         )
         if existing is not None:
             if outbox_id is not None and claimed_by is not None:
-                outbox_ops.mark_terminal(conn, outbox_id=outbox_id, status="SUCCEEDED", claimed_by=claimed_by)
+                # The row's own already-determined status, never an
+                # invented value — mark_terminal only accepts COMPLETE/
+                # LIMITED_EVIDENCE/FAILED_TERMINAL, and existing.status
+                # is always one of those (report_store only ever
+                # persists a report under one of those statuses).
+                settled = outbox_ops.mark_terminal(
+                    conn, outbox_id=outbox_id, status=existing.status, claimed_by=claimed_by,
+                )
+                if not settled:
+                    raise generation_service.StaleLeaseError(
+                        f"outbox_id={outbox_id}: lease no longer held by claimant when settling an "
+                        "already-existing report — a different claimant has since taken over this row."
+                    )
             return existing, CURRENT_REPORT_ALREADY_COMPLETE
 
-        applicable_stop = exit_snapshot.final_stop_loss if exit_snapshot else trade["stop_loss"]
-        applicable_target = exit_snapshot.final_target_price if exit_snapshot else trade["target_price"]
+        # Gate 'J4F — Report-Exists Reconciliation': a terminal-success
+        # (COMPLETE/LIMITED_EVIDENCE) outbox row whose report is
+        # genuinely missing is an inconsistent state — never silently
+        # self-heal by regenerating (that would fabricate a SECOND
+        # "success" under a row that already claims one happened);
+        # surface it distinctly for operational remediation instead.
+        if outbox_id is not None:
+            outbox_row = conn.execute(
+                "SELECT status FROM paper_trade_postmortem_outbox WHERE id = %s", (outbox_id,),
+            ).fetchone()
+            if outbox_row is not None and outbox_row[0] in ("COMPLETE", "LIMITED_EVIDENCE"):
+                logger.warning(
+                    "current_report_generation: integrity contradiction — outbox_id=%s already "
+                    "terminal-success but no matching report exists", outbox_id,
+                )
+                return None, CURRENT_REPORT_INTEGRITY_CONTRADICTION
+
+        # Gate 'J4E — Immutable Snapshot Consumption': the entry and
+        # exit endpoint values are derived INDEPENDENTLY from each
+        # snapshot's own immutable fields — never collapsed onto one
+        # shared "applicable" value. A missing snapshot means missing
+        # endpoint evidence (None), never a silent substitution of the
+        # mutable paper_trades row.
+        entry_stop_value = entry_snapshot.user_selected_stop_loss if entry_snapshot is not None else None
+        entry_target_value = entry_snapshot.user_selected_target_price if entry_snapshot is not None else None
+        exit_stop_value = exit_snapshot.final_stop_loss if exit_snapshot is not None else None
+        exit_target_value = exit_snapshot.final_target_price if exit_snapshot is not None else None
+        # The numerical crossing OBSERVATION itself still needs one
+        # configured level per side (raw price-path math has no notion
+        # of "entry vs exit" — it observes against whichever level value
+        # was actually in force). The EXIT snapshot's final value is
+        # used for observation when present (the level that was active
+        # at close, which is what a real touch/no-touch determination
+        # must be checked against); the mutable trade row is the last
+        # resort only when neither snapshot exists at all.
+        applicable_stop = exit_stop_value if exit_snapshot is not None else trade["stop_loss"]
+        applicable_target = exit_target_value if exit_snapshot is not None else trade["target_price"]
 
         gen_ctx = price_path_generation.load_generation_context(
             conn, trade_id=trade_id, user_id=user_id, symbol=trade["symbol"], market=trade["market"],
@@ -676,34 +729,55 @@ def process_current_report(
                     )
             return None, CURRENT_REPORT_FAILED_RETRYABLE
 
-    with conn_factory() as conn:
-        if bundle is not None and gen_ctx.compatible_evidence is None:
+    # Phase 3 — short evidence-persistence transaction, closed before
+    # pure report construction begins.
+    if bundle is not None and gen_ctx.compatible_evidence is None:
+        with conn_factory() as conn:
             price_path_generation.persist_price_path_evidence(conn, bundle)
 
-        price_path_payload = build_governed_price_path_payload(
-            trade_id, bundle, entry_snapshot=entry_snapshot, exit_snapshot=exit_snapshot,
-            entry_price=trade["entry_price"], exit_price=trade["exit_price"],
-            entry_stop_value=applicable_stop, exit_stop_value=applicable_stop,
-            entry_target_value=applicable_target, exit_target_value=applicable_target,
-        )
-        closed_record = ClosedTradeRecord(
-            trade_id=trade["trade_id"], status=trade["status"], symbol=trade["symbol"], market=trade["market"],
-            quantity=trade["quantity"], entry_price=trade["entry_price"], exit_price=trade["exit_price"],
-            stop_loss=trade["stop_loss"], target_price=trade["target_price"], opened_at=trade["opened_at"],
-            closed_at=trade["closed_at"], trade_management_mode=trade["trade_management_mode"],
-            exit_reason=trade["exit_reason"],
-        )
-        postmortem = compute_postmortem(closed_record, snapshot=entry_snapshot)
-        current_payload = build_current_report_payload(
-            postmortem=postmortem, entry_snapshot=entry_snapshot, exit_snapshot=exit_snapshot,
-            price_path_payload=price_path_payload,
-            base_calculation_version=generation_service.CALCULATION_VERSION,
-            numerical_rules_version=numerical_rules_version, source_version=source_version,
-        )
+    # Phase 4 — pure report construction. No database connection is open
+    # anywhere in this block (Gate 'J4E — Current Report Generation
+    # Architecture').
+    price_path_payload = build_governed_price_path_payload(
+        trade_id, bundle, entry_snapshot=entry_snapshot, exit_snapshot=exit_snapshot,
+        entry_price=trade["entry_price"], exit_price=trade["exit_price"],
+        entry_stop_value=entry_stop_value, exit_stop_value=exit_stop_value,
+        entry_target_value=entry_target_value, exit_target_value=exit_target_value,
+    )
+    closed_record = ClosedTradeRecord(
+        trade_id=trade["trade_id"], status=trade["status"], symbol=trade["symbol"], market=trade["market"],
+        quantity=trade["quantity"], entry_price=trade["entry_price"], exit_price=trade["exit_price"],
+        stop_loss=trade["stop_loss"], target_price=trade["target_price"], opened_at=trade["opened_at"],
+        closed_at=trade["closed_at"], trade_management_mode=trade["trade_management_mode"],
+        exit_reason=trade["exit_reason"],
+    )
+    postmortem = compute_postmortem(closed_record, snapshot=entry_snapshot)
+    current_payload = build_current_report_payload(
+        postmortem=postmortem, entry_snapshot=entry_snapshot, exit_snapshot=exit_snapshot,
+        price_path_payload=price_path_payload,
+        base_calculation_version=generation_service.CALCULATION_VERSION,
+        numerical_rules_version=numerical_rules_version, source_version=source_version,
+    )
 
+    # Market-local trading date — trade['closed_at'] is a UTC-aware
+    # timestamp; the report's trading date must reflect the CLOSE
+    # market's own local calendar day, never the bare UTC date (which
+    # can differ near day boundaries, especially for Asia/Kolkata's
+    # UTC+5:30 offset).
+    closed_at = trade["closed_at"]
+    if closed_at.tzinfo is None:
+        raise ValueError(
+            f"process_current_report: trade_id={trade_id} has a timezone-naive closed_at — "
+            "refusing to guess a market-local trading date rather than silently using the wrong one."
+        )
+    report_trading_date = closed_at.astimezone(market_tzinfo).date()
+
+    # Phase 5 — fresh short atomic transaction: predecessor lookup,
+    # idempotent report insert, outbox terminal settlement.
+    with conn_factory() as conn:
         report, created = persist_current_report(
             conn, trade_id=trade_id, user_id=user_id, market=trade["market"],
-            report_trading_date=trade["closed_at"].date(), market_timezone=market_timezone_name,
+            report_trading_date=report_trading_date, market_timezone=market_timezone_name,
             payload=current_payload, calculation_version=calc_version,
             evidence_bundle_version=evidence_bundle_version, outbox_id=outbox_id, claimed_by=claimed_by,
         )
