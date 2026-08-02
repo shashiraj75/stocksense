@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_serializer, model_validator
-from typing import Literal
+from typing import Any, Literal
 from services.auth import get_current_user_id
 from services.market_hours import is_market_open as _is_market_open
 from services.paper_trade_math import compute_realized_pnl_abs, compute_realized_pnl_pct
@@ -3204,7 +3204,16 @@ CurrentReportAvailability = Literal[
 CurrentReportStatus = Literal["COMPLETE", "LIMITED_EVIDENCE"]
 
 
-type JSONValue = str | int | float | bool | None | list[JSONValue] | dict[str, JSONValue]
+# A fully self-referencing recursive alias (via the `type` statement,
+# Python 3.12+) is not usable here — CI runs Python 3.11 (a SyntaxError
+# on `type X = ...`), and a plain `Union[..., list["X"], dict[str,
+# "X"]]` string-forward-ref alias triggers infinite recursion in this
+# pydantic version's schema generation (reproduced directly). `Any` for
+# the nested cases is the safe, universally-compatible choice; the
+# field itself is still typed as JSONValue at the top level to document
+# intent (a JSON-safe scalar, or a JSON-safe list/dict of otherwise-
+# unconstrained JSON-safe content).
+JSONValue = str | int | float | bool | None | list[Any] | dict[str, Any]
 
 
 class PostmortemClaimModel(BaseModel):
