@@ -665,7 +665,7 @@ def test_report_level_source_manifest_preserves_historical_absence_of_price_path
     )
     manifest_without_price_path_key = {
         "has_entry_snapshot": True, "has_exit_snapshot": True,
-        "exit_snapshot_schema_version": "1.0.0", "exit_trigger_timing_verification": "verified",
+        "exit_snapshot_schema_version": "1.0.0", "exit_trigger_timing_verification": "SERVER_VERIFIED",
         "exit_evidence_rules_version": "1.0.0",
         "phase1_calculation_version": "1.0.0", "attribution_rules_version": "1.0.0",
         # price_path_calculation_version intentionally omitted entirely.
