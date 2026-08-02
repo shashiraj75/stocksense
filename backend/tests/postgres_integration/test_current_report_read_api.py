@@ -168,29 +168,45 @@ def test_evidence_bundle_version_reflects_the_persisted_row_not_a_code_constant(
     from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
     from services.postmortem import report_store
 
-    # Close happens with the capability at its default (off), so /sell
-    # never auto-generates a report at this identity — this test is the
-    # sole writer of the current-version row, avoiding an ON CONFLICT
-    # DO NOTHING no-op against an auto-generated report that would
-    # silently keep the ORIGINAL (non-marker) evidence_bundle_version.
-    trade_id = _open_and_close(client, pg_conn, unique_user_id)
+    # Trade A: capability ON at close time, so /sell auto-generates a
+    # REAL report through the actual production pipeline — the source
+    # of a realistic structured_report/claims/evidence_items/
+    # source_manifest body (never a hand-written stub), so this test
+    # stays valid against a future strict typed response contract.
     monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    real_trade_id = _open_and_close(client, pg_conn, unique_user_id)
+    real_row = pg_conn.execute(
+        """SELECT structured_report, evidence_items, claims, source_manifest, evidence_gaps, warnings, status
+           FROM paper_trade_postmortem_report WHERE paper_trade_id = %s""",
+        (real_trade_id,),
+    ).fetchone()
+    (real_structured, real_evidence_items, real_claims, real_source_manifest,
+     real_evidence_gaps, real_warnings, real_status) = real_row
 
     schema_v, calc_v, rules_v = current_target_identity(
         base_calculation_version=CALCULATION_VERSION,
         numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
     )
+
+    # Trade B: capability OFF at close time, so /sell never
+    # auto-generates a report at this identity for THIS trade — a
+    # distinct trade_id also avoids the ON CONFLICT DO NOTHING
+    # collision an UPDATE-in-place or a second INSERT for real_trade_id
+    # would hit against its own immutable row.
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "0")
+    other_trade_id = _open_and_close(client, pg_conn, unique_user_id)
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
     marker = "9.9.9-persisted-provenance-adversarial-marker"
     report_store.persist_report(
-        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+        pg_conn, paper_trade_id=other_trade_id, user_id=unique_user_id, market="US",
         report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
         report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
-        evidence_bundle_version=marker, status="COMPLETE",
-        structured_report={"price_path": {}}, evidence_items=[], claims=[],
-        source_manifest={}, evidence_gaps=[], warnings=[],
+        evidence_bundle_version=marker, status=real_status,
+        structured_report=real_structured, evidence_items=real_evidence_items, claims=real_claims,
+        source_manifest=real_source_manifest, evidence_gaps=real_evidence_gaps, warnings=real_warnings,
     )
 
-    resp = _current_report(client, unique_user_id, trade_id)
+    resp = _current_report(client, unique_user_id, other_trade_id)
     assert resp.status_code == 200
     body = resp.json()
     assert body["availability"] == "READY"
@@ -198,6 +214,7 @@ def test_evidence_bundle_version_reflects_the_persisted_row_not_a_code_constant(
         "evidence_bundle_version must be read from the persisted report row, "
         "never fabricated from a current code constant"
     )
+    assert "price_path" in body["structured_report"]
 
 
 def test_terminal_outbox_missing_report_is_integrity_contradiction(client, pg_conn, unique_user_id, monkeypatch):
