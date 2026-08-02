@@ -816,3 +816,102 @@ def test_malformed_source_manifest_causes_no_mutation(client, pg_conn, unique_us
         "SELECT count(*) FROM paper_trade_postmortem_report WHERE paper_trade_id = %s", (trade_id,),
     ).fetchone()[0]
     assert after == before
+
+
+# ============================= claims/evidence_items provenance ============================= #
+
+def test_claims_and_evidence_items_round_trip_adversarial_marker_values(
+    client, pg_conn, unique_user_id, monkeypatch,
+):
+    """Real-PostgreSQL adversarial proof for PostmortemClaimModel and
+    EvidenceItemModel: a claim and an evidence item with marker values
+    for every typed field round-trip exactly through the canonical
+    endpoint — never substituted or dropped."""
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+    from services.postmortem import report_store
+
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # flag OFF at close — no auto-generation
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+
+    schema_v, calc_v, rules_v = current_target_identity(
+        base_calculation_version=CALCULATION_VERSION,
+        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+    )
+    marker_evidence_item = {
+        "evidence_id": "EV-marker-id", "category": "marker-category", "name": "marker-name",
+        "value": {"nested": "marker-value", "n": 42}, "units": "marker-units",
+        "observation_timestamp": "2026-06-01T12:00:00+00:00",
+        "source": "marker-source", "source_type": "marker-source-type",
+        "verification_level": "marker-verification-level", "freshness_status": "marker-freshness-status",
+        "limitations": ["marker-limitation-1"],
+    }
+    marker_claim = {
+        "claim_id": "CLM-marker-id", "report_section": "marker-section", "factor": "marker-factor",
+        "claim_text": "marker claim text", "evidence_class": "SUPPORTING_EVIDENCE",
+        "confidence_band": "HIGH", "supporting_evidence_ids": ["EV-marker-id"],
+        "opposing_evidence_ids": [], "missing_evidence": [], "contradiction_flags": [],
+        "rule_id": "marker-rule-id", "rule_version": "marker-rule-version",
+        "limitations": ["marker-claim-limitation"],
+    }
+    report_store.persist_report(
+        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+        report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
+        report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+        evidence_bundle_version="claim-evidence-marker-test", status="COMPLETE",
+        structured_report={"marker": "claim-evidence-marker-test"},
+        evidence_items=[marker_evidence_item], claims=[marker_claim],
+        source_manifest={
+            "has_entry_snapshot": True, "has_exit_snapshot": False,
+            "exit_snapshot_schema_version": None, "exit_trigger_timing_verification": None,
+            "exit_evidence_rules_version": "1.0.0", "phase1_calculation_version": "1.0.0",
+            "attribution_rules_version": "1.0.0",
+        },
+        evidence_gaps=["marker-gap"], warnings=["marker-warning"],
+    )
+
+    resp = _current_report(client, unique_user_id, trade_id)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["availability"] == "READY"
+    assert body["claims"] == [marker_claim]
+    assert body["evidence_items"] == [marker_evidence_item]
+    assert body["evidence_gaps"] == ["marker-gap"]
+    assert body["warnings"] == ["marker-warning"]
+
+
+def test_malformed_claim_missing_rule_id_fails_closed(client, pg_conn, unique_user_id, monkeypatch):
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+    from services.postmortem import report_store
+
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # flag OFF at close
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    malformed_claim = {
+        "claim_id": "CLM-malformed", "report_section": "x", "factor": "x",
+        "claim_text": "x", "evidence_class": "SUPPORTING_EVIDENCE", "confidence_band": "HIGH",
+        "supporting_evidence_ids": [], "opposing_evidence_ids": [], "missing_evidence": [],
+        "contradiction_flags": [],
+        # rule_id and rule_version intentionally omitted — malformed.
+    }
+    schema_v, calc_v, rules_v = current_target_identity(
+        base_calculation_version=CALCULATION_VERSION,
+        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+    )
+    report_store.persist_report(
+        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+        report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
+        report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+        evidence_bundle_version="malformed-claim-test", status="COMPLETE",
+        structured_report={"marker": "malformed-claim-test"}, evidence_items=[], claims=[malformed_claim],
+        source_manifest={
+            "has_entry_snapshot": True, "has_exit_snapshot": False,
+            "exit_snapshot_schema_version": None, "exit_trigger_timing_verification": None,
+            "exit_evidence_rules_version": "1.0.0", "phase1_calculation_version": "1.0.0",
+            "attribution_rules_version": "1.0.0",
+        },
+        evidence_gaps=[], warnings=[],
+    )
+    _assert_fails_closed_to_integrity_contradiction(client, unique_user_id, trade_id, ["CLM-malformed"])

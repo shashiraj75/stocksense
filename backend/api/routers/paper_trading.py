@@ -40,7 +40,7 @@ from services.postmortem.close_service import (
 )
 from services.postmortem.close_service import _EXIT_SNAPSHOT_COLUMNS as _EXIT_SNAPSHOT_DB_COLUMNS
 from services.postmortem.close_service import _insert_outbox_record
-from services.postmortem.exit_snapshot import CloseExitMechanism, ExitSnapshot
+from services.postmortem.exit_snapshot import CloseExitMechanism, ExitSnapshot, TriggerTimingVerification
 from services.postmortem import generation_service
 from services.postmortem import outbox as outbox_ops
 from services.postmortem import report_store
@@ -3204,6 +3204,61 @@ CurrentReportAvailability = Literal[
 CurrentReportStatus = Literal["COMPLETE", "LIMITED_EVIDENCE"]
 
 
+type JSONValue = str | int | float | bool | None | list[JSONValue] | dict[str, JSONValue]
+
+
+class PostmortemClaimModel(BaseModel):
+    """Typed model for services.postmortem.evidence.PostmortemClaim, the
+    SINGLE uniform claim shape used by every claim producer in the
+    system (Sprint 1's evidence_attribution.py, exit_evidence.py,
+    price_path_generation.py's governed_price_path_claims.py all import
+    and construct THIS SAME dataclass — verified by direct source read;
+    there is no separate claim shape to union against). All fields are
+    required because PostmortemClaim itself has no optional dataclass
+    fields except limitations (default []) — the frozen dataclass's own
+    __post_init__ already enforces cross-field invariants (e.g. an
+    INSUFFICIENT_EVIDENCE claim must cite zero supporting evidence) at
+    the point every claim was originally constructed, so this model
+    only needs to type-check the persisted shape, not re-derive those
+    invariants."""
+
+    claim_id: str
+    report_section: str
+    factor: str
+    claim_text: str
+    evidence_class: str
+    confidence_band: str
+    supporting_evidence_ids: list[str]
+    opposing_evidence_ids: list[str]
+    missing_evidence: list[str]
+    contradiction_flags: list[str]
+    rule_id: str
+    rule_version: str
+    limitations: list[str] = Field(default_factory=list)
+
+
+class EvidenceItemModel(BaseModel):
+    """Typed model for services.postmortem.evidence.EvidenceItem, the
+    SINGLE uniform evidence-item shape used across the system (same
+    verification as PostmortemClaimModel above). `value` is typed
+    JSONValue because the dataclass itself declares it `object` — the
+    field is genuinely open-ended by the original author's own design
+    (an evidence item's observed value can be a price, a count, a
+    string signal name, a nested dict, etc.)."""
+
+    evidence_id: str
+    category: str
+    name: str
+    value: JSONValue
+    units: str | None
+    observation_timestamp: datetime | None
+    source: str
+    source_type: str
+    verification_level: str
+    freshness_status: str
+    limitations: list[str] = Field(default_factory=list)
+
+
 class ReportSourceManifest(BaseModel):
     """Typed model for paper_trade_postmortem_report.source_manifest —
     the REPORT row's own smaller manifest (built by
@@ -3234,9 +3289,13 @@ class ReportSourceManifest(BaseModel):
     has_entry_snapshot: bool
     has_exit_snapshot: bool
     exit_snapshot_schema_version: str | None = None
-    exit_trigger_timing_verification: Literal[
-        "NOT_APPLICABLE", "CLIENT_REPORTED_UNVERIFIED", "SERVER_VERIFIED"
-    ] | None = None
+    # Uses TriggerTimingVerification directly (str, Enum) rather than a
+    # duplicated Literal, so this field can never silently drift from
+    # services.postmortem.exit_snapshot's own governed vocabulary — a
+    # value added there is automatically accepted here with no
+    # separate update, and (str, Enum) serializes identically to a
+    # plain string, so the external JSON contract is unchanged.
+    exit_trigger_timing_verification: TriggerTimingVerification | None = None
     exit_evidence_rules_version: str
     phase1_calculation_version: str
     attribution_rules_version: str
@@ -3311,10 +3370,10 @@ class CurrentReportReadResponse(BaseModel):
     status: CurrentReportStatus | None = None
     generated_at: datetime | None = None
     structured_report: dict | None = None
-    claims: list | None = None
-    evidence_items: list | None = None
-    evidence_gaps: list | None = None
-    warnings: list | None = None
+    claims: list[PostmortemClaimModel] | None = None
+    evidence_items: list[EvidenceItemModel] | None = None
+    evidence_gaps: list[str] | None = None
+    warnings: list[str] | None = None
     source_manifest: ReportSourceManifest | None = None
     supersedes_report_id: int | None = None
 

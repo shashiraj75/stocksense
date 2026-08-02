@@ -24,8 +24,19 @@ _REPRESENTATIVE_VALUES = {
     "status": "COMPLETE",
     "generated_at": datetime.datetime(2026, 6, 1, tzinfo=datetime.timezone.utc),
     "structured_report": {"x": 1},
-    "claims": [{"id": "c1"}],
-    "evidence_items": [{"id": "e1"}],
+    "claims": [{
+        "claim_id": "CLM-1-rule1", "report_section": "price_path", "factor": "target",
+        "claim_text": "target was hit", "evidence_class": "SUPPORTING_EVIDENCE",
+        "confidence_band": "HIGH", "supporting_evidence_ids": ["EV-1-target-hit"],
+        "opposing_evidence_ids": [], "missing_evidence": [], "contradiction_flags": [],
+        "rule_id": "rule1", "rule_version": "1.0.0",
+    }],
+    "evidence_items": [{
+        "evidence_id": "EV-1-target-hit", "category": "price_path", "name": "target_hit",
+        "value": True, "units": None, "observation_timestamp": None,
+        "source": "market_data", "source_type": "PROVIDER", "verification_level": "SERVER_VERIFIED",
+        "freshness_status": "CURRENT",
+    }],
     "evidence_gaps": ["gap-1"],
     "warnings": ["warning-1"],
     "source_manifest": {
