@@ -2532,3 +2532,211 @@ generation.py`, `price_path_claims.py`, `price_path_identity.py`,
 diff against the prior-pass HEAD. Version constants unchanged. Still no
 report/claim/API/frontend wiring; still no PR, merge, deployment, or
 feature-flag activation; still does not begin Wave B.
+
+---
+
+## Wave B — Governed Report/Claim Contract, Durable Lifecycle (CLOSED)
+
+**Historical Wave A state** (everything above this section): the
+governed per-level touch/order *semantic* conclusions
+(`governed_price_path_conclusions.py`) existed and were correct, but
+were never turned into a persisted report, a claim, or a durable
+outbox/worker lifecycle — "no report/claim/API/frontend wiring" is
+explicitly stated at the end of every Wave A pass above.
+
+**Current authoritative state after Wave B**: all of that wiring now
+exists, is implemented, tested, and green on both the complete
+non-PostgreSQL suite and real PostgreSQL 15/17.
+
+### 1. Version identity
+
+- `report_schema_version = "1.2.0"` (`price_path_identity.
+  GOVERNED_PRICE_PATH_REPORT_SCHEMA_VERSION`) — a third, additive
+  identity alongside the historical `1.0.0` (Sprint 2 base) and `1.1.0`
+  (legacy price-path, `detect_touches`/`classify_touch_order`
+  authority). Neither historical constant's value changed.
+- `GOVERNED_PRICE_PATH_RULES_VERSION = "2.0.0"` — the semantic-rules
+  identity actually used to derive the 1.2.0 governed conclusions.
+- `GOVERNED_PRICE_PATH_CLAIM_RULES_VERSION = "2.0.0"` — the claim-
+  authoring rules identity, independent of the legacy `1.1.0` claim
+  rules.
+- `governed_calculation_version()` is the one authoritative formatter:
+  `<base>+price_path:<numerical_rules>+governed:<governed_rules>+src:<source_version>`.
+- The `(paper_trade_id, report_schema_version, calculation_version,
+  attribution_rules_version)` unique index (unchanged since Sprint 2)
+  is what makes 1.0.0/1.1.0/1.2.0 coexistence structural, not
+  convention-based — proven by real-PostgreSQL scenarios (WB-J4E-18,
+  WB-J4F-13..20).
+
+### 2. Semantic authority
+
+A `1.2.0` report's `price_path` section is built ONLY from
+`governed_price_path_conclusions.classify_governed_level_touch` /
+`classify_governed_order` — never `detect_touches`,
+`classify_touch_order`, or `build_touch_order_claim` (frozen,
+`1.1.0`-only). `governed_price_path_claims.py` is the sole claim
+builder for this identity; it registers its 3 rules under its OWN
+`RULE_REGISTRY` section (`"governed_price_path"`, deliberately
+distinct from legacy `price_path_claims.py`'s `"price_path"` section —
+a genuine defect found in this closure pass, see §9 below).
+
+Fail-closed behavior: `NO_BARS`/`INCOMPATIBLE_BASIS`/
+`INSUFFICIENT_EVIDENCE`/`CONTRADICTORY_ENDPOINT_EVIDENCE` all route
+through the canonical fallback sentence (`"Insufficient evidence to
+determine this factor reliably."`, byte-identical to
+`evidence.INSUFFICIENT_EVIDENCE_SENTENCE`) with zero supporting
+evidence. `NO_VALUE_SUPPLIED`/`NO_COMPATIBLE_CROSSING` are genuine
+definitive negatives (real evidence-backed claims), not fallbacks.
+
+### 3. Immutable evidence
+
+`current_report_generation.py`'s own fetch helpers read the immutable
+`entry_snapshot`/`exit_snapshot` rows' own governed fields
+(`level_history_contract_version`, `initial_*_modified_after_entry`,
+`final_*_modified_after_entry`) directly — never the mutable
+`paper_trades` columns as a substitute. A legacy trade with
+`entry_snapshot=None` cascades to `INSUFFICIENT_EVIDENCE`, never a
+fabricated governed-false negative.
+
+### 4. Report construction
+
+`structured_report["price_path"]` carries the 4 required sub-sections:
+`raw_evidence`, `level_history`, `governed_conclusions`,
+`version_and_provenance` — additively merged on top of
+`generation_service.build_report_payload`'s base payload, the same
+additive-merge pattern the legacy `1.1.0` path already used. Overall
+report status is the weakest of the base ceiling and the governed
+price-path ceiling (`price_path_evidence_decision.
+compute_report_completeness_ceiling`). Claims cite only evidence_ids
+present in the SAME report (referential integrity, WB-J4E-16).
+Supersession predecessor is deterministic — the most recent report for
+the same trade/user whose schema_version is NOT the target version
+(`report_store.get_latest_predecessor_report`).
+
+### 5. Durable lifecycle
+
+Five-phase orchestrator (`current_report_generation.
+process_current_report`): short DB read → no-DB replay/acquisition
+decision → no-DB provider acquisition → short evidence-persist
+transaction → short atomic report+outbox-terminal transaction. This
+ONE function is called identically by:
+
+- close-time best-effort (`api/routers/paper_trading.py`'s `/sell`
+  handler), gated on the price-path enhancement's own
+  `GENERATED`/`ALREADY_COMPLETE` outcome this cycle (never redundantly
+  re-acquiring provider evidence on a failed/in-progress cycle — a
+  genuine defect found and fixed in this closure pass, see §9);
+- the explicit `POST /postmortem/{trade_id}/generate` recovery
+  endpoint (`_build_generate_response`);
+- the bounded background worker (`services/postmortem/
+  outbox_worker.py`).
+
+Atomic close-to-current-outbox creation: `close_service.
+close_paper_trade` accepts explicit
+`request_current_report_outbox`/`current_report_schema_version`/
+`current_calculation_version`/`current_rules_version` parameters — the
+caller (paper_trading.py) computes and supplies the exact version
+identity; the DB helper itself never reads a feature flag or
+environment variable. The row is inserted inside the SAME transaction
+as the trade close and the legacy 1.0.0 outbox insert.
+
+Global (cross-user) atomic claim
+(`outbox_worker.claim_next_current_outbox_batch`): a single `UPDATE
+... WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED)` — the standard
+safe PostgreSQL batch-claim pattern, deliberately distinct from the
+stale-CTE approach that caused a prior double-claim defect in
+`outbox.claim_next_attempt`'s own history (see that module's
+docstring). Filters by the exact requested version triple. Reuses
+`outbox.py`'s own `MAX_ATTEMPTS_BEFORE_TERMINAL`,
+`LEASE_DURATION_SECONDS`, and `new_claimant_token()` — one shared
+lease/retry/backoff contract across the per-trade and global claim
+paths.
+
+Failure taxonomy: `LIMITED_EVIDENCE` is a genuine successful terminal
+report outcome (not a failure) when raw or governed evidence is
+incomplete; `FAILED_RETRYABLE` for transient provider errors;
+`FAILED_TERMINAL` for permanently invalid conditions (missing trade,
+ownership mismatch, unsupported identity, max-attempts exceeded).
+Stale-worker settlement is rejected via `generation_service.
+StaleLeaseError`, propagated to roll back the whole transaction with
+zero side effect on the outbox row.
+
+### 6. Multi-market correctness
+
+`claim_next_current_outbox_batch` joins `paper_trades` and returns each
+claimed row's own `market` column; `outbox_worker._process_claimed_row`
+resolves `market_tzinfo`/`market_timezone_name` PER ROW from that
+column — never from an external per-poll-cycle assumption. This was a
+genuine defect (mixed-market batches silently misattributing session-
+boundary timezone semantics) found by this closure pass's own
+concurrency-perspective audit and corrected (commit `d647648`).
+
+### 7. Operations and governance
+
+`TRADE_POSTMORTEM_PRICE_PATH_ENABLED` (existing flag, not new) remains
+default-off; the worker starts/stops from `api/main.py`'s lifespan only
+when that flag is set, and a startup failure is caught and logged,
+never blocking the rest of the application. No frontend file changed.
+No new GET report-exposure endpoint (the 2 existing `GET
+/postmortem/*` endpoints predate Wave B). `reset_portfolio`'s existing
+generic `DELETE ... WHERE user_id = %s` statements already cover the
+`paper_trade_postmortem_report`/`outbox` tables for the 1.2.0 identity
+with zero code change (verified, not assumed). No Railway/Vercel
+configuration or environment variable changed. No PR opened, no merge,
+no deployment, no feature-flag activation.
+
+### 8. Traceability
+
+18 `WB-J4E-*` + 20 `WB-J4F-*` requirement IDs; 55 J4E + 68 J4F = 123
+behavioural scenarios; all GREEN at final SHA
+`60bf499a4caf81d4dee3f5b9ca4e9965062dfa46` — non-PostgreSQL (5335
+passed, 1 skipped, 241 deselected postgres_integration-only, 0 failed)
+and PostgreSQL 15+17 (241/241 each, 0 failed, 0 skipped, workflow run
+`30736169951`). See `backend/tests/unit/wave_b_traceability_manifest.json`
+and `wave_b_scenario_ledger.json` for the full per-requirement/
+per-scenario record, and `test_wave_b_traceability_validator.py` for
+the automated cross-check against real pytest collection.
+
+### 9. Defects found and corrected during closure
+
+Four genuine defects were found and fixed across the implementation and
+closure passes — none discovered by the red-test matrix itself (which,
+by construction, only proves absence/presence of behavior pre-fix, not
+correctness of the eventual implementation):
+
+1. **Worker per-market timezone misattribution** (concurrency
+   perspective) — commit `d647648`.
+2. **Dead atomic-outbox-insertion wiring** (operations perspective) —
+   `request_current_report_outbox` was implemented and unit-tested but
+   never actually invoked with `True` from any real call site — commit
+   `6c6c981`.
+3. **RULE_REGISTRY section-namespace collision** — `governed_price_
+   path_claims.py` shared `report_section="price_path"` with the
+   legacy `price_path_claims.py`, breaking a frozen Wave A test's
+   exact rule-id-set assertion once anything in a full-suite run
+   imported both modules (invisible when running `tests/unit` alone,
+   real under the true complete suite) — commit `60bf499`.
+4. **Fragile 2-tuple unpack of `_attempt_price_path_enhancement`'s
+   return value** at the `/sell` call site — broke the pre-existing
+   fire-and-ignore call-site contract two frozen regression tests
+   depend on (monkeypatch-to-`None`, real concurrent-request exercise)
+   — commit `60bf499`.
+
+All 4 were found by actually running the true complete non-PostgreSQL
+suite (`pytest tests -m "not postgres_integration"`, 5336 selected) and
+a genuine 12-perspective adversarial code review — not merely by
+re-running the Wave B red-test batches, which by design could not have
+caught any of these (they test the new code's own behavior in
+isolation, not its interaction with pre-existing frozen tests or
+cross-market batches).
+
+### 10. Remaining Wave C scope (not started, not implied complete)
+
+Persisted current-report read API; authorization-safe retrieval;
+report-list/trade-link frontend integration; Postmortem frontend
+presentation, API types, unit/component tests, typecheck, production
+build; feature-flag UI gating; production worker-capacity/timeout
+validation; operational observability/alerting; owner-authorized PR,
+merge, deployment, Railway/Vercel verification; feature-flag activation
+decision; production health verification; rollback/disablement
+procedure.

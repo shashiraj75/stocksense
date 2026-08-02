@@ -35,23 +35,23 @@
     ],
     "outbox_writers": [
       "services/postmortem/current_report_generation.py:insert_current_outbox_record",
-      "services/postmortem/close_service.py:close_paper_trade (pending wiring)"
+      "services/postmortem/close_service.py:close_paper_trade (WIRED \u2014 request_current_report_outbox param, invoked from /sell)"
     ],
     "outbox_claimers": [
       "services/postmortem/outbox.py:claim_next_attempt (per-trade)",
-      "new global cross-user claim (pending)"
+      "services/postmortem/outbox_worker.py:claim_next_current_outbox_batch (global cross-user, SKIP LOCKED, WIRED)"
     ],
     "close_time_generation": [
-      "api/routers/paper_trading.py:/sell handler (pending wiring)"
+      "api/routers/paper_trading.py:/sell handler (WIRED \u2014 gated on price-path GENERATED/ALREADY_COMPLETE)"
     ],
     "explicit_post_recovery": [
-      "api/routers/paper_trading.py:POST /postmortem/{trade_id}/generate (pending wiring)"
+      "api/routers/paper_trading.py:POST /postmortem/{trade_id}/generate (WIRED \u2014 _build_generate_response)"
     ],
     "startup_lifespan_integration": [
-      "api/main.py:lifespan (pending wiring)"
+      "api/main.py:lifespan (WIRED \u2014 start_outbox_worker/stop_outbox_worker, flag-gated)"
     ],
     "reset_delete_paths": [
-      "not yet inventoried \u2014 pending"
+      "api/routers/paper_trading.py:reset_portfolio \u2014 generic user_id-scoped DELETE FROM paper_trade_postmortem_report/outbox already covers the 1.2.0 identity with no code change (verified WB-J4F-49/50, EXPECTED_BASELINE_PASS)"
     ],
     "database_transactions": [
       "current_report_generation.process_current_report 5-phase boundary"
@@ -66,6 +66,15 @@
       "1.0.0 (generation_service)",
       "1.1.0 (price_path_generation, legacy detect_touches authority)",
       "1.2.0 (current_report_generation, governed authority)"
+    ],
+    "frontend_exclusions": [
+      "No frontend files modified in Wave B \u2014 confirmed via diff against c91b7d8 (Section 3.8/Section 7 audit)"
+    ],
+    "api_read_exclusions": [
+      "No new GET endpoint added; the 2 existing GET /postmortem/* endpoints predate Wave B"
+    ],
+    "deployment_exclusions": [
+      "No Railway/Vercel config or environment variable changed; TRADE_POSTMORTEM_PRICE_PATH_ENABLED remains default-off"
     ]
   },
   "j4e_requirements": [
@@ -73,109 +82,145 @@
       "id": "WB-J4E-01",
       "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_01_governed_report_identity_module_exists",
       "batch": "A",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4E-02",
       "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_02_report_schema_version_1_2_0_constant_exists",
       "batch": "A",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4E-03",
       "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_03_governed_price_path_rules_version_constant_exists",
       "batch": "A",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4E-04",
       "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_04_governed_claim_rules_version_constant_exists",
       "batch": "A",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4E-05",
       "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_05_governed_calculation_version_format",
       "batch": "A",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4E-06",
       "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_06_governed_claims_module_does_not_import_legacy_touch_authority",
       "batch": "A",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4E-07",
       "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_07_build_governed_price_path_payload_exists",
       "batch": "B",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4E-08",
       "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_08_no_bundle_produces_no_bars_not_fabricated_touch",
       "batch": "B",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4E-09",
       "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_09_payload_reads_snapshot_governed_fields_not_mutable_row",
       "batch": "B",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4E-10",
       "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_10_legacy_no_snapshot_never_fabricates_governed_false",
       "batch": "B",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4E-11",
       "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_11_structured_report_has_four_required_subsections",
       "batch": "B",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4E-12",
       "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_12_version_and_provenance_carries_exact_triple",
       "batch": "B",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4E-13",
       "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_13_canonical_fallback_sentence_matches_evidence_module",
       "batch": "C",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4E-14",
       "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_14_no_bars_claim_makes_no_positive_assertion",
       "batch": "C",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4E-15",
       "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_15_claim_ids_deterministic_and_collision_safe",
       "batch": "C",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4E-16",
       "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_16_claim_referential_integrity_within_report",
       "batch": "C",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4E-17",
       "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_17_supersession_predecessor_is_deterministic_single_and_same_trade",
       "batch": "C",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4E-18",
       "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_18_version_scoped_report_api_exists_for_all_three_identities",
       "batch": "C",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     }
   ],
   "j4f_requirements": [
@@ -183,130 +228,241 @@
       "id": "WB-J4F-01",
       "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_01_close_paper_trade_accepts_explicit_current_outbox_request",
       "batch": "G",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4F-02",
       "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_02_current_outbox_insert_helper_exists_and_is_idempotent",
       "batch": "G",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4F-03",
       "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_03_current_outbox_insert_happens_inside_close_transaction",
       "batch": "G",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4F-04",
       "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_04_current_outbox_identity_is_caller_supplied_not_env_read",
       "batch": "G",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4F-05",
       "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_05_duplicate_close_never_double_inserts_current_outbox",
       "batch": "G",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4F-06",
       "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_06_current_outbox_creatable_outside_close_time_for_backfill",
       "batch": "G",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4F-07",
       "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_07_current_outbox_lookup_is_exact_version_scoped_not_latest",
       "batch": "H",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4F-08",
       "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_08_worker_claim_lookup_will_be_version_scoped",
       "batch": "H",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4F-09",
       "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_09_shared_orchestrator_function_exists",
       "batch": "H",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4F-10",
       "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_10_paper_trading_close_time_path_calls_shared_orchestrator",
       "batch": "H",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4F-11",
       "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_11_post_generate_endpoint_calls_shared_orchestrator",
       "batch": "H",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4F-12",
       "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_12_background_worker_will_call_shared_orchestrator",
       "batch": "H",
-      "status": "RED"
+      "pre_implementation_status": "RED",
+      "final_result": "GREEN_NON_POSTGRESQL",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
     },
     {
       "id": "WB-J4F-13",
       "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_13_global_claim_function_exists",
       "batch": "I",
       "level": "real-postgres",
-      "status": "COLLECTED_LOCALLY_EXECUTION_PENDING_CI_DISPATCH"
+      "pre_implementation_status": "COLLECTED_LOCALLY_EXECUTION_PENDING_CI_DISPATCH",
+      "final_result": "GREEN_ALL_REQUIRED_LEVELS",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46",
+      "final_postgresql_15_workflow": "30736169951",
+      "final_postgresql_17_workflow": "30736169951",
+      "final_postgresql_15_result": "0 failed, 0 skipped, 241 tests",
+      "final_postgresql_17_result": "0 failed, 0 skipped, 241 tests"
     },
     {
       "id": "WB-J4F-14",
       "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_14_simultaneous_claimants_never_both_claim_same_row",
       "batch": "I",
       "level": "real-postgres",
-      "status": "COLLECTED_LOCALLY_EXECUTION_PENDING_CI_DISPATCH"
+      "pre_implementation_status": "COLLECTED_LOCALLY_EXECUTION_PENDING_CI_DISPATCH",
+      "final_result": "GREEN_ALL_REQUIRED_LEVELS",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46",
+      "final_postgresql_15_workflow": "30736169951",
+      "final_postgresql_17_workflow": "30736169951",
+      "final_postgresql_15_result": "0 failed, 0 skipped, 241 tests",
+      "final_postgresql_17_result": "0 failed, 0 skipped, 241 tests"
     },
     {
       "id": "WB-J4F-15",
       "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_15_distinct_rows_claimed_by_distinct_claimants",
       "batch": "I",
       "level": "real-postgres",
-      "status": "COLLECTED_LOCALLY_EXECUTION_PENDING_CI_DISPATCH"
+      "pre_implementation_status": "COLLECTED_LOCALLY_EXECUTION_PENDING_CI_DISPATCH",
+      "final_result": "GREEN_ALL_REQUIRED_LEVELS",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46",
+      "final_postgresql_15_workflow": "30736169951",
+      "final_postgresql_17_workflow": "30736169951",
+      "final_postgresql_15_result": "0 failed, 0 skipped, 241 tests",
+      "final_postgresql_17_result": "0 failed, 0 skipped, 241 tests"
     },
     {
       "id": "WB-J4F-16",
       "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_16_active_lease_row_is_not_reclaimable",
       "batch": "I",
       "level": "real-postgres",
-      "status": "COLLECTED_LOCALLY_EXECUTION_PENDING_CI_DISPATCH"
+      "pre_implementation_status": "COLLECTED_LOCALLY_EXECUTION_PENDING_CI_DISPATCH",
+      "final_result": "GREEN_ALL_REQUIRED_LEVELS",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46",
+      "final_postgresql_15_workflow": "30736169951",
+      "final_postgresql_17_workflow": "30736169951",
+      "final_postgresql_15_result": "0 failed, 0 skipped, 241 tests",
+      "final_postgresql_17_result": "0 failed, 0 skipped, 241 tests"
     },
     {
       "id": "WB-J4F-17",
       "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_17_expired_lease_row_is_reclaimable",
       "batch": "I",
       "level": "real-postgres",
-      "status": "COLLECTED_LOCALLY_EXECUTION_PENDING_CI_DISPATCH"
+      "pre_implementation_status": "COLLECTED_LOCALLY_EXECUTION_PENDING_CI_DISPATCH",
+      "final_result": "GREEN_ALL_REQUIRED_LEVELS",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46",
+      "final_postgresql_15_workflow": "30736169951",
+      "final_postgresql_17_workflow": "30736169951",
+      "final_postgresql_15_result": "0 failed, 0 skipped, 241 tests",
+      "final_postgresql_17_result": "0 failed, 0 skipped, 241 tests"
     },
     {
       "id": "WB-J4F-18",
       "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_18_retry_backoff_delays_next_attempt",
       "batch": "I",
       "level": "real-postgres",
-      "status": "COLLECTED_LOCALLY_EXECUTION_PENDING_CI_DISPATCH"
+      "pre_implementation_status": "COLLECTED_LOCALLY_EXECUTION_PENDING_CI_DISPATCH",
+      "final_result": "GREEN_ALL_REQUIRED_LEVELS",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46",
+      "final_postgresql_15_workflow": "30736169951",
+      "final_postgresql_17_workflow": "30736169951",
+      "final_postgresql_15_result": "0 failed, 0 skipped, 241 tests",
+      "final_postgresql_17_result": "0 failed, 0 skipped, 241 tests"
     },
     {
       "id": "WB-J4F-19",
       "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_19_worker_enforces_max_attempt_terminalization",
       "batch": "I",
       "level": "real-postgres",
-      "status": "COLLECTED_LOCALLY_EXECUTION_PENDING_CI_DISPATCH"
+      "pre_implementation_status": "COLLECTED_LOCALLY_EXECUTION_PENDING_CI_DISPATCH",
+      "final_result": "GREEN_ALL_REQUIRED_LEVELS",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46",
+      "final_postgresql_15_workflow": "30736169951",
+      "final_postgresql_17_workflow": "30736169951",
+      "final_postgresql_15_result": "0 failed, 0 skipped, 241 tests",
+      "final_postgresql_17_result": "0 failed, 0 skipped, 241 tests"
     },
     {
       "id": "WB-J4F-20",
       "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_20_global_claim_query_uses_index_not_seqscan",
       "batch": "I",
       "level": "real-postgres",
-      "status": "COLLECTED_LOCALLY_EXECUTION_PENDING_CI_DISPATCH"
+      "pre_implementation_status": "COLLECTED_LOCALLY_EXECUTION_PENDING_CI_DISPATCH",
+      "final_result": "GREEN_ALL_REQUIRED_LEVELS",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46",
+      "final_postgresql_15_workflow": "30736169951",
+      "final_postgresql_17_workflow": "30736169951",
+      "final_postgresql_15_result": "0 failed, 0 skipped, 241 tests",
+      "final_postgresql_17_result": "0 failed, 0 skipped, 241 tests"
     }
   ],
-  "status": "J4E RED-BASELINE COMPLETE (55/55). J4F RED-BASELINE COMPLETE (68/68 scenarios; all 20 WB-J4F traceability IDs covered across Batches G-M). WB-J4F-13..20 are real-PostgreSQL-level (tests/postgres_integration/), collected locally, execution pending CI dispatch. Full 123-scenario Wave B red baseline (55 J4E + 68 J4F) is complete and locally verified. Next: push the test/spec-only baseline and dispatch PostgreSQL 15/17 CI per owner authorization, then reapply/reassess the preserved draft and implement."
+  "status": "WAVE B FINAL ASSURANCE COMPLETE \u2014 J4E 18/18 + J4F 20/20 traceability IDs GREEN at final SHA 60bf499a4caf81d4dee3f5b9ca4e9965062dfa46. Non-PostgreSQL: 5335 passed, 1 skipped, 241 deselected, 0 failed. PostgreSQL 15: 241/241 passed, 0 failed. PostgreSQL 17: 241/241 passed, 0 failed. 2 additional BLOCKING findings from this closure pass's true-full-suite run corrected and reverified.",
+  "as_of_head": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46",
+  "final_assurance": {
+    "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46",
+    "non_postgresql_result": "5335 passed, 1 skipped, 241 deselected, 0 failed",
+    "non_postgresql_command": "pytest tests -m \"not postgres_integration\"",
+    "non_postgresql_threshold_required": ">5220 passing",
+    "non_postgresql_threshold_met": true,
+    "note_on_earlier_2818_count": "The earlier-reported 2818-passed count came from running only `pytest tests/unit` (114 files), which silently excluded tests/regression (133 files), tests/integration (14), tests/golden (9) and tests/sector (2) \u2014 not a deliberate scope narrowing, an incomplete command. The true complete non-PostgreSQL suite (tests -m 'not postgres_integration', 5577 collected / 5336 selected / 241 deselected as expected postgres_integration-only tests) surfaced 3 genuine regressions the narrower run had never exercised; all 3 fixed (see commit 60bf499), then reverified: 5335 passed, 1 skipped, 241 deselected, 0 failed.",
+    "postgresql_15": {
+      "workflow_run": "30736169951",
+      "head_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46",
+      "tests": 241,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "postgresql_17": {
+      "workflow_run": "30736169951",
+      "head_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46",
+      "tests": 241,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "gate5_formal_re_audit_findings_in_this_pass": [
+      {
+        "perspective": "PostgreSQL/versioning auditor",
+        "classification": "BLOCKING",
+        "summary": "governed_price_path_claims.py shared RULE_REGISTRY report_section='price_path' collided with legacy price_path_claims.py's own section, breaking a frozen Wave A test's exact rule-id-set assertion under full-suite import ordering.",
+        "fix_commit": "60bf499"
+      },
+      {
+        "perspective": "compatibility auditor",
+        "classification": "BLOCKING",
+        "summary": "the /sell handler's new price-path-status gate unconditionally unpacked _attempt_price_path_enhancement's return as a 2-tuple, breaking the pre-existing fire-and-ignore call-site contract frozen regression tests rely on (monkeypatch-to-None, real concurrency).",
+        "fix_commit": "60bf499"
+      }
+    ]
+  }
 }
