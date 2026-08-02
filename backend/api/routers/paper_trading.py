@@ -3197,9 +3197,23 @@ CURRENT_REPORT_STATUS_FEATURE_DISABLED = "FEATURE_DISABLED"
 _NO_STORE_HEADERS = {"Cache-Control": "private, no-store"}
 
 
+CurrentReportAvailability = Literal[
+    "READY", "PROCESSING", "NOT_ELIGIBLE", "NOT_AVAILABLE",
+    "TERMINAL_FAILURE", "INTEGRITY_CONTRADICTION", "FEATURE_DISABLED",
+]
+CurrentReportStatus = Literal["COMPLETE", "LIMITED_EVIDENCE"]
+
+_READY_ONLY_FIELDS = (
+    "report_schema_version", "calculation_version", "attribution_rules_version",
+    "evidence_bundle_version", "market", "report_trading_date", "market_timezone",
+    "status", "generated_at", "structured_report", "claims", "evidence_items",
+    "evidence_gaps", "warnings", "source_manifest", "supersedes_report_id",
+)
+
+
 class CurrentReportReadResponse(BaseModel):
     trade_id: int
-    availability: str
+    availability: CurrentReportAvailability
     report_schema_version: str | None = None
     calculation_version: str | None = None
     attribution_rules_version: str | None = None
@@ -3207,8 +3221,8 @@ class CurrentReportReadResponse(BaseModel):
     market: str | None = None
     report_trading_date: str | None = None
     market_timezone: str | None = None
-    status: str | None = None
-    generated_at: str | None = None
+    status: CurrentReportStatus | None = None
+    generated_at: datetime | None = None
     structured_report: dict | None = None
     claims: list | None = None
     evidence_items: list | None = None
@@ -3216,6 +3230,34 @@ class CurrentReportReadResponse(BaseModel):
     warnings: list | None = None
     source_manifest: dict | None = None
     supersedes_report_id: int | None = None
+
+    @model_validator(mode="after")
+    def _enforce_ready_non_ready_invariants(self):
+        # WC-K — a non-READY response must never carry report contents:
+        # PROCESSING/TERMINAL_FAILURE/etc. leaking a stale or unrelated
+        # report body would be a fabrication and a privacy defect.
+        if self.availability != "READY":
+            leaked = [f for f in _READY_ONLY_FIELDS if getattr(self, f) is not None]
+            if leaked:
+                raise ValueError(
+                    f"non-READY response (availability={self.availability!r}) must not carry report "
+                    f"fields, but found: {leaked}"
+                )
+            return self
+        # READY requires a valid, complete persisted report identity —
+        # never a partially-populated response.
+        missing = [
+            f for f in (
+                "report_schema_version", "calculation_version", "attribution_rules_version",
+                "evidence_bundle_version", "market", "report_trading_date", "market_timezone",
+                "status", "generated_at", "structured_report", "claims", "evidence_items",
+                "source_manifest",
+            )
+            if getattr(self, f) is None
+        ]
+        if missing:
+            raise ValueError(f"READY response is missing required report field(s): {missing}")
+        return self
 
 
 @router.get("/{trade_id}/current-report", response_model=CurrentReportReadResponse)
@@ -3281,7 +3323,7 @@ def get_current_governed_report(trade_id: int, response: Response, user_id: str 
                 report_trading_date=report.report_trading_date.isoformat() if report.report_trading_date else None,
                 market_timezone=report.market_timezone,
                 status=report.status,
-                generated_at=report.generated_at.isoformat() if report.generated_at else None,
+                generated_at=report.generated_at,
                 structured_report=report.structured_report,
                 claims=report.claims,
                 evidence_items=report.evidence_items,

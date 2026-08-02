@@ -1,6 +1,12 @@
 # Wave C, WC-K-14 — Persisted Version Provenance Inventory
 
-- **Status:** WC-K-14 PARTIAL — see verdict at the bottom.
+- **Status:** WC-K-14 PARTIAL — report-level column and body provenance
+  closed with real PostgreSQL round-trip proof; report-level
+  `source_manifest`/claim typing remains open. See verdict at the
+  bottom. (Corrected: an earlier version of this file incorrectly
+  stated that source_id/provider_library_version/boundary_policy_version
+  etc. do not exist anywhere in the persisted contract — they do exist,
+  in the linked price-path-evidence record; see item 10.)
 - **Scope:** every version/provenance-shaped value the current-report
   read API (`GET /api/paper-trading/{trade_id}/current-report`) could
   expose, mapped to its actual persisted source, based on reading
@@ -19,7 +25,7 @@
 | 7 | `source_manifest.phase1_calculation_version` | nested, `generation_service.py:179` | Required | inside `source_manifest` | N/A |
 | 8 | `source_manifest.attribution_rules_version` (Sprint-2-era, pre-price-path) | nested, `generation_service.py:180` | Required for Sprint-2/1.0.0 rows | inside `source_manifest` | N/A |
 | 9 | `source_manifest.price_path_calculation_version` | nested, added only when a price-path enhancement is applied (`price_path_generation.py:349`, via `price_path_calculation_suffix(source_version)`) | **Historical-optional** — absent on any report that predates or never received price-path enhancement (e.g. a plain Sprint 2 1.0.0/1.1.0 row) | inside `source_manifest` | Genuinely absent on those rows; the endpoint must not synthesize it |
-| 10 | "Source ID" / "source-manifest schema version" / "provider-library version" / "boundary-policy version" (as named in the Wave C master prompt) | **Not found anywhere in the actual persisted contract** — no such keys are ever written by `generation_service.py` or `price_path_generation.py` | **Missing contract requirement** — these are not currently part of the Wave B/Wave C frozen persistence contract | N/A | The endpoint correctly returns whatever `source_manifest` JSON actually contains (which never has these keys today) rather than fabricating them |
+| 10 | "Source ID" / "source-manifest schema version" / "provider-library version" / "boundary-policy version" (as named in the Wave C master prompt) | **Correction**: these fields DO exist and ARE persisted — `services/postmortem/price_path_acquisition.py` builds and validates a full manifest with exactly these keys (`source_manifest_schema_version`, `source_id`, `source_type`, `source_scope`, `production_authoritative`, `source_version`, `provider`, `provider_library_version`, `boundary_policy_version`, `symbol_normalization_version`, plus acquisition parameters — see `_REQUIRED_SOURCE_MANIFEST_KEYS` around line 427 and the manifest builder around line 802), and `price_path_generation.persist_price_path_evidence` → `price_path_store.persist_evidence` durably persists the full `PricePathEvidenceBundle` (including this manifest) to its OWN linked evidence table — this is a real, persisted, immutable record. **PERSISTED IN LINKED PRICE-PATH EVIDENCE, NOT CURRENTLY SURFACED BY THE CURRENT-REPORT RESPONSE** — `paper_trade_postmortem_report.source_manifest` (the REPORT row's own column, item 5–9 above) is a materially different, smaller object that only ever receives `price_path_calculation_version` copied in (item 9) — the full provider manifest is never copied into it. This is a report-vs-evidence separation of concerns, not a missing persistence capability. | Governed by the linked price-path-evidence record, not the report row | N/A — the current-report response returns the REPORT row's `source_manifest`; exposing the linked evidence manifest through this same response is a scope decision, not a defect, and is tracked as NONBLOCKING BACKLOG unless the ratified Wave C contract requires it |
 | 11 | Claim-level rule/version metadata | Each claim dict (`evidence.py`'s rule registry) carries its own `rule_id`/`rule_version`-shaped fields at claim-construction time, persisted verbatim inside the `claims` JSONB array — not a separate top-level column | Present per-claim, not per-report | inside `claims[]` | Endpoint returns `claims` unchanged; no separate top-level provenance field exists for this today |
 | 12 | Supersession provenance | `.supersedes_report_id` column (BIGINT, nullable) | Optional — NULL unless this report supersedes an older one (Stage I price-path enhancement) | `supersedes_report_id` | Already correctly nullable in the response |
 
@@ -46,9 +52,16 @@ deciding (as an owner/product decision, not an engineering default)
 whether the persistence layer should start writing these fields for
 newly generated reports.
 
-**WC-K-14 remains PARTIAL**: the top-level column provenance (items
-1–4, 12) is fully closed with real PostgreSQL evidence. The nested
-nested `source_manifest` nested-field typing (items 5–9) and the
-non-existent items 10 require, respectively, typed-model work (§6) and
-an explicit owner decision before they can be closed — this file does
-not resolve them itself.
+**WC-K-14 PARTIAL**: the report row's top-level version fields (items
+1–4, 12) and its real body (structured_report/claims/evidence_items)
+have persisted-row PostgreSQL round-trip proof, including an
+adversarial marker test for item 4. Final closure requires the
+report-level `source_manifest` (items 5–9), claim provenance (item 11)
+and the READY/non-READY typed-response invariants to be validated
+without fabrication — this is typed-model work (§5–§8 of the
+governing prompt), not an owner decision. Item 10 (the linked
+price-path-evidence provider manifest) is real and persisted but is a
+separate concern from the report row; exposing it through the
+current-report response is recorded as NONBLOCKING BACKLOG and does
+not block WC-K-14 closure unless the ratified Wave C contract requires
+it.
