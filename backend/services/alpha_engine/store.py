@@ -11,6 +11,7 @@ import logging
 import os
 import sqlite3
 import threading
+import time
 from datetime import datetime, timezone
 
 from services.market_integrity import MISSING_MARKET, require_explicit_market
@@ -335,7 +336,34 @@ def log_regime(regime_id: int, label: str, features: list[float]):
         )
 
 
-def get_training_data(horizon: str, market: str = "IN", window_days: int | None = None) -> list[dict]:
+# TTL cache for the shared unbounded predictions/outcomes join. Added 2026-08
+# (Supabase egress incident): besides ic_engine's diagnostic live-IC
+# computation, weight_adapter's count_training_rows() also called this
+# uncached on every adaptation cycle just to count rows — and did so
+# immediately after ic_engine.invalidate_cache() wiped ic_engine's own
+# cache, defeating that cache's purpose. Caching here, at the single shared
+# entry point every non-training caller goes through, fixes both at once.
+# force_fresh=True (used by meta_model.train()) bypasses this cache — an
+# actual model retrain must always see the true current data, never a
+# cached snapshot, so numerical training behavior is unchanged.
+_TRAINING_DATA_CACHE_TTL = 3600  # matches ic_engine.CACHE_TTL
+_training_data_cache: dict[tuple, list[dict]] = {}
+_training_data_cache_expiry: dict[tuple, float] = {}
+_training_data_cache_lock = threading.Lock()
+
+
+def invalidate_training_data_cache() -> None:
+    """Force a fresh join on next non-force_fresh call (called after new
+    outcomes are logged, alongside ic_engine.invalidate_cache())."""
+    with _training_data_cache_lock:
+        _training_data_cache.clear()
+        _training_data_cache_expiry.clear()
+
+
+def get_training_data(
+    horizon: str, market: str = "IN", window_days: int | None = None,
+    force_fresh: bool = False,
+) -> list[dict]:
     """
     Join predictions with outcomes to get labelled training rows.
     Forward return column selected by horizon. IN and US train separately —
@@ -344,7 +372,31 @@ def get_training_data(horizon: str, market: str = "IN", window_days: int | None 
     Phase 1A.6: excludes any row with a definitive market/symbol conflict
     (services.market_integrity) — see postgres_store.get_training_data's
     docstring for why this matters even though it's rare in practice.
+
+    Cached per (horizon, market, window_days) for _TRAINING_DATA_CACHE_TTL
+    seconds unless force_fresh=True — see the module comment above.
     """
+    cache_key = (horizon, market, window_days)
+    if not force_fresh:
+        now = time.time()
+        with _training_data_cache_lock:
+            if cache_key in _training_data_cache and now < _training_data_cache_expiry.get(cache_key, 0):
+                return _training_data_cache[cache_key]
+
+    result = _get_training_data_uncached(horizon, market=market, window_days=window_days)
+
+    if not force_fresh:
+        with _training_data_cache_lock:
+            _training_data_cache[cache_key] = result
+            _training_data_cache_expiry[cache_key] = time.time() + _TRAINING_DATA_CACHE_TTL
+
+    return result
+
+
+def _get_training_data_uncached(horizon: str, market: str = "IN", window_days: int | None = None) -> list[dict]:
+    """Uncached implementation — see get_training_data, the cached entry
+    point every non-training caller should use instead of calling this
+    directly."""
     if USE_POSTGRES:
         return _pg.get_training_data(horizon, market=market, window_days=window_days)
     from services.market_integrity import (
