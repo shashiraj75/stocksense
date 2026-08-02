@@ -53,7 +53,17 @@ from services.postmortem.governed_price_path_conclusions import (
 from services.postmortem.price_path_calculator import STOP_VALUE, TARGET_VALUE
 from services.postmortem.price_path_identity import GOVERNED_PRICE_PATH_CLAIM_RULES_VERSION
 
-_REPORT_SECTION = "price_path"
+# Deliberately distinct from price_path_claims.py's own "price_path"
+# report_section string. Both modules register into the SAME shared
+# evidence.RULE_REGISTRY (a process-wide, import-order-independent
+# dict), so sharing "price_path" here would silently add 3 rule_ids to
+# a section a frozen Wave A/J4B test enumerates exhaustively
+# (test_price_path_claims_rule_registry_gains_no_new_j4b_rule), and
+# would blur the "no dual semantic authority" section boundary this
+# module's own docstring establishes. The persisted structured_report's
+# "price_path" JSON key (see current_report_generation.py) is a
+# SEPARATE, unrelated namespace — this constant never controls that key.
+_REPORT_SECTION = "governed_price_path"
 _RULES_VERSION = GOVERNED_PRICE_PATH_CLAIM_RULES_VERSION
 
 _RULE_ID_BY_LEVEL_KIND = {TARGET_VALUE: "GOVERNED_TARGET_TOUCH", STOP_VALUE: "GOVERNED_STOP_TOUCH"}

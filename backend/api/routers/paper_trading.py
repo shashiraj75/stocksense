@@ -2340,7 +2340,19 @@ def paper_sell(trade_id: int, req: SellRequest, user_id: str = Depends(get_curre
     # like the Sprint 2 attempt above, failure here can never turn a
     # successful sell into an HTTP error.
     if _trade_postmortem_price_path_enabled():
-        _enhanced_report, _price_path_status = _attempt_price_path_enhancement(user_id=user_id, trade_id=trade_id)
+        # Defensive unpack: _attempt_price_path_enhancement's real
+        # contract always returns a (report_or_None, status) tuple, but
+        # this call site's ORIGINAL contract (predating Wave B) was
+        # fire-and-ignore-the-return-value — existing regression tests
+        # legitimately monkeypatch this function down to a bare stub
+        # returning None. Never assume the 2-tuple shape at this call
+        # site; a non-tuple result simply means "no price_path_status
+        # to gate the Wave B addition on."
+        _enhancement_result = _attempt_price_path_enhancement(user_id=user_id, trade_id=trade_id)
+        if isinstance(_enhancement_result, tuple) and len(_enhancement_result) == 2:
+            _enhanced_report, _price_path_status = _enhancement_result
+        else:
+            _enhanced_report, _price_path_status = None, None
 
         # Wave B, Stage J4F — close-time best-effort current (1.2.0)
         # governed report generation via the shared orchestrator (the
