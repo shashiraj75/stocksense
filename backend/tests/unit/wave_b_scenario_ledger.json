@@ -1406,5 +1406,65 @@
         "fix_commit": "60bf499"
       }
     ]
+  },
+  "closure_pass_2_findings": {
+    "source_defects_found_and_fixed": [
+      {
+        "finding": "A",
+        "summary": "entry/exit endpoint collapse \u2014 process_current_report passed one shared applicable_stop/applicable_target as both entry and exit endpoint values",
+        "fix_commit": "7e30f82"
+      },
+      {
+        "finding": "B",
+        "summary": "invalid outbox status 'SUCCEEDED' passed to mark_terminal (not in _TERMINAL_STATUSES), raises ValueError; return value unchecked",
+        "fix_commit": "7e30f82"
+      },
+      {
+        "finding": "C",
+        "summary": "report_trading_date derived from bare UTC .date() with no market_tzinfo conversion",
+        "fix_commit": "7e30f82"
+      },
+      {
+        "finding": "D",
+        "summary": "phases 3/4/5 ran inside one shared conn_factory() scope, contradicting the documented 5-phase no-connection-during-pure-construction architecture",
+        "fix_commit": "7e30f82"
+      },
+      {
+        "finding": "E",
+        "summary": "stop_outbox_worker's timeout unconditionally cleared _TASK/_STOP_EVENT even though asyncio.to_thread work cannot be cancelled once started, orphaning in-flight generation and permitting a duplicate worker to start",
+        "fix_commit": "7e30f82"
+      },
+      {
+        "finding": "G",
+        "summary": "Batch L's own test/docstring described a terminal-success outbox row with a missing report as 'self-heal by regenerating', contradicting the correct integrity-contradiction contract; no distinct outcome existed",
+        "fix_commit": "7e30f82, test corrected in be0c64a"
+      }
+    ],
+    "finding_f_honest_disclosure": {
+      "summary": "A source-level scan of all Wave B J4E/J4F test function bodies (111 function definitions, expanding via pytest.mark.parametrize to the 123 scenario count) classifies exactly 29 as BEHAVIORAL (directly call a real production function/method with real arguments and assert on its return value or persisted side effect), 47 as clearly STRUCTURAL (hasattr/inspect.getsource/signature checks only, no execution of the scenario's actual runtime behavior), and 35 as a MIXED category (e.g. constructing real dataclass inputs and calling a real function, but asserting only on structural properties like a signature parameter's presence rather than the scenario's full behavioral outcome).",
+      "classification_not_claimed": "This closure pass does NOT claim all 123 scenarios are REAL_BEHAVIOURAL_UNIT/REGRESSION/POSTGRESQL \u2014 that would require materially expanding roughly 47-82 of the 123 tests into genuine executing scenarios (e.g. real database-backed process_current_report calls exercising each reconciliation/claim/status branch), which was not completed in this pass given the scope already covered (6 genuine source defects found and fixed via fresh code review, not test execution).",
+      "what_was_verified": "The 6 genuine defects found in this pass (A-E, G) were found by DIRECT SOURCE REVIEW, not by any of the 123 scenario tests \u2014 proving the scenario matrix's existing behavioral gaps are real and consequential, not a merely theoretical concern.",
+      "disclosed_as": "This is a known, disclosed remaining gap, not silently treated as closed."
+    }
+  },
+  "final_assurance_closure_pass_2": {
+    "final_tested_sha": "be0c64afaccba166cf2dec34192feaa3ac5b2d00",
+    "non_postgresql_result": "5355 passed, 1 skipped, 241 deselected, 0 failed",
+    "postgresql_15": {
+      "workflow_run": "30737613927",
+      "head_sha": "be0c64afaccba166cf2dec34192feaa3ac5b2d00",
+      "tests": 241,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "postgresql_17": {
+      "workflow_run": "30737613927",
+      "head_sha": "be0c64afaccba166cf2dec34192feaa3ac5b2d00",
+      "tests": 241,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
   }
 }
