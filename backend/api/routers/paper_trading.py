@@ -3234,11 +3234,45 @@ class ReportSourceManifest(BaseModel):
     has_entry_snapshot: bool
     has_exit_snapshot: bool
     exit_snapshot_schema_version: str | None = None
-    exit_trigger_timing_verification: str | None = None
+    exit_trigger_timing_verification: Literal[
+        "NOT_APPLICABLE", "CLIENT_REPORTED_UNVERIFIED", "SERVER_VERIFIED"
+    ] | None = None
     exit_evidence_rules_version: str
     phase1_calculation_version: str
     attribution_rules_version: str
     price_path_calculation_version: str | None = None
+
+    @model_validator(mode="after")
+    def _enforce_exit_snapshot_and_price_path_consistency(self):
+        # generation_service.py's own builder guarantees: exit_snapshot_
+        # schema_version and exit_trigger_timing_verification are BOTH
+        # None exactly when has_exit_snapshot is False, and BOTH set to
+        # a real value when it is True. A row violating this shape is
+        # malformed, not a legitimate historical variant.
+        if not self.has_exit_snapshot:
+            if self.exit_snapshot_schema_version is not None or self.exit_trigger_timing_verification is not None:
+                raise ValueError(
+                    "has_exit_snapshot=False requires exit_snapshot_schema_version and "
+                    "exit_trigger_timing_verification to both be null"
+                )
+        else:
+            if not self.exit_snapshot_schema_version:
+                raise ValueError("has_exit_snapshot=True requires a non-empty exit_snapshot_schema_version")
+            if self.exit_trigger_timing_verification is None:
+                raise ValueError("has_exit_snapshot=True requires a governed exit_trigger_timing_verification value")
+        # price_path_calculation_version is historical-optional — the
+        # only two legitimate states production ever persists are
+        # "key absent" (no price-path enhancement) or "a real non-empty
+        # version string" (enhanced). An EXPLICIT null is not a state
+        # production establishes evidence for, so it is treated as
+        # malformed rather than silently legitimized as a third state.
+        if "price_path_calculation_version" in self.model_fields_set and self.price_path_calculation_version is None:
+            raise ValueError(
+                "price_path_calculation_version must either be entirely absent (historical, "
+                "non-enhanced) or a non-null version string — an explicit null is not a "
+                "recognized persisted state"
+            )
+        return self
 
     @model_serializer(mode="wrap")
     def _serialize_preserving_historical_absence(self, handler):

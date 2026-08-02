@@ -611,9 +611,14 @@ def test_report_level_source_manifest_round_trips_adversarial_marker_values(
         numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
     )
     marker_manifest = {
-        "has_entry_snapshot": True, "has_exit_snapshot": False,
+        "has_entry_snapshot": True, "has_exit_snapshot": True,
         "exit_snapshot_schema_version": "marker-exit-snapshot-schema",
-        "exit_trigger_timing_verification": "marker-trigger-timing",
+        # Governed vocabulary field — must be a real Literal value, not
+        # a free-form marker, so this uses SERVER_VERIFIED itself as
+        # the "adversarial" value (it's simply not the value a plain
+        # manual-close report would carry, proving the response isn't
+        # silently defaulting to something else).
+        "exit_trigger_timing_verification": "SERVER_VERIFIED",
         "exit_evidence_rules_version": "marker-exit-evidence-rules",
         "phase1_calculation_version": "marker-phase1-calc",
         "attribution_rules_version": "marker-attribution-rules",
@@ -682,3 +687,132 @@ def test_report_level_source_manifest_preserves_historical_absence_of_price_path
         "a genuinely absent historical-optional key must stay absent in the response JSON, "
         "never synthesized as an explicit null"
     )
+
+
+# ============================= source_manifest semantic consistency, fail-closed ============================= #
+
+def _seed_current_manifest(pg_conn, trade_id, unique_user_id, manifest, *, marker):
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+    from services.postmortem import report_store
+    from datetime import datetime as _dt, timezone as _tz
+
+    schema_v, calc_v, rules_v = current_target_identity(
+        base_calculation_version=CALCULATION_VERSION,
+        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+    )
+    report_store.persist_report(
+        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+        report_trading_date=_dt.now(_tz.utc).date(), market_timezone="America/New_York",
+        report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+        evidence_bundle_version=marker, status="COMPLETE",
+        structured_report={"marker": marker}, evidence_items=[], claims=[],
+        source_manifest=manifest, evidence_gaps=[], warnings=[],
+    )
+
+
+def _assert_fails_closed_to_integrity_contradiction(client, unique_user_id, trade_id, forbidden_strings):
+    resp = _current_report(client, unique_user_id, trade_id)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["availability"] == "INTEGRITY_CONTRADICTION"
+    assert body["structured_report"] is None
+    assert body["source_manifest"] is None
+    for forbidden in forbidden_strings:
+        assert forbidden not in str(body)
+    assert resp.headers.get("cache-control") == "private, no-store"
+
+
+def test_no_exit_snapshot_with_non_null_schema_version_fails_closed(client, pg_conn, unique_user_id, monkeypatch):
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # flag OFF at close
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    manifest = {
+        "has_entry_snapshot": True, "has_exit_snapshot": False,
+        "exit_snapshot_schema_version": "should-not-be-set",  # <-- malformation
+        "exit_trigger_timing_verification": None,
+        "exit_evidence_rules_version": "1.0.0", "phase1_calculation_version": "1.0.0",
+        "attribution_rules_version": "1.0.0",
+    }
+    _seed_current_manifest(pg_conn, trade_id, unique_user_id, manifest, marker="no-exit-nonnull-schema")
+    _assert_fails_closed_to_integrity_contradiction(client, unique_user_id, trade_id, ["should-not-be-set"])
+
+
+def test_no_exit_snapshot_with_non_null_trigger_timing_fails_closed(client, pg_conn, unique_user_id, monkeypatch):
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # flag OFF at close
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    manifest = {
+        "has_entry_snapshot": True, "has_exit_snapshot": False,
+        "exit_snapshot_schema_version": None,
+        "exit_trigger_timing_verification": "SERVER_VERIFIED",  # <-- malformation
+        "exit_evidence_rules_version": "1.0.0", "phase1_calculation_version": "1.0.0",
+        "attribution_rules_version": "1.0.0",
+    }
+    _seed_current_manifest(pg_conn, trade_id, unique_user_id, manifest, marker="no-exit-nonnull-trigger")
+    _assert_fails_closed_to_integrity_contradiction(client, unique_user_id, trade_id, [])
+
+
+def test_has_exit_snapshot_missing_schema_version_fails_closed(client, pg_conn, unique_user_id, monkeypatch):
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # flag OFF at close
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    manifest = {
+        "has_entry_snapshot": True, "has_exit_snapshot": True,
+        "exit_snapshot_schema_version": None,  # <-- malformation
+        "exit_trigger_timing_verification": "SERVER_VERIFIED",
+        "exit_evidence_rules_version": "1.0.0", "phase1_calculation_version": "1.0.0",
+        "attribution_rules_version": "1.0.0",
+    }
+    _seed_current_manifest(pg_conn, trade_id, unique_user_id, manifest, marker="has-exit-missing-schema")
+    _assert_fails_closed_to_integrity_contradiction(client, unique_user_id, trade_id, [])
+
+
+def test_invalid_trigger_timing_vocabulary_fails_closed(client, pg_conn, unique_user_id, monkeypatch):
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # flag OFF at close
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    manifest = {
+        "has_entry_snapshot": True, "has_exit_snapshot": True,
+        "exit_snapshot_schema_version": "1.0.0",
+        "exit_trigger_timing_verification": "NOT_A_GOVERNED_VALUE",  # <-- malformation
+        "exit_evidence_rules_version": "1.0.0", "phase1_calculation_version": "1.0.0",
+        "attribution_rules_version": "1.0.0",
+    }
+    _seed_current_manifest(pg_conn, trade_id, unique_user_id, manifest, marker="invalid-trigger-vocab")
+    _assert_fails_closed_to_integrity_contradiction(client, unique_user_id, trade_id, ["NOT_A_GOVERNED_VALUE"])
+
+
+def test_explicit_null_price_path_calculation_version_fails_closed(client, pg_conn, unique_user_id, monkeypatch):
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # flag OFF at close
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    manifest = {
+        "has_entry_snapshot": True, "has_exit_snapshot": False,
+        "exit_snapshot_schema_version": None, "exit_trigger_timing_verification": None,
+        "exit_evidence_rules_version": "1.0.0", "phase1_calculation_version": "1.0.0",
+        "attribution_rules_version": "1.0.0",
+        "price_path_calculation_version": None,  # <-- malformation: explicit null, not absence
+    }
+    _seed_current_manifest(pg_conn, trade_id, unique_user_id, manifest, marker="explicit-null-price-path")
+    _assert_fails_closed_to_integrity_contradiction(client, unique_user_id, trade_id, [])
+
+
+def test_malformed_source_manifest_causes_no_mutation(client, pg_conn, unique_user_id, monkeypatch):
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # flag OFF at close
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    manifest = {
+        "has_entry_snapshot": True, "has_exit_snapshot": True,
+        "exit_snapshot_schema_version": None,
+        "exit_trigger_timing_verification": None,
+        "exit_evidence_rules_version": "1.0.0", "phase1_calculation_version": "1.0.0",
+        "attribution_rules_version": "1.0.0",
+    }
+    _seed_current_manifest(pg_conn, trade_id, unique_user_id, manifest, marker="no-mutation-check")
+
+    before = pg_conn.execute(
+        "SELECT count(*) FROM paper_trade_postmortem_report WHERE paper_trade_id = %s", (trade_id,),
+    ).fetchone()[0]
+    for _ in range(3):
+        resp = _current_report(client, unique_user_id, trade_id)
+        assert resp.json()["availability"] == "INTEGRITY_CONTRADICTION"
+    after = pg_conn.execute(
+        "SELECT count(*) FROM paper_trade_postmortem_report WHERE paper_trade_id = %s", (trade_id,),
+    ).fetchone()[0]
+    assert after == before

@@ -30,7 +30,7 @@ _REPRESENTATIVE_VALUES = {
     "warnings": ["warning-1"],
     "source_manifest": {
         "has_entry_snapshot": True, "has_exit_snapshot": True,
-        "exit_snapshot_schema_version": "1.0.0", "exit_trigger_timing_verification": "verified",
+        "exit_snapshot_schema_version": "1.0.0", "exit_trigger_timing_verification": "SERVER_VERIFIED",
         "exit_evidence_rules_version": "1.0.0",
         "phase1_calculation_version": "1.0.0", "attribution_rules_version": "1.0.0",
     },
@@ -263,6 +263,7 @@ class TestReportSourceManifestAbsencePreservingSerialization:
 
     _BASE_KWARGS = dict(
         has_entry_snapshot=True, has_exit_snapshot=True,
+        exit_snapshot_schema_version="1.0.0", exit_trigger_timing_verification="SERVER_VERIFIED",
         exit_evidence_rules_version="1.0.0", phase1_calculation_version="1.0.0",
         attribution_rules_version="1.0.0",
     )
@@ -283,19 +284,20 @@ class TestReportSourceManifestAbsencePreservingSerialization:
         serialized = json.loads(manifest.model_dump_json())
         assert serialized["price_path_calculation_version"] == "pp-marker"
 
-    def test_explicit_persisted_null_is_preserved_as_null(self):
-        """An explicit JSON null in the persisted row (distinct from
-        the key being genuinely absent) must remain null, not be
-        dropped — the distinction is legitimate and preserved via
-        model_fields_set, which IS populated when None is passed
-        explicitly as a keyword argument."""
+    def test_explicit_persisted_null_is_treated_as_malformed(self):
+        """Production only ever establishes two legitimate states for
+        price_path_calculation_version: entirely absent (historical,
+        non-enhanced) or a real non-empty version string (enhanced).
+        An explicit JSON null is not a state production has evidence
+        for, so it is rejected as malformed rather than silently
+        legitimized as a third state — this ValidationError is what
+        the fail-closed conversion boundary turns into
+        INTEGRITY_CONTRADICTION at the route layer."""
         from api.routers.paper_trading import ReportSourceManifest
-        import json
+        from pydantic import ValidationError
 
-        manifest = ReportSourceManifest(**self._BASE_KWARGS, price_path_calculation_version=None)
-        serialized = json.loads(manifest.model_dump_json())
-        assert "price_path_calculation_version" in serialized
-        assert serialized["price_path_calculation_version"] is None
+        with pytest.raises(ValidationError, match="not a recognized persisted state"):
+            ReportSourceManifest(**self._BASE_KWARGS, price_path_calculation_version=None)
 
     def test_absence_is_preserved_through_the_full_current_report_response(self):
         """End-to-end proof at the shape the real endpoint actually
@@ -311,3 +313,69 @@ class TestReportSourceManifestAbsencePreservingSerialization:
         response = CurrentReportReadResponse(**kwargs)
         serialized = json.loads(response.model_dump_json())
         assert "price_path_calculation_version" not in serialized["source_manifest"]
+
+
+@pytest.mark.unit
+class TestReportSourceManifestSemanticConsistency:
+    """generation_service.py's builder guarantees exit_snapshot_schema_
+    version and exit_trigger_timing_verification are BOTH null exactly
+    when has_exit_snapshot is False, and BOTH set when True. A
+    persisted row violating this shape is malformed."""
+
+    _NO_EXIT = dict(
+        has_entry_snapshot=True, has_exit_snapshot=False,
+        exit_evidence_rules_version="1.0.0", phase1_calculation_version="1.0.0",
+        attribution_rules_version="1.0.0",
+    )
+    _WITH_EXIT = dict(
+        has_entry_snapshot=True, has_exit_snapshot=True,
+        exit_snapshot_schema_version="1.0.0", exit_trigger_timing_verification="SERVER_VERIFIED",
+        exit_evidence_rules_version="1.0.0", phase1_calculation_version="1.0.0",
+        attribution_rules_version="1.0.0",
+    )
+
+    def test_no_exit_snapshot_with_both_fields_null_is_valid(self):
+        from api.routers.paper_trading import ReportSourceManifest
+
+        ReportSourceManifest(**self._NO_EXIT)  # must not raise
+
+    def test_has_exit_snapshot_with_both_fields_set_is_valid(self):
+        from api.routers.paper_trading import ReportSourceManifest
+
+        ReportSourceManifest(**self._WITH_EXIT)  # must not raise
+
+    def test_no_exit_snapshot_with_non_null_schema_version_is_malformed(self):
+        from api.routers.paper_trading import ReportSourceManifest
+
+        with pytest.raises(ValidationError, match="requires exit_snapshot_schema_version"):
+            ReportSourceManifest(**{**self._NO_EXIT, "exit_snapshot_schema_version": "1.0.0"})
+
+    def test_no_exit_snapshot_with_non_null_trigger_timing_is_malformed(self):
+        from api.routers.paper_trading import ReportSourceManifest
+
+        with pytest.raises(ValidationError, match="requires exit_snapshot_schema_version"):
+            ReportSourceManifest(**{**self._NO_EXIT, "exit_trigger_timing_verification": "SERVER_VERIFIED"})
+
+    def test_has_exit_snapshot_missing_schema_version_is_malformed(self):
+        from api.routers.paper_trading import ReportSourceManifest
+
+        with pytest.raises(ValidationError, match="requires a non-empty exit_snapshot_schema_version"):
+            ReportSourceManifest(**{**self._WITH_EXIT, "exit_snapshot_schema_version": None})
+
+    def test_has_exit_snapshot_missing_trigger_timing_is_malformed(self):
+        from api.routers.paper_trading import ReportSourceManifest
+
+        with pytest.raises(ValidationError, match="requires a governed exit_trigger_timing_verification"):
+            ReportSourceManifest(**{**self._WITH_EXIT, "exit_trigger_timing_verification": None})
+
+    def test_invalid_trigger_timing_vocabulary_is_rejected(self):
+        from api.routers.paper_trading import ReportSourceManifest
+
+        with pytest.raises(ValidationError):
+            ReportSourceManifest(**{**self._WITH_EXIT, "exit_trigger_timing_verification": "MADE_UP_VALUE"})
+
+    @pytest.mark.parametrize("value", ["NOT_APPLICABLE", "CLIENT_REPORTED_UNVERIFIED", "SERVER_VERIFIED"])
+    def test_every_governed_trigger_timing_value_is_accepted(self, value):
+        from api.routers.paper_trading import ReportSourceManifest
+
+        ReportSourceManifest(**{**self._WITH_EXIT, "exit_trigger_timing_verification": value})  # must not raise
