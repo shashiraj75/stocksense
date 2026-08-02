@@ -1,24 +1,34 @@
 """
 Trade Postmortem Sprint 3A, Pre-Stage-H Correction 3 — MOCK-LEVEL
-transaction-boundary proof only.
+transaction-boundary proof.
 
-This file is explicitly NOT sufficient proof on its own — Correction 3
-requires a real-PostgreSQL integration test that begins a close
-request, commits it, and observes provider invocation ordering across a
-SECOND connection. That test does not exist yet: this sandbox has no
-`psql`/`pg_isready` and no reachable PostgreSQL instance (checked at
-the start of this correction), so the real-PostgreSQL leg of
-Correction 3 is environment-blocked, not implemented, and honestly
-reported as such rather than faked with a mock standing in for it.
+This file is fast, deterministic complementary unit coverage for the
+provider-acquisition ordering CONTRACT (commit-then-acquire, no open
+connection during provider I/O) — it is a mock and is never a
+replacement for real-PostgreSQL verification. The real-PostgreSQL leg
+of Correction 3 is no longer blocked: it is proven by
+tests/postgres_integration/test_current_report_generation_lifecycle.py
+::test_8e_no_connection_open_during_provider_acquisition_phase and by
+tests/postgres_integration/test_price_path_generation.py::
+TestCloseTransactionFinancialIsolation
+(test_closed_trade_cash_snapshot_outbox_all_visible_before_acquisition,
+test_provider_failure_leaves_committed_financial_state_untouched,
+test_provider_failure_creates_no_evidence_row), all of which run
+against a real ephemeral PostgreSQL 15/17 instance in CI. THIS file
+never substitutes for those — it only gives sub-second regression
+coverage for the same ordering contract between full PostgreSQL runs.
 
-What THIS file proves, at the unit level: a spy provider correctly
-records whether it was invoked while a simulated transaction context
-was still open, and the generation-flow ordering this sprint intends
-(commit-then-acquire) is exercised end-to-end against a fake connection
-that raises if any operation occurs after "commit" without an explicit
-new transaction. This gives fast, deterministic regression coverage for
-the ordering CONTRACT — it is a mock, and is only a complement to, never
-a replacement for, real-PostgreSQL verification.
+Every call to the acquisition entry point below MUST inject all three
+fetch-callback keyword arguments explicitly — omitting one lets the
+call fall through to its production default, which for the dividends
+callback reaches the live yfinance provider. Note that those defaults
+are ordinary Python default-parameter values bound once at function-
+definition time, NOT a live module-attribute lookup on every call — so
+monkeypatching the module-level fetch_* functions does NOT intercept a
+call that omits a keyword (the defect this file previously had): the
+only reliable guard is TestNoLiveNetworkAccess's static source scan
+below, which fails the build the moment any call site in this module
+stops explicitly naming all three keywords.
 """
 import datetime as dt
 
@@ -72,7 +82,7 @@ class TestMockTransactionBoundaryOrdering:
             market_timezone_name="America/New_York", market_tzinfo=ET,
             entry_timestamp=dt.datetime(2026, 6, 1, tzinfo=ET),
             exit_timestamp=dt.datetime(2026, 6, 4, tzinfo=ET),
-            fetch_bars_fn=spy_bars, fetch_splits_fn=spy_splits,
+            fetch_bars_fn=spy_bars, fetch_splits_fn=spy_splits, fetch_dividends_fn=lambda *a: [],
         )
 
         assert observed["in_transaction_at_call"] is False
@@ -97,7 +107,7 @@ class TestMockTransactionBoundaryOrdering:
             market_timezone_name="America/New_York", market_tzinfo=ET,
             entry_timestamp=dt.datetime(2026, 6, 1, tzinfo=ET),
             exit_timestamp=dt.datetime(2026, 6, 4, tzinfo=ET),
-            fetch_bars_fn=spy_bars, fetch_splits_fn=lambda *a: [],
+            fetch_bars_fn=spy_bars, fetch_splits_fn=lambda *a: [], fetch_dividends_fn=lambda *a: [],
         )
 
     def test_provider_failure_after_commit_does_not_touch_committed_state(self):
@@ -115,18 +125,46 @@ class TestMockTransactionBoundaryOrdering:
                 market_timezone_name="America/New_York", market_tzinfo=ET,
                 entry_timestamp=dt.datetime(2026, 6, 1, tzinfo=ET),
                 exit_timestamp=dt.datetime(2026, 6, 4, tzinfo=ET),
-                fetch_bars_fn=failing_bars, fetch_splits_fn=lambda *a: [],
+                fetch_bars_fn=failing_bars, fetch_splits_fn=lambda *a: [], fetch_dividends_fn=lambda *a: [],
             )
         assert conn.committed_state == snapshot_before
         assert conn.in_transaction is False
 
 
 @pytest.mark.unit
-class TestCorrection3EnvironmentStatusHonesty:
-    def test_this_suite_does_not_claim_to_be_real_postgres_proof(self):
-        """A meta-test making the limitation impossible to silently lose
-        track of: this module's own docstring must keep stating that a
-        real-PostgreSQL leg is required and currently blocked."""
+class TestNoLiveNetworkAccess:
+    """Guards against exactly the defect this module previously had: a
+    call to the acquisition entry point omitting fetch_dividends_fn
+    silently fell through to the production default, which calls
+    yfinance — a real, nondeterministic network dependency inside what
+    is supposed to be a fast offline unit test.
+
+    A dynamic monkeypatch-and-call guard is deliberately NOT used here:
+    fetch_bars_fn/fetch_splits_fn/fetch_dividends_fn are ordinary
+    Python default-parameter values bound once at function-definition
+    time, not a live module-attribute lookup performed on every call —
+    monkeypatching the module-level fetch_* functions would silently
+    fail to intercept a call that omits a keyword, giving false
+    confidence while the call still reaches the network. A static
+    source scan is the only reliable guard against this class of
+    defect for this file."""
+
+    def test_every_call_site_in_this_module_names_all_three_offline_fetchers(self):
+        import inspect
+        import re
         import tests.unit.test_price_path_transaction_boundary_mock as mod
-        assert "environment-blocked" in mod.__doc__
-        assert "real-PostgreSQL" in mod.__doc__
+
+        source = inspect.getsource(mod)
+        # Match only real call sites (an open paren immediately followed
+        # by a newline, the shape every call in this file uses) — never
+        # the bare mention of the function name in prose/docstrings.
+        call_sites = re.findall(r"acquire_price_path_evidence\(\s*\n", source)
+        assert len(call_sites) >= 3, (
+            f"expected at least 3 acquire_price_path_evidence(...) call sites in this module, found {len(call_sites)}"
+        )
+        for keyword in ("fetch_bars_fn=", "fetch_splits_fn=", "fetch_dividends_fn="):
+            count = source.count(keyword)
+            assert count >= len(call_sites), (
+                f"{keyword} appears {count} times but there are {len(call_sites)} call sites — "
+                "a call site is missing an explicit offline override and may reach the live network"
+            )
