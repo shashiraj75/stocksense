@@ -50,11 +50,11 @@ def _seed_entry_snapshot(pg_conn, *, trade_id, user_id, market="US",
     pg_conn.execute(
         """INSERT INTO paper_trade_entry_snapshot
            (paper_trade_id, user_id, symbol, market, snapshot_schema_version, evidence_source,
-            simulated_execution_price, user_selected_stop_loss, user_selected_target_price,
+            simulated_execution_price, execution_range_position, user_selected_stop_loss, user_selected_target_price,
             user_overrode_recommendation, verification_levels, level_history_contract_version,
             initial_stop_modified_after_entry, initial_target_modified_after_entry,
             initial_levels_modified_after_entry)
-           VALUES (%s, %s, 'AAPL', %s, '1.0.0', 'DAILY_PICK', 100.0, %s, %s, false, '{}'::jsonb, '1.0.0',
+           VALUES (%s, %s, 'AAPL', %s, '1.0.0', 'DAILY_PICK', 100.0, 'WITHIN_RANGE', %s, %s, false, '{}'::jsonb, '1.0.0',
                    false, false, false)""",
         (trade_id, user_id, market, user_selected_stop_loss, user_selected_target_price),
     )
