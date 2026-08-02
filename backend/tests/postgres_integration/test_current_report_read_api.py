@@ -122,7 +122,10 @@ def test_ready_report_returns_persisted_complete_or_limited_evidence(client, pg_
     # report timestamp, never fabricated from request time.
     assert body["generated_at"] is not None
     row = pg_conn.execute(
-        "SELECT generated_at FROM paper_trade_postmortem_report WHERE paper_trade_id = %s", (trade_id,),
+        """SELECT generated_at FROM paper_trade_postmortem_report
+           WHERE paper_trade_id = %s AND report_schema_version = %s
+             AND calculation_version = %s AND attribution_rules_version = %s""",
+        (trade_id, body["report_schema_version"], body["calculation_version"], body["attribution_rules_version"]),
     ).fetchone()
     persisted_generated_at = row[0]
     assert datetime.fromisoformat(body["generated_at"]) == persisted_generated_at.astimezone(timezone.utc), (
