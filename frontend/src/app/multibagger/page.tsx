@@ -165,13 +165,6 @@ export default function MultibaggerPage() {
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0 flex-wrap">
-          {/* Market is now chosen once, globally, via the header's
-              GlobalMarketDropdown — this read-only label just shows what's
-              currently selected rather than offering a second, page-level
-              way to change it. */}
-          <span className="text-xs px-3 py-1.5 rounded-lg bg-dark-card border border-dark-border text-gray-400">
-            Market: {market === "IN" ? "🇮🇳 India" : "🇺🇸 US"}
-          </span>
           {status?.running ? (
             <span className="flex items-center gap-1.5 text-xs text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 rounded-lg px-3 py-1.5">
               <Wifi size={12} className="animate-pulse" /> Refreshing fundamentals…

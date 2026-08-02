@@ -31,6 +31,10 @@ export default function AlertsPage() {
   const apiBase = userId ? `/api/alerts/${userId}` : null;
 
   const [alerts, setAlerts] = useState<Alert[]>(() => loadLocal());
+  // Collapsible add-alert form (mirrors Portfolio's "Add Holding" pattern) —
+  // defaults open only when there are no alerts yet, toggled via the header
+  // button rather than staying permanently visible for a returning user.
+  const [showAddAlert, setShowAddAlert] = useState(() => loadLocal().length === 0);
   const [sym, setSym] = useState("");
   const [market, setMarket] = useMarketPreference(["IN", "US"] as const, "IN");
   const [targetPrice, setTargetPrice] = useState("");
@@ -191,63 +195,76 @@ export default function AlertsPage() {
               <BellRing size={13} /> {triggered.length} triggered
             </span>
           )}
+          <button
+            onClick={() => setShowAddAlert(v => !v)}
+            className={clsx(
+              "flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border transition-colors",
+              showAddAlert
+                ? "bg-brand-500/10 border-brand-500/40 text-brand-400"
+                : "border-dark-border text-gray-400 hover:text-white hover:border-white/30"
+            )}
+          >
+            <PlusCircle size={13} /> {showAddAlert ? "Close" : "Add Alert"}
+          </button>
         </div>
       </div>
 
-      {/* Add alert form */}
-      <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
-        <h2 className="font-semibold mb-4 text-sm text-gray-300">New Alert</h2>
-        <div className="flex flex-wrap gap-3 items-end">
-          <div className="flex-1 min-w-28">
-            <label className="text-xs text-gray-400 mb-1 block">Symbol</label>
-            <StockSymbolField
-              className="w-full bg-dark-bg border border-dark-border rounded-xl px-3 py-2 text-white font-mono font-bold text-sm outline-none focus:border-brand-500 uppercase"
-              value={sym}
-              onChange={setSym}
-              onEnter={add}
-              onSelect={(stock: StockResult) => {
-                setSym(stock.symbol.replace(/\.(NS|BO)$/, ""));
-                if (stock.market === "IN" || stock.market === "US") setMarket(stock.market);
-              }}
-            />
-          </div>
-          <div>
-            <label className="text-xs text-gray-400 mb-1 block">Market</label>
-            {/* Market is now chosen once, globally, via the header's
-                GlobalMarketDropdown, rather than a second click target here.
-                It still determines which market a manually-typed symbol is
-                added under — picking a symbol from search auto-detects its
-                own market instead (see onSelect above), same as before. */}
-            <div className="px-3 py-2 rounded-lg text-xs font-medium border bg-dark-bg border-dark-border text-gray-400">
-              {market === "US" ? "🇺🇸" : "🇮🇳"} {market}
+      {/* Add alert form — collapsible, mirrors Portfolio's "Add Holding". */}
+      {showAddAlert && (
+        <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
+          <h2 className="font-semibold mb-4 text-sm text-gray-300">New Alert</h2>
+          <div className="flex flex-wrap gap-3 items-end">
+            <div className="flex-1 min-w-28">
+              <label className="text-xs text-gray-400 mb-1 block">Symbol</label>
+              <StockSymbolField
+                className="w-full bg-dark-bg border border-dark-border rounded-xl px-3 py-2 text-white font-mono font-bold text-sm outline-none focus:border-brand-500 uppercase"
+                value={sym}
+                onChange={setSym}
+                onEnter={add}
+                onSelect={(stock: StockResult) => {
+                  setSym(stock.symbol.replace(/\.(NS|BO)$/, ""));
+                  if (stock.market === "IN" || stock.market === "US") setMarket(stock.market);
+                }}
+              />
             </div>
-          </div>
-          <div>
-            <label className="text-xs text-gray-400 mb-1 block">Alert when price goes</label>
-            <div className="flex gap-1">
-              {(["above", "below"] as const).map(d => (
-                <button key={d} onClick={() => setDirection(d)}
-                  className={clsx("px-3 py-2 rounded-lg text-xs font-medium border capitalize transition-colors",
-                    direction === d ? "bg-brand-500 text-white border-brand-500" : "bg-dark-bg border-dark-border text-gray-400 hover:text-white")}>
-                  {d === "above" ? "↑ Above" : "↓ Below"}
-                </button>
-              ))}
+            <div>
+              <label className="text-xs text-gray-400 mb-1 block">Market</label>
+              {/* Market is now chosen once, globally, via the header's
+                  GlobalMarketDropdown, rather than a second click target here.
+                  It still determines which market a manually-typed symbol is
+                  added under — picking a symbol from search auto-detects its
+                  own market instead (see onSelect above), same as before. */}
+              <div className="px-3 py-2 rounded-lg text-xs font-medium border bg-dark-bg border-dark-border text-gray-400">
+                {market === "US" ? "🇺🇸" : "🇮🇳"} {market}
+              </div>
             </div>
+            <div>
+              <label className="text-xs text-gray-400 mb-1 block">Alert when price goes</label>
+              <div className="flex gap-1">
+                {(["above", "below"] as const).map(d => (
+                  <button key={d} onClick={() => setDirection(d)}
+                    className={clsx("px-3 py-2 rounded-lg text-xs font-medium border capitalize transition-colors",
+                      direction === d ? "bg-brand-500 text-white border-brand-500" : "bg-dark-bg border-dark-border text-gray-400 hover:text-white")}>
+                    {d === "above" ? "↑ Above" : "↓ Below"}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="w-36">
+              <label className="text-xs text-gray-400 mb-1 block">Target Price</label>
+              <input className="w-full bg-dark-bg border border-dark-border rounded-xl px-3 py-2 text-white font-mono text-sm outline-none focus:border-brand-500"
+                placeholder="200.00" type="number" min="0" step="0.01" value={targetPrice}
+                onChange={e => setTargetPrice(e.target.value)} />
+            </div>
+            <button onClick={add} disabled={syncing}
+              className="flex items-center gap-2 px-5 py-2 rounded-xl bg-brand-500 text-white text-sm font-medium hover:bg-brand-600 transition-colors disabled:opacity-60">
+              <PlusCircle size={15} /> {syncing ? "Saving…" : "Set Alert"}
+            </button>
           </div>
-          <div className="w-36">
-            <label className="text-xs text-gray-400 mb-1 block">Target Price</label>
-            <input className="w-full bg-dark-bg border border-dark-border rounded-xl px-3 py-2 text-white font-mono text-sm outline-none focus:border-brand-500"
-              placeholder="200.00" type="number" min="0" step="0.01" value={targetPrice}
-              onChange={e => setTargetPrice(e.target.value)} />
-          </div>
-          <button onClick={add} disabled={syncing}
-            className="flex items-center gap-2 px-5 py-2 rounded-xl bg-brand-500 text-white text-sm font-medium hover:bg-brand-600 transition-colors disabled:opacity-60">
-            <PlusCircle size={15} /> {syncing ? "Saving…" : "Set Alert"}
-          </button>
+          {error && <p className="text-bear text-xs mt-2">{error}</p>}
+          <p className="text-xs text-gray-500 mt-3">Alerts are saved to the cloud and persist across sessions.</p>
         </div>
-        {error && <p className="text-bear text-xs mt-2">{error}</p>}
-        <p className="text-xs text-gray-500 mt-3">Alerts are saved to the cloud and persist across sessions.</p>
-      </div>
+      )}
 
       {/* Triggered alerts */}
       {triggered.length > 0 && (

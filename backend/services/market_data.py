@@ -51,8 +51,14 @@ _CACHE_MAX = 300
 def _cache_set(cache: dict, key: str, value: tuple) -> None:
     """Insert into cache, evicting the oldest entry when cap is reached."""
     if key not in cache and len(cache) >= _CACHE_MAX:
-        oldest = min(cache, key=lambda k: cache[k][0])
-        del cache[oldest]
+        try:
+            oldest = min(cache, key=lambda k: cache[k][0])
+            del cache[oldest]
+        except (ValueError, KeyError):
+            # memory_guard.clear_safe_caches() may empty this cache from
+            # another thread between the len() check and the eviction —
+            # nothing left to evict is success, not an error.
+            pass
     cache[key] = value
 
 _quote_cache: dict[str, tuple[float, dict]] = {}

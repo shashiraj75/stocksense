@@ -487,11 +487,31 @@ async def finalize_premarket(market: str, now: datetime | None = None) -> dict:
     # regardless of what finalization markers it happens to carry.
     outcome, detail = _validate_payload_preflight(payload, now_et)
     if outcome is not None:
+        # US Daily Picks generation-reliability incident (2026-07-22, Phase
+        # 6): a missing or stale base used to make this finalizer silently
+        # no-op with a "skipped" status the UI badge showed as an
+        # indefinite "Premarket Review Pending" — with no attempt to
+        # recover. This finalizer already runs on a real schedule well
+        # after the base's expected completion time, so it doubles as the
+        # watchdog's check point: on exactly these two outcomes (base
+        # genuinely absent, or present but not from today), it now
+        # initiates a bounded, non-overlapping, governed recovery instead
+        # of only reporting the gap. "rejected_malformed_base" is
+        # deliberately excluded — that's a data-integrity problem a blind
+        # retry could mask, not a missing-run problem a retry fixes.
+        recovery = None
+        if outcome in ("skipped_no_base", "skipped_stale_base"):
+            try:
+                import services.daily_picks as _dp
+                recovery = _dp.attempt_governed_recovery("US", reason=outcome)
+            except Exception as e:
+                log.warning(f"[premarket_finalizer] governed recovery attempt failed: {e}")
         return {
             "market": "US",
             "status": _OUTCOME_STATUS_MAP[outcome],
             "reason": outcome,
             "premarket_finalizer_version": PREMARKET_FINALIZER_VERSION,
+            "recovery": recovery,
             **detail,
         }
 

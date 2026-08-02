@@ -127,25 +127,47 @@ class TestEntrySnapshotSchemaExecutionIsAttempted:
     def test_init_db_executes_the_schema_sql_containing_the_new_table(self, monkeypatch):
         """Mocked-executor proof that init_db() actually runs SCHEMA_SQL
         (and therefore this stage's DDL) — not just that the string exists
-        somewhere in the module."""
+        somewhere in the module.
+
+        Schema Initialization Hardening phase: init_db() now opens its own
+        connection via psycopg.connect() directly (a fresh, non-pooled
+        connection per attempt — see _attempt_schema_initialization) rather
+        than through _get_pool().connection(), so the fake is patched onto
+        psycopg.connect instead. fetchone() returns a row shaped for
+        whichever query was last executed — the advisory-lock
+        acquisition, every guarded migration's existence check, and
+        postcondition verification (including the strengthened trigger-
+        contract query, which unpacks 5 columns) each need a plausibly-
+        shaped truthy row, never real data here."""
         executed = []
 
         class _FakeConn:
+            def __init__(self):
+                self._last_sql = ""
+                self._last_params = None
+
             def execute(self, sql, params=None):
                 executed.append(sql)
+                self._last_sql = sql
+                self._last_params = params
                 return self
 
             def fetchone(self):
-                return None
+                if "pronargs" in self._last_sql:
+                    return ("O", 19, "public", "trigger", 0)
+                if "proname" in self._last_sql and "tgname" in self._last_sql:
+                    # Trade Postmortem Engine, Sprint 2 — this postcondition
+                    # query now also runs for paper_trade_exit_snapshot, not
+                    # only paper_trade_entry_snapshot; derive the expected
+                    # function name from the query's own table parameter
+                    # (params[0]) rather than a single hardcoded string.
+                    table = self._last_params[0] if self._last_params else "paper_trade_entry_snapshot"
+                    return (f"reject_{table}_update",)
+                return (True,)
 
-            def __enter__(self):
-                return self
+            def close(self):
+                pass
 
-            def __exit__(self, *a):
-                return False
-
-        monkeypatch.setattr(postgres_store, "_get_pool", lambda: type(
-            "P", (), {"connection": lambda self: _FakeConn()}
-        )())
+        monkeypatch.setattr(postgres_store.psycopg, "connect", lambda *a, **k: _FakeConn())
         postgres_store.init_db()
         assert any("paper_trade_entry_snapshot" in sql for sql in executed)

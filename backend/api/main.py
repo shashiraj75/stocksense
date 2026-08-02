@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
 from slowapi import _rate_limit_exceeded_handler
-from api.routers import stocks, predictions, news, screener, watchlist, backtest, picks, validation, paper_trading, alerts, auth, feedback, portfolio, multibagger
+from api.routers import stocks, predictions, news, screener, watchlist, backtest, picks, validation, paper_trading, alerts, auth, feedback, portfolio, multibagger, leadership
 from services.rate_limit import limiter
 
 log = logging.getLogger(__name__)
@@ -159,6 +159,47 @@ async def _us_movers_refresh_loop():
         await asyncio.sleep(3 * 60)  # every 3 min — ahead of the 2-5 min movers cache TTL
 
 
+async def _daily_picks_orphan_reconciliation_loop():
+    """
+    Periodic (in addition to the existing startup-only pass) orphan/restart
+    recovery for Daily Picks jobs — added after the 2026-07-21 US incidents:
+    a deployment orphaned one run mid phase_1, and its replacement was then
+    killed (an OOM-consistent signature — no traceback, no shutdown log, a
+    same-deployment-ID process restart) ~30-45s after entering the ranking
+    phase. Both times, reconcile_stale_daily_picks_jobs()'s existing 6h-only
+    startup pass never caught it: on the next boot, the row was only minutes
+    stale, nowhere near 6h — so it would have sat 'running' for up to 6h
+    regardless of how many more restarts happened before then.
+
+    This loop closes that gap with a much shorter, periodic sweep using
+    services.postgres_store._DAILY_PICKS_PERIODIC_STALE_INTERVAL (10
+    minutes — see that constant's own comment for the full margin-over-
+    heartbeat-cadence reasoning). It never touches a genuinely healthy job,
+    which keeps writing a heartbeat every 30s no matter how long its run
+    takes; it only reclaims a job whose owning process is provably gone.
+    Like the startup pass, it never starts a replacement job itself — same
+    manual-retry-required contract, just reached automatically and much
+    sooner than 6 hours.
+    """
+    await asyncio.sleep(300)  # let server settle & the startup pass finish first
+    log.info("[daily_picks_orphan_sweep] started")
+    while True:
+        try:
+            from services.postgres_store import (
+                reconcile_stale_daily_picks_jobs,
+                _DAILY_PICKS_PERIODIC_STALE_INTERVAL,
+            )
+            loop = asyncio.get_running_loop()
+            reclaimed = await loop.run_in_executor(
+                None, reconcile_stale_daily_picks_jobs, _DAILY_PICKS_PERIODIC_STALE_INTERVAL,
+            )
+            if reclaimed:
+                log.warning(f"[daily_picks_orphan_sweep] reconciled {reclaimed} stale Daily Picks job(s)")
+        except Exception as e:
+            log.warning(f"[daily_picks_orphan_sweep] sweep error: {e}")
+        await asyncio.sleep(300)  # every 5 minutes
+
+
 async def _price_alerts_check_loop():
     """
     Email backstop for the Alerts page (services/price_alert_notifier.py).
@@ -216,7 +257,7 @@ async def _validation_schedule_loop():
             for univ in ("nifty100", "midcap", "us"):
                 try:
                     log.info(f"[validation_scheduler] starting medium/{univ} run…")
-                    await loop.run_in_executor(None, lambda u=univ: run_validation(horizon="medium", universe=u))
+                    await loop.run_in_executor(None, lambda u=univ: run_validation(horizon="medium", universe=u, trigger_type="scheduler"))
                     log.info(f"[validation_scheduler] medium/{univ} complete")
                 except Exception as e:
                     log.warning(f"[validation_scheduler] medium/{univ} error: {e}")
@@ -227,7 +268,7 @@ async def _validation_schedule_loop():
                 for univ in ("nifty100", "midcap", "us"):
                     try:
                         log.info(f"[validation_scheduler] Sunday — starting long/{univ} run…")
-                        await loop.run_in_executor(None, lambda u=univ: run_validation(horizon="long", universe=u))
+                        await loop.run_in_executor(None, lambda u=univ: run_validation(horizon="long", universe=u, trigger_type="scheduler"))
                         log.info(f"[validation_scheduler] long/{univ} complete")
                     except Exception as e:
                         log.warning(f"[validation_scheduler] long/{univ} error: {e}")
@@ -282,7 +323,23 @@ async def lifespan(app: FastAPI):
             init_db()
             log.info("[startup] Postgres schema initialized")
         except Exception as e:
-            log.warning(f"[startup] Postgres init failed: {e}")
+            # Schema Initialization Hardening phase — deliberately NOT
+            # log-and-continue. init_db() itself is now fail-closed and
+            # concurrency-safe (session-level advisory lock, bounded
+            # retry only for approved transient SQLSTATEs, metadata-only
+            # postcondition verification); an exception reaching this
+            # point means initialization could not be safely completed
+            # even after retrying. Re-raising here prevents FastAPI
+            # startup from completing at all, so /health can never report
+            # ready against unverified schema state — never DATABASE_URL,
+            # hostname, credentials, raw SQL or row content, only the
+            # sanitized exception class/SQLSTATE.
+            sqlstate = getattr(e, "sqlstate", None) or getattr(getattr(e, "__cause__", None), "sqlstate", None)
+            log.critical(
+                f"[startup] Postgres schema initialization failed terminally "
+                f"(sqlstate={sqlstate} {type(e).__name__}) — refusing to start with unverified schema"
+            )
+            raise
         try:
             from services.validation_engine import init_db as init_validation_db
             init_validation_db()
@@ -468,7 +525,7 @@ async def lifespan(app: FastAPI):
             from services.validation_engine import run_validation
             log.info("[catchup] missed today's 6 AM validation — running now…")
             loop2 = asyncio.get_running_loop()
-            await loop2.run_in_executor(None, lambda: run_validation(horizon="medium"))
+            await loop2.run_in_executor(None, lambda: run_validation(horizon="medium", trigger_type="scheduler"))
             log.info("[catchup] catch-up validation complete")
         except Exception as e:
             log.warning(f"[catchup] validation catch-up error: {e}")
@@ -514,6 +571,7 @@ async def lifespan(app: FastAPI):
     trade_notify_task = asyncio.create_task(_paper_trade_notify_loop())
     us_movers_task = asyncio.create_task(_us_movers_refresh_loop())
     price_alerts_task = asyncio.create_task(_price_alerts_check_loop())
+    daily_picks_orphan_sweep_task = asyncio.create_task(_daily_picks_orphan_reconciliation_loop())
     yield
     task.cancel()
     keepalive.cancel()
@@ -527,8 +585,10 @@ async def lifespan(app: FastAPI):
     trade_notify_task.cancel()
     us_movers_task.cancel()
     price_alerts_task.cancel()
+    daily_picks_orphan_sweep_task.cancel()
     for t in (task, keepalive, outcome_task, warmup_task, crumb_task, validation_task, catchup_task,
-              picks_catchup_task, picks_catchup_task_us, trade_notify_task, us_movers_task, price_alerts_task):
+              picks_catchup_task, picks_catchup_task_us, trade_notify_task, us_movers_task, price_alerts_task,
+              daily_picks_orphan_sweep_task):
         try:
             await t
         except asyncio.CancelledError:
@@ -638,6 +698,7 @@ app.include_router(auth.router,           tags=["Auth"])
 app.include_router(feedback.router)
 app.include_router(portfolio.router)
 app.include_router(multibagger.router)
+app.include_router(leadership.router)
 
 
 @app.get("/health")

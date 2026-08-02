@@ -38,18 +38,20 @@ jobs:
       run:
         working-directory: backend
 
+    # Schema Initialization Hardening phase — matrix over both the
+    # production-current major version (17) and the previously-only-
+    # tested one (15). Both legs must pass; a failure on either fails
+    # the workflow. Job/artifact names include the exact version so a
+    # failing leg is unambiguous at a glance.
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres_version: [15, 17]
+
     services:
       postgres:
-        # Explicit pinned major version — never `latest`. PostgreSQL 15 is
-        # assumed compatible with the current Supabase-managed Postgres
-        # version at the time this workflow was authored; this assumption
-        # has NOT been independently re-verified against the live
-        # Supabase project's actual server version from this environment
-        # (no network access to Supabase's dashboard/API here) — that
-        # confirmation is a required, cheap check before treating this
-        # workflow's results as fully representative of production
-        # behavior, and is called out explicitly in this phase's report.
-        image: postgres:15
+        # Explicit pinned major version — never `latest`.
+        image: postgres:${{ matrix.postgres_version }}
         env:
           # Synthetic, CI-only, job-scoped credentials — never a repository
           # secret (disposable test credentials need none), never printed
@@ -125,7 +127,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: postgres-integration-results
+          name: postgres-integration-results-pg${{ matrix.postgres_version }}
           path: |
             backend/postgres_integration_report.xml
             backend/postgres_integration_output.log

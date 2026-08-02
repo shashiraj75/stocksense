@@ -18,6 +18,7 @@ the direct Postgres port.
 import logging
 import os
 import json
+import time
 from datetime import datetime, timezone
 
 import psycopg
@@ -205,6 +206,21 @@ CREATE TABLE IF NOT EXISTS daily_picks_cache (
 ALTER TABLE daily_picks_cache ADD COLUMN IF NOT EXISTS market TEXT NOT NULL DEFAULT 'IN';
 CREATE INDEX IF NOT EXISTS idx_daily_picks_cache_date ON daily_picks_cache(generated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_daily_picks_cache_market ON daily_picks_cache(market, generated_at DESC);
+-- The daily_picks_cache.status column and its migration are deliberately
+-- NOT here — see _migrate_daily_picks_cache_status_column() below and
+-- init_db()'s own comment for why: this whole SCHEMA_SQL string is
+-- executed as one autocommit multi-statement batch, and a genuinely
+-- pre-existing, unrelated statement earlier in this same string
+-- (score_snapshots' ADD CONSTRAINT, which is not re-run-safe — it
+-- succeeds once, then fails "already exists" on every subsequent
+-- startup) aborts execution of everything after it on most real
+-- deploys. Discovered 2026-07-22 when this incident's own status-column
+-- addition, placed inline here originally, silently never ran in
+-- production, which in turn made every save_picks_to_db() call fail
+-- outright (INSERT referencing a column that doesn't exist) — a strictly
+-- worse regression than the one this incident set out to fix. Running it
+-- as its own separately-invoked, independently-guarded function makes it
+-- unconditional on any earlier statement in this string succeeding.
 
 CREATE TABLE IF NOT EXISTS factor_ic_history (
     id            BIGSERIAL PRIMARY KEY,
@@ -440,6 +456,216 @@ DROP TRIGGER IF EXISTS trg_paper_trade_entry_snapshot_immutable ON paper_trade_e
 CREATE TRIGGER trg_paper_trade_entry_snapshot_immutable
     BEFORE UPDATE ON paper_trade_entry_snapshot
     FOR EACH ROW EXECUTE FUNCTION reject_paper_trade_entry_snapshot_update();
+
+-- Trade Postmortem Engine, Sprint 2 — immutable exit-evidence snapshot.
+-- Mirrors paper_trade_entry_snapshot's exact pattern: one row per close
+-- event, inserted once inside the same transaction as the paper_trades
+-- close UPDATE (see services/postmortem/close_service.py), never UPDATEd
+-- afterward. paper_trade_id is UNIQUE (not a FOREIGN KEY, same rationale
+-- as the entry snapshot — this schema has no FK constraints anywhere;
+-- POST /reset explicitly removes matching rows itself).
+--
+-- trigger_timing_verification defaults to CLIENT_REPORTED_UNVERIFIED —
+-- see services/postmortem/deterministic.py's AutoCloseTimingEvidence:
+-- auto-close is browser-triggered, never backend-observed, so this value
+-- must never be promoted to SERVER_VERIFIED by any code path today.
+CREATE TABLE IF NOT EXISTS paper_trade_exit_snapshot (
+    id                              BIGSERIAL PRIMARY KEY,
+    paper_trade_id                  BIGINT NOT NULL UNIQUE,
+    user_id                         TEXT NOT NULL,
+    symbol                          TEXT NOT NULL,
+    market                          TEXT NOT NULL,
+    exit_snapshot_schema_version    TEXT NOT NULL,
+
+    financial_outcome               TEXT NOT NULL,
+    closure_classification          TEXT NOT NULL,
+    exit_mechanism                  TEXT NOT NULL,
+    exit_mechanism_raw              TEXT,
+
+    exit_price                      DOUBLE PRECISION NOT NULL CHECK (exit_price > 0 AND exit_price < 'Infinity'),
+    exit_quantity                   INTEGER NOT NULL CHECK (exit_quantity > 0),
+    closed_at                       TIMESTAMPTZ NOT NULL,
+    recorded_at                     TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    final_stop_loss                 DOUBLE PRECISION,
+    final_target_price              DOUBLE PRECISION,
+    trailing_stop_level             DOUBLE PRECISION,
+    time_exit_rule                  TEXT,
+    market_close_rule               TEXT,
+    management_mode                 TEXT NOT NULL,
+    levels_modified_after_entry     BOOLEAN,
+
+    source_request_id               TEXT,
+    trigger_observation_timestamp   TIMESTAMPTZ,
+    trigger_observation_price       DOUBLE PRECISION,
+    -- NOT_APPLICABLE | CLIENT_REPORTED_UNVERIFIED | SERVER_VERIFIED
+    trigger_timing_verification     TEXT NOT NULL DEFAULT 'CLIENT_REPORTED_UNVERIFIED',
+
+    source_metadata                 JSONB,
+    created_at                      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trade_exit_snapshot_trade ON paper_trade_exit_snapshot(paper_trade_id);
+CREATE INDEX IF NOT EXISTS idx_paper_trade_exit_snapshot_user ON paper_trade_exit_snapshot(user_id, symbol, market);
+
+-- Database-level immutability — identical pattern to
+-- trg_paper_trade_entry_snapshot_immutable above. INSERT and DELETE are
+-- untouched (reset_portfolio must still be able to delete snapshot rows
+-- for a reset trade; see its own explicit DELETE statements). Accurate
+-- wording: this table is immutable-by-UPDATE during normal application
+-- lifecycle, not absolutely immutable — an authorized portfolio reset may
+-- still DELETE a row, which is a documented, deliberate exception, not a
+-- gap in this trigger.
+CREATE OR REPLACE FUNCTION reject_paper_trade_exit_snapshot_update() RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'paper_trade_exit_snapshot rows are immutable — UPDATE is not permitted (paper_trade_id=%)', OLD.paper_trade_id;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_paper_trade_exit_snapshot_immutable ON paper_trade_exit_snapshot;
+CREATE TRIGGER trg_paper_trade_exit_snapshot_immutable
+    BEFORE UPDATE ON paper_trade_exit_snapshot
+    FOR EACH ROW EXECUTE FUNCTION reject_paper_trade_exit_snapshot_update();
+
+-- Trade Postmortem Engine, Sprint 2 — durable report-generation outbox.
+-- One row per (paper_trade_id, requested_report_schema_version,
+-- requested_calculation_version, requested_rules_version) — that
+-- quadruple is the idempotent-insertion boundary (INSERT ... ON CONFLICT
+-- DO NOTHING), so a duplicate close-commit-triggered generation attempt
+-- or a duplicate POST /generate call can never create a second row for
+-- the same logical generation request. A future rules/calculation-version
+-- bump creates a NEW row (and eventually a new report version), never
+-- mutates this one.
+--
+-- Claiming for processing is a single atomic UPDATE ... WHERE status IN
+-- ('PENDING','FAILED_RETRYABLE') ... RETURNING id (see
+-- services/postmortem/generation_service.py) — PostgreSQL's own row-level
+-- locking during that UPDATE is the concurrency guarantee, never a
+-- process-local lock, so two workers (or two request handlers) racing to
+-- claim the same row can never both succeed.
+CREATE TABLE IF NOT EXISTS paper_trade_postmortem_outbox (
+    id                                 BIGSERIAL PRIMARY KEY,
+    paper_trade_id                     BIGINT NOT NULL,
+    user_id                            TEXT NOT NULL,
+    requested_report_schema_version    TEXT NOT NULL,
+    requested_calculation_version      TEXT NOT NULL,
+    requested_rules_version            TEXT NOT NULL,
+    -- PENDING | GENERATING | COMPLETE | LIMITED_EVIDENCE | FAILED_RETRYABLE | FAILED_TERMINAL
+    status                             TEXT NOT NULL DEFAULT 'PENDING',
+    attempt_count                      INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at                    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_attempt_at                    TIMESTAMPTZ,
+    -- Trade Postmortem Engine, Sprint 2 correction phase — genuine
+    -- database-backed lease fields, replacing the prior design's
+    -- unbounded GENERATING window (a process kill between claim and
+    -- terminal-mark left a row permanently stuck, unclaimable, since the
+    -- claim UPDATE only matched PENDING/FAILED_RETRYABLE). claimed_by is
+    -- a privacy-safe, per-attempt opaque token (never a raw hostname,
+    -- IP, or user identifier) — mark_terminal/mark_retryable_failure/
+    -- mark_terminal_failure all require it to match the CURRENT lease
+    -- holder before writing, so a stale worker whose lease already
+    -- expired and was reclaimed by someone else can never overwrite the
+    -- new claimant's result.
+    claimed_at                         TIMESTAMPTZ,
+    lease_expires_at                   TIMESTAMPTZ,
+    claimed_by                         TEXT,
+    -- Stable machine-readable code only (e.g. "GENERATION_ERROR") — never
+    -- a raw exception message, secret, connection string or report
+    -- narrative (Sprint 2, Stage 5/18 privacy requirement).
+    last_error_code                    TEXT,
+    last_error_summary                 TEXT,
+    source_request_id                  TEXT,
+    created_at                         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at                       TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trade_pm_outbox_unique
+    ON paper_trade_postmortem_outbox(
+        paper_trade_id, requested_report_schema_version,
+        requested_calculation_version, requested_rules_version
+    );
+CREATE INDEX IF NOT EXISTS idx_paper_trade_pm_outbox_claim
+    ON paper_trade_postmortem_outbox(status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_paper_trade_pm_outbox_user
+    ON paper_trade_postmortem_outbox(user_id, paper_trade_id);
+
+-- Trade Postmortem Engine, Sprint 2 — versioned, persisted structured
+-- report store. structured_report/evidence_items/claims are the
+-- authoritative JSON representation (never only an unstructured
+-- paragraph) — field-for-field the same shape
+-- services/postmortem/evidence_attribution.py's EvidenceAttributionResult
+-- already produces, serialized once at generation time rather than
+-- recomputed on every read.
+--
+-- Current-version identity is the UNIQUE(paper_trade_id,
+-- report_schema_version, calculation_version, attribution_rules_version)
+-- quadruple below — deliberately NOT a separate "is_current" boolean
+-- column (which would need its own concurrency-safe flip-on-insert
+-- logic); "the current report for this trade" is simply the row matching
+-- today's live version constants, found by that same unique key. A
+-- completed row is NEVER UPDATEd or overwritten by a later generation
+-- attempt for the identical version triple — INSERT ... ON CONFLICT DO
+-- NOTHING lets the loser of a concurrent-generation race safely no-op and
+-- read back the winner's row instead. A genuinely new rules or
+-- calculation version naturally creates a new row under a new key,
+-- optionally linked via supersedes_report_id for audit trail.
+CREATE TABLE IF NOT EXISTS paper_trade_postmortem_report (
+    id                              BIGSERIAL PRIMARY KEY,
+    paper_trade_id                  BIGINT NOT NULL,
+    user_id                         TEXT NOT NULL,
+    market                          TEXT NOT NULL,
+    report_trading_date             DATE NOT NULL,
+    market_timezone                 TEXT NOT NULL,
+    report_schema_version           TEXT NOT NULL,
+    calculation_version             TEXT NOT NULL,
+    attribution_rules_version       TEXT NOT NULL,
+    evidence_bundle_version         TEXT NOT NULL,
+    evidence_hash                   TEXT NOT NULL,
+    -- COMPLETE | LIMITED_EVIDENCE | FAILED_TERMINAL
+    status                          TEXT NOT NULL,
+    structured_report               JSONB NOT NULL,
+    evidence_items                  JSONB NOT NULL,
+    claims                          JSONB NOT NULL,
+    source_manifest                 JSONB NOT NULL,
+    evidence_gaps                   JSONB NOT NULL DEFAULT '[]'::jsonb,
+    warnings                        JSONB NOT NULL DEFAULT '[]'::jsonb,
+    generated_at                    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    supersedes_report_id            BIGINT,
+    created_at                      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trade_pm_report_current_version
+    ON paper_trade_postmortem_report(
+        paper_trade_id, report_schema_version, calculation_version, attribution_rules_version
+    );
+CREATE INDEX IF NOT EXISTS idx_paper_trade_pm_report_user
+    ON paper_trade_postmortem_report(user_id, paper_trade_id);
+CREATE INDEX IF NOT EXISTS idx_paper_trade_pm_report_status
+    ON paper_trade_postmortem_report(status);
+CREATE INDEX IF NOT EXISTS idx_paper_trade_pm_report_market_date
+    ON paper_trade_postmortem_report(market, report_trading_date);
+
+-- Trade Postmortem Engine, Sprint 2 correction phase (Stage 8) —
+-- database-level immutability for completed reports, identical pattern
+-- to trg_paper_trade_entry_snapshot_immutable /
+-- trg_paper_trade_exit_snapshot_immutable above. Application code
+-- (services/postmortem/report_store.py's persist_report) already never
+-- issues an UPDATE against this table — a completed report is INSERTed
+-- once per version triple and read back via ON CONFLICT DO NOTHING for
+-- every later request; this trigger makes that contract a database
+-- guarantee, not only an application convention. INSERT and DELETE are
+-- untouched (reset_portfolio must still be able to delete report rows
+-- for a reset trade). Same accurate wording as the snapshot triggers:
+-- immutable-by-UPDATE during normal application lifecycle, not
+-- absolutely immutable — an authorized portfolio reset may still DELETE
+-- a row.
+CREATE OR REPLACE FUNCTION reject_paper_trade_postmortem_report_update() RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'paper_trade_postmortem_report rows are immutable — UPDATE is not permitted (paper_trade_id=%)', OLD.paper_trade_id;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_paper_trade_postmortem_report_immutable ON paper_trade_postmortem_report;
+CREATE TRIGGER trg_paper_trade_postmortem_report_immutable
+    BEFORE UPDATE ON paper_trade_postmortem_report
+    FOR EACH ROW EXECUTE FUNCTION reject_paper_trade_postmortem_report_update();
 
 -- Trade Postmortem Engine — Buy idempotency (Part 7 of the migration-
 -- verification hardening gate). One row per (user_id, operation_type,
@@ -811,6 +1037,17 @@ ALTER TABLE market_cache         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE signal_feedback      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE nps_responses        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE daily_picks_jobs     ENABLE ROW LEVEL SECURITY;
+
+-- Trade Postmortem Engine, Sprint 2 — same rationale as above, applied to
+-- the three new tables this sprint introduces. Blocks the public
+-- PostgREST API from ever reading/writing exit evidence, outbox state or
+-- persisted reports directly; this backend's own `postgres`-role
+-- connection (BYPASSRLS) is unaffected, and every application-level
+-- read/write already enforces user_id-scoped authorization independently
+-- (see services/postmortem/close_service.py, report_store.py).
+ALTER TABLE paper_trade_exit_snapshot     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE paper_trade_postmortem_outbox ENABLE ROW LEVEL SECURITY;
+ALTER TABLE paper_trade_postmortem_report ENABLE ROW LEVEL SECURITY;
 """
 
 
@@ -841,11 +1078,366 @@ def load_market_cache(key: str) -> dict | list | None:
         return None
 
 
-def init_db():
-    with _get_pool().connection() as conn:
+# ── Schema initialization: fail-closed, concurrency-safe, retried ──────────
+#
+# Real PostgreSQL Verification, Schema-Init Hardening phase. Replaces the
+# prior log-and-continue design (which existed only because a specific,
+# now-eliminated statement — score_snapshots' old unguarded ADD
+# CONSTRAINT — used to fail "already exists" on every restart after the
+# first; see _migrate_score_snapshots_market_constraint's docstring).
+# With that statement removed from SCHEMA_SQL, nothing left in the bulk
+# batch is known to legitimately need tolerating, so failures now
+# propagate and prevent application startup instead of being swallowed.
+#
+# Sequential idempotency (every individual statement being safe to
+# re-run) does NOT by itself prove this is safe when multiple backend
+# instances start at the same time — a session-level PostgreSQL advisory
+# lock serializes the whole attempt across instances.
+
+# Two-int advisory-lock identity (pg_try_advisory_lock(key1, key2)),
+# namespaced so it can never collide with any other lock this
+# application might take in the future. Fixed and deterministic —
+# never derived from Python's randomized hash() — so every instance and
+# every CI run computes the identical identity.
+_SCHEMA_INIT_LOCK_NAMESPACE = 0x53544B53  # 'STKS' — StockSense360 app namespace
+_SCHEMA_INIT_LOCK_ID = 1  # sub-id: schema initialization specifically
+
+_SCHEMA_INIT_LOCK_POLL_INTERVAL_SECONDS = 0.5
+_SCHEMA_INIT_LOCK_MAX_WAIT_SECONDS = 30
+_SCHEMA_INIT_MAX_ATTEMPTS = 3
+_SCHEMA_INIT_RETRY_BACKOFF_SECONDS = 1.0
+
+# PR #31 review correction — the schema-init connection previously had no
+# bound on connection time, DDL lock waits, or statement execution time,
+# so a hung network handshake or an ordinary table-lock conflict (a
+# ROW/ACCESS EXCLUSIVE lock held by some unrelated long-running query on
+# a table SCHEMA_SQL also touches) could stall startup indefinitely
+# instead of failing cleanly. These are conservative initial values,
+# intentionally documented here for future tuning against real Railway
+# deploy timing, not derived from measured production behavior yet.
+# lock_timeout is what actually turns an ordinary DDL lock wait into a
+# real PostgreSQL SQLSTATE 55P03 (lock_not_available) — without it, a
+# blocked ALTER/CREATE would simply wait forever, never reaching the
+# retryable-SQLSTATE path at all.
+_SCHEMA_INIT_CONNECT_TIMEOUT_SECONDS = 10
+_SCHEMA_INIT_LOCK_TIMEOUT_MS = 5_000
+_SCHEMA_INIT_STATEMENT_TIMEOUT_MS = 120_000
+
+# SQLSTATEs safe to retry the ENTIRE initialization attempt for, always
+# on a fresh connection — never used to retry a single statement in
+# place, and never applied to anything not in this explicit set.
+# lock_not_available, deadlock_detected and serialization_failure are
+# the standard PostgreSQL classes for "this exact attempt collided with
+# something transient; a clean retry is expected to succeed."
+_RETRYABLE_SQLSTATES = frozenset({"55P03", "40P01", "40001"})
+
+
+class SchemaInitializationError(RuntimeError):
+    """Raised when schema initialization cannot be safely completed.
+    Never caught silently — must propagate out of init_db() and out of
+    the FastAPI lifespan handler, deliberately failing application
+    startup rather than serving traffic against unknown schema state."""
+
+
+def _sqlstate_of(exc: BaseException) -> str | None:
+    return getattr(exc, "sqlstate", None) or getattr(getattr(exc, "diag", None), "sqlstate", None)
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    return _sqlstate_of(exc) in _RETRYABLE_SQLSTATES
+
+
+_REQUIRED_SCHEMA_TABLES = [
+    "predictions", "outcomes", "score_snapshots",
+    "daily_picks_cache", "paper_trades", "paper_portfolio",
+    "paper_trade_entry_snapshot", "paper_trade_idempotency_key",
+    "paper_trade_exit_snapshot", "paper_trade_postmortem_outbox",
+    "paper_trade_postmortem_report",
+]
+
+_REQUIRED_SCHEMA_CONSTRAINTS = [
+    ("outcomes", "outcomes_symbol_horizon_pred_date_market_key"),
+    ("score_snapshots", "score_snapshots_symbol_market_horizon_snapshot_date_key"),
+]
+
+
+def _verify_schema_postconditions(conn) -> None:
+    """
+    Metadata-only contract check proving the critical subsystems this
+    application depends on are actually usable — one representative
+    check per critical subsystem (Learning Alpha Engine, Daily Picks,
+    Trade Postmortem, Buy idempotency), not a re-verification of every
+    one of SCHEMA_SQL's ~114 statements. Any failure here raises
+    SchemaInitializationError and fails startup.
+
+    PR #31 review correction — every check here is now explicitly
+    schema-qualified to `public`. A same-named object in a different
+    schema (a decoy, a leftover from manual debugging, a future
+    unrelated extension) must never satisfy a postcondition meant to
+    prove the application's own `public` schema is correct; `to_regclass`
+    was already schema-qualified via the `public.<table>` argument, but
+    the constraint/column/trigger/function checks previously were not.
+
+    The three lists above (_REQUIRED_SCHEMA_TABLES,
+    _REQUIRED_SCHEMA_CONSTRAINTS, and the trigger contract below) are
+    module-level so a test can monkeypatch them to exercise a
+    deliberately-impossible postcondition through the real init_db()
+    path rather than only by calling this function directly.
+    """
+    for table in _REQUIRED_SCHEMA_TABLES:
+        row = conn.execute("SELECT to_regclass(%s) IS NOT NULL", (f"public.{table}",)).fetchone()
+        if not row or not row[0]:
+            raise SchemaInitializationError(f"required table missing after init: public.{table}")
+
+    for table, constraint in _REQUIRED_SCHEMA_CONSTRAINTS:
+        row = conn.execute(
+            """SELECT 1 FROM information_schema.table_constraints
+               WHERE table_schema = 'public' AND table_name = %s
+                 AND constraint_type = 'UNIQUE' AND constraint_name = %s""",
+            (table, constraint),
+        ).fetchone()
+        if not row:
+            raise SchemaInitializationError(f"required market-scoped constraint missing: public.{table}.{constraint}")
+
+    row = conn.execute(
+        """SELECT 1 FROM information_schema.columns
+           WHERE table_schema = 'public' AND table_name = 'daily_picks_cache' AND column_name = 'status'"""
+    ).fetchone()
+    if not row:
+        raise SchemaInitializationError("required column missing: public.daily_picks_cache.status")
+
+    _verify_immutability_trigger_contract(
+        conn, table="paper_trade_entry_snapshot",
+        trigger="trg_paper_trade_entry_snapshot_immutable",
+        function="reject_paper_trade_entry_snapshot_update",
+    )
+    # Sprint 2 — same contract, same rigor, for the new exit snapshot.
+    _verify_immutability_trigger_contract(
+        conn, table="paper_trade_exit_snapshot",
+        trigger="trg_paper_trade_exit_snapshot_immutable",
+        function="reject_paper_trade_exit_snapshot_update",
+    )
+    # Sprint 2 correction phase (Stage 8) — same contract for the
+    # persisted report store.
+    _verify_immutability_trigger_contract(
+        conn, table="paper_trade_postmortem_report",
+        trigger="trg_paper_trade_postmortem_report_immutable",
+        function="reject_paper_trade_postmortem_report_update",
+    )
+
+
+# BEFORE (2) | ROW (1) | UPDATE (16) — see PostgreSQL's pg_trigger.tgtype
+# bit layout (src/include/catalog/pg_trigger.h). Exactly this combination
+# means "fires once per row, before the row is written, on UPDATE only"
+# — not INSERT, not DELETE, not AFTER, not INSTEAD OF, not statement-level.
+_EXPECTED_SNAPSHOT_TRIGGER_TGTYPE = 19
+_EXPECTED_SNAPSHOT_TRIGGER_ENABLED = "O"  # origin/normal — fires for ordinary sessions
+
+
+def _verify_immutability_trigger_contract(conn, *, table: str, trigger: str, function: str) -> None:
+    """
+    PR #31 review correction — a trigger's mere existence (or even its
+    name) proves nothing about its actual behavior: it could be
+    disabled, bound to the wrong function, firing on the wrong event, or
+    living in the wrong schema entirely. This checks the complete
+    contract in one query: schema, table, trigger name, non-internal,
+    enabled state, exact BEFORE/ROW/UPDATE-only tgtype, the bound
+    function's identity (by schema-qualified name, not name alone),
+    that the function returns `trigger`, and that it takes no arguments
+    (the expected no-argument PL/pgSQL trigger-function signature).
+
+    Sprint 2 — parameterized (table/trigger/function) so the identical
+    rigor applies to both paper_trade_entry_snapshot (Stage 2) and
+    paper_trade_exit_snapshot (Sprint 2) without duplicating this logic.
+    """
+    row = conn.execute(
+        """SELECT t.tgenabled, t.tgtype, p.pronamespace::regnamespace::text,
+                  p.prorettype::regtype::text, p.pronargs
+           FROM pg_trigger t
+           JOIN pg_class c ON c.oid = t.tgrelid
+           JOIN pg_namespace tn ON tn.oid = c.relnamespace
+           JOIN pg_proc p ON p.oid = t.tgfoid
+           WHERE tn.nspname = 'public'
+             AND c.relname = %s
+             AND t.tgname = %s
+             AND NOT t.tgisinternal""",
+        (table, trigger),
+    ).fetchone()
+    if not row:
+        raise SchemaInitializationError(f"required trigger missing: public.{table}.{trigger}")
+
+    tgenabled, tgtype, func_schema, func_rettype, func_nargs = row
+
+    if tgenabled != _EXPECTED_SNAPSHOT_TRIGGER_ENABLED:
+        raise SchemaInitializationError(
+            f"{table} immutability trigger is not in the normal enabled state (tgenabled={tgenabled!r})"
+        )
+    if tgtype != _EXPECTED_SNAPSHOT_TRIGGER_TGTYPE:
+        raise SchemaInitializationError(
+            f"{table} immutability trigger has unexpected timing/event (tgtype={tgtype}, "
+            f"expected {_EXPECTED_SNAPSHOT_TRIGGER_TGTYPE} = BEFORE|ROW|UPDATE only)"
+        )
+    if func_schema != "public":
+        raise SchemaInitializationError(
+            f"{table} immutability trigger is bound to a function outside public schema: {func_schema}"
+        )
+    if func_rettype != "trigger":
+        raise SchemaInitializationError(
+            f"{table} immutability trigger function does not return trigger (returns {func_rettype!r})"
+        )
+    if func_nargs != 0:
+        raise SchemaInitializationError(
+            f"{table} immutability trigger function has unexpected argument count ({func_nargs}, expected 0)"
+        )
+
+    row = conn.execute(
+        """SELECT p.proname FROM pg_trigger t
+           JOIN pg_class c ON c.oid = t.tgrelid
+           JOIN pg_namespace tn ON tn.oid = c.relnamespace
+           JOIN pg_proc p ON p.oid = t.tgfoid
+           WHERE tn.nspname = 'public'
+             AND c.relname = %s
+             AND t.tgname = %s
+             AND NOT t.tgisinternal""",
+        (table, trigger),
+    ).fetchone()
+    if not row or row[0] != function:
+        raise SchemaInitializationError(
+            f"{table} immutability trigger is bound to an unexpected function: {row[0] if row else None!r} "
+            f"(expected {function})"
+        )
+
+
+def _acquire_schema_init_lock(conn) -> None:
+    """
+    Bounded acquisition of a SESSION-level advisory lock
+    (pg_try_advisory_lock, not the transaction-scoped
+    pg_advisory_xact_lock). Session-level is deliberate: initialization
+    spans several independent autocommit statements — the bulk
+    SCHEMA_SQL execute, then three separate guarded-migration calls, then
+    postcondition verification — not one explicit transaction, so a
+    transaction-scoped lock would release after the very first statement
+    and provide no real serialization across the rest of init_db().
+    Released explicitly by the caller in a finally block; connection
+    close is the secondary release guarantee PostgreSQL itself provides
+    for session-level advisory locks.
+    """
+    deadline = time.monotonic() + _SCHEMA_INIT_LOCK_MAX_WAIT_SECONDS
+    while True:
+        got = conn.execute(
+            "SELECT pg_try_advisory_lock(%s, %s)",
+            (_SCHEMA_INIT_LOCK_NAMESPACE, _SCHEMA_INIT_LOCK_ID),
+        ).fetchone()[0]
+        if got:
+            return
+        if time.monotonic() >= deadline:
+            raise SchemaInitializationError(
+                f"could not acquire schema-init advisory lock within {_SCHEMA_INIT_LOCK_MAX_WAIT_SECONDS}s "
+                "— another instance appears to be initializing"
+            )
+        time.sleep(_SCHEMA_INIT_LOCK_POLL_INTERVAL_SECONDS)
+
+
+def _release_schema_init_lock(conn) -> None:
+    try:
+        conn.execute("SELECT pg_advisory_unlock(%s, %s)", (_SCHEMA_INIT_LOCK_NAMESPACE, _SCHEMA_INIT_LOCK_ID))
+    except Exception:
+        # The connection is closed immediately after this regardless (see
+        # _attempt_schema_initialization) — PostgreSQL releases every
+        # session-level advisory lock a connection holds when that
+        # connection closes, which is the secondary guarantee here.
+        pass
+
+
+def _attempt_schema_initialization(attempt: int) -> None:
+    started = time.monotonic()
+    log.info(f"[schema_init] attempt {attempt}/{_SCHEMA_INIT_MAX_ATTEMPTS}: starting")
+    # A fresh, non-pooled connection for the whole attempt — deliberately
+    # not one of _get_pool()'s recycled connections, so a prior attempt's
+    # uncertain connection-level failure can never be reused here, and
+    # this connection is never returned to the pool while it might still
+    # hold the advisory lock.
+    conn = psycopg.connect(
+        DATABASE_URL,
+        autocommit=True,
+        prepare_threshold=None,
+        connect_timeout=_SCHEMA_INIT_CONNECT_TIMEOUT_SECONDS,
+        application_name="stocksense_schema_init",
+    )
+    try:
+        # lock_timeout bounds ordinary DDL table-lock waits (e.g. an
+        # ALTER TABLE blocked behind an unrelated long-running query) —
+        # without it such a wait would block forever rather than raising
+        # SQLSTATE 55P03 into the retryable path below. statement_timeout
+        # is a broader backstop against any single statement (including
+        # the pg_try_advisory_lock polling SELECTs and SCHEMA_SQL itself)
+        # hanging indefinitely. Neither bounds the advisory-lock
+        # ACQUISITION loop itself — pg_try_advisory_lock never blocks by
+        # design, so that's governed entirely by
+        # _SCHEMA_INIT_LOCK_MAX_WAIT_SECONDS instead.
+        conn.execute(f"SET lock_timeout = '{_SCHEMA_INIT_LOCK_TIMEOUT_MS}ms'")
+        conn.execute(f"SET statement_timeout = '{_SCHEMA_INIT_STATEMENT_TIMEOUT_MS}ms'")
+
+        _acquire_schema_init_lock(conn)
+        log.info(f"[schema_init] attempt {attempt}: advisory lock acquired")
+
         conn.execute(SCHEMA_SQL)
-        _migrate_outcomes_market_constraint(conn)
-        _migrate_score_snapshots_market_constraint(conn)
+        log.info(f"[schema_init] attempt {attempt}: bulk baseline schema succeeded")
+
+        for migration in (
+            _migrate_outcomes_market_constraint,
+            _migrate_score_snapshots_market_constraint,
+            _migrate_daily_picks_cache_status_column,
+        ):
+            migration(conn)
+            log.info(f"[schema_init] attempt {attempt}: migration {migration.__name__} succeeded")
+
+        _verify_schema_postconditions(conn)
+        log.info(f"[schema_init] attempt {attempt}: postcondition verification succeeded")
+    finally:
+        _release_schema_init_lock(conn)
+        conn.close()
+
+    elapsed = time.monotonic() - started
+    log.info(f"[schema_init] attempt {attempt}: complete initialization succeeded (elapsed={elapsed:.2f}s)")
+
+
+def init_db():
+    """
+    Fail-closed, concurrency-safe schema initialization. Runs on every
+    backend startup. No broad exception swallowing anywhere in this path
+    — an unexpected failure propagates out of this function (and, in
+    api/main.py's lifespan handler, prevents application startup)
+    instead of being logged and tolerated.
+
+    See _acquire_schema_init_lock for why concurrent backend instances
+    are serialized, and the module comment above for the retry contract:
+    only lock_not_available/deadlock_detected/serialization_failure are
+    retryable, a retry always restarts the COMPLETE attempt on a brand
+    new connection, and every other failure is raised immediately.
+    """
+    for attempt in range(1, _SCHEMA_INIT_MAX_ATTEMPTS + 1):
+        try:
+            _attempt_schema_initialization(attempt)
+            return
+        except SchemaInitializationError:
+            raise
+        except Exception as exc:
+            sqlstate = _sqlstate_of(exc)
+            if _is_retryable(exc) and attempt < _SCHEMA_INIT_MAX_ATTEMPTS:
+                log.warning(
+                    f"[schema_init] attempt {attempt} hit a retryable condition "
+                    f"(sqlstate={sqlstate} {type(exc).__name__}) — retrying with a fresh connection"
+                )
+                time.sleep(_SCHEMA_INIT_RETRY_BACKOFF_SECONDS)
+                continue
+            log.critical(
+                f"[schema_init] attempt {attempt} failed terminally "
+                f"(sqlstate={sqlstate} {type(exc).__name__}) — schema initialization cannot proceed"
+            )
+            raise SchemaInitializationError(
+                f"schema initialization failed after {attempt} attempt(s): {type(exc).__name__} (sqlstate={sqlstate})"
+            ) from exc
 
 
 def _migrate_score_snapshots_market_constraint(conn) -> None:
@@ -861,6 +1453,14 @@ def _migrate_score_snapshots_market_constraint(conn) -> None:
     including, once discovered, the unrelated Trade Postmortem Engine
     schema. Moved here and guarded exactly like the outcomes migration so
     init_db() is genuinely safe to call on every restart.
+
+    This is the root-cause fix for the same defect that
+    _migrate_daily_picks_cache_status_column below was, independently,
+    already forced to work around (2026-07-22) for daily_picks_cache
+    specifically — that incident fix left the score_snapshots statement
+    itself untouched, deliberately out of its scope. Both guarded
+    migrations are unconditional on each other and on SCHEMA_SQL's own
+    try/except above.
     """
     exists = conn.execute("""
         SELECT 1 FROM information_schema.table_constraints
@@ -876,6 +1476,25 @@ def _migrate_score_snapshots_market_constraint(conn) -> None:
         "ALTER TABLE score_snapshots ADD CONSTRAINT score_snapshots_symbol_market_horizon_snapshot_date_key "
         "UNIQUE (symbol, market, horizon, snapshot_date)"
     )
+
+
+def _migrate_daily_picks_cache_status_column(conn) -> None:
+    """
+    US Daily Picks generation-reliability incident (2026-07-22) — see
+    init_db()'s comment for why this must be its own independently-run,
+    independently-guarded migration rather than a few more lines in
+    SCHEMA_SQL. Adds daily_picks_cache.status ('success' | 'failed_attempt',
+    default 'success') and retroactively corrects any pre-existing row
+    whose payload carries the old failure-path's 'error' key to
+    'failed_attempt' — the actual fix that makes load_picks_from_db()'s
+    WHERE status='success' filter self-healing against data already
+    polluted by the incident, without a separate manual cleanup script.
+    Every statement here is independently idempotent (IF NOT EXISTS /
+    re-runnable UPDATE), so this is safe to call on every startup.
+    """
+    conn.execute("ALTER TABLE daily_picks_cache ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'success'")
+    conn.execute("UPDATE daily_picks_cache SET status = 'failed_attempt' WHERE status = 'success' AND payload ? 'error'")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_picks_cache_market_status ON daily_picks_cache(market, status, generated_at DESC)")
 
 
 def _migrate_outcomes_market_constraint(conn) -> None:
@@ -1677,9 +2296,20 @@ def get_alpha_observations_coverage() -> list[dict]:
 
 # ── New: Daily picks performance (section 5) ────────────────────────────────
 
-def save_picks_to_db(payload: dict, market: str = "IN") -> bool:
+def save_picks_to_db(payload: dict, market: str = "IN", status: str = "success") -> bool:
     """
     Persist the full picks payload to Postgres so it survives Railway redeploys.
+
+    `status` MUST be "success" for any real Daily Picks outcome — including a
+    genuine, legitimate zero-BUY-qualified day (see get_track_record_summary
+    docs: an empty `picks` payload is a valid successful outcome, distinct
+    from a failed/incomplete run). US Daily Picks generation-reliability
+    incident (2026-07-22): this function must NEVER be called with a failed
+    or partial generation attempt's payload — a failed attempt is recorded
+    exclusively via mark_daily_picks_job_failed(daily_picks_jobs), which
+    never touches this "latest serving payload" table. Callers must not
+    invent a third status value without also updating load_picks_from_db's
+    filter below.
 
     Returns True on success, False on any failure (exception is logged, not raised).
     Callers must check the return value to determine whether durable persistence
@@ -1688,8 +2318,8 @@ def save_picks_to_db(payload: dict, market: str = "IN") -> bool:
     try:
         with _get_pool().connection() as conn:
             conn.execute(
-                "INSERT INTO daily_picks_cache (generated_at, payload, market) VALUES (%s, %s, %s)",
-                (datetime.now(timezone.utc), json.dumps(payload), market),
+                "INSERT INTO daily_picks_cache (generated_at, payload, market, status) VALUES (%s, %s, %s, %s)",
+                (datetime.now(timezone.utc), json.dumps(payload), market, status),
             )
             # Keep only last 10 rows per market to avoid bloat
             conn.execute("""
@@ -1709,11 +2339,20 @@ def save_picks_to_db(payload: dict, market: str = "IN") -> bool:
 
 
 def load_picks_from_db(market: str = "IN") -> dict | None:
-    """Load the most recently generated picks for a market from Postgres."""
+    """
+    Load the most recently generated SUCCESSFUL picks for a market from
+    Postgres. `status = 'success'` is the entire fix for the 2026-07-22 US
+    generation-reliability incident's "blank page" symptom: a row from a
+    failed/partial attempt (status='failed_attempt', either backfilled from
+    before the code fix, or — should some future code path ever regress —
+    freshly inserted) is never selected as "the latest picks", so the last
+    genuinely successful payload keeps being served, however old, instead of
+    an empty error stand-in. See save_picks_to_db's docstring.
+    """
     try:
         with _get_pool().connection() as conn:
             row = conn.execute(
-                "SELECT payload FROM daily_picks_cache WHERE market = %s "
+                "SELECT payload FROM daily_picks_cache WHERE market = %s AND status = 'success' "
                 "ORDER BY generated_at DESC LIMIT 1",
                 (market,),
             ).fetchone()
@@ -2012,6 +2651,29 @@ def get_active_daily_picks_job(market: str) -> dict | None:
         return None
 
 
+def count_daily_picks_job_attempts_since(market: str, since) -> int:
+    """
+    Count daily_picks_jobs rows for a market started at/after `since` (a
+    tz-aware datetime — callers pass today's market-local midnight in UTC).
+    US Daily Picks generation-reliability incident (2026-07-22): used by the
+    bounded governed-recovery watchdog to cap retries per session date —
+    "at most a governed number of times" — instead of retrying indefinitely.
+    Returns 0 (not an error) on any lookup failure so a transient DB issue
+    fails toward "allow one more attempt", not toward "silently stop
+    retrying forever" — the watchdog's own outer failure handling still
+    bounds worst case behavior.
+    """
+    try:
+        with _get_pool().connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM daily_picks_jobs WHERE market = %s AND started_at >= %s",
+                (market, since),
+            ).fetchone()
+        return int(row[0]) if row else 0
+    except Exception:
+        return 0
+
+
 _MULTIBAGGER_ORPHAN_TIMEOUT_HOURS = 7  # longer than the ~5-6h US refresh; see Product Integrity #009 §9
 
 # 2026-07-17 production incident: a US Daily Picks base-generation job died
@@ -2035,6 +2697,24 @@ _MULTIBAGGER_ORPHAN_TIMEOUT_HOURS = 7  # longer than the ~5-6h US refresh; see P
 # stuck indefinitely on the next crash.
 _DAILY_PICKS_ORPHAN_TIMEOUT_HOURS = 6
 
+# Periodic (not just startup-only) sweep threshold — added after the
+# 2026-07-21 US incidents: a deployment orphaned one run mid phase_1, and
+# its replacement was itself killed (OOM-consistent signature) ~30-45s
+# after entering the ranking phase. Both times the row sat 'running' far
+# short of 6h when the next process booted, so the existing startup-only
+# pass never touched it — the row would have waited up to 6h regardless of
+# how many more restarts happened in between. This threshold is for
+# api.main's periodic reconciliation loop, which runs the sweep every few
+# minutes instead of once at boot. It must stay far above one heartbeat
+# cadence (30s, written by services.daily_picks._heartbeat_loop) so a
+# genuinely healthy job — which keeps writing a heartbeat every 30s no
+# matter how long its overall run takes — is never touched; 10 minutes is a
+# ~20x margin over that cadence, and comfortably above the existing
+# 180s "unresponsive" presentation threshold in api/routers/picks.py's
+# _derive_job_health, so this never fires on transient slowness the UI
+# itself only flags as "slow".
+_DAILY_PICKS_PERIODIC_STALE_INTERVAL = "10 minutes"
+
 
 def mark_multibagger_job_running(job_id: str) -> None:
     with _get_pool().connection() as conn:
@@ -2057,23 +2737,38 @@ def try_claim_queued_multibagger_job(job_id: str) -> bool:
     currently runs as a single Railway instance, so this is a forward-
     looking safety property, not a currently-exercised multi-instance path
     — but it costs nothing and closes the gap if that ever changes.
+
+    LEASE-TX-B1 (2026-07-20): the pool this module uses is configured with
+    autocommit=True (see _get_pool()'s own comment), which means a bare
+    conn.execute() commits and releases any row lock the instant that
+    statement returns. The SELECT ... FOR UPDATE SKIP LOCKED below only
+    holds its lock for the lifetime of the transaction it runs in — under
+    autocommit=True with no explicit transaction, that transaction ended
+    (and the lock released) before the following UPDATE ever ran, so a
+    second concurrent claimant's own SELECT could observe the row as still
+    'queued' and lock it too. Wrapping both statements in one
+    `with conn.transaction():` block (psycopg3's documented way to get a
+    real BEGIN/COMMIT on an autocommit connection — same fix as
+    _reserve_job_with_lease() above) keeps the row lock held across both
+    statements, closing that window.
     """
     with _get_pool().connection() as conn:
-        row = conn.execute(
-            """SELECT job_id FROM multibagger_refresh_jobs
-               WHERE job_id = %s AND status = 'queued'
-               FOR UPDATE SKIP LOCKED""",
-            (job_id,),
-        ).fetchone()
-        if row is None:
-            return False
-        conn.execute(
-            """UPDATE multibagger_refresh_jobs
-               SET status = 'running', last_runner_heartbeat_at = now()
-               WHERE job_id = %s""",
-            (job_id,),
-        )
-        return True
+        with conn.transaction():
+            row = conn.execute(
+                """SELECT job_id FROM multibagger_refresh_jobs
+                   WHERE job_id = %s AND status = 'queued'
+                   FOR UPDATE SKIP LOCKED""",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            conn.execute(
+                """UPDATE multibagger_refresh_jobs
+                   SET status = 'running', last_runner_heartbeat_at = now()
+                   WHERE job_id = %s""",
+                (job_id,),
+            )
+            return True
 
 
 def get_staged_symbols(job_id: str) -> set:
@@ -2298,48 +2993,72 @@ def reconcile_stale_multibagger_jobs() -> int:
     Returns the number of rows reclassified. Swallows DB errors (best-effort;
     a failed reconciliation pass just tries again next time, same as Daily
     Picks' own restart-catchup pattern).
+
+    LEASE-TX-B1 (2026-07-20): under this module's autocommit=True pool, the
+    stale-job UPDATE above and the lease-release UPDATE below were each
+    committed the instant they ran, with no transaction spanning both — a
+    crash or process exit between the two could leave a job marked
+    'interrupted' with its lease still active. Both statements now run
+    inside one `with conn.transaction():` block (same fix as
+    _reserve_job_with_lease() and try_claim_queued_multibagger_job() above),
+    so they commit together or not at all.
     """
     try:
         with _get_pool().connection() as conn:
-            stale = conn.execute(
-                f"""UPDATE multibagger_refresh_jobs
-                    SET status = 'interrupted', completed_at = now(),
-                        last_error = 'reconciled: no heartbeat for over {_MULTIBAGGER_ORPHAN_TIMEOUT_HOURS}h'
-                    WHERE status IN ('queued', 'running')
-                      AND COALESCE(last_runner_heartbeat_at, started_at)
-                          < now() - interval '{_MULTIBAGGER_ORPHAN_TIMEOUT_HOURS} hours'
-                    RETURNING job_id"""
-            )
-            stale_job_ids = [r[0] for r in stale.fetchall()]
-            if stale_job_ids:
-                conn.execute(
-                    """UPDATE heavy_workload_leases
-                       SET released_at = now()
-                       WHERE released_at IS NULL AND owner_job_id = ANY(%s)""",
-                    (stale_job_ids,),
+            with conn.transaction():
+                stale = conn.execute(
+                    f"""UPDATE multibagger_refresh_jobs
+                        SET status = 'interrupted', completed_at = now(),
+                            last_error = 'reconciled: no heartbeat for over {_MULTIBAGGER_ORPHAN_TIMEOUT_HOURS}h'
+                        WHERE status IN ('queued', 'running')
+                          AND COALESCE(last_runner_heartbeat_at, started_at)
+                              < now() - interval '{_MULTIBAGGER_ORPHAN_TIMEOUT_HOURS} hours'
+                        RETURNING job_id"""
                 )
+                stale_job_ids = [r[0] for r in stale.fetchall()]
+                if stale_job_ids:
+                    conn.execute(
+                        """UPDATE heavy_workload_leases
+                           SET released_at = now()
+                           WHERE released_at IS NULL AND owner_job_id = ANY(%s)""",
+                        (stale_job_ids,),
+                    )
         return len(stale_job_ids)
     except Exception:
         log.error("[multibagger] stale-job reconciliation pass failed")
         return 0
 
 
-def reconcile_stale_daily_picks_jobs() -> int:
+def reconcile_stale_daily_picks_jobs(stale_interval: str | None = None) -> int:
     """
     Orphan/restart recovery for Daily Picks jobs, mirroring
     reconcile_stale_multibagger_jobs() above (2026-07-17, after a US base
     run died mid-run to an OOM-kill and sat stuck at 'running' for hours —
     daily_picks_jobs had no automatic recovery, only the documented
     manual-only path, see this table's own CREATE TABLE comment). A
-    queued/running row whose heartbeat has gone silent for longer than a
-    credible full run (see _DAILY_PICKS_ORPHAN_TIMEOUT_HOURS) is
-    reclassified 'interrupted' — never deleted, never touched while
-    genuinely active. 'interrupted' is already a fully anticipated terminal
-    state elsewhere in the codebase (services/premarket_finalizer.py's
+    queued/running row whose heartbeat has gone silent for longer than
+    `stale_interval` (a Postgres INTERVAL literal, e.g. "10 minutes"; see
+    _DAILY_PICKS_ORPHAN_TIMEOUT_HOURS when omitted) is reclassified
+    'interrupted' — never deleted, never touched while genuinely active.
+    'interrupted' is already a fully anticipated terminal state elsewhere in
+    the codebase (services/premarket_finalizer.py's
     _JOB_STATUS_TERMINAL_FAILURE), so this doesn't introduce a new status
     value or a new code path for consumers to handle — it only makes an
     already-supported status reachable automatically instead of requiring
     a human to write it by hand.
+
+    stale_interval: optional override of the default
+    "{_DAILY_PICKS_ORPHAN_TIMEOUT_HOURS} hours" threshold, as a Postgres
+    INTERVAL literal string. Always a hardcoded constant supplied by our own
+    call sites (api.main's startup hook passes nothing / the periodic sweep
+    passes _DAILY_PICKS_PERIODIC_STALE_INTERVAL) — never user input, so
+    direct string interpolation here carries no injection risk, consistent
+    with how the default hour-based interval was already embedded before
+    this parameter existed. Added 2026-07-21 so a short-interval periodic
+    sweep (api.main's reconciliation loop) can reuse this exact function and
+    its transactional lease-release semantics instead of duplicating them,
+    while the original startup-only 6h call keeps its exact prior behavior
+    unchanged when called with no argument.
 
     Clearing the row also releases the (market) WHERE status IN ('queued',
     'running') partial unique index slot the crashed job was holding,
@@ -2348,29 +3067,49 @@ def reconcile_stale_daily_picks_jobs() -> int:
     in the same statement set, exactly like Multibagger's version.
 
     Read-only GET endpoints must never call this — only an explicit
-    reconciliation path (e.g. startup) may, same constraint as Multibagger.
-    Returns the number of rows reclassified. Swallows DB errors (best-effort;
-    a failed reconciliation pass just tries again next restart).
+    reconciliation path (startup, or the periodic sweep) may, same
+    constraint as Multibagger. Returns the number of rows reclassified.
+    Swallows DB errors (best-effort; a failed pass just tries again next
+    time this runs).
+
+    LEASE-TX-B1 (2026-07-20): same autocommit=True atomicity gap and fix as
+    reconcile_stale_multibagger_jobs() above — both statements now run
+    inside one `with conn.transaction():` block so they commit together or
+    not at all.
     """
+    interval_literal = stale_interval or f"{_DAILY_PICKS_ORPHAN_TIMEOUT_HOURS} hours"
+    # Default (no override) keeps the exact pre-2026-07-21 last_error text
+    # ("...over 6h") byte-for-byte, since nothing about the startup-only 6h
+    # call site's behavior or output should change. Only the new periodic
+    # override gets a distinctly-worded reason, both so it's identifiable
+    # in logs/DB and so it doesn't need to match the hour-suffix format
+    # ("6h") that only ever made sense for a whole-number-of-hours value.
+    reason = (
+        f"reconciled: no heartbeat for over {_DAILY_PICKS_ORPHAN_TIMEOUT_HOURS}h"
+        if stale_interval is None
+        else f"reconciled: no heartbeat for over {stale_interval}"
+    )
     try:
         with _get_pool().connection() as conn:
-            stale = conn.execute(
-                f"""UPDATE daily_picks_jobs
-                    SET status = 'interrupted', completed_at = now(),
-                        last_error = 'reconciled: no heartbeat for over {_DAILY_PICKS_ORPHAN_TIMEOUT_HOURS}h'
-                    WHERE status IN ('queued', 'running')
-                      AND COALESCE(last_runner_heartbeat_at, started_at)
-                          < now() - interval '{_DAILY_PICKS_ORPHAN_TIMEOUT_HOURS} hours'
-                    RETURNING job_id"""
-            )
-            stale_job_ids = [r[0] for r in stale.fetchall()]
-            if stale_job_ids:
-                conn.execute(
-                    """UPDATE heavy_workload_leases
-                       SET released_at = now()
-                       WHERE released_at IS NULL AND owner_job_id = ANY(%s)""",
-                    (stale_job_ids,),
+            with conn.transaction():
+                stale = conn.execute(
+                    f"""UPDATE daily_picks_jobs
+                        SET status = 'interrupted', completed_at = now(),
+                            last_error = %s
+                        WHERE status IN ('queued', 'running')
+                          AND COALESCE(last_runner_heartbeat_at, started_at)
+                              < now() - interval '{interval_literal}'
+                        RETURNING job_id""",
+                    (reason,),
                 )
+                stale_job_ids = [r[0] for r in stale.fetchall()]
+                if stale_job_ids:
+                    conn.execute(
+                        """UPDATE heavy_workload_leases
+                           SET released_at = now()
+                           WHERE released_at IS NULL AND owner_job_id = ANY(%s)""",
+                        (stale_job_ids,),
+                    )
         return len(stale_job_ids)
     except Exception:
         log.error("[daily_picks] stale-job reconciliation pass failed")
@@ -2418,16 +3157,74 @@ def has_active_heavy_workload_lease(resource: str) -> bool:
         return True
 
 
+class _ReservationOutcome(Exception):
+    """
+    Internal control-flow signal only — never escapes this module. Raised
+    from inside a `conn.transaction()` block to force a real ROLLBACK of
+    everything done in that block (including an already-inserted job row)
+    before unwinding to the plain outcome string the public functions
+    return. See _reserve_job_with_lease()'s docstring for why this exists.
+    """
+    def __init__(self, outcome: str):
+        self.outcome = outcome
+
+
+def _reserve_job_with_lease(conn, job_insert_sql, job_insert_params,
+                             conflict_outcome, lease_insert_sql, lease_insert_params):
+    """
+    Shared atomic job+lease reservation body for both
+    try_reserve_multibagger_job_with_lease() and
+    try_reserve_daily_picks_job_with_lease().
+
+    The pool this module uses is configured with autocommit=True (see
+    _get_pool()'s own comment) — every conn.execute() call commits itself
+    the instant it runs. That made the previous single `with
+    _get_pool().connection() as conn:` block only LOOK transactional: the
+    job-row INSERT was already durably committed before the lease INSERT
+    ever ran, so a later conn.rollback() had nothing left to undo. In
+    production this left an orphaned 'queued' daily_picks_jobs row with no
+    lease behind it whenever the lease INSERT lost the race (see job
+    e49d84bf-c19e-4c1c-9a2e-5c1da3f676c3, 2026-07-20).
+
+    conn.transaction() is psycopg3's documented way to get a real
+    transaction on an autocommit connection: it issues an explicit
+    BEGIN on entry and COMMIT/ROLLBACK on exit (COMMIT on a clean exit,
+    ROLLBACK if an exception propagates out of the block) — regardless of
+    the connection's autocommit setting. Raising _ReservationOutcome from
+    inside the block is what forces the ROLLBACK for every "did not start"
+    outcome, including the case where the job INSERT itself already
+    succeeded; catching it just outside the `with conn.transaction():`
+    block converts it back to the plain string callers expect. A normal
+    (non-exception) return of "started" from inside the block lets
+    conn.transaction() commit as usual.
+    """
+    try:
+        with conn.transaction():
+            job_result = conn.execute(job_insert_sql, job_insert_params)
+            if job_result.rowcount != 1:
+                raise _ReservationOutcome(conflict_outcome)
+
+            lease_result = conn.execute(lease_insert_sql, lease_insert_params)
+            if lease_result.rowcount != 1:
+                raise _ReservationOutcome("resource_busy")
+
+            return "started"
+    except _ReservationOutcome as outcome:
+        return outcome.outcome
+
+
 def try_reserve_multibagger_job_with_lease(
     job_id: str, market: str, runner_instance_id: str,
     trigger_source: str, scheduled_period_key: str | None, resource: str,
 ) -> str:
     """
     Product Integrity #010 §9 — atomic job+lease reservation. Both INSERTs
-    happen inside the SAME connection/transaction (one `with` block); a
-    lease-acquisition failure explicitly rolls back the job-row insert too,
-    so a caller never sees an orphaned queued row with no lease behind it —
-    the previous #009 design acquired these in two separate calls/
+    happen inside the same real database transaction (see
+    _reserve_job_with_lease()'s docstring — plain conn.rollback() alone
+    does not achieve this under this module's autocommit=True pool); a
+    lease-acquisition failure rolls back the job-row insert too, so a
+    caller never sees an orphaned queued row with no lease behind it — the
+    previous #009 design acquired these in two separate calls/
     transactions, leaving a real (if narrow) window where a job could be
     reserved and then never actually run because the lease step failed
     independently.
@@ -2438,30 +3235,20 @@ def try_reserve_multibagger_job_with_lease(
     Raises on genuine DB error — caller treats that as durable_state_unavailable.
     """
     with _get_pool().connection() as conn:
-        job_result = conn.execute(
+        return _reserve_job_with_lease(
+            conn,
             """INSERT INTO multibagger_refresh_jobs
                    (job_id, market, status, runner_instance_id, started_at,
                     trigger_source, scheduled_period_key, last_runner_heartbeat_at)
                VALUES (%s, %s, 'queued', %s, now(), %s, %s, now())
                ON CONFLICT DO NOTHING""",
             (job_id, market, runner_instance_id, trigger_source, scheduled_period_key),
-        )
-        if job_result.rowcount != 1:
-            conn.rollback()
-            return "already_completed_for_period" if trigger_source == "scheduled" else "already_running"
-
-        lease_result = conn.execute(
+            "already_completed_for_period" if trigger_source == "scheduled" else "already_running",
             """INSERT INTO heavy_workload_leases (resource, owner_type, owner_job_id, market, acquired_at)
                VALUES (%s, 'multibagger', %s, %s, now())
                ON CONFLICT DO NOTHING""",
             (resource, job_id, market),
         )
-        if lease_result.rowcount != 1:
-            conn.rollback()
-            return "resource_busy"
-
-        conn.commit()
-        return "started"
 
 
 def try_reserve_daily_picks_job_with_lease(
@@ -2472,35 +3259,26 @@ def try_reserve_daily_picks_job_with_lease(
     for Daily Picks (Product Integrity #010 §10). Uses daily_picks_jobs'
     existing (market) WHERE status IN ('queued','running') gate — unchanged,
     same table/constraint Daily Picks has always used; only the lease
-    acquisition is now folded into the same transaction.
+    acquisition is now folded into the same real transaction (see
+    _reserve_job_with_lease()).
 
     Returns one of: 'started', 'already_running', 'resource_busy'.
     Raises on genuine DB error.
     """
     with _get_pool().connection() as conn:
-        job_result = conn.execute(
+        return _reserve_job_with_lease(
+            conn,
             """INSERT INTO daily_picks_jobs
                    (job_id, market, status, runner_instance_id, started_at)
                VALUES (%s, %s, 'queued', %s, now())
                ON CONFLICT DO NOTHING""",
             (job_id, market, runner_instance_id),
-        )
-        if job_result.rowcount != 1:
-            conn.rollback()
-            return "already_running"
-
-        lease_result = conn.execute(
+            "already_running",
             """INSERT INTO heavy_workload_leases (resource, owner_type, owner_job_id, market, acquired_at)
                VALUES (%s, 'daily_picks', %s, %s, now())
                ON CONFLICT DO NOTHING""",
             (resource, job_id, market),
         )
-        if lease_result.rowcount != 1:
-            conn.rollback()
-            return "resource_busy"
-
-        conn.commit()
-        return "started"
 
 
 def get_latest_daily_picks_job(market: str) -> dict | None:

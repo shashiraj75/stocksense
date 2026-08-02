@@ -86,6 +86,24 @@ def _reset_fake_ticker_calls():
     _FakeTicker.calls = []
 
 
+@pytest.fixture(autouse=True)
+def _stub_sec_edgar_as_of(monkeypatch):
+    """
+    DP-026 remediation (2026-07-21): _backtest_stock() now calls
+    sec_edgar_adapter.get_fundamentals_as_of() once per US signal date.
+    None of the tests in this file are about SEC EDGAR/fundamentals — they
+    predate that remediation entirely — so this autouse stub keeps the
+    file's own "No network access anywhere in this file" guarantee true by
+    always returning a deterministic "unavailable" result, never reaching
+    the real network. Tests that specifically need fundamentals-available
+    behavior live in test_dp026_point_in_time_remediation.py instead.
+    """
+    monkeypatch.setattr(
+        ve.sec_edgar_adapter, "get_fundamentals_as_of",
+        lambda symbol, as_of: {"available": False, "reason": "stubbed in test"},
+    )
+
+
 class _NoWriteCursor:
     lastrowid = 0
 
@@ -107,7 +125,19 @@ class _NoWriteConn:
         pass
 
 
-def _mock_validation_io_boundaries(monkeypatch, backtest_stock_fake):
+def _valid_benchmark_df(n=300, seed=99):
+    """A benchmark DataFrame that passes _validate_benchmark_acquisition
+    for every horizon — sorted, unique, finite, positive Close, enough
+    rows. Default mocked yfinance response for tests whose real concern
+    is symbol routing / run wiring, not benchmark evidence itself."""
+    rng = np.random.default_rng(seed)
+    dates = pd.bdate_range("2019-01-01", periods=n)
+    rets = rng.normal(0.0003, 0.008, n)
+    close = 100.0 * np.cumprod(1 + rets)
+    return pd.DataFrame({"Close": close}, index=dates)
+
+
+def _mock_validation_io_boundaries(monkeypatch, backtest_stock_fake, auto_window_stats=True):
     """
     Mocks every I/O boundary run_validation() touches — yfinance, DB init,
     and the SQLite connection — so a call to run_validation() in a test
@@ -115,15 +145,31 @@ def _mock_validation_io_boundaries(monkeypatch, backtest_stock_fake):
     validation_results.db, no alpha_engine.db, no Postgres). Also resets
     the module's shared _run_status so a prior failed test can't leave a
     stuck "running" flag behind.
-    """
-    mock_yf = MagicMock()
-    mock_yf.Ticker.return_value.history.return_value = pd.DataFrame()
 
-    monkeypatch.setattr(ve, "_backtest_stock", backtest_stock_fake)
+    `auto_window_stats=True` (default) makes every _backtest_stock call
+    report one genuinely benchmark-valid window before delegating to
+    `backtest_stock_fake` — these tests are about symbol routing/run
+    wiring, not benchmark signal-coverage itself, so without this every
+    test whose stub backtest returns `[]` would spuriously trip the
+    post-alignment coverage gate (2026-07-26 hardening, Finding D).
+    """
+    def _wrapped_backtest(*args, **kwargs):
+        if auto_window_stats:
+            window_stats = kwargs.get("_window_stats")
+            if window_stats is not None:
+                window_stats["considered"] = window_stats.get("considered", 0) + 1
+                window_stats["benchmark_valid"] = window_stats.get("benchmark_valid", 0) + 1
+        return backtest_stock_fake(*args, **kwargs)
+
+    mock_yf = MagicMock()
+    mock_yf.Ticker.return_value.history.return_value = _valid_benchmark_df()
+
+    monkeypatch.setattr(ve, "_backtest_stock", _wrapped_backtest)
     monkeypatch.setattr(ve, "yf", mock_yf)
     monkeypatch.setattr(ve, "_init_db", lambda: None)
     monkeypatch.setattr(ve, "_get_sqlite_conn", lambda: _NoWriteConn())
     monkeypatch.setattr(ve, "_USE_POSTGRES", False)
+    monkeypatch.setattr(ve.time, "sleep", lambda *a, **k: None)  # bounded retry — never slow a test
 
     with ve._status_lock:
         ve._run_status["running"] = False
@@ -360,26 +406,19 @@ class TestBacktestStockRouting:
 
 @pytest.mark.unit
 class TestBacktestStockSignalComputationUnchanged:
-    def test_entry_exit_and_alpha_match_manual_calc_with_no_benchmark(self, monkeypatch):
+    def test_no_benchmark_produces_no_signals_not_a_fabricated_flat_comparison(self, monkeypatch):
+        """Benchmark evidence integrity closure: a None benchmark used to
+        make every signal's benchmark forward return silently default to
+        0.0 (alpha == raw forward return, as if the benchmark were
+        genuinely flat) — exactly the fabricated-evidence defect this
+        phase closes. _backtest_stock now excludes every signal date
+        instead, since no genuine benchmark/regime evidence exists at any
+        of them (see this function's own _exclusions contract)."""
         monkeypatch.setattr(ve.yf, "Ticker", _FakeTicker)
-        df = _synthetic_ohlcv()  # same seed/params _FakeTicker.history() returns
-        signals = _backtest_stock("AAPL", "short", None, "US", universe="us")
-        assert len(signals) > 0
-
-        fwd_days = ve.HORIZON_DAYS["short"]
-        i = 200  # MIN_WARMUP — first signal date
-        entry = float(df["Close"].iloc[i])
-        exit_ = float(df["Close"].iloc[i + fwd_days])
-        expected_fwd_ret = round((exit_ - entry) / entry * 100, 3)
-
-        first = signals[0]
-        assert first["symbol"] == "AAPL"
-        assert first["horizon"] == "short"
-        assert first["fwd_return_pct"] == pytest.approx(expected_fwd_ret)
-        # No benchmark supplied -> benchmark forward return is 0, so alpha
-        # equals the raw forward return (persisted key name unchanged).
-        assert first["nifty_fwd_ret_pct"] == 0.0
-        assert first["alpha_pct"] == pytest.approx(expected_fwd_ret)
+        exclusions = []
+        signals = _backtest_stock("AAPL", "short", None, "US", universe="us", _exclusions=exclusions)
+        assert signals == []
+        assert len(exclusions) > 0
 
     def test_benchmark_alignment_and_alpha_with_benchmark_supplied(self, monkeypatch):
         monkeypatch.setattr(ve.yf, "Ticker", _FakeTicker)
@@ -390,7 +429,11 @@ class TestBacktestStockSignalComputationUnchanged:
 
         fwd_days = ve.HORIZON_DAYS["short"]
         i = 200
-        bench_close = bench_df["Close"].reindex(stock_df.index).ffill().bfill()
+        # Same date index on both sides (both _synthetic_ohlcv calls share
+        # the same pd.bdate_range regardless of seed) — ffill-only
+        # alignment (no bfill, matching _align_benchmark_close's contract)
+        # produces identical values here since there is no leading gap.
+        bench_close = bench_df["Close"].reindex(stock_df.index).ffill()
         entry = float(stock_df["Close"].iloc[i])
         exit_ = float(stock_df["Close"].iloc[i + fwd_days])
         fwd_ret = (exit_ - entry) / entry * 100
@@ -400,6 +443,7 @@ class TestBacktestStockSignalComputationUnchanged:
         expected_alpha = round(fwd_ret - bench_fwd_ret, 3)
 
         first = signals[0]
+        assert first["fwd_return_pct"] == pytest.approx(round(fwd_ret, 3))
         assert first["nifty_fwd_ret_pct"] == pytest.approx(round(bench_fwd_ret, 3))
         assert first["alpha_pct"] == pytest.approx(expected_alpha)
 
@@ -408,7 +452,9 @@ class TestBacktestStockSignalComputationUnchanged:
         Pre-existing look-ahead-bias guarantee (untouched by this phase):
         compute_indicators() must only ever see df.iloc[:i+1] at signal date
         i, never later rows. Spies on the real compute_indicators to record
-        the window length passed at each call.
+        the window length passed at each call. Uses a valid benchmark (not
+        None) so signals are actually produced — this test's own concern
+        is indicator windowing, not benchmark evidence.
         """
         monkeypatch.setattr(ve.yf, "Ticker", _FakeTicker)
         seen_lengths = []
@@ -419,7 +465,8 @@ class TestBacktestStockSignalComputationUnchanged:
             return real_compute_indicators(window)
 
         monkeypatch.setattr(ve, "compute_indicators", _spy)
-        _backtest_stock("AAPL", "short", None, "US", universe="us")
+        bench_df = _synthetic_ohlcv(seed=7)
+        _backtest_stock("AAPL", "short", bench_df, "US", universe="us")
 
         fwd_days = ve.HORIZON_DAYS["short"]
         step = ve.HORIZON_STEP["short"]
@@ -478,18 +525,23 @@ class TestRunValidationWiringFullyMocked:
     def _run_fully_mocked(self, monkeypatch, universe):
         captured_markets = []
 
-        def _fake_backtest_stock(symbol, horizon, benchmark_df, market, universe=None):
+        def _fake_backtest_stock(symbol, horizon, benchmark_df, market, universe=None, **kwargs):
             captured_markets.append(market)
+            window_stats = kwargs.get("_window_stats")
+            if window_stats is not None:
+                window_stats["considered"] = window_stats.get("considered", 0) + 1
+                window_stats["benchmark_valid"] = window_stats.get("benchmark_valid", 0) + 1
             return []
 
         mock_yf = MagicMock()
-        mock_yf.Ticker.return_value.history.return_value = pd.DataFrame()
+        mock_yf.Ticker.return_value.history.return_value = _valid_benchmark_df()
 
         monkeypatch.setattr(ve, "_backtest_stock", _fake_backtest_stock)
         monkeypatch.setattr(ve, "yf", mock_yf)
         monkeypatch.setattr(ve, "_init_db", lambda: None)
         monkeypatch.setattr(ve, "_get_sqlite_conn", lambda: self._NullConn())
         monkeypatch.setattr(ve, "_USE_POSTGRES", False)
+        monkeypatch.setattr(ve.time, "sleep", lambda *a, **k: None)
 
         with ve._status_lock:
             ve._run_status["running"] = False
@@ -542,7 +594,7 @@ class TestEffectiveSampleSizeTruthful:
         present returns zero signals (a real, uncounted, failed/insufficient
         fetch stand-in)."""
 
-        def _fake_backtest_stock(symbol, horizon, benchmark_df, market, universe=None):
+        def _fake_backtest_stock(symbol, horizon, benchmark_df, market, universe=None, **kwargs):
             n = signal_counts.get(symbol, 0)
             return [_fake_signal(symbol, horizon, i) for i in range(n)]
 

@@ -4,7 +4,190 @@
 
 **Use this document for current state.** Historical sprint reports, Epic closures, SSDS documents, and audit reports remain authoritative evidence for their own completed scope, but they do not automatically describe the current production operating state.
 
-**As of:** 2026-07-16 — maintained as a live operational register
+**As of:** 2026-07-26 — maintained as a live operational register
+
+---
+
+## Validation Benchmark Evidence Integrity
+
+**Status:** two PRs, both merged and automatically deployed:
+
+- **PR [#26](https://github.com/shashiraj75/stocksense/pull/26)** (`fix/validation-benchmark-evidence-integrity`)
+  — **major benchmark-evidence integrity remediation**, merge commit `0c3926c`, 2026-07-26.
+- **PR [#28](https://github.com/shashiraj75/stocksense/pull/28)** (`fix/validation-benchmark-evidence-final-hardening`)
+  — **follow-up hardening**: malformed-type, positive-exit, coverage, retry and observability
+  closure, merge commit `2247384`, 2026-07-26.
+
+**Automatic deployment successful** for both — confirmed via GitHub's commit-status/deployment API
+(Railway `success`, Vercel `success` on both merge commits) and a direct, read-only production smoke
+check after each merge: `GET /health` returns `{"status":"ok",...}` and `GET /api/validation/status`
+returns the clean, expected shape. **No `/api/validation/run` was triggered** to force this evidence
+for either PR — **natural production failure-path verification remains pending**; the failure path
+is fully test-backed instead (PR #26: 50 tests; PR #28: 36 additional tests using deterministic
+fault injection — string/mixed/malformed `Close` columns, negative/zero exit values, hand-computed
+exact coverage boundaries, timezone/intraday-timestamp mismatches, non-`DatetimeIndex` input) rather
+than production-observed. **No win-rate or accuracy claim** is made or implied by either PR.
+
+**PR #26 — major remediation.** Closed a class of defect where unavailable or invalid benchmark
+evidence was silently treated as genuine flat/neutral evidence: a benchmark alignment step that
+could backward-fill a *future* observation into an earlier stock date (a real look-ahead
+violation); a missing benchmark making the market-regime adjustment default to a genuine-looking
+neutral `0.0` for every signal; a missing benchmark forward return defaulting to `0.0` and
+fabricating `alpha_pct`/`actual_direction`/`correct`; `avg_return_benchmark_pct` using a truthy
+check that collapsed a genuine `0.0%` to `None`; a missing-BUY-signals case fabricating a `0%`
+model return instead of `None`; and a degraded-but-completed run persisting a contaminated result.
+Introduced the centralized, versioned `BenchmarkEvidence` contract (`validation_benchmark_evidence_v1`)
+and the run-level fail-closed gate (`BENCHMARK_EVIDENCE_UNAVAILABLE`). 70 new/updated tests. Test
+evidence at merge: backend 3830/3830, frontend 454/454.
+
+**PR #28 — follow-up hardening**, closing edge cases found on fresh adversarial review of PR #26's
+own implementation (none of PR #26's protections repeated or weakened — its full test suite remains
+green):
+- **Total, exception-safe validator** — `_validate_benchmark_acquisition` now never raises for any
+  DataFrame shape/dtype (an escaping exception previously risked stranding the active job slot,
+  since this function runs deliberately outside the main try/except). New `non_numeric`,
+  `invalid_index_type`, `validation_error` states; deterministic numeric coercion with disclosed
+  invalid counts; original frame never mutated.
+- **Positive entry AND exit** — the prior condition only checked `entry > 0`; a zero/negative
+  `exit` could silently reach the forward-return division. Fixed at all three layers (acquisition,
+  aggregate return, per-signal alignment), which now provably share one coerced series.
+- **Coverage-based acquisition adequacy** — a single valid forward-return window among hundreds of
+  invalid rows is no longer accepted; requires >= 95% window coverage
+  (`BENCHMARK_MIN_ACQUISITION_WINDOW_COVERAGE_PCT`), with real, disclosed coverage counts. New
+  `insufficient_window_coverage` status.
+- **Post-alignment, whole-run signal coverage gate** — new `signal_windows_considered`/
+  `benchmark_valid_signal_windows`/`benchmark_signal_coverage_pct`, gated at >= 95%
+  (`BENCHMARK_MIN_SIGNAL_COVERAGE_PCT`) after the stock backtests run but before
+  `_compute_metrics()`/persistence — zero benchmark-valid signals, or below-threshold coverage,
+  fails closed (`BENCHMARK_ALIGNMENT_COVERAGE_INSUFFICIENT`) and persists nothing; the latest
+  previously completed valid result remains unchanged.
+- **Retry extended** to non-exception acquisition failures (empty/malformed frame returned without
+  raising) for plausibly-transient states — still capped at 2 attempts, same ticker, no new
+  provider; structural states are explicitly not retried.
+- **Failed-job evidence** — a failed job's status snapshot now carries the full, safe
+  `BenchmarkEvidence` contract (never raw provider/exception text).
+- **Timezone/index robustness** — `_align_benchmark_close` normalizes tz-aware/naive and intraday
+  timestamps safely (never via a UTC-shifting conversion that could move a date across midnight);
+  a non-`DatetimeIndex` fails safe rather than raising.
+
+**Healthy-path parity preserved** for both PRs — every pre-existing signal-computation test's
+expected numeric values are unchanged; dedicated India/US parity tests confirm both markets
+complete unaffected. No scoring, benchmark methodology, alpha/hit-rate calculation, universe/
+horizon definition, or scheduler behavior changed. No production data rewritten at any point.
+36 new tests plus 5 existing test-file corrections in PR #28. Final combined test evidence:
+backend 3866/3866, frontend 454/454, clean typecheck, clean production build.
+
+## Validation Public Diagnostic Sanitization
+
+**Status:** PR [#24](https://github.com/shashiraj75/stocksense/pull/24)
+(`fix/validation-public-error-sanitization`) **MERGED** to `main` (merge commit `d83488f`,
+2026-07-25) and **automatically deployed** — confirmed via GitHub's commit-status/deployment API
+(Railway `success`, Vercel `success` on the merge commit) and a direct, read-only production smoke
+check: `GET /health` returns `{"status":"ok",...}` and `GET /api/validation/status` returns the
+clean, expected shape with no error content. No `/api/validation/run` was triggered to force this
+evidence — **failure-path production evidence remains naturally pending**, consistent with this
+release's own operational safety boundaries; the failure path is test-backed (20 new regression
+tests using hostile fixture exception text) rather than production-observed.
+
+Closes the residual risk named in the Market Leadership entry below: four write sites in
+`validation_engine.py` previously embedded a live exception object directly into a field reachable
+from a public Validation API response — `benchmark_unavailable_reason` (persisted + returned by
+`/api/validation/results`), `job.failure_message` and the per-symbol/run-level progress log (both
+returned by `/api/validation/status`). All four now return a stable failure code / fixed message
+from a centralized `VALIDATION_PUBLIC_FAILURE_MESSAGES` contract; the real exception is always
+logged server-side (`log.exception`/`log.warning`, with symbol/market/universe/horizon context
+where applicable) and never crosses into a public field. Older `val_runs.summary` rows persisted
+before this fix (which may already contain raw exception text) are sanitized on read by a pure,
+deterministic helper — **the stored row itself is never rewritten or backfilled**. No scoring,
+benchmark methodology, alpha/hit-rate calculation, universe/horizon definition, or scheduler
+behavior changed; `benchmark_avg_fwd_return_pct`/`nifty_avg_fwd_return_pct` remain `None` (never a
+fabricated `0.0`) when unavailable, unchanged from the pre-existing behavior. 20 new regression
+tests plus 2 existing tests corrected (they previously asserted the *old, unsafe* behavior). Final
+test evidence: backend 3780/3780, frontend 454/454, clean typecheck.
+
+## Validation Job-Identity Fix
+
+**Status:** PR [#21](https://github.com/shashiraj75/stocksense/pull/21)
+(`fix/validation-job-universe-identity`) **MERGED** to `main` (merge commit `37bfe39`, 2026-07-25) and
+**automatically deployed** — confirmed via GitHub's commit-status API (Railway and Vercel both
+`success` on the merge commit) and a direct, natural, unmanufactured observation: the production
+`/api/validation/status` endpoint transitioned from its pre-merge shape (no `job` field) through a
+502 during the Railway restart to its fresh post-merge default (`{"running": false, "progress": 0,
+"total": 0, "started_at": null, "log": []}`), proving the new code is live. **Natural behavioural
+verification of the cross-universe fix itself is PENDING** — no scheduled or manually-triggered
+validation run has occurred since deploy, so the original defect (a US run rendering under the Nifty
+100 tab) has not yet been observed corrected under real, naturally-occurring traffic. No validation
+run was manually triggered to force this evidence, consistent with this repository's operational
+safety boundaries.
+
+Fixed via a fresh independent pre-merge review (not just the original implementation): jobs are now
+bound to an immutable identity (market/universe/horizon/timestamps) at claim time; a caller-supplied
+mismatched job identity now fails closed instead of silently misattributing a run; a benchmark fetch
+failure is now explicitly disclosed (`benchmark_data_available`/`benchmark_unavailable_reason`)
+rather than silently reported as a fabricated 0.0% return; `data_cutoff` is honestly `None` (with
+`data_cutoff_basis: "not_captured"`) rather than presenting a claim/run-start timestamp as a verified
+market-data cutoff. 29 regression tests. Final test evidence: backend 3582/3582, frontend 420/420,
+clean typecheck, clean production build.
+
+## Market Leadership and Trend Context Layer
+
+**Status:** PR [#22](https://github.com/shashiraj75/stocksense/pull/22)
+(`feat/shadow-market-leadership-context`) **MERGED** to `main` (merge commit `67a1f13`, 2026-07-25)
+and **automatically deployed DORMANT** — confirmed via GitHub's commit-status API (Railway and
+Vercel both `success`) and a direct, natural observation of the live production endpoint:
+`GET /api/leadership/context?symbol=AAPL&market=US` returns exactly `{"status":"disabled"}`, proven
+by watching the endpoint transition from a pre-deploy 404 (route didn't exist yet) through a 502
+during the Railway restart to this live disabled response — genuine evidence, not a manufactured
+test. See
+[Market Leadership and Trend Context Layer — Local Implementation and Release Evidence](../Releases/Market-Leadership-Trend-Context-Layer-Local-Implementation.md)
+and its companion
+[Architecture](../Architecture/Market-Leadership-Trend-Context-Layer.md).
+
+**ALL SIX FEATURE FLAGS REMAIN OFF** — five backend capability flags
+(`MARKET_LEADERSHIP_ENGINE_ENABLED`/`_SHADOW_ENABLED`/`_UI_ENABLED`/`_VALIDATION_ENABLED`/`_SCORING_ENABLED`)
+plus one fail-closed public frontend presentation gate (`NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED`,
+only the exact string `"1"` enables it). None was set in any Railway/Vercel environment during this
+release. **UI NOT EXPOSED. SHADOW PERSISTENCE NOT ENABLED. SCORING INFLUENCE ZERO** —
+`MARKET_LEADERSHIP_SCORING_ENABLED` is statically proven unconsumed by any scoring/ranking code
+path. Daily Picks, Multibagger, Portfolio, Paper Trading, Alerts, Validation, Heatmap, and Screener
+are unmodified by this work.
+
+- New, isolated `backend/services/market_leadership/` package: Stock Relative Strength Rank,
+  Sector/Industry Group Leadership, Trend Lifecycle classification, Market Breadth, "Why Now?"
+  explanation contract, plus an additive `GET /api/leadership/context` endpoint and an experimental
+  Stock Detail page component.
+- Six genuine defects were found and fixed across this release's review passes — three via live
+  manual verification against real yfinance data (a provider-incomplete-bar JSON crash; a misleading
+  "insufficient history" explanation for a case where data was actually fine; an unbounded
+  per-request recomputation cost), one cache-mutation hazard (a caller could corrupt the shared TTL
+  cache via in-place mutation of its own response), one incomplete "flags-off" claim (the frontend
+  issued a browser request regardless of backend flag state — fixed with the new frontend
+  presentation gate), and two found via a final fresh adversarial pre-merge review using more
+  extreme inputs than the original test suite: a group cap-weight redistribution algorithm that
+  could silently violate its own 20% ceiling under extreme concentration, and a NaN composite value
+  that could be sorted as if it were a genuine top-percentile relative-strength extreme. All six are
+  fixed, tested, and — where practical — sanity-checked by deliberately reverting the fix, confirming
+  the regression test fails, and restoring.
+- Final test evidence (this repository's own venv, real exit codes checked): backend **3762/3762**
+  passed, frontend **454/454** passed, clean typecheck, clean production build (built with the
+  frontend gate absent, matching real deployment state).
+- **Quantitative shadow validation (Section 15) status: VALIDATION PENDING.** The walk-forward
+  harness is built, functional, and smoke-tested against real data (225 real observations, correctly
+  self-suppressed below its own 300-observation floor), but **no statistically adequate evidence
+  base exists yet** — a genuine evidence base (India + US separately, multiple horizons, multiple
+  regimes, walk-forward splits, bootstrap confidence intervals) requires a data-collection period
+  well beyond what any single implementation session can produce. The 300-observation floor is a
+  presentation minimum, not proof of statistical adequacy — no accuracy, win-rate, or profitability
+  claim is made or implied anywhere in this release.
+- **Residual risk closed**: the raw-exception-string disclosure flagged during PR #22's review
+  (outside both PRs' merged scope at the time) was fixed and merged separately as PR #24 — see the
+  "Validation Public Diagnostic Sanitization" entry above. Public Validation responses no longer
+  carry any raw exception text; full diagnostic detail remains in server-side logs only.
+- **Next gates required before this layer can affect a user or a score**: separate, explicit
+  approval for (1) production shadow enablement (`MARKET_LEADERSHIP_SHADOW_ENABLED`), (2)
+  user-visible UI enablement (both `MARKET_LEADERSHIP_UI_ENABLED` and
+  `NEXT_PUBLIC_MARKET_LEADERSHIP_UI_ENABLED`), and (3) any recommendation-scoring influence
+  (`MARKET_LEADERSHIP_SCORING_ENABLED`) — none of which is requested or implied by this entry.
 
 ---
 

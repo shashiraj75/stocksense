@@ -1,0 +1,3 @@
+SYMBOL,NAME OF COMPANY, SERIES, DATE OF LISTING, PAID UP VALUE, MARKET LOT, ISIN NUMBER, FACE VALUE
+SYNTHREIT,Synthetic REIT Test,RR,01-JAN-2020,100,1,INTESTGH0044,100
+Note: the Market lot is updated periodically and this footnote row has no valid ISIN

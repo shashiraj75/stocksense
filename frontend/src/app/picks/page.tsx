@@ -17,6 +17,7 @@ import { PaperTradeModal } from "@/components/PaperTradeModal";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
 import { UnsupportedMarketNotice } from "@/components/UnsupportedMarketNotice";
 import { INTEGRITY_HOLD_ACTIVE, ValidationIntegrityHold } from "@/components/ValidationIntegrityHold";
+import { DataLimitationsNotice } from "@/components/DataLimitationsNotice";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type ReasonItem = { indicator: string; signal: string; reason: string };
@@ -67,8 +68,25 @@ type DailyPicksResponse = {
   historical_track_record?: Record<
     "short" | "medium" | "long",
     { universe: string; beat_benchmark_pct: number | null; buy_hit_rate_pct: number | null;
-      n_signals: number | null; run_at: string | null }[]
+      n_signals: number | null; run_at: string | null;
+      // DP-026 remediation (2026-07-21) — undefined/null on any entry
+      // persisted before this session (genuinely legacy, not "false").
+      fundamentals_point_in_time?: boolean | null;
+      fundamentals_point_in_time_coverage_pct?: number | null }[]
   >;
+  // US Daily Picks generation-reliability incident (2026-07-22) — failure-
+  // safe publication contract. `picks` above is now ALWAYS either today's
+  // genuine successful result or the last genuinely successful prior
+  // result (never an empty error stand-in); these fields say which, and
+  // give the exact vocabulary for the three states that must never be
+  // confused: today's success, stale-but-real last success, and a known
+  // terminal failure with nothing usable yet.
+  stale?: boolean;
+  serving_stale_payload?: boolean;
+  last_successful_session_date?: string | null;
+  last_attempt_status?: string | null;
+  last_attempt_error_category?: string | null;
+  message?: string;
 };
 
 type ValidationResult = {
@@ -258,7 +276,9 @@ function HistoricalTrackRecordSummary({
 }: {
   horizon: "short" | "medium" | "long";
   entries?: { universe: string; beat_benchmark_pct: number | null; buy_hit_rate_pct: number | null;
-              n_signals: number | null; run_at: string | null }[];
+              n_signals: number | null; run_at: string | null;
+              fundamentals_point_in_time?: boolean | null;
+              fundamentals_point_in_time_coverage_pct?: number | null }[];
   benchmarkLabel: string;
 }) {
   if (!entries || entries.length === 0) return null;
@@ -274,11 +294,22 @@ function HistoricalTrackRecordSummary({
         <p className="text-sm font-semibold text-white">Historical accuracy — {horizon}-term</p>
         <span className="text-xs text-gray-500">from real walk-forward backtests, not this run's picks</span>
       </div>
+      {/* DP-026 (2026-07-21 remediation) — the blanket "not point-in-time"
+          notice is now shown only when at least one entry genuinely still
+          needs it (false or legacy/null). A fully-remediated entry
+          (fundamentals_point_in_time === true) gets its own per-entry
+          coverage badge below instead — see DataLimitationsNotice's
+          docstring: this must never claim remediation for an entry that
+          isn't. */}
+      {entries.some(e => e.fundamentals_point_in_time !== true) && (
+        <DataLimitationsNotice className="mb-3" />
+      )}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {entries.map((e) => {
           const beatBenchmark = e.beat_benchmark_pct;
           const lowSample = (e.n_signals ?? 0) < 200;
           const weak = beatBenchmark != null && beatBenchmark < 50;
+          const pit = e.fundamentals_point_in_time;
           return (
             <div key={e.universe} className="bg-dark-bg/60 border border-dark-border rounded-lg p-3">
               <div className="flex items-center justify-between mb-1.5">
@@ -308,6 +339,25 @@ function HistoricalTrackRecordSummary({
               )}
               {lowSample && (
                 <p className="text-[11px] text-gray-500 mt-1">Small sample — treat as directional, not conclusive.</p>
+              )}
+              {/* DP-026 remediation — per-entry provenance, replacing the
+                  blanket warning only for an entry proven genuinely
+                  point-in-time. `pit === false` (still contaminated) is
+                  already covered by the blanket notice above and gets no
+                  duplicate text here; `pit === undefined/null` (legacy,
+                  predates data_limitations entirely) gets its own distinct
+                  label rather than being silently lumped in with either
+                  "remediated" or "known contaminated". */}
+              {pit === true && (
+                <p className="text-[11px] text-emerald-400/80 mt-1.5">
+                  Point-in-time fundamentals coverage: {e.fundamentals_point_in_time_coverage_pct ?? "—"}%
+                  {" "}— reconstructed from SEC filings as of each signal's own date.
+                </p>
+              )}
+              {pit == null && (
+                <p className="text-[11px] text-gray-500 mt-1.5">
+                  Legacy result — predates point-in-time fundamentals tracking; treat as directional only.
+                </p>
               )}
             </div>
           );
@@ -352,6 +402,11 @@ function BacktestPanel({ horizon, benchmarkLabel }: { horizon: string; benchmark
           </p>
         )}
       </div>
+
+      {/* DP-026 — always rendered, not conditioned on data.data_limitations
+          being present (legacy runs predate that field but carry the same
+          limitation). See DataLimitationsNotice for the full rationale. */}
+      <DataLimitationsNotice />
 
       {/* Key metrics */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -1048,13 +1103,6 @@ export default function DailyPicksPage() {
           </span>
         </div>
         <div className="flex items-center gap-2 shrink-0 ml-auto flex-wrap justify-end">
-          {/* Market is now chosen once, globally, via the header's
-              GlobalMarketDropdown — this read-only label just shows what's
-              currently selected rather than offering a second, page-level
-              way to change it. */}
-          <span className="shrink-0 whitespace-nowrap text-xs px-3 py-1.5 rounded-lg bg-dark-card border border-dark-border text-gray-400">
-            Market: {marketCfg.short}
-          </span>
           {/* Original opt-in "Real Accuracy" control — withheld while
               INTEGRITY_HOLD_ACTIVE is true (see ValidationIntegrityHold.tsx),
               restored verbatim once it's false. */}
@@ -1330,6 +1378,33 @@ export default function DailyPicksPage() {
         </div>
       )}
 
+      {/* US Daily Picks generation-reliability incident (2026-07-22) —
+          failure-safe publication contract, Phase 2. `data` (when present)
+          is now ALWAYS a genuinely successful payload — never an empty
+          error stand-in — but it may be from an EARLIER session than
+          today's if today's generation attempt failed or hasn't completed
+          yet. This banner is the one place that says so explicitly,
+          distinct from — and must never be confused with — a genuine
+          "generation completed, zero qualifying picks today" outcome
+          (which keeps generated_at as TODAY and shows the existing
+          "No BUY signals found today" copy below, unchanged). */}
+      {data?.stale && data?.generated_at && !isLoading && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 flex items-start gap-3">
+          <AlertCircle size={18} className="text-amber-400 mt-0.5 shrink-0" />
+          <div>
+            <p className="text-sm font-semibold text-amber-300">
+              Today&apos;s {market} generation is delayed. Showing the last successfully completed{" "}
+              {market} picks from {data.last_successful_session_date ?? new Date(data.generated_at).toLocaleDateString()}.
+            </p>
+            {data.last_attempt_status === "failed" && (
+              <p className="text-xs text-amber-400/70 mt-0.5">
+                Today&apos;s attempt failed{data.last_attempt_error_category ? ` (${data.last_attempt_error_category})` : ""} and is expected to retry automatically.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Picks grid */}
       {isLoading || isMarketTransitioning ? (
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -1372,11 +1447,15 @@ export default function DailyPicksPage() {
             <>
               <AlertCircle size={40} className="text-gray-600 mb-4" />
               <h3 className="text-lg font-semibold text-gray-300 mb-2">
-                {data?.generated_at ? "No BUY signals found today" : "Picks not yet generated"}
+                {data?.generated_at
+                  ? (data?.stale ? "No BUY signals in the last completed run" : "Generation completed — no stocks met today's qualification criteria")
+                  : "Picks not yet generated"}
               </h3>
               <p className="text-sm text-gray-500 max-w-sm">
                 {data?.generated_at
-                  ? `The AI didn't find strong BUY signals across ${market === "IN" ? "NSE" : "US markets"} today. Market conditions may be weak — check back tomorrow.`
+                  ? (data?.stale
+                      ? `The last successfully completed run (${data.last_successful_session_date ?? "an earlier date"}) found no strong BUY signals across ${market === "IN" ? "NSE" : "US markets"}. Today's run may still be in progress or delayed.`
+                      : `The AI didn't find strong BUY signals across ${market === "IN" ? "NSE" : "US markets"} today. Market conditions may be weak — check back tomorrow.`)
                   : `Daily picks are generated at ${marketCfg.genTime} on market days. Check back then.`}
               </p>
               {(data as any)?.generating && data?.generated_at && (
