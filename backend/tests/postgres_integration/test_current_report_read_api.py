@@ -393,6 +393,100 @@ def test_historical_1_1_0_report_never_returned_as_current(client, pg_conn, uniq
         assert body["structured_report"].get("legacy") is not True
 
 
+# ============================= WC-K — malformed persisted report, fail-closed ============================= #
+
+def test_malformed_status_at_current_identity_fails_closed_to_integrity_contradiction(
+    client, pg_conn, unique_user_id, monkeypatch,
+):
+    """The database's status column carries no CHECK constraint (only a
+    convention comment: 'COMPLETE | LIMITED_EVIDENCE | FAILED_TERMINAL')
+    — report_store.persist_report also performs no validation, so a
+    genuinely malformed status can reach the database. The typed
+    CurrentReportReadResponse's own Literal["COMPLETE","LIMITED_EVIDENCE"]
+    constraint must reject it, and the route's fail-closed conversion
+    boundary must convert that rejection into a sanitized
+    INTEGRITY_CONTRADICTION rather than a raw 500."""
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+    from services.postmortem import report_store
+
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)
+
+    schema_v, calc_v, rules_v = current_target_identity(
+        base_calculation_version=CALCULATION_VERSION,
+        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+    )
+    report_store.persist_report(
+        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+        report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
+        report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+        evidence_bundle_version="malformed-status-test",
+        status="THIS_IS_NOT_A_VALID_STATUS",  # <-- the malformation under test
+        structured_report={"marker": "malformed-status-test"}, evidence_items=[], claims=[],
+        source_manifest={}, evidence_gaps=[], warnings=[],
+    )
+
+    resp = _current_report(client, unique_user_id, trade_id)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["availability"] == "INTEGRITY_CONTRADICTION"
+    # No READY payload, no raw persisted content, no validation trace.
+    assert body["structured_report"] is None
+    assert body["status"] is None
+    assert body["claims"] is None
+    assert "THIS_IS_NOT_A_VALID_STATUS" not in str(body)
+    assert "marker" not in str(body)
+    assert "ValidationError" not in str(body)
+    assert resp.headers.get("cache-control") == "private, no-store"
+
+
+def test_malformed_report_causes_no_mutation_or_recovery(client, pg_conn, unique_user_id, monkeypatch):
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+    from services.postmortem import report_store
+
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)
+
+    schema_v, calc_v, rules_v = current_target_identity(
+        base_calculation_version=CALCULATION_VERSION,
+        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+    )
+    report_store.persist_report(
+        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+        report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
+        report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+        evidence_bundle_version="malformed-no-mutation-test", status="ALSO_NOT_VALID",
+        structured_report={}, evidence_items=[], claims=[],
+        source_manifest={}, evidence_gaps=[], warnings=[],
+    )
+
+    before_report_count = pg_conn.execute(
+        "SELECT count(*) FROM paper_trade_postmortem_report WHERE paper_trade_id = %s", (trade_id,),
+    ).fetchone()[0]
+    before_outbox_count = pg_conn.execute(
+        "SELECT count(*) FROM paper_trade_postmortem_outbox WHERE paper_trade_id = %s", (trade_id,),
+    ).fetchone()[0]
+
+    for _ in range(3):
+        resp = _current_report(client, unique_user_id, trade_id)
+        assert resp.status_code == 200
+        assert resp.json()["availability"] == "INTEGRITY_CONTRADICTION"
+
+    after_report_count = pg_conn.execute(
+        "SELECT count(*) FROM paper_trade_postmortem_report WHERE paper_trade_id = %s", (trade_id,),
+    ).fetchone()[0]
+    after_outbox_count = pg_conn.execute(
+        "SELECT count(*) FROM paper_trade_postmortem_outbox WHERE paper_trade_id = %s", (trade_id,),
+    ).fetchone()[0]
+
+    assert after_report_count == before_report_count
+    assert after_outbox_count == before_outbox_count
+
+
 # ============================= WC-K-15 — capability-disabled behavior ============================= #
 # Note: the `client`/pg_conn fixtures run with the capability at its
 # real production default (unset/off) unless a test explicitly enables

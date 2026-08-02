@@ -7,7 +7,7 @@ import time as _time
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from typing import Literal
 from services.auth import get_current_user_id
 from services.market_hours import is_market_open as _is_market_open
@@ -3260,6 +3260,52 @@ class CurrentReportReadResponse(BaseModel):
         return self
 
 
+def _build_current_report_ready_response(report, *, trade_id: int) -> "CurrentReportReadResponse | None":
+    """WC-K — fail-closed conversion boundary between a persisted
+    PersistedReport row and the typed READY response. Maps ONLY
+    persisted values — never imports a current code constant to fill a
+    missing one. Returns None (never raises) when the persisted row
+    cannot satisfy CurrentReportReadResponse's own READY invariants
+    (e.g. a malformed/incomplete legacy or corrupted row); the caller
+    is responsible for converting a None into a sanitized
+    INTEGRITY_CONTRADICTION response — this function itself never
+    constructs that fallback, so it cannot accidentally leak partial
+    report data through a half-built object."""
+    try:
+        return CurrentReportReadResponse(
+            trade_id=trade_id, availability=CURRENT_REPORT_STATUS_READY,
+            report_schema_version=report.report_schema_version,
+            calculation_version=report.calculation_version,
+            attribution_rules_version=report.attribution_rules_version,
+            evidence_bundle_version=report.evidence_bundle_version,
+            market=report.market,
+            report_trading_date=report.report_trading_date.isoformat() if report.report_trading_date else None,
+            market_timezone=report.market_timezone,
+            status=report.status,
+            generated_at=report.generated_at,
+            structured_report=report.structured_report,
+            claims=report.claims,
+            evidence_items=report.evidence_items,
+            evidence_gaps=report.evidence_gaps,
+            warnings=report.warnings,
+            source_manifest=report.source_manifest,
+            supersedes_report_id=report.supersedes_report_id,
+        )
+    except ValidationError as exc:
+        # Privacy-safe operational metadata ONLY — never the raw
+        # exception body (which pydantic embeds the invalid VALUES
+        # into), never claims/evidence/structured_report/source_manifest,
+        # never a user identifier. report.id/report_schema_version are
+        # safe internal identifiers for an operator to look up the row.
+        log.warning(
+            "[current_report_read] persisted report failed READY validation "
+            "(trade_id=%s, report_id=%s, report_schema_version=%s, error_count=%d)",
+            trade_id, getattr(report, "id", None), getattr(report, "report_schema_version", None),
+            exc.error_count(),
+        )
+        return None
+
+
 @router.get("/{trade_id}/current-report", response_model=CurrentReportReadResponse)
 def get_current_governed_report(trade_id: int, response: Response, user_id: str = Depends(get_current_user_id)):
     """WC-K-01/02/03/04/05/06/07/08/09/10 — the canonical, side-effect-
@@ -3313,25 +3359,12 @@ def get_current_governed_report(trade_id: int, response: Response, user_id: str 
             report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
         )
         if report is not None:
-            return CurrentReportReadResponse(
-                trade_id=trade_id, availability=CURRENT_REPORT_STATUS_READY,
-                report_schema_version=report.report_schema_version,
-                calculation_version=report.calculation_version,
-                attribution_rules_version=report.attribution_rules_version,
-                evidence_bundle_version=report.evidence_bundle_version,
-                market=report.market,
-                report_trading_date=report.report_trading_date.isoformat() if report.report_trading_date else None,
-                market_timezone=report.market_timezone,
-                status=report.status,
-                generated_at=report.generated_at,
-                structured_report=report.structured_report,
-                claims=report.claims,
-                evidence_items=report.evidence_items,
-                evidence_gaps=report.evidence_gaps,
-                warnings=report.warnings,
-                source_manifest=report.source_manifest,
-                supersedes_report_id=report.supersedes_report_id,
-            )
+            ready_response = _build_current_report_ready_response(report, trade_id=trade_id)
+            if ready_response is None:
+                return CurrentReportReadResponse(
+                    trade_id=trade_id, availability=CURRENT_REPORT_STATUS_INTEGRITY_CONTRADICTION,
+                )
+            return ready_response
 
         # No report exists yet — check the current-version outbox row
         # (if one exists) to distinguish PROCESSING / TERMINAL_FAILURE /

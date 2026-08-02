@@ -101,3 +101,75 @@ class TestReadyRequiresCompleteReportIdentity:
         kwargs["evidence_gaps"] = []
         kwargs["warnings"] = []
         CurrentReportReadResponse(**kwargs)  # must not raise
+
+
+@pytest.mark.unit
+class TestFailClosedConversionBoundary:
+    """Unit-level proof for _build_current_report_ready_response — the
+    fail-closed boundary between a persisted report row and the typed
+    READY response."""
+
+    def _fake_report(self, **overrides):
+        from dataclasses import dataclass, field
+
+        @dataclass
+        class _FakeReport:
+            id: int = 1
+            report_schema_version: str | None = "1.2.0"
+            calculation_version: str | None = "calc-v1"
+            attribution_rules_version: str | None = "rules-v1"
+            evidence_bundle_version: str | None = "ev-v1"
+            market: str | None = "US"
+            report_trading_date: object = datetime.date(2026, 6, 1)
+            market_timezone: str | None = "America/New_York"
+            status: str | None = "COMPLETE"
+            generated_at: object = None
+            structured_report: dict | None = field(default_factory=lambda: {"x": 1})
+            claims: list | None = field(default_factory=list)
+            evidence_items: list | None = field(default_factory=list)
+            evidence_gaps: list | None = field(default_factory=list)
+            warnings: list | None = field(default_factory=list)
+            source_manifest: dict | None = field(default_factory=dict)
+            supersedes_report_id: int | None = None
+
+        kwargs = dict(generated_at=datetime.datetime(2026, 6, 1, tzinfo=datetime.timezone.utc))
+        kwargs.update(overrides)
+        return _FakeReport(**kwargs)
+
+    def test_valid_report_builds_a_ready_response(self):
+        from api.routers.paper_trading import _build_current_report_ready_response
+
+        result = _build_current_report_ready_response(self._fake_report(), trade_id=1)
+        assert result is not None
+        assert result.availability == "READY"
+        assert result.status == "COMPLETE"
+
+    def test_malformed_status_returns_none_not_a_raised_exception(self):
+        from api.routers.paper_trading import _build_current_report_ready_response
+
+        result = _build_current_report_ready_response(
+            self._fake_report(status="NOT_A_VALID_STATUS"), trade_id=1,
+        )
+        assert result is None
+
+    def test_missing_required_field_returns_none_not_a_raised_exception(self):
+        from api.routers.paper_trading import _build_current_report_ready_response
+
+        result = _build_current_report_ready_response(
+            self._fake_report(report_schema_version=None), trade_id=1,
+        )
+        assert result is None
+
+    def test_none_result_never_leaks_via_an_uncaught_exception_type(self):
+        """The helper's contract is: return None, never raise. Any
+        exception escaping here would become an unhandled 500 at the
+        route layer."""
+        from api.routers.paper_trading import _build_current_report_ready_response
+
+        try:
+            result = _build_current_report_ready_response(
+                self._fake_report(status="BOGUS", generated_at=None), trade_id=1,
+            )
+        except Exception as exc:  # noqa: BLE001 — this IS the assertion
+            pytest.fail(f"_build_current_report_ready_response must never raise, raised {type(exc).__name__}: {exc}")
+        assert result is None
