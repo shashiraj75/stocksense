@@ -590,12 +590,13 @@ def insert_current_outbox_record(conn, *, trade_id: int, user_id: str, schema_ve
 
 
 # ============================= Shared orchestrator (Phases 1-5) ============================= #
-
-CURRENT_REPORT_GENERATED = "GENERATED"
-CURRENT_REPORT_ALREADY_COMPLETE = "ALREADY_COMPLETE"
-CURRENT_REPORT_NOT_YET_AVAILABLE = "NOT_YET_AVAILABLE"
-CURRENT_REPORT_FAILED_RETRYABLE = "FAILED_RETRYABLE"
-CURRENT_REPORT_FAILED_TERMINAL = "FAILED_TERMINAL"
+# NOTE: the CURRENT_REPORT_* outcome constants are declared ONCE, near
+# the top of this module (Gate 'J4F — Report-Exists Reconciliation'
+# section) — a duplicate re-declaration block used to live here with
+# DIFFERENT (unprefixed) string values that silently shadowed the
+# canonical ones; a genuine defect found via real-PostgreSQL CI
+# execution (persisted/compared values disagreed with every caller
+# checking against the canonical CURRENT_REPORT_* constants). Removed.
 
 logger = logging.getLogger(__name__)
 

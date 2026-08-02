@@ -23,6 +23,23 @@ _ET = ZoneInfo("America/New_York")
 _IST = ZoneInfo("Asia/Kolkata")
 
 
+def _fake_none(*a, **k):
+    return []
+
+
+@pytest.fixture(autouse=True)
+def _patch_price_path_provider(monkeypatch):
+    """Every test in this file exercises process_current_report's REAL
+    Phase 2 acquisition path — mocked here (matching
+    test_price_path_endpoint_lifecycle.py's own established convention)
+    so it never makes a live network call regardless of the synthetic
+    trade's symbol/market combination."""
+    from services.postmortem import price_path_acquisition
+    monkeypatch.setattr(price_path_acquisition, "fetch_raw_daily_bars", _fake_none)
+    monkeypatch.setattr(price_path_acquisition, "fetch_split_events", _fake_none)
+    monkeypatch.setattr(price_path_acquisition, "fetch_dividend_events", _fake_none)
+
+
 def _make_conn_factory(pg_database_url):
     @contextmanager
     def _factory():
