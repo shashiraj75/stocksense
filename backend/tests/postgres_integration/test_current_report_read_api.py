@@ -150,22 +150,44 @@ def test_ready_report_returns_persisted_complete_or_limited_evidence(client, pg_
 
 def test_evidence_bundle_version_reflects_the_persisted_row_not_a_code_constant(client, pg_conn, unique_user_id, monkeypatch):
     """Adversarial proof: current_target_identity() (built from CURRENT
-    code constants) is used only to LOCATE the current report row — the
-    response's evidence_bundle_version must come from that row's own
-    persisted column, never be synthesized from a currently-imported
-    constant. Directly UPDATEs the already-generated report's
-    evidence_bundle_version to a marker value no code constant could
-    ever equal, then proves the API reflects exactly that value."""
-    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    code constants) is used only to LOCATE the current report row via
+    its (schema_version, calculation_version, attribution_rules_version)
+    key — the response's evidence_bundle_version, which is NOT part of
+    that lookup key, must come from that row's own persisted column,
+    never be synthesized from a currently-imported constant.
+
+    paper_trade_postmortem_report rows are immutable (an UPDATE is
+    rejected by a database trigger — discovered by this test's first
+    attempt at direct UPDATE, which failed with
+    reject_paper_trade_postmortem_report_update()), so this seeds the
+    current-version row directly via report_store.persist_report with a
+    marker evidence_bundle_version no code constant could ever equal,
+    rather than generating one first and mutating it afterward."""
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+    from services.postmortem import report_store
+
+    # Close happens with the capability at its default (off), so /sell
+    # never auto-generates a report at this identity — this test is the
+    # sole writer of the current-version row, avoiding an ON CONFLICT
+    # DO NOTHING no-op against an auto-generated report that would
+    # silently keep the ORIGINAL (non-marker) evidence_bundle_version.
     trade_id = _open_and_close(client, pg_conn, unique_user_id)
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
 
-    ready_resp = _current_report(client, unique_user_id, trade_id)
-    assert ready_resp.json()["availability"] == "READY"
-
+    schema_v, calc_v, rules_v = current_target_identity(
+        base_calculation_version=CALCULATION_VERSION,
+        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+    )
     marker = "9.9.9-persisted-provenance-adversarial-marker"
-    pg_conn.execute(
-        "UPDATE paper_trade_postmortem_report SET evidence_bundle_version = %s WHERE paper_trade_id = %s",
-        (marker, trade_id),
+    report_store.persist_report(
+        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+        report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
+        report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+        evidence_bundle_version=marker, status="COMPLETE",
+        structured_report={"price_path": {}}, evidence_items=[], claims=[],
+        source_manifest={}, evidence_gaps=[], warnings=[],
     )
 
     resp = _current_report(client, unique_user_id, trade_id)
