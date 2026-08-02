@@ -3188,6 +3188,7 @@ CURRENT_REPORT_STATUS_NOT_ELIGIBLE = "NOT_ELIGIBLE"
 CURRENT_REPORT_STATUS_NOT_AVAILABLE = "NOT_AVAILABLE"
 CURRENT_REPORT_STATUS_TERMINAL_FAILURE = "TERMINAL_FAILURE"
 CURRENT_REPORT_STATUS_INTEGRITY_CONTRADICTION = "INTEGRITY_CONTRADICTION"
+CURRENT_REPORT_STATUS_FEATURE_DISABLED = "FEATURE_DISABLED"
 
 
 class CurrentReportReadResponse(BaseModel):
@@ -3234,6 +3235,15 @@ def get_current_governed_report(trade_id: int, response: Response, user_id: str 
         if trade_row is None or trade_row[0] != user_id:
             raise HTTPException(status_code=404, detail="Trade not found")
         trade_owner, trade_status, trade_market = trade_row
+
+        # WC-K-15: capability is evaluated only AFTER ownership is
+        # established, so a disabled-feature response can never be used
+        # to probe for the existence of another user's trade — a
+        # nonexistent/other-user trade is still the identical 404 above,
+        # regardless of the flag. While disabled, no report contents,
+        # outbox state or generation/recovery path is ever reached.
+        if not _trade_postmortem_price_path_enabled():
+            return CurrentReportReadResponse(trade_id=trade_id, availability=CURRENT_REPORT_STATUS_FEATURE_DISABLED)
 
         if trade_status != "CLOSED":
             return CurrentReportReadResponse(trade_id=trade_id, availability=CURRENT_REPORT_STATUS_NOT_ELIGIBLE)

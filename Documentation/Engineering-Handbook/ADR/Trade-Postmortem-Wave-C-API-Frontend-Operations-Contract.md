@@ -39,15 +39,27 @@ legacy route occurs in Wave C without explicit owner approval.
 - **Ownership:** a trade belonging to another user is byte-for-byte
   indistinguishable from a nonexistent `trade_id` (404, same body) —
   identical convention to the legacy route.
-- **Feature-disabled:** when `TRADE_POSTMORTEM_PRICE_PATH_ENABLED` is
-  off, the endpoint remains reachable (it is a read of persisted
-  state, not a capability itself) but will structurally never observe
-  a persisted 1.2.0 report or outbox row, since nothing durable is
-  written while the flag is off — so it returns `NOT_ELIGIBLE` /
-  `NOT_AVAILABLE` per the normal state machine. No separate
-  `FEATURE_DISABLED` state is introduced in this pass; this is
-  recorded as an open item (WC-K-15) rather than silently declared
-  equivalent.
+- **Feature-disabled (final, WC-K-15 closed):** the endpoint reuses the
+  single existing authoritative helper,
+  `_trade_postmortem_price_path_enabled()` (reads
+  `TRADE_POSTMORTEM_PRICE_PATH_ENABLED`, accepted values `1`/`true`/
+  `yes`/`on`) — no second parser or independent flag source was
+  introduced. Evaluation order is fixed: (1) authenticate, (2) look up
+  the trade, (3) enforce ownership — a nonexistent trade and another
+  user's trade return the byte-for-byte identical 404 regardless of
+  capability state — and only *after* ownership is established, (4)
+  evaluate the capability. When disabled, the endpoint returns a
+  stable `FEATURE_DISABLED` availability state for an owned trade,
+  exposing no report identity, structured report, claims, evidence,
+  or version fields (all null), and performs no generation, recovery,
+  provider acquisition, claim, settlement, or write of any kind.
+  `FEATURE_DISABLED` is returned even when a 1.2.0 report already
+  exists in the database for that trade (e.g. generated while the
+  flag was previously on) — an existing row is never leaked once the
+  capability is off. `FEATURE_DISABLED` is distinguishable from
+  `NOT_ELIGIBLE` (open trade), `NOT_AVAILABLE` (closed trade, never
+  requested), `PROCESSING`, and `TERMINAL_FAILURE` — it is checked
+  before, and short-circuits, that entire state machine.
 - **Current-version identity:** derived via
   `current_report_generation.current_target_identity()` — the same
   Wave B primitive used by the write path — never a fuzzy/latest

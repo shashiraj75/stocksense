@@ -85,7 +85,8 @@ def test_another_users_trade_is_indistinguishable_from_nonexistent(client, pg_co
 
 # ============================= WC-K-06 — availability-state mapping ============================= #
 
-def test_open_owned_trade_is_not_eligible(client, pg_conn, unique_user_id):
+def test_open_owned_trade_is_not_eligible(client, pg_conn, unique_user_id, monkeypatch):
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
     ensure_portfolio(pg_conn, unique_user_id, cash_usd=1_000_000.0)
     trade_id = _buy(client, unique_user_id).json()["trade_id"]
 
@@ -94,11 +95,13 @@ def test_open_owned_trade_is_not_eligible(client, pg_conn, unique_user_id):
     assert resp.json()["availability"] == "NOT_ELIGIBLE"
 
 
-def test_closed_trade_no_outbox_no_report_is_not_available(client, pg_conn, unique_user_id):
-    """flag disabled (default in this test env unless a test enables it) — /sell
-    never creates a current outbox row, so a fresh closed trade with no
-    explicit generation request shows NOT_AVAILABLE, never a fabricated report."""
+def test_closed_trade_no_outbox_no_report_is_not_available(client, pg_conn, unique_user_id, monkeypatch):
+    """Close happens with the capability at its default (off) so /sell
+    never auto-creates a current outbox row; the capability is enabled
+    only for the read itself, so a fresh closed trade with no explicit
+    generation request shows NOT_AVAILABLE, never a fabricated report."""
     trade_id = _open_and_close(client, pg_conn, unique_user_id)
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
     resp = _current_report(client, unique_user_id, trade_id)
     assert resp.status_code == 200
     body = resp.json()
@@ -135,12 +138,13 @@ def test_ready_report_returns_persisted_complete_or_limited_evidence(client, pg_
     assert resp.headers.get("cache-control") == "private, no-store"
 
 
-def test_terminal_outbox_missing_report_is_integrity_contradiction(client, pg_conn, unique_user_id):
+def test_terminal_outbox_missing_report_is_integrity_contradiction(client, pg_conn, unique_user_id, monkeypatch):
     from services.postmortem.current_report_generation import current_target_identity
     from services.postmortem.deterministic import CALCULATION_VERSION
     from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
 
     trade_id = _open_and_close(client, pg_conn, unique_user_id)
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
     schema_v, calc_v, rules_v = current_target_identity(
         base_calculation_version=CALCULATION_VERSION,
         numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
@@ -158,12 +162,13 @@ def test_terminal_outbox_missing_report_is_integrity_contradiction(client, pg_co
     assert resp.json()["availability"] == "INTEGRITY_CONTRADICTION"
 
 
-def test_terminal_failure_outbox_is_reported(client, pg_conn, unique_user_id):
+def test_terminal_failure_outbox_is_reported(client, pg_conn, unique_user_id, monkeypatch):
     from services.postmortem.current_report_generation import current_target_identity
     from services.postmortem.deterministic import CALCULATION_VERSION
     from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
 
     trade_id = _open_and_close(client, pg_conn, unique_user_id)
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
     schema_v, calc_v, rules_v = current_target_identity(
         base_calculation_version=CALCULATION_VERSION,
         numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
@@ -184,12 +189,13 @@ def test_terminal_failure_outbox_is_reported(client, pg_conn, unique_user_id):
     assert "MAX_ATTEMPTS_EXCEEDED" not in str(body)
 
 
-def test_pending_outbox_is_processing(client, pg_conn, unique_user_id):
+def test_pending_outbox_is_processing(client, pg_conn, unique_user_id, monkeypatch):
     from services.postmortem.current_report_generation import current_target_identity
     from services.postmortem.deterministic import CALCULATION_VERSION
     from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
 
     trade_id = _open_and_close(client, pg_conn, unique_user_id)
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
     schema_v, calc_v, rules_v = current_target_identity(
         base_calculation_version=CALCULATION_VERSION,
         numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
@@ -210,8 +216,11 @@ def test_pending_outbox_is_processing(client, pg_conn, unique_user_id):
 # ============================= WC-K-05 — side-effect-free proof ============================= #
 
 def test_get_never_calls_provider_acquisition(client, pg_conn, unique_user_id, monkeypatch):
-    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "0")
     trade_id = _open_and_close(client, pg_conn, unique_user_id)
+    # Enabled AFTER close, so /sell never auto-generates — this proves
+    # GET calls no provider even when the trade IS eligible and the
+    # capability IS on, not merely because the feature is off.
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
 
     calls = {"n": 0}
     from services.postmortem import price_path_generation
@@ -227,8 +236,9 @@ def test_get_never_calls_provider_acquisition(client, pg_conn, unique_user_id, m
     assert calls["n"] == 0, "GET /current-report must never trigger provider acquisition."
 
 
-def test_get_inserts_no_outbox_row_and_no_report_row(client, pg_conn, unique_user_id):
+def test_get_inserts_no_outbox_row_and_no_report_row(client, pg_conn, unique_user_id, monkeypatch):
     trade_id = _open_and_close(client, pg_conn, unique_user_id)
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
 
     before_outbox = pg_conn.execute(
         "SELECT count(*) FROM paper_trade_postmortem_outbox WHERE paper_trade_id = %s", (trade_id,),
@@ -254,8 +264,9 @@ def test_get_inserts_no_outbox_row_and_no_report_row(client, pg_conn, unique_use
     assert after_report == before_report, "GET must never insert a report row."
 
 
-def test_get_does_not_mutate_trade_row(client, pg_conn, unique_user_id):
+def test_get_does_not_mutate_trade_row(client, pg_conn, unique_user_id, monkeypatch):
     trade_id = _open_and_close(client, pg_conn, unique_user_id)
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
     before = pg_conn.execute(
         "SELECT status, exit_price, closed_at FROM paper_trades WHERE id = %s", (trade_id,),
     ).fetchone()
@@ -271,10 +282,11 @@ def test_get_does_not_mutate_trade_row(client, pg_conn, unique_user_id):
 
 # ============================= WC-K-10 — historical-version isolation ============================= #
 
-def test_historical_1_1_0_report_never_returned_as_current(client, pg_conn, unique_user_id):
+def test_historical_1_1_0_report_never_returned_as_current(client, pg_conn, unique_user_id, monkeypatch):
     from services.postmortem import report_store
 
     trade_id = _open_and_close(client, pg_conn, unique_user_id)
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
     report_store.persist_report(
         pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
         report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
@@ -291,3 +303,104 @@ def test_historical_1_1_0_report_never_returned_as_current(client, pg_conn, uniq
     assert body["report_schema_version"] != "1.1.0"
     if body["structured_report"] is not None:
         assert body["structured_report"].get("legacy") is not True
+
+
+# ============================= WC-K-15 — capability-disabled behavior ============================= #
+# Note: the `client`/pg_conn fixtures run with the capability at its
+# real production default (unset/off) unless a test explicitly enables
+# it via monkeypatch.setenv — so every test below needs NO monkeypatch
+# at all to exercise the disabled path, which is itself evidence that
+# "disabled" is the safe, unauthorized-by-default state.
+
+def test_disabled_owned_open_trade_returns_feature_disabled(client, pg_conn, unique_user_id):
+    ensure_portfolio(pg_conn, unique_user_id, cash_usd=1_000_000.0)
+    trade_id = _buy(client, unique_user_id).json()["trade_id"]
+
+    resp = _current_report(client, unique_user_id, trade_id)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["availability"] == "FEATURE_DISABLED"
+    assert body["structured_report"] is None
+
+
+def test_disabled_owned_closed_trade_returns_feature_disabled(client, pg_conn, unique_user_id):
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)
+
+    resp = _current_report(client, unique_user_id, trade_id)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["availability"] == "FEATURE_DISABLED"
+    assert body["structured_report"] is None
+
+
+def test_disabled_owned_trade_with_persisted_report_exposes_no_report_contents(client, pg_conn, unique_user_id, monkeypatch):
+    """Generate a real 1.2.0 report with the capability ON, then turn it
+    OFF and re-read — disabled must hide the already-persisted report,
+    never leak it just because the row already exists in the database."""
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)
+    ready_resp = _current_report(client, unique_user_id, trade_id)
+    assert ready_resp.json()["availability"] == "READY"
+
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "0")
+    resp = _current_report(client, unique_user_id, trade_id)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["availability"] == "FEATURE_DISABLED"
+    assert body["structured_report"] is None
+    assert body["claims"] is None
+    assert body["report_schema_version"] is None
+
+
+def test_disabled_nonexistent_trade_still_returns_404(client, pg_conn, unique_user_id):
+    resp = _current_report(client, unique_user_id, 999_999_999)
+    assert resp.status_code == 404
+
+
+def test_disabled_other_users_trade_is_still_indistinguishable_from_nonexistent(client, pg_conn, unique_user_id):
+    """Ownership is enforced BEFORE the capability check — a disabled
+    capability must never become a side channel for probing whether
+    another user's trade_id exists."""
+    victim_id = f"{unique_user_id}-victim"
+    trade_id = _open_and_close(client, pg_conn, victim_id)
+
+    attacker_id = f"{unique_user_id}-attacker"
+    resp_attacker = _current_report(client, attacker_id, trade_id)
+    resp_nonexistent = _current_report(client, attacker_id, 999_999_999)
+
+    assert resp_attacker.status_code == 404
+    assert resp_attacker.status_code == resp_nonexistent.status_code
+    assert resp_attacker.json() == resp_nonexistent.json()
+
+
+def test_disabled_response_performs_no_writes_or_processing(client, pg_conn, unique_user_id):
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)
+
+    calls = {"n": 0}
+    from services.postmortem import price_path_generation
+
+    def _counting_acquire(**kwargs):
+        calls["n"] += 1
+        raise AssertionError("disabled-capability GET must never call acquire_price_path_evidence")
+
+    import unittest.mock
+    with unittest.mock.patch.object(price_path_generation, "acquire_price_path_evidence", _counting_acquire):
+        before_outbox = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_postmortem_outbox WHERE paper_trade_id = %s", (trade_id,),
+        ).fetchone()[0]
+        resp = _current_report(client, unique_user_id, trade_id)
+        after_outbox = pg_conn.execute(
+            "SELECT count(*) FROM paper_trade_postmortem_outbox WHERE paper_trade_id = %s", (trade_id,),
+        ).fetchone()[0]
+
+    assert resp.status_code == 200
+    assert resp.json()["availability"] == "FEATURE_DISABLED"
+    assert calls["n"] == 0
+    assert after_outbox == before_outbox
+
+
+def test_disabled_response_has_safe_cache_policy(client, pg_conn, unique_user_id):
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)
+    resp = _current_report(client, unique_user_id, trade_id)
+    assert resp.status_code == 200
+    assert resp.headers.get("cache-control") == "private, no-store"
