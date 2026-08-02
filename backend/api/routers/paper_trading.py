@@ -7,7 +7,7 @@ import time as _time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_serializer, model_validator
 from typing import Literal
 from services.auth import get_current_user_id
 from services.market_hours import is_market_open as _is_market_open
@@ -3214,13 +3214,16 @@ class ReportSourceManifest(BaseModel):
     this response is tracked as NONBLOCKING BACKLOG, see
     Trade-Postmortem-Wave-C-WC-K-14-Provenance-Inventory.md).
 
-    exit_evidence_rules_version/phase1_calculation_version/
-    attribution_rules_version are required on every Sprint-2-or-later
-    report (generation_service.py always sets them).
-    exit_snapshot_schema_version is null whenever no exit snapshot
-    exists. price_path_calculation_version is HISTORICAL-OPTIONAL —
-    absent on any report that predates or never received a price-path
-    enhancement; it must never be synthesized when missing.
+    has_entry_snapshot/has_exit_snapshot/exit_evidence_rules_version/
+    phase1_calculation_version/attribution_rules_version are required
+    on every Sprint-2-or-later report (generation_service.py always
+    sets all five). exit_snapshot_schema_version and
+    exit_trigger_timing_verification are null whenever no exit
+    snapshot exists. price_path_calculation_version is
+    HISTORICAL-OPTIONAL — absent on any report that predates or never
+    received a price-path enhancement; it must never be synthesized as
+    an explicit `null` when the persisted JSON genuinely omits the key
+    (see the wrap serializer below).
 
     `extra="allow"` preserves any additional JSON-safe keys a future
     persisted report might carry, for forward compatibility, without
@@ -3228,11 +3231,30 @@ class ReportSourceManifest(BaseModel):
 
     model_config = {"extra": "allow"}
 
+    has_entry_snapshot: bool
+    has_exit_snapshot: bool
     exit_snapshot_schema_version: str | None = None
+    exit_trigger_timing_verification: str | None = None
     exit_evidence_rules_version: str
     phase1_calculation_version: str
     attribution_rules_version: str
     price_path_calculation_version: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _serialize_preserving_historical_absence(self, handler):
+        """price_path_calculation_version is historical-optional. A
+        report whose persisted JSON genuinely omits this key must
+        serialize WITHOUT the key (not as an explicit `null`) — Pydantic
+        would otherwise always emit it because it is a declared field
+        with a None default. Uses model_fields_set (populated only by
+        values actually present in the input, never by defaults) to
+        distinguish 'absent from persisted JSON' from 'explicitly
+        persisted as null', preserving the latter where it legitimately
+        occurs."""
+        data = handler(self)
+        if "price_path_calculation_version" not in self.model_fields_set:
+            data.pop("price_path_calculation_version", None)
+        return data
 
 _READY_ONLY_FIELDS = (
     "report_schema_version", "calculation_version", "attribution_rules_version",

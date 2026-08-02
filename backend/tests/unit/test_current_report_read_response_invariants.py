@@ -29,7 +29,9 @@ _REPRESENTATIVE_VALUES = {
     "evidence_gaps": ["gap-1"],
     "warnings": ["warning-1"],
     "source_manifest": {
-        "exit_snapshot_schema_version": "1.0.0", "exit_evidence_rules_version": "1.0.0",
+        "has_entry_snapshot": True, "has_exit_snapshot": True,
+        "exit_snapshot_schema_version": "1.0.0", "exit_trigger_timing_verification": "verified",
+        "exit_evidence_rules_version": "1.0.0",
         "phase1_calculation_version": "1.0.0", "attribution_rules_version": "1.0.0",
     },
     "supersedes_report_id": 42,
@@ -43,7 +45,9 @@ _READY_KWARGS = dict(
     status="COMPLETE", generated_at=datetime.datetime(2026, 6, 1, tzinfo=datetime.timezone.utc),
     structured_report={"x": 1}, claims=[], evidence_items=[], evidence_gaps=[], warnings=[],
     source_manifest={
-        "exit_snapshot_schema_version": None, "exit_evidence_rules_version": "1.0.0",
+        "has_entry_snapshot": True, "has_exit_snapshot": False,
+        "exit_snapshot_schema_version": None, "exit_trigger_timing_verification": None,
+        "exit_evidence_rules_version": "1.0.0",
         "phase1_calculation_version": "1.0.0", "attribution_rules_version": "1.0.0",
     },
 )
@@ -182,7 +186,9 @@ class TestFailClosedConversionBoundary:
             evidence_gaps: list | None = field(default_factory=list)
             warnings: list | None = field(default_factory=list)
             source_manifest: dict | None = field(default_factory=lambda: {
-                "exit_snapshot_schema_version": None, "exit_evidence_rules_version": "1.0.0",
+                "has_entry_snapshot": True, "has_exit_snapshot": False,
+                "exit_snapshot_schema_version": None, "exit_trigger_timing_verification": None,
+                "exit_evidence_rules_version": "1.0.0",
                 "phase1_calculation_version": "1.0.0", "attribution_rules_version": "1.0.0",
             })
             supersedes_report_id: int | None = None
@@ -247,3 +253,61 @@ class TestFailClosedConversionBoundary:
 
         with pytest.raises(AttributeError):
             _build_current_report_ready_response(_BrokenReport(), trade_id=1)
+
+
+@pytest.mark.unit
+class TestReportSourceManifestAbsencePreservingSerialization:
+    """price_path_calculation_version is historical-optional — a
+    persisted report whose source_manifest genuinely omits this key
+    must serialize WITHOUT the key, not as an explicit `null`."""
+
+    _BASE_KWARGS = dict(
+        has_entry_snapshot=True, has_exit_snapshot=True,
+        exit_evidence_rules_version="1.0.0", phase1_calculation_version="1.0.0",
+        attribution_rules_version="1.0.0",
+    )
+
+    def test_key_absent_from_input_stays_absent_in_serialized_output(self):
+        from api.routers.paper_trading import ReportSourceManifest
+        import json
+
+        manifest = ReportSourceManifest(**self._BASE_KWARGS)  # price_path_calculation_version omitted
+        serialized = json.loads(manifest.model_dump_json())
+        assert "price_path_calculation_version" not in serialized
+
+    def test_explicit_persisted_value_is_preserved(self):
+        from api.routers.paper_trading import ReportSourceManifest
+        import json
+
+        manifest = ReportSourceManifest(**self._BASE_KWARGS, price_path_calculation_version="pp-marker")
+        serialized = json.loads(manifest.model_dump_json())
+        assert serialized["price_path_calculation_version"] == "pp-marker"
+
+    def test_explicit_persisted_null_is_preserved_as_null(self):
+        """An explicit JSON null in the persisted row (distinct from
+        the key being genuinely absent) must remain null, not be
+        dropped — the distinction is legitimate and preserved via
+        model_fields_set, which IS populated when None is passed
+        explicitly as a keyword argument."""
+        from api.routers.paper_trading import ReportSourceManifest
+        import json
+
+        manifest = ReportSourceManifest(**self._BASE_KWARGS, price_path_calculation_version=None)
+        serialized = json.loads(manifest.model_dump_json())
+        assert "price_path_calculation_version" in serialized
+        assert serialized["price_path_calculation_version"] is None
+
+    def test_absence_is_preserved_through_the_full_current_report_response(self):
+        """End-to-end proof at the shape the real endpoint actually
+        constructs: CurrentReportReadResponse(source_manifest=<dict>)
+        coerces the nested dict into ReportSourceManifest — absence
+        must survive that coercion too, not just direct construction."""
+        import datetime
+        import json
+        from api.routers.paper_trading import CurrentReportReadResponse
+
+        kwargs = dict(_READY_KWARGS)
+        kwargs["source_manifest"] = dict(self._BASE_KWARGS)  # price_path_calculation_version omitted
+        response = CurrentReportReadResponse(**kwargs)
+        serialized = json.loads(response.model_dump_json())
+        assert "price_path_calculation_version" not in serialized["source_manifest"]

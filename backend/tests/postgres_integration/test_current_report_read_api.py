@@ -587,3 +587,98 @@ def test_disabled_response_has_safe_cache_policy(client, pg_conn, unique_user_id
     resp = _current_report(client, unique_user_id, trade_id)
     assert resp.status_code == 200
     assert resp.headers.get("cache-control") == "private, no-store"
+
+
+# ============================= WC-K-14 — report-level source_manifest ============================= #
+
+def test_report_level_source_manifest_round_trips_adversarial_marker_values(
+    client, pg_conn, unique_user_id, monkeypatch,
+):
+    """Real-PostgreSQL adversarial proof for ReportSourceManifest: every
+    field, plus an unknown future JSON-safe key, is set to a marker
+    value no code constant could ever equal, and the API response must
+    reflect them exactly — never substituted from a current constant."""
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+    from services.postmortem import report_store
+
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # flag OFF at close — no auto-generation
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+
+    schema_v, calc_v, rules_v = current_target_identity(
+        base_calculation_version=CALCULATION_VERSION,
+        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+    )
+    marker_manifest = {
+        "has_entry_snapshot": True, "has_exit_snapshot": False,
+        "exit_snapshot_schema_version": "marker-exit-snapshot-schema",
+        "exit_trigger_timing_verification": "marker-trigger-timing",
+        "exit_evidence_rules_version": "marker-exit-evidence-rules",
+        "phase1_calculation_version": "marker-phase1-calc",
+        "attribution_rules_version": "marker-attribution-rules",
+        "price_path_calculation_version": "marker-price-path-calc",
+        "some_future_field_not_yet_modelled": "marker-future-value",
+    }
+    report_store.persist_report(
+        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+        report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
+        report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+        evidence_bundle_version="source-manifest-marker-test", status="COMPLETE",
+        structured_report={"marker": "source-manifest-marker-test"}, evidence_items=[], claims=[],
+        source_manifest=marker_manifest, evidence_gaps=[], warnings=[],
+    )
+
+    resp = _current_report(client, unique_user_id, trade_id)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["availability"] == "READY"
+    assert body["source_manifest"] == marker_manifest, (
+        "report-level source_manifest must round-trip exactly from the persisted row, "
+        "including an unknown future key, never substituted from a current constant"
+    )
+
+
+def test_report_level_source_manifest_preserves_historical_absence_of_price_path_key(
+    client, pg_conn, unique_user_id, monkeypatch,
+):
+    """Companion historical test: a persisted report whose source_manifest
+    genuinely omits price_path_calculation_version (a plain Sprint 2
+    report, never price-path-enhanced) must keep that key ABSENT in the
+    API response — never synthesized as an explicit null."""
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+    from services.postmortem import report_store
+
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # flag OFF at close — no auto-generation
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+
+    schema_v, calc_v, rules_v = current_target_identity(
+        base_calculation_version=CALCULATION_VERSION,
+        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+    )
+    manifest_without_price_path_key = {
+        "has_entry_snapshot": True, "has_exit_snapshot": True,
+        "exit_snapshot_schema_version": "1.0.0", "exit_trigger_timing_verification": "verified",
+        "exit_evidence_rules_version": "1.0.0",
+        "phase1_calculation_version": "1.0.0", "attribution_rules_version": "1.0.0",
+        # price_path_calculation_version intentionally omitted entirely.
+    }
+    report_store.persist_report(
+        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+        report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
+        report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+        evidence_bundle_version="historical-absence-test", status="COMPLETE",
+        structured_report={"marker": "historical-absence-test"}, evidence_items=[], claims=[],
+        source_manifest=manifest_without_price_path_key, evidence_gaps=[], warnings=[],
+    )
+
+    resp = _current_report(client, unique_user_id, trade_id)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["availability"] == "READY"
+    assert "price_path_calculation_version" not in body["source_manifest"], (
+        "a genuinely absent historical-optional key must stay absent in the response JSON, "
+        "never synthesized as an explicit null"
+    )
