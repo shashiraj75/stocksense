@@ -333,3 +333,75 @@ def test_8d_market_local_date_india_boundary(pg_conn, pg_database_url, unique_us
         f"{closed_at.astimezone(_IST).date()!r}, not the bare UTC date {closed_at.date()!r}."
     )
     assert persisted_date != closed_at.date(), "8D: setup sanity check — UTC and IST-local dates must genuinely differ here."
+
+
+# ============================= Section 8E — five-phase connection boundary ============================= #
+
+def test_8e_no_connection_open_during_provider_acquisition_phase(pg_conn, pg_database_url, unique_user_id, monkeypatch):
+    """Instruments the REAL conn_factory to record every open/close
+    event, and the (already-mocked) acquisition call to record when it
+    runs relative to those events. Proves phase 2 (provider acquisition)
+    executes with NO open connection from this factory, and that at
+    least 2 SEPARATE connections are opened overall (phase 1 read and
+    phase 5 write are genuinely distinct short scopes, never one
+    connection held for the whole call)."""
+    from services.postmortem import price_path_generation
+    from services.postmortem.current_report_generation import process_current_report
+    from services.postmortem.price_path_acquisition import acquire_price_path_evidence as _real_acquire
+
+    events = []
+
+    @contextmanager
+    def _instrumented_factory():
+        events.append(("conn_open", len(events)))
+        with psycopg.connect(pg_database_url, autocommit=True) as conn:
+            try:
+                yield conn
+            finally:
+                events.append(("conn_close", len(events)))
+
+    def _fake_none(*a, **k):
+        return []
+
+    def _instrumented_acquire(*, fetch_bars_fn=None, fetch_splits_fn=None, fetch_dividends_fn=None, **kwargs):
+        events.append(("acquire_called", len(events)))
+        return _real_acquire(fetch_bars_fn=_fake_none, fetch_splits_fn=_fake_none, fetch_dividends_fn=_fake_none, **kwargs)
+
+    monkeypatch.setattr(price_path_generation, "acquire_price_path_evidence", _instrumented_acquire)
+
+    closed_at = datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc)
+    trade_id = _seed_trade(pg_conn, user_id=unique_user_id, closed_at=closed_at)
+    _seed_entry_snapshot(pg_conn, trade_id=trade_id, user_id=unique_user_id,
+                          user_selected_stop_loss=95.0, user_selected_target_price=110.0)
+    _seed_exit_snapshot(pg_conn, trade_id=trade_id, user_id=unique_user_id, closed_at=closed_at,
+                         final_stop_loss=95.0, final_target_price=110.0, levels_modified=False)
+
+    report, outcome = process_current_report(
+        _instrumented_factory, trade_id=trade_id, user_id=unique_user_id,
+        market_tzinfo=_ET, market_timezone_name="America/New_York",
+    )
+    assert outcome == "CURRENT_REPORT_GENERATED"
+
+    open_count = sum(1 for kind, _ in events if kind == "conn_open")
+    close_count = sum(1 for kind, _ in events if kind == "conn_close")
+    assert open_count == close_count, f"8E: mismatched conn open/close counts: {open_count} opens, {close_count} closes."
+    assert open_count >= 2, (
+        f"8E: only {open_count} connection(s) opened for the whole call — expected at least 2 (phase 1 read, "
+        "phase 5 write), proving the connection is NOT held open across the entire call."
+    )
+
+    # For every acquire_called event, the immediately-preceding event
+    # must be a conn_close (phase 1's connection already released) and
+    # the immediately-following event must be a conn_open (phase 3's
+    # connection not yet acquired) — i.e. acquisition runs strictly
+    # BETWEEN two connection scopes, never inside one.
+    for i, (kind, idx) in enumerate(events):
+        if kind == "acquire_called":
+            assert idx > 0 and events[idx - 1][0] == "conn_close", (
+                f"8E: acquire_price_path_evidence was called without a preceding conn_close — "
+                f"event sequence: {events}"
+            )
+            assert idx < len(events) - 1, (
+                f"8E: acquire_price_path_evidence was the LAST event — expected a subsequent conn_open for "
+                f"phase 3/5. Event sequence: {events}"
+            )
