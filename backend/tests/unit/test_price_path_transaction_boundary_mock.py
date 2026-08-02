@@ -131,40 +131,9 @@ class TestMockTransactionBoundaryOrdering:
         assert conn.in_transaction is False
 
 
-@pytest.mark.unit
-class TestNoLiveNetworkAccess:
-    """Guards against exactly the defect this module previously had: a
-    call to the acquisition entry point omitting fetch_dividends_fn
-    silently fell through to the production default, which calls
-    yfinance — a real, nondeterministic network dependency inside what
-    is supposed to be a fast offline unit test.
-
-    A dynamic monkeypatch-and-call guard is deliberately NOT used here:
-    fetch_bars_fn/fetch_splits_fn/fetch_dividends_fn are ordinary
-    Python default-parameter values bound once at function-definition
-    time, not a live module-attribute lookup performed on every call —
-    monkeypatching the module-level fetch_* functions would silently
-    fail to intercept a call that omits a keyword, giving false
-    confidence while the call still reaches the network. A static
-    source scan is the only reliable guard against this class of
-    defect for this file."""
-
-    def test_every_call_site_in_this_module_names_all_three_offline_fetchers(self):
-        import inspect
-        import re
-        import tests.unit.test_price_path_transaction_boundary_mock as mod
-
-        source = inspect.getsource(mod)
-        # Match only real call sites (an open paren immediately followed
-        # by a newline, the shape every call in this file uses) — never
-        # the bare mention of the function name in prose/docstrings.
-        call_sites = re.findall(r"acquire_price_path_evidence\(\s*\n", source)
-        assert len(call_sites) >= 3, (
-            f"expected at least 3 acquire_price_path_evidence(...) call sites in this module, found {len(call_sites)}"
-        )
-        for keyword in ("fetch_bars_fn=", "fetch_splits_fn=", "fetch_dividends_fn="):
-            count = source.count(keyword)
-            assert count >= len(call_sites), (
-                f"{keyword} appears {count} times but there are {len(call_sites)} call sites — "
-                "a call site is missing an explicit offline override and may reach the live network"
-            )
+# The file-local regex-based call-site guard previously here has been
+# superseded by the AST-based, multi-file guard in
+# tests/unit/test_price_path_acquisition_call_site_guard.py, which
+# inspects real ast.Call keyword arguments (immune to a keyword name
+# merely appearing in a docstring/comment) across every test file that
+# calls acquire_price_path_evidence(...), not just this one.

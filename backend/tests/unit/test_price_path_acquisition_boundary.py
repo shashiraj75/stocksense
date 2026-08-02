@@ -656,7 +656,7 @@ class TestBoundedAcquisitionWindow:
                 market_timezone_name="America/New_York", market_tzinfo=ET,
                 entry_timestamp=dt.datetime(2020, 1, 1, tzinfo=ET),
                 exit_timestamp=dt.datetime(2020, 1, 1, tzinfo=ET) + dt.timedelta(days=MAX_ACQUISITION_WINDOW_DAYS + 10),
-                fetch_bars_fn=fake_bars, fetch_splits_fn=fake_splits,
+                fetch_bars_fn=fake_bars, fetch_splits_fn=fake_splits, fetch_dividends_fn=lambda *a: [],
             )
         assert calls["bars"] == 0
         assert calls["splits"] == 0
@@ -676,7 +676,7 @@ class TestBoundedAcquisitionWindow:
             market_timezone_name="America/New_York", market_tzinfo=ET,
             entry_timestamp=dt.datetime(2026, 6, 1, tzinfo=ET),
             exit_timestamp=dt.datetime(2026, 6, 4, tzinfo=ET),
-            fetch_bars_fn=fake_bars, fetch_splits_fn=fake_splits,
+            fetch_bars_fn=fake_bars, fetch_splits_fn=fake_splits, fetch_dividends_fn=lambda *a: [],
         )
         assert calls["bars"] == 1
 
@@ -696,7 +696,7 @@ class TestAcquisitionFailureNeverFabricatesEvidence:
                 market_timezone_name="America/New_York", market_tzinfo=ET,
                 entry_timestamp=dt.datetime(2026, 6, 1, tzinfo=ET),
                 exit_timestamp=dt.datetime(2026, 6, 4, tzinfo=ET),
-                fetch_bars_fn=failing_bars, fetch_splits_fn=fake_splits,
+                fetch_bars_fn=failing_bars, fetch_splits_fn=fake_splits, fetch_dividends_fn=lambda *a: [],
             )
         assert excinfo.value.code == "PROVIDER_FETCH_FAILED"
 
