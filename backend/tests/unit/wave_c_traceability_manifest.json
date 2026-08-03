@@ -4,6 +4,23 @@
   "wc_k_frozen_sha": "7432851ea7affa7a80e8db131337763c7cbb69eb",
   "wc_n_closed_sha": "d9096a9b16c2267a5cd6c4fac866467acffe07df",
   "wc_o_closed_sha": "85d7edba540018f7b8c1fb625126fe25edceb49f",
+  "formal_audit_sha": "901bba15c36c9e4a35ea30c99177d2e5b1be0509",
+  "final_executable_candidate_sha": "901bba15c36c9e4a35ea30c99177d2e5b1be0509",
+  "final_assurance_evidence": {
+    "workflow_run": "30836665992",
+    "postgres_15_job": "91763386468",
+    "postgres_17_job": "91763386393",
+    "postgres_15_result": "321 passed, 0 failed, 0 errors, 0 skipped",
+    "postgres_17_result": "321 passed, 0 failed, 0 errors, 0 skipped",
+    "postgres_15_artifact_id": "8865140616",
+    "postgres_17_artifact_id": "8865144274",
+    "postgres_15_digest": "sha256:46b604991caa18d71ce1f81f5e2ecaea32b18f61e2c446c7ec9aa6f21d9a4153",
+    "postgres_17_digest": "sha256:3815d9fa414e614ed35bf6f66929344add221cbc76bae25f865b5a3283e9b05b",
+    "backend_non_postgresql_result": "5659 passed, 322 skipped, 0 failed",
+    "frontend_result": "529 passed, 0 failed",
+    "frontend_typecheck": "0 errors",
+    "frontend_build": "succeeded, clean route list"
+  },
   "requirements": [
     {
       "id": "WC-K-01",
