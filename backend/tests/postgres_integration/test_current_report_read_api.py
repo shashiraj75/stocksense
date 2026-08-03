@@ -881,10 +881,127 @@ def test_claims_and_evidence_items_round_trip_adversarial_marker_values(
     assert body["warnings"] == ["marker-warning"]
 
 
-# NOTE: a malformed-claim fail-closed test previously lived here,
-# relying on claims being typed as list[PostmortemClaimModel]. That
-# typing was reverted (see the NOTE on CurrentReportReadResponse.claims
-# in api/routers/paper_trading.py) after real-PostgreSQL CI proved the
-# model didn't yet match every real production shape — removed along
-# with it, since claims is untyped list | None again and no longer
-# rejects a malformed claim shape at this layer.
+def test_malformed_claim_missing_rule_id_fails_closed(client, pg_conn, unique_user_id, monkeypatch):
+    """Re-added after the root-cause canonicalization fix (governed
+    dataclass entries are now converted to dicts before persistence,
+    proven by test_real_price_path_report_persists_claims_and_evidence_
+    as_json_objects) and re-enabling list[PostmortemClaimModel] typing."""
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+    from services.postmortem import report_store
+
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # flag OFF at close
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    malformed_claim = {
+        "claim_id": "CLM-malformed", "report_section": "x", "factor": "x",
+        "claim_text": "x", "evidence_class": "SUPPORTING_EVIDENCE", "confidence_band": "HIGH",
+        "supporting_evidence_ids": [], "opposing_evidence_ids": [], "missing_evidence": [],
+        "contradiction_flags": [],
+        # rule_id and rule_version intentionally omitted — malformed.
+    }
+    schema_v, calc_v, rules_v = current_target_identity(
+        base_calculation_version=CALCULATION_VERSION,
+        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+    )
+    report_store.persist_report(
+        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+        report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
+        report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+        evidence_bundle_version="malformed-claim-test", status="COMPLETE",
+        structured_report={"marker": "malformed-claim-test"}, evidence_items=[], claims=[malformed_claim],
+        source_manifest={
+            "has_entry_snapshot": True, "has_exit_snapshot": False,
+            "exit_snapshot_schema_version": None, "exit_trigger_timing_verification": None,
+            "exit_evidence_rules_version": "1.0.0", "phase1_calculation_version": "1.0.0",
+            "attribution_rules_version": "1.0.0",
+        },
+        evidence_gaps=[], warnings=[],
+    )
+    _assert_fails_closed_to_integrity_contradiction(client, unique_user_id, trade_id, ["CLM-malformed"])
+
+
+# ============================= persisted claims/evidence_items shape ============================= #
+
+def test_real_price_path_report_persists_claims_and_evidence_as_json_objects(
+    client, pg_conn, unique_user_id, monkeypatch,
+):
+    """Real defect regression: a governed price-path EvidenceItem/
+    PostmortemClaim dataclass instance previously reached
+    report_store.persist_report unconverted, and json.dumps(...,
+    default=str) silently stringified it into an opaque dataclass repr
+    instead of persisting a governed JSON object — current_report_
+    generation.build_current_report_payload now canonicalizes via
+    dataclasses.asdict before the merge, and report_store's own
+    encoder additionally refuses (rather than stringifies) any
+    non-dataclass/Enum/datetime object that still reaches it.
+
+    This test proves the PERSISTED SHAPE only (jsonb_typeof, no value
+    output) — real content-value proof already exists in
+    test_ready_report_returns_persisted_complete_or_limited_evidence
+    and the adversarial marker round-trip tests above."""
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)
+
+    resp = _current_report(client, unique_user_id, trade_id)
+    assert resp.status_code == 200
+    assert resp.json()["availability"] == "READY"
+
+    claim_shape_rows = pg_conn.execute(
+        """SELECT idx, jsonb_typeof(elem)
+           FROM paper_trade_postmortem_report,
+                jsonb_array_elements(claims) WITH ORDINALITY AS t(elem, idx)
+           WHERE paper_trade_id = %s""",
+        (trade_id,),
+    ).fetchall()
+    evidence_shape_rows = pg_conn.execute(
+        """SELECT idx, jsonb_typeof(elem)
+           FROM paper_trade_postmortem_report,
+                jsonb_array_elements(evidence_items) WITH ORDINALITY AS t(elem, idx)
+           WHERE paper_trade_id = %s""",
+        (trade_id,),
+    ).fetchall()
+
+    assert claim_shape_rows, "expected at least one persisted claim for a real generated report"
+    for idx, typeof in claim_shape_rows:
+        assert typeof == "object", f"claims[{idx}] has jsonb_typeof={typeof!r}, expected 'object' (not 'string')"
+
+    for idx, typeof in evidence_shape_rows:
+        assert typeof == "object", f"evidence_items[{idx}] has jsonb_typeof={typeof!r}, expected 'object'"
+
+    # Belt-and-suspenders: no dataclass repr prefix survives, using a
+    # count-only ILIKE check that never selects the actual content.
+    repr_leak_count = pg_conn.execute(
+        """SELECT count(*) FROM paper_trade_postmortem_report
+           WHERE paper_trade_id = %s
+             AND (claims::text ILIKE '%%PostmortemClaim(%%' OR evidence_items::text ILIKE '%%EvidenceItem(%%')""",
+        (trade_id,),
+    ).fetchone()[0]
+    assert repr_leak_count == 0, "found a dataclass repr string leaked into persisted claims/evidence_items"
+
+
+def test_governed_no_bars_fallback_report_persists_claims_as_json_objects(
+    client, pg_conn, unique_user_id, monkeypatch,
+):
+    """Same shape proof, specifically for the governed no-bars/fallback
+    branch (build_governed_price_path_payload's bundle=None path) —
+    the exact branch that constructs GovernedLevelTouchConclusion-based
+    EvidenceItem/PostmortemClaim instances via build_governed_touch_claim
+    and build_governed_order_claim."""
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # _fake_none fetchers -> bundle=None -> fallback path
+
+    resp = _current_report(client, unique_user_id, trade_id)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["availability"] == "READY"
+    assert body["status"] == "LIMITED_EVIDENCE"  # no-bars fallback ceilings the report to LIMITED_EVIDENCE
+
+    claim_shape_rows = pg_conn.execute(
+        """SELECT jsonb_typeof(elem)
+           FROM paper_trade_postmortem_report, jsonb_array_elements(claims) AS elem
+           WHERE paper_trade_id = %s""",
+        (trade_id,),
+    ).fetchall()
+    assert claim_shape_rows
+    assert all(typeof == "object" for (typeof,) in claim_shape_rows)

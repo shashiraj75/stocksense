@@ -389,8 +389,43 @@ def build_current_report_payload(
         "source_version": source_version,
     }
 
-    evidence_items = list(base.evidence_items) + list(price_path_payload.evidence_items)
-    claims = list(base.claims) + list(price_path_payload.claims)
+    # `base.evidence_items`/`base.claims` are ALREADY plain dicts
+    # (generation_service.build_report_payload converts them via its
+    # own `_asdict`). `price_path_payload.evidence_items`/`.claims` are
+    # raw EvidenceItem/PostmortemClaim dataclass INSTANCES (see
+    # GovernedPricePathPayload's own field types) — never converted
+    # before this merge. Left unconverted, report_store.persist_report's
+    # `json.dumps(..., default=str)` would silently stringify them via
+    # their dataclass repr (e.g. "EvidenceItem(evidence_id='...', ...)")
+    # instead of persisting a governed JSON object — a real defect found
+    # by real-PostgreSQL CI (a price-path-enhanced report's claims/
+    # evidence_items array became a heterogeneous mix of dicts and
+    # repr strings). Canonicalize explicitly here, the single authoritative
+    # merge point, rather than trusting every caller to do it.
+    governed_evidence_items = [
+        dataclasses.asdict(item) if dataclasses.is_dataclass(item) else item
+        for item in price_path_payload.evidence_items
+    ]
+    governed_claims = [
+        dataclasses.asdict(claim) if dataclasses.is_dataclass(claim) else claim
+        for claim in price_path_payload.claims
+    ]
+    evidence_items = list(base.evidence_items) + governed_evidence_items
+    claims = list(base.claims) + governed_claims
+    for item in evidence_items:
+        if not isinstance(item, dict):
+            raise TypeError(
+                f"build_current_report_payload: evidence_items must all be dicts after "
+                f"canonicalization, got {type(item).__name__} — refusing to persist an "
+                f"unsupported object that would otherwise be silently stringified"
+            )
+    for claim in claims:
+        if not isinstance(claim, dict):
+            raise TypeError(
+                f"build_current_report_payload: claims must all be dicts after "
+                f"canonicalization, got {type(claim).__name__} — refusing to persist an "
+                f"unsupported object that would otherwise be silently stringified"
+            )
     status = compute_report_completeness_ceiling(base.status, price_path_payload.status)
     warnings = list(base.warnings) + list(price_path_payload.limitations)
     source_manifest = dict(base.source_manifest)

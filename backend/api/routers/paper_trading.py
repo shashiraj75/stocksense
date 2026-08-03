@@ -3379,22 +3379,23 @@ class CurrentReportReadResponse(BaseModel):
     status: CurrentReportStatus | None = None
     generated_at: datetime | None = None
     structured_report: dict | None = None
-    # NOTE: NOT yet typed as list[PostmortemClaimModel]/list[EvidenceItemModel].
-    # Real-PostgreSQL CI (run 30768906338, the immediately following
-    # dispatch after wiring those typed models in) failed
-    # test_ready_report_returns_persisted_complete_or_limited_evidence
-    # and test_disabled_owned_trade_with_persisted_report_exposes_no_
-    # report_contents: a REAL end-to-end generated report (via /sell
-    # with the price-path capability on) produced claims/evidence_items
-    # that failed validation against those models and fell through the
-    # fail-closed boundary to INTEGRITY_CONTRADICTION — i.e. the models
-    # do not yet accurately describe every real shape the production
-    # price-path claim/evidence builders (governed_price_path_claims.py,
-    # price_path_claims.py) actually emit. Reverted to list | None
-    # rather than ship a change that breaks real reports; the typed
-    # models above are defined but unused pending that investigation.
-    claims: list | None = None
-    evidence_items: list | None = None
+    # Root cause of the earlier real-PostgreSQL CI failure (run
+    # 30768906338) found and fixed: current_report_generation.
+    # build_current_report_payload was merging GovernedPricePathPayload's
+    # raw EvidenceItem/PostmortemClaim dataclass INSTANCES directly
+    # alongside already-dict base entries, and report_store.persist_report's
+    # json.dumps(..., default=str) silently stringified the dataclass
+    # instances into opaque repr strings instead of governed JSON objects
+    # — a heterogeneous persisted array these typed models correctly
+    # rejected. Fixed at the source (canonicalized via dataclasses.asdict
+    # in build_current_report_payload, plus a narrow non-permissive
+    # encoder in report_store as defense-in-depth) and proven with a
+    # real-PostgreSQL shape-only regression test
+    # (test_real_price_path_report_persists_claims_and_evidence_as_json_
+    # objects, test_governed_no_bars_fallback_report_persists_claims_
+    # as_json_objects) before re-enabling this typing.
+    claims: list[PostmortemClaimModel] | None = None
+    evidence_items: list[EvidenceItemModel] | None = None
     evidence_gaps: list[str] | None = None
     warnings: list[str] | None = None
     source_manifest: ReportSourceManifest | None = None

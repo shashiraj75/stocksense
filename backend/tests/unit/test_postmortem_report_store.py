@@ -181,3 +181,90 @@ class TestReportColumnsOrderingWaveC:
         report = _row_to_report(row)
         assert report.generated_at == stamp
         assert report.supersedes_report_id == 999
+
+
+class _FakeConnCapturingParams:
+    """Minimal fake conn that captures the INSERT params so we can
+    inspect the exact JSON strings persist_report would have sent,
+    without needing a real database."""
+
+    def __init__(self):
+        self.last_params = None
+
+    def execute(self, sql, params):
+        self.last_params = params
+        return self
+
+    def fetchone(self):
+        return None  # no existing row; forces the caller down the "conflict, re-select" path is irrelevant here
+
+
+@pytest.mark.unit
+class TestCanonicalJsonDefaultRejectsUnsupportedObjects:
+    """Real defect found by real-PostgreSQL CI: a governed price-path
+    EvidenceItem/PostmortemClaim dataclass instance reaching
+    persist_report's json.dumps(..., default=str) call was silently
+    stringified into an opaque repr instead of raising — the caller-side
+    fix lives in current_report_generation.build_current_report_payload,
+    but persist_report itself must also refuse to silently accept an
+    unsupported object for claims/evidence_items, as defense in depth."""
+
+    def _base_kwargs(self, **overrides):
+        kwargs = dict(
+            paper_trade_id=1, user_id="user-aaa", market="US",
+            report_trading_date=dt.date(2026, 6, 1), market_timezone="America/New_York",
+            report_schema_version="1.2.0", calculation_version="c", attribution_rules_version="a",
+            evidence_bundle_version="e", status="COMPLETE",
+            structured_report={"a": 1}, source_manifest={}, evidence_gaps=[], warnings=[],
+        )
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_dataclass_evidence_item_is_converted_via_asdict_defense_in_depth(self):
+        """A dataclass instance reaching persist_report should no longer
+        happen from the real pipeline (canonicalized upstream in
+        current_report_generation.build_current_report_payload), but as
+        defense-in-depth this encoder still converts one via
+        dataclasses.asdict rather than silently stringifying it — proven
+        by the INSERT's json.dumps succeeding (reaching the
+        RuntimeError from the fake conn's always-empty fetchone, not a
+        TypeError)."""
+        import dataclasses as dc
+
+        @dc.dataclass
+        class _FakeEvidenceItem:
+            evidence_id: str = "EV-1"
+
+        conn = _FakeConnCapturingParams()
+        with pytest.raises(RuntimeError, match="no existing row found"):
+            persist_report(conn, evidence_items=[_FakeEvidenceItem()], claims=[], **self._base_kwargs())
+
+    def test_unsupported_non_dataclass_object_raises_instead_of_being_stringified(self):
+        """The genuine defect class this guards against: an arbitrary
+        object that is NOT a dataclass, Enum, datetime or date — the
+        only case json.dumps(..., default=str) would previously have
+        silently stringified into an opaque repr."""
+        class _NotJsonSafe:
+            def __repr__(self):
+                return "<_NotJsonSafe opaque repr>"
+
+        conn = _FakeConnCapturingParams()
+        with pytest.raises(TypeError, match="unsupported"):
+            persist_report(conn, evidence_items=[_NotJsonSafe()], claims=[], **self._base_kwargs())
+
+    def test_plain_dict_evidence_items_and_claims_serialize_without_raising(self):
+        conn = _FakeConnCapturingParams()
+        # Real INSERT would return a row; this fake returns None, which
+        # persist_report's own SELECT-fallback would then also see None
+        # for — we only care that the json.dumps() calls inside the
+        # INSERT execute() call didn't raise, which happens before the
+        # RETURNING row is even read.
+        with pytest.raises(RuntimeError, match="no existing row found"):
+            persist_report(
+                conn,
+                evidence_items=[{"evidence_id": "EV-1"}], claims=[{"claim_id": "CLM-1"}],
+                **self._base_kwargs(),
+            )
+        # Reaching the "no existing row found" RuntimeError proves the
+        # INSERT's json.dumps(..., default=_canonical_json_default) calls
+        # completed successfully for plain dicts.

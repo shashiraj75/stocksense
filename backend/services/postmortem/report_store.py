@@ -16,10 +16,40 @@ UPDATEd by this module — a genuinely new rules or calculation version
 simply inserts a new row under its own key.
 """
 
+import dataclasses
+import enum
 import hashlib
 import json
 from dataclasses import dataclass
 from datetime import date, datetime
+
+
+def _canonical_json_default(obj):
+    """Narrow, non-permissive `default=` for json.dumps — used ONLY for
+    the authoritative `claims`/`evidence_items` fields (never structured_
+    report/source_manifest/evidence_gaps/warnings, which keep their
+    existing default=str policy pending a separate review).
+
+    Unlike `default=str`, this never silently stringifies an unsupported
+    object — real defect found by real-PostgreSQL CI: a governed
+    price-path EvidenceItem/PostmortemClaim dataclass instance reaching
+    this call (a caller bug now fixed at its source in
+    current_report_generation.build_current_report_payload) would
+    otherwise have been persisted as an opaque repr string
+    ("EvidenceItem(evidence_id='...', ...)") instead of a governed JSON
+    object. Any object still reaching this function is a genuine
+    programming error, not a legitimate persisted shape, so it raises
+    rather than falls back to str()."""
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return dataclasses.asdict(obj)
+    if isinstance(obj, enum.Enum):
+        return obj.value
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    raise TypeError(
+        f"claims/evidence_items must serialize to plain JSON-safe values — "
+        f"got an unsupported {type(obj).__name__}, refusing to silently stringify it"
+    )
 
 
 @dataclass(frozen=True)
@@ -124,7 +154,9 @@ def persist_report(
             paper_trade_id, user_id, market, report_trading_date, market_timezone,
             report_schema_version, calculation_version, attribution_rules_version, evidence_bundle_version,
             evidence_hash, status,
-            json.dumps(structured_report, default=str), json.dumps(evidence_items, default=str), json.dumps(claims, default=str),
+            json.dumps(structured_report, default=str),
+            json.dumps(evidence_items, default=_canonical_json_default),
+            json.dumps(claims, default=_canonical_json_default),
             json.dumps(source_manifest, default=str), json.dumps(evidence_gaps, default=str), json.dumps(warnings, default=str),
             supersedes_report_id,
         ),
