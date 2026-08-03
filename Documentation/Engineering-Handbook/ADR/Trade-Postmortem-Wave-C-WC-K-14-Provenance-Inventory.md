@@ -1,12 +1,16 @@
 # Wave C, WC-K-14 — Persisted Version Provenance Inventory
 
-- **Status:** WC-K-14 PARTIAL — report-level column and body provenance
-  closed with real PostgreSQL round-trip proof; report-level
-  `source_manifest`/claim typing remains open. See verdict at the
-  bottom. (Corrected: an earlier version of this file incorrectly
-  stated that source_id/provider_library_version/boundary_policy_version
-  etc. do not exist anywhere in the persisted contract — they do exist,
-  in the linked price-path-evidence record; see item 10.)
+- **Status:** WC-K-14 CLOSED — ALL VERSION AND PROVENANCE VALUES EXPOSED
+  BY THE GOVERNED CURRENT-REPORT API ARE TYPED, SEMANTICALLY VALIDATED
+  AND SOURCED FROM THE EXACT IMMUTABLE PERSISTED REPORT; OPTIONAL
+  HISTORICAL VALUES ARE NOT SYNTHESIZED; LINKED PROVIDER-MANIFEST
+  EXPANSION REMAINS NONBLOCKING BACKLOG. Closed after Gate 1 (Wave C,
+  WC-K, A4/A5) went green on both real PostgreSQL 15 and PostgreSQL 17
+  — see verdict at the bottom for the closing evidence. (Corrected: an
+  earlier version of this file incorrectly stated that
+  source_id/provider_library_version/boundary_policy_version etc. do
+  not exist anywhere in the persisted contract — they do exist, in the
+  linked price-path-evidence record; see item 10.)
 - **Scope:** every version/provenance-shaped value the current-report
   read API (`GET /api/paper-trading/{trade_id}/current-report`) could
   expose, mapped to its actual persisted source, based on reading
@@ -52,16 +56,42 @@ deciding (as an owner/product decision, not an engineering default)
 whether the persistence layer should start writing these fields for
 newly generated reports.
 
-**WC-K-14 PARTIAL**: the report row's top-level version fields (items
-1–4, 12) and its real body (structured_report/claims/evidence_items)
-have persisted-row PostgreSQL round-trip proof, including an
-adversarial marker test for item 4. Final closure requires the
-report-level `source_manifest` (items 5–9), claim provenance (item 11)
-and the READY/non-READY typed-response invariants to be validated
-without fabrication — this is typed-model work (§5–§8 of the
-governing prompt), not an owner decision. Item 10 (the linked
-price-path-evidence provider manifest) is real and persisted but is a
-separate concern from the report row; exposing it through the
-current-report response is recorded as NONBLOCKING BACKLOG and does
-not block WC-K-14 closure unless the ratified Wave C contract requires
-it.
+**WC-K-14 CLOSED — ALL VERSION AND PROVENANCE VALUES EXPOSED BY THE
+GOVERNED CURRENT-REPORT API ARE TYPED, SEMANTICALLY VALIDATED AND
+SOURCED FROM THE EXACT IMMUTABLE PERSISTED REPORT; OPTIONAL HISTORICAL
+VALUES ARE NOT SYNTHESIZED; LINKED PROVIDER-MANIFEST EXPANSION REMAINS
+NONBLOCKING BACKLOG.**
+
+The report row's top-level version fields (items 1–4, 12) and its real
+body (structured_report/claims/evidence_items) have persisted-row
+PostgreSQL round-trip proof, including an adversarial marker test for
+item 4. Wave C, WC-K Gate 1 (A4/A5) closes the remaining open items:
+`structured_report.price_path.version_and_provenance` (the 9-field
+1.2.0 governed provenance subtree — `report_schema_version`,
+`calculation_version`, `numerical_rules_version`,
+`governed_semantic_rules_version`, `governed_claim_rules_version`,
+`entry_snapshot_schema_version`, `exit_snapshot_schema_version`,
+`level_history_contract_version`, `source_version`) is now typed
+(`VersionAndProvenance`, `extra="forbid"`), semantically validated at
+the READY conversion boundary (fails closed to
+`INTEGRITY_CONTRADICTION` on a missing/malformed subtree — never
+synthesizes an absent value), and read verbatim from the exact
+persisted report row. `supersedes_report_id` (item 12) is confirmed, by
+real-PostgreSQL proof, to be read directly from the persisted row —
+never recalculated at GET time — with a genuine no-predecessor case, a
+genuine real-predecessor case returning the exact stored predecessor
+id, and repeated-GET proof of no mutation. Optional historical
+snapshot-schema-version fields remain correctly nullable and are never
+synthesized when the corresponding snapshot doesn't exist.
+
+Item 10 (the linked price-path-evidence provider manifest —
+`source_id`, `provider_library_version`, `boundary_policy_version`,
+etc.) is real and persisted but lives in a separate linked evidence
+record, not the report row; exposing it through the current-report
+response remains NONBLOCKING BACKLOG and does not block this closure.
+
+Closing evidence: Wave C, WC-K Gate 1 (commits `daeb82d`, `2bb1da9` on
+`feature/trade-postmortem-sprint3a-price-path`) — GitHub Actions run
+[30803447452](https://github.com/shashiraj75/stocksense/actions/runs/30803447452),
+green on both PostgreSQL 15 and PostgreSQL 17, JUnit-confirmed
+`tests="304"`, `failures="0"`, `errors="0"`, `skipped="0"` on each.
