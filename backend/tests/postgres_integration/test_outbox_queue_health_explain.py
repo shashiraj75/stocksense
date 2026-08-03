@@ -50,7 +50,7 @@ _QUERY_SQL = """SELECT
      AND requested_rules_version = %(rules_version)s"""
 
 
-def test_explain_evidence_at_beta_scale_row_count(pg_conn):
+def test_explain_evidence_at_beta_scale_row_count(pg_conn, capsys):
     schema_version = "1.2.0"
     calculation_version = f"explain-evidence-calc-{uuid.uuid4().hex[:12]}"
     rules_version = f"explain-evidence-rules-{uuid.uuid4().hex[:12]}"
@@ -107,12 +107,18 @@ def test_explain_evidence_at_beta_scale_row_count(pg_conn):
         f"Shared Read Blocks: {shared_read}",
         "=== end evidence ===",
     ]
-    # Printed (not asserted) so it surfaces in this test's JUnit
-    # system-out for copying into the observability review document —
-    # deliberately no assertion on the plan node type or a millisecond
-    # threshold, per the explicit instruction not to pin a brittle plan
-    # shape or timing number.
-    print("\n".join(evidence_lines))
+    # Printed (not asserted) so it surfaces in the CI job's raw log
+    # output for copying into the observability review document —
+    # capsys.disabled() is required because this repo's pytest config
+    # has no junit_logging system-out capture configured, and pytest's
+    # default output capture otherwise silently discards stdout for a
+    # PASSING test (only failed tests get their captured output
+    # attached to the JUnit report by default). Deliberately no
+    # assertion on the plan node type or a millisecond threshold, per
+    # the explicit instruction not to pin a brittle plan shape or
+    # timing number.
+    with capsys.disabled():
+        print("\n" + "\n".join(evidence_lines))
 
     # The only real assertions: the EXPLAIN command executed successfully
     # and returned a well-formed plan — proving the query is valid and
