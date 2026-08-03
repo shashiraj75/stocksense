@@ -94,6 +94,41 @@ legacy route occurs in Wave C without explicit owner approval.
 - **Exclusions:** no PR, no merge, no Railway/Vercel production
   action, no flag activation, no production PostgreSQL access.
 
+## 3a. WC-K executable freeze (Gate 3)
+
+- **WC-K is FROZEN as of commit `7432851ea7affa7a80e8db131337763c7cbb69eb`**
+  on `feature/trade-postmortem-sprint3a-price-path`. Only
+  documentation-only commits may follow against this SHA for WC-K;
+  any further behavioral change to the current-report read path
+  requires a new, explicitly-labeled correction, not a silent edit
+  under this freeze.
+- **Closing real-PostgreSQL evidence:** GitHub Actions run
+  [30804393885](https://github.com/shashiraj75/stocksense/actions/runs/30804393885)
+  (jobs `postgres-integration (15)` id `91656249430`,
+  `postgres-integration (17)` id `91656249507`), both `conclusion:
+  success`. JUnit-verified (not terminal-summary-only) on both:
+  `tests="314"`, `failures="0"`, `errors="0"`, `skipped="0"`.
+  Artifacts `postgres-integration-results-pg15` (id `8852181028`) and
+  `postgres-integration-results-pg17` (id `8852173779`), expiring
+  2026-08-17.
+- **Scope frozen:** Gate 1 (A4 typed
+  `structured_report.price_path.version_and_provenance`, A5
+  supersession proof, public `validate_merged_evidence_integrity`) and
+  Gate 2 (availability-state matrix including active/expired-lease
+  GENERATING and FAILED_RETRYABLE → PROCESSING, exact before/after
+  DB-state snapshot proof across every governed state, deterministic-
+  serialization proof, and proof GET never invokes any generation/
+  acquisition/claim/recovery entry point) are both complete and
+  green. WC-K-14 (provenance inventory) is CLOSED — see the dedicated
+  ADR. This supersedes the "13 existing tests" figure in §1 above;
+  WC-K now has 55 real-PostgreSQL tests in
+  `test_current_report_read_api.py` (the original 13 plus subsequent
+  sprints' additions, +6 from Gate 1, +10 from Gate 2), all green in
+  the run cited above.
+- **Not frozen:** WC-N (frontend) and WC-O (operations) remain fully
+  open, tracked in §3 above, and are the subject of the next work
+  package under this same governing prompt.
+
 ## 4. Acceptance criteria
 
 Wave C may be classified COMPLETE only when every WC-K/WC-N/WC-O
