@@ -887,11 +887,17 @@ def test_postgres_and_sqlite_training_data_exclusion_behavior_matches():
     """Both backends must exclude on the exact same predicate
     (is_definitive_conflict), proven by calling the same function on
     identical synthetic inputs conceptually — here verified by asserting
-    both code paths import and call the same shared classifier function."""
+    both code paths import and call the same shared classifier function.
+
+    2026-08 (Supabase egress incident): store.get_training_data() is now a
+    thin TTL-caching wrapper around _get_training_data_uncached() — the
+    exclusion predicate lives in the uncached implementation, which is what
+    every call (cached or not) ultimately runs, so that's what this
+    inspects. postgres_store.get_training_data() is unchanged."""
     import services.postgres_store as pg
     import services.alpha_engine.store as sq
     pg_source = inspect.getsource(pg.get_training_data)
-    sq_source = inspect.getsource(sq.get_training_data)
+    sq_source = inspect.getsource(sq._get_training_data_uncached)
     assert "is_definitive_conflict" in pg_source
     assert "is_definitive_conflict" in sq_source
 

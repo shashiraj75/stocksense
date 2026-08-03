@@ -672,6 +672,14 @@ async def finalize_premarket(market: str, now: datetime | None = None) -> dict:
                 "source_job_id": source_job_id,
                 "base_generated_at": base_generated_at,
             }
+        # Postgres succeeded — invalidate the in-process read-side cache
+        # (2026-08 Supabase egress incident) so the very next /api/picks/daily
+        # or /api/picks/status request sees this finalized payload rather
+        # than a stale pre-finalization one cached for up to
+        # _PICKS_CACHE_TTL_SECONDS. Only after persistence succeeds, per the
+        # "Postgres success gates everything else" rule above.
+        _dp._invalidate_cached_picks("US")
+
         # Postgres succeeded — local disk copy is now best-effort only. A
         # disk-write failure here must never downgrade an already-durable
         # Postgres success back to a reported failure.

@@ -166,12 +166,14 @@ def picks_status(market: str = "IN"):
     # publicly safe (can contain internal file paths/stack frames) and (b)
     # doesn't survive a Railway restart, unlike attempt_status's durable
     # daily_picks_jobs-backed fields, which is why those are preferred here.
-    attempt_status = _dp.get_generation_attempt_status(market)
+    # metadata_only=True (2026-08 Supabase egress incident): every field
+    # below is derived from generated_at alone — never the full payload.
+    attempt_status = _dp.get_generation_attempt_status(market, metadata_only=True)
 
     resp = {
         "market": market,
         "generating": generating,
-        "has_today": _dp.picks_generated_today(market),
+        "has_today": _dp.picks_has_today_lightweight(market),
         "last_error": attempt_status.get("last_attempt_error_category"),
         "last_trigger_received_at": _dp._last_trigger_received_at.get(market),
         "last_successful_session_date": attempt_status.get("last_successful_session_date"),
@@ -239,12 +241,14 @@ def picks_status(market: str = "IN"):
     # fabricated. All None on a payload finalized before this feature
     # existed, or one no premarket run has touched yet — never an error.
     if market == "US":
-        cached = _dp.get_cached_picks("US") or {}
+        # 2026-08 (Supabase egress incident): lightweight metadata lookup,
+        # never the full payload — see get_picks_status_metadata's docstring.
+        meta = _dp.get_picks_status_metadata("US")
         resp.update({
-            "base_generated_at":          cached.get("base_generated_at") or cached.get("generated_at"),
-            "premarket_finalized_at":     cached.get("premarket_finalized_at"),
-            "premarket_status":           cached.get("premarket_status"),
-            "premarket_finalizer_version": cached.get("premarket_finalizer_version"),
+            "base_generated_at":          meta.get("base_generated_at"),
+            "premarket_finalized_at":     meta.get("premarket_finalized_at"),
+            "premarket_status":           meta.get("premarket_status"),
+            "premarket_finalizer_version": meta.get("premarket_finalizer_version"),
             "next_base_run_hint":         "06:00 UTC / 10:00 AM Dubai / 11:30 AM IST, Mon-Fri",
             "next_premarket_run_hint":    "~6:00 AM America/New_York, Mon-Fri (EDT candidate: 10:00 UTC, EST candidate: 11:00 UTC; backend acceptance window 6:00-7:30 AM ET)",
         })
