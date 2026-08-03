@@ -31,7 +31,7 @@ import dataclasses
 import logging
 from datetime import date, datetime
 
-from services.postmortem import deterministic, generation_service, outbox as outbox_ops, price_path_generation, report_store
+from services.postmortem import current_report_metrics, deterministic, generation_service, outbox as outbox_ops, price_path_generation, report_store
 from services.postmortem.deterministic import ClosedTradeRecord, DeterministicPostmortem, compute_postmortem
 from services.postmortem.entry_snapshot import EntrySnapshot
 from services.postmortem.evidence import EvidenceItem, PostmortemClaim
@@ -715,6 +715,7 @@ def process_current_report(
                     "current_report_generation: integrity contradiction — outbox_id=%s already "
                     "terminal-success but no matching report exists", outbox_id,
                 )
+                current_report_metrics.increment(current_report_metrics.COUNTER_INTEGRITY_CONTRADICTION_DETECTED)
                 return None, CURRENT_REPORT_INTEGRITY_CONTRADICTION
 
         # Gate 'J4E — Immutable Snapshot Consumption': the entry and
@@ -757,6 +758,7 @@ def process_current_report(
             bundle = price_path_generation.acquire_evidence_outside_transaction(gen_ctx, market_tzinfo=market_tzinfo)
         except Exception:
             logger.warning("current_report_generation: provider acquisition failed for trade_id=%s", trade_id)
+            current_report_metrics.increment(current_report_metrics.COUNTER_PROVIDER_ACQUISITION_FAILURE)
             with conn_factory() as conn:
                 if outbox_id is not None and claimed_by is not None:
                     outbox_ops.mark_retryable_failure(

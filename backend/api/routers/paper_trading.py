@@ -66,6 +66,7 @@ from services.postmortem.idempotency import (
     validate_idempotency_key_format,
 )
 from services.postmortem import idempotency_metrics as _metrics
+from services.postmortem import current_report_metrics as _cr_metrics
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -3627,9 +3628,11 @@ def get_current_governed_report(trade_id: int, response: Response, user_id: str 
         # regardless of the flag. While disabled, no report contents,
         # outbox state or generation/recovery path is ever reached.
         if not _trade_postmortem_price_path_enabled():
+            _cr_metrics.record_availability(CURRENT_REPORT_STATUS_FEATURE_DISABLED)
             return CurrentReportReadResponse(trade_id=trade_id, availability=CURRENT_REPORT_STATUS_FEATURE_DISABLED)
 
         if trade_status != "CLOSED":
+            _cr_metrics.record_availability(CURRENT_REPORT_STATUS_NOT_ELIGIBLE)
             return CurrentReportReadResponse(trade_id=trade_id, availability=CURRENT_REPORT_STATUS_NOT_ELIGIBLE)
 
         from services.postmortem.deterministic import CALCULATION_VERSION as _base_calc_v
@@ -3646,9 +3649,11 @@ def get_current_governed_report(trade_id: int, response: Response, user_id: str 
         if report is not None:
             ready_response = _build_current_report_ready_response(report, trade_id=trade_id)
             if ready_response is None:
+                _cr_metrics.record_availability(CURRENT_REPORT_STATUS_INTEGRITY_CONTRADICTION)
                 return CurrentReportReadResponse(
                     trade_id=trade_id, availability=CURRENT_REPORT_STATUS_INTEGRITY_CONTRADICTION,
                 )
+            _cr_metrics.record_availability(CURRENT_REPORT_STATUS_READY)
             return ready_response
 
         # No report exists yet — check the current-version outbox row
@@ -3664,17 +3669,21 @@ def get_current_governed_report(trade_id: int, response: Response, user_id: str 
         ).fetchone()
 
         if outbox_row is None:
+            _cr_metrics.record_availability(CURRENT_REPORT_STATUS_NOT_AVAILABLE)
             return CurrentReportReadResponse(trade_id=trade_id, availability=CURRENT_REPORT_STATUS_NOT_AVAILABLE)
 
         outbox_status = outbox_row[0]
         if outbox_status in ("PENDING", "GENERATING", "FAILED_RETRYABLE"):
+            _cr_metrics.record_availability(CURRENT_REPORT_STATUS_PROCESSING)
             return CurrentReportReadResponse(trade_id=trade_id, availability=CURRENT_REPORT_STATUS_PROCESSING)
         if outbox_status == "FAILED_TERMINAL":
+            _cr_metrics.record_availability(CURRENT_REPORT_STATUS_TERMINAL_FAILURE)
             return CurrentReportReadResponse(trade_id=trade_id, availability=CURRENT_REPORT_STATUS_TERMINAL_FAILURE)
         # outbox_status in ("COMPLETE", "LIMITED_EVIDENCE") but no report
         # row exists — the exact integrity-contradiction condition
         # current_report_generation.process_current_report itself
         # detects and refuses to silently regenerate under.
+        _cr_metrics.record_availability(CURRENT_REPORT_STATUS_INTEGRITY_CONTRADICTION)
         return CurrentReportReadResponse(trade_id=trade_id, availability=CURRENT_REPORT_STATUS_INTEGRITY_CONTRADICTION)
 
 
