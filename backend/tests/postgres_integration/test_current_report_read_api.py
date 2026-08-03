@@ -876,7 +876,18 @@ def test_claims_and_evidence_items_round_trip_adversarial_marker_values(
     body = resp.json()
     assert body["availability"] == "READY"
     assert body["claims"] == [marker_claim]
-    assert body["evidence_items"] == [marker_evidence_item]
+    # evidence_items[0] is now typed (EvidenceItemModel.observation_timestamp:
+    # datetime), so pydantic normalizes the persisted ISO string to its own
+    # canonical form ("...Z" instead of "...+00:00") — compare everything
+    # except that one field literally, and that field by parsed value.
+    got_evidence = body["evidence_items"][0]
+    expected_evidence = marker_evidence_item
+    assert {k: v for k, v in got_evidence.items() if k != "observation_timestamp"} == {
+        k: v for k, v in expected_evidence.items() if k != "observation_timestamp"
+    }
+    assert datetime.fromisoformat(got_evidence["observation_timestamp"]) == datetime.fromisoformat(
+        expected_evidence["observation_timestamp"]
+    )
     assert body["evidence_gaps"] == ["marker-gap"]
     assert body["warnings"] == ["marker-warning"]
 
