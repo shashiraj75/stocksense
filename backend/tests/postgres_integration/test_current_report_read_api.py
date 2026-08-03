@@ -15,6 +15,23 @@ pytestmark = pytest.mark.postgres_integration
 
 _ET = ZoneInfo("America/New_York")
 
+# A valid structured_report satisfying StructuredReportModel/
+# PricePathSection/VersionAndProvenance — every current 1.2.0 report
+# unconditionally has structured_report.price_path.version_and_provenance.
+# Used only where a test expects READY; malformed-report tests keep
+# their own intentionally-broken structured_report stubs.
+_VALID_STRUCTURED_REPORT = {
+    "price_path": {
+        "version_and_provenance": {
+            "report_schema_version": "1.2.0", "calculation_version": "calc-v1",
+            "numerical_rules_version": "1.0.0", "governed_semantic_rules_version": "1.0.0",
+            "governed_claim_rules_version": "1.0.0", "entry_snapshot_schema_version": None,
+            "exit_snapshot_schema_version": None, "level_history_contract_version": None,
+            "source_version": "1.0.0",
+        },
+    },
+}
+
 
 def _fake_none(*a, **k):
     return []
@@ -633,7 +650,7 @@ def test_report_level_source_manifest_round_trips_adversarial_marker_values(
         report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
         report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
         evidence_bundle_version="source-manifest-marker-test", status="COMPLETE",
-        structured_report={"marker": "source-manifest-marker-test"}, evidence_items=[], claims=[],
+        structured_report=_VALID_STRUCTURED_REPORT, evidence_items=[], claims=[],
         source_manifest=marker_manifest, evidence_gaps=[], warnings=[],
     )
 
@@ -679,7 +696,7 @@ def test_report_level_source_manifest_preserves_historical_absence_of_price_path
         report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
         report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
         evidence_bundle_version="historical-absence-test", status="COMPLETE",
-        structured_report={"marker": "historical-absence-test"}, evidence_items=[], claims=[],
+        structured_report=_VALID_STRUCTURED_REPORT, evidence_items=[], claims=[],
         source_manifest=manifest_without_price_path_key, evidence_gaps=[], warnings=[],
     )
 
@@ -876,7 +893,7 @@ def test_claims_and_evidence_items_round_trip_adversarial_marker_values(
         report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
         report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
         evidence_bundle_version="claim-evidence-marker-test", status="COMPLETE",
-        structured_report={"marker": "claim-evidence-marker-test"},
+        structured_report=_VALID_STRUCTURED_REPORT,
         evidence_items=[marker_evidence_item], claims=[marker_claim],
         source_manifest={
             "has_entry_snapshot": True, "has_exit_snapshot": False,
@@ -1165,3 +1182,208 @@ def test_unexpected_extra_claim_field_fails_closed_under_strict_policy(client, p
         source_manifest=_VALID_MANIFEST, evidence_gaps=[], warnings=[],
     )
     _assert_fails_closed_to_integrity_contradiction(client, unique_user_id, trade_id, ["surprise", "unexpected_field"])
+
+
+# ============================= structured_report.price_path.version_and_provenance (A4) ============================= #
+
+def test_structured_report_provenance_round_trips_adversarial_marker_values(
+    client, pg_conn, unique_user_id, monkeypatch,
+):
+    """Real-PostgreSQL adversarial proof for VersionAndProvenance: every
+    nested provenance field, plus an unrelated top-level structured_
+    report section, round trips exactly through the canonical endpoint."""
+    from services.postmortem import report_store
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # flag OFF at close
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    marker_structured_report = {
+        "postmortem": {"outcome": "marker-outcome"},
+        "price_path": {
+            "raw_evidence": {"marker": "raw-evidence-marker"},
+            "version_and_provenance": {
+                "report_schema_version": "marker-schema-v", "calculation_version": "marker-calc-v",
+                "numerical_rules_version": "marker-numerical-v", "governed_semantic_rules_version": "marker-semantic-v",
+                "governed_claim_rules_version": "marker-claim-v", "entry_snapshot_schema_version": "marker-entry-v",
+                "exit_snapshot_schema_version": "marker-exit-v", "level_history_contract_version": "marker-history-v",
+                "source_version": "marker-source-v",
+            },
+        },
+    }
+    schema_v, calc_v, rules_v = current_target_identity(
+        base_calculation_version=CALCULATION_VERSION,
+        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+    )
+    report_store.persist_report(
+        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+        report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
+        report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+        evidence_bundle_version="structured-report-marker-test", status="COMPLETE",
+        structured_report=marker_structured_report, evidence_items=[], claims=[],
+        source_manifest=_VALID_MANIFEST, evidence_gaps=[], warnings=[],
+    )
+
+    resp = _current_report(client, unique_user_id, trade_id)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["availability"] == "READY"
+    assert body["structured_report"] == marker_structured_report, (
+        "structured_report must round-trip exactly from the persisted row, "
+        "including its unrelated top-level 'postmortem' section"
+    )
+
+
+def test_structured_report_missing_price_path_subtree_fails_closed(client, pg_conn, unique_user_id, monkeypatch):
+    from services.postmortem import report_store
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # flag OFF at close
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    schema_v, calc_v, rules_v = current_target_identity(
+        base_calculation_version=CALCULATION_VERSION,
+        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+    )
+    report_store.persist_report(
+        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+        report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
+        report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+        evidence_bundle_version="missing-price-path", status="COMPLETE",
+        structured_report={"postmortem": {"outcome": "WIN"}},  # no "price_path" key at all
+        evidence_items=[], claims=[], source_manifest=_VALID_MANIFEST, evidence_gaps=[], warnings=[],
+    )
+    _assert_fails_closed_to_integrity_contradiction(client, unique_user_id, trade_id, [])
+
+
+def test_structured_report_missing_required_provenance_field_fails_closed(client, pg_conn, unique_user_id, monkeypatch):
+    from services.postmortem import report_store
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # flag OFF at close
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    incomplete_vap = {
+        "report_schema_version": "1.2.0",
+        # calculation_version intentionally omitted — malformed.
+        "numerical_rules_version": "1.0.0", "governed_semantic_rules_version": "1.0.0",
+        "governed_claim_rules_version": "1.0.0", "entry_snapshot_schema_version": None,
+        "exit_snapshot_schema_version": None, "level_history_contract_version": None,
+        "source_version": "1.0.0",
+    }
+    schema_v, calc_v, rules_v = current_target_identity(
+        base_calculation_version=CALCULATION_VERSION,
+        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+    )
+    report_store.persist_report(
+        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+        report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
+        report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+        evidence_bundle_version="missing-vap-field", status="COMPLETE",
+        structured_report={"price_path": {"version_and_provenance": incomplete_vap}},
+        evidence_items=[], claims=[], source_manifest=_VALID_MANIFEST, evidence_gaps=[], warnings=[],
+    )
+    _assert_fails_closed_to_integrity_contradiction(client, unique_user_id, trade_id, [])
+
+
+# ============================= supersession (A5) ============================= #
+
+def test_current_report_with_no_predecessor_returns_null_supersedes_id(client, pg_conn, unique_user_id, monkeypatch):
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)
+
+    resp = _current_report(client, unique_user_id, trade_id)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["availability"] == "READY"
+    assert body["supersedes_report_id"] is None
+
+
+def test_current_report_with_a_real_predecessor_returns_the_exact_persisted_predecessor_id(
+    client, pg_conn, unique_user_id, monkeypatch,
+):
+    """Seeds a historical 1.0.0 predecessor row, then a current 1.2.0
+    row whose supersedes_report_id points at the predecessor's real
+    persisted id — proves the API returns that exact stored id, never
+    recalculating or substituting a different value."""
+    from services.postmortem import report_store
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # flag OFF at close
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+
+    predecessor, _created = report_store.persist_report(
+        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+        report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
+        report_schema_version="1.0.0", calculation_version="1.0.0-predecessor", attribution_rules_version="1.0.0-predecessor",
+        evidence_bundle_version="1.0.0", status="COMPLETE",
+        structured_report={"postmortem": {"outcome": "WIN"}}, evidence_items=[], claims=[],
+        source_manifest={}, evidence_gaps=[], warnings=[],
+    )
+
+    schema_v, calc_v, rules_v = current_target_identity(
+        base_calculation_version=CALCULATION_VERSION,
+        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+    )
+    report_store.persist_report(
+        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+        report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
+        report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+        evidence_bundle_version="1.2.0-successor", status="COMPLETE",
+        structured_report=_VALID_STRUCTURED_REPORT, evidence_items=[], claims=[],
+        source_manifest=_VALID_MANIFEST, evidence_gaps=[], warnings=[],
+        supersedes_report_id=predecessor.id,
+    )
+
+    resp = _current_report(client, unique_user_id, trade_id)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["availability"] == "READY"
+    assert body["supersedes_report_id"] == predecessor.id
+
+
+def test_repeated_get_with_supersession_causes_no_mutation(client, pg_conn, unique_user_id, monkeypatch):
+    from services.postmortem import report_store
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # flag OFF at close
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    predecessor, _ = report_store.persist_report(
+        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+        report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
+        report_schema_version="1.0.0", calculation_version="1.0.0-p2", attribution_rules_version="1.0.0-p2",
+        evidence_bundle_version="1.0.0", status="COMPLETE",
+        structured_report={"postmortem": {"outcome": "WIN"}}, evidence_items=[], claims=[],
+        source_manifest={}, evidence_gaps=[], warnings=[],
+    )
+    schema_v, calc_v, rules_v = current_target_identity(
+        base_calculation_version=CALCULATION_VERSION,
+        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+    )
+    report_store.persist_report(
+        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+        report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
+        report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+        evidence_bundle_version="1.2.0-successor-2", status="COMPLETE",
+        structured_report=_VALID_STRUCTURED_REPORT, evidence_items=[], claims=[],
+        source_manifest=_VALID_MANIFEST, evidence_gaps=[], warnings=[],
+        supersedes_report_id=predecessor.id,
+    )
+
+    before = pg_conn.execute(
+        "SELECT count(*) FROM paper_trade_postmortem_report WHERE paper_trade_id = %s", (trade_id,),
+    ).fetchone()[0]
+    for _ in range(3):
+        resp = _current_report(client, unique_user_id, trade_id)
+        assert resp.json()["supersedes_report_id"] == predecessor.id
+    after = pg_conn.execute(
+        "SELECT count(*) FROM paper_trade_postmortem_report WHERE paper_trade_id = %s", (trade_id,),
+    ).fetchone()[0]
+    assert after == before

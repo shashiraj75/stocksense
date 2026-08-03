@@ -3408,6 +3408,58 @@ _READY_ONLY_FIELDS = (
 )
 
 
+class VersionAndProvenance(BaseModel):
+    """Typed model for the current 1.2.0 governed provenance subtree
+    current_report_generation.build_current_report_payload
+    unconditionally sets at structured_report["price_path"]
+    ["version_and_provenance"] for EVERY current report (verified by
+    direct source read — never absent for a real 1.2.0 report,
+    regardless of COMPLETE/LIMITED_EVIDENCE/no-bars-fallback status).
+    entry_snapshot_schema_version/exit_snapshot_schema_version/
+    level_history_contract_version are legitimately null when the
+    corresponding snapshot doesn't exist — every other field is always
+    a real string. extra="forbid": this is a frozen 1.2.0 shape with no
+    known legitimate variant, so an unexpected field is a real defect."""
+
+    model_config = {"extra": "forbid"}
+
+    report_schema_version: str
+    calculation_version: str
+    numerical_rules_version: str
+    governed_semantic_rules_version: str
+    governed_claim_rules_version: str
+    entry_snapshot_schema_version: str | None
+    exit_snapshot_schema_version: str | None
+    level_history_contract_version: str | None
+    source_version: str
+
+
+class PricePathSection(BaseModel):
+    """Typed wrapper for structured_report["price_path"] — only
+    version_and_provenance is modeled explicitly; every other key
+    (raw_evidence, level_history, order, etc.) is genuinely open-ended
+    persisted content this pass does not model, preserved via
+    extra="allow" for forward compatibility."""
+
+    model_config = {"extra": "allow"}
+
+    version_and_provenance: VersionAndProvenance
+
+
+class StructuredReportModel(BaseModel):
+    """Typed wrapper for the top-level structured_report — only the
+    "price_path" key is modeled explicitly (the current 1.2.0 governed
+    subtree); "postmortem"/"attribution" and any other top-level
+    section are genuinely open-ended base-report content this pass does
+    not model, preserved via extra="allow". price_path itself is
+    required: every current 1.2.0 report has it (see PricePathSection's
+    own docstring)."""
+
+    model_config = {"extra": "allow"}
+
+    price_path: PricePathSection
+
+
 class CurrentReportReadResponse(BaseModel):
     trade_id: int
     availability: CurrentReportAvailability
@@ -3420,7 +3472,7 @@ class CurrentReportReadResponse(BaseModel):
     market_timezone: str | None = None
     status: CurrentReportStatus | None = None
     generated_at: datetime | None = None
-    structured_report: dict | None = None
+    structured_report: StructuredReportModel | None = None
     # Root cause of the earlier real-PostgreSQL CI failure (run
     # 30768906338) found and fixed: current_report_generation.
     # build_current_report_payload was merging GovernedPricePathPayload's
@@ -3495,7 +3547,7 @@ def _build_current_report_ready_response(report, *, trade_id: int) -> "CurrentRe
         # integrity check (the SAME one Sprint 1/2 generation already
         # runs) rather than a second, independently drifting copy —
         # never repairs or removes a dangling reference, only detects it.
-        generation_service._validate_merged_evidence_integrity(report.evidence_items, report.claims)
+        generation_service.validate_merged_evidence_integrity(report.evidence_items, report.claims)
         return CurrentReportReadResponse(
             trade_id=trade_id, availability=CURRENT_REPORT_STATUS_READY,
             report_schema_version=report.report_schema_version,

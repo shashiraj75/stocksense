@@ -9,6 +9,26 @@ from pydantic import ValidationError
 
 from api.routers.paper_trading import _READY_ONLY_FIELDS, CurrentReportReadResponse
 
+# A valid structured_report satisfying StructuredReportModel/
+# PricePathSection/VersionAndProvenance — every current 1.2.0 report
+# unconditionally has structured_report.price_path.version_and_provenance
+# (verified by direct source read of current_report_generation.
+# build_current_report_payload). "postmortem" is an example unrelated,
+# untyped top-level section preserved via extra="allow".
+_VALID_STRUCTURED_REPORT = {
+    "postmortem": {"outcome": "WIN"},
+    "price_path": {
+        "raw_evidence": None,
+        "version_and_provenance": {
+            "report_schema_version": "1.2.0", "calculation_version": "calc-v1",
+            "numerical_rules_version": "1.0.0", "governed_semantic_rules_version": "1.0.0",
+            "governed_claim_rules_version": "1.0.0", "entry_snapshot_schema_version": None,
+            "exit_snapshot_schema_version": None, "level_history_contract_version": None,
+            "source_version": "1.0.0",
+        },
+    },
+}
+
 # One valid, non-null representative value for EVERY field in the
 # production _READY_ONLY_FIELDS inventory — imported directly from
 # production rather than a second hand-maintained list, so this test
@@ -23,7 +43,7 @@ _REPRESENTATIVE_VALUES = {
     "market_timezone": "America/New_York",
     "status": "COMPLETE",
     "generated_at": datetime.datetime(2026, 6, 1, tzinfo=datetime.timezone.utc),
-    "structured_report": {"x": 1},
+    "structured_report": _VALID_STRUCTURED_REPORT,
     "claims": [{
         "claim_id": "CLM-1-rule1", "report_section": "price_path", "factor": "target",
         "claim_text": "target was hit", "evidence_class": "DIRECTLY_OBSERVED",
@@ -55,7 +75,7 @@ _READY_KWARGS = dict(
     attribution_rules_version="rules-v1", evidence_bundle_version="ev-v1",
     market="US", report_trading_date="2026-06-01", market_timezone="America/New_York",
     status="COMPLETE", generated_at=datetime.datetime(2026, 6, 1, tzinfo=datetime.timezone.utc),
-    structured_report={"x": 1}, claims=[], evidence_items=[], evidence_gaps=[], warnings=[],
+    structured_report=_VALID_STRUCTURED_REPORT, claims=[], evidence_items=[], evidence_gaps=[], warnings=[],
     source_manifest={
         "has_entry_snapshot": True, "has_exit_snapshot": False,
         "exit_snapshot_schema_version": None, "exit_trigger_timing_verification": None,
@@ -193,7 +213,7 @@ class TestFailClosedConversionBoundary:
             market_timezone: str | None = "America/New_York"
             status: str | None = "COMPLETE"
             generated_at: object = None
-            structured_report: dict | None = field(default_factory=lambda: {"x": 1})
+            structured_report: dict | None = field(default_factory=lambda: dict(_VALID_STRUCTURED_REPORT))
             claims: list | None = field(default_factory=list)
             evidence_items: list | None = field(default_factory=list)
             evidence_gaps: list | None = field(default_factory=list)
@@ -520,3 +540,89 @@ class TestReferentialIntegrityAndClaimEvidenceGovernance:
         result = _build_current_report_ready_response(report, trade_id=1)
         assert result is not None
         assert result.availability == "READY"
+
+
+@pytest.mark.unit
+class TestStructuredReportProvenanceTyping:
+    """Package A4 — structured_report.price_path.version_and_provenance."""
+
+    _VALID_VAP = dict(
+        report_schema_version="1.2.0", calculation_version="c", numerical_rules_version="1.0.0",
+        governed_semantic_rules_version="1.0.0", governed_claim_rules_version="1.0.0",
+        entry_snapshot_schema_version=None, exit_snapshot_schema_version=None,
+        level_history_contract_version=None, source_version="1.0.0",
+    )
+
+    def _structured_report(self, **vap_overrides):
+        return {
+            "postmortem": {"outcome": "WIN"},
+            "price_path": {"raw_evidence": None, "version_and_provenance": {**self._VALID_VAP, **vap_overrides}},
+        }
+
+    def test_valid_complete_provenance_is_accepted(self):
+        CurrentReportReadResponse(**{**_READY_KWARGS, "structured_report": self._structured_report()})
+
+    def test_valid_nullable_snapshot_fields_are_accepted(self):
+        CurrentReportReadResponse(**{**_READY_KWARGS, "structured_report": self._structured_report(
+            entry_snapshot_schema_version="1.0.0", exit_snapshot_schema_version="1.0.0",
+            level_history_contract_version="1.0.0",
+        )})
+
+    def test_missing_price_path_is_rejected(self):
+        bad = {"postmortem": {"outcome": "WIN"}}
+        with pytest.raises(ValidationError):
+            CurrentReportReadResponse(**{**_READY_KWARGS, "structured_report": bad})
+
+    def test_price_path_with_wrong_type_is_rejected(self):
+        bad = {"price_path": "not-a-dict"}
+        with pytest.raises(ValidationError):
+            CurrentReportReadResponse(**{**_READY_KWARGS, "structured_report": bad})
+
+    def test_missing_version_and_provenance_is_rejected(self):
+        bad = {"price_path": {"raw_evidence": None}}
+        with pytest.raises(ValidationError):
+            CurrentReportReadResponse(**{**_READY_KWARGS, "structured_report": bad})
+
+    def test_version_and_provenance_with_wrong_type_is_rejected(self):
+        bad = {"price_path": {"version_and_provenance": "not-a-dict"}}
+        with pytest.raises(ValidationError):
+            CurrentReportReadResponse(**{**_READY_KWARGS, "structured_report": bad})
+
+    @pytest.mark.parametrize("missing_field", [
+        "report_schema_version", "calculation_version", "numerical_rules_version",
+        "governed_semantic_rules_version", "governed_claim_rules_version", "source_version",
+    ])
+    def test_every_missing_required_vap_field_is_rejected(self, missing_field):
+        vap = dict(self._VALID_VAP)
+        del vap[missing_field]
+        with pytest.raises(ValidationError):
+            CurrentReportReadResponse(**{**_READY_KWARGS, "structured_report": {"price_path": {"version_and_provenance": vap}}})
+
+    @pytest.mark.parametrize("field", ["report_schema_version", "calculation_version", "source_version"])
+    def test_invalid_field_type_is_rejected(self, field):
+        with pytest.raises(ValidationError):
+            CurrentReportReadResponse(**{**_READY_KWARGS, "structured_report": self._structured_report(**{field: 12345})})
+
+    def test_unexpected_extra_vap_field_is_rejected(self):
+        with pytest.raises(ValidationError):
+            CurrentReportReadResponse(**{
+                **_READY_KWARGS,
+                "structured_report": self._structured_report(unexpected_field="surprise"),
+            })
+
+    def test_unrelated_structured_report_and_price_path_fields_are_preserved(self):
+        response = CurrentReportReadResponse(**{
+            **_READY_KWARGS,
+            "structured_report": {
+                "postmortem": {"outcome": "WIN"}, "attribution": {"thesis_verdict": "SUPPORTED"},
+                "price_path": {
+                    "raw_evidence": {"bars": []}, "level_history": {"target": {}},
+                    "version_and_provenance": self._VALID_VAP,
+                },
+            },
+        })
+        dumped = response.model_dump()
+        assert dumped["structured_report"]["postmortem"] == {"outcome": "WIN"}
+        assert dumped["structured_report"]["attribution"] == {"thesis_verdict": "SUPPORTED"}
+        assert dumped["structured_report"]["price_path"]["raw_evidence"] == {"bars": []}
+        assert dumped["structured_report"]["price_path"]["level_history"] == {"target": {}}

@@ -72,7 +72,7 @@ def _asdict(obj):
     return dataclasses.asdict(obj) if dataclasses.is_dataclass(obj) else obj
 
 
-def _validate_merged_evidence_integrity(evidence_items: list[dict], claims: list[dict]) -> None:
+def validate_merged_evidence_integrity(evidence_items: list[dict], claims: list[dict]) -> None:
     """Sprint 1's own build_evidence_attribution already validates ITS
     claims against ITS evidence internally (evidence_attribution.
     validate_report_integrity) — but that check runs before this
@@ -165,7 +165,7 @@ def build_report_payload(
     exit_evidence_items, exit_claims = build_exit_evidence(postmortem.trade_id, exit_snapshot)
     evidence_items += [_asdict(e) for e in exit_evidence_items]
     claims += [_asdict(c) for c in exit_claims]
-    _validate_merged_evidence_integrity(evidence_items, claims)
+    validate_merged_evidence_integrity(evidence_items, claims)
 
     source_manifest = {
         "has_entry_snapshot": entry_snapshot is not None,
