@@ -44,6 +44,7 @@ _REPRESENTATIVE_VALUES = {
         "exit_snapshot_schema_version": "1.0.0", "exit_trigger_timing_verification": "SERVER_VERIFIED",
         "exit_evidence_rules_version": "1.0.0",
         "phase1_calculation_version": "1.0.0", "attribution_rules_version": "1.0.0",
+        "price_path_rules_version": "1.0.0", "governed_rules_version": "1.0.0",
     },
     "supersedes_report_id": 42,
 }
@@ -60,6 +61,7 @@ _READY_KWARGS = dict(
         "exit_snapshot_schema_version": None, "exit_trigger_timing_verification": None,
         "exit_evidence_rules_version": "1.0.0",
         "phase1_calculation_version": "1.0.0", "attribution_rules_version": "1.0.0",
+        "price_path_rules_version": "1.0.0", "governed_rules_version": "1.0.0",
     },
 )
 
@@ -201,6 +203,7 @@ class TestFailClosedConversionBoundary:
                 "exit_snapshot_schema_version": None, "exit_trigger_timing_verification": None,
                 "exit_evidence_rules_version": "1.0.0",
                 "phase1_calculation_version": "1.0.0", "attribution_rules_version": "1.0.0",
+        "price_path_rules_version": "1.0.0", "governed_rules_version": "1.0.0",
             })
             supersedes_report_id: int | None = None
 
@@ -277,6 +280,7 @@ class TestReportSourceManifestAbsencePreservingSerialization:
         exit_snapshot_schema_version="1.0.0", exit_trigger_timing_verification="SERVER_VERIFIED",
         exit_evidence_rules_version="1.0.0", phase1_calculation_version="1.0.0",
         attribution_rules_version="1.0.0",
+        price_path_rules_version="1.0.0", governed_rules_version="1.0.0",
     )
 
     def test_key_absent_from_input_stays_absent_in_serialized_output(self):
@@ -337,12 +341,14 @@ class TestReportSourceManifestSemanticConsistency:
         has_entry_snapshot=True, has_exit_snapshot=False,
         exit_evidence_rules_version="1.0.0", phase1_calculation_version="1.0.0",
         attribution_rules_version="1.0.0",
+        price_path_rules_version="1.0.0", governed_rules_version="1.0.0",
     )
     _WITH_EXIT = dict(
         has_entry_snapshot=True, has_exit_snapshot=True,
         exit_snapshot_schema_version="1.0.0", exit_trigger_timing_verification="SERVER_VERIFIED",
         exit_evidence_rules_version="1.0.0", phase1_calculation_version="1.0.0",
         attribution_rules_version="1.0.0",
+        price_path_rules_version="1.0.0", governed_rules_version="1.0.0",
     )
 
     def test_no_exit_snapshot_with_both_fields_null_is_valid(self):

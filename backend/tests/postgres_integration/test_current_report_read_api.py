@@ -623,6 +623,7 @@ def test_report_level_source_manifest_round_trips_adversarial_marker_values(
         "phase1_calculation_version": "marker-phase1-calc",
         "attribution_rules_version": "marker-attribution-rules",
         "price_path_calculation_version": "marker-price-path-calc",
+        "price_path_rules_version": "marker-price-path-rules", "governed_rules_version": "marker-governed-rules",
         "some_future_field_not_yet_modelled": "marker-future-value",
     }
     report_store.persist_report(
@@ -668,6 +669,7 @@ def test_report_level_source_manifest_preserves_historical_absence_of_price_path
         "exit_snapshot_schema_version": "1.0.0", "exit_trigger_timing_verification": "SERVER_VERIFIED",
         "exit_evidence_rules_version": "1.0.0",
         "phase1_calculation_version": "1.0.0", "attribution_rules_version": "1.0.0",
+            "price_path_rules_version": "1.0.0", "governed_rules_version": "1.0.0",
         # price_path_calculation_version intentionally omitted entirely.
     }
     report_store.persist_report(
@@ -733,6 +735,7 @@ def test_no_exit_snapshot_with_non_null_schema_version_fails_closed(client, pg_c
         "exit_trigger_timing_verification": None,
         "exit_evidence_rules_version": "1.0.0", "phase1_calculation_version": "1.0.0",
         "attribution_rules_version": "1.0.0",
+        "price_path_rules_version": "1.0.0", "governed_rules_version": "1.0.0",
     }
     _seed_current_manifest(pg_conn, trade_id, unique_user_id, manifest, marker="no-exit-nonnull-schema")
     _assert_fails_closed_to_integrity_contradiction(client, unique_user_id, trade_id, ["should-not-be-set"])
@@ -747,6 +750,7 @@ def test_no_exit_snapshot_with_non_null_trigger_timing_fails_closed(client, pg_c
         "exit_trigger_timing_verification": "SERVER_VERIFIED",  # <-- malformation
         "exit_evidence_rules_version": "1.0.0", "phase1_calculation_version": "1.0.0",
         "attribution_rules_version": "1.0.0",
+        "price_path_rules_version": "1.0.0", "governed_rules_version": "1.0.0",
     }
     _seed_current_manifest(pg_conn, trade_id, unique_user_id, manifest, marker="no-exit-nonnull-trigger")
     _assert_fails_closed_to_integrity_contradiction(client, unique_user_id, trade_id, [])
@@ -761,6 +765,7 @@ def test_has_exit_snapshot_missing_schema_version_fails_closed(client, pg_conn, 
         "exit_trigger_timing_verification": "SERVER_VERIFIED",
         "exit_evidence_rules_version": "1.0.0", "phase1_calculation_version": "1.0.0",
         "attribution_rules_version": "1.0.0",
+        "price_path_rules_version": "1.0.0", "governed_rules_version": "1.0.0",
     }
     _seed_current_manifest(pg_conn, trade_id, unique_user_id, manifest, marker="has-exit-missing-schema")
     _assert_fails_closed_to_integrity_contradiction(client, unique_user_id, trade_id, [])
@@ -775,6 +780,7 @@ def test_invalid_trigger_timing_vocabulary_fails_closed(client, pg_conn, unique_
         "exit_trigger_timing_verification": "NOT_A_GOVERNED_VALUE",  # <-- malformation
         "exit_evidence_rules_version": "1.0.0", "phase1_calculation_version": "1.0.0",
         "attribution_rules_version": "1.0.0",
+        "price_path_rules_version": "1.0.0", "governed_rules_version": "1.0.0",
     }
     _seed_current_manifest(pg_conn, trade_id, unique_user_id, manifest, marker="invalid-trigger-vocab")
     _assert_fails_closed_to_integrity_contradiction(client, unique_user_id, trade_id, ["NOT_A_GOVERNED_VALUE"])
@@ -788,6 +794,7 @@ def test_explicit_null_price_path_calculation_version_fails_closed(client, pg_co
         "exit_snapshot_schema_version": None, "exit_trigger_timing_verification": None,
         "exit_evidence_rules_version": "1.0.0", "phase1_calculation_version": "1.0.0",
         "attribution_rules_version": "1.0.0",
+        "price_path_rules_version": "1.0.0", "governed_rules_version": "1.0.0",
         "price_path_calculation_version": None,  # <-- malformation: explicit null, not absence
     }
     _seed_current_manifest(pg_conn, trade_id, unique_user_id, manifest, marker="explicit-null-price-path")
@@ -803,6 +810,7 @@ def test_malformed_source_manifest_causes_no_mutation(client, pg_conn, unique_us
         "exit_trigger_timing_verification": None,
         "exit_evidence_rules_version": "1.0.0", "phase1_calculation_version": "1.0.0",
         "attribution_rules_version": "1.0.0",
+        "price_path_rules_version": "1.0.0", "governed_rules_version": "1.0.0",
     }
     _seed_current_manifest(pg_conn, trade_id, unique_user_id, manifest, marker="no-mutation-check")
 
@@ -867,6 +875,7 @@ def test_claims_and_evidence_items_round_trip_adversarial_marker_values(
             "exit_snapshot_schema_version": None, "exit_trigger_timing_verification": None,
             "exit_evidence_rules_version": "1.0.0", "phase1_calculation_version": "1.0.0",
             "attribution_rules_version": "1.0.0",
+            "price_path_rules_version": "1.0.0", "governed_rules_version": "1.0.0",
         },
         evidence_gaps=["marker-gap"], warnings=["marker-warning"],
     )
@@ -926,6 +935,7 @@ def test_malformed_claim_missing_rule_id_fails_closed(client, pg_conn, unique_us
             "exit_snapshot_schema_version": None, "exit_trigger_timing_verification": None,
             "exit_evidence_rules_version": "1.0.0", "phase1_calculation_version": "1.0.0",
             "attribution_rules_version": "1.0.0",
+            "price_path_rules_version": "1.0.0", "governed_rules_version": "1.0.0",
         },
         evidence_gaps=[], warnings=[],
     )

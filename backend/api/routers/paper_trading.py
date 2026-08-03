@@ -3309,6 +3309,11 @@ class ReportSourceManifest(BaseModel):
     phase1_calculation_version: str
     attribution_rules_version: str
     price_path_calculation_version: str | None = None
+    # Both unconditionally set by current_report_generation.
+    # build_current_report_payload for every 1.2.0 report (verified by
+    # direct source read) — required, unlike price_path_calculation_version.
+    price_path_rules_version: str
+    governed_rules_version: str
 
     @model_validator(mode="after")
     def _enforce_exit_snapshot_and_price_path_consistency(self):
