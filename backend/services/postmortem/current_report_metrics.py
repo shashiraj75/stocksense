@@ -17,16 +17,26 @@ only counter names, trade_id, outbox_id, market, and bounded error_code
 strings are ever passed to these functions — never prices, P&L amounts,
 claim text, evidence values, or any other report content.
 
-FAIL-OPEN CONTRACT (WC-O correction, Package O §O1): observability must
-never alter governed application behavior. `increment`/`record_duration`
-are the raw, throwing primitives (kept for this module's own tests and
-for callers that have already decided a failure here is acceptable to
-propagate — none currently exist). Every application call site outside
-this module MUST use the `safe_*` wrappers below instead, which catch
-every exception internally, log a single bounded warning (never the raw
-exception text — only its type name, which is not user data), and return
-without raising. A metrics failure must never replace, mask, or delay the
-caller's own original exception or control flow.
+FAIL-OPEN CONTRACT (WC-O correction, Package O §O1, extended by Package
+O §1 to cover logging itself): observability must never alter governed
+application behavior. `increment`/`record_duration` are the raw,
+throwing primitives (kept for this module's own tests and for callers
+that have already decided a failure here is acceptable to propagate —
+none currently exist). Every application call site outside this module
+MUST use the `safe_*` wrappers below instead, which catch every
+exception internally and return without raising. A metrics failure must
+never replace, mask, or delay the caller's own original exception or
+control flow.
+
+A metrics-STORE failure is not the only failure mode: the logging
+SUBSYSTEM itself (a broken handler, a misconfigured formatter, etc.)
+could also raise. Every log.info/log.warning call made from an
+observability path in this module, current_report_generation.py, and
+outbox_worker.py goes through `safe_log(log_fn, *args, **kwargs)`
+instead of calling the logger directly — this is the second protective
+boundary: even the bounded warning this module logs when the metrics
+STORE fails is itself wrapped, so a broken logging subsystem can never
+propagate past that warning either.
 """
 
 import logging
@@ -95,10 +105,27 @@ _AVAILABILITY_COUNTER_BY_STATE = {
 # Kept for this module's own tests and internal use only. Application
 # call sites outside this module must use the safe_* wrappers below.
 
+def safe_log(log_fn, *args, **kwargs) -> None:
+    """The shared logging-is-part-of-the-fail-open-contract helper
+    (§O1 correction, Package O §1): a broken logging HANDLER or
+    logging SUBSYSTEM (not just a broken metrics store) must never
+    propagate out of an observability call site either. Every log.info/
+    log.warning call made from an observability code path anywhere in
+    this module, current_report_generation.py, and outbox_worker.py
+    goes through this helper instead of calling the logger directly.
+    Deliberately swallows any exception the logging call itself raises
+    — there is nothing more this helper could safely do (logging the
+    failure would risk repeating the exact same failure)."""
+    try:
+        log_fn(*args, **kwargs)
+    except Exception:
+        pass
+
+
 def increment(counter_name: str, amount: int = 1) -> None:
     with _lock:
         _counters[counter_name] += amount
-    log.info("[metrics] %s +%d", counter_name, amount)
+    safe_log(log.info, "[metrics] %s +%d", counter_name, amount)
 
 
 def record_duration(metric_name: str, seconds: float) -> None:
@@ -107,7 +134,7 @@ def record_duration(metric_name: str, seconds: float) -> None:
         samples.append(seconds)
         if len(samples) > _MAX_DURATION_SAMPLES:
             del samples[: len(samples) - _MAX_DURATION_SAMPLES]
-    log.info("[metrics] %s=%.4fs", metric_name, seconds)
+    safe_log(log.info, "[metrics] %s=%.4fs", metric_name, seconds)
 
 
 def record_availability(availability: str) -> None:
@@ -151,7 +178,7 @@ def safe_record_availability(availability: str) -> None:
     try:
         record_availability(availability)
     except KeyError:
-        log.warning("[metrics] unrecognized availability value for recording: %s", availability)
+        safe_log(log.warning, "[metrics] unrecognized availability value for recording: %s", availability)
     except Exception:
         _log_internal_failure_bounded("safe_record_availability")
 
@@ -180,7 +207,10 @@ def _log_internal_failure_bounded(call_site: str) -> None:
     # for its own counter (that would risk unbounded recursion if the
     # store itself is what's broken) — uses a direct, best-effort,
     # separately-guarded increment instead.
-    log.warning("[metrics] internal failure recording a metric from %s — application behavior unaffected", call_site)
+    safe_log(
+        log.warning, "[metrics] internal failure recording a metric from %s — application behavior unaffected",
+        call_site,
+    )
     try:
         with _lock:
             _counters[COUNTER_METRICS_INTERNAL_FAILURE] += 1

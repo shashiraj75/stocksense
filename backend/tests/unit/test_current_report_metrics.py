@@ -135,3 +135,41 @@ class TestSafeWrappersAreFailOpen:
         monkeypatch.setattr(metrics, "increment", _broken_increment)
         metrics.safe_increment(metrics.COUNTER_AVAILABILITY_READY)
         assert "some-sensitive-detail-that-must-never-be-logged" not in caplog.text
+
+
+@pytest.mark.unit
+class TestLoggingItselfIsFailOpen:
+    """Package O §1 (final WC-O correction) — a broken logging HANDLER
+    or logging SUBSYSTEM (not just a broken metrics store) must never
+    propagate out of any safe_* function either. `safe_log` is the
+    shared second protective boundary every observability log call goes
+    through."""
+
+    def test_safe_log_never_raises_when_the_wrapped_log_call_itself_raises(self):
+        def _broken_log_fn(*a, **k):
+            raise RuntimeError("simulated logging handler failure")
+        metrics.safe_log(_broken_log_fn, "irrelevant message")  # must not raise
+
+    def test_safe_increment_returns_normally_when_logging_itself_raises(self, monkeypatch):
+        monkeypatch.setattr(metrics.log, "info", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("logging broke")))
+        metrics.safe_increment(metrics.COUNTER_AVAILABILITY_READY)  # must not raise
+        assert metrics.get_snapshot()["counters"][metrics.COUNTER_AVAILABILITY_READY] == 1  # the counter itself still updates
+
+    def test_safe_record_availability_returns_normally_for_a_recognized_value_when_logging_raises(self, monkeypatch):
+        monkeypatch.setattr(metrics.log, "info", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("logging broke")))
+        metrics.safe_record_availability("READY")  # must not raise
+        assert metrics.get_snapshot()["counters"][metrics.COUNTER_AVAILABILITY_READY] == 1
+
+    def test_safe_record_availability_returns_normally_for_an_unrecognized_value_when_logging_raises(self, monkeypatch):
+        monkeypatch.setattr(metrics.log, "warning", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("logging broke")))
+        metrics.safe_record_availability("SOMETHING_MADE_UP")  # must not raise
+
+    def test_internal_failure_helper_never_raises_when_its_own_logging_call_raises(self, monkeypatch):
+        """Simulates BOTH boundaries failing at once: the metrics store
+        raises (triggering _log_internal_failure_bounded), AND that
+        function's own log.warning call also raises."""
+        def _broken_increment(*a, **k):
+            raise RuntimeError("simulated metrics store failure")
+        monkeypatch.setattr(metrics, "increment", _broken_increment)
+        monkeypatch.setattr(metrics.log, "warning", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("logging broke")))
+        metrics.safe_increment(metrics.COUNTER_AVAILABILITY_READY)  # must not raise

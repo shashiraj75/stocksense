@@ -149,8 +149,11 @@ grows rather than pinned now.
 
 ## 4. Noise-bounded logging
 
-`QueueHealthLogState` (process-local, one instance per worker process,
-reset on restart, never shared across replicas) implements:
+`QueueHealthLogState` (process-local, never shared across replicas,
+reset on every genuinely NEW worker task start — including a
+stop_outbox_worker/start_outbox_worker cycle within the SAME process,
+per Package O §5's correction — as well as on a full process restart)
+implements:
 
 - **Heartbeat**: the `[outbox_worker_queue_depth]` line is emitted at
   most once per `HEARTBEAT_INTERVAL_SECONDS` (5 minutes), not once per
@@ -173,8 +176,10 @@ reset on restart, never shared across replicas) implements:
 
 **Explicit disclosures** (§O7):
 - Suppression/heartbeat state is **process-local** — it lives in a
-  module-level `QueueHealthLogState()` instance and is lost on every
-  restart.
+  module-level `QueueHealthLogState()` instance and is reset every time
+  `start_outbox_worker` creates a genuinely new worker task (not the
+  idempotent no-op path when a task is already running), as well as on
+  a full process restart.
 - **Each worker replica maintains independent state** — running more
   than one replica means the same condition can produce one warning per
   replica, not one deduplicated warning total. This is NOT global alert

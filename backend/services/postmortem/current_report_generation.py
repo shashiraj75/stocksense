@@ -711,7 +711,8 @@ def process_current_report(
                 "SELECT status FROM paper_trade_postmortem_outbox WHERE id = %s", (outbox_id,),
             ).fetchone()
             if outbox_row is not None and outbox_row[0] in ("COMPLETE", "LIMITED_EVIDENCE"):
-                logger.warning(
+                current_report_metrics.safe_log(
+                    logger.warning,
                     "current_report_generation: integrity contradiction — outbox_id=%s already "
                     "terminal-success but no matching report exists", outbox_id,
                 )
@@ -764,7 +765,9 @@ def process_current_report(
             with current_report_metrics.safe_timed(current_report_metrics.DURATION_PROVIDER_ACQUISITION):
                 bundle = price_path_generation.acquire_evidence_outside_transaction(gen_ctx, market_tzinfo=market_tzinfo)
         except Exception:
-            logger.warning("current_report_generation: provider acquisition failed for trade_id=%s", trade_id)
+            current_report_metrics.safe_log(
+                logger.warning, "current_report_generation: provider acquisition failed for trade_id=%s", trade_id,
+            )
             current_report_metrics.safe_increment(current_report_metrics.COUNTER_PROVIDER_ACQUISITION_FAILURE)
             with conn_factory() as conn:
                 if outbox_id is not None and claimed_by is not None:

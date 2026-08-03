@@ -57,8 +57,9 @@ WORKER_LEASE_DURATION_SECONDS = outbox_ops.LEASE_DURATION_SECONDS
 _TASK: asyncio.Task | None = None
 _STOP_EVENT: asyncio.Event | None = None
 # Process-local (see outbox_queue_health.QueueHealthLogState's own
-# docstring) — reset whenever the worker restarts; never shared across
-# replicas or persisted.
+# docstring) — reset on every genuinely NEW worker task start (see
+# start_outbox_worker below, Package O §5 correction) as well as on a
+# full process restart; never shared across replicas or persisted.
 _QUEUE_HEALTH_LOG_STATE = QueueHealthLogState()
 
 
@@ -136,7 +137,7 @@ async def _process_claimed_row(row: dict, claimant: str, *, market_tzinfo_by_mar
         return
     tz_entry = market_tzinfo_by_market.get(row["market"])
     if tz_entry is None:
-        log.warning("[outbox_worker] unsupported market for outbox_id=%s — skipping", row["outbox_id"])
+        current_report_metrics.safe_log(log.warning, "[outbox_worker] unsupported market for outbox_id=%s — skipping", row["outbox_id"])
         return
     market_tzinfo, market_timezone_name = tz_entry
     try:
@@ -147,7 +148,7 @@ async def _process_claimed_row(row: dict, claimant: str, *, market_tzinfo_by_mar
             outbox_id=row["outbox_id"], claimed_by=claimant,
         )
     except Exception:
-        log.warning("[outbox_worker] row processing failed outbox_id=%s", row["outbox_id"])
+        current_report_metrics.safe_log(log.warning, "[outbox_worker] row processing failed outbox_id=%s", row["outbox_id"])
         current_report_metrics.safe_increment(current_report_metrics.COUNTER_WORKER_ROW_PROCESSING_FAILURE)
 
 
@@ -170,14 +171,14 @@ async def _poll_once(conn_factory, *, market_tzinfo_by_market: dict, batch_size:
                 )
                 apply_transition_and_log(snapshot, state=_QUEUE_HEALTH_LOG_STATE)
             except Exception:
-                log.warning("[outbox_worker_queue_depth] snapshot query failed — skipping this cycle's queue-health log")
+                current_report_metrics.safe_log(log.warning, "[outbox_worker_queue_depth] snapshot query failed — skipping this cycle's queue-health log")
 
             batch = claim_next_current_outbox_batch(
                 conn, claimant=claimant, limit=batch_size,
                 schema_version=schema_version, calculation_version=calculation_version, rules_version=rules_version,
             )
     except Exception:
-        log.warning("[outbox_worker] claim batch failed — database outage or transient error, backing off")
+        current_report_metrics.safe_log(log.warning, "[outbox_worker] claim batch failed — database outage or transient error, backing off")
         current_report_metrics.safe_increment(current_report_metrics.COUNTER_WORKER_CLAIM_BATCH_FAILURE)
         return 0
 
@@ -196,7 +197,7 @@ async def _worker_loop(conn_factory, *, market_tzinfo_by_market: dict, poll_inte
             try:
                 await _poll_once(conn_factory, market_tzinfo_by_market=market_tzinfo_by_market)
             except Exception:
-                log.warning("[outbox_worker] poll cycle failed")
+                current_report_metrics.safe_log(log.warning, "[outbox_worker] poll cycle failed")
                 current_report_metrics.safe_increment(current_report_metrics.COUNTER_WORKER_POLL_CYCLE_FAILURE)
             # No database connection is held across this sleep — the
             # claim/process cycle above has already released its
@@ -218,9 +219,16 @@ def start_outbox_worker(conn_factory, *, market_tzinfo_by_market: dict, poll_int
     gating is the CALLER's responsibility (api/main.py checks
     TRADE_POSTMORTEM_PRICE_PATH_ENABLED before calling this), matching
     every other flag-gated background loop already in that module."""
-    global _TASK, _STOP_EVENT
+    global _TASK, _STOP_EVENT, _QUEUE_HEALTH_LOG_STATE
     if _TASK is not None and not _TASK.done():
         return _TASK
+    # Package O §5 — a genuinely NEW worker task (never the idempotent
+    # early-return above) starts with a fresh queue-health log state.
+    # Without this, a stop/start cycle within the same process would
+    # carry over stale heartbeat/reminder timers from the previous run,
+    # which could suppress a warning for a condition that is actually
+    # brand new to this run.
+    _QUEUE_HEALTH_LOG_STATE = QueueHealthLogState()
     _STOP_EVENT = asyncio.Event()
     task = asyncio.create_task(_worker_loop(conn_factory, market_tzinfo_by_market=market_tzinfo_by_market, poll_interval_seconds=poll_interval_seconds))
     _TASK = task
@@ -240,7 +248,7 @@ def start_outbox_worker(conn_factory, *, market_tzinfo_by_market: dict, poll_int
             return
         exc = finished_task.exception()
         if exc is not None:
-            log.warning("[outbox_worker] worker loop task ended with an unhandled exception")
+            current_report_metrics.safe_log(log.warning, "[outbox_worker] worker loop task ended with an unhandled exception")
             current_report_metrics.safe_increment(current_report_metrics.COUNTER_WORKER_LOOP_CRASHED)
 
     task.add_done_callback(_clear_on_done)
