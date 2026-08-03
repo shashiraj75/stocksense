@@ -1292,8 +1292,38 @@ def test_structured_report_missing_required_provenance_field_fails_closed(client
 # ============================= supersession (A5) ============================= #
 
 def test_current_report_with_no_predecessor_returns_null_supersedes_id(client, pg_conn, unique_user_id, monkeypatch):
+    """Close-time best-effort generation (generation_service.generate_and_
+    persist, invoked at sell regardless of the price-path flag — see
+    paper_trading.py's sell handler) always persists a real 1.0.0 base
+    report for a happy-path close, so a trade that reaches this API via
+    _open_and_close always has a genuine predecessor once the 1.2.0 report
+    is live-generated. "No predecessor" is therefore not reachable through
+    the ordinary close+GET flow — it is exercised here the same way the
+    "real predecessor" and "no mutation" tests below control the exact
+    persisted identity: by seeding the 1.2.0 row directly at its exact
+    target identity (report_store.get_current_report then returns it
+    unchanged, without live generation running its own predecessor
+    lookup), with supersedes_report_id left at its true default of None."""
+    from services.postmortem import report_store
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # flag OFF at close
     monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
-    trade_id = _open_and_close(client, pg_conn, unique_user_id)
+
+    schema_v, calc_v, rules_v = current_target_identity(
+        base_calculation_version=CALCULATION_VERSION,
+        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+    )
+    report_store.persist_report(
+        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+        report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
+        report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+        evidence_bundle_version="1.2.0-no-predecessor", status="COMPLETE",
+        structured_report=_VALID_STRUCTURED_REPORT, evidence_items=[], claims=[],
+        source_manifest=_VALID_MANIFEST, evidence_gaps=[], warnings=[],
+    )
 
     resp = _current_report(client, unique_user_id, trade_id)
     assert resp.status_code == 200
