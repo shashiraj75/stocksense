@@ -1,0 +1,502 @@
+{
+  "wave": "C",
+  "description": "Trade Postmortem Wave C (WC-K current-report read API, WC-N per-trade frontend, WC-O observability) traceability manifest. Reuses the j4b3_traceability_helper.py static/runtime validation framework established for Sprint 3A rather than introducing a competing schema.",
+  "wc_k_frozen_sha": "7432851ea7affa7a80e8db131337763c7cbb69eb",
+  "wc_n_closed_sha": "d9096a9b16c2267a5cd6c4fac866467acffe07df",
+  "wc_o_closed_sha": "85d7edba540018f7b8c1fb625126fe25edceb49f",
+  "requirements": [
+    {
+      "id": "WC-K-01",
+      "title": "Canonical current-report route and authorization",
+      "implementation": "backend/api/routers/paper_trading.py::get_current_governed_report",
+      "expected_behavior": "GET /api/paper-trading/{trade_id}/current-report requires the same get_current_user_id dependency as every other paper-trading route; a trade belonging to another user is byte-for-byte indistinguishable (identical 404) from a nonexistent trade_id.",
+      "nodes": [
+        "tests/postgres_integration/test_current_report_read_api.py::test_unauthenticated_request_is_rejected",
+        "tests/postgres_integration/test_current_report_read_api.py::test_nonexistent_trade_returns_404",
+        "tests/postgres_integration/test_current_report_read_api.py::test_another_users_trade_is_indistinguishable_from_nonexistent"
+      ],
+      "proof_level": "PostgreSQL",
+      "historical_closure_sha": "7432851ea7affa7a80e8db131337763c7cbb69eb",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-K-02",
+      "title": "Feature-disabled behavior returns FEATURE_DISABLED, never a fabricated 404 or leaked report",
+      "implementation": "backend/api/routers/paper_trading.py::get_current_governed_report",
+      "expected_behavior": "Evaluated strictly after ownership; an owned trade with the backend flag off always returns availability=FEATURE_DISABLED with every READY-only field null, even if a 1.2.0 report already exists.",
+      "nodes": [
+        "tests/postgres_integration/test_current_report_read_api.py::test_disabled_owned_open_trade_returns_feature_disabled",
+        "tests/postgres_integration/test_current_report_read_api.py::test_disabled_owned_closed_trade_returns_feature_disabled",
+        "tests/postgres_integration/test_current_report_read_api.py::test_disabled_response_performs_no_writes_or_processing",
+        "tests/unit/test_current_report_endpoint_metrics_fail_open.py::TestAvailabilityFailOpenAcrossAllGovernedStates::test_response_unchanged_when_raw_metrics_primitive_raises[FEATURE_DISABLED]"
+      ],
+      "proof_level": "PostgreSQL",
+      "historical_closure_sha": "7432851ea7affa7a80e8db131337763c7cbb69eb",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-K-03",
+      "title": "All seven governed availability states are mapped deterministically",
+      "implementation": "backend/api/routers/paper_trading.py::get_current_governed_report",
+      "expected_behavior": "READY, PROCESSING, NOT_ELIGIBLE, NOT_AVAILABLE, TERMINAL_FAILURE, INTEGRITY_CONTRADICTION, FEATURE_DISABLED cover every reachable combination of trade status/outbox status/report existence.",
+      "nodes": [
+        "tests/postgres_integration/test_current_report_read_api.py::test_open_owned_trade_is_not_eligible",
+        "tests/postgres_integration/test_current_report_read_api.py::test_closed_trade_no_outbox_no_report_is_not_available",
+        "tests/postgres_integration/test_current_report_read_api.py::test_ready_report_returns_persisted_complete_or_limited_evidence",
+        "tests/postgres_integration/test_current_report_read_api.py::test_terminal_outbox_missing_report_is_integrity_contradiction",
+        "tests/postgres_integration/test_current_report_read_api.py::test_terminal_failure_outbox_is_reported",
+        "tests/postgres_integration/test_current_report_read_api.py::test_pending_outbox_is_processing",
+        "tests/postgres_integration/test_current_report_read_api.py::test_gate2_availability_matrix_maps_to_processing",
+        "tests/unit/test_current_report_endpoint_metrics_fail_open.py::TestAvailabilityFailOpenAcrossAllGovernedStates::test_response_identical_with_healthy_metrics"
+      ],
+      "proof_level": "PostgreSQL",
+      "historical_closure_sha": "7432851ea7affa7a80e8db131337763c7cbb69eb",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-K-04",
+      "title": "Current-version identity derivation, never a fuzzy/latest lookup",
+      "implementation": "backend/services/postmortem/current_report_generation.py::current_target_identity",
+      "expected_behavior": "The read path derives the exact governed (schema_version, calculation_version, rules_version) triple via current_target_identity, the same primitive the write path uses.",
+      "nodes": [
+        "tests/postgres_integration/test_current_report_read_api.py::test_historical_1_1_0_report_never_returned_as_current"
+      ],
+      "proof_level": "PostgreSQL",
+      "historical_closure_sha": "7432851ea7affa7a80e8db131337763c7cbb69eb",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-K-05",
+      "title": "Side-effect-free GET — never generates, claims, or mutates",
+      "implementation": "backend/api/routers/paper_trading.py::get_current_governed_report",
+      "expected_behavior": "GET never calls process_current_report, never acquires provider evidence, never claims/settles/inserts/updates an outbox row, never mutates a trade row.",
+      "nodes": [
+        "tests/postgres_integration/test_current_report_read_api.py::test_get_never_calls_provider_acquisition",
+        "tests/postgres_integration/test_current_report_read_api.py::test_get_inserts_no_outbox_row_and_no_report_row",
+        "tests/postgres_integration/test_current_report_read_api.py::test_get_does_not_mutate_trade_row",
+        "tests/postgres_integration/test_current_report_read_api.py::test_gate2_no_mutation_and_no_forbidden_calls_across_states"
+      ],
+      "proof_level": "PostgreSQL",
+      "historical_closure_sha": "7432851ea7affa7a80e8db131337763c7cbb69eb",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-K-06",
+      "title": "Deterministic serialization for a fixed persisted report",
+      "implementation": "backend/api/routers/paper_trading.py::CurrentReportReadResponse",
+      "expected_behavior": "Repeated GETs of the identical persisted report return byte-identical response bodies.",
+      "nodes": [
+        "tests/postgres_integration/test_current_report_read_api.py::test_gate2_ready_response_serialization_is_deterministic",
+        "tests/postgres_integration/test_current_report_read_api.py::test_repeated_get_with_supersession_causes_no_mutation"
+      ],
+      "proof_level": "PostgreSQL",
+      "historical_closure_sha": "7432851ea7affa7a80e8db131337763c7cbb69eb",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-K-07",
+      "title": "Canonical JSON persistence and evidence hash",
+      "implementation": "backend/services/postmortem/report_store.py::canonicalize_report_json,compute_evidence_hash,persist_report",
+      "expected_behavior": "One authoritative recursive canonicalizer for all six persisted report JSON fields; persist_report canonicalizes each exactly once and reuses those exact collections for both hashing and the INSERT payload.",
+      "nodes": [
+        "tests/postgres_integration/test_current_report_read_api.py::test_real_price_path_report_persists_claims_and_evidence_as_json_objects",
+        "tests/postgres_integration/test_current_report_read_api.py::test_governed_no_bars_fallback_report_persists_claims_as_json_objects"
+      ],
+      "proof_level": "PostgreSQL",
+      "historical_closure_sha": "7432851ea7affa7a80e8db131337763c7cbb69eb",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-K-08",
+      "title": "Governed source manifest — required fields and historical optionality",
+      "implementation": "backend/api/routers/paper_trading.py::ReportSourceManifest",
+      "expected_behavior": "has_entry_snapshot/has_exit_snapshot/exit_evidence_rules_version/phase1_calculation_version/attribution_rules_version required on every Sprint-2+ report; price_path_calculation_version genuinely absent (not null) on a historical/non-enhanced row.",
+      "nodes": [
+        "tests/postgres_integration/test_current_report_read_api.py::test_report_level_source_manifest_preserves_historical_absence_of_price_path_key",
+        "tests/unit/test_current_report_read_response_invariants.py::TestReadyRequiresCompleteReportIdentity"
+      ],
+      "proof_level": "PostgreSQL",
+      "historical_closure_sha": "7432851ea7affa7a80e8db131337763c7cbb69eb",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-K-09",
+      "title": "Governed claim/evidence vocabularies — no privacy leak of raw error codes",
+      "implementation": "backend/api/routers/paper_trading.py::PostmortemClaimModel,EvidenceItemModel",
+      "expected_behavior": "evidence_class/confidence_band/source_type/verification_level/freshness_status use the authoritative shared Enums directly; a raw outbox error code is never leaked to the client.",
+      "nodes": [
+        "tests/postgres_integration/test_current_report_read_api.py::test_terminal_failure_outbox_is_reported",
+        "tests/postgres_integration/test_current_report_read_api.py::test_invalid_governed_enum_in_persisted_claim_fails_closed",
+        "tests/postgres_integration/test_current_report_read_api.py::test_invalid_governed_enum_in_persisted_evidence_item_fails_closed"
+      ],
+      "proof_level": "PostgreSQL",
+      "historical_closure_sha": "7432851ea7affa7a80e8db131337763c7cbb69eb",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-K-10",
+      "title": "Claim semantics enforcement, shared not duplicated",
+      "implementation": "backend/services/postmortem/evidence.py::validate_postmortem_claim_semantics",
+      "expected_behavior": "The one authoritative rule check, called by both the frozen dataclass validator and PostmortemClaimModel's Pydantic validator.",
+      "nodes": [
+        "tests/postgres_integration/test_current_report_read_api.py::test_malformed_claim_missing_rule_id_fails_closed",
+        "tests/postgres_integration/test_current_report_read_api.py::test_unexpected_extra_claim_field_fails_closed_under_strict_policy"
+      ],
+      "proof_level": "PostgreSQL",
+      "historical_closure_sha": "7432851ea7affa7a80e8db131337763c7cbb69eb",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-K-11",
+      "title": "Referential integrity between claims and evidence",
+      "implementation": "backend/services/postmortem/generation_service.py::validate_merged_evidence_integrity",
+      "expected_behavior": "Public helper (renamed from _validate_merged_evidence_integrity), reused identically by build_report_payload and the READY conversion boundary; a dangling supporting/opposing evidence reference fails closed.",
+      "nodes": [
+        "tests/postgres_integration/test_current_report_read_api.py::test_dangling_supporting_evidence_reference_fails_closed"
+      ],
+      "proof_level": "PostgreSQL",
+      "historical_closure_sha": "7432851ea7affa7a80e8db131337763c7cbb69eb",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-K-12",
+      "title": "Typed structured_report.price_path.version_and_provenance (A4)",
+      "implementation": "backend/api/routers/paper_trading.py::VersionAndProvenance,PricePathSection,StructuredReportModel",
+      "expected_behavior": "The exact 9-field 1.2.0 governed provenance subtree is typed (extra=forbid); malformed/missing subtree fails closed to INTEGRITY_CONTRADICTION; unrelated structured_report/price_path sections are preserved via extra=allow.",
+      "nodes": [
+        "tests/unit/test_current_report_read_response_invariants.py::TestStructuredReportProvenanceTyping",
+        "tests/postgres_integration/test_current_report_read_api.py::test_structured_report_provenance_round_trips_adversarial_marker_values",
+        "tests/postgres_integration/test_current_report_read_api.py::test_structured_report_missing_price_path_subtree_fails_closed",
+        "tests/postgres_integration/test_current_report_read_api.py::test_structured_report_missing_required_provenance_field_fails_closed"
+      ],
+      "proof_level": "PostgreSQL",
+      "historical_closure_sha": "daeb82d0036787226aa678469aad76a597248980",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-K-13",
+      "title": "Supersession proof (A5)",
+      "implementation": "backend/services/postmortem/current_report_generation.py::persist_current_report",
+      "expected_behavior": "supersedes_report_id is null with no predecessor; a real predecessor's EXACT stored id is echoed (never recalculated); repeated GET causes no insert/update/repair.",
+      "nodes": [
+        "tests/postgres_integration/test_current_report_read_api.py::test_current_report_with_no_predecessor_returns_null_supersedes_id",
+        "tests/postgres_integration/test_current_report_read_api.py::test_current_report_with_a_real_predecessor_returns_the_exact_persisted_predecessor_id",
+        "tests/postgres_integration/test_current_report_read_api.py::test_repeated_get_with_supersession_causes_no_mutation"
+      ],
+      "proof_level": "PostgreSQL",
+      "historical_closure_sha": "2bb1da9ccdaa2df808e89c5c36573bbd126a410a",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-K-14",
+      "title": "Persisted version-provenance inventory closure",
+      "implementation": "Documentation/Engineering-Handbook/ADR/Trade-Postmortem-Wave-C-WC-K-14-Provenance-Inventory.md",
+      "expected_behavior": "Every version/provenance value the API can expose is typed, semantically validated, and sourced from the exact immutable persisted report; optional historical values are never synthesized; linked provider-manifest expansion recorded as nonblocking backlog.",
+      "nodes": [],
+      "proof_level": "documentation/runbook",
+      "historical_closure_sha": "de91ebac6d047c27f3ff7ec54536ec46b83ccba3",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-K-15",
+      "title": "Fail-closed malformed persistence behavior",
+      "implementation": "backend/api/routers/paper_trading.py::_build_current_report_ready_response",
+      "expected_behavior": "A ValidationError or ReportIntegrityError constructing the READY response is caught, logs only privacy-safe metadata, and converts to INTEGRITY_CONTRADICTION; never a raw 500 or leaked content; causes no mutation or self-repair.",
+      "nodes": [
+        "tests/postgres_integration/test_current_report_read_api.py::test_malformed_status_at_current_identity_fails_closed_to_integrity_contradiction",
+        "tests/postgres_integration/test_current_report_read_api.py::test_malformed_report_causes_no_mutation_or_recovery",
+        "tests/postgres_integration/test_current_report_read_api.py::test_malformed_source_manifest_causes_no_mutation",
+        "tests/unit/test_current_report_read_response_invariants.py::TestFailClosedConversionBoundary"
+      ],
+      "proof_level": "PostgreSQL",
+      "historical_closure_sha": "7432851ea7affa7a80e8db131337763c7cbb69eb",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-N-01",
+      "title": "Exact TypeScript contract mirroring the frozen backend response",
+      "implementation": "frontend/src/utils/api.ts::CurrentReportReadResponse,VersionAndProvenance,ReportSourceManifest,TriggerTimingVerification,EvidenceItem",
+      "expected_behavior": "Governed fields typed exactly (never any); TriggerTimingVerification/JSONValue/EXTERNAL_UNOFFICIAL_DAILY match the backend's governed vocabularies; compile-time assertions reject unsupported values.",
+      "nodes": [
+        "frontend/src/utils/__tests__/currentReportContract.types.ts (tsc --noEmit compile-time assertions)"
+      ],
+      "proof_level": "typecheck",
+      "historical_closure_sha": "d9096a9b16c2267a5cd6c4fac866467acffe07df",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-N-02",
+      "title": "Authenticated read-only client",
+      "implementation": "frontend/src/utils/api.ts::fetchCurrentPostmortemReport",
+      "expected_behavior": "Reuses the shared axios instance's Supabase JWT interceptor; never invokes a report-generation POST endpoint from the read page.",
+      "nodes": [],
+      "proof_level": "typecheck",
+      "historical_closure_sha": "c9fe27bd9bbdea9efd415a2d9f4d52078dff56a8",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-N-03",
+      "title": "Bounded polling stops on request error, not just non-PROCESSING data",
+      "implementation": "frontend/src/app/postmortem/[tradeId]/page.tsx::useBoundedProcessingPoll",
+      "expected_behavior": "refetchInterval checks q.state.status==='error' first (stale PROCESSING data must not mask a failed subsequent request); refetchOnWindowFocus/refetchOnReconnect disabled so neither bypasses the bound.",
+      "nodes": [
+        "TradePostmortemPage — bounded polling stops on request error, not just non-PROCESSING data > stops polling after a rejected 401 request and shows a safe generic error",
+        "TradePostmortemPage — bounded polling stops on request error, not just non-PROCESSING data > stops polling after a rejected 403 request",
+        "TradePostmortemPage — bounded polling stops on request error, not just non-PROCESSING data > stops polling after a rejected 404 request",
+        "TradePostmortemPage — bounded polling stops on request error, not just non-PROCESSING data > stops periodic requests after a network failure and shows the safe generic error state",
+        "TradePostmortemPage — bounded polling stops on request error, not just non-PROCESSING data > does not refetch on window focus after the polling window has timed out",
+        "TradePostmortemPage — bounded polling stops on request error, not just non-PROCESSING data > does not refetch on reconnect after the polling window has timed out",
+        "TradePostmortemPage — bounded polling stops on request error, not just non-PROCESSING data > the bounded normal PROCESSING path still makes no request beyond its documented maximum"
+      ],
+      "proof_level": "frontend component",
+      "historical_closure_sha": "d9096a9b16c2267a5cd6c4fac866467acffe07df",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-N-04",
+      "title": "AbortSignal cancellation on unmount and trade-ID change",
+      "implementation": "frontend/src/app/postmortem/[tradeId]/page.tsx::useBoundedProcessingPoll",
+      "expected_behavior": "The signal threaded to fetchCurrentPostmortemReport actually becomes aborted (not merely ignored) on unmount and on a trade-ID change.",
+      "nodes": [
+        "TradePostmortemPage — cancellation on unmount > passes an AbortSignal that becomes aborted after unmount",
+        "TradePostmortemPage — cancellation on unmount > aborts the old request's AbortSignal when the trade ID changes"
+      ],
+      "proof_level": "frontend component",
+      "historical_closure_sha": "d9096a9b16c2267a5cd6c4fac866467acffe07df",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-N-05",
+      "title": "All seven governed availability states rendered explicitly",
+      "implementation": "frontend/src/app/postmortem/[tradeId]/page.tsx::NonReadyState",
+      "expected_behavior": "Every non-READY state gets a named, explicit message; never a blank page for a state the backend deliberately distinguishes.",
+      "nodes": [
+        "TradePostmortemPage — non-READY availability states > renders an explicit message for %s, never a blank page"
+      ],
+      "proof_level": "frontend component",
+      "historical_closure_sha": "d9096a9b16c2267a5cd6c4fac866467acffe07df",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-N-06",
+      "title": "READY COMPLETE and LIMITED_EVIDENCE rendering",
+      "implementation": "frontend/src/app/postmortem/[tradeId]/page.tsx::ReadyReport",
+      "expected_behavior": "COMPLETE renders outcome/P&L/exit mechanism/MFE-MAE/touch evidence/claims/evidence/gaps/warnings/provenance; LIMITED_EVIDENCE is visually distinct, never implies certainty, shows the canonical insufficient-evidence sentence unchanged.",
+      "nodes": [
+        "TradePostmortemPage — READY COMPLETE > renders financial outcome, price-path findings, claims, gaps and warnings",
+        "TradePostmortemPage — READY LIMITED_EVIDENCE > is visually distinct and states the limitation without implying certainty",
+        "TradePostmortemPage — READY LIMITED_EVIDENCE > shows the canonical insufficient-evidence wording unchanged for an INSUFFICIENT_EVIDENCE claim"
+      ],
+      "proof_level": "frontend component",
+      "historical_closure_sha": "d9096a9b16c2267a5cd6c4fac866467acffe07df",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-N-07",
+      "title": "Financial currency context and closure-classification sourcing",
+      "implementation": "frontend/src/app/postmortem/[tradeId]/page.tsx::currencySymbolFor,findClosureClassification",
+      "expected_behavior": "IN→₹, US→$, unrecognized market shows the number without a fabricated symbol; percentages never carry a currency symbol; closure classification sourced ONLY from the governed EXIT/closure_classification evidence item, N/A when absent.",
+      "nodes": [
+        "TradePostmortemPage — financial context and closure classification > renders INR currency for an IN-market report",
+        "TradePostmortemPage — financial context and closure classification > renders USD currency for a US-market report",
+        "TradePostmortemPage — financial context and closure classification > never attaches a currency symbol to a percentage value",
+        "TradePostmortemPage — financial context and closure classification > displays a number without a currency symbol for an unrecognized market",
+        "TradePostmortemPage — financial context and closure classification > sources closure classification from the governed EXIT evidence item, not P&L or exit mechanism",
+        "TradePostmortemPage — financial context and closure classification > shows N/A for closure classification when the governed evidence item is absent"
+      ],
+      "proof_level": "frontend component",
+      "historical_closure_sha": "d9096a9b16c2267a5cd6c4fac866467acffe07df",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-N-08",
+      "title": "Report evidence manifest disclosure, historical-absence-preserving",
+      "implementation": "frontend/src/app/postmortem/[tradeId]/page.tsx::ReportEvidenceManifest",
+      "expected_behavior": "A separate disclosure from version/provenance using only explicitly typed source_manifest fields; price_path_calculation_version's row is omitted (never a fabricated null) when historically absent.",
+      "nodes": [
+        "TradePostmortemPage — report evidence manifest > shows the complete manifest with all governed fields",
+        "TradePostmortemPage — report evidence manifest > never displays a row for price_path_calculation_version when it is historically absent",
+        "TradePostmortemPage — report evidence manifest > shows entry/exit snapshot availability and supersession ID",
+        "TradePostmortemPage — report evidence manifest > the manifest disclosure control is keyboard-accessible and reports its expanded state"
+      ],
+      "proof_level": "frontend component",
+      "historical_closure_sha": "d9096a9b16c2267a5cd6c4fac866467acffe07df",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-N-09",
+      "title": "Evidence-value safety and accessibility",
+      "implementation": "frontend/src/app/postmortem/[tradeId]/page.tsx::safeFormatValue,ClaimRow,EvidenceRow",
+      "expected_behavior": "Bounded JSON formatting for non-scalar evidence values (never [object Object], never dangerouslySetInnerHTML); observation_timestamp/limitations shown when present; contradiction_flags labelled distinctly; status/alert roles and aria-expanded on disclosures.",
+      "nodes": [
+        "TradePostmortemPage — evidence value safety > renders a bounded safe representation for a non-scalar evidence value, never [object Object]",
+        "TradePostmortemPage — evidence value safety > shows observation timestamp and limitations when present",
+        "TradePostmortemPage — evidence value safety > labels claim contradiction_flags distinctly from ordinary limitations",
+        "TradePostmortemPage — accessibility > uses status/alert roles for loading and error states, and keyboard-operable expandable controls"
+      ],
+      "proof_level": "frontend component",
+      "historical_closure_sha": "d9096a9b16c2267a5cd6c4fac866467acffe07df",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-N-10",
+      "title": "Closed-trade entry point, open-trade absence, no duplication, frontend flag",
+      "implementation": "frontend/src/components/PaperTradeHistoryBlock.tsx::ClosedTradeRow",
+      "expected_behavior": "Exactly one View Postmortem link on a closed trade, gated by the frontend flag; never rendered on an open trade; never a second Buy/Sell/Close control; no duplicate after rerender.",
+      "nodes": [
+        "ClosedTradeHorizonBlock — View Postmortem entry point > renders exactly one View Postmortem link for a closed trade when the flag is enabled",
+        "ClosedTradeHorizonBlock — View Postmortem entry point > renders no View Postmortem action when the frontend flag is disabled",
+        "ClosedTradeHorizonBlock — View Postmortem entry point > never introduces a new Buy/Sell/Close control on the closed-trade row",
+        "ClosedTradeHorizonBlock — View Postmortem entry point > does not duplicate the action after a rerender with the same data"
+      ],
+      "proof_level": "frontend component",
+      "historical_closure_sha": "c9fe27bd9bbdea9efd415a2d9f4d52078dff56a8",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-N-11",
+      "title": "Frontend feature gate, tests, typecheck, production build",
+      "implementation": "frontend/src/utils/featureFlags.ts::isTradePostmortemPricePathEnabled",
+      "expected_behavior": "Independent of the daily-report flag; backend capability remains authoritative even when this flag is on. Full suite/typecheck/build all green.",
+      "nodes": [
+        "TradePostmortemPage — feature-disabled frontend gate > renders a safe unavailable state and never calls the API when the frontend flag is off"
+      ],
+      "proof_level": "production build",
+      "historical_closure_sha": "d9096a9b16c2267a5cd6c4fac866467acffe07df",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-N-12",
+      "title": "Browser-smoke scope and honest limitation",
+      "implementation": "N/A (manual verification against a temporary dev server)",
+      "expected_behavior": "Feature-disabled route, invalid-trade-ID route, unauthenticated-user route, and mobile layout verified live with zero console errors; READY/LIMITED_EVIDENCE states explicitly recorded as unverified live (no safe mock/interception mechanism in this environment) and covered instead by WC-N-06's component tests.",
+      "nodes": [],
+      "proof_level": "browser smoke",
+      "historical_closure_sha": "d9096a9b16c2267a5cd6c4fac866467acffe07df",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-O-01",
+      "title": "Metrics-store fail-open behavior",
+      "implementation": "backend/services/postmortem/current_report_metrics.py::safe_increment,safe_record_duration,safe_record_availability,safe_timed",
+      "expected_behavior": "Every safe_* function never raises regardless of an internal store failure; an unrecognized availability value produces one bounded warning, never a propagated KeyError.",
+      "nodes": [
+        "tests/unit/test_current_report_metrics.py::TestSafeWrappersAreFailOpen",
+        "tests/unit/test_current_report_endpoint_metrics_fail_open.py::TestAvailabilityFailOpenAcrossAllGovernedStates"
+      ],
+      "proof_level": "unit",
+      "historical_closure_sha": "d12616fcdab848a35511a5e4b8dc227462cd5cd1",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-O-02",
+      "title": "Logging-subsystem fail-open behavior",
+      "implementation": "backend/services/postmortem/current_report_metrics.py::safe_log",
+      "expected_behavior": "A broken logging handler/subsystem must never propagate out of any safe_* function, _log_internal_failure_bounded, or any observability log.warning/log.info call in current_report_generation.py/outbox_worker.py.",
+      "nodes": [
+        "tests/unit/test_current_report_metrics.py::TestLoggingItselfIsFailOpen",
+        "tests/unit/test_outbox_worker_metrics_fail_open.py::TestQueueSnapshotFailureDoesNotBlockClaiming",
+        "tests/unit/test_outbox_worker_metrics_fail_open.py::TestTaskDoneCallbackFailOpen",
+        "tests/unit/test_outbox_worker_metrics_fail_open.py::TestWorkerRowIsolationUnderMetricsFailure::test_row_failure_logging_and_metrics_failure_together_do_not_abort_the_next_row"
+      ],
+      "proof_level": "unit",
+      "historical_closure_sha": "4abd3f22dd7a86ebbc90346be7aecf47bd0d29bd",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-O-03",
+      "title": "Provider attempt/success/failure/replay signals and timing",
+      "implementation": "backend/services/postmortem/current_report_generation.py::process_current_report",
+      "expected_behavior": "Real acquisition success/failure record exactly one attempt plus one success/failure; compatible-evidence replay records zero attempts and no duration sample; a metrics/logging failure never changes the FAILED_RETRYABLE outcome.",
+      "nodes": [
+        "tests/unit/test_current_report_generation_provider_metrics.py::TestProviderAcquisitionMetricsWiring"
+      ],
+      "proof_level": "unit",
+      "historical_closure_sha": "4abd3f22dd7a86ebbc90346be7aecf47bd0d29bd",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-O-04",
+      "title": "Queue-health snapshot: counts, ages, version isolation, pre-claim observation, no mutation",
+      "implementation": "backend/services/postmortem/outbox_queue_health.py::read_queue_health_snapshot",
+      "expected_behavior": "Exact status counts and version isolation; active-vs-expired lease classification; documented age semantics (created_at/claimed_at/last_attempt_at, never next_attempt_at); >120s-in-GENERATING count; null ages/zero counts when empty; read before the claim each cycle; causes zero mutation.",
+      "nodes": [
+        "tests/postgres_integration/test_outbox_queue_health.py::test_exact_status_counts_and_version_isolation",
+        "tests/postgres_integration/test_outbox_queue_health.py::test_active_vs_expired_lease_classification_and_over_poll_window_count",
+        "tests/postgres_integration/test_outbox_queue_health.py::test_age_fields_use_the_documented_timestamps",
+        "tests/postgres_integration/test_outbox_queue_health.py::test_null_ages_and_zero_counts_when_a_category_is_empty",
+        "tests/postgres_integration/test_outbox_queue_health.py::test_snapshot_read_causes_no_database_mutation",
+        "tests/unit/test_outbox_queue_health.py::TestHeartbeat"
+      ],
+      "proof_level": "PostgreSQL",
+      "historical_closure_sha": "f230ec54ef82e5e3f0ebe5deb76f6222c334d3d3",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-O-05",
+      "title": "Noise-bounded logging: heartbeat and transition/reminder warnings",
+      "implementation": "backend/services/postmortem/outbox_queue_health.py::QueueHealthLogState,apply_transition_and_log",
+      "expected_behavior": "Heartbeat at most every 5 minutes; warnings on zero-to-non-zero/increase/15-minute-reminder, reset on return to zero; deterministic via an injectable clock.",
+      "nodes": [
+        "tests/unit/test_outbox_queue_health.py::TestExpiredLeaseTransitionLogging",
+        "tests/unit/test_outbox_queue_health.py::TestTerminalFailureTransitionLogging"
+      ],
+      "proof_level": "unit",
+      "historical_closure_sha": "d12616fcdab848a35511a5e4b8dc227462cd5cd1",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-O-06",
+      "title": "Process-local / multi-replica limitations, disclosed honestly",
+      "implementation": "backend/services/postmortem/outbox_worker.py::_QUEUE_HEALTH_LOG_STATE,start_outbox_worker",
+      "expected_behavior": "QueueHealthLogState resets on every genuinely new worker task start (not the idempotent early-return) and on process restart; each replica maintains independent state (no cross-replica dedup) — documented explicitly, not silently assumed.",
+      "nodes": [],
+      "proof_level": "documentation/runbook",
+      "historical_closure_sha": "85d7edba540018f7b8c1fb625126fe25edceb49f",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-O-07",
+      "title": "Real EXPLAIN evidence for the queue-health query",
+      "implementation": "backend/tests/postgres_integration/test_outbox_queue_health_explain.py",
+      "expected_behavior": "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) captured at a representative beta-scale row count (5,000) on both PostgreSQL 15 and 17, never asserting a brittle plan node or millisecond threshold; EXPLAIN ANALYZE itself causes zero mutation.",
+      "nodes": [
+        "tests/postgres_integration/test_outbox_queue_health_explain.py::test_explain_evidence_at_beta_scale_row_count",
+        "tests/postgres_integration/test_outbox_queue_health_explain.py::test_explain_analyze_causes_no_database_mutation"
+      ],
+      "proof_level": "PostgreSQL",
+      "historical_closure_sha": "85d7edba540018f7b8c1fb625126fe25edceb49f",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-O-08",
+      "title": "Log-volume analysis and query-cost evidence documentation",
+      "implementation": "Documentation/Engineering-Handbook/Operations/Trade-Postmortem-Wave-C-WC-O-Observability-And-Capacity-Review.md",
+      "expected_behavior": "Realistic log-volume estimate (GET traffic 1:1 with metrics lines, no cap; worker heartbeat/warnings bounded); the 'query is cheap' claim replaced with measured EXPLAIN evidence and an honest, evidence-supported capacity boundary (no unsupported 50,000-row threshold).",
+      "nodes": [],
+      "proof_level": "documentation/runbook",
+      "historical_closure_sha": "cf42fbf64ae0b3465a7eac7592951d8d797ccdb0",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-O-09",
+      "title": "Controlled remediation procedure, no ad hoc production SQL",
+      "implementation": "Documentation/Engineering-Handbook/Operations/Trade-Postmortem-Wave-C-WC-O-Runbooks.md",
+      "expected_behavior": "The ad hoc 'manually reset FAILED_TERMINAL to PENDING' instruction is replaced with a 9-step controlled procedure (disable if material, read-only evidence, root-cause fix, reviewed script, owner approval, dry-run, transactional execution, consistency verification, audit retention). No remediation tool built without a real unresolved case.",
+      "nodes": [],
+      "proof_level": "documentation/runbook",
+      "historical_closure_sha": "d12616fcdab848a35511a5e4b8dc227462cd5cd1",
+      "classification": "CLOSED"
+    },
+    {
+      "id": "WC-O-10",
+      "title": "Evidence-based global-beta boundary and enablement/disablement/rollback procedures",
+      "implementation": "Documentation/Engineering-Handbook/Operations/Trade-Postmortem-Wave-C-WC-O-Runbooks.md",
+      "expected_behavior": "services/auth.py inspected — no invite/cohort gate exists; beta boundary stated honestly as a global, low-traffic activation, not a restricted cohort; frontend-enabled/backend-disabled correctly documented as FEATURE_DISABLED (never a fabricated 404); dark deployment, enablement, disablement, and rollback are fully executable procedures.",
+      "nodes": [],
+      "proof_level": "documentation/runbook",
+      "historical_closure_sha": "d12616fcdab848a35511a5e4b8dc227462cd5cd1",
+      "classification": "CLOSED"
+    }
+  ]
+}
