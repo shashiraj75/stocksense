@@ -75,37 +75,99 @@ dormant:
 
 ## 5. Controlled beta
 
-1. Enable the backend flag first, frontend flag second (backend-first
-   ordering means the API is ready before any user-facing entry point
-   exists — the reverse order would surface a link that immediately
-   404s or shows `FEATURE_DISABLED`, a confusing user experience even
-   though it fails safely).
-2. Restrict the beta population via whatever mechanism the deployment
-   platform already supports for gradual rollout (this document does
-   not introduce a new per-user flag — Wave C's flags are global,
-   environment-level toggles only).
-3. Monitor the thresholds in runbook 6 for the beta's duration before
-   considering a wider rollout — that is itself an owner decision, not
-   automated by anything in this pass.
+**§O9 — the actual beta boundary, evidence-based.** Inspected
+`services/auth.py`'s `get_current_user_id` (the sole authorization
+dependency every paper-trading route, including the current-report GET,
+uses) and the signup/registration surface: there is no invite-only user
+population, no cohort gate, no separate preview deployment, and no
+per-user flag anywhere in this codebase — any user who can authenticate
+with a valid Supabase session token is authorized identically. This is
+stated explicitly rather than assumed: **the flags introduced by Wave C
+(`TRADE_POSTMORTEM_PRICE_PATH_ENABLED`,
+`NEXT_PUBLIC_TRADE_POSTMORTEM_PRICE_PATH_ENABLED`) are GLOBAL,
+environment-level toggles with no cohort mechanism** — so "controlled
+beta" here means **a global, low-traffic activation observed closely**,
+not a restricted user population. Do not describe this as a "cohort"
+or "invite-only" beta in any owner communication; that would misstate
+what the flags actually do.
+
+Given that:
+
+1. **Backend-enabled, frontend-disabled first** (runbook 3), observed
+   for the stated observation period below, before enabling the
+   frontend flag (runbook 4). Ordering matters for a DIFFERENT reason
+   than a 404 risk (there is no 404 risk here — see the correction
+   below): it lets the backend generation path and worker be observed
+   under real (if invisible-to-users) load before any user-facing entry
+   point exists, so a backend-only defect is caught before any user can
+   reach it.
+2. **Frontend-enabled but backend-disabled is a safe, well-defined
+   state, not a broken one**: with the frontend flag on and the backend
+   flag off, `GET /api/paper-trading/{trade_id}/current-report` for an
+   owned, closed trade returns HTTP 200 with `availability:
+   "FEATURE_DISABLED"` (verified in
+   `api/routers/paper_trading.py::get_current_governed_report` — the
+   capability check happens strictly after the ownership/404 check, and
+   returns `CurrentReportReadResponse(availability=
+   CURRENT_REPORT_STATUS_FEATURE_DISABLED)`, never a 404). The
+   `/postmortem/[tradeId]` page renders this as an explicit "Postmortem
+   reports aren't available yet" message (`NonReadyState`'s
+   `FEATURE_DISABLED` branch) — **the page never invents or surfaces a
+   404 in this state.** This corrects an earlier draft of this runbook
+   that incorrectly suggested a 404 was possible here.
+3. **Expected beta population**: since no cohort mechanism exists, this
+   is every authenticated user of the deployment the flags are enabled
+   on — treat the observation period and rollback thresholds below as
+   applying to 100% of that deployment's traffic, not a sampled subset.
+4. **Observation period**: a minimum of 48 hours of backend-only
+   enablement (step 1) with the monitoring thresholds in runbook 6
+   showing no BLOCKING signal, followed by a minimum of 72 hours of full
+   (backend + frontend) enablement before considering the beta
+   successful. These durations are a starting recommendation, not a
+   backend-enforced timer — the owner may extend either window based on
+   observed signal.
+5. **Rollback thresholds**: any occurrence of
+   `COUNTER_WORKER_LOOP_CRASHED`, any occurrence of
+   `COUNTER_INTEGRITY_CONTRADICTION_DETECTED`, or a sustained (present
+   across 3+ consecutive heartbeat log lines) non-zero
+   `failed_terminal`/`generating_expired_lease` count triggers immediate
+   disablement (runbook 7) and owner notification before any expansion
+   decision.
+6. **Who approves expansion**: the same owner who grants Owner Gate 1/
+   Owner Gate 2 approval — this document does not delegate that
+   decision to an on-call engineer; an engineer's role during the beta
+   is to execute immediate disablement (runbook 7) on a rollback
+   threshold and then escalate, not to decide on expansion.
 
 ## 6. Monitoring thresholds
 
-Watch these `[outbox_worker_queue_depth]` fields (logged once per
-30-second poll cycle) and the corresponding metrics counters:
+Watch these signals, all sourced from structured logs (§O4 — logging is
+noise-bounded, not one line per cycle: see the observability document
+for the exact heartbeat/reminder cadence and the explicit multi-replica
+caveat below):
 
-| Signal | Where | Investigate when |
-|---|---|---|
-| `pending` count | queue-depth log line | trending upward across consecutive cycles (backlog growing faster than the ~20 rows/minute processing ceiling — see capacity review) |
-| `generating_expired_lease` count | queue-depth log line / `[outbox_worker_expired_lease]` warning | non-zero and not shrinking on the next cycle (a worker that claimed a row is not completing it within the lease window — possible stuck/crashed processing) |
-| `failed_terminal` count | queue-depth log line / `[outbox_worker_terminal_failure_backlog]` warning | any sustained non-zero count (see runbook 11, "Report-generation failure") |
-| `COUNTER_INTEGRITY_CONTRADICTION_DETECTED` | `[metrics]` log line | any occurrence at all (see runbook 9) |
-| `COUNTER_WORKER_LOOP_CRASHED` | `[metrics]` log line | any occurrence (see runbook 8) |
-| `COUNTER_PROVIDER_ACQUISITION_FAILURE` rate | `[metrics]` log line | a spike relative to request volume (see runbook 10, "Provider storm") |
-| `COUNTER_AVAILABILITY_TERMINAL_FAILURE` rate | `[metrics]` log line | a spike in user-facing terminal failures |
+| Signal | Where | Cadence | Investigate when |
+|---|---|---|---|
+| `pending` count | `[outbox_worker_queue_depth]` heartbeat line | every ~5 minutes per replica | trending upward across consecutive heartbeats (backlog growing faster than the ~20 rows/minute/replica processing ceiling — see capacity review) |
+| `generating_expired_lease` count | `[outbox_worker_queue_depth]` heartbeat, or `[outbox_worker_expired_lease]` warning | warning on zero→non-zero transition, count increase, or every ~15 minutes while sustained | non-zero and not shrinking (a worker that claimed a row is not completing it within the lease window — possible stuck/crashed processing) |
+| `failed_terminal` count | `[outbox_worker_queue_depth]` heartbeat, or `[outbox_worker_terminal_failure_backlog]` warning | same transition/reminder policy as above | any sustained non-zero count (see runbook 11, "Report-generation failure") |
+| `COUNTER_INTEGRITY_CONTRADICTION_DETECTED` | `[metrics]` log line | on occurrence | any occurrence at all (see runbook 9) |
+| `COUNTER_WORKER_LOOP_CRASHED` | `[metrics]` log line | on occurrence | any occurrence (see runbook 8) |
+| provider failure rate = `COUNTER_PROVIDER_ACQUISITION_FAILURE` / `COUNTER_PROVIDER_ACQUISITION_ATTEMPT` | `[metrics]` log lines (compute the ratio from the two counters — no single log line emits a pre-computed rate) | on occurrence of either counter | a rate spike relative to baseline (see runbook 10, "Provider storm") |
+| `COUNTER_AVAILABILITY_TERMINAL_FAILURE` rate | `[metrics]` log line | on occurrence | a spike in user-facing terminal failures |
 
-No dashboard is created by this pass — these are log-line signals an
-operator (or a future, separately-approved log-alerting rule) watches
-directly.
+**No dashboard exists.** These are log-line signals an operator (or a
+future, separately-approved log-alerting rule) watches directly by
+reading or grepping application logs. **Warning suppression and
+heartbeat state are process-local** (see
+`services.postmortem.outbox_queue_health.QueueHealthLogState`) — they
+reset on every process restart, and **each worker replica maintains its
+own independent state**, so with more than one replica running, the same
+condition can produce a duplicate warning from each replica rather than
+one deduplicated alert. This is NOT global alert deduplication; computing
+a true cross-replica rate or a deduplicated alert requires aggregating
+the structured logs above across all replicas (e.g. in a log platform),
+which this pass does not build.
 
 ## 7. Immediate disablement
 
@@ -183,7 +245,10 @@ a code change and redeploy — these are named constants in
 replicas — the `FOR UPDATE SKIP LOCKED` claim query is already
 multi-replica-safe.
 
-**Provider storm** (a spike in `COUNTER_PROVIDER_ACQUISITION_FAILURE`):
+**Provider storm** (the ratio `COUNTER_PROVIDER_ACQUISITION_FAILURE` /
+`COUNTER_PROVIDER_ACQUISITION_ATTEMPT` spikes — note
+`COUNTER_PROVIDER_ACQUISITION_REPLAY` is NOT part of this denominator;
+replaying already-persisted evidence makes no provider call):
 this indicates the upstream market-data provider is failing or
 rate-limiting acquisition calls. Each failure already routes the row to
 `FAILED_RETRYABLE` (not `FAILED_TERMINAL`) via
@@ -204,14 +269,44 @@ Triggered by: `COUNTER_AVAILABILITY_TERMINAL_FAILURE` or
    `last_error_summary` columns on the outbox row for the actual failure
    reason (never logged in full elsewhere, to keep log lines bounded —
    see the observability review's log-cardinality section).
-3. If the root cause is fixed (e.g. a provider outage that has since
-   resolved, or a code defect that has since been corrected and
-   deployed), a `FAILED_TERMINAL` row can be manually reset to `PENDING`
-   with `attempt_count` reset to 0 by an operator with direct database
-   access — this is a deliberate manual action, not something any code
-   path in this feature performs automatically, since automatically
-   retrying a terminal failure indefinitely was the exact failure mode
-   `MAX_ATTEMPTS_BEFORE_TERMINAL` exists to prevent.
+3. **§O8 — remediation is a controlled procedure, never ad hoc
+   production SQL.** No operator is authorized to directly execute
+   `UPDATE paper_trade_postmortem_outbox SET status = 'PENDING' WHERE
+   status = 'FAILED_TERMINAL'` (or any direct `attempt_count` reset)
+   against production. Automatically or informally retrying a terminal
+   failure indefinitely was the exact failure mode
+   `MAX_ATTEMPTS_BEFORE_TERMINAL` exists to prevent — an ad hoc reset
+   reintroduces exactly that risk with no review trail. If the root
+   cause is fixed and remediation is genuinely warranted, follow this
+   procedure instead:
+   1. Disable the feature (runbook 7) if the backlog's impact is
+      material.
+   2. Collect read-only evidence using the approved read-only
+      operational database role (never a role with write access) —
+      affected `outbox_id`s, `trade_id`s, `last_error_code`,
+      `attempt_count`, and timestamps.
+   3. Identify and fix the actual root cause (provider issue, code
+      defect) and confirm the fix is deployed.
+   4. Prepare a reviewed, version-controlled remediation script,
+      migration, or administrative tool — not an interactive SQL
+      session — that resets exactly the identified rows by ID (never a
+      blanket `WHERE status = 'FAILED_TERMINAL'` across the whole
+      table).
+   5. Obtain explicit owner approval for that specific script and row
+      set.
+   6. Run the script in dry-run mode first and produce output listing
+      the exact affected row identities and counts for review.
+   7. Execute transactionally through the approved deployment/change
+      process (never a direct interactive production connection).
+   8. Verify report/outbox consistency afterward (no new
+      `INTEGRITY_CONTRADICTION` introduced, `failed_terminal` count
+      decreased by exactly the expected amount).
+   9. Retain the dry-run output, the approval record, and the execution
+      log as the audit record.
+
+   No such remediation script is created by this release — one is only
+   built if and when a real, unresolved production case requires it,
+   following the procedure above.
 
 ## 12. Frontend polling failure
 

@@ -715,7 +715,7 @@ def process_current_report(
                     "current_report_generation: integrity contradiction — outbox_id=%s already "
                     "terminal-success but no matching report exists", outbox_id,
                 )
-                current_report_metrics.increment(current_report_metrics.COUNTER_INTEGRITY_CONTRADICTION_DETECTED)
+                current_report_metrics.safe_increment(current_report_metrics.COUNTER_INTEGRITY_CONTRADICTION_DETECTED)
                 return None, CURRENT_REPORT_INTEGRITY_CONTRADICTION
 
         # Gate 'J4E — Immutable Snapshot Consumption': the entry and
@@ -752,13 +752,20 @@ def process_current_report(
     # Phase 2 — outside any DB connection.
     bundle = None
     if gen_ctx.compatible_evidence is not None:
+        # Reusing already-persisted compatible evidence makes no provider
+        # network call at all — never counted as a provider "attempt"
+        # (§O5: a failure RATE's denominator must only include real
+        # attempts, not replays).
+        current_report_metrics.safe_increment(current_report_metrics.COUNTER_PROVIDER_ACQUISITION_REPLAY)
         bundle = price_path_generation._persisted_evidence_to_bundle(gen_ctx.compatible_evidence)
     else:
+        current_report_metrics.safe_increment(current_report_metrics.COUNTER_PROVIDER_ACQUISITION_ATTEMPT)
         try:
-            bundle = price_path_generation.acquire_evidence_outside_transaction(gen_ctx, market_tzinfo=market_tzinfo)
+            with current_report_metrics.safe_timed(current_report_metrics.DURATION_PROVIDER_ACQUISITION):
+                bundle = price_path_generation.acquire_evidence_outside_transaction(gen_ctx, market_tzinfo=market_tzinfo)
         except Exception:
             logger.warning("current_report_generation: provider acquisition failed for trade_id=%s", trade_id)
-            current_report_metrics.increment(current_report_metrics.COUNTER_PROVIDER_ACQUISITION_FAILURE)
+            current_report_metrics.safe_increment(current_report_metrics.COUNTER_PROVIDER_ACQUISITION_FAILURE)
             with conn_factory() as conn:
                 if outbox_id is not None and claimed_by is not None:
                     outbox_ops.mark_retryable_failure(
@@ -766,6 +773,7 @@ def process_current_report(
                         error_summary="price-path evidence acquisition raised", claimed_by=claimed_by,
                     )
             return None, CURRENT_REPORT_FAILED_RETRYABLE
+        current_report_metrics.safe_increment(current_report_metrics.COUNTER_PROVIDER_ACQUISITION_SUCCESS)
 
     # Phase 3 — short evidence-persistence transaction, closed before
     # pure report construction begins.

@@ -30,6 +30,11 @@ import logging
 
 from services.postmortem import current_report_metrics
 from services.postmortem import outbox as outbox_ops
+from services.postmortem.outbox_queue_health import (
+    QueueHealthLogState,
+    apply_transition_and_log,
+    read_queue_health_snapshot,
+)
 from services.postmortem.current_report_generation import (
     CURRENT_REPORT_FAILED_TERMINAL,
     CURRENT_REPORT_SCHEMA_VERSION,
@@ -51,6 +56,10 @@ WORKER_LEASE_DURATION_SECONDS = outbox_ops.LEASE_DURATION_SECONDS
 
 _TASK: asyncio.Task | None = None
 _STOP_EVENT: asyncio.Event | None = None
+# Process-local (see outbox_queue_health.QueueHealthLogState's own
+# docstring) — reset whenever the worker restarts; never shared across
+# replicas or persisted.
+_QUEUE_HEALTH_LOG_STATE = QueueHealthLogState()
 
 
 def claim_next_current_outbox_batch(
@@ -139,46 +148,7 @@ async def _process_claimed_row(row: dict, claimant: str, *, market_tzinfo_by_mar
         )
     except Exception:
         log.warning("[outbox_worker] row processing failed outbox_id=%s", row["outbox_id"])
-        current_report_metrics.increment(current_report_metrics.COUNTER_WORKER_ROW_PROCESSING_FAILURE)
-
-
-# WC-O — outbox backlog/expired-lease/retryable/terminal-failure visibility.
-# One cheap, read-only, purely-additive query per poll cycle (never part
-# of the claim/settlement transaction itself, so it can never affect
-# claim correctness or add lock contention to the write path). Logged as
-# a single structured line so backlog growth, a spike in expired leases,
-# or accumulating FAILED_TERMINAL rows are all visible from log output
-# alone, with no dashboard required to notice a trend.
-def _log_queue_depth_snapshot(conn, *, schema_version: str, calculation_version: str, rules_version: str) -> None:
-    try:
-        row = conn.execute(
-            """SELECT
-                 count(*) FILTER (WHERE status = 'PENDING') AS pending,
-                 count(*) FILTER (WHERE status = 'GENERATING' AND (lease_expires_at IS NULL OR lease_expires_at > now())) AS generating_active,
-                 count(*) FILTER (WHERE status = 'GENERATING' AND lease_expires_at IS NOT NULL AND lease_expires_at <= now()) AS generating_expired_lease,
-                 count(*) FILTER (WHERE status = 'FAILED_RETRYABLE') AS failed_retryable,
-                 count(*) FILTER (WHERE status = 'FAILED_TERMINAL') AS failed_terminal
-               FROM paper_trade_postmortem_outbox
-               WHERE requested_report_schema_version = %s
-                 AND requested_calculation_version = %s
-                 AND requested_rules_version = %s""",
-            (schema_version, calculation_version, rules_version),
-        ).fetchone()
-    except Exception:
-        log.warning("[outbox_worker_queue_depth] snapshot query failed — skipping this cycle")
-        return
-    if row is None:
-        return
-    pending, generating_active, generating_expired_lease, failed_retryable, failed_terminal = row
-    log.info(
-        "[outbox_worker_queue_depth] pending=%d generating_active=%d generating_expired_lease=%d "
-        "failed_retryable=%d failed_terminal=%d",
-        pending, generating_active, generating_expired_lease, failed_retryable, failed_terminal,
-    )
-    if generating_expired_lease > 0:
-        log.warning("[outbox_worker_expired_lease] count=%d — rows reclaimable on next claim batch", generating_expired_lease)
-    if failed_terminal > 0:
-        log.warning("[outbox_worker_terminal_failure_backlog] count=%d", failed_terminal)
+        current_report_metrics.safe_increment(current_report_metrics.COUNTER_WORKER_ROW_PROCESSING_FAILURE)
 
 
 async def _poll_once(conn_factory, *, market_tzinfo_by_market: dict, batch_size: int = CLAIM_BATCH_SIZE) -> int:
@@ -189,16 +159,26 @@ async def _poll_once(conn_factory, *, market_tzinfo_by_market: dict, batch_size:
     )
     try:
         with conn_factory() as conn:
+            # WC-O §O2 — the snapshot is read BEFORE claiming, so this
+            # cycle's queue-health numbers reflect the backlog/expired-
+            # lease state actually observed at cycle start, not state
+            # already mutated by this same cycle's own claim.
+            try:
+                snapshot = read_queue_health_snapshot(
+                    conn, schema_version=schema_version, calculation_version=calculation_version,
+                    rules_version=rules_version,
+                )
+                apply_transition_and_log(snapshot, state=_QUEUE_HEALTH_LOG_STATE)
+            except Exception:
+                log.warning("[outbox_worker_queue_depth] snapshot query failed — skipping this cycle's queue-health log")
+
             batch = claim_next_current_outbox_batch(
                 conn, claimant=claimant, limit=batch_size,
                 schema_version=schema_version, calculation_version=calculation_version, rules_version=rules_version,
             )
-            _log_queue_depth_snapshot(
-                conn, schema_version=schema_version, calculation_version=calculation_version, rules_version=rules_version,
-            )
     except Exception:
         log.warning("[outbox_worker] claim batch failed — database outage or transient error, backing off")
-        current_report_metrics.increment(current_report_metrics.COUNTER_WORKER_CLAIM_BATCH_FAILURE)
+        current_report_metrics.safe_increment(current_report_metrics.COUNTER_WORKER_CLAIM_BATCH_FAILURE)
         return 0
 
     for row in batch:
@@ -217,7 +197,7 @@ async def _worker_loop(conn_factory, *, market_tzinfo_by_market: dict, poll_inte
                 await _poll_once(conn_factory, market_tzinfo_by_market=market_tzinfo_by_market)
             except Exception:
                 log.warning("[outbox_worker] poll cycle failed")
-                current_report_metrics.increment(current_report_metrics.COUNTER_WORKER_POLL_CYCLE_FAILURE)
+                current_report_metrics.safe_increment(current_report_metrics.COUNTER_WORKER_POLL_CYCLE_FAILURE)
             # No database connection is held across this sleep — the
             # claim/process cycle above has already released its
             # connection back to the pool by this point. stop_
@@ -261,7 +241,7 @@ def start_outbox_worker(conn_factory, *, market_tzinfo_by_market: dict, poll_int
         exc = finished_task.exception()
         if exc is not None:
             log.warning("[outbox_worker] worker loop task ended with an unhandled exception")
-            current_report_metrics.increment(current_report_metrics.COUNTER_WORKER_LOOP_CRASHED)
+            current_report_metrics.safe_increment(current_report_metrics.COUNTER_WORKER_LOOP_CRASHED)
 
     task.add_done_callback(_clear_on_done)
     return _TASK
