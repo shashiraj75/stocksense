@@ -65,7 +65,7 @@ def test_explain_evidence_at_beta_scale_row_count(pg_conn):
             requested_calculation_version, requested_rules_version, status,
             created_at, claimed_at, lease_expires_at, last_attempt_at)
          SELECT
-           1_000_000_000 + gs,
+           1000000000 + gs,
            %(user_id)s,
            %(schema_version)s, %(calculation_version)s, %(rules_version)s,
            (ARRAY['PENDING','GENERATING','FAILED_RETRYABLE','FAILED_TERMINAL'])[1 + (gs %% 4)],
