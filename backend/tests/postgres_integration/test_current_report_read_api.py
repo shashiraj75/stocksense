@@ -1539,9 +1539,10 @@ def test_gate2_availability_matrix_maps_to_processing(client, pg_conn, unique_us
     columns = ["paper_trade_id", "user_id", "requested_report_schema_version",
                "requested_calculation_version", "requested_rules_version", "status"] + list(extra.keys())
     static_values = (trade_id, unique_user_id, schema_v, calc_v, rules_v, status)
+    extra_fragment = (", " + ", ".join(extra.values())) if extra else ""
     pg_conn.execute(
         f"INSERT INTO paper_trade_postmortem_outbox ({', '.join(columns)}) "
-        f"VALUES (%s, %s, %s, %s, %s, %s, {', '.join(list(extra.values()))})",
+        f"VALUES (%s, %s, %s, %s, %s, %s{extra_fragment})",
         static_values,
     )
 
