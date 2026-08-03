@@ -26,6 +26,7 @@ from services.postmortem.entry_snapshot import (
     classify_evidence_completeness,
 )
 from services.postmortem.evidence_attribution import ATTRIBUTION_RULES_VERSION, build_evidence_attribution
+from services.postmortem import evidence_attribution
 from services.postmortem.daily_report import DailyTradePostmortem, build_daily_report
 from services.market_hours import IST, ET
 from services.postmortem.close_service import (
@@ -41,6 +42,10 @@ from services.postmortem.close_service import (
 from services.postmortem.close_service import _EXIT_SNAPSHOT_COLUMNS as _EXIT_SNAPSHOT_DB_COLUMNS
 from services.postmortem.close_service import _insert_outbox_record
 from services.postmortem.exit_snapshot import CloseExitMechanism, ExitSnapshot, TriggerTimingVerification
+from services.postmortem.evidence import (
+    ConfidenceBand, EvidenceClass, EvidenceVerificationLevel, FreshnessStatus, SourceType,
+    validate_postmortem_claim_semantics,
+)
 from services.postmortem import generation_service
 from services.postmortem import outbox as outbox_ops
 from services.postmortem import report_store
@@ -3224,19 +3229,28 @@ class PostmortemClaimModel(BaseModel):
     and construct THIS SAME dataclass — verified by direct source read;
     there is no separate claim shape to union against). All fields are
     required because PostmortemClaim itself has no optional dataclass
-    fields except limitations (default []) — the frozen dataclass's own
-    __post_init__ already enforces cross-field invariants (e.g. an
-    INSUFFICIENT_EVIDENCE claim must cite zero supporting evidence) at
-    the point every claim was originally constructed, so this model
-    only needs to type-check the persisted shape, not re-derive those
-    invariants."""
+    fields except limitations (default []).
+
+    extra="forbid": every current 1.2.0 producer constructs the exact
+    shared PostmortemClaim dataclass shape (verified above) — an
+    unexpected extra field means either a real defect or an
+    undocumented schema change, and must fail closed rather than be
+    silently dropped.
+
+    evidence_class/confidence_band use the authoritative
+    services.postmortem.evidence Enums directly (both (str, Enum), so
+    external JSON serialization is an unchanged plain string) rather
+    than a duplicated Literal — a value added to those enums is
+    automatically accepted here with no separate update."""
+
+    model_config = {"extra": "forbid"}
 
     claim_id: str
     report_section: str
     factor: str
     claim_text: str
-    evidence_class: str
-    confidence_band: str
+    evidence_class: EvidenceClass
+    confidence_band: ConfidenceBand
     supporting_evidence_ids: list[str]
     opposing_evidence_ids: list[str]
     missing_evidence: list[str]
@@ -3244,6 +3258,23 @@ class PostmortemClaimModel(BaseModel):
     rule_id: str
     rule_version: str
     limitations: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _enforce_claim_semantics(self):
+        # Reuses the SAME authoritative rule check
+        # PostmortemClaim.__post_init__ itself uses — never a second,
+        # independently drifting implementation.
+        try:
+            validate_postmortem_claim_semantics(
+                claim_id=self.claim_id, claim_text=self.claim_text,
+                evidence_class=self.evidence_class.value, confidence_band=self.confidence_band.value,
+                supporting_evidence_ids=self.supporting_evidence_ids,
+                opposing_evidence_ids=self.opposing_evidence_ids,
+                rule_id=self.rule_id, rule_version=self.rule_version,
+            )
+        except ValueError as exc:
+            raise ValueError(f"claim semantic rule violated: {type(exc).__name__}") from None
+        return self
 
 
 class EvidenceItemModel(BaseModel):
@@ -3253,7 +3284,13 @@ class EvidenceItemModel(BaseModel):
     JSONValue because the dataclass itself declares it `object` — the
     field is genuinely open-ended by the original author's own design
     (an evidence item's observed value can be a price, a count, a
-    string signal name, a nested dict, etc.)."""
+    string signal name, a nested dict, etc.).
+
+    extra="forbid" for the same reason as PostmortemClaimModel.
+    source_type/verification_level/freshness_status use the
+    authoritative services.postmortem.evidence Enums directly."""
+
+    model_config = {"extra": "forbid"}
 
     evidence_id: str
     category: str
@@ -3262,9 +3299,9 @@ class EvidenceItemModel(BaseModel):
     units: str | None
     observation_timestamp: datetime | None
     source: str
-    source_type: str
-    verification_level: str
-    freshness_status: str
+    source_type: SourceType
+    verification_level: EvidenceVerificationLevel
+    freshness_status: FreshnessStatus
     limitations: list[str] = Field(default_factory=list)
 
 
@@ -3452,6 +3489,13 @@ def _build_current_report_ready_response(report, *, trade_id: int) -> "CurrentRe
     never constructs that fallback, so it cannot accidentally leak
     partial report data through a half-built object."""
     try:
+        # Report-wide referential integrity: every claim's supporting/
+        # opposing evidence_id must resolve to a real evidence_items
+        # entry. Reuses generation_service's own merged-evidence
+        # integrity check (the SAME one Sprint 1/2 generation already
+        # runs) rather than a second, independently drifting copy —
+        # never repairs or removes a dangling reference, only detects it.
+        generation_service._validate_merged_evidence_integrity(report.evidence_items, report.claims)
         return CurrentReportReadResponse(
             trade_id=trade_id, availability=CURRENT_REPORT_STATUS_READY,
             report_schema_version=report.report_schema_version,
@@ -3482,6 +3526,15 @@ def _build_current_report_ready_response(report, *, trade_id: int) -> "CurrentRe
             "(trade_id=%s, report_id=%s, report_schema_version=%s, error_count=%d)",
             trade_id, getattr(report, "id", None), getattr(report, "report_schema_version", None),
             exc.error_count(),
+        )
+        return None
+    except evidence_attribution.ReportIntegrityError:
+        # Same privacy-safe policy as above — never the raw exception
+        # message (which embeds the specific claim_id/evidence_id).
+        log.warning(
+            "[current_report_read] persisted report failed evidence referential integrity "
+            "(trade_id=%s, report_id=%s, report_schema_version=%s)",
+            trade_id, getattr(report, "id", None), getattr(report, "report_schema_version", None),
         )
         return None
 

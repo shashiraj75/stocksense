@@ -853,13 +853,19 @@ def test_claims_and_evidence_items_round_trip_adversarial_marker_values(
         "evidence_id": "EV-marker-id", "category": "marker-category", "name": "marker-name",
         "value": {"nested": "marker-value", "n": 42}, "units": "marker-units",
         "observation_timestamp": "2026-06-01T12:00:00+00:00",
-        "source": "marker-source", "source_type": "marker-source-type",
-        "verification_level": "marker-verification-level", "freshness_status": "marker-freshness-status",
+        # source/category/name/units remain genuinely free-form marker
+        # strings; source_type/verification_level/freshness_status are
+        # now governed enums (services.postmortem.evidence) and must be
+        # real values — using ones a plain manual-close report would
+        # NOT ordinarily carry still proves the response isn't silently
+        # defaulting to something else.
+        "source": "marker-source", "source_type": "EXTERNAL_UNOFFICIAL_DAILY",
+        "verification_level": "DIRECTLY_OBSERVED", "freshness_status": "STALE",
         "limitations": ["marker-limitation-1"],
     }
     marker_claim = {
         "claim_id": "CLM-marker-id", "report_section": "marker-section", "factor": "marker-factor",
-        "claim_text": "marker claim text", "evidence_class": "SUPPORTING_EVIDENCE",
+        "claim_text": "marker claim text", "evidence_class": "DIRECTLY_OBSERVED",
         "confidence_band": "HIGH", "supporting_evidence_ids": ["EV-marker-id"],
         "opposing_evidence_ids": [], "missing_evidence": [], "contradiction_flags": [],
         "rule_id": "marker-rule-id", "rule_version": "marker-rule-version",
@@ -917,7 +923,7 @@ def test_malformed_claim_missing_rule_id_fails_closed(client, pg_conn, unique_us
     monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
     malformed_claim = {
         "claim_id": "CLM-malformed", "report_section": "x", "factor": "x",
-        "claim_text": "x", "evidence_class": "SUPPORTING_EVIDENCE", "confidence_band": "HIGH",
+        "claim_text": "x", "evidence_class": "DIRECTLY_OBSERVED", "confidence_band": "HIGH",
         "supporting_evidence_ids": [], "opposing_evidence_ids": [], "missing_evidence": [],
         "contradiction_flags": [],
         # rule_id and rule_version intentionally omitted — malformed.
@@ -1028,3 +1034,135 @@ def test_governed_no_bars_fallback_report_persists_claims_as_json_objects(
     ).fetchall()
     assert claim_shape_rows
     assert all(typeof == "object" for (typeof,) in claim_shape_rows)
+
+
+# ============================= claim/evidence governance, referential integrity ============================= #
+
+_VALID_MANIFEST = {
+    "has_entry_snapshot": True, "has_exit_snapshot": False,
+    "exit_snapshot_schema_version": None, "exit_trigger_timing_verification": None,
+    "exit_evidence_rules_version": "1.0.0", "phase1_calculation_version": "1.0.0",
+    "attribution_rules_version": "1.0.0",
+    "price_path_rules_version": "1.0.0", "governed_rules_version": "1.0.0",
+}
+
+
+def test_invalid_governed_enum_in_persisted_claim_fails_closed(client, pg_conn, unique_user_id, monkeypatch):
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # flag OFF at close
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    claim = {
+        "claim_id": "CLM-x", "report_section": "s", "factor": "f", "claim_text": "t",
+        "evidence_class": "NOT_A_GOVERNED_VALUE", "confidence_band": "HIGH",
+        "supporting_evidence_ids": [], "opposing_evidence_ids": [], "missing_evidence": [],
+        "contradiction_flags": [], "rule_id": "r1", "rule_version": "1.0.0",
+    }
+    _seed_current_manifest(pg_conn, trade_id, unique_user_id, _VALID_MANIFEST, marker="invalid-claim-enum")
+    from services.postmortem import report_store
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+    schema_v, calc_v, rules_v = current_target_identity(
+        base_calculation_version=CALCULATION_VERSION,
+        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+    )
+    report_store.persist_report(
+        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+        report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
+        report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+        evidence_bundle_version="invalid-claim-enum-2", status="COMPLETE",
+        structured_report={"marker": "invalid-claim-enum-2"}, evidence_items=[], claims=[claim],
+        source_manifest=_VALID_MANIFEST, evidence_gaps=[], warnings=[],
+    )
+    _assert_fails_closed_to_integrity_contradiction(client, unique_user_id, trade_id, ["NOT_A_GOVERNED_VALUE"])
+
+
+def test_invalid_governed_enum_in_persisted_evidence_item_fails_closed(client, pg_conn, unique_user_id, monkeypatch):
+    from services.postmortem import report_store
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # flag OFF at close
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    evidence_item = {
+        "evidence_id": "EV-x", "category": "c", "name": "n", "value": 1, "units": None,
+        "observation_timestamp": None, "source": "s", "source_type": "NOT_A_GOVERNED_VALUE",
+        "verification_level": "MECHANICALLY_VERIFIED", "freshness_status": "POINT_IN_TIME_VALID",
+    }
+    schema_v, calc_v, rules_v = current_target_identity(
+        base_calculation_version=CALCULATION_VERSION,
+        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+    )
+    report_store.persist_report(
+        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+        report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
+        report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+        evidence_bundle_version="invalid-evidence-enum", status="COMPLETE",
+        structured_report={"marker": "invalid-evidence-enum"}, evidence_items=[evidence_item], claims=[],
+        source_manifest=_VALID_MANIFEST, evidence_gaps=[], warnings=[],
+    )
+    _assert_fails_closed_to_integrity_contradiction(client, unique_user_id, trade_id, ["NOT_A_GOVERNED_VALUE"])
+
+
+def test_dangling_supporting_evidence_reference_fails_closed(client, pg_conn, unique_user_id, monkeypatch):
+    from services.postmortem import report_store
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # flag OFF at close
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    claim = {
+        "claim_id": "CLM-dangling", "report_section": "s", "factor": "f", "claim_text": "t",
+        "evidence_class": "DIRECTLY_OBSERVED", "confidence_band": "HIGH",
+        "supporting_evidence_ids": ["EV-NONEXISTENT"], "opposing_evidence_ids": [], "missing_evidence": [],
+        "contradiction_flags": [], "rule_id": "r1", "rule_version": "1.0.0",
+    }
+    schema_v, calc_v, rules_v = current_target_identity(
+        base_calculation_version=CALCULATION_VERSION,
+        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+    )
+    report_store.persist_report(
+        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+        report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
+        report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+        evidence_bundle_version="dangling-support", status="COMPLETE",
+        structured_report={"marker": "dangling-support"}, evidence_items=[], claims=[claim],
+        source_manifest=_VALID_MANIFEST, evidence_gaps=[], warnings=[],
+    )
+    _assert_fails_closed_to_integrity_contradiction(client, unique_user_id, trade_id, ["EV-NONEXISTENT", "CLM-dangling"])
+
+
+def test_unexpected_extra_claim_field_fails_closed_under_strict_policy(client, pg_conn, unique_user_id, monkeypatch):
+    from services.postmortem import report_store
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)  # flag OFF at close
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    claim = {
+        "claim_id": "CLM-extra", "report_section": "s", "factor": "f", "claim_text": "t",
+        "evidence_class": "DIRECTLY_OBSERVED", "confidence_band": "HIGH",
+        "supporting_evidence_ids": ["EV-1"], "opposing_evidence_ids": [], "missing_evidence": [],
+        "contradiction_flags": [], "rule_id": "r1", "rule_version": "1.0.0",
+        "unexpected_field": "surprise",
+    }
+    evidence_item = {
+        "evidence_id": "EV-1", "category": "c", "name": "n", "value": 1, "units": None,
+        "observation_timestamp": None, "source": "s", "source_type": "SERVER_DERIVED",
+        "verification_level": "MECHANICALLY_VERIFIED", "freshness_status": "POINT_IN_TIME_VALID",
+    }
+    schema_v, calc_v, rules_v = current_target_identity(
+        base_calculation_version=CALCULATION_VERSION,
+        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+    )
+    report_store.persist_report(
+        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+        report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
+        report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+        evidence_bundle_version="extra-field", status="COMPLETE",
+        structured_report={"marker": "extra-field"}, evidence_items=[evidence_item], claims=[claim],
+        source_manifest=_VALID_MANIFEST, evidence_gaps=[], warnings=[],
+    )
+    _assert_fails_closed_to_integrity_contradiction(client, unique_user_id, trade_id, ["surprise", "unexpected_field"])

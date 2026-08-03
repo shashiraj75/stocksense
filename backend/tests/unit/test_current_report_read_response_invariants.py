@@ -26,7 +26,7 @@ _REPRESENTATIVE_VALUES = {
     "structured_report": {"x": 1},
     "claims": [{
         "claim_id": "CLM-1-rule1", "report_section": "price_path", "factor": "target",
-        "claim_text": "target was hit", "evidence_class": "SUPPORTING_EVIDENCE",
+        "claim_text": "target was hit", "evidence_class": "DIRECTLY_OBSERVED",
         "confidence_band": "HIGH", "supporting_evidence_ids": ["EV-1-target-hit"],
         "opposing_evidence_ids": [], "missing_evidence": [], "contradiction_flags": [],
         "rule_id": "rule1", "rule_version": "1.0.0",
@@ -34,8 +34,8 @@ _REPRESENTATIVE_VALUES = {
     "evidence_items": [{
         "evidence_id": "EV-1-target-hit", "category": "price_path", "name": "target_hit",
         "value": True, "units": None, "observation_timestamp": None,
-        "source": "market_data", "source_type": "PROVIDER", "verification_level": "SERVER_VERIFIED",
-        "freshness_status": "CURRENT",
+        "source": "market_data", "source_type": "SERVER_DERIVED", "verification_level": "MECHANICALLY_VERIFIED",
+        "freshness_status": "POINT_IN_TIME_VALID",
     }],
     "evidence_gaps": ["gap-1"],
     "warnings": ["warning-1"],
@@ -396,3 +396,127 @@ class TestReportSourceManifestSemanticConsistency:
         from api.routers.paper_trading import ReportSourceManifest
 
         ReportSourceManifest(**{**self._WITH_EXIT, "exit_trigger_timing_verification": value})  # must not raise
+
+
+@pytest.mark.unit
+class TestReferentialIntegrityAndClaimEvidenceGovernance:
+    """Package A3 — governed claim/evidence vocabularies and report-wide
+    referential integrity, at both the model level and the fail-closed
+    conversion boundary."""
+
+    _VALID_CLAIM = dict(
+        claim_id="CLM-1", report_section="s", factor="f", claim_text="t",
+        evidence_class="DIRECTLY_OBSERVED", confidence_band="HIGH",
+        supporting_evidence_ids=["EV-1"], opposing_evidence_ids=[], missing_evidence=[],
+        contradiction_flags=[], rule_id="r1", rule_version="1.0.0",
+    )
+    _VALID_EVIDENCE = dict(
+        evidence_id="EV-1", category="c", name="n", value=1, units=None,
+        observation_timestamp=None, source="s", source_type="SERVER_DERIVED",
+        verification_level="MECHANICALLY_VERIFIED", freshness_status="POINT_IN_TIME_VALID",
+    )
+
+    def test_valid_claim_and_evidence_construct_without_raising(self):
+        from api.routers.paper_trading import EvidenceItemModel, PostmortemClaimModel
+
+        PostmortemClaimModel(**self._VALID_CLAIM)
+        EvidenceItemModel(**self._VALID_EVIDENCE)
+
+    @pytest.mark.parametrize("field,value", [
+        ("evidence_class", "MADE_UP"), ("confidence_band", "MADE_UP"),
+    ])
+    def test_invalid_claim_enum_value_is_rejected(self, field, value):
+        from api.routers.paper_trading import PostmortemClaimModel
+
+        with pytest.raises(ValidationError):
+            PostmortemClaimModel(**{**self._VALID_CLAIM, field: value})
+
+    @pytest.mark.parametrize("field,value", [
+        ("source_type", "MADE_UP"), ("verification_level", "MADE_UP"), ("freshness_status", "MADE_UP"),
+    ])
+    def test_invalid_evidence_enum_value_is_rejected(self, field, value):
+        from api.routers.paper_trading import EvidenceItemModel
+
+        with pytest.raises(ValidationError):
+            EvidenceItemModel(**{**self._VALID_EVIDENCE, field: value})
+
+    def test_insufficient_evidence_with_wrong_sentence_is_rejected(self):
+        from api.routers.paper_trading import PostmortemClaimModel
+
+        with pytest.raises(ValidationError, match="claim semantic rule violated"):
+            PostmortemClaimModel(**{
+                **self._VALID_CLAIM, "evidence_class": "INSUFFICIENT_EVIDENCE",
+                "confidence_band": "NOT_ASSESSABLE", "supporting_evidence_ids": [], "claim_text": "wrong sentence",
+            })
+
+    def test_insufficient_evidence_citing_support_is_rejected(self):
+        from api.routers.paper_trading import PostmortemClaimModel
+        from services.postmortem.evidence import INSUFFICIENT_EVIDENCE_SENTENCE
+
+        with pytest.raises(ValidationError, match="claim semantic rule violated"):
+            PostmortemClaimModel(**{
+                **self._VALID_CLAIM, "evidence_class": "INSUFFICIENT_EVIDENCE",
+                "confidence_band": "NOT_ASSESSABLE", "claim_text": INSUFFICIENT_EVIDENCE_SENTENCE,
+                "supporting_evidence_ids": ["EV-1"],
+            })
+
+    def test_ordinary_claim_without_supporting_evidence_is_rejected(self):
+        from api.routers.paper_trading import PostmortemClaimModel
+
+        with pytest.raises(ValidationError, match="claim semantic rule violated"):
+            PostmortemClaimModel(**{**self._VALID_CLAIM, "supporting_evidence_ids": []})
+
+    def test_conflicting_claim_without_opposing_evidence_is_rejected(self):
+        from api.routers.paper_trading import PostmortemClaimModel
+
+        with pytest.raises(ValidationError, match="claim semantic rule violated"):
+            PostmortemClaimModel(**{**self._VALID_CLAIM, "evidence_class": "CONFLICTING_EVIDENCE"})
+
+    def test_empty_rule_id_is_rejected(self):
+        from api.routers.paper_trading import PostmortemClaimModel
+
+        with pytest.raises(ValidationError, match="claim semantic rule violated"):
+            PostmortemClaimModel(**{**self._VALID_CLAIM, "rule_id": ""})
+
+    def test_unexpected_extra_claim_field_is_rejected(self):
+        from api.routers.paper_trading import PostmortemClaimModel
+
+        with pytest.raises(ValidationError):
+            PostmortemClaimModel(**{**self._VALID_CLAIM, "unexpected_field": "x"})
+
+    def test_unexpected_extra_evidence_field_is_rejected(self):
+        from api.routers.paper_trading import EvidenceItemModel
+
+        with pytest.raises(ValidationError):
+            EvidenceItemModel(**{**self._VALID_EVIDENCE, "unexpected_field": "x"})
+
+    def test_dangling_supporting_reference_fails_closed_at_the_conversion_boundary(self):
+        from api.routers.paper_trading import _build_current_report_ready_response
+
+        report = TestFailClosedConversionBoundary()._fake_report(
+            claims=[{**self._VALID_CLAIM, "supporting_evidence_ids": ["EV-NONEXISTENT"]}],
+            evidence_items=[],
+        )
+        assert _build_current_report_ready_response(report, trade_id=1) is None
+
+    def test_dangling_opposing_reference_fails_closed_at_the_conversion_boundary(self):
+        from api.routers.paper_trading import _build_current_report_ready_response
+
+        report = TestFailClosedConversionBoundary()._fake_report(
+            claims=[{
+                **self._VALID_CLAIM, "evidence_class": "CONFLICTING_EVIDENCE",
+                "opposing_evidence_ids": ["EV-NONEXISTENT"],
+            }],
+            evidence_items=[self._VALID_EVIDENCE],
+        )
+        assert _build_current_report_ready_response(report, trade_id=1) is None
+
+    def test_valid_reference_builds_a_ready_response(self):
+        from api.routers.paper_trading import _build_current_report_ready_response
+
+        report = TestFailClosedConversionBoundary()._fake_report(
+            claims=[self._VALID_CLAIM], evidence_items=[self._VALID_EVIDENCE],
+        )
+        result = _build_current_report_ready_response(report, trade_id=1)
+        assert result is not None
+        assert result.availability == "READY"

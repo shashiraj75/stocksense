@@ -20,6 +20,7 @@ import dataclasses
 import enum
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 from datetime import date, datetime
 
@@ -44,10 +45,22 @@ def canonicalize_report_json(value):
     stringified into an opaque repr instead of a governed JSON object.
     This function never falls back to str() — an object it cannot
     represent as governed JSON raises TypeError."""
+    # Enum BEFORE the scalar-type branch: a governed enum inherits from
+    # both str and Enum (e.g. `class TriggerTimingVerification(str,
+    # Enum)`), so isinstance(value, _JSON_SCALAR_TYPES) would already
+    # match it and return the raw Enum object unconverted if checked
+    # first — recurse into .value so an enum-of-enum or otherwise
+    # non-JSON-safe underlying value is still rejected, not silently
+    # accepted.
+    if isinstance(value, enum.Enum):
+        return canonicalize_report_json(value.value)
+    if isinstance(value, float) and not math.isfinite(value):
+        raise TypeError(
+            f"report JSON must not contain non-finite floats (NaN/Infinity/-Infinity) — "
+            f"got {value!r}, not a valid governed financial-report value"
+        )
     if isinstance(value, _JSON_SCALAR_TYPES):
         return value
-    if isinstance(value, enum.Enum):
-        return value.value
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, dict):
@@ -106,11 +119,21 @@ def compute_evidence_hash(evidence_items: list, claims: list) -> str:
     persisted row — never a second, independently-converted copy — so
     an equivalent dataclass and dictionary input produce the identical
     hash, and the stored evidence_hash always matches a recomputation
-    over the exact persisted content."""
-    canonical_evidence_items = canonicalize_report_json(evidence_items)
-    canonical_claims = canonicalize_report_json(claims)
+    over the exact persisted content. Public entry point for raw
+    (not-yet-canonicalized) callers — canonicalizes its own inputs.
+    persist_report itself uses _hash_canonical_evidence below to avoid
+    canonicalizing the same collections twice."""
+    return _hash_canonical_evidence(canonicalize_report_json(evidence_items), canonicalize_report_json(claims))
+
+
+def _hash_canonical_evidence(canonical_evidence_items, canonical_claims) -> str:
+    """Hashes ALREADY-canonicalized evidence_items/claims — the private
+    half of compute_evidence_hash's logic, used by persist_report so
+    the exact same canonical collections it is about to persist are
+    hashed once, not canonicalized a second time."""
     canonical = json.dumps(
-        {"evidence_items": canonical_evidence_items, "claims": canonical_claims}, sort_keys=True,
+        {"evidence_items": canonical_evidence_items, "claims": canonical_claims},
+        sort_keys=True, allow_nan=False,
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -184,7 +207,7 @@ def persist_report(
     canonical_evidence_gaps = canonicalize_report_json(evidence_gaps)
     canonical_warnings = canonicalize_report_json(warnings)
 
-    evidence_hash = compute_evidence_hash(canonical_evidence_items, canonical_claims)
+    evidence_hash = _hash_canonical_evidence(canonical_evidence_items, canonical_claims)
     row = conn.execute(
         f"""INSERT INTO paper_trade_postmortem_report (
                 paper_trade_id, user_id, market, report_trading_date, market_timezone,
@@ -199,10 +222,12 @@ def persist_report(
             paper_trade_id, user_id, market, report_trading_date, market_timezone,
             report_schema_version, calculation_version, attribution_rules_version, evidence_bundle_version,
             evidence_hash, status,
-            json.dumps(canonical_structured_report),
-            json.dumps(canonical_evidence_items),
-            json.dumps(canonical_claims),
-            json.dumps(canonical_source_manifest), json.dumps(canonical_evidence_gaps), json.dumps(canonical_warnings),
+            json.dumps(canonical_structured_report, allow_nan=False),
+            json.dumps(canonical_evidence_items, allow_nan=False),
+            json.dumps(canonical_claims, allow_nan=False),
+            json.dumps(canonical_source_manifest, allow_nan=False),
+            json.dumps(canonical_evidence_gaps, allow_nan=False),
+            json.dumps(canonical_warnings, allow_nan=False),
             supersedes_report_id,
         ),
     ).fetchone()

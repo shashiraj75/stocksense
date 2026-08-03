@@ -404,3 +404,79 @@ class TestEvidenceHashUsesSharedCanonicalization:
         with pytest.raises(TypeError, match="unsupported"):
             _persist(conn, claims=[{"bad": _NotJsonSafe()}])
         assert len(conn.rows) == 0
+
+
+@pytest.mark.unit
+class TestCanonicalizeReportJsonHardening:
+    """Package A1 hardening items A-D."""
+
+    def test_enum_is_checked_before_the_scalar_branch(self):
+        """A governed enum inheriting from (str, Enum) must canonicalize
+        to its plain .value string, never be returned as the raw Enum
+        object (which isinstance(value, _JSON_SCALAR_TYPES) would
+        otherwise match first, since str is a scalar type)."""
+        import enum
+        from services.postmortem.report_store import canonicalize_report_json
+
+        class _StrEnum(str, enum.Enum):
+            X = "GOVERNED_X"
+
+        result = canonicalize_report_json(_StrEnum.X)
+        assert result == "GOVERNED_X"
+        assert type(result) is str, f"expected plain str, got {type(result).__name__}"
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_floats_are_rejected(self, value):
+        from services.postmortem.report_store import canonicalize_report_json
+
+        with pytest.raises(TypeError, match="non-finite"):
+            canonicalize_report_json(value)
+
+    def test_non_finite_float_nested_in_a_dict_is_rejected(self):
+        from services.postmortem.report_store import canonicalize_report_json
+
+        with pytest.raises(TypeError, match="non-finite"):
+            canonicalize_report_json({"value": float("nan")})
+
+    def test_finite_float_is_accepted(self):
+        from services.postmortem.report_store import canonicalize_report_json
+
+        assert canonicalize_report_json(1.5) == 1.5
+
+    def test_persist_report_hashes_and_persists_the_same_canonical_collections_once(self):
+        """persist_report must canonicalize evidence_items/claims exactly
+        once and reuse those same canonical collections for both the
+        hash and the INSERT payload — proven indirectly: the persisted
+        evidence_hash must equal _hash_canonical_evidence's result over
+        the already-canonical persisted content (not a second, separate
+        canonicalization pass that could theoretically diverge)."""
+        from services.postmortem.report_store import _hash_canonical_evidence, canonicalize_report_json
+
+        conn = _FakeConn()
+        report, _ = _persist(conn, evidence_items=[{"id": "ev1"}], claims=[{"id": "cl1"}])
+        expected = _hash_canonical_evidence(
+            canonicalize_report_json(report.evidence_items), canonicalize_report_json(report.claims),
+        )
+        assert report.evidence_hash == expected
+
+
+@pytest.mark.unit
+class TestNoPartialWriteAcrossAllSixFields:
+    """Package A1 item D — an unsupported nested value in ANY of the six
+    authoritative fields must raise before the first database execute
+    call, for every field, not just evidence_items/claims."""
+
+    class _NotJsonSafe:
+        pass
+
+    @pytest.mark.parametrize("field", [
+        "structured_report", "evidence_items", "claims", "source_manifest", "evidence_gaps", "warnings",
+    ])
+    def test_unsupported_object_in_any_field_raises_before_any_insert(self, field):
+        conn = _FakeConn()
+        bad_value = {"bad": self._NotJsonSafe()} if field in ("structured_report", "source_manifest") else (
+            [self._NotJsonSafe()] if field in ("evidence_gaps", "warnings") else [{"bad": self._NotJsonSafe()}]
+        )
+        with pytest.raises(TypeError, match="unsupported"):
+            _persist(conn, **{field: bad_value})
+        assert len(conn.rows) == 0, f"no partial report row may be inserted when {field} fails canonicalization"
