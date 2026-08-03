@@ -175,18 +175,20 @@ def test_evidence_bundle_version_reflects_the_persisted_row_not_a_code_constant(
     # stays valid against a future strict typed response contract.
     monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
     real_trade_id = _open_and_close(client, pg_conn, unique_user_id)
-    real_row = pg_conn.execute(
-        """SELECT structured_report, evidence_items, claims, source_manifest, evidence_gaps, warnings, status
-           FROM paper_trade_postmortem_report WHERE paper_trade_id = %s""",
-        (real_trade_id,),
-    ).fetchone()
-    (real_structured, real_evidence_items, real_claims, real_source_manifest,
-     real_evidence_gaps, real_warnings, real_status) = real_row
 
     schema_v, calc_v, rules_v = current_target_identity(
         base_calculation_version=CALCULATION_VERSION,
         numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
     )
+    real_row = pg_conn.execute(
+        """SELECT structured_report, evidence_items, claims, source_manifest, evidence_gaps, warnings, status
+           FROM paper_trade_postmortem_report
+           WHERE paper_trade_id = %s AND report_schema_version = %s
+             AND calculation_version = %s AND attribution_rules_version = %s""",
+        (real_trade_id, schema_v, calc_v, rules_v),
+    ).fetchone()
+    (real_structured, real_evidence_items, real_claims, real_source_manifest,
+     real_evidence_gaps, real_warnings, real_status) = real_row
 
     # Trade B: capability OFF at close time, so /sell never
     # auto-generates a report at this identity for THIS trade — a
