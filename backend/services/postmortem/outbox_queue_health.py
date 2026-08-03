@@ -23,21 +23,24 @@ existing `idx_paper_trade_pm_outbox_unique` index (that index leads with
 `paper_trade_id`, so a query that does not also filter on
 `paper_trade_id` cannot use it as an index-only/index-range scan for this
 predicate) or `idx_paper_trade_pm_outbox_claim` (leads with `status`).
-No new index is added by this pass: at the row volumes this feature is
-expected to reach during a controlled beta (a small population's closed
-trades — low thousands of outbox rows, not millions), a sequential scan
-aggregate over this table is fast (single-digit milliseconds) and adding
-an index purely on the prompt's suggestion, without EXPLAIN evidence
-showing it is actually needed, would be premature. Real-PostgreSQL
-EXPLAIN evidence for this query is captured in
-`tests/postgres_integration/test_outbox_queue_health.py` and recorded in
-`Trade-Postmortem-Wave-C-WC-O-Observability-And-Capacity-Review.md`
-(§3, "Query cost evidence"). Revisit this conclusion if the outbox
-table's row count for a single governed version identity exceeds
-roughly 50,000 rows — at that scale a composite index on
-`(requested_report_schema_version, requested_calculation_version,
-requested_rules_version, status)` would be the smallest additive index
-matching this query's actual predicates.
+No new index is added by this pass: real EXPLAIN (ANALYZE, BUFFERS)
+evidence at 5,000 seeded rows (`tests/postgres_integration/
+test_outbox_queue_health_explain.py`, measured on both PostgreSQL 15
+and 17, recorded in `Trade-Postmortem-Wave-C-WC-O-Observability-And-
+Capacity-Review.md` §3 "Query cost evidence") shows a sequential-scan
+Aggregate completing in ~2.3-2.5ms with zero disk reads (the entire
+working set served from shared buffers) — supporting "no index needed"
+at the row volumes this feature is expected to reach during a
+controlled beta (a global, low-traffic activation — low thousands of
+outbox rows, not millions). This is measured evidence at that scale,
+not extrapolated proof for unlimited growth: if the outbox table's row
+count for a single governed version identity is ever observed growing
+into the tens of thousands, re-run that same committed test at the
+observed scale rather than assuming this conclusion still holds, and
+add the smallest additive index matching this query's actual
+predicates — `(requested_report_schema_version,
+requested_calculation_version, requested_rules_version, status)` —
+only if that re-measurement shows a real regression.
 """
 
 import dataclasses

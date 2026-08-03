@@ -125,27 +125,62 @@ leading-column index range scan (the unique index leads with
 leads with `status`, which this query aggregates over rather than
 filters a single value of).
 
-**No new index is added by this pass.** At the row volumes the §5
-(§O9) evidence-based beta boundary implies — a global, low-traffic
-activation, meaning at most a few thousand outbox rows for the current
-governed version identity during the beta observation window — a
-sequential-scan aggregate over this table is expected to complete in
-single-digit milliseconds. This conclusion should be revisited if the
-outbox table's row count for a single governed version identity exceeds
-roughly 50,000 rows; at that scale, the smallest additive index matching
-this query's actual predicates would be `CREATE INDEX IF NOT EXISTS
+**No new index is added by this pass.**
+
+**Real measured EXPLAIN evidence** (Package O §4 final correction —
+`tests/postgres_integration/test_outbox_queue_health_explain.py`,
+seeded via one `INSERT ... SELECT generate_series` at 5,000 rows under
+a throwaway synthetic version identity, captured from the actual
+PostgreSQL CI run rather than asserted as a plan-shape unit test):
+
+| | PostgreSQL 15.18 | PostgreSQL 17.10 |
+|---|---|---|
+| Seeded row count (this identity) | 5,000 | 5,000 |
+| Top plan node | Aggregate | Aggregate |
+| Planning time | 0.176 ms | 0.179 ms |
+| Execution time | 2.260 ms | 2.492 ms |
+| Shared buffer hits | 133 | 133 |
+| Shared buffer reads | 0 | 0 |
+
+Source: workflow run
+[30833627292](https://github.com/shashiraj75/stocksense/actions/runs/30833627292),
+jobs `postgres-integration (15)` (id `91753344628`) and
+`postgres-integration (17)` (id `91753344708`), both `conclusion:
+success`, captured directly from the job log (this repo's pytest
+config has no `junit_logging` system-out capture configured, so the
+evidence is printed via `capsys.disabled()` and read from the raw CI
+log rather than the JUnit XML).
+
+**What this evidence supports**: at 5,000 rows for a single governed
+version identity — the row count representative of the §O9 evidence-
+based beta boundary (a global, low-traffic activation with no cohort
+restriction) — the query completes in ~2.3-2.5ms with the entire
+working set served from shared buffers (zero disk reads), confirming
+the "no new index needed at beta scale" conclusion with real
+measurement rather than assumption. **What this evidence does NOT
+support**: a specific claim about behavior at 50,000+ rows — that
+number was previously asserted without EXPLAIN evidence and has been
+removed. The honest boundary this measurement actually supports is:
+this conclusion holds at row counts on the order of the measured
+5,000-row scale (a low single-digit multiple of it, extrapolating the
+Aggregate-over-Seq-Scan cost roughly linearly); if the outbox table's
+row count for a single governed version identity is ever observed
+growing into the tens of thousands, re-run this exact test (it is
+already committed and reusable) at that observed scale rather than
+relying on extrapolation, and add the smallest additive index matching
+this query's actual predicates only if that re-measurement shows a
+real regression — `CREATE INDEX IF NOT EXISTS
 idx_paper_trade_pm_outbox_version_status ON
 paper_trade_postmortem_outbox (requested_report_schema_version,
-requested_calculation_version, requested_rules_version, status)`.
+requested_calculation_version, requested_rules_version, status)` is
+the smallest additive index matching this query's predicates and is
+the candidate to add at that time, not before.
 
-EXPLAIN evidence: captured via the real-PostgreSQL CI dispatch for this
-correction (see the WC-O correction SHA's PostgreSQL run, recorded in
-this document's own commit history / PR description once opened) rather
-than asserted as a brittle exact-plan unit test — the test suite
-(`test_outbox_queue_health.py`) proves query CORRECTNESS (exact counts,
-isolation, ages, no mutation) on real PostgreSQL, not a specific plan
-shape, which is appropriately left to be re-evaluated as the table
-grows rather than pinned now.
+`test_outbox_queue_health_explain.py::test_explain_analyze_causes_no_database_mutation`
+additionally proves `EXPLAIN ANALYZE` on this query causes zero
+mutation (it is a pure read, so running the real query via `EXPLAIN
+ANALYZE` is exactly as safe as calling `read_queue_health_snapshot`
+directly).
 
 ## 4. Noise-bounded logging
 
