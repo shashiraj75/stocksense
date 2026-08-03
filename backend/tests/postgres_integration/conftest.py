@@ -132,6 +132,12 @@ def _cleanup_synthetic_rows(pg_database_url, initialized_schema):
                 "DELETE FROM paper_trade_postmortem_report WHERE user_id LIKE %s",
                 (f"{SYNTHETIC_USER_PREFIX}%",)
             )
+            # Sprint 3A — price-path evidence has no FK to report/outbox,
+            # but belongs to the same synthetic-user cleanup discipline.
+            conn.execute(
+                "DELETE FROM paper_trade_price_path_evidence WHERE user_id LIKE %s",
+                (f"{SYNTHETIC_USER_PREFIX}%",)
+            )
             conn.execute(
                 "DELETE FROM paper_trade_postmortem_outbox WHERE user_id LIKE %s",
                 (f"{SYNTHETIC_USER_PREFIX}%",)

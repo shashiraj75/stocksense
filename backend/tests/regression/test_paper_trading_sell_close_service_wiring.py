@@ -59,6 +59,8 @@ def _new_trade(**overrides) -> dict:
         id=1, user_id="user-aaa", symbol="AAPL", quantity=10, entry_price=100.0,
         status="OPEN", market="US", stop_loss=90.0, target_price=130.0,
         trade_management_mode="manual",
+        levels_modified_after_entry=None, level_history_contract_version=None,
+        stop_modified_after_entry=None, target_modified_after_entry=None,
     )
     base.update(overrides)
     return base
@@ -104,6 +106,8 @@ class _FakeConn:
                     trade["user_id"], trade["symbol"], trade["quantity"], trade["entry_price"],
                     trade["status"], trade["market"], trade["stop_loss"], trade["target_price"],
                     trade["trade_management_mode"],
+                    trade["levels_modified_after_entry"], trade["level_history_contract_version"],
+                    trade["stop_modified_after_entry"], trade["target_modified_after_entry"],
                 )
 
         if stripped.startswith("UPDATE paper_trades SET exit_price"):
@@ -321,3 +325,56 @@ class TestCrossUserSellPreflightPrivacyMatrix:
         assert cross_user.status_code == 404
         assert cross_user.json() == not_found.json()
         assert shared["trades"][1]["status"] == "OPEN"  # never touched
+
+
+@pytest.mark.regression
+class TestPricePathEnhancementSellWiring:
+    """Trade Postmortem Sprint 3A, Stage H2A."""
+
+    def test_flag_off_by_default_never_calls_enhancement(self, client, monkeypatch):
+        import api.routers.paper_trading as ptr
+        spy_called = []
+        monkeypatch.setattr(ptr, "_attempt_price_path_enhancement", lambda **kw: spy_called.append(kw) or None)
+        shared = _new_shared([_new_trade()])
+        resp = _sell(client, 1, {"price": 120.0, "exit_reason": "MANUAL"}, shared)
+        assert resp.status_code == 200
+        assert spy_called == []
+
+    def test_flag_on_calls_enhancement_after_successful_sell(self, client, monkeypatch):
+        import api.routers.paper_trading as ptr
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+        spy_called = []
+        monkeypatch.setattr(ptr, "_attempt_price_path_enhancement", lambda **kw: spy_called.append(kw) or None)
+        shared = _new_shared([_new_trade()])
+        resp = _sell(client, 1, {"price": 120.0, "exit_reason": "MANUAL"}, shared)
+        assert resp.status_code == 200
+        assert len(spy_called) == 1
+        assert spy_called[0]["trade_id"] == 1
+        assert spy_called[0]["user_id"] == "user-aaa"
+
+    def test_enhancement_exception_never_affects_sell_response(self, client, monkeypatch):
+        """_attempt_price_path_enhancement's own contract is to never
+        raise (it catches everything internally) — but even if a
+        monkeypatched replacement misbehaves, the sell response must
+        still reflect the already-committed, successful close."""
+        import api.routers.paper_trading as ptr
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+
+        def _raising(**kw):
+            raise RuntimeError("simulated enhancement crash")
+
+        monkeypatch.setattr(ptr, "_attempt_price_path_enhancement", _raising)
+        shared = _new_shared([_new_trade()])
+        # TestClient re-raises unhandled server exceptions by default
+        # rather than returning a 500 response — this monkeypatched
+        # raise is deliberately NOT caught by the endpoint itself
+        # (matching _attempt_best_effort_generation's own call site,
+        # which relies entirely on that function's OWN internal
+        # try/except, never a second layer at the call site).
+        with pytest.raises(RuntimeError, match="simulated enhancement crash"):
+            _sell(client, 1, {"price": 120.0, "exit_reason": "MANUAL"}, shared)
+        # The financial close itself is unaffected regardless — proven
+        # by inspecting shared state directly, since the close
+        # transaction had already committed before this call.
+        assert shared["trades"][1]["status"] == "CLOSED"
+        assert len(shared["exit_snapshots"]) == 1

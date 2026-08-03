@@ -45,6 +45,12 @@ class SourceType(str, Enum):
     SERVER_DERIVED = "SERVER_DERIVED"
     CLIENT_REPORTED = "CLIENT_REPORTED"
     APPROVED_EXTERNAL_SOURCE = "APPROVED_EXTERNAL_SOURCE"
+    # A third-party market-data dependency used only for bounded,
+    # replayable evidence acquisition — NOT a vetted/licensed/production-
+    # authoritative source. Distinct from APPROVED_EXTERNAL_SOURCE, which
+    # implies an actual approval review this codebase has not performed
+    # for any provider. See price_path_acquisition.py's module docstring.
+    EXTERNAL_UNOFFICIAL_DAILY = "EXTERNAL_UNOFFICIAL_DAILY"
     UNAVAILABLE = "UNAVAILABLE"
 
 
@@ -140,38 +146,58 @@ class PostmortemClaim:
     limitations: list[str] = field(default_factory=list)
 
     def __post_init__(self):
-        if self.evidence_class == EvidenceClass.INSUFFICIENT_EVIDENCE.value:
-            if self.claim_text != INSUFFICIENT_EVIDENCE_SENTENCE:
-                raise ValueError(
-                    f"claim {self.claim_id}: INSUFFICIENT_EVIDENCE claims must use the exact fallback "
-                    f"sentence, got: {self.claim_text!r}"
-                )
-            if self.confidence_band != ConfidenceBand.NOT_ASSESSABLE.value:
-                raise ValueError(
-                    f"claim {self.claim_id}: INSUFFICIENT_EVIDENCE claims must use NOT_ASSESSABLE confidence, "
-                    f"got: {self.confidence_band!r}"
-                )
-            if self.supporting_evidence_ids:
-                raise ValueError(
-                    f"claim {self.claim_id}: INSUFFICIENT_EVIDENCE claims must not cite supporting evidence "
-                    "(that would contradict the 'insufficient' label)"
-                )
-        else:
-            if not self.supporting_evidence_ids:
-                raise ValueError(
-                    f"claim {self.claim_id}: every claim except INSUFFICIENT_EVIDENCE must cite at least one "
-                    "supporting evidence ID"
-                )
+        validate_postmortem_claim_semantics(
+            claim_id=self.claim_id, claim_text=self.claim_text,
+            evidence_class=self.evidence_class, confidence_band=self.confidence_band,
+            supporting_evidence_ids=self.supporting_evidence_ids,
+            opposing_evidence_ids=self.opposing_evidence_ids,
+            rule_id=self.rule_id, rule_version=self.rule_version,
+        )
 
-        if self.evidence_class == EvidenceClass.CONFLICTING_EVIDENCE.value:
-            if not self.opposing_evidence_ids:
-                raise ValueError(
-                    f"claim {self.claim_id}: CONFLICTING_EVIDENCE claims must cite both supporting and "
-                    "opposing evidence"
-                )
 
-        if not self.rule_id or not self.rule_version:
-            raise ValueError(f"claim {self.claim_id}: rule_id and rule_version are required")
+def validate_postmortem_claim_semantics(
+    *, claim_id: str, claim_text: str, evidence_class: str, confidence_band: str,
+    supporting_evidence_ids: list[str], opposing_evidence_ids: list[str],
+    rule_id: str, rule_version: str,
+) -> None:
+    """The ONE authoritative semantic-rule check for a postmortem claim —
+    called by PostmortemClaim.__post_init__ (the frozen dataclass every
+    claim producer in the system constructs) AND by
+    api.routers.paper_trading.PostmortemClaimModel (the typed API
+    response model), so the two never independently drift. Raises
+    ValueError on any violation; never repairs or coerces a claim."""
+    if evidence_class == EvidenceClass.INSUFFICIENT_EVIDENCE.value:
+        if claim_text != INSUFFICIENT_EVIDENCE_SENTENCE:
+            raise ValueError(
+                f"claim {claim_id}: INSUFFICIENT_EVIDENCE claims must use the exact fallback "
+                f"sentence, got: {claim_text!r}"
+            )
+        if confidence_band != ConfidenceBand.NOT_ASSESSABLE.value:
+            raise ValueError(
+                f"claim {claim_id}: INSUFFICIENT_EVIDENCE claims must use NOT_ASSESSABLE confidence, "
+                f"got: {confidence_band!r}"
+            )
+        if supporting_evidence_ids:
+            raise ValueError(
+                f"claim {claim_id}: INSUFFICIENT_EVIDENCE claims must not cite supporting evidence "
+                "(that would contradict the 'insufficient' label)"
+            )
+    else:
+        if not supporting_evidence_ids:
+            raise ValueError(
+                f"claim {claim_id}: every claim except INSUFFICIENT_EVIDENCE must cite at least one "
+                "supporting evidence ID"
+            )
+
+    if evidence_class == EvidenceClass.CONFLICTING_EVIDENCE.value:
+        if not opposing_evidence_ids:
+            raise ValueError(
+                f"claim {claim_id}: CONFLICTING_EVIDENCE claims must cite both supporting and "
+                "opposing evidence"
+            )
+
+    if not rule_id or not rule_version:
+        raise ValueError(f"claim {claim_id}: rule_id and rule_version are required")
 
 
 def make_claim_id(trade_id: int, rule_id: str) -> str:

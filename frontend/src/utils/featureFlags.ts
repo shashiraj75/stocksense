@@ -37,3 +37,26 @@ export function isTradePostmortemDailyEnabled(): boolean {
   const normalized = raw.trim().toLowerCase();
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
+
+/**
+ * Wave C — the browser-side mirror of the backend's
+ * TRADE_POSTMORTEM_PRICE_PATH_ENABLED flag, gating the per-trade
+ * `/postmortem/[tradeId]` page and its "View Postmortem" entry point on
+ * Paper Trading. Same rationale and truthy-value set as
+ * isTradePostmortemDailyEnabled above — kept as an independent function
+ * (not a parameter on that one) since the two backend flags are
+ * independent and can be toggled on different schedules.
+ *
+ * This is a PRESENTATION gate only. The backend capability
+ * (TRADE_POSTMORTEM_PRICE_PATH_ENABLED) remains authoritative regardless
+ * of this flag's value — with this flag on but the backend flag off, the
+ * page still renders (flag passes) but the API responds
+ * FEATURE_DISABLED, which the page must render explicitly, never as a
+ * blank or generic error state.
+ */
+export function isTradePostmortemPricePathEnabled(): boolean {
+  const raw = process.env.NEXT_PUBLIC_TRADE_POSTMORTEM_PRICE_PATH_ENABLED;
+  if (!raw) return false;
+  const normalized = raw.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}

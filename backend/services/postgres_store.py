@@ -299,6 +299,102 @@ ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS model_version TEXT;
 ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS execution_slippage_pct DOUBLE PRECISION;
 ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS signal_override BOOLEAN;
 ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS levels_modified_after_entry BOOLEAN;
+-- Trade Postmortem Sprint 3A, Stage J4D — durable level-history write
+-- invariant. All three columns are nullable and purely additive: every
+-- existing row reads back NULL/NULL/NULL (UNKNOWN_OR_LEGACY under the
+-- Stage J4C semantic contract), exactly like a legacy row, never
+-- backfilled. New trades explicitly initialize level_history_contract_
+-- version='1', stop_modified_after_entry=FALSE, target_modified_after_
+-- entry=FALSE at INSERT time (see api/routers/paper_trading.py's
+-- paper_buy). The BEFORE UPDATE trigger below (trg_paper_trades_level_
+-- history_invariant) is the durable enforcement point — it, not any one
+-- API route, is what makes the invariant "database bypass resistant":
+-- version immutability, TRUE-never-reverts, governed value-change-
+-- requires-matching-flag, and aggregate/per-level consistency all hold
+-- for ANY authoritative UPDATE to this table, not only ones issued
+-- through PATCH /trade/{id}.
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS level_history_contract_version TEXT;
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS stop_modified_after_entry BOOLEAN;
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS target_modified_after_entry BOOLEAN;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_paper_trades_level_history_contract_version'
+    ) THEN
+        ALTER TABLE paper_trades ADD CONSTRAINT chk_paper_trades_level_history_contract_version
+            CHECK (level_history_contract_version IS NULL OR level_history_contract_version = '1');
+    END IF;
+
+    -- Wave A closure correction — exact governed tuple invariant. Applies
+    -- on BOTH INSERT and UPDATE (CHECK constraints, unlike a BEFORE
+    -- UPDATE trigger, evaluate on every row-affecting statement). For a
+    -- governed version '1' row this rejects any tuple where a per-level
+    -- flag is NULL, or where the aggregate is not EXACTLY the logical OR
+    -- of the two per-level flags in either direction — not merely "per-
+    -- level TRUE implies aggregate TRUE" (which the existing trigger
+    -- already enforces) but the full equality, catching e.g. an
+    -- aggregate TRUE with both per-level flags FALSE, or a NULL
+    -- aggregate on an otherwise-populated governed row. A legacy row
+    -- (version IS NULL) is completely unconstrained by this check.
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_paper_trades_governed_level_history_tuple'
+    ) THEN
+        ALTER TABLE paper_trades ADD CONSTRAINT chk_paper_trades_governed_level_history_tuple
+            CHECK (
+                level_history_contract_version IS DISTINCT FROM '1'
+                OR (
+                    stop_modified_after_entry IS NOT NULL
+                    AND target_modified_after_entry IS NOT NULL
+                    AND levels_modified_after_entry IS NOT NULL
+                    AND levels_modified_after_entry = (stop_modified_after_entry OR target_modified_after_entry)
+                )
+            );
+    END IF;
+END $$;
+
+-- BEFORE UPDATE only (never fires on INSERT — a brand-new governed row's
+-- initial FALSE/FALSE/FALSE/'1' quadruple is the authoritative writer's
+-- own responsibility, not this trigger's). OLD.* is therefore always a
+-- pre-existing row on every invocation, which is what makes "IS
+-- DISTINCT FROM OLD.level_history_contract_version" a safe immutability
+-- check rather than a spurious rejection of the very first write.
+CREATE OR REPLACE FUNCTION enforce_paper_trade_level_history_invariant() RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.level_history_contract_version IS DISTINCT FROM OLD.level_history_contract_version THEN
+        RAISE EXCEPTION 'level_history_contract_version is immutable once set (paper_trade id=%)', OLD.id;
+    END IF;
+
+    IF OLD.stop_modified_after_entry IS TRUE AND NEW.stop_modified_after_entry IS NOT TRUE THEN
+        RAISE EXCEPTION 'stop_modified_after_entry cannot revert from TRUE (paper_trade id=%)', OLD.id;
+    END IF;
+    IF OLD.target_modified_after_entry IS TRUE AND NEW.target_modified_after_entry IS NOT TRUE THEN
+        RAISE EXCEPTION 'target_modified_after_entry cannot revert from TRUE (paper_trade id=%)', OLD.id;
+    END IF;
+
+    IF NEW.level_history_contract_version IS NOT NULL THEN
+        IF NEW.stop_loss IS DISTINCT FROM OLD.stop_loss AND NEW.stop_modified_after_entry IS NOT TRUE THEN
+            RAISE EXCEPTION 'governed stop_loss change requires stop_modified_after_entry=TRUE in the same update (paper_trade id=%)', OLD.id;
+        END IF;
+        IF NEW.target_price IS DISTINCT FROM OLD.target_price AND NEW.target_modified_after_entry IS NOT TRUE THEN
+            RAISE EXCEPTION 'governed target_price change requires target_modified_after_entry=TRUE in the same update (paper_trade id=%)', OLD.id;
+        END IF;
+    END IF;
+
+    IF (NEW.stop_modified_after_entry IS TRUE OR NEW.target_modified_after_entry IS TRUE)
+       AND NEW.levels_modified_after_entry IS NOT TRUE THEN
+        RAISE EXCEPTION 'levels_modified_after_entry must be TRUE whenever a per-level flag is TRUE (paper_trade id=%)', OLD.id;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_paper_trades_level_history_invariant ON paper_trades;
+CREATE TRIGGER trg_paper_trades_level_history_invariant
+    BEFORE UPDATE ON paper_trades
+    FOR EACH ROW EXECUTE FUNCTION enforce_paper_trade_level_history_invariant();
+
 -- Per-user Paper Trading notification preference — gates both the trade
 -- notifier's proximity/auto-close emails and (client-side) whether the
 -- Notifications toggle asks for browser permission. Paper Trading only;
@@ -416,10 +512,25 @@ CREATE TABLE IF NOT EXISTS paper_trade_entry_snapshot (
     -- this stage (see entry_snapshot.py's module docstring).
     verification_levels             JSONB NOT NULL,
 
+    -- Wave A closure correction — immutable governed level-history
+    -- evidence at entry time. NULL for a legacy trade (mirrors the
+    -- paper_trades row's own legacy NULL state at the moment this
+    -- snapshot was written); for a governed trade, always version='1'
+    -- and all three booleans FALSE (entry-time state is FALSE by
+    -- construction). Never backfilled onto existing rows.
+    level_history_contract_version         TEXT,
+    initial_stop_modified_after_entry      BOOLEAN,
+    initial_target_modified_after_entry    BOOLEAN,
+    initial_levels_modified_after_entry    BOOLEAN,
+
     created_at                      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trade_entry_snapshot_trade ON paper_trade_entry_snapshot(paper_trade_id);
 CREATE INDEX IF NOT EXISTS idx_paper_trade_entry_snapshot_user ON paper_trade_entry_snapshot(user_id, symbol, market);
+ALTER TABLE paper_trade_entry_snapshot ADD COLUMN IF NOT EXISTS level_history_contract_version TEXT;
+ALTER TABLE paper_trade_entry_snapshot ADD COLUMN IF NOT EXISTS initial_stop_modified_after_entry BOOLEAN;
+ALTER TABLE paper_trade_entry_snapshot ADD COLUMN IF NOT EXISTS initial_target_modified_after_entry BOOLEAN;
+ALTER TABLE paper_trade_entry_snapshot ADD COLUMN IF NOT EXISTS initial_levels_modified_after_entry BOOLEAN;
 
 -- Migration-verification hardening gate — database-level immutability.
 -- Application code never issues an UPDATE against this table (verified:
@@ -494,6 +605,14 @@ CREATE TABLE IF NOT EXISTS paper_trade_exit_snapshot (
     market_close_rule               TEXT,
     management_mode                 TEXT NOT NULL,
     levels_modified_after_entry     BOOLEAN,
+    -- Stage J4D — final per-level history state at close, captured in
+    -- the SAME transaction as the paper_trades close UPDATE (see
+    -- close_service.py). NULL for a legacy trade (level_history_
+    -- contract_version was never set), exactly like the paper_trades
+    -- row it was read from at close time.
+    level_history_contract_version  TEXT,
+    final_stop_modified_after_entry BOOLEAN,
+    final_target_modified_after_entry BOOLEAN,
 
     source_request_id               TEXT,
     trigger_observation_timestamp   TIMESTAMPTZ,
@@ -506,6 +625,11 @@ CREATE TABLE IF NOT EXISTS paper_trade_exit_snapshot (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trade_exit_snapshot_trade ON paper_trade_exit_snapshot(paper_trade_id);
 CREATE INDEX IF NOT EXISTS idx_paper_trade_exit_snapshot_user ON paper_trade_exit_snapshot(user_id, symbol, market);
+-- Stage J4D additive columns for a table that may already exist from an
+-- earlier deployment (same idempotent pattern as paper_trades above).
+ALTER TABLE paper_trade_exit_snapshot ADD COLUMN IF NOT EXISTS level_history_contract_version TEXT;
+ALTER TABLE paper_trade_exit_snapshot ADD COLUMN IF NOT EXISTS final_stop_modified_after_entry BOOLEAN;
+ALTER TABLE paper_trade_exit_snapshot ADD COLUMN IF NOT EXISTS final_target_modified_after_entry BOOLEAN;
 
 -- Database-level immutability — identical pattern to
 -- trg_paper_trade_entry_snapshot_immutable above. INSERT and DELETE are
@@ -666,6 +790,81 @@ DROP TRIGGER IF EXISTS trg_paper_trade_postmortem_report_immutable ON paper_trad
 CREATE TRIGGER trg_paper_trade_postmortem_report_immutable
     BEFORE UPDATE ON paper_trade_postmortem_report
     FOR EACH ROW EXECUTE FUNCTION reject_paper_trade_postmortem_report_update();
+
+-- Trade Postmortem Engine, Sprint 3A — point-in-time price-path
+-- evidence. One immutable versioned row per (paper_trade_id,
+-- evidence_bundle_version, source_id, source_version) — the same
+-- "current version identity" pattern paper_trade_postmortem_report
+-- already uses. `bars` is a bounded JSONB array of the full daily OHLC
+-- history for the trade's holding window, kept alongside the row
+-- (Stage 3's own explicit requirement: never store only the computed
+-- MFE/MAE while discarding the bars that support them) — chosen over a
+-- separate per-bar table because this sprint's daily-only resolution
+-- bounds bars-per-trade to, realistically, a few hundred rows even for
+-- a multi-year hold, trivially small as one JSONB array and avoiding an
+-- extra join for every read of a trade's price path.
+--
+-- Never UPDATEd once written (see the immutability trigger below) — a
+-- re-acquisition (new source version, or a retry that produces
+-- different bars) inserts a NEW row under its own version key, exactly
+-- like the report/exit-snapshot tables. `status` mirrors the module-
+-- level statuses in services/postmortem/price_path_evidence.py: COMPLETE
+-- | PARTIAL | UNAVAILABLE | INVALID_SOURCE_DATA | AMBIGUOUS_RESOLUTION.
+CREATE TABLE IF NOT EXISTS paper_trade_price_path_evidence (
+    id                              BIGSERIAL PRIMARY KEY,
+    paper_trade_id                  BIGINT NOT NULL,
+    user_id                         TEXT NOT NULL,
+    symbol                          TEXT NOT NULL,
+    market                          TEXT NOT NULL,
+    evidence_bundle_version         TEXT NOT NULL,
+    source_id                       TEXT NOT NULL,
+    source_type                     TEXT NOT NULL,
+    source_version                  TEXT NOT NULL,
+    provider_symbol                 TEXT NOT NULL,
+    price_adjustment_basis          TEXT NOT NULL,
+    bar_interval                    TEXT NOT NULL,
+    market_timezone                 TEXT NOT NULL,
+    entry_timestamp                 TIMESTAMPTZ NOT NULL,
+    exit_timestamp                  TIMESTAMPTZ NOT NULL,
+    entry_bar_policy                TEXT NOT NULL,
+    exit_bar_policy                 TEXT NOT NULL,
+    requested_window_start          DATE NOT NULL,
+    requested_window_end            DATE NOT NULL,
+    observed_window_start           DATE,
+    observed_window_end             DATE,
+    bars_expected                   INTEGER,
+    bars_observed                   INTEGER NOT NULL,
+    missing_bar_count               INTEGER,
+    -- COMPLETE | PARTIAL | UNAVAILABLE | INVALID_SOURCE_DATA | AMBIGUOUS_RESOLUTION
+    data_completeness               TEXT NOT NULL,
+    freshness_basis                 TEXT NOT NULL,
+    acquisition_timestamp           TIMESTAMPTZ NOT NULL,
+    source_manifest                 JSONB NOT NULL,
+    limitations                     JSONB NOT NULL DEFAULT '[]'::jsonb,
+    bars                            JSONB NOT NULL DEFAULT '[]'::jsonb,
+    evidence_hash                   TEXT NOT NULL,
+    created_at                      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trade_price_path_current_version
+    ON paper_trade_price_path_evidence(paper_trade_id, evidence_bundle_version, source_id, source_version);
+CREATE INDEX IF NOT EXISTS idx_paper_trade_price_path_user
+    ON paper_trade_price_path_evidence(user_id, paper_trade_id);
+CREATE INDEX IF NOT EXISTS idx_paper_trade_price_path_status
+    ON paper_trade_price_path_evidence(data_completeness);
+
+-- Database-level immutability — identical pattern to the report/exit-
+-- snapshot triggers. INSERT and DELETE are untouched (reset must still
+-- be able to delete price-path evidence rows for a reset trade).
+CREATE OR REPLACE FUNCTION reject_paper_trade_price_path_evidence_update() RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'paper_trade_price_path_evidence rows are immutable — UPDATE is not permitted (paper_trade_id=%)', OLD.paper_trade_id;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_paper_trade_price_path_evidence_immutable ON paper_trade_price_path_evidence;
+CREATE TRIGGER trg_paper_trade_price_path_evidence_immutable
+    BEFORE UPDATE ON paper_trade_price_path_evidence
+    FOR EACH ROW EXECUTE FUNCTION reject_paper_trade_price_path_evidence_update();
 
 -- Trade Postmortem Engine — Buy idempotency (Part 7 of the migration-
 -- verification hardening gate). One row per (user_id, operation_type,
@@ -1048,6 +1247,10 @@ ALTER TABLE daily_picks_jobs     ENABLE ROW LEVEL SECURITY;
 ALTER TABLE paper_trade_exit_snapshot     ENABLE ROW LEVEL SECURITY;
 ALTER TABLE paper_trade_postmortem_outbox ENABLE ROW LEVEL SECURITY;
 ALTER TABLE paper_trade_postmortem_report ENABLE ROW LEVEL SECURITY;
+
+-- Trade Postmortem Engine, Sprint 3A — same rationale, applied to the
+-- new price-path evidence table.
+ALTER TABLE paper_trade_price_path_evidence ENABLE ROW LEVEL SECURITY;
 """
 
 
@@ -1152,7 +1355,7 @@ _REQUIRED_SCHEMA_TABLES = [
     "daily_picks_cache", "paper_trades", "paper_portfolio",
     "paper_trade_entry_snapshot", "paper_trade_idempotency_key",
     "paper_trade_exit_snapshot", "paper_trade_postmortem_outbox",
-    "paper_trade_postmortem_report",
+    "paper_trade_postmortem_report", "paper_trade_price_path_evidence",
 ]
 
 _REQUIRED_SCHEMA_CONSTRAINTS = [
@@ -1206,6 +1409,21 @@ def _verify_schema_postconditions(conn) -> None:
     if not row:
         raise SchemaInitializationError("required column missing: public.daily_picks_cache.status")
 
+    # Sprint 3A, Stage I — supersedes_report_id already existed on
+    # paper_trade_postmortem_report since Sprint 2's own schema (it was
+    # provisioned ahead of use); Stage I is the first application code
+    # to actually write/read it, so this is the first postcondition
+    # verifying it's genuinely present rather than assumed.
+    row = conn.execute(
+        """SELECT 1 FROM information_schema.columns
+           WHERE table_schema = 'public' AND table_name = 'paper_trade_postmortem_report'
+             AND column_name = 'supersedes_report_id'"""
+    ).fetchone()
+    if not row:
+        raise SchemaInitializationError(
+            "required column missing: public.paper_trade_postmortem_report.supersedes_report_id"
+        )
+
     _verify_immutability_trigger_contract(
         conn, table="paper_trade_entry_snapshot",
         trigger="trg_paper_trade_entry_snapshot_immutable",
@@ -1223,6 +1441,12 @@ def _verify_schema_postconditions(conn) -> None:
         conn, table="paper_trade_postmortem_report",
         trigger="trg_paper_trade_postmortem_report_immutable",
         function="reject_paper_trade_postmortem_report_update",
+    )
+    # Sprint 3A — same contract for the new price-path evidence store.
+    _verify_immutability_trigger_contract(
+        conn, table="paper_trade_price_path_evidence",
+        trigger="trg_paper_trade_price_path_evidence_immutable",
+        function="reject_paper_trade_price_path_evidence_update",
     )
 
 

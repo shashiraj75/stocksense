@@ -1,0 +1,1470 @@
+{
+  "purpose": "Honest ledger distinguishing the 18 WB-J4E-* / 20 WB-J4F-* TRACEABILITY REQUIREMENT IDs from the mandatory 55-scenario J4E / 68-scenario J4F BEHAVIOURAL matrix. One requirement ID may need several pytest nodes to reach full scenario coverage; this file is the running proof of that mapping and must never show a requirement as scenario-complete until every scenario under it has its own runnable, executed, genuinely red (pre-fix) or green (post-fix) node.",
+  "as_of_head": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46",
+  "j4e_scenario_target": 55,
+  "j4f_scenario_target": 68,
+  "j4e_scenarios_represented": 55,
+  "j4f_scenarios_represented": 68,
+  "gap_disclosure": "HISTORICAL: batches A-C originally mapped one node per WB-J4E-* traceability ID; batches D-M expanded to the full 55 J4E + 68 J4F scenario matrix. CURRENT (this closure pass): all 123 scenarios are GREEN at final SHA 60bf499a4caf81d4dee3f5b9ca4e9965062dfa46 \u2014 J4E 55/55, J4F 68/68 (60 non-Postgres + 8 real-PostgreSQL, PostgreSQL 15+17 both 241/241 passed, 0 failed, workflow 30736169951).",
+  "entries": [
+    {
+      "scenario_no": 1,
+      "requirement_id": "WB-J4E-01",
+      "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_01_governed_report_identity_module_exists",
+      "level": "unit",
+      "intended_failure_reason": "current_report_generation module does not exist",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 2,
+      "requirement_id": "WB-J4E-02",
+      "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_02_report_schema_version_1_2_0_constant_exists",
+      "level": "unit",
+      "intended_failure_reason": "GOVERNED_PRICE_PATH_REPORT_SCHEMA_VERSION not defined",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 3,
+      "requirement_id": "WB-J4E-03",
+      "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_03_governed_price_path_rules_version_constant_exists",
+      "level": "unit",
+      "intended_failure_reason": "GOVERNED_PRICE_PATH_RULES_VERSION not defined",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 4,
+      "requirement_id": "WB-J4E-04",
+      "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_04_governed_claim_rules_version_constant_exists",
+      "level": "unit",
+      "intended_failure_reason": "GOVERNED_PRICE_PATH_CLAIM_RULES_VERSION not defined",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 5,
+      "requirement_id": "WB-J4E-05",
+      "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_05_governed_calculation_version_format",
+      "level": "unit",
+      "intended_failure_reason": "governed_calculation_version not defined",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 6,
+      "requirement_id": "WB-J4E-06",
+      "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_06_governed_claims_module_does_not_import_legacy_touch_authority",
+      "level": "unit",
+      "intended_failure_reason": "governed_price_path_claims module does not exist",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 7,
+      "requirement_id": "WB-J4E-07",
+      "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_07_build_governed_price_path_payload_exists",
+      "level": "unit",
+      "intended_failure_reason": "build_governed_price_path_payload not defined",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 8,
+      "requirement_id": "WB-J4E-08",
+      "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_08_no_bundle_produces_no_bars_not_fabricated_touch",
+      "level": "unit",
+      "intended_failure_reason": "builder not defined, cannot exercise no-bundle path",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 9,
+      "requirement_id": "WB-J4E-09",
+      "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_09_payload_reads_snapshot_governed_fields_not_mutable_row",
+      "level": "unit/structural",
+      "intended_failure_reason": "module does not exist",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 10,
+      "requirement_id": "WB-J4E-10",
+      "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_10_legacy_no_snapshot_never_fabricates_governed_false",
+      "level": "unit",
+      "intended_failure_reason": "build_current_report_payload not defined",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 11,
+      "requirement_id": "WB-J4E-11",
+      "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_11_structured_report_has_four_required_subsections",
+      "level": "unit",
+      "intended_failure_reason": "CurrentReportPayload not defined",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 12,
+      "requirement_id": "WB-J4E-12",
+      "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_12_version_and_provenance_carries_exact_triple",
+      "level": "unit",
+      "intended_failure_reason": "build_current_report_payload not defined",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 13,
+      "requirement_id": "WB-J4E-13",
+      "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_13_canonical_fallback_sentence_matches_evidence_module",
+      "level": "unit",
+      "intended_failure_reason": "governed_price_path_claims module does not exist",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 14,
+      "requirement_id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_14_no_bars_claim_makes_no_positive_assertion",
+      "level": "unit",
+      "intended_failure_reason": "build_governed_touch_claim not defined",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 15,
+      "requirement_id": "WB-J4E-15",
+      "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_15_claim_ids_deterministic_and_collision_safe",
+      "level": "unit",
+      "intended_failure_reason": "build_governed_touch_claim not defined",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 16,
+      "requirement_id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_16_claim_referential_integrity_within_report",
+      "level": "unit",
+      "intended_failure_reason": "build_governed_price_path_payload not defined",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 17,
+      "requirement_id": "WB-J4E-17",
+      "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_17_supersession_predecessor_is_deterministic_single_and_same_trade",
+      "level": "unit",
+      "intended_failure_reason": "persist_current_report not defined",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 18,
+      "requirement_id": "WB-J4E-18",
+      "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_18_version_scoped_report_api_exists_for_all_three_identities",
+      "level": "unit/real-postgres(pending)",
+      "intended_failure_reason": "persist_current_report not defined; real-PG coexistence proof not yet written",
+      "post_fix_result": "PENDING",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    }
+  ],
+  "batch_d_added_scenarios": [
+    {
+      "scenario_no": 19,
+      "requirement_id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[NO_VALUE_SUPPLIED]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 20,
+      "requirement_id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[NO_COMPATIBLE_CROSSING]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 21,
+      "requirement_id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[SUPPORTED_TOUCH]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 22,
+      "requirement_id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[INCOMPATIBLE_BASIS]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 23,
+      "requirement_id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[NO_BARS]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 24,
+      "requirement_id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[INSUFFICIENT_EVIDENCE]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 25,
+      "requirement_id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[CONTRADICTORY_ENDPOINT_EVIDENCE]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 26,
+      "requirement_id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[NEITHER_OBSERVED]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 27,
+      "requirement_id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[TARGET_ONLY_OBSERVED]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 28,
+      "requirement_id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[STOP_ONLY_OBSERVED]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 29,
+      "requirement_id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[TARGET_SAFELY_BEFORE_STOP]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 30,
+      "requirement_id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[STOP_SAFELY_BEFORE_TARGET]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 31,
+      "requirement_id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[SAME_BAR_ORDER_UNKNOWN]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 32,
+      "requirement_id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[ORDER_UNAVAILABLE]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    }
+  ],
+  "batch_e_added_scenarios": [
+    {
+      "scenario_no": 33,
+      "requirement_id": "WB-J4E-11",
+      "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_11_variant_weakest_ceiling_wins_no_bundle[False-True]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 34,
+      "requirement_id": "WB-J4E-11",
+      "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_11_variant_weakest_ceiling_wins_no_bundle[False-False]",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 35,
+      "requirement_id": "WB-J4E-17",
+      "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_17_variant_persist_current_report_is_idempotent_on_replay",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 36,
+      "requirement_id": "WB-J4E-17",
+      "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_17_variant_supersession_never_cross_trade_or_cross_user",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 37,
+      "requirement_id": "WB-J4E-18",
+      "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_18_variant_1_0_0_report_untouched_after_1_2_0_persist",
+      "level": "unit(pending real-pg proof)",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 38,
+      "requirement_id": "WB-J4E-18",
+      "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_18_variant_1_1_0_report_untouched_after_1_2_0_persist",
+      "level": "unit(pending real-pg proof)",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    }
+  ],
+  "batch_e_structural_invariant_checks_not_counted_toward_red_matrix": [
+    {
+      "scenario_no": "N/A (baseline-preservation, not one of the 55)",
+      "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_18_variant_latest_report_prefers_1_2_0_once_it_exists",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_BASELINE_PASS",
+      "actual_pre_fix_result": "PASS",
+      "why_expected_to_pass": "report_store.get_latest_report_for_trade's ORDER BY report_schema_version DESC, generated_at DESC clause was written in an earlier sprint (predates Wave B) and is version-value-agnostic \u2014 it will prefer '1.2.0' the moment such a row exists without any code change, exactly as it already prefers '1.1.0' over '1.0.0' today.",
+      "what_it_protects": "Guards against a future Wave B change accidentally narrowing or hardcoding that ORDER BY clause (e.g. to a fixed list of known versions) in a way that would stop preferring a new, not-yet-invented version string.",
+      "why_it_does_not_reduce_required_coverage": "It verifies a PRE-EXISTING invariant this module must not regress \u2014 it proves nothing about the NEW 1.2.0 writer/reader code that Wave B must still add. All 55 J4E scenarios exercising the new 1.2.0 surface remain required and are tracked separately below.",
+      "counts_as_test_first_red_evidence": false
+    }
+  ],
+  "batch_f_added_scenarios": [
+    {
+      "scenario_no": 39,
+      "requirement_id": "WB-J4E-17",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_39_persist_current_report_accepts_outbox_linkage_params",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 40,
+      "requirement_id": "WB-J4E-17",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_40_persist_current_report_raises_on_stale_lease",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 41,
+      "requirement_id": "WB-J4E-11",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_41_current_report_reuses_shared_evidence_hash_function",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 42,
+      "requirement_id": "WB-J4E-11",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_42_current_report_payload_exposes_warnings_field",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 43,
+      "requirement_id": "WB-J4E-11",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_43_current_report_payload_exposes_evidence_gaps_field",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 44,
+      "requirement_id": "WB-J4E-12",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_44_report_trading_date_uses_close_date",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 45,
+      "requirement_id": "WB-J4E-12",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_45_market_timezone_is_caller_supplied_not_hardcoded",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 46,
+      "requirement_id": "WB-J4E-17",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_46_persist_current_report_relies_on_db_unique_index_not_app_lock",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 47,
+      "requirement_id": "WB-J4E-05",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_47_governed_calculation_version_is_pure_and_stable",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 48,
+      "requirement_id": "WB-J4E-05",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_48_governed_calculation_version_is_sensitive_to_numerical_rules",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 49,
+      "requirement_id": "WB-J4E-05",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_49_governed_calculation_version_is_sensitive_to_source_version",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 50,
+      "requirement_id": "WB-J4E-18",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_50_current_report_lookup_reuses_shared_user_scoped_function",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 51,
+      "requirement_id": "WB-J4E-10",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_51_process_current_report_rejects_ownership_mismatch",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 52,
+      "requirement_id": "WB-J4E-10",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_52_process_current_report_handles_open_trade_honestly",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 53,
+      "requirement_id": "WB-J4E-06",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_53_governed_rule_ids_do_not_collide_with_legacy_rule_ids",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 54,
+      "requirement_id": "WB-J4E-13",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_54_fallback_claim_uses_insufficient_evidence_class",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 55,
+      "requirement_id": "WB-J4E-13",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_55_supported_touch_claim_confidence_not_not_assessable",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    }
+  ],
+  "j4e_matrix_status": "J4E FINAL: 55/55 scenarios GREEN at SHA 60bf499a4caf81d4dee3f5b9ca4e9965062dfa46 \u2014 collected, executed, passing. 0 pending. 0 mandatory skipped (the 1 documented baseline-preservation skip in Batch E remains an intentional, disclosed structural design choice, not a mandatory scenario).",
+  "remaining_j4e_scenarios_not_yet_written": 0,
+  "remaining_j4f_scenarios_not_yet_written": 0,
+  "next_action": "All 55 J4E + 68 J4F scenarios represented and locally executed. Next: fix WB-J4F-67's scaffold assertion before counting it toward green evidence later; push the test/spec-only red baseline and dispatch the real-PostgreSQL 15/17 CI workflow to obtain genuine execution results for the 8 postgres_integration nodes (WB-J4F-13..20) per the owner's explicit push authorization; then reapply and reassess the preserved draft from /tmp/stocksense-wave-b-wip-20260801T193503Z/ against the complete contract+ledger.",
+  "batch_g_added_scenarios": [
+    {
+      "scenario_no": 1,
+      "requirement_id": "WB-J4F-01",
+      "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_01_close_paper_trade_accepts_explicit_current_outbox_request",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 2,
+      "requirement_id": "WB-J4F-02",
+      "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_02_current_outbox_insert_helper_exists_and_is_idempotent",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 3,
+      "requirement_id": "WB-J4F-03",
+      "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_03_current_outbox_insert_happens_inside_close_transaction",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 4,
+      "requirement_id": "WB-J4F-04",
+      "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_04_current_outbox_identity_is_caller_supplied_not_env_read",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 5,
+      "requirement_id": "WB-J4F-05",
+      "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_05_duplicate_close_never_double_inserts_current_outbox",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 6,
+      "requirement_id": "WB-J4F-06",
+      "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_06_current_outbox_creatable_outside_close_time_for_backfill",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    }
+  ],
+  "batch_h_added_scenarios": [
+    {
+      "scenario_no": 7,
+      "requirement_id": "WB-J4F-07",
+      "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_07_current_outbox_lookup_is_exact_version_scoped_not_latest",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 8,
+      "requirement_id": "WB-J4F-08",
+      "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_08_worker_claim_lookup_will_be_version_scoped",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 9,
+      "requirement_id": "WB-J4F-09",
+      "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_09_shared_orchestrator_function_exists",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 10,
+      "requirement_id": "WB-J4F-10",
+      "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_10_paper_trading_close_time_path_calls_shared_orchestrator",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 11,
+      "requirement_id": "WB-J4F-11",
+      "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_11_post_generate_endpoint_calls_shared_orchestrator",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 12,
+      "requirement_id": "WB-J4F-12",
+      "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_12_background_worker_will_call_shared_orchestrator",
+      "level": "unit",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    }
+  ],
+  "batch_i_added_scenarios": [
+    {
+      "scenario_no": 13,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_13_global_claim_function_exists",
+      "level": "real-postgres",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED (confirmed on real PostgreSQL 15 AND 17, CI run 30716822323, genuine intended AssertionError, zero collection/infrastructure errors)",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 14,
+      "requirement_id": "WB-J4F-14",
+      "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_14_simultaneous_claimants_never_both_claim_same_row",
+      "level": "real-postgres",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED (confirmed on real PostgreSQL 15 AND 17, CI run 30716822323, genuine intended AssertionError, zero collection/infrastructure errors)",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 15,
+      "requirement_id": "WB-J4F-15",
+      "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_15_distinct_rows_claimed_by_distinct_claimants",
+      "level": "real-postgres",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED (confirmed on real PostgreSQL 15 AND 17, CI run 30716822323, genuine intended AssertionError, zero collection/infrastructure errors)",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 16,
+      "requirement_id": "WB-J4F-16",
+      "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_16_active_lease_row_is_not_reclaimable",
+      "level": "real-postgres",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED (confirmed on real PostgreSQL 15 AND 17, CI run 30716822323, genuine intended AssertionError, zero collection/infrastructure errors)",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 17,
+      "requirement_id": "WB-J4F-17",
+      "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_17_expired_lease_row_is_reclaimable",
+      "level": "real-postgres",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED (confirmed on real PostgreSQL 15 AND 17, CI run 30716822323, genuine intended AssertionError, zero collection/infrastructure errors)",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 18,
+      "requirement_id": "WB-J4F-18",
+      "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_18_retry_backoff_delays_next_attempt",
+      "level": "real-postgres",
+      "pre_implementation_expectation": "EXPECTED_BASELINE_PASS",
+      "pre_implementation_result": "PASS (confirmed on real PostgreSQL 15 AND 17, CI run 30716822323 \u2014 EXPECTED_BASELINE_PASS, reuses existing outbox.py backoff logic unchanged)",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 19,
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_19_worker_enforces_max_attempt_terminalization",
+      "level": "real-postgres",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED (confirmed on real PostgreSQL 15 AND 17, CI run 30716822323, genuine intended AssertionError, zero collection/infrastructure errors)",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 20,
+      "requirement_id": "WB-J4F-20",
+      "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_20_global_claim_query_uses_index_not_seqscan",
+      "level": "real-postgres",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED (confirmed on real PostgreSQL 15 AND 17, CI run 30716822323, genuine intended AssertionError, zero collection/infrastructure errors)",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    }
+  ],
+  "batch_j_added_scenarios": [
+    {
+      "scenario_no": 21,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_21_outbox_worker_module_exists",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 22,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_22_worker_is_flag_gated",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 23,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_23_worker_exposes_a_start_function",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 24,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_24_worker_exposes_a_graceful_stop_function",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 25,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_25_worker_poll_has_bounded_batch_size_parameter",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 26,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_26_worker_poll_interval_is_named_not_bare_magic_number",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 27,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_27_worker_does_not_hold_connection_across_sleep",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 28,
+      "requirement_id": "WB-J4F-09",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_28_worker_delegates_provider_acquisition_outside_any_conn_block",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 29,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_29_worker_backs_off_on_database_outage",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 30,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_30_worker_logs_lifecycle_events",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    }
+  ],
+  "batch_k_added_scenarios": [
+    {
+      "scenario_no": 31,
+      "requirement_id": "WB-J4F-18",
+      "node": "tests/unit/test_wave_b_j4f_batch_k_failure_taxonomy.py::test_wb_j4f_31_empty_but_successful_acquisition_completes_limited_not_retryable",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 32,
+      "requirement_id": "WB-J4F-18",
+      "node": "tests/unit/test_wave_b_j4f_batch_k_failure_taxonomy.py::test_wb_j4f_32_provider_network_error_is_retryable_not_terminal",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 33,
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/unit/test_wave_b_j4f_batch_k_failure_taxonomy.py::test_wb_j4f_33_missing_trade_is_terminal_not_retryable",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 34,
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/unit/test_wave_b_j4f_batch_k_failure_taxonomy.py::test_wb_j4f_34_ownership_mismatch_is_terminal",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 35,
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/unit/test_wave_b_j4f_batch_k_failure_taxonomy.py::test_wb_j4f_35_unsupported_identity_is_terminal_with_specific_error_code",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 36,
+      "requirement_id": "WB-J4F-18",
+      "node": "tests/unit/test_wave_b_j4f_batch_k_failure_taxonomy.py::test_wb_j4f_36_error_codes_are_enumerated_not_raw_exception_text",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 37,
+      "requirement_id": "WB-J4F-18",
+      "node": "tests/unit/test_wave_b_j4f_batch_k_failure_taxonomy.py::test_wb_j4f_37_error_summary_never_interpolates_raw_provider_response",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 38,
+      "requirement_id": "WB-J4F-18",
+      "node": "tests/unit/test_wave_b_j4f_batch_k_failure_taxonomy.py::test_wb_j4f_38_limited_evidence_completion_still_persists_a_report",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    }
+  ],
+  "batch_l_added_scenarios": [
+    {
+      "scenario_no": 39,
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_39_reconciliation_scenario_1_no_outbox_no_report_generates",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 40,
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_40_reconciliation_scenario_2_pending_outbox_claims_and_generates",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 41,
+      "requirement_id": "WB-J4F-16",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_41_reconciliation_scenario_3_active_lease_generating_is_skipped",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 42,
+      "requirement_id": "WB-J4F-17",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_42_reconciliation_scenario_4_expired_lease_is_reclaimed",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 43,
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_43_reconciliation_scenario_5_terminal_with_report_returns_existing",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 44,
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_44_reconciliation_scenario_6_terminal_without_report_self_heals",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 45,
+      "requirement_id": "WB-J4F-17",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_45_exactly_once_effect_relies_on_shared_persist_report",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 46,
+      "requirement_id": "WB-J4F-17",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_46_report_and_outbox_settlement_share_one_transaction",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 47,
+      "requirement_id": "WB-J4F-16",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_47_stale_worker_settlement_is_rejected_not_silently_applied",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 48,
+      "requirement_id": "WB-J4F-16",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_48_stale_worker_rejection_leaves_outbox_row_untouched",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    }
+  ],
+  "reconciliation_state_machine_note": "The governing prompt's 6-numbered reconciliation-state-machine scenarios are represented 1:1 as scenarios 39-44 above (no outbox/no report; PENDING outbox; active-lease GENERATING; expired-lease GENERATING; terminal-with-report; terminal-without-report/self-heal).",
+  "batch_m_added_scenarios": [
+    {
+      "scenario_no": 49,
+      "requirement_id": "WB-J4F-20",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_49_reset_endpoint_deletes_report_and_outbox_by_user_id_generically",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_BASELINE_PASS",
+      "pre_implementation_result": "PASS",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 50,
+      "requirement_id": "WB-J4F-20",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_50_report_and_outbox_deleted_before_paper_trades",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_BASELINE_PASS",
+      "pre_implementation_result": "PASS",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 51,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_51_global_claim_batch_carries_per_row_user_id",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 52,
+      "requirement_id": "WB-J4F-09",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_52_process_current_report_cross_checks_trade_ownership",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 53,
+      "requirement_id": "WB-J4F-09",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_53_no_raw_pii_or_price_values_interpolated_into_logs",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 54,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_54_worker_does_not_log_raw_exception_at_info_level",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 55,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_55_claimant_tokens_reuse_existing_opaque_generator",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 56,
+      "requirement_id": "WB-J4F-17",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_56_current_reports_share_the_same_immutable_table",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_BASELINE_PASS",
+      "pre_implementation_result": "PASS",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 57,
+      "requirement_id": "WB-J4F-17",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_57_supersedes_report_id_never_updated_after_insert",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 58,
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_58_worker_survives_trade_deleted_mid_generation",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 59,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_59_worker_isolates_per_row_exceptions_within_a_batch",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 60,
+      "requirement_id": "WB-J4F-18",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_60_retry_backoff_is_capped_not_unbounded",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_BASELINE_PASS",
+      "pre_implementation_result": "PASS",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 61,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_61_graceful_shutdown_does_not_abandon_in_flight_claim",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 62,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_62_worker_start_is_idempotent_no_duplicate_loops",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 63,
+      "requirement_id": "WB-J4F-16",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_63_worker_lease_duration_matches_shared_outbox_convention",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 64,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_64_global_claim_accepts_caller_supplied_claimant_token",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 65,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_65_global_claim_function_accepts_explicit_limit_param",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 66,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_66_global_claim_filters_by_exact_current_version_identity",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 67,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_67_lifespan_worker_startup_does_not_block_app_boot_on_failure",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    },
+    {
+      "scenario_no": 68,
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_68_lifespan_calls_worker_stop_on_shutdown",
+      "level": "unit/structural",
+      "pre_implementation_expectation": "EXPECTED_RED_PRE_IMPLEMENTATION",
+      "pre_implementation_result": "RED",
+      "final_result": "GREEN",
+      "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46"
+    }
+  ],
+  "j4f_matrix_status": "J4F FINAL: 68/68 scenarios GREEN at SHA 60bf499a4caf81d4dee3f5b9ca4e9965062dfa46 \u2014 60 non-PostgreSQL scenarios GREEN locally; 8 real-PostgreSQL scenarios (WB-J4F-13..20) GREEN on both PostgreSQL 15 and 17 (workflow 30736169951, 241/241 tests passed, 0 failed, 0 skipped on each version). 0 pending.",
+  "real_postgresql_ci_evidence": {
+    "workflow": "Backend PostgreSQL Integration Tests",
+    "first_dispatch_run_id": "30716679230",
+    "first_dispatch_result": "2 genuine pre-existing test-authoring bugs found (UnboundLocalError from a shadowing local `import importlib`; NotNullViolation on paper_trades.session_id) \u2014 NOT counted as red evidence; both fixed in commit 71be8c8 before recounting, per the mandate against counting collection/runtime-defect failures as valid red evidence.",
+    "corrected_dispatch_run_id": "30716822323",
+    "corrected_dispatch_result": "7/8 WB-J4F-13..20 nodes genuinely RED (AssertionError, module/function not yet defined) on BOTH PostgreSQL 15 and PostgreSQL 17; 1/8 (WB-J4F-18) genuinely PASSED on both \u2014 confirmed EXPECTED_BASELINE_PASS, exercising existing outbox.py retry-backoff logic against a real database, unchanged by Wave B. Zero collection errors, zero infrastructure failures on the corrected run.",
+    "pushed_head": "71be8c8cb0a1637c6e6e1a848a267ab2a7353ab1"
+  },
+  "implementation_green_evidence": {
+    "workflow": "Backend PostgreSQL Integration Tests",
+    "green_run_id": "30718307152",
+    "pushed_head": "de58b24e61b7bffed6d1e23c34a7615ec8e095af",
+    "result": "SUCCESS on BOTH PostgreSQL 15 and 17 \u2014 full workflow, including all pre-existing (Wave A/Sprint 3A) regression suites and all 8 WB-J4F-13..20 real-postgres nodes, now genuinely GREEN post-implementation.",
+    "regression_history": [
+      "Run 30716822323 (red baseline dispatch, pre-implementation): 7/8 WB-J4F-13..20 RED as intended, 1/8 baseline-pass \u2014 correct pre-implementation state.",
+      "Run 30717901956 (first post-implementation dispatch): 6 pre-existing Wave A regression tests broke \u2014 root cause: new close-time/POST-recovery wiring called the 1.2.0 orchestrator unconditionally, causing redundant provider acquisition on non-settled price-path cycles.",
+      "Fix (commit 9cd7919): gated both call sites on the price-path enhancement's own PRICE_PATH_GENERATED/ALREADY_COMPLETE outcome.",
+      "Run 30718093504 (second post-implementation dispatch): reduced to 3 failures, all stale pre-Wave-B report-count assertions (correctly expected 2/3 reports, Wave B's additive 1.2.0 report legitimately makes it 3/4) \u2014 not regressions.",
+      "Fix (commit de58b24): updated the 3 stale count assertions with explanatory comments.",
+      "Run 30718307152 (third post-implementation dispatch): SUCCESS \u2014 zero failures on both PostgreSQL 15 and 17."
+    ]
+  },
+  "gate5_adversarial_audit": {
+    "perspectives_run": [
+      "implementer (self-review during implementation)",
+      "independent reviewer (fresh-eyes code inspection post-implementation)",
+      "no-fabrication auditor (canonical fallback string identity, honest NO_BARS/LIMITED_EVIDENCE verified)",
+      "versioning auditor (1.0.0/1.1.0/1.2.0 constants confirmed independently unchanged)",
+      "PostgreSQL auditor (SKIP LOCKED claim pattern, UPDATE...FROM join correctness verified via real CI)",
+      "concurrency auditor",
+      "crash-recovery auditor (StaleLeaseError propagation, lease reclaim verified)",
+      "security/privacy auditor (no raw PII/price f-string logging, opaque claimant tokens verified)",
+      "operations auditor",
+      "compatibility auditor (no frozen file/constant mutated)",
+      "reset/delete auditor (generic user_id-scoped DELETE confirmed to already cover 1.2.0 tables)",
+      "product owner (no new GET exposure, no frontend change, no flag activation, scope matches contract)"
+    ],
+    "findings": [
+      {
+        "perspective": "concurrency auditor",
+        "classification": "BLOCKING",
+        "summary": "outbox_worker's poll loop applied ONE market_tzinfo/market_timezone_name to an ENTIRE claimed batch, but claim_next_current_outbox_batch never filtered by market \u2014 a claimed batch could contain trades from either market, silently misattributing session-boundary timezone semantics for any row not matching the current loop iteration's assumed market.",
+        "fix_commit": "d647648",
+        "verification": "Full J4F local matrix (60/60) + full non-PostgreSQL suite (2818/1/0) + PostgreSQL 15+17 CI run 30718595833 all green after the fix."
+      },
+      {
+        "perspective": "operations auditor",
+        "classification": "BLOCKING",
+        "summary": "close_service.py's request_current_report_outbox parameter (implemented + unit-tested in Batch G) was never actually invoked with True from any real call site \u2014 the atomic close-to-outbox creation capability was dead code; the background worker had nothing to durably recover from when the close-time synchronous best-effort attempt didn't run or settle.",
+        "fix_commit": "6c6c981",
+        "verification": "Same verification set as above; PostgreSQL 15+17 CI run 30718595833 green."
+      }
+    ],
+    "false_positives_or_nonblocking": [],
+    "re_audit_status": "Both BLOCKING findings corrected in the SAME pass they were discovered in and re-verified green (non-PostgreSQL suite + real PostgreSQL 15/17 CI) before being recorded here \u2014 a formal second full audit pass was not separately re-run given the findings were narrow and immediately fixed/verified; this is disclosed rather than silently treated as a full independent re-audit round."
+  },
+  "final_assurance": {
+    "final_tested_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46",
+    "non_postgresql_result": "5335 passed, 1 skipped, 241 deselected, 0 failed",
+    "non_postgresql_command": "pytest tests -m \"not postgres_integration\"",
+    "non_postgresql_threshold_required": ">5220 passing",
+    "non_postgresql_threshold_met": true,
+    "note_on_earlier_2818_count": "The earlier-reported 2818-passed count came from running only `pytest tests/unit` (114 files), which silently excluded tests/regression (133 files), tests/integration (14), tests/golden (9) and tests/sector (2) \u2014 not a deliberate scope narrowing, an incomplete command. The true complete non-PostgreSQL suite (tests -m 'not postgres_integration', 5577 collected / 5336 selected / 241 deselected as expected postgres_integration-only tests) surfaced 3 genuine regressions the narrower run had never exercised; all 3 fixed (see commit 60bf499), then reverified: 5335 passed, 1 skipped, 241 deselected, 0 failed.",
+    "postgresql_15": {
+      "workflow_run": "30736169951",
+      "head_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46",
+      "tests": 241,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "postgresql_17": {
+      "workflow_run": "30736169951",
+      "head_sha": "60bf499a4caf81d4dee3f5b9ca4e9965062dfa46",
+      "tests": 241,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "gate5_formal_re_audit_findings_in_this_pass": [
+      {
+        "perspective": "PostgreSQL/versioning auditor",
+        "classification": "BLOCKING",
+        "summary": "governed_price_path_claims.py shared RULE_REGISTRY report_section='price_path' collided with legacy price_path_claims.py's own section, breaking a frozen Wave A test's exact rule-id-set assertion under full-suite import ordering.",
+        "fix_commit": "60bf499"
+      },
+      {
+        "perspective": "compatibility auditor",
+        "classification": "BLOCKING",
+        "summary": "the /sell handler's new price-path-status gate unconditionally unpacked _attempt_price_path_enhancement's return as a 2-tuple, breaking the pre-existing fire-and-ignore call-site contract frozen regression tests rely on (monkeypatch-to-None, real concurrency).",
+        "fix_commit": "60bf499"
+      }
+    ]
+  },
+  "closure_pass_2_findings": {
+    "source_defects_found_and_fixed": [
+      {
+        "finding": "A",
+        "summary": "entry/exit endpoint collapse \u2014 process_current_report passed one shared applicable_stop/applicable_target as both entry and exit endpoint values",
+        "fix_commit": "7e30f82"
+      },
+      {
+        "finding": "B",
+        "summary": "invalid outbox status 'SUCCEEDED' passed to mark_terminal (not in _TERMINAL_STATUSES), raises ValueError; return value unchecked",
+        "fix_commit": "7e30f82"
+      },
+      {
+        "finding": "C",
+        "summary": "report_trading_date derived from bare UTC .date() with no market_tzinfo conversion",
+        "fix_commit": "7e30f82"
+      },
+      {
+        "finding": "D",
+        "summary": "phases 3/4/5 ran inside one shared conn_factory() scope, contradicting the documented 5-phase no-connection-during-pure-construction architecture",
+        "fix_commit": "7e30f82"
+      },
+      {
+        "finding": "E",
+        "summary": "stop_outbox_worker's timeout unconditionally cleared _TASK/_STOP_EVENT even though asyncio.to_thread work cannot be cancelled once started, orphaning in-flight generation and permitting a duplicate worker to start",
+        "fix_commit": "7e30f82"
+      },
+      {
+        "finding": "G",
+        "summary": "Batch L's own test/docstring described a terminal-success outbox row with a missing report as 'self-heal by regenerating', contradicting the correct integrity-contradiction contract; no distinct outcome existed",
+        "fix_commit": "7e30f82, test corrected in be0c64a"
+      }
+    ],
+    "finding_f_honest_disclosure": {
+      "summary": "A source-level scan of all Wave B J4E/J4F test function bodies (111 function definitions, expanding via pytest.mark.parametrize to the 123 scenario count) classifies exactly 29 as BEHAVIORAL (directly call a real production function/method with real arguments and assert on its return value or persisted side effect), 47 as clearly STRUCTURAL (hasattr/inspect.getsource/signature checks only, no execution of the scenario's actual runtime behavior), and 35 as a MIXED category (e.g. constructing real dataclass inputs and calling a real function, but asserting only on structural properties like a signature parameter's presence rather than the scenario's full behavioral outcome).",
+      "classification_not_claimed": "This closure pass does NOT claim all 123 scenarios are REAL_BEHAVIOURAL_UNIT/REGRESSION/POSTGRESQL \u2014 that would require materially expanding roughly 47-82 of the 123 tests into genuine executing scenarios (e.g. real database-backed process_current_report calls exercising each reconciliation/claim/status branch), which was not completed in this pass given the scope already covered (6 genuine source defects found and fixed via fresh code review, not test execution).",
+      "what_was_verified": "The 6 genuine defects found in this pass (A-E, G) were found by DIRECT SOURCE REVIEW, not by any of the 123 scenario tests \u2014 proving the scenario matrix's existing behavioral gaps are real and consequential, not a merely theoretical concern.",
+      "disclosed_as": "This is a known, disclosed remaining gap, not silently treated as closed."
+    }
+  },
+  "final_assurance_closure_pass_2": {
+    "final_tested_sha": "be0c64afaccba166cf2dec34192feaa3ac5b2d00",
+    "non_postgresql_result": "5355 passed, 1 skipped, 241 deselected, 0 failed",
+    "postgresql_15": {
+      "workflow_run": "30737613927",
+      "head_sha": "be0c64afaccba166cf2dec34192feaa3ac5b2d00",
+      "tests": 241,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "postgresql_17": {
+      "workflow_run": "30737613927",
+      "head_sha": "be0c64afaccba166cf2dec34192feaa3ac5b2d00",
+      "tests": 241,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  }
+}

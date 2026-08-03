@@ -53,7 +53,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
-SNAPSHOT_SCHEMA_VERSION = "1.0.0"
+# Wave A closure correction — the persisted snapshot SHAPE changed (four
+# new governed level-history fields), so the schema version must too.
+# Existing historical rows keep their already-stored "1.0.0" (never
+# rewritten); every NEW entry snapshot from this point on is built by
+# build_entry_snapshot below, which always populates the governed fields
+# (even for a legacy trade, where they're simply None) and so always
+# stamps "1.1.0". SNAPSHOT_SCHEMA_VERSION_1_0_0 is kept only as a named
+# reference for historical-row compatibility tests/read paths — it is
+# never written by this module again.
+SNAPSHOT_SCHEMA_VERSION_1_0_0 = "1.0.0"
+SNAPSHOT_SCHEMA_VERSION = "1.1.0"
 
 
 class EvidenceSource(str, Enum):
@@ -192,6 +202,18 @@ class EntrySnapshot:
     model_version: str | None
     verification_levels: dict[str, str]
 
+    # Wave A closure correction — immutable governed level-history
+    # evidence captured at entry time, so the future J4C conclusion
+    # never has to consult mutable current trade state. None for a
+    # legacy trade (no governed invariant); for a governed trade, the
+    # three boolean fields are ALWAYS False at entry by construction
+    # (set atomically in the same INSERT as the trade row, before any
+    # edit is possible) — never anything else.
+    level_history_contract_version: str | None
+    initial_stop_modified_after_entry: bool | None
+    initial_target_modified_after_entry: bool | None
+    initial_levels_modified_after_entry: bool | None
+
 
 def _compute_execution_slippage_pct(reference_price: float | None, execution_price: float) -> float | None:
     if not _is_finite_positive(reference_price):
@@ -278,11 +300,22 @@ def classify_evidence_completeness(snapshot: EntrySnapshot) -> tuple[str, list[s
 
 
 def build_entry_snapshot(
-    *, paper_trade_id: int, user_id: str, symbol: str, market: str, ctx: RecommendationContext
+    *, paper_trade_id: int, user_id: str, symbol: str, market: str, ctx: RecommendationContext,
+    level_history_contract_version: str | None = None,
 ) -> EntrySnapshot:
     """Pure function: construct the immutable snapshot to be persisted
     alongside a newly created trade. No I/O — the caller is responsible for
-    atomic persistence (see api/routers/paper_trading.py's paper_buy)."""
+    atomic persistence (see api/routers/paper_trading.py's paper_buy).
+
+    `level_history_contract_version` mirrors exactly what the caller is
+    about to write to paper_trades.level_history_contract_version for
+    this SAME new trade — None for a legacy/ungoverned insert path (not
+    expected in production going forward, but never assumed away),
+    non-None for a governed one. When non-None, the three initial
+    per-level/aggregate flags are always False — a governed trade's
+    entry-time state is False by definition, before any edit is
+    possible. When None, all three stay None, exactly mirroring the
+    paper_trades row's own legacy NULL state."""
     execution_price = ctx.simulated_execution_price
 
     slippage_pct = _compute_execution_slippage_pct(ctx.recommendation_reference_price, execution_price)
@@ -335,4 +368,8 @@ def build_entry_snapshot(
         recommendation_reasoning=ctx.recommendation_reasoning,
         model_version=ctx.model_version,
         verification_levels=_compute_verification_levels(ctx),
+        level_history_contract_version=level_history_contract_version,
+        initial_stop_modified_after_entry=(False if level_history_contract_version is not None else None),
+        initial_target_modified_after_entry=(False if level_history_contract_version is not None else None),
+        initial_levels_modified_after_entry=(False if level_history_contract_version is not None else None),
     )

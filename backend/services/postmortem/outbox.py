@@ -107,36 +107,50 @@ def claim_next_attempt(conn, *, outbox_id: int, user_id: str, claimant: str) -> 
     LIMITED_EVIDENCE/FAILED_TERMINAL) — the caller must treat None as
     "nothing to do right now," never as an error.
     """
+    # No CTE here — a `WITH claimable AS (SELECT ...) UPDATE ... FROM
+    # claimable c WHERE o.id = c.id` computes `claimable` ONCE from the
+    # snapshot at statement start. Under genuine concurrent contention,
+    # if this UPDATE blocks waiting for another transaction's lock on
+    # the SAME row, Postgres's EvalPlanQual re-check on unblock only
+    # re-verifies the join key (o.id = c.id) against the now-current row
+    # — it does NOT re-execute the CTE. Since `id` never changes, the
+    # join still matches even though the row's status has since changed
+    # (e.g. to GENERATING under a lease the other transaction just won),
+    # so the guard condition that lived only inside the CTE is silently
+    # bypassed and this UPDATE re-claims an already-claimed row — a real
+    # double-claim, confirmed by a true-concurrency real-PostgreSQL test
+    # that only manifests under simultaneous (not staggered) contention.
+    # Every guard condition and the exceeds_limit computation now
+    # reference `o` (the target table) directly in a single UPDATE with
+    # no CTE, so EvalPlanQual re-checks them all against the fresh row
+    # after any lock wait.
     row = conn.execute(
-        """WITH claimable AS (
-               SELECT id, (attempt_count + 1 > %s) AS exceeds_limit
-               FROM paper_trade_postmortem_outbox
-               WHERE id = %s AND user_id = %s
-                 AND (
-                     status = 'PENDING'
-                     OR (status = 'FAILED_RETRYABLE' AND (next_attempt_at IS NULL OR next_attempt_at <= now()))
-                     OR (status = 'GENERATING' AND lease_expires_at IS NOT NULL AND lease_expires_at <= now())
-                 )
-           )
-           UPDATE paper_trade_postmortem_outbox o
-           SET status = CASE WHEN c.exceeds_limit THEN 'FAILED_TERMINAL' ELSE 'GENERATING' END,
+        """UPDATE paper_trade_postmortem_outbox o
+           SET status = CASE WHEN (o.attempt_count + 1 > %(max_attempts)s) THEN 'FAILED_TERMINAL' ELSE 'GENERATING' END,
                attempt_count = o.attempt_count + 1,
                last_attempt_at = now(),
-               claimed_at = CASE WHEN c.exceeds_limit THEN o.claimed_at ELSE now() END,
-               lease_expires_at = CASE WHEN c.exceeds_limit THEN NULL
-                                        ELSE now() + make_interval(secs => %s) END,
-               claimed_by = CASE WHEN c.exceeds_limit THEN NULL ELSE %s END,
-               completed_at = CASE WHEN c.exceeds_limit THEN now() ELSE o.completed_at END,
-               last_error_code = CASE WHEN c.exceeds_limit THEN 'MAX_ATTEMPTS_EXCEEDED' ELSE o.last_error_code END,
-               last_error_summary = CASE WHEN c.exceeds_limit
+               claimed_at = CASE WHEN (o.attempt_count + 1 > %(max_attempts)s) THEN o.claimed_at ELSE now() END,
+               lease_expires_at = CASE WHEN (o.attempt_count + 1 > %(max_attempts)s) THEN NULL
+                                        ELSE now() + make_interval(secs => %(lease_seconds)s) END,
+               claimed_by = CASE WHEN (o.attempt_count + 1 > %(max_attempts)s) THEN NULL ELSE %(claimant)s END,
+               completed_at = CASE WHEN (o.attempt_count + 1 > %(max_attempts)s) THEN now() ELSE o.completed_at END,
+               last_error_code = CASE WHEN (o.attempt_count + 1 > %(max_attempts)s) THEN 'MAX_ATTEMPTS_EXCEEDED' ELSE o.last_error_code END,
+               last_error_summary = CASE WHEN (o.attempt_count + 1 > %(max_attempts)s)
                                           THEN 'exceeded max attempts before terminal'
                                           ELSE o.last_error_summary END
-           FROM claimable c
-           WHERE o.id = c.id
+           WHERE o.id = %(outbox_id)s AND o.user_id = %(user_id)s
+             AND (
+                 o.status = 'PENDING'
+                 OR (o.status = 'FAILED_RETRYABLE' AND (o.next_attempt_at IS NULL OR o.next_attempt_at <= now()))
+                 OR (o.status = 'GENERATING' AND o.lease_expires_at IS NOT NULL AND o.lease_expires_at <= now())
+             )
            RETURNING o.id, o.paper_trade_id, o.user_id, o.requested_report_schema_version,
                      o.requested_calculation_version, o.requested_rules_version, o.status,
                      o.attempt_count, o.source_request_id, o.claimed_by""",
-        (MAX_ATTEMPTS_BEFORE_TERMINAL, outbox_id, user_id, LEASE_DURATION_SECONDS, claimant),
+        {
+            "max_attempts": MAX_ATTEMPTS_BEFORE_TERMINAL, "lease_seconds": LEASE_DURATION_SECONDS,
+            "claimant": claimant, "outbox_id": outbox_id, "user_id": user_id,
+        },
     ).fetchone()
     if row is None:
         return None

@@ -45,7 +45,13 @@ from enum import Enum
 
 from services.postmortem.deterministic import Outcome
 
-EXIT_SNAPSHOT_SCHEMA_VERSION = "1.0.0"
+# Wave A closure correction — same rationale as entry_snapshot.py's
+# SNAPSHOT_SCHEMA_VERSION bump: the persisted shape gained governed
+# level-history fields in this Wave, so every NEW exit snapshot from
+# here on stamps "1.1.0"; already-persisted "1.0.0" rows are never
+# rewritten.
+EXIT_SNAPSHOT_SCHEMA_VERSION_1_0_0 = "1.0.0"
+EXIT_SNAPSHOT_SCHEMA_VERSION = "1.1.0"
 
 
 class CloseExitMechanism(str, Enum):
@@ -166,6 +172,9 @@ class ExitSnapshot:
     market_close_rule: str | None
     management_mode: str
     levels_modified_after_entry: bool | None
+    level_history_contract_version: str | None
+    final_stop_modified_after_entry: bool | None
+    final_target_modified_after_entry: bool | None
 
     source_request_id: str | None
     trigger_observation_timestamp: datetime | None
@@ -194,6 +203,9 @@ def build_exit_snapshot(
     market_close_rule: str | None = None,
     management_mode: str,
     levels_modified_after_entry: bool | None = None,
+    level_history_contract_version: str | None = None,
+    final_stop_modified_after_entry: bool | None = None,
+    final_target_modified_after_entry: bool | None = None,
     source_request_id: str | None = None,
     trigger_observation_timestamp: datetime | None = None,
     trigger_observation_price: float | None = None,
@@ -235,6 +247,9 @@ def build_exit_snapshot(
         market_close_rule=market_close_rule,
         management_mode=management_mode,
         levels_modified_after_entry=levels_modified_after_entry,
+        level_history_contract_version=level_history_contract_version,
+        final_stop_modified_after_entry=final_stop_modified_after_entry,
+        final_target_modified_after_entry=final_target_modified_after_entry,
         source_request_id=source_request_id,
         trigger_observation_timestamp=trigger_observation_timestamp,
         trigger_observation_price=trigger_observation_price,

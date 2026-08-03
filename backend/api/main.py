@@ -572,6 +572,30 @@ async def lifespan(app: FastAPI):
     us_movers_task = asyncio.create_task(_us_movers_refresh_loop())
     price_alerts_task = asyncio.create_task(_price_alerts_check_loop())
     daily_picks_orphan_sweep_task = asyncio.create_task(_daily_picks_orphan_reconciliation_loop())
+
+    # Wave B, Stage J4F — bounded background postmortem outbox worker.
+    # Flag-gated behind the existing TRADE_POSTMORTEM_PRICE_PATH_ENABLED
+    # flag (no new flag activation this wave), default-disabled.
+    # Best-effort infrastructure: a startup failure here is caught and
+    # logged, never allowed to prevent the rest of the application from
+    # starting.
+    postmortem_worker_task = None
+    if os.getenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            from services.market_hours import ET as _PM_ET, IST as _PM_IST
+            from services.postmortem.outbox_worker import start_outbox_worker
+            from api.routers.paper_trading import _conn as _postmortem_conn
+            postmortem_worker_task = start_outbox_worker(
+                _postmortem_conn,
+                market_tzinfo_by_market={
+                    "IN": (_PM_IST, "Asia/Kolkata"),
+                    "US": (_PM_ET, "America/New_York"),
+                },
+            )
+            log.info("[startup] postmortem outbox worker started")
+        except Exception:
+            log.warning("[startup] postmortem outbox worker failed to start — continuing without it")
+
     yield
     task.cancel()
     keepalive.cancel()
@@ -593,6 +617,12 @@ async def lifespan(app: FastAPI):
             await t
         except asyncio.CancelledError:
             pass
+    if postmortem_worker_task is not None:
+        try:
+            from services.postmortem.outbox_worker import stop_outbox_worker
+            await stop_outbox_worker()
+        except Exception:
+            log.warning("[shutdown] postmortem outbox worker stop failed")
 
 
 app = FastAPI(

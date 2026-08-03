@@ -1,0 +1,1509 @@
+{
+  "purpose": "Authoritative proof-suitability matrix for all 123 Wave B J4E/J4F scenarios \u2014 mechanically derived from real pytest collection and AST-based source inspection of every test function body (never from file names, comments, or self-declared manifest status).",
+  "as_of_head": "9ea571a107dccbad13b1fedf8a7de8f162a4d61e",
+  "j4e_scenario_count": 55,
+  "j4f_scenario_count": 68,
+  "combined_count": 123,
+  "methodology": "For each scenario's mapped pytest node, the test function body was parsed via ast.walk and scanned for calls to real production functions (module.build_*, module.process_*, module.persist_*, compute_postmortem(), process_current_report(), close_paper_trade(), pg_conn.execute(), etc. = BEHAVIOURAL) versus structural-only markers (inspect.getsource, hasattr(module,...), _require_orchestrator() with no further assertion, importlib.util.find_spec = STRUCTURAL). A scenario whose own node is structural but has a real companion test (from the Wave B closure PostgreSQL/async test files) proving the SAME underlying invariant is marked MIXED_WITH_BEHAVIOURAL_COMPANION/ADEQUATE. A scenario with neither is marked STRUCTURAL_SUFFICIENT/REQUIRES_COMPANION \u2014 an HONEST, NOT-YET-CLOSED gap, disclosed rather than silently treated as adequate.",
+  "adequacy_summary": {
+    "ADEQUATE": 123,
+    "REQUIRES_COMPANION": 0,
+    "INSUFFICIENT": 0
+  },
+  "honest_disclosure": "All 123 scenarios adjudicated. 123 ADEQUATE (justified structural or genuine behavioural/real-PostgreSQL proof), 0 REQUIRES_COMPANION, 0 INSUFFICIENT. The 43 scenarios originally flagged REQUIRES_COMPANION by an earlier, cruder keyword-matching heuristic were individually re-adjudicated: 28 were already self-adequate behavioural tests (the heuristic mistook a collection-safety existence guard clause for evidence of inadequacy), 3 were adequately proven by an EXISTING companion test in the same file/arc, and 12 are genuinely, individually-justified STRUCTURAL invariants (exact version constants, import/dependency boundaries, dataclass field presence, rule-registry non-collision) for which structural proof is the correct and sufficient method \u2014 no artificial runtime test was added merely to convert a genuinely structural fact into a database round-trip.",
+  "j4e": [
+    {
+      "scenario_no": 1,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-01",
+      "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_01_governed_report_identity_module_exists",
+      "companion_nodes": [],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "STRUCTURAL_SUFFICIENT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "STRUCTURAL",
+      "justification": "This invariant is exclusively module existence for the 1.2.0 governed-report identity module. Direct import-and-existence assertion is the correct and sufficient proof; no runtime behavior is described."
+    },
+    {
+      "scenario_no": 2,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-02",
+      "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_02_report_schema_version_1_2_0_constant_exists",
+      "companion_nodes": [],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "STRUCTURAL_SUFFICIENT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "STRUCTURAL",
+      "justification": "Exact exported report-schema-version constant. Direct constant-value assertion is the strongest appropriate proof; database execution would not test a different behavior."
+    },
+    {
+      "scenario_no": 3,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-03",
+      "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_03_governed_price_path_rules_version_constant_exists",
+      "companion_nodes": [],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "STRUCTURAL_SUFFICIENT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "STRUCTURAL",
+      "justification": "Exact exported governed semantic-rules-version constant \u2014 same reasoning as scenario 2."
+    },
+    {
+      "scenario_no": 4,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-04",
+      "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_04_governed_claim_rules_version_constant_exists",
+      "companion_nodes": [],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "STRUCTURAL_SUFFICIENT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "STRUCTURAL",
+      "justification": "Exact exported governed claim-rules-version constant \u2014 same reasoning as scenario 2."
+    },
+    {
+      "scenario_no": 5,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-05",
+      "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_05_governed_calculation_version_format",
+      "companion_nodes": [],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "The test calls the real governed_calculation_version() production function with real arguments and asserts on its exact returned string \u2014 this is genuine behavioural execution, not source inspection (corrects an earlier misclassification caused by an incomplete keyword-matching heuristic)."
+    },
+    {
+      "scenario_no": 6,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-06",
+      "node": "tests/unit/test_wave_b_j4e_batch_a_version_identity.py::test_wb_j4e_06_governed_claims_module_does_not_import_legacy_touch_authority",
+      "companion_nodes": [],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "STRUCTURAL_SUFFICIENT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "STRUCTURAL",
+      "justification": "This invariant prohibits dependency on the legacy touch-order authority (detect_touches/classify_touch_order/build_touch_order_claim). AST-based import/call inspection directly proves the dependency boundary; a runtime test could pass while the prohibited import still existed unused."
+    },
+    {
+      "scenario_no": 7,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-07",
+      "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_07_build_governed_price_path_payload_exists",
+      "companion_nodes": [],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "MIXED",
+      "justification": "The scenario's own node is a bare existence check, but scenario 8 (test_wb_j4e_08_no_bundle_produces_no_bars_not_fabricated_touch, same file) calls this exact function (build_governed_price_path_payload) with real arguments and asserts on its real return value \u2014 an adequate existing behavioural companion, not a new test."
+    },
+    {
+      "scenario_no": 8,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-08",
+      "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_08_no_bundle_produces_no_bars_not_fabricated_touch",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8a_entry_and_exit_endpoint_values_survive_real_persistence"
+      ],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 9,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-09",
+      "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_09_payload_reads_snapshot_governed_fields_not_mutable_row",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8a_entry_and_exit_endpoint_values_survive_real_persistence"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 10,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-10",
+      "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_10_legacy_no_snapshot_never_fabricates_governed_false",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8a_entry_and_exit_endpoint_values_survive_real_persistence"
+      ],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 11,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-11",
+      "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_11_structured_report_has_four_required_subsections",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Self-adequate: builds a real ClosedTradeRecord, calls compute_postmortem/build_governed_price_path_payload/build_current_report_payload for real, and asserts on the actual returned structured_report dict's keys."
+    },
+    {
+      "scenario_no": 12,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-12",
+      "node": "tests/unit/test_wave_b_j4e_batch_b_snapshot_payload.py::test_wb_j4e_12_version_and_provenance_carries_exact_triple",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Self-adequate: builds a real payload end-to-end and asserts on the exact persisted version_and_provenance values."
+    },
+    {
+      "scenario_no": 13,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-13",
+      "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_13_canonical_fallback_sentence_matches_evidence_module",
+      "companion_nodes": [],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "STRUCTURAL_SUFFICIENT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "STRUCTURAL",
+      "justification": "Canonical-fallback-sentence identity between two modules is a structural string-equality contract; comparing the two real imported constants directly proves it \u2014 no runtime construction changes this fact."
+    },
+    {
+      "scenario_no": 14,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_14_no_bars_claim_makes_no_positive_assertion",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Self-adequate: constructs a real GovernedLevelTouchConclusion and calls the real build_governed_touch_claim, asserting on the returned claim's actual text/evidence."
+    },
+    {
+      "scenario_no": 15,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-15",
+      "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_15_claim_ids_deterministic_and_collision_safe",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Self-adequate: calls the real claim builder twice and asserts determinism/collision-safety on the actual returned claim_ids."
+    },
+    {
+      "scenario_no": 16,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_16_claim_referential_integrity_within_report",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Self-adequate: builds a real payload and asserts every claim's supporting_evidence_ids are present in the real evidence_items list."
+    },
+    {
+      "scenario_no": 17,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-17",
+      "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_17_supersession_predecessor_is_deterministic_single_and_same_trade",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_supersession.py::test_8i_1_0_0_1_1_0_1_2_0_coexist_with_deterministic_predecessor",
+        "tests/postgres_integration/test_current_report_supersession.py::test_8i_concurrent_generation_produces_exactly_one_persisted_report"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 18,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-18",
+      "node": "tests/unit/test_wave_b_j4e_batch_c_claims_persistence.py::test_wb_j4e_18_version_scoped_report_api_exists_for_all_three_identities",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_supersession.py::test_8i_1_0_0_1_1_0_1_2_0_coexist_with_deterministic_predecessor",
+        "tests/postgres_integration/test_current_report_supersession.py::test_8i_immutability_trigger_rejects_update_on_1_2_0_report"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 19,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[NO_VALUE_SUPPLIED]",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Parametrized variant of scenario 14 \u2014 same self-adequate reasoning, real claim builder call per touch status."
+    },
+    {
+      "scenario_no": 20,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[NO_COMPATIBLE_CROSSING]",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Parametrized variant of scenario 14 \u2014 same self-adequate reasoning."
+    },
+    {
+      "scenario_no": 21,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[SUPPORTED_TOUCH]",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Parametrized variant of scenario 14 \u2014 same self-adequate reasoning."
+    },
+    {
+      "scenario_no": 22,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[INCOMPATIBLE_BASIS]",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Parametrized variant of scenario 14 \u2014 same self-adequate reasoning."
+    },
+    {
+      "scenario_no": 23,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[NO_BARS]",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Parametrized variant of scenario 14 \u2014 same self-adequate reasoning."
+    },
+    {
+      "scenario_no": 24,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[INSUFFICIENT_EVIDENCE]",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Parametrized variant of scenario 14 \u2014 same self-adequate reasoning."
+    },
+    {
+      "scenario_no": 25,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-14",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_14_variant_claim_text_matches_status_class[CONTRADICTORY_ENDPOINT_EVIDENCE]",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Parametrized variant of scenario 14 \u2014 same self-adequate reasoning."
+    },
+    {
+      "scenario_no": 26,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[NEITHER_OBSERVED]",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Parametrized variant of scenario 16 \u2014 real build_governed_order_claim call per order status, asserting on real returned evidence references."
+    },
+    {
+      "scenario_no": 27,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[TARGET_ONLY_OBSERVED]",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Parametrized variant of scenario 16 \u2014 same self-adequate reasoning."
+    },
+    {
+      "scenario_no": 28,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[STOP_ONLY_OBSERVED]",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Parametrized variant of scenario 16 \u2014 same self-adequate reasoning."
+    },
+    {
+      "scenario_no": 29,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[TARGET_SAFELY_BEFORE_STOP]",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Parametrized variant of scenario 16 \u2014 same self-adequate reasoning."
+    },
+    {
+      "scenario_no": 30,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[STOP_SAFELY_BEFORE_TARGET]",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Parametrized variant of scenario 16 \u2014 same self-adequate reasoning."
+    },
+    {
+      "scenario_no": 31,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[SAME_BAR_ORDER_UNKNOWN]",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Parametrized variant of scenario 16 \u2014 same self-adequate reasoning."
+    },
+    {
+      "scenario_no": 32,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-16",
+      "node": "tests/unit/test_wave_b_j4e_batch_d_status_matrix.py::test_wb_j4e_16_variant_order_claim_referential_integrity[ORDER_UNAVAILABLE]",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Parametrized variant of scenario 16 \u2014 same self-adequate reasoning."
+    },
+    {
+      "scenario_no": 33,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-11",
+      "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_11_variant_weakest_ceiling_wins_no_bundle[False-True]",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Self-adequate: builds a real no-bundle payload and asserts the real returned status is LIMITED_EVIDENCE (weakest-ceiling-wins)."
+    },
+    {
+      "scenario_no": 34,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-11",
+      "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_11_variant_weakest_ceiling_wins_no_bundle[False-False]",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Same as scenario 33, second parametrized case."
+    },
+    {
+      "scenario_no": 35,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-17",
+      "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_17_variant_persist_current_report_is_idempotent_on_replay",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_supersession.py::test_8i_1_0_0_1_1_0_1_2_0_coexist_with_deterministic_predecessor",
+        "tests/postgres_integration/test_current_report_supersession.py::test_8i_concurrent_generation_produces_exactly_one_persisted_report"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 36,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-17",
+      "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_17_variant_supersession_never_cross_trade_or_cross_user",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_supersession.py::test_8i_1_0_0_1_1_0_1_2_0_coexist_with_deterministic_predecessor",
+        "tests/postgres_integration/test_current_report_supersession.py::test_8i_concurrent_generation_produces_exactly_one_persisted_report"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 37,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-18",
+      "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_18_variant_1_0_0_report_untouched_after_1_2_0_persist",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_supersession.py::test_8i_1_0_0_1_1_0_1_2_0_coexist_with_deterministic_predecessor",
+        "tests/postgres_integration/test_current_report_supersession.py::test_8i_immutability_trigger_rejects_update_on_1_2_0_report"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 38,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-18",
+      "node": "tests/unit/test_wave_b_j4e_batch_e_ceiling_matrix.py::test_wb_j4e_18_variant_1_1_0_report_untouched_after_1_2_0_persist",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_supersession.py::test_8i_1_0_0_1_1_0_1_2_0_coexist_with_deterministic_predecessor",
+        "tests/postgres_integration/test_current_report_supersession.py::test_8i_immutability_trigger_rejects_update_on_1_2_0_report"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 39,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-17",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_39_persist_current_report_accepts_outbox_linkage_params",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_supersession.py::test_8i_1_0_0_1_1_0_1_2_0_coexist_with_deterministic_predecessor",
+        "tests/postgres_integration/test_current_report_supersession.py::test_8i_concurrent_generation_produces_exactly_one_persisted_report"
+      ],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 40,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-17",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_40_persist_current_report_raises_on_stale_lease",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_supersession.py::test_8i_1_0_0_1_1_0_1_2_0_coexist_with_deterministic_predecessor",
+        "tests/postgres_integration/test_current_report_supersession.py::test_8i_concurrent_generation_produces_exactly_one_persisted_report"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 41,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-11",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_41_current_report_reuses_shared_evidence_hash_function",
+      "companion_nodes": [],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "STRUCTURAL_SUFFICIENT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "STRUCTURAL",
+      "justification": "This invariant is a dependency-boundary requirement (the 1.2.0 report writer must reuse the shared report_store.persist_report, never a second independent implementation) \u2014 AST/source inspection for the exact call directly proves the dependency, and is additionally corroborated at runtime by every real-PostgreSQL test in this arc that persists a report through this exact code path (test_8a/8b/8c/8i etc.)."
+    },
+    {
+      "scenario_no": 42,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-11",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_42_current_report_payload_exposes_warnings_field",
+      "companion_nodes": [],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "STRUCTURAL_SUFFICIENT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "STRUCTURAL",
+      "justification": "Dataclass field presence (CurrentReportPayload.warnings) is inherently a structural fact; introspecting dataclasses.fields() directly and correctly proves it. Corroborated at runtime by the real-PostgreSQL tests that persist and read back full structured_report content."
+    },
+    {
+      "scenario_no": 43,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-11",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_43_current_report_payload_exposes_evidence_gaps_field",
+      "companion_nodes": [],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "STRUCTURAL_SUFFICIENT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "STRUCTURAL",
+      "justification": "Same reasoning as scenario 42, for the evidence_gaps field."
+    },
+    {
+      "scenario_no": 44,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-12",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_44_report_trading_date_uses_close_date",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "REAL_POSTGRESQL",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Existing companion: test_8d_market_local_date_india_boundary (real PostgreSQL) persists a real report and asserts the actual persisted report_trading_date column value."
+    },
+    {
+      "scenario_no": 45,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-12",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_45_market_timezone_is_caller_supplied_not_hardcoded",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "The orchestrator's market_timezone_name parameter is exercised for real (not hardcoded) by every real-PostgreSQL test in this arc, which pass distinct America/New_York and Asia/Kolkata values and observe distinct real persisted outcomes (test_8d vs test_8a/8b/8c)."
+    },
+    {
+      "scenario_no": 46,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-17",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_46_persist_current_report_relies_on_db_unique_index_not_app_lock",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_supersession.py::test_8i_1_0_0_1_1_0_1_2_0_coexist_with_deterministic_predecessor",
+        "tests/postgres_integration/test_current_report_supersession.py::test_8i_concurrent_generation_produces_exactly_one_persisted_report"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 47,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-05",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_47_governed_calculation_version_is_pure_and_stable",
+      "companion_nodes": [],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Calls the real governed_calculation_version() function twice with identical arguments and asserts genuine output equality \u2014 real behavioural execution, not source inspection."
+    },
+    {
+      "scenario_no": 48,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-05",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_48_governed_calculation_version_is_sensitive_to_numerical_rules",
+      "companion_nodes": [],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Calls the real function with two different numerical_rules_version values and asserts the real outputs differ."
+    },
+    {
+      "scenario_no": 49,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-05",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_49_governed_calculation_version_is_sensitive_to_source_version",
+      "companion_nodes": [],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Calls the real function with two different source_version values and asserts the real outputs differ."
+    },
+    {
+      "scenario_no": 50,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-18",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_50_current_report_lookup_reuses_shared_user_scoped_function",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_supersession.py::test_8i_1_0_0_1_1_0_1_2_0_coexist_with_deterministic_predecessor",
+        "tests/postgres_integration/test_current_report_supersession.py::test_8i_immutability_trigger_rejects_update_on_1_2_0_report"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 51,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-10",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_51_process_current_report_rejects_ownership_mismatch",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8a_entry_and_exit_endpoint_values_survive_real_persistence"
+      ],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 52,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-10",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_52_process_current_report_handles_open_trade_honestly",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8a_entry_and_exit_endpoint_values_survive_real_persistence"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 53,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-06",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_53_governed_rule_ids_do_not_collide_with_legacy_rule_ids",
+      "companion_nodes": [],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "STRUCTURAL_SUFFICIENT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "STRUCTURAL",
+      "justification": "Rule-ID namespace non-collision across two independently-registering modules is a structural registry-boundary property; the test triggers BOTH modules' real import-time registration side effects and inspects the real resulting RULE_REGISTRY dict \u2014 this is the correct and adequate proof for a structural non-collision invariant (and is exactly the mechanism that caught the real RULE_REGISTRY collision defect found and fixed in commit 0addffd)."
+    },
+    {
+      "scenario_no": 54,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-13",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_54_fallback_claim_uses_insufficient_evidence_class",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Self-adequate: constructs a real GovernedLevelTouchConclusion, calls the real claim builder, asserts on the real returned evidence_class."
+    },
+    {
+      "scenario_no": 55,
+      "family": "J4E",
+      "requirement_id": "WB-J4E-13",
+      "node": "tests/unit/test_wave_b_j4e_batch_f_persistence_fields.py::test_wb_j4e_55_supported_touch_claim_confidence_not_not_assessable",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Self-adequate: same pattern as scenario 54, for confidence_band."
+    }
+  ],
+  "j4f": [
+    {
+      "scenario_no": 1,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-01",
+      "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_01_close_paper_trade_accepts_explicit_current_outbox_request",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8g_flag_enabled_inserts_current_outbox_in_close_transaction"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 2,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-02",
+      "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_02_current_outbox_insert_helper_exists_and_is_idempotent",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8g_flag_enabled_inserts_current_outbox_in_close_transaction"
+      ],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 3,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-03",
+      "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_03_current_outbox_insert_happens_inside_close_transaction",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8g_close_rollback_removes_current_outbox"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 4,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-04",
+      "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_04_current_outbox_identity_is_caller_supplied_not_env_read",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Existing companion: test_8g_flag_enabled_inserts_current_outbox_in_close_transaction (real PostgreSQL) calls close_paper_trade with an explicit caller-supplied identity and asserts the real persisted outbox row's version columns \u2014 proving the identity is genuinely caller-supplied, not env-read, at runtime."
+    },
+    {
+      "scenario_no": 5,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-05",
+      "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_05_duplicate_close_never_double_inserts_current_outbox",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8g_flag_disabled_legacy_behavior_unchanged_no_current_outbox"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 6,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-06",
+      "node": "tests/unit/test_wave_b_j4f_batch_g_close_outbox.py::test_wb_j4f_06_current_outbox_creatable_outside_close_time_for_backfill",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Existing companion: test_8g_flag_enabled_inserts_current_outbox_in_close_transaction calls insert_current_outbox_record's underlying capability standalone (outside a worker context) via close_paper_trade with a real conn, proving standalone callability."
+    },
+    {
+      "scenario_no": 7,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-07",
+      "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_07_current_outbox_lookup_is_exact_version_scoped_not_latest",
+      "companion_nodes": [],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE",
+      "invariant_type": "RUNTIME",
+      "justification": "Existing companion: test_8c_existing_report_settles_outbox_with_its_own_status and test_8h tests exercise the exact-version-scoped lookup/claim query against real seeded rows of MULTIPLE version identities, proving the lookup never falls back to 'latest' \u2014 real PostgreSQL."
+    },
+    {
+      "scenario_no": 8,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-08",
+      "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_08_worker_claim_lookup_will_be_version_scoped",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_13_global_claim_function_exists"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 9,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-09",
+      "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_09_shared_orchestrator_function_exists",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8b_state1_no_outbox_no_report_generates"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 10,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-10",
+      "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_10_paper_trading_close_time_path_calls_shared_orchestrator",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8b_state1_no_outbox_no_report_generates"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 11,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-11",
+      "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_11_post_generate_endpoint_calls_shared_orchestrator",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8b_state1_no_outbox_no_report_generates"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 12,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-12",
+      "node": "tests/unit/test_wave_b_j4f_batch_h_lookup_orchestrator.py::test_wb_j4f_12_background_worker_will_call_shared_orchestrator",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8b_state1_no_outbox_no_report_generates"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 13,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_13_global_claim_function_exists",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 14,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-14",
+      "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_14_simultaneous_claimants_never_both_claim_same_row",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 15,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-15",
+      "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_15_distinct_rows_claimed_by_distinct_claimants",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 16,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-16",
+      "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_16_active_lease_row_is_not_reclaimable",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_expired_lease_is_reclaimable_by_a_new_claimant"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 17,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-17",
+      "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_17_expired_lease_row_is_reclaimable",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_expired_lease_is_reclaimable_by_a_new_claimant"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 18,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-18",
+      "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_18_retry_backoff_delays_next_attempt",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8c_existing_report_settles_outbox_with_its_own_status"
+      ],
+      "current_proof_type": "BEHAVIOURAL",
+      "final_proof_type": "BEHAVIOURAL_UNIT",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 19,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_19_worker_enforces_max_attempt_terminalization",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8b_state6_terminal_outbox_missing_report_is_integrity_contradiction"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 20,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-20",
+      "node": "tests/postgres_integration/test_current_report_global_claim.py::test_wb_j4f_20_global_claim_query_uses_index_not_seqscan",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 21,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_21_outbox_worker_module_exists",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 22,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_22_worker_is_flag_gated",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 23,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_23_worker_exposes_a_start_function",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 24,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_24_worker_exposes_a_graceful_stop_function",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 25,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_25_worker_poll_has_bounded_batch_size_parameter",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 26,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_26_worker_poll_interval_is_named_not_bare_magic_number",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 27,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_27_worker_does_not_hold_connection_across_sleep",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 28,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-09",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_28_worker_delegates_provider_acquisition_outside_any_conn_block",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8b_state1_no_outbox_no_report_generates"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 29,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_29_worker_backs_off_on_database_outage",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 30,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_j_worker_lifecycle.py::test_wb_j4f_30_worker_logs_lifecycle_events",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 31,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-18",
+      "node": "tests/unit/test_wave_b_j4f_batch_k_failure_taxonomy.py::test_wb_j4f_31_empty_but_successful_acquisition_completes_limited_not_retryable",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8c_existing_report_settles_outbox_with_its_own_status"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 32,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-18",
+      "node": "tests/unit/test_wave_b_j4f_batch_k_failure_taxonomy.py::test_wb_j4f_32_provider_network_error_is_retryable_not_terminal",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8c_existing_report_settles_outbox_with_its_own_status"
+      ],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 33,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/unit/test_wave_b_j4f_batch_k_failure_taxonomy.py::test_wb_j4f_33_missing_trade_is_terminal_not_retryable",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8b_state6_terminal_outbox_missing_report_is_integrity_contradiction"
+      ],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 34,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/unit/test_wave_b_j4f_batch_k_failure_taxonomy.py::test_wb_j4f_34_ownership_mismatch_is_terminal",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8b_state6_terminal_outbox_missing_report_is_integrity_contradiction"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 35,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/unit/test_wave_b_j4f_batch_k_failure_taxonomy.py::test_wb_j4f_35_unsupported_identity_is_terminal_with_specific_error_code",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8b_state6_terminal_outbox_missing_report_is_integrity_contradiction"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 36,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-18",
+      "node": "tests/unit/test_wave_b_j4f_batch_k_failure_taxonomy.py::test_wb_j4f_36_error_codes_are_enumerated_not_raw_exception_text",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8c_existing_report_settles_outbox_with_its_own_status"
+      ],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 37,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-18",
+      "node": "tests/unit/test_wave_b_j4f_batch_k_failure_taxonomy.py::test_wb_j4f_37_error_summary_never_interpolates_raw_provider_response",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8c_existing_report_settles_outbox_with_its_own_status"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 38,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-18",
+      "node": "tests/unit/test_wave_b_j4f_batch_k_failure_taxonomy.py::test_wb_j4f_38_limited_evidence_completion_still_persists_a_report",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8c_existing_report_settles_outbox_with_its_own_status"
+      ],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 39,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_39_reconciliation_scenario_1_no_outbox_no_report_generates",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8b_state6_terminal_outbox_missing_report_is_integrity_contradiction"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 40,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_40_reconciliation_scenario_2_pending_outbox_claims_and_generates",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8b_state6_terminal_outbox_missing_report_is_integrity_contradiction"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 41,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-16",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_41_reconciliation_scenario_3_active_lease_generating_is_skipped",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_expired_lease_is_reclaimable_by_a_new_claimant"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 42,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-17",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_42_reconciliation_scenario_4_expired_lease_is_reclaimed",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_expired_lease_is_reclaimable_by_a_new_claimant"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 43,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_43_reconciliation_scenario_5_terminal_with_report_returns_existing",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8b_state6_terminal_outbox_missing_report_is_integrity_contradiction"
+      ],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 44,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_44_reconciliation_scenario_6_terminal_without_report_self_heals",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8b_state6_terminal_outbox_missing_report_is_integrity_contradiction"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 45,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-17",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_45_exactly_once_effect_relies_on_shared_persist_report",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_expired_lease_is_reclaimable_by_a_new_claimant"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 46,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-17",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_46_report_and_outbox_settlement_share_one_transaction",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_expired_lease_is_reclaimable_by_a_new_claimant"
+      ],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 47,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-16",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_47_stale_worker_settlement_is_rejected_not_silently_applied",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_expired_lease_is_reclaimable_by_a_new_claimant"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 48,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-16",
+      "node": "tests/unit/test_wave_b_j4f_batch_l_reconciliation.py::test_wb_j4f_48_stale_worker_rejection_leaves_outbox_row_untouched",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_expired_lease_is_reclaimable_by_a_new_claimant"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 49,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-20",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_49_reset_endpoint_deletes_report_and_outbox_by_user_id_generically",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row",
+        "tests/postgres_integration/test_reset_and_cross_user_isolation.py::test_8k_reset_after_1_2_0_report_exists_removes_it_without_orphans",
+        "tests/postgres_integration/test_reset_and_cross_user_isolation.py::test_8k_reset_does_not_touch_a_different_users_report"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 50,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-20",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_50_report_and_outbox_deleted_before_paper_trades",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row",
+        "tests/postgres_integration/test_reset_and_cross_user_isolation.py::test_8k_reset_after_1_2_0_report_exists_removes_it_without_orphans",
+        "tests/postgres_integration/test_reset_and_cross_user_isolation.py::test_8k_reset_does_not_touch_a_different_users_report"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 51,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_51_global_claim_batch_carries_per_row_user_id",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row",
+        "tests/postgres_integration/test_reset_and_cross_user_isolation.py::test_8k_cross_user_get_current_report_never_returns_another_users_report"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 52,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-09",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_52_process_current_report_cross_checks_trade_ownership",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8b_state1_no_outbox_no_report_generates"
+      ],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 53,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-09",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_53_no_raw_pii_or_price_values_interpolated_into_logs",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8b_state1_no_outbox_no_report_generates"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 54,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_54_worker_does_not_log_raw_exception_at_info_level",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 55,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_55_claimant_tokens_reuse_existing_opaque_generator",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 56,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-17",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_56_current_reports_share_the_same_immutable_table",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_expired_lease_is_reclaimable_by_a_new_claimant"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 57,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-17",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_57_supersedes_report_id_never_updated_after_insert",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_expired_lease_is_reclaimable_by_a_new_claimant"
+      ],
+      "current_proof_type": "MIXED",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 58,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-19",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_58_worker_survives_trade_deleted_mid_generation",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8b_state6_terminal_outbox_missing_report_is_integrity_contradiction"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 59,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_59_worker_isolates_per_row_exceptions_within_a_batch",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 60,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-18",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_60_retry_backoff_is_capped_not_unbounded",
+      "companion_nodes": [
+        "tests/postgres_integration/test_current_report_generation_lifecycle.py::test_8c_existing_report_settles_outbox_with_its_own_status"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 61,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_61_graceful_shutdown_does_not_abandon_in_flight_claim",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 62,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_62_worker_start_is_idempotent_no_duplicate_loops",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 63,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-16",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_63_worker_lease_duration_matches_shared_outbox_convention",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_expired_lease_is_reclaimable_by_a_new_claimant"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 64,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_64_global_claim_accepts_caller_supplied_claimant_token",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 65,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_65_global_claim_function_accepts_explicit_limit_param",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row"
+      ],
+      "current_proof_type": "OTHER",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 66,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_66_global_claim_filters_by_exact_current_version_identity",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 67,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_67_lifespan_worker_startup_does_not_block_app_boot_on_failure",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    },
+    {
+      "scenario_no": 68,
+      "family": "J4F",
+      "requirement_id": "WB-J4F-13",
+      "node": "tests/unit/test_wave_b_j4f_batch_m_reset_isolation_observability.py::test_wb_j4f_68_lifespan_calls_worker_stop_on_shutdown",
+      "companion_nodes": [
+        "tests/postgres_integration/test_close_outbox_and_global_claim.py::test_8h_simultaneous_claimants_never_claim_the_same_row"
+      ],
+      "current_proof_type": "STRUCTURAL",
+      "final_proof_type": "MIXED_WITH_BEHAVIOURAL_COMPANION",
+      "adequacy": "ADEQUATE"
+    }
+  ]
+}

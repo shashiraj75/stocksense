@@ -1,0 +1,344 @@
+"""
+Historical price-path EVIDENCE decision governance — Trade Postmortem
+Sprint 3A, Stage J1B.
+
+Second of the two-stage historical decision model. Stage J1A
+(price_path_eligibility.evaluate_eligibility) decides ONLY whether a
+trade's own persisted context permits attempting acquisition/replay/
+calculation at all.
+
+Stage J1B is split into two DELIBERATELY SEPARATE decisions — a Stage
+J1B-Fail-Closed-Hardening correction. The prior single
+HistoricalEvidenceDecision conflated "how was this evidence obtained"
+with "is this evidence usable," which meant a genuine evidence-replay
+attempt (zero provider calls) and a freshly-acquired-but-then-found-
+UNAVAILABLE attempt (one provider call, which returned nothing usable)
+were indistinguishable in the persisted provenance — a real false-
+provenance defect (a replayed report could read provider_call_expected
+=True even though no provider was ever touched for it).
+
+  1. classify_replay_or_acquisition -> HistoricalEvidenceAcquisitionDecision
+     WHERE the evidence came from (compatible replay vs fresh
+     acquisition). This is a fact about ACQUISITION, fixed the moment a
+     compatible-evidence lookup returns — nothing that happens
+     afterward (how good the evidence turns out to be) may ever
+     overwrite it.
+
+  2. classify_acquired_evidence -> HistoricalEvidenceQualityDecision
+     WHETHER the (replayed or freshly acquired) evidence is usable, and
+     for what. Never claims acquisition provenance.
+
+A third function, get_provider_failure_policy -> ProviderFailurePolicy,
+is the SOLE authority for a caught PriceProviderAcquisitionError (Stage
+J1B-Assurance-Closure correction — an earlier classify_provider_failure
+function duplicated this same error-code-to-evidence-status mapping but
+was never actually called by the live path; removed rather than left as
+a second, unconsulted classification table).
+
+All three are pure — no I/O, no database access, no provider calls.
+Callers gather the facts (a compatible-evidence lookup result, an
+acquired PricePathEvidenceBundle's own fields, a caught
+PriceProviderAcquisitionError's code) and pass them in; this module
+only classifies.
+"""
+
+from dataclasses import dataclass, field
+
+# --- Acquisition decision (WHERE evidence came from) -----------------
+COMPATIBLE_REPLAY = "COMPATIBLE_REPLAY"
+ACQUISITION_REQUIRED = "ACQUISITION_REQUIRED"
+
+# --- Evidence-quality decision (WHETHER it is usable) -----------------
+SOURCE_UNAVAILABLE = "SOURCE_UNAVAILABLE"
+SOURCE_INVALID = "SOURCE_INVALID"
+PARTIAL_EVIDENCE = "PARTIAL_EVIDENCE"
+AMBIGUOUS_RESOLUTION = "AMBIGUOUS_RESOLUTION"
+CALCULATION_ELIGIBLE = "CALCULATION_ELIGIBLE"
+CALCULATION_UNAVAILABLE = "CALCULATION_UNAVAILABLE"
+# UNSUPPORTED_EVIDENCE_COMPLETENESS — the fail-closed destination for
+# any data_completeness value this module does not recognize (null,
+# empty, malformed, or a genuinely new future value not yet mapped
+# here). Never silently treated as COMPLETE.
+UNSUPPORTED_EVIDENCE_COMPLETENESS = "UNSUPPORTED_EVIDENCE_COMPLETENESS"
+
+# PRICE_BASIS_INCOMPATIBLE — Stage J1B-Fail-Closed-Hardening, Stage 6:
+# removed from the active runtime enum. The live acquisition layer
+# (price_path_acquisition.build_price_path_evidence) has no field that
+# truthfully distinguishes "bars available but basis unknown/
+# incompatible" from its own real AMBIGUOUS_RESOLUTION trigger (a split
+# inside the window zeroes bars_observed AND sets data_completeness to
+# AMBIGUOUS_RESOLUTION — there is no separate "basis known but
+# incompatible with bars present" bundle state to classify against).
+# Inventing a boolean to synthesize this distinction was exactly the
+# fabrication Stage J1B-Fail-Closed-Hardening was opened to eliminate.
+# Retained ONLY as a documented future-scope constant, name preserved
+# so a future acquisition-layer signal (e.g. a persisted, provider-
+# derived basis-compatibility field) can be wired in without a rename;
+# it is not returned by any function in this module today, and no
+# caller references it as a live branch target.
+PRICE_BASIS_INCOMPATIBLE_FUTURE_SCOPE = "PRICE_BASIS_INCOMPATIBLE"
+
+_INSUFFICIENT_EVIDENCE_FALLBACK = "Insufficient evidence to determine this factor reliably."
+
+# data_completeness (price_path_acquisition's own real, already-
+# computed enum) -> this module's evidence_status. Anything NOT a key
+# in this dict falls through to the explicit fail-closed branch in
+# classify_acquired_evidence, never silently to COMPLETE/
+# CALCULATION_ELIGIBLE.
+#
+# Stage J1B-Final-Reconciliation correction: "INVALID_SOURCE_DATA" is
+# deliberately NOT a key here. price_path_acquisition.
+# build_price_path_evidence has no production code path that ever
+# assigns that value (confirmed by direct inspection — grep the module,
+# there is no `STATUS_INVALID_SOURCE_DATA` assignment anywhere) — it was
+# never a real acquired-bundle state, only a value declared in price_
+# path_evidence.py's own STATUS_* enum and never produced. Presenting it
+# as an active, mapped classification target was itself a form of
+# fabrication: implying a live producer that does not exist. A
+# persisted row that somehow contains "INVALID_SOURCE_DATA" (legacy
+# data, external corruption) now correctly falls through to the SAME
+# fail-closed UNSUPPORTED_EVIDENCE_COMPLETENESS branch as any other
+# unrecognized value — there is no meaningful behavioral distinction
+# between "a value nothing ever produces" and "a value this mapping
+# doesn't recognize," so it does not need (and must not have) its own
+# entry. SOURCE_INVALID remains fully real and tested via the ONE
+# genuine live trigger for it: a caught PriceProviderAcquisitionError
+# with code PROVIDER_UNEXPECTED_COLUMN_SHAPE (see ProviderFailurePolicy
+# below) — a malformed PROVIDER RESPONSE exception, never a validated
+# bundle's own data_completeness field.
+_DATA_COMPLETENESS_TO_EVIDENCE_STATUS = {
+    "UNAVAILABLE": SOURCE_UNAVAILABLE,
+    "AMBIGUOUS_RESOLUTION": AMBIGUOUS_RESOLUTION,
+    "PARTIAL": PARTIAL_EVIDENCE,
+    "COMPLETE": CALCULATION_ELIGIBLE,
+}
+
+
+@dataclass(frozen=True)
+class HistoricalEvidenceAcquisitionDecision:
+    """WHERE the evidence came from — fixed at the moment a compatible-
+    evidence lookup returns; never revised by anything discovered about
+    evidence quality afterward."""
+    acquisition_status: str  # COMPATIBLE_REPLAY | ACQUISITION_REQUIRED
+    provider_call_expected: bool
+    compatible_evidence_found: bool
+    evidence_id: int | None = None
+    reason_codes: tuple[str, ...] = field(default_factory=tuple)
+    limitations: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class HistoricalEvidenceQualityDecision:
+    """WHETHER the evidence is usable, and for what. Never claims
+    acquisition provenance — provider_call_expected lives exclusively
+    on HistoricalEvidenceAcquisitionDecision."""
+    evidence_status: str
+    calculation_status: str  # CALCULATION_ELIGIBLE | CALCULATION_UNAVAILABLE
+    fresh_persistence_permitted: bool
+    report_completeness_ceiling: str  # "COMPLETE" | "LIMITED_EVIDENCE"
+    reason_codes: tuple[str, ...] = field(default_factory=tuple)
+    limitations: tuple[str, ...] = field(default_factory=tuple)
+
+
+def classify_replay_or_acquisition(
+    *, compatible_evidence_found: bool, evidence_id: int | None = None,
+) -> HistoricalEvidenceAcquisitionDecision:
+    """Called BEFORE any provider access is attempted, immediately after
+    a persisted-evidence compatibility lookup (Stage J5). Compatible
+    evidence means deterministic replay: no provider call, ever — a
+    provider outage must never prevent this path from succeeding."""
+    if compatible_evidence_found:
+        return HistoricalEvidenceAcquisitionDecision(
+            acquisition_status=COMPATIBLE_REPLAY, provider_call_expected=False,
+            compatible_evidence_found=True, evidence_id=evidence_id,
+        )
+    return HistoricalEvidenceAcquisitionDecision(
+        acquisition_status=ACQUISITION_REQUIRED, provider_call_expected=True,
+        compatible_evidence_found=False,
+    )
+
+
+def classify_acquired_evidence(*, data_completeness: str | None) -> HistoricalEvidenceQualityDecision:
+    """Called after a provider response was successfully validated into
+    a PricePathEvidenceBundle (or after a compatible evidence row was
+    replayed) — `data_completeness` is that bundle's own real,
+    already-computed field, never re-derived from bar counts here.
+
+    FAIL-CLOSED: any value not in the known set (None, "", a typo, a
+    genuinely new future value this mapping hasn't been taught yet, OR
+    the never-produced "INVALID_SOURCE_DATA" legacy/corrupted value)
+    returns UNSUPPORTED_EVIDENCE_COMPLETENESS with calculation_status=
+    CALCULATION_UNAVAILABLE and fresh_persistence_permitted=False — never
+    silently treated as COMPLETE/CALCULATION_ELIGIBLE.
+
+    This function never returns evidence_status=SOURCE_INVALID — that
+    status exists solely for ProviderFailurePolicy (a caught provider
+    EXCEPTION, PROVIDER_UNEXPECTED_COLUMN_SHAPE), never for a bundle
+    that was successfully validated and returned. The live path still
+    handles a SOURCE_INVALID quality decision defensively (Stage 3's
+    no-report policy) in case a future acquisition-layer change ever
+    does produce one through this function, but no code path reaches
+    that branch today."""
+    status = _DATA_COMPLETENESS_TO_EVIDENCE_STATUS.get(data_completeness)
+
+    if status is None:
+        return HistoricalEvidenceQualityDecision(
+            evidence_status=UNSUPPORTED_EVIDENCE_COMPLETENESS, calculation_status=CALCULATION_UNAVAILABLE,
+            fresh_persistence_permitted=False, report_completeness_ceiling="LIMITED_EVIDENCE",
+            reason_codes=(UNSUPPORTED_EVIDENCE_COMPLETENESS,), limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
+        )
+    if status == SOURCE_UNAVAILABLE:
+        # A zero-bar bundle (an honest "the provider ran and returned
+        # nothing usable" manifest, never fabricated bars) IS an
+        # immutable evidence record worth persisting — Stage 3's own
+        # explicit decision point.
+        return HistoricalEvidenceQualityDecision(
+            evidence_status=status, calculation_status=CALCULATION_UNAVAILABLE,
+            fresh_persistence_permitted=True, report_completeness_ceiling="LIMITED_EVIDENCE",
+            reason_codes=(status,), limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
+        )
+    if status == AMBIGUOUS_RESOLUTION:
+        return HistoricalEvidenceQualityDecision(
+            evidence_status=AMBIGUOUS_RESOLUTION, calculation_status=CALCULATION_ELIGIBLE,
+            fresh_persistence_permitted=True, report_completeness_ceiling="LIMITED_EVIDENCE",
+            reason_codes=(AMBIGUOUS_RESOLUTION,), limitations=(_INSUFFICIENT_EVIDENCE_FALLBACK,),
+        )
+    if status == PARTIAL_EVIDENCE:
+        return HistoricalEvidenceQualityDecision(
+            evidence_status=PARTIAL_EVIDENCE, calculation_status=CALCULATION_ELIGIBLE,
+            fresh_persistence_permitted=True, report_completeness_ceiling="LIMITED_EVIDENCE",
+            reason_codes=(PARTIAL_EVIDENCE,),
+        )
+    # status == CALCULATION_ELIGIBLE (data_completeness == "COMPLETE")
+    return HistoricalEvidenceQualityDecision(
+        evidence_status=CALCULATION_ELIGIBLE, calculation_status=CALCULATION_ELIGIBLE,
+        fresh_persistence_permitted=True, report_completeness_ceiling="COMPLETE",
+    )
+
+
+# The outbox's own claim_next_attempt/MAX_ATTEMPTS_BEFORE_TERMINAL
+# mechanism (outbox.py) is a SEPARATE, already-tested concern: it may
+# later move a FAILED_RETRYABLE row to FAILED_TERMINAL once the attempt
+# limit is exceeded, regardless of what any single policy below says.
+# immediate_outbox_outcome below describes ONLY what THIS attempt's own
+# failure settles to right now — never both retryable and terminal at
+# once, unlike the prior retry_permitted=True/terminal_permitted=True
+# combination, which described every code identically and left the live
+# path to independently decide (ambiguously) which one applied.
+IMMEDIATE_FAILED_RETRYABLE = "FAILED_RETRYABLE"
+IMMEDIATE_FAILED_TERMINAL = "FAILED_TERMINAL"
+
+
+@dataclass(frozen=True)
+class ProviderFailurePolicy:
+    """Stage J1B-Final-Reconciliation — reduced to exactly the fields the
+    live path actually reads. A caught PriceProviderAcquisitionError has,
+    by construction, no validated PricePathEvidenceBundle at all: there
+    is categorically nothing to persist as evidence and no basis for a
+    report, for EVERY current provider error code — these are properties
+    of the exception path itself, not a per-code policy decision, so
+    they are not represented as separate fields here (an earlier draft
+    carried evidence_fresh_persistence_permitted/report_permitted/
+    limitations booleans that were always False/empty for every existing
+    code and were never actually read by the live path — advisory
+    fields, not load-bearing ones, removed rather than left implying a
+    variability that doesn't exist).
+
+    - evidence_status: classification only, drives sanitized log lines
+      (paper_trading.py's own log.warning call) — never persisted
+      verbatim as a report field, since no report exists on this path.
+    - sanitized_error_code: the ONLY field persisted durably — written
+      to paper_trade_postmortem_outbox.last_error_code by mark_
+      retryable_failure/mark_terminal_failure.
+    - immediate_outbox_outcome: drives the immediate retryable-vs-
+      terminal branch in the live path."""
+    evidence_status: str
+    immediate_outbox_outcome: str  # IMMEDIATE_FAILED_RETRYABLE | IMMEDIATE_FAILED_TERMINAL
+    sanitized_error_code: str
+
+
+# Every PriceProviderAcquisitionError.code this codebase currently
+# raises (price_path_acquisition.py), inspected explicitly rather than
+# assumed identical. All three currently settle IMMEDIATE_FAILED_
+# RETRYABLE: none represents a condition retrying the SAME request is
+# guaranteed to reproduce forever in a way that couldn't ALSO resolve (a
+# transient network blip, a momentarily-too-large response, or — for the
+# shape error — a genuinely unexpected provider library behavior a
+# future library version could stop producing). The outbox's own
+# attempt-limit mechanism remains the sole path to an eventual
+# FAILED_TERMINAL for these codes.
+_PROVIDER_FAILURE_POLICIES = {
+    "PROVIDER_FETCH_FAILED": ProviderFailurePolicy(
+        evidence_status=SOURCE_UNAVAILABLE, immediate_outbox_outcome=IMMEDIATE_FAILED_RETRYABLE,
+        sanitized_error_code="PROVIDER_FETCH_FAILED",
+    ),
+    "PROVIDER_RESPONSE_TOO_LARGE": ProviderFailurePolicy(
+        evidence_status=SOURCE_UNAVAILABLE, immediate_outbox_outcome=IMMEDIATE_FAILED_RETRYABLE,
+        sanitized_error_code="PROVIDER_RESPONSE_TOO_LARGE",
+    ),
+    "PROVIDER_UNEXPECTED_COLUMN_SHAPE": ProviderFailurePolicy(
+        evidence_status=SOURCE_INVALID, immediate_outbox_outcome=IMMEDIATE_FAILED_RETRYABLE,
+        sanitized_error_code="PROVIDER_UNEXPECTED_COLUMN_SHAPE",
+    ),
+}
+# Unknown provider errors fail closed exactly as specified: classified
+# SOURCE_UNAVAILABLE (never assumed invalid without evidence), settle
+# IMMEDIATE_FAILED_RETRYABLE (never silently dropped, never assumed
+# permanently terminal for a code this module has never evaluated), and
+# never carry raw provider error text — PROVIDER_ACQUISITION_ERROR is a
+# fixed, sanitized generic code.
+_DEFAULT_PROVIDER_FAILURE_POLICY = ProviderFailurePolicy(
+    evidence_status=SOURCE_UNAVAILABLE, immediate_outbox_outcome=IMMEDIATE_FAILED_RETRYABLE,
+    sanitized_error_code="PROVIDER_ACQUISITION_ERROR",
+)
+
+
+def get_provider_failure_policy(*, error_code: str) -> ProviderFailurePolicy:
+    """A code this module hasn't seen before still fails closed
+    (immediately retryable, never silently terminal, sanitized generic
+    code) via _DEFAULT_PROVIDER_FAILURE_POLICY. Every caught-exception
+    path — known code or not — categorically has no validated evidence
+    bundle to persist and no basis for a report; that is a property of
+    calling this function AT ALL (from the except
+    PriceProviderAcquisitionError branch), not something any returned
+    ProviderFailurePolicy field expresses."""
+    return _PROVIDER_FAILURE_POLICIES.get(error_code, _DEFAULT_PROVIDER_FAILURE_POLICY)
+
+
+# Stage 2/3 — a SANITIZED internal-integrity outcome for two distinct
+# defensive-only conditions that must never fabricate a report or
+# persist anything, yet must never crash the request either:
+#   1. A COMPATIBLE_REPLAY acquisition decision with no actual evidence
+#      object present (a contradictory internal state — see Stage 2's
+#      replacement of the old `assert evidence is not None`).
+#   2. A freshly acquired bundle classified SOURCE_INVALID or
+#      UNSUPPORTED_EVIDENCE_COMPLETENESS (Stage 3's conservative rule:
+#      unlike SOURCE_UNAVAILABLE's honest zero-bar manifest, these two
+#      states must never produce ANY report, complete or limited).
+INTERNAL_INTEGRITY_VIOLATION = "INTERNAL_INTEGRITY_VIOLATION"
+
+
+_KNOWN_CEILINGS = frozenset({"COMPLETE", "LIMITED_EVIDENCE"})
+
+
+def compute_report_completeness_ceiling(*ceilings: str) -> str:
+    """Stage J3 — the final report status must never exceed the WEAKEST
+    applicable ceiling. Every caller (trade-context ceiling from J1A,
+    evidence-quality ceiling from J1B, any downstream boundary/level-
+    history ceiling) passes its own ceiling in; this is the single
+    place \"minimum of all applicable ceilings\" is computed, so no
+    caller can accidentally let a locally-COMPLETE value override an
+    upstream LIMITED_EVIDENCE one.
+
+    Stage J1B-Assurance-Closure correction: the prior implementation
+    (`"LIMITED_EVIDENCE" if "LIMITED_EVIDENCE" in ceilings else
+    "COMPLETE"`) FAILED OPEN — any unknown, null, empty, or malformed
+    ceiling value that was not literally the string "LIMITED_EVIDENCE"
+    fell through to "COMPLETE", including a value nobody actually
+    intended to be treated as complete. Now every input is validated
+    against the known two-value set; any unrecognized value fails
+    closed to LIMITED_EVIDENCE, exactly like an explicit
+    LIMITED_EVIDENCE input would."""
+    if any(c not in _KNOWN_CEILINGS for c in ceilings):
+        return "LIMITED_EVIDENCE"
+    return "LIMITED_EVIDENCE" if "LIMITED_EVIDENCE" in ceilings else "COMPLETE"
