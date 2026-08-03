@@ -5,21 +5,23 @@
   "wc_n_closed_sha": "d9096a9b16c2267a5cd6c4fac866467acffe07df",
   "wc_o_closed_sha": "85d7edba540018f7b8c1fb625126fe25edceb49f",
   "formal_audit_sha": "901bba15c36c9e4a35ea30c99177d2e5b1be0509",
-  "final_executable_candidate_sha": "901bba15c36c9e4a35ea30c99177d2e5b1be0509",
+  "pre_reconciliation_assurance_sha": "901bba15c36c9e4a35ea30c99177d2e5b1be0509",
+  "pre_reconciliation_assurance_status": "HISTORICAL — superseded by main-reconciliation assurance below. Valid only as pre-reconciliation evidence; the local origin/main tracking reference used to certify this SHA was stale (git config remote.origin.fetch was scoped only to the feature branch, so prior `git fetch origin` calls never updated origin/main locally, even though `git ls-remote origin` — which queries GitHub directly — always showed the true current main). Root cause identified and repaired; see main_reconciliation below.",
+  "main_reconciliation": {
+    "pre_reconciliation_local_origin_main_believed": "a71872641657169da1d5c2f5e9511393d7f0bb9d",
+    "actual_authoritative_main_before_reconciliation": "3689d6ffd13aea11fc41d15124b3ab3d8cde1fea",
+    "merge_base": "a71872641657169da1d5c2f5e9511393d7f0bb9d",
+    "commits_behind_before_reconciliation": 4,
+    "stale_reference_cause": "git config remote.origin.fetch in this worktree was narrowly scoped to +refs/heads/feature/trade-postmortem-sprint3a-price-path only, with no refspec for refs/heads/main — so a plain `git fetch origin` never updated the local origin/main tracking ref, even repeatedly. `git ls-remote origin refs/heads/main` (a direct GitHub query, independent of local refspecs) always returned the true current main SHA. Repaired via an explicit one-off refspec: `git fetch --prune origin +refs/heads/main:refs/remotes/origin/main`.",
+    "reconciliation_merge_sha": "c9ced06394f22790725e336b83ae5709f92d0f7f",
+    "reconciliation_merge_type": "merge commit (--no-ff), never a rebase/reset/force-push/cherry-pick",
+    "conflicts": "none — backend/services/postgres_store.py auto-merged cleanly (main's new get_picks_status_metadata function and the Postmortem branch's schema additions live in non-overlapping locations in the file); no other file overlapped",
+    "focused_post_merge_verification": "173 egress-containment/TTL-cache/training-data-cache/IC-cache/market-integrity tests passed; 266 focused Postmortem tests passed (including the traceability validator's own live subprocess collection)",
+    "postgresql_dispatch_at_this_stage": "not performed — no merge conflict changed PostgreSQL SQL/schema behavior, and focused tests fully proved the resolution"
+  },
+  "final_executable_candidate_sha": "PENDING — set after Step 6's final integrated assurance cycle",
   "final_assurance_evidence": {
-    "workflow_run": "30836665992",
-    "postgres_15_job": "91763386468",
-    "postgres_17_job": "91763386393",
-    "postgres_15_result": "321 passed, 0 failed, 0 errors, 0 skipped",
-    "postgres_17_result": "321 passed, 0 failed, 0 errors, 0 skipped",
-    "postgres_15_artifact_id": "8865140616",
-    "postgres_17_artifact_id": "8865144274",
-    "postgres_15_digest": "sha256:46b604991caa18d71ce1f81f5e2ecaea32b18f61e2c446c7ec9aa6f21d9a4153",
-    "postgres_17_digest": "sha256:3815d9fa414e614ed35bf6f66929344add221cbc76bae25f865b5a3283e9b05b",
-    "backend_non_postgresql_result": "5659 passed, 322 skipped, 0 failed",
-    "frontend_result": "529 passed, 0 failed",
-    "frontend_typecheck": "0 errors",
-    "frontend_build": "succeeded, clean route list"
+    "note": "PENDING — replaced after Step 6's final integrated assurance cycle at the post-reconciliation candidate SHA"
   },
   "requirements": [
     {

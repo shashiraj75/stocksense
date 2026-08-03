@@ -314,3 +314,92 @@ SAFETY, OR SAFE DARK DEPLOYMENT/DISABLEMENT/ROLLBACK.**
 
 This replaces "Formal audit blockers not yet assessed" as of commit
 `9264898393f77f32f53fa6df31f9123ae0cebb09`.
+
+---
+
+# POST-MAIN-RECONCILIATION AUDIT ADDENDUM
+
+**Trigger:** the local `origin/main` tracking reference used to certify
+the audit above was stale — `git config remote.origin.fetch` in this
+worktree was scoped only to
+`+refs/heads/feature/trade-postmortem-sprint3a-price-path`, with no
+refspec for `refs/heads/main`, so repeated `git fetch origin` calls
+never updated the local `origin/main` ref even though `git ls-remote
+origin refs/heads/main` (a direct GitHub query) always returned the
+true current main. Authoritative current main
+(`3689d6ffd13aea11fc41d15124b3ab3d8cde1fea`) was 4 commits ahead of the
+merge-base the original Stage M believed was current. Repaired via
+`git fetch --prune origin +refs/heads/main:refs/remotes/origin/main`;
+reconciled via merge commit `c9ced06394f22790725e336b83ae5709f92d0f7f`
+(`git merge --no-ff origin/main`, zero conflicts — `postgres_store.py`
+auto-merged cleanly, every other file untouched by main's 4 commits).
+
+The four reconciled main commits (`8f56745`, `137b353`, `127899c`,
+`3689d6f`) are entirely Daily Picks/alpha-engine Supabase-egress-
+containment work: `get_picks_status_metadata` (metadata-only `/status`
+reads), TTL caching for picks payloads and IC-engine live-IC data,
+shared training-data-join caching, and cache invalidation on
+persistence/premarket-finalization/new-outcome events. **None of the
+four commits touch any Trade Postmortem file** (`services/postmortem/`,
+`api/routers/paper_trading.py`'s current-report route, `outbox_worker.py`,
+`current_report_metrics.py`, `outbox_queue_health.py`, or any frontend
+Postmortem file) — confirmed by the file list in each commit and by
+`git diff a718726 origin/main --stat` showing only the 12 files listed
+in Stage M's own known-affected-file list.
+
+## Perspective-by-perspective reassessment
+
+| # | Perspective | Disposition |
+|---|---|---|
+| 1 | Architecture and authority boundaries | CARRIED FORWARD WITH DIFF EVIDENCE — the reconciled commits add zero new call paths touching the current-report/outbox/worker boundary; `git diff a718726 origin/main --stat` confirms no Postmortem file appears. |
+| 2 | Financial/model correctness | **REASSESSED.** `test_ic_engine_live_ic_cache.py` and `test_store_training_data_cache.py` explicitly proven post-merge (33 total tests across both, part of the 173 focused-verification total) — caching never alters a computed IC value or a trained model's output; `test_store_training_data_cache.py` asserts `force_fresh=True` is used for real model training regardless of cache state. No Postmortem financial display logic (`fmtAbs`/`fmtPct`/`currencySymbolFor`) was touched by the reconciled commits. |
+| 3 | Evidence, provenance and claim integrity | CARRIED FORWARD WITH DIFF EVIDENCE — untouched by the 4 commits. |
+| 4 | PostgreSQL and schema integration | **REASSESSED.** `postgres_store.py`'s merge was inspected line-by-line (§ above) — main's `get_picks_status_metadata` function and the Postmortem branch's own schema additions (outbox/report/price-path-evidence tables, level-history columns/triggers) occupy non-overlapping regions of the file; the merge was a clean auto-merge, not a manually-resolved conflict, eliminating the primary risk of an accidental silent drop. `test_wave_c_traceability_validator.py`'s live subprocess collection (part of the 266-test focused Postmortem verification) re-confirmed every cited Postmortem test still collects correctly post-merge. |
+| 5 | Authorization, privacy and caching | **REASSESSED.** `test_picks_ttl_cache.py` and `test_picks_egress_containment_endpoints.py` (173-test focused run) explicitly prove cold/warm `/daily` behavior, metadata-only `/status` reads for both IN and US markets, and stampede-safe concurrent cache misses — all green post-merge. No Postmortem privacy/caching code was touched. |
+| 6 | Concurrency, leases and idempotency | CARRIED FORWARD WITH DIFF EVIDENCE — untouched; `test_outbox_worker_metrics_fail_open.py`/`test_outbox_worker_shutdown.py` re-run green post-merge as part of the 266-test Postmortem focused verification. |
+| 7 | Failures, retries and fail-closed behavior | CARRIED FORWARD WITH DIFF EVIDENCE — untouched by the reconciled commits; re-verified green post-merge. |
+| 8 | API and historical compatibility | **REASSESSED.** `backend/api/routers/picks.py`'s changes are additive (`/api/picks/status` now uses `get_picks_status_metadata`) and scoped entirely to the Daily Picks surface — no interaction with `api/routers/paper_trading.py`'s routes. |
+| 9 | Frontend correctness and accessibility | CARRIED FORWARD WITH DIFF EVIDENCE — the reconciled main commits contain zero frontend changes (confirmed: none of the 12 known-affected files are under `frontend/`); no frontend re-verification triggered by reconciliation itself (still re-run in Step 6 as the required once-per-final-candidate cycle). |
+| 10 | Observability and operational readiness | CARRIED FORWARD WITH DIFF EVIDENCE — untouched; WC-O's own metrics/logging modules re-verified green post-merge (266-test focused run). |
+| 11 | Performance, database egress and capacity | **REASSESSED.** This is the perspective the reconciled commits are MOST relevant to (they exist specifically to reduce Supabase egress) — `test_picks_egress_containment_endpoints.py`'s read-count assertions (`test_cold_daily_performs_at_most_one_full_payload_read` and siblings) confirm the egress-reduction behavior is present and passing at the reconciled SHA, independent of and unaffected by the Postmortem branch's own query-cost work (§O-07). |
+| 12 | Release, rollback and activation readiness | **REASSESSED.** Both Postmortem feature flags remain default-disabled after reconciliation (unchanged files: `paper_trading.py`'s `_trade_postmortem_price_path_enabled`, `featureFlags.ts`'s `isTradePostmortemPricePathEnabled` — neither appears in the reconciled diff). No production configuration changed by the reconciliation itself (a local merge commit, never touching any deployed environment). |
+
+## Explicit verifications required by this addendum
+
+- **`/status` remains metadata-only:** confirmed —
+  `get_picks_status_metadata` (main, `postgres_store.py`) uses
+  JSONB path operators (`->>`) to extract only
+  `generated_at`/`base_generated_at`/`premarket_finalized_at`/
+  `premarket_status`/`premarket_finalizer_version`, never the full
+  payload; `test_picks_egress_containment_endpoints.py` passes.
+- **All cache invalidation remains present:** confirmed —
+  `test_picks_ttl_cache.py` and `test_store_training_data_cache.py`
+  (persistence/premarket-finalization/outcome-driven invalidation)
+  pass.
+- **Force-fresh training remains authoritative:** confirmed —
+  `test_store_training_data_cache.py` asserts real model training uses
+  `force_fresh=True` regardless of cache state.
+- **Caching does not alter financial/model outputs:** confirmed — the
+  same test suite asserts numerical/model behavior is unchanged by the
+  cache layer.
+- **`postgres_store.py` preserves both sets of changes:** confirmed by
+  direct inspection (§ above) and by the clean auto-merge with zero
+  manual conflict resolution.
+- **Postmortem behavior remains unchanged:** confirmed — 266 focused
+  Postmortem tests pass post-merge with zero modification to any
+  Postmortem source file during reconciliation.
+- **Feature flags remain disabled:** confirmed — neither flag-reading
+  function was touched by the reconciled commits.
+
+## Findings ledger addendum
+
+No new BLOCKING or NONBLOCKING findings were identified during this
+reconciliation reassessment. AUDIT-01 and AUDIT-02 from the original
+audit remain as previously dispositioned (AUDIT-01 CLOSED, AUDIT-02
+accepted NONBLOCKING with its existing future disposition) — neither is
+affected by the reconciled main commits.
+
+**POST-MAIN-RECONCILIATION AUDIT RESULT: ZERO BLOCKING FINDINGS. ALL
+REASSESSED PERSPECTIVES CONFIRM THE RECONCILED CANDIDATE PRESERVES BOTH
+MAIN'S EGRESS-CONTAINMENT WORK AND THE COMPLETE TRADE POSTMORTEM
+BEHAVIOR, WITH NO REGRESSION TO EITHER.**
