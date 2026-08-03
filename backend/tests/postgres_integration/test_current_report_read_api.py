@@ -1056,7 +1056,6 @@ def test_invalid_governed_enum_in_persisted_claim_fails_closed(client, pg_conn, 
         "supporting_evidence_ids": [], "opposing_evidence_ids": [], "missing_evidence": [],
         "contradiction_flags": [], "rule_id": "r1", "rule_version": "1.0.0",
     }
-    _seed_current_manifest(pg_conn, trade_id, unique_user_id, _VALID_MANIFEST, marker="invalid-claim-enum")
     from services.postmortem import report_store
     from services.postmortem.current_report_generation import current_target_identity
     from services.postmortem.deterministic import CALCULATION_VERSION
@@ -1069,8 +1068,8 @@ def test_invalid_governed_enum_in_persisted_claim_fails_closed(client, pg_conn, 
         pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
         report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
         report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
-        evidence_bundle_version="invalid-claim-enum-2", status="COMPLETE",
-        structured_report={"marker": "invalid-claim-enum-2"}, evidence_items=[], claims=[claim],
+        evidence_bundle_version="invalid-claim-enum", status="COMPLETE",
+        structured_report={"marker": "invalid-claim-enum"}, evidence_items=[], claims=[claim],
         source_manifest=_VALID_MANIFEST, evidence_gaps=[], warnings=[],
     )
     _assert_fails_closed_to_integrity_contradiction(client, unique_user_id, trade_id, ["NOT_A_GOVERNED_VALUE"])
