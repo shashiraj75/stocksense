@@ -1417,3 +1417,234 @@ def test_repeated_get_with_supersession_causes_no_mutation(client, pg_conn, uniq
         "SELECT count(*) FROM paper_trade_postmortem_report WHERE paper_trade_id = %s", (trade_id,),
     ).fetchone()[0]
     assert after == before
+
+
+# ================== Wave C, Gate 2 — availability/determinism/no-side-effect matrix ================== #
+#
+# The state -> availability mapping already has one representative test
+# per branch above (test_open_owned_trade_is_not_eligible,
+# test_closed_trade_no_outbox_no_report_is_not_available,
+# test_ready_report_returns_persisted_complete_or_limited_evidence,
+# test_terminal_outbox_missing_report_is_integrity_contradiction,
+# test_terminal_failure_outbox_is_reported, test_pending_outbox_is_processing,
+# test_disabled_owned_open_trade_returns_feature_disabled,
+# test_disabled_owned_closed_trade_returns_feature_disabled). This section
+# closes the two branches not yet independently exercised — GENERATING
+# with an active lease and GENERATING with an expired lease both mapping
+# to PROCESSING identically (the route reads only the outbox `status`
+# column, never `lease_expires_at`/`claimed_at`, per direct source read
+# of get_current_governed_report) — and FAILED_RETRYABLE -> PROCESSING —
+# then adds one reusable exact before/after DB-state snapshot (every
+# outbox and report column, not just row counts) applied across every
+# governed state, a deterministic-serialization proof, and a proof GET
+# never invokes any generation/acquisition/claim/recovery operation in
+# any of these states (not only the READY-adjacent one already covered
+# by test_get_never_calls_provider_acquisition).
+
+_OUTBOX_COLUMNS = (
+    "id, paper_trade_id, user_id, requested_report_schema_version, requested_calculation_version, "
+    "requested_rules_version, status, attempt_count, next_attempt_at, last_attempt_at, claimed_at, "
+    "lease_expires_at, claimed_by, last_error_code, last_error_summary, source_request_id, created_at, "
+    "completed_at"
+)
+_REPORT_COLUMNS_SNAPSHOT = (
+    "id, paper_trade_id, user_id, market, report_trading_date, market_timezone, report_schema_version, "
+    "calculation_version, attribution_rules_version, evidence_bundle_version, evidence_hash, status, "
+    "structured_report, evidence_items, claims, source_manifest, evidence_gaps, warnings, generated_at, "
+    "supersedes_report_id, created_at"
+)
+
+
+def _snapshot_state(pg_conn, trade_id):
+    """Exact before/after DB-state proof: every column of every outbox
+    and report row for this trade, plus the trade row's own mutable
+    fields — not just a row count, so a corrupting UPDATE-in-place would
+    be caught even if it left row counts unchanged."""
+    outbox_rows = pg_conn.execute(
+        f"SELECT {_OUTBOX_COLUMNS} FROM paper_trade_postmortem_outbox "
+        "WHERE paper_trade_id = %s ORDER BY id", (trade_id,),
+    ).fetchall()
+    report_rows = pg_conn.execute(
+        f"SELECT {_REPORT_COLUMNS_SNAPSHOT} FROM paper_trade_postmortem_report "
+        "WHERE paper_trade_id = %s ORDER BY id", (trade_id,),
+    ).fetchall()
+    trade_row = pg_conn.execute(
+        "SELECT status, exit_price, closed_at FROM paper_trades WHERE id = %s", (trade_id,),
+    ).fetchone()
+    return (outbox_rows, report_rows, trade_row)
+
+
+def _insert_outbox(pg_conn, *, trade_id, user_id, schema_v, calc_v, rules_v, status, **extra):
+    columns = ["paper_trade_id", "user_id", "requested_report_schema_version",
+               "requested_calculation_version", "requested_rules_version", "status"]
+    values = [trade_id, user_id, schema_v, calc_v, rules_v, status]
+    for col, val in extra.items():
+        columns.append(col)
+        values.append(val)
+    placeholders = ", ".join(["%s"] * len(values))
+    pg_conn.execute(
+        f"INSERT INTO paper_trade_postmortem_outbox ({', '.join(columns)}) VALUES ({placeholders})",
+        tuple(values),
+    )
+
+
+def _forbid_all_generation_calls(monkeypatch):
+    """Patches every generation/acquisition/claim/recovery entry point
+    this GET route must never invoke, each raising immediately if
+    called — a single shared guard reused across every Gate 2 state
+    test so the forbidden-call list can't silently drift between tests."""
+    from services.postmortem import current_report_generation, generation_service, price_path_generation
+
+    def _forbidden(name):
+        def _raise(*a, **k):
+            raise AssertionError(f"GET /current-report must never call {name}")
+        return _raise
+
+    monkeypatch.setattr(price_path_generation, "acquire_price_path_evidence", _forbidden("acquire_price_path_evidence"))
+    monkeypatch.setattr(current_report_generation, "process_current_report", _forbidden("process_current_report"))
+    monkeypatch.setattr(current_report_generation, "persist_current_report", _forbidden("persist_current_report"))
+    monkeypatch.setattr(current_report_generation, "insert_current_outbox_record", _forbidden("insert_current_outbox_record"))
+    monkeypatch.setattr(generation_service, "generate_and_persist", _forbidden("generate_and_persist"))
+
+
+@pytest.mark.parametrize(
+    "status,extra",
+    [
+        ("PENDING", {}),
+        ("GENERATING", {"claimed_at": "now()", "lease_expires_at": "now() + interval '5 minutes'", "claimed_by": "'worker-active'"}),
+        ("GENERATING", {"claimed_at": "now() - interval '1 hour'", "lease_expires_at": "now() - interval '55 minutes'", "claimed_by": "'worker-expired'"}),
+        ("FAILED_RETRYABLE", {"last_error_code": "'PROVIDER_TIMEOUT'", "next_attempt_at": "now() + interval '1 minute'"}),
+    ],
+    ids=["pending", "generating_active_lease", "generating_expired_lease", "failed_retryable"],
+)
+def test_gate2_availability_matrix_maps_to_processing(client, pg_conn, unique_user_id, monkeypatch, status, extra):
+    """Gate 2 — PENDING, active-lease GENERATING, expired-lease GENERATING
+    and FAILED_RETRYABLE all map identically to PROCESSING: the route
+    consults only the outbox `status` column (never lease timestamps),
+    so an expired lease is not distinguished from an active one at this
+    layer (background recovery, not this GET, is what reclaims it)."""
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    schema_v, calc_v, rules_v = current_target_identity(
+        base_calculation_version=CALCULATION_VERSION,
+        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+    )
+    # `extra` values are literal SQL fragments (now()/interval expressions
+    # for lease timestamps), not bind params, so they're interpolated
+    # directly rather than passed as %s placeholders.
+    columns = ["paper_trade_id", "user_id", "requested_report_schema_version",
+               "requested_calculation_version", "requested_rules_version", "status"] + list(extra.keys())
+    static_values = (trade_id, unique_user_id, schema_v, calc_v, rules_v, status)
+    pg_conn.execute(
+        f"INSERT INTO paper_trade_postmortem_outbox ({', '.join(columns)}) "
+        f"VALUES (%s, %s, %s, %s, %s, %s, {', '.join(list(extra.values()))})",
+        static_values,
+    )
+
+    _forbid_all_generation_calls(monkeypatch)
+    before = _snapshot_state(pg_conn, trade_id)
+    resp = _current_report(client, unique_user_id, trade_id)
+    after = _snapshot_state(pg_conn, trade_id)
+
+    assert resp.status_code == 200
+    assert resp.json()["availability"] == "PROCESSING"
+    assert resp.headers.get("cache-control") == "private, no-store"
+    assert after == before, f"GET must cause zero mutation while outbox status={status}"
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ["not_eligible_open_trade", "not_available_no_outbox", "terminal_failure", "integrity_contradiction_no_report", "ready"],
+)
+def test_gate2_no_mutation_and_no_forbidden_calls_across_states(client, pg_conn, unique_user_id, monkeypatch, scenario):
+    """Gate 2 — exact before/after DB-state snapshot proof (every column,
+    not just row counts) AND proof that none of the generation/
+    acquisition/claim/recovery entry points are invoked, for every
+    remaining governed availability state not already covered by the
+    PROCESSING-matrix test above."""
+    from services.postmortem import report_store
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+
+    if scenario == "not_eligible_open_trade":
+        ensure_portfolio(pg_conn, unique_user_id, cash_usd=1_000_000.0)
+        trade_id = _buy(client, unique_user_id).json()["trade_id"]
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+        expected_availability = "NOT_ELIGIBLE"
+    else:
+        trade_id = _open_and_close(client, pg_conn, unique_user_id)
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+        schema_v, calc_v, rules_v = current_target_identity(
+            base_calculation_version=CALCULATION_VERSION,
+            numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+        )
+        if scenario == "not_available_no_outbox":
+            expected_availability = "NOT_AVAILABLE"
+        elif scenario == "terminal_failure":
+            _insert_outbox(pg_conn, trade_id=trade_id, user_id=unique_user_id,
+                            schema_v=schema_v, calc_v=calc_v, rules_v=rules_v, status="FAILED_TERMINAL")
+            expected_availability = "TERMINAL_FAILURE"
+        elif scenario == "integrity_contradiction_no_report":
+            pg_conn.execute(
+                """INSERT INTO paper_trade_postmortem_outbox
+                   (paper_trade_id, user_id, requested_report_schema_version, requested_calculation_version,
+                    requested_rules_version, status, completed_at)
+                   VALUES (%s, %s, %s, %s, %s, 'COMPLETE', now())""",
+                (trade_id, unique_user_id, schema_v, calc_v, rules_v),
+            )
+            expected_availability = "INTEGRITY_CONTRADICTION"
+        elif scenario == "ready":
+            report_store.persist_report(
+                pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+                report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
+                report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+                evidence_bundle_version="1.2.0-gate2-ready", status="COMPLETE",
+                structured_report=_VALID_STRUCTURED_REPORT, evidence_items=[], claims=[],
+                source_manifest=_VALID_MANIFEST, evidence_gaps=[], warnings=[],
+            )
+            expected_availability = "READY"
+
+    _forbid_all_generation_calls(monkeypatch)
+    before = _snapshot_state(pg_conn, trade_id)
+    resp = _current_report(client, unique_user_id, trade_id)
+    after = _snapshot_state(pg_conn, trade_id)
+
+    assert resp.status_code == 200
+    assert resp.json()["availability"] == expected_availability
+    assert after == before, f"GET must cause zero mutation in scenario={scenario}"
+
+
+def test_gate2_ready_response_serialization_is_deterministic(client, pg_conn, unique_user_id, monkeypatch):
+    """Deterministic-serialization proof: two consecutive GETs of the
+    same persisted READY report return byte-identical response bodies
+    (not merely equal-after-parsing) — proving the response is built
+    solely from persisted, immutable content with no nondeterministic
+    ordering, timestamp, or identity substitution across repeated
+    serialization of the SAME underlying row."""
+    from services.postmortem import report_store
+    from services.postmortem.current_report_generation import current_target_identity
+    from services.postmortem.deterministic import CALCULATION_VERSION
+    from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION, SOURCE_VERSION
+
+    trade_id = _open_and_close(client, pg_conn, unique_user_id)
+    monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+    schema_v, calc_v, rules_v = current_target_identity(
+        base_calculation_version=CALCULATION_VERSION,
+        numerical_rules_version=PRICE_PATH_CALC_RULES_VERSION, source_version=SOURCE_VERSION,
+    )
+    report_store.persist_report(
+        pg_conn, paper_trade_id=trade_id, user_id=unique_user_id, market="US",
+        report_trading_date=datetime.now(timezone.utc).date(), market_timezone="America/New_York",
+        report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+        evidence_bundle_version="1.2.0-gate2-determinism", status="COMPLETE",
+        structured_report=_VALID_STRUCTURED_REPORT, evidence_items=[], claims=[],
+        source_manifest=_VALID_MANIFEST, evidence_gaps=[], warnings=[],
+    )
+
+    bodies = [_current_report(client, unique_user_id, trade_id).content for _ in range(5)]
+    assert all(b == bodies[0] for b in bodies), "Repeated GETs of the same persisted report must be byte-identical."
