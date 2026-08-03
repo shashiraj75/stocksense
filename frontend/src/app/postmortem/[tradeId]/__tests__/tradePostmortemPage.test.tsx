@@ -558,6 +558,21 @@ describe("TradePostmortemPage — financial context and closure classification",
     await waitFor(() => expect(screen.getByText(/\$120\.50/)).toBeInTheDocument());
   });
 
+  it("places the sign before the currency symbol for a negative value (-$X.XX, never $-X.XX)", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue({
+      ...BASE_READY,
+      structured_report: {
+        ...BASE_READY.structured_report!,
+        postmortem: { ...(BASE_READY.structured_report!.postmortem as object), realized_pnl_abs: -50, realized_pnl_pct: -2.1 },
+      },
+    });
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getByText(/-\$50\.00/)).toBeInTheDocument());
+    expect(screen.queryByText(/\$-50\.00/)).not.toBeInTheDocument();
+  });
+
   it("never attaches a currency symbol to a percentage value", async () => {
     mockFetchCurrentPostmortemReport.mockResolvedValue(BASE_READY);
     const { default: TradePostmortemPage } = await import("../page");
