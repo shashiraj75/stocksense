@@ -19,9 +19,27 @@
     "focused_post_merge_verification": "173 egress-containment/TTL-cache/training-data-cache/IC-cache/market-integrity tests passed; 266 focused Postmortem tests passed (including the traceability validator's own live subprocess collection)",
     "postgresql_dispatch_at_this_stage": "not performed — no merge conflict changed PostgreSQL SQL/schema behavior, and focused tests fully proved the resolution"
   },
-  "final_executable_candidate_sha": "PENDING — set after Step 6's final integrated assurance cycle",
+  "final_executable_candidate_sha": "5b3fb964ddae7782aa28fb9c290a403e8838608a",
+  "final_executable_candidate_frozen": true,
   "final_assurance_evidence": {
-    "note": "PENDING — replaced after Step 6's final integrated assurance cycle at the post-reconciliation candidate SHA"
+    "post_reconciliation": true,
+    "origin_main_at_final_diff_review": "3689d6ffd13aea11fc41d15124b3ab3d8cde1fea",
+    "merge_base_at_final_diff_review": "3689d6ffd13aea11fc41d15124b3ab3d8cde1fea",
+    "commits_behind_at_final_diff_review": 0,
+    "workflow_run": "30841945629",
+    "postgres_15_job": "91780866537",
+    "postgres_17_job": "91780866601",
+    "postgres_15_result": "321 passed, 0 failed, 0 errors, 0 skipped",
+    "postgres_17_result": "321 passed, 0 failed, 0 errors, 0 skipped",
+    "postgres_15_artifact_id": "8867169669",
+    "postgres_17_artifact_id": "8867165422",
+    "postgres_15_digest": "sha256:23b03d56179d639961f3dfe44cb9e3587af402d99f9b82306fd724af67b3b95a",
+    "postgres_17_digest": "sha256:cca324edffe9324f84f083916f8360d20c71bfd8ac9821bec852e779fd7c1719",
+    "backend_non_postgresql_result": "5694 passed, 322 skipped, 0 failed",
+    "frontend_result": "529 passed, 0 failed",
+    "frontend_typecheck": "0 errors",
+    "frontend_build": "succeeded, clean route list unchanged (reconciled main commits contain zero frontend files)",
+    "browser_smoke": "carried forward from d9096a9 — no frontend executable file changed by reconciliation"
   },
   "requirements": [
     {
