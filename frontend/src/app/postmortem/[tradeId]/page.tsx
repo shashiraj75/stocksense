@@ -61,8 +61,52 @@ function asBool(v: JSONValue | undefined): boolean | null {
 function fmtPct(v: number | null): string {
   return v === null ? "N/A" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
 }
-function fmtAbs(v: number | null): string {
-  return v === null ? "N/A" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}`;
+
+// Currency is derived from the persisted report's own `market`, never
+// guessed or defaulted — an unrecognized future market still shows the
+// number, just without inventing a currency symbol for it. Never applied
+// to percentages (fmtPct above has no currency parameter at all).
+function currencySymbolFor(market: string | null): string | null {
+  if (market === "IN") return "₹";
+  if (market === "US") return "$";
+  return null;
+}
+
+function fmtAbs(v: number | null, currencySymbol: string | null): string {
+  if (v === null) return "N/A";
+  const sign = v >= 0 ? "+" : "";
+  const magnitude = Math.abs(v).toFixed(2);
+  return `${sign}${v < 0 ? "-" : ""}${currencySymbol ?? ""}${magnitude}`;
+}
+
+// Bounded, safe rendering for an evidence item's `value` — never
+// "[object Object]" for an array/object, never dangerouslySetInnerHTML
+// (JSON.stringify output is rendered as plain text, which React already
+// escapes), and never an unbounded dump of a large nested structure.
+const MAX_EVIDENCE_VALUE_LENGTH = 200;
+function safeFormatValue(value: JSONValue): string {
+  if (value === null) return "null";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  let json: string;
+  try {
+    json = JSON.stringify(value) ?? "null";
+  } catch {
+    return "(unrepresentable value)";
+  }
+  return json.length > MAX_EVIDENCE_VALUE_LENGTH ? `${json.slice(0, MAX_EVIDENCE_VALUE_LENGTH)}…` : json;
+}
+
+// The Closure classification summary field is sourced ONLY from the
+// governed EXIT/closure_classification evidence item — never inferred
+// from P&L sign, exit_mechanism, exit_reason, touch evidence, or claim
+// text, all of which can disagree with the trade's actual governed
+// closure classification (e.g. a manual sell above target is not a
+// genuine target-hit).
+function findClosureClassification(evidenceItems: EvidenceItem[]): string | null {
+  const item = evidenceItems.find((e) => e.category === "EXIT" && e.name === "closure_classification");
+  return item && typeof item.value === "string" ? item.value : null;
 }
 
 function useBoundedProcessingPoll(tradeId: number, enabled: boolean) {
@@ -83,7 +127,20 @@ function useBoundedProcessingPoll(tradeId: number, enabled: boolean) {
     // retry loop — a 401/403/404 is a stable outcome the UI must show
     // immediately, not mask behind repeated silent retries.
     retry: false,
+    // A focus/reconnect-triggered refetch would otherwise let the user
+    // bypass the bounded polling window (e.g. re-focusing the tab after
+    // MAX_POLL_ATTEMPTS is reached) — polling is governed exclusively by
+    // refetchInterval below, never by these implicit triggers.
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     refetchInterval: (q) => {
+      // q.state.data can retain the PREVIOUS successful (PROCESSING)
+      // response even after a subsequent request has failed — q.state.data
+      // is not cleared on error. Checking q.state.status first is what
+      // actually stops polling after a failed interval request (401, 403,
+      // 404, or a network failure); checking .data alone would silently
+      // keep scheduling further requests forever using stale data.
+      if (q.state.status === "error") return false;
       const availability = (q.state.data as CurrentReportReadResponse | undefined)?.availability;
       if (availability !== "PROCESSING") return false;
       if (pollCount >= MAX_POLL_ATTEMPTS) return false;
@@ -175,6 +232,15 @@ function ClaimRow({ claim, evidenceById }: { claim: PostmortemClaim; evidenceByI
         )}
       </div>
       <div className="text-xs text-gray-300 mt-0.5 break-words">{claim.claim_text}</div>
+      {claim.contradiction_flags.length > 0 && (
+        // Labelled distinctly from ordinary "Limitations" — a contradiction
+        // flag means the evidence actively disagrees with itself, a
+        // materially different signal than merely incomplete evidence.
+        <div className="text-[11px] text-bear mt-0.5 break-words">
+          <span className="font-semibold">Contradictions: </span>
+          {claim.contradiction_flags.join("; ")}
+        </div>
+      )}
       <WhyThisConclusion claim={claim} evidenceById={evidenceById} />
     </div>
   );
@@ -186,12 +252,18 @@ function EvidenceRow({ item }: { item: EvidenceItem }) {
   return (
     <div className="flex items-start justify-between gap-2 py-1 text-xs border-b border-dark-border/40 last:border-0">
       <div className="min-w-0">
-        <div className="text-gray-300 break-words">{item.name}: <span className="font-mono">{String(item.value)}{item.units ? ` ${item.units}` : ""}</span></div>
+        <div className="text-gray-300 break-words">
+          {item.name}: <span className="font-mono">{safeFormatValue(item.value)}{item.units ? ` ${item.units}` : ""}</span>
+        </div>
         <div className="text-[10px] text-gray-500">
           {item.source} · {item.source_type.replace(/_/g, " ").toLowerCase()} ·{" "}
           {item.verification_level.replace(/_/g, " ").toLowerCase()} ·{" "}
           {item.freshness_status.replace(/_/g, " ").toLowerCase()}
+          {item.observation_timestamp && <> · {new Date(item.observation_timestamp).toLocaleString()}</>}
         </div>
+        {item.limitations.length > 0 && (
+          <div className="text-[10px] text-gray-500 break-words">Limitations: {item.limitations.join("; ")}</div>
+        )}
       </div>
     </div>
   );
@@ -261,7 +333,7 @@ export default function TradePostmortemPage() {
   const tradeIdIsValid = Number.isFinite(tradeId) && tradeId > 0;
 
   const flagEnabled = isTradePostmortemPricePathEnabled();
-  const { data, isLoading, isError, error, timedOut } = useBoundedProcessingPoll(
+  const { data, isLoading, isError, timedOut } = useBoundedProcessingPoll(
     tradeId,
     flagEnabled && !!user && tradeIdIsValid
   );
@@ -292,9 +364,12 @@ export default function TradePostmortemPage() {
   }
 
   if (isError) {
+    // Never render the raw Axios/backend/auth error text (message, status
+    // code, response body) — a single safe, generic sentence regardless of
+    // the underlying failure (401/403/404/network/etc).
     return (
       <div role="alert" className="max-w-4xl mx-auto px-4 py-16 text-sm text-bear text-center">
-        Could not load this report{error instanceof Error && error.message ? "." : "."}
+        Could not load this report.
       </div>
     );
   }
@@ -345,6 +420,8 @@ function ReadyReport({ report }: { report: CurrentReportReadResponse }) {
     : [];
 
   const isLimited = report.status === "LIMITED_EVIDENCE";
+  const currencySymbol = currencySymbolFor(report.market);
+  const closureClassification = findClosureClassification(evidenceItems);
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-6 space-y-5">
@@ -372,7 +449,7 @@ function ReadyReport({ report }: { report: CurrentReportReadResponse }) {
         <div>
           <div className="text-gray-500">Realized P&amp;L</div>
           <div className={clsx("font-semibold text-sm tabular-nums", realizedPnlAbs !== null && (realizedPnlAbs >= 0 ? "text-bull" : "text-bear"))}>
-            {fmtAbs(realizedPnlAbs)} ({fmtPct(realizedPnlPct)})
+            {fmtAbs(realizedPnlAbs, currencySymbol)} ({fmtPct(realizedPnlPct)})
           </div>
         </div>
         <div>
@@ -383,6 +460,14 @@ function ReadyReport({ report }: { report: CurrentReportReadResponse }) {
           <div className="text-gray-500">Evidence</div>
           <div className="font-semibold text-sm">{report.status ?? "N/A"}</div>
         </div>
+        <div>
+          {/* Sourced ONLY from the governed EXIT/closure_classification
+              evidence item — never inferred from P&L, exit mechanism,
+              exit reason, touch evidence, or claim text (see
+              findClosureClassification's own comment). */}
+          <div className="text-gray-500">Closure classification</div>
+          <div className="font-semibold text-sm">{closureClassification ? closureClassification.replace(/_/g, " ") : "N/A"}</div>
+        </div>
       </div>
 
       <div>
@@ -390,11 +475,11 @@ function ReadyReport({ report }: { report: CurrentReportReadResponse }) {
         <div className="rounded-lg border border-dark-border bg-dark-card px-4 py-3 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
           <div>
             <div className="text-gray-500">Max favorable excursion</div>
-            <div className="font-medium tabular-nums">{fmtAbs(mfeAbs)} ({fmtPct(mfePct)})</div>
+            <div className="font-medium tabular-nums">{fmtAbs(mfeAbs, currencySymbol)} ({fmtPct(mfePct)})</div>
           </div>
           <div>
             <div className="text-gray-500">Max adverse excursion</div>
-            <div className="font-medium tabular-nums">{fmtAbs(maeMagnitudeAbs)} ({fmtPct(maeMagnitudePct)})</div>
+            <div className="font-medium tabular-nums">{fmtAbs(maeMagnitudeAbs, currencySymbol)} ({fmtPct(maeMagnitudePct)})</div>
           </div>
           <div>
             <div className="text-gray-500">Target touched</div>
@@ -486,6 +571,67 @@ function ReadyReport({ report }: { report: CurrentReportReadResponse }) {
             </dl>
           )}
         </div>
+      )}
+
+      <ReportEvidenceManifest sourceManifest={report.source_manifest} supersedesReportId={report.supersedes_report_id} />
+    </div>
+  );
+}
+
+// Wave C, WC-N §5 — a clearly separated disclosure from the version/
+// provenance section above, using ONLY the explicitly typed
+// ReportSourceManifest fields (never enumerating or displaying unknown
+// extra keys the backend's extra="allow" contract may carry — those are
+// genuinely out of scope for this governed view).
+function ReportEvidenceManifest({
+  sourceManifest, supersedesReportId,
+}: {
+  sourceManifest: CurrentReportReadResponse["source_manifest"];
+  supersedesReportId: number | null;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!sourceManifest) return null;
+
+  // price_path_calculation_version is historical-optional — genuinely
+  // absent (not present as a key) on a report generated before or
+  // without price-path enhancement. Never display an invented null row
+  // for it; only render the row when the key is truly present.
+  const hasPricePathCalculationVersion = "price_path_calculation_version" in sourceManifest
+    && sourceManifest.price_path_calculation_version !== undefined;
+
+  return (
+    <div className="text-xs">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="text-gray-400 hover:text-gray-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-500 rounded"
+      >
+        {open ? "Hide" : "Show"} report evidence manifest
+      </button>
+      {open && (
+        <dl className="mt-2 rounded-lg border border-dark-border bg-dark-card px-3 py-2 grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-gray-500">
+          <dt>Entry snapshot available</dt><dd className="text-gray-300">{sourceManifest.has_entry_snapshot ? "Yes" : "No"}</dd>
+          <dt>Exit snapshot available</dt><dd className="text-gray-300">{sourceManifest.has_exit_snapshot ? "Yes" : "No"}</dd>
+          <dt>Exit snapshot schema</dt><dd className="text-gray-300">{sourceManifest.exit_snapshot_schema_version ?? "N/A"}</dd>
+          <dt>Exit trigger timing verification</dt>
+          <dd className="text-gray-300">{sourceManifest.exit_trigger_timing_verification?.replace(/_/g, " ") ?? "N/A"}</dd>
+          <dt>Exit evidence rules</dt><dd className="text-gray-300">{sourceManifest.exit_evidence_rules_version}</dd>
+          <dt>Phase 1 calculation</dt><dd className="text-gray-300">{sourceManifest.phase1_calculation_version}</dd>
+          <dt>Attribution rules</dt><dd className="text-gray-300">{sourceManifest.attribution_rules_version}</dd>
+          {hasPricePathCalculationVersion && (
+            <>
+              <dt>Price-path calculation</dt><dd className="text-gray-300">{sourceManifest.price_path_calculation_version}</dd>
+            </>
+          )}
+          <dt>Price-path rules</dt><dd className="text-gray-300">{sourceManifest.price_path_rules_version}</dd>
+          <dt>Governed rules</dt><dd className="text-gray-300">{sourceManifest.governed_rules_version}</dd>
+          {supersedesReportId !== null && (
+            <>
+              <dt>Supersedes report</dt><dd className="text-gray-300">#{supersedesReportId}</dd>
+            </>
+          )}
+        </dl>
       )}
     </div>
   );

@@ -849,11 +849,11 @@ export interface EvidenceItem {
   evidence_id: string;
   category: string;
   name: string;
-  value: unknown;
+  value: JSONValue;
   units: string | null;
   observation_timestamp: string | null;
   source: string;
-  source_type: "SERVER_STORED" | "SERVER_DERIVED" | "CLIENT_REPORTED" | "APPROVED_EXTERNAL_SOURCE" | "UNAVAILABLE";
+  source_type: "SERVER_STORED" | "SERVER_DERIVED" | "CLIENT_REPORTED" | "APPROVED_EXTERNAL_SOURCE" | "EXTERNAL_UNOFFICIAL_DAILY" | "UNAVAILABLE";
   verification_level: "MECHANICALLY_VERIFIED" | "DIRECTLY_OBSERVED" | "CLIENT_REPORTED" | "UNVERIFIED" | "UNAVAILABLE";
   freshness_status: "POINT_IN_TIME_VALID" | "STALE" | "NOT_APPLICABLE" | "UNKNOWN";
   limitations: string[];
@@ -1026,13 +1026,22 @@ export type PricePathSection = { version_and_provenance: VersionAndProvenance } 
 
 export type StructuredReportModel = { price_path: PricePathSection } & Record<string, JSONValue>;
 
+// Mirrors services.postmortem.exit_snapshot.TriggerTimingVerification
+// exactly (backend/api/routers/paper_trading.py's ReportSourceManifest
+// uses this Enum directly, not a plain string) — kept as its own governed
+// vocabulary here rather than widened to `string`, so an unrecognized
+// value fails a type check at the call site instead of silently
+// round-tripping unchecked.
+export type TriggerTimingVerification =
+  | "NOT_APPLICABLE" | "CLIENT_REPORTED_UNVERIFIED" | "SERVER_VERIFIED";
+
 // Mirrors ReportSourceManifest exactly (extra="allow" on the backend, so
 // this stays open-ended beyond the always-present governed fields).
 export interface ReportSourceManifest {
   has_entry_snapshot: boolean;
   has_exit_snapshot: boolean;
   exit_snapshot_schema_version: string | null;
-  exit_trigger_timing_verification: string | null;
+  exit_trigger_timing_verification: TriggerTimingVerification | null;
   exit_evidence_rules_version: string;
   phase1_calculation_version: string;
   attribution_rules_version: string;
