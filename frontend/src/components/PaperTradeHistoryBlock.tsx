@@ -10,6 +10,7 @@ import {
 import { seedInitialCursor, dedupeAppend } from "@/utils/closedTradeHistoryPaging";
 import { runIfNotInFlight } from "@/utils/inFlightGuard";
 import { outcomeLabel, shouldShowBreakEven } from "@/utils/paperTradeOutcome";
+import { isTradePostmortemPricePathEnabled } from "@/utils/featureFlags";
 
 const fmt = (n: number, dec = 2, locale = "en-IN") =>
   n.toLocaleString(locale, { minimumFractionDigits: dec, maximumFractionDigits: dec });
@@ -68,6 +69,25 @@ function ClosedTradeRow({ trade }: { trade: PaperTrade }) {
       </td>
       <td className="px-4 py-3 text-xs text-gray-500">
         {trade.closed_at ? new Date(trade.closed_at).toLocaleDateString("en-IN") : "—"}
+      </td>
+      <td className="px-4 py-3">
+        {isTradePostmortemPricePathEnabled() && (
+          // Backend capability (TRADE_POSTMORTEM_PRICE_PATH_ENABLED) remains
+          // authoritative regardless of this frontend gate — the destination
+          // page itself renders FEATURE_DISABLED explicitly when the backend
+          // flag is off, so this link is never a broken promise, only a
+          // presentation choice about whether to show the entry point at all.
+          // No open trade ever reaches this row (ClosedTradeRow only), and
+          // this Link renders exactly once per row — no rerender-triggered
+          // duplicate action is possible since it's plain navigation, not a
+          // mutation.
+          <Link
+            href={`/postmortem/${trade.id}`}
+            className="text-xs text-gray-400 hover:text-brand-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-500 rounded whitespace-nowrap"
+          >
+            View Postmortem
+          </Link>
+        )}
       </td>
     </tr>
   );
@@ -243,6 +263,7 @@ export function ClosedTradeHorizonBlock({
                   <th className="px-4 py-2.5 text-left">P&L</th>
                   <th className="px-4 py-2.5 text-left">Outcome</th>
                   <th className="px-4 py-2.5 text-left">Closed</th>
+                  {isTradePostmortemPricePathEnabled() && <th className="px-4 py-2.5 text-left" />}
                 </tr>
               </thead>
               <tbody>
