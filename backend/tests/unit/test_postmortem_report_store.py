@@ -266,5 +266,141 @@ class TestCanonicalJsonDefaultRejectsUnsupportedObjects:
                 **self._base_kwargs(),
             )
         # Reaching the "no existing row found" RuntimeError proves the
-        # INSERT's json.dumps(..., default=_canonical_json_default) calls
+        # INSERT's json.dumps(canonicalize_report_json(...)) calls
         # completed successfully for plain dicts.
+
+
+@pytest.mark.unit
+class TestCanonicalizeReportJson:
+    """Package A1 — canonicalize_report_json is the ONE authoritative
+    path for every persisted report JSON value, used identically by
+    both compute_evidence_hash and persist_report."""
+
+    def test_scalars_pass_through_unchanged(self):
+        from services.postmortem.report_store import canonicalize_report_json
+
+        assert canonicalize_report_json("s") == "s"
+        assert canonicalize_report_json(1) == 1
+        assert canonicalize_report_json(1.5) == 1.5
+        assert canonicalize_report_json(True) is True
+        assert canonicalize_report_json(None) is None
+
+    def test_nested_dict_and_list_recurse(self):
+        from services.postmortem.report_store import canonicalize_report_json
+
+        assert canonicalize_report_json({"a": [1, {"b": 2}]}) == {"a": [1, {"b": 2}]}
+
+    def test_enum_converts_to_its_value(self):
+        import enum
+        from services.postmortem.report_store import canonicalize_report_json
+
+        class _E(enum.Enum):
+            X = "GOVERNED_X"
+
+        assert canonicalize_report_json(_E.X) == "GOVERNED_X"
+        assert canonicalize_report_json({"k": _E.X}) == {"k": "GOVERNED_X"}
+
+    def test_datetime_and_date_convert_to_isoformat(self):
+        from services.postmortem.report_store import canonicalize_report_json
+
+        d = dt.date(2026, 6, 1)
+        t = dt.datetime(2026, 6, 1, 12, 0, tzinfo=dt.timezone.utc)
+        assert canonicalize_report_json(d) == d.isoformat()
+        assert canonicalize_report_json(t) == t.isoformat()
+
+    def test_dataclass_converts_via_asdict_recursively(self):
+        import dataclasses as dc
+        from services.postmortem.report_store import canonicalize_report_json
+
+        @dc.dataclass
+        class _Inner:
+            value: str
+
+        @dc.dataclass
+        class _Outer:
+            inner: _Inner
+            when: dt.datetime
+
+        t = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
+        result = canonicalize_report_json(_Outer(inner=_Inner(value="x"), when=t))
+        assert result == {"inner": {"value": "x"}, "when": t.isoformat()}
+
+    def test_equivalent_dataclass_and_dict_produce_identical_canonical_form(self):
+        import dataclasses as dc
+        from services.postmortem.report_store import canonicalize_report_json
+
+        @dc.dataclass
+        class _Item:
+            evidence_id: str
+            category: str
+
+        as_dataclass = canonicalize_report_json(_Item(evidence_id="EV-1", category="c"))
+        as_dict = canonicalize_report_json({"evidence_id": "EV-1", "category": "c"})
+        assert as_dataclass == as_dict
+
+    def test_non_string_dict_key_raises(self):
+        from services.postmortem.report_store import canonicalize_report_json
+
+        with pytest.raises(TypeError, match="must be strings"):
+            canonicalize_report_json({1: "value"})
+
+    def test_unsupported_object_raises(self):
+        from services.postmortem.report_store import canonicalize_report_json
+
+        class _NotJsonSafe:
+            pass
+
+        with pytest.raises(TypeError, match="unsupported"):
+            canonicalize_report_json(_NotJsonSafe())
+
+        with pytest.raises(TypeError, match="unsupported"):
+            canonicalize_report_json({"nested": [1, _NotJsonSafe()]})
+
+
+@pytest.mark.unit
+class TestEvidenceHashUsesSharedCanonicalization:
+    def test_equivalent_dataclass_and_dict_evidence_produce_the_same_hash(self):
+        import dataclasses as dc
+
+        @dc.dataclass
+        class _Item:
+            evidence_id: str
+
+        h_dataclass = compute_evidence_hash([_Item(evidence_id="EV-1")], [])
+        h_dict = compute_evidence_hash([{"evidence_id": "EV-1"}], [])
+        assert h_dataclass == h_dict
+
+    def test_nested_enum_and_datetime_canonicalize_consistently_in_the_hash(self):
+        import enum
+
+        class _E(enum.Enum):
+            X = "V"
+
+        t = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
+        h1 = compute_evidence_hash([{"status": _E.X, "ts": t}], [])
+        h2 = compute_evidence_hash([{"status": "V", "ts": t.isoformat()}], [])
+        assert h1 == h2
+
+    def test_persisted_evidence_hash_matches_recomputation_over_canonical_content(self):
+        conn = _FakeConn()
+        report, _ = _persist(conn, evidence_items=[{"id": "ev1"}], claims=[{"id": "cl1"}])
+        recomputed = compute_evidence_hash(report.evidence_items, report.claims)
+        assert report.evidence_hash == recomputed
+
+    def test_unsupported_nested_object_in_evidence_items_raises_before_insert(self):
+        class _NotJsonSafe:
+            pass
+
+        conn = _FakeConn()
+        with pytest.raises(TypeError, match="unsupported"):
+            _persist(conn, evidence_items=[{"bad": _NotJsonSafe()}])
+        assert len(conn.rows) == 0, "no partial report row may be inserted when canonicalization fails"
+
+    def test_unsupported_nested_object_in_claims_raises_before_insert(self):
+        class _NotJsonSafe:
+            pass
+
+        conn = _FakeConn()
+        with pytest.raises(TypeError, match="unsupported"):
+            _persist(conn, claims=[{"bad": _NotJsonSafe()}])
+        assert len(conn.rows) == 0

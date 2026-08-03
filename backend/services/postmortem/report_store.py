@@ -24,31 +24,50 @@ from dataclasses import dataclass
 from datetime import date, datetime
 
 
-def _canonical_json_default(obj):
-    """Narrow, non-permissive `default=` for json.dumps — used ONLY for
-    the authoritative `claims`/`evidence_items` fields (never structured_
-    report/source_manifest/evidence_gaps/warnings, which keep their
-    existing default=str policy pending a separate review).
+_JSON_SCALAR_TYPES = (str, int, float, bool, type(None))
 
-    Unlike `default=str`, this never silently stringifies an unsupported
-    object — real defect found by real-PostgreSQL CI: a governed
+
+def canonicalize_report_json(value):
+    """The ONE authoritative canonicalization path for every persisted
+    postmortem report JSON value (structured_report, evidence_items,
+    claims, source_manifest, evidence_gaps, warnings) — a recursive,
+    eager walk (not a json.dumps `default=` callback, so the exact same
+    canonical Python objects can be reused for both evidence_hash
+    computation and persistence, per Package A's requirement that the
+    hash and the stored row are computed from identical canonical
+    content, never two independently-converted copies).
+
+    Real defect found by real-PostgreSQL CI (fixed at its source in
+    current_report_generation.build_current_report_payload): a governed
     price-path EvidenceItem/PostmortemClaim dataclass instance reaching
-    this call (a caller bug now fixed at its source in
-    current_report_generation.build_current_report_payload) would
-    otherwise have been persisted as an opaque repr string
-    ("EvidenceItem(evidence_id='...', ...)") instead of a governed JSON
-    object. Any object still reaching this function is a genuine
-    programming error, not a legitimate persisted shape, so it raises
-    rather than falls back to str()."""
-    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        return dataclasses.asdict(obj)
-    if isinstance(obj, enum.Enum):
-        return obj.value
-    if isinstance(obj, (datetime, date)):
-        return obj.isoformat()
+    the OLD json.dumps(..., default=str) call would have been silently
+    stringified into an opaque repr instead of a governed JSON object.
+    This function never falls back to str() — an object it cannot
+    represent as governed JSON raises TypeError."""
+    if isinstance(value, _JSON_SCALAR_TYPES):
+        return value
+    if isinstance(value, enum.Enum):
+        return value.value
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        canonical = {}
+        for k, v in value.items():
+            if not isinstance(k, str):
+                raise TypeError(
+                    f"report JSON dictionary keys must be strings — got an unsupported "
+                    f"{type(k).__name__} key, refusing to silently coerce it"
+                )
+            canonical[k] = canonicalize_report_json(v)
+        return canonical
+    if isinstance(value, (list, tuple)):
+        return [canonicalize_report_json(item) for item in value]
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return canonicalize_report_json(dataclasses.asdict(value))
     raise TypeError(
-        f"claims/evidence_items must serialize to plain JSON-safe values — "
-        f"got an unsupported {type(obj).__name__}, refusing to silently stringify it"
+        f"report JSON must be built from plain JSON-safe scalars, dicts, lists, "
+        f"dataclasses, Enums or date/datetime values — got an unsupported "
+        f"{type(value).__name__}, refusing to silently stringify it"
     )
 
 
@@ -80,8 +99,19 @@ def compute_evidence_hash(evidence_items: list, claims: list) -> str:
     """Deterministic for identical evidence — sorted-key JSON serialization
     of exactly the two lists that make up a report's evidence content,
     hashed with SHA-256. Used for debugging/dedup visibility only; it is
-    NOT the uniqueness boundary (the version-triple UNIQUE index is)."""
-    canonical = json.dumps({"evidence_items": evidence_items, "claims": claims}, sort_keys=True, default=str)
+    NOT the uniqueness boundary (the version-triple UNIQUE index is).
+
+    Canonicalizes evidence_items/claims through the SAME
+    canonicalize_report_json() path persist_report uses for the
+    persisted row — never a second, independently-converted copy — so
+    an equivalent dataclass and dictionary input produce the identical
+    hash, and the stored evidence_hash always matches a recomputation
+    over the exact persisted content."""
+    canonical_evidence_items = canonicalize_report_json(evidence_items)
+    canonical_claims = canonicalize_report_json(claims)
+    canonical = json.dumps(
+        {"evidence_items": canonical_evidence_items, "claims": canonical_claims}, sort_keys=True,
+    )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -138,8 +168,23 @@ def persist_report(
     trade it supersedes — set only by callers building on top of an
     existing report (services.postmortem.price_path_generation); plain
     Sprint 1/2 callers never pass it and it stays NULL, so existing
-    Sprint 2 report rows are entirely unaffected by this addition."""
-    evidence_hash = compute_evidence_hash(evidence_items, claims)
+    Sprint 2 report rows are entirely unaffected by this addition.
+
+    Package A — every authoritative JSON field is canonicalized ONCE,
+    through the single canonicalize_report_json() path, and the SAME
+    canonical objects are used both to compute evidence_hash and to
+    build the INSERT payload below — never two independently-converted
+    copies. A serialization failure (an unsupported object anywhere in
+    any of the six fields) raises before any INSERT is attempted, so no
+    partial report row can ever be persisted."""
+    canonical_structured_report = canonicalize_report_json(structured_report)
+    canonical_evidence_items = canonicalize_report_json(evidence_items)
+    canonical_claims = canonicalize_report_json(claims)
+    canonical_source_manifest = canonicalize_report_json(source_manifest)
+    canonical_evidence_gaps = canonicalize_report_json(evidence_gaps)
+    canonical_warnings = canonicalize_report_json(warnings)
+
+    evidence_hash = compute_evidence_hash(canonical_evidence_items, canonical_claims)
     row = conn.execute(
         f"""INSERT INTO paper_trade_postmortem_report (
                 paper_trade_id, user_id, market, report_trading_date, market_timezone,
@@ -154,10 +199,10 @@ def persist_report(
             paper_trade_id, user_id, market, report_trading_date, market_timezone,
             report_schema_version, calculation_version, attribution_rules_version, evidence_bundle_version,
             evidence_hash, status,
-            json.dumps(structured_report, default=str),
-            json.dumps(evidence_items, default=_canonical_json_default),
-            json.dumps(claims, default=_canonical_json_default),
-            json.dumps(source_manifest, default=str), json.dumps(evidence_gaps, default=str), json.dumps(warnings, default=str),
+            json.dumps(canonical_structured_report),
+            json.dumps(canonical_evidence_items),
+            json.dumps(canonical_claims),
+            json.dumps(canonical_source_manifest), json.dumps(canonical_evidence_gaps), json.dumps(canonical_warnings),
             supersedes_report_id,
         ),
     ).fetchone()
