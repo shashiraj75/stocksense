@@ -146,6 +146,41 @@ describe("ClaimExplanationLayer", () => {
       fireEvent.click(screen.getByText("Details"));
       expect(screen.getByText(new RegExp(rawText))).toBeInTheDocument();
     });
+
+    it("exposes the exact governed evidence_class in Layer-3 detail even when the investor-facing badge disagrees (audit-transparency correction)", () => {
+      const claim = makeClaim({
+        claim_id: "stop", report_section: "governed_price_path", factor: "stop_touch",
+        evidence_class: "DIRECTLY_OBSERVED", confidence_band: "HIGH",
+        claim_text: "No compatible crossing of the stop level was observed.",
+      });
+      const originalClaim = { ...claim };
+      const assessment: PriceFieldAssessment = makeAssessment("STOP_TOUCH", "NOT_ESTABLISHED");
+
+      render(
+        <ClaimExplanationLayer
+          claims={[claim]} evidenceById={new Map()}
+          priceFieldAssessments={{
+            MFE: makeAssessment("MFE", "NOT_ESTABLISHED"), MAE: makeAssessment("MAE", "NOT_ESTABLISHED"),
+            TARGET_TOUCH: makeAssessment("TARGET_TOUCH", "NOT_ESTABLISHED"), STOP_TOUCH: assessment,
+          }}
+        />
+      );
+
+      // Collapsed investor-facing badge: "Not established", never the raw governed class.
+      expect(screen.getAllByText(/not established/i).length).toBeGreaterThan(0);
+      expect(screen.queryByText(/direct observation/i)).not.toBeInTheDocument();
+
+      // Expanded Layer-3 detail: exact unmodified governed evidence_class.
+      fireEvent.click(screen.getByText("Details"));
+      expect(screen.getByText(/Governed evidence class:/i)).toBeInTheDocument();
+      expect(screen.getByText(/DIRECTLY_OBSERVED/)).toBeInTheDocument();
+      // Original claim text remains visible.
+      expect(screen.getByText(/No compatible crossing of the stop level was observed\./)).toBeInTheDocument();
+      // The claim object itself was never mutated.
+      expect(claim).toEqual(originalClaim);
+      // Claim-count invariant unaffected — exactly one factor-title rendered.
+      expect(screen.getAllByTestId("factor-title")).toHaveLength(1);
+    });
   });
 
   describe("bucketClaimsForWhatYouCanLearn — single-source-of-truth via priceFieldAssessments", () => {

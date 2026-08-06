@@ -162,6 +162,19 @@ function FactorClaimRow({
       {open && (
         <div className="mt-2 rounded-md border border-dark-border bg-black/20 p-2.5 text-[11px] space-y-1.5">
           <div className="text-gray-500">Original claim text: <span className="text-gray-300">{claim.claim_text}</span></div>
+          {/* Applies to every governed claim, not only price-path claims —
+              the exact unmodified claim.evidence_class, never the
+              PriceFieldAssessment.learningClassification. When a
+              price-path factor's investor-facing badge above shows a
+              different classification (e.g. "Not established" while the
+              governed claim itself is DIRECTLY_OBSERVED), that governed
+              value must still be reachable here — not just preserved in
+              memory but actually visible to the reviewer. */}
+          <div className="text-gray-500">
+            Governed evidence class: <span className="text-gray-300">
+              {claim.evidence_class}{EVIDENCE_CLASS_LABEL[claim.evidence_class] ? ` — ${EVIDENCE_CLASS_LABEL[claim.evidence_class].replace(/^[^\s]+\s/, "")}` : ""}
+            </span>
+          </div>
           <div className="text-gray-500">
             Section <span className="text-gray-300">{claim.report_section}</span> · Factor{" "}
             <span className="text-gray-300">{claim.factor}</span> · Rule{" "}
