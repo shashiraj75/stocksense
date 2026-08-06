@@ -11,6 +11,9 @@ import {
 import { useAuth } from "@/lib/AuthContext";
 import { InsufficientEvidenceMark } from "@/components/InsufficientEvidenceMark";
 import { isTradePostmortemPricePathEnabled } from "@/utils/featureFlags";
+import { buildLayer1Summary, fmtAbs, fmtPct, currencySymbolFor } from "@/utils/postmortemSummary";
+import { ClaimExplanationLayer } from "@/components/postmortem/ClaimExplanationLayer";
+import { resolveAllPriceFieldAssessments } from "@/utils/postmortemPriceFieldAssessment";
 
 // ============================================================================
 // Wave C, WC-N — /postmortem/[tradeId]: the per-trade governed current-report
@@ -56,27 +59,6 @@ function asStr(v: JSONValue | undefined): string | null {
 }
 function asBool(v: JSONValue | undefined): boolean | null {
   return typeof v === "boolean" ? v : null;
-}
-
-function fmtPct(v: number | null): string {
-  return v === null ? "N/A" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
-}
-
-// Currency is derived from the persisted report's own `market`, never
-// guessed or defaulted — an unrecognized future market still shows the
-// number, just without inventing a currency symbol for it. Never applied
-// to percentages (fmtPct above has no currency parameter at all).
-function currencySymbolFor(market: string | null): string | null {
-  if (market === "IN") return "₹";
-  if (market === "US") return "$";
-  return null;
-}
-
-function fmtAbs(v: number | null, currencySymbol: string | null): string {
-  if (v === null) return "N/A";
-  const sign = v >= 0 ? "+" : "";
-  const magnitude = Math.abs(v).toFixed(2);
-  return `${sign}${v < 0 ? "-" : ""}${currencySymbol ?? ""}${magnitude}`;
 }
 
 // Bounded, safe rendering for an evidence item's `value` — never
@@ -418,6 +400,22 @@ function ReadyReport({ report }: { report: CurrentReportReadResponse }) {
   const priceLimitations = Array.isArray(pricePath?.price_path_limitations)
     ? (pricePath!.price_path_limitations as JSONValue[]).filter((v): v is string => typeof v === "string")
     : [];
+  const warnings = report.warnings ?? [];
+
+  // Single source of truth: ONE assessment per price-path factor, shared
+  // by the summary card, the target-hit explanatory note, and "What You
+  // Can Learn" (passed down to ClaimExplanationLayer below) — never
+  // recomputed independently in more than one place. Deliberately never
+  // fed report.evidence_gaps (entry-snapshot limitations) — those must
+  // never classify a holding-period/boundary-verification factor (see
+  // postmortemPriceFieldAssessment.ts's module comment for the real
+  // defect this fixes: an entry-evidence limitation was previously
+  // winning for all four price-path fields).
+  const priceFieldAssessments = resolveAllPriceFieldAssessments({
+    mfe: mfeAbs, mae: maeMagnitudeAbs, targetTouch: targetTouch, stopTouch: stopTouch,
+    reportAvailability: report.availability ?? null, exitMechanism,
+    pricePathLimitations: priceLimitations, warnings,
+  });
 
   const isLimited = report.status === "LIMITED_EVIDENCE";
   const currencySymbol = currencySymbolFor(report.market);
@@ -427,6 +425,16 @@ function ReadyReport({ report }: { report: CurrentReportReadResponse }) {
     <div className="max-w-4xl mx-auto px-4 py-6 space-y-5">
       <div>
         <h1 className="text-xl font-bold">Trade Postmortem</h1>
+        {/* Stock identity — DISPLAY metadata only, never governed
+            evidence. company_name is the primary readable title when
+            available; symbol always remains visible alongside it. Never
+            "Unknown stock" when the symbol is known, never a live quote
+            fetched merely to show the name. */}
+        {report.symbol && (
+          <p className="text-base font-semibold text-gray-100 mt-1 break-words" data-testid="stock-identity">
+            {report.company_name ? `${report.company_name} (${report.symbol})` : report.symbol}
+          </p>
+        )}
         <p className="text-sm text-gray-500 mt-1">
           {report.market ?? "—"} · Report date {report.report_trading_date ?? "—"}
           {report.generated_at && <> · Generated {new Date(report.generated_at).toLocaleString()}</>}
@@ -440,6 +448,12 @@ function ReadyReport({ report }: { report: CurrentReportReadResponse }) {
           about what is not.
         </div>
       )}
+
+      {/* Layer 1 — Executive Summary: one deterministic plain-English
+          paragraph built only from governed report fields. */}
+      <div className="rounded-lg border border-dark-border bg-dark-card px-4 py-3 text-sm text-gray-200" data-testid="layer1-summary">
+        {buildLayer1Summary(report)}
+      </div>
 
       <div className="rounded-lg border border-dark-border bg-dark-card px-4 py-3 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
         <div>
@@ -476,42 +490,86 @@ function ReadyReport({ report }: { report: CurrentReportReadResponse }) {
           <div>
             <div className="text-gray-500">Max favorable excursion</div>
             <div className="font-medium tabular-nums">{fmtAbs(mfeAbs, currencySymbol)} ({fmtPct(mfePct)})</div>
+            {mfeAbs === null && (
+              <div className="text-[10px] text-gray-500 mt-0.5 break-words" data-testid="mfe-reason">
+                {priceFieldAssessments.MFE.explanation}
+              </div>
+            )}
           </div>
           <div>
             <div className="text-gray-500">Max adverse excursion</div>
             <div className="font-medium tabular-nums">{fmtAbs(maeMagnitudeAbs, currencySymbol)} ({fmtPct(maeMagnitudePct)})</div>
+            {maeMagnitudeAbs === null && (
+              <div className="text-[10px] text-gray-500 mt-0.5 break-words" data-testid="mae-reason">
+                {priceFieldAssessments.MAE.explanation}
+              </div>
+            )}
           </div>
           <div>
             <div className="text-gray-500">Target touched</div>
             <div className="font-medium">
               {targetTouch === null ? "N/A" : targetTouch ? (targetTouchType ?? "Yes") : "No"}
             </div>
+            {targetTouch === null && (
+              <div className="text-[10px] text-gray-500 mt-0.5 break-words" data-testid="target-touch-reason">
+                {priceFieldAssessments.TARGET_TOUCH.explanation}
+              </div>
+            )}
           </div>
           <div>
             <div className="text-gray-500">Stop touched</div>
             <div className="font-medium">
               {stopTouch === null ? "N/A" : stopTouch ? (stopTouchType ?? "Yes") : "No"}
             </div>
+            {stopTouch === null && (
+              <div className="text-[10px] text-gray-500 mt-0.5 break-words" data-testid="stop-touch-reason">
+                {priceFieldAssessments.STOP_TOUCH.explanation}
+              </div>
+            )}
           </div>
         </div>
         {touchOrder && (
           <p className="text-xs text-gray-500 mt-1.5">Touch sequence: {touchOrder.replace(/_/g, " ").toLowerCase()}</p>
+        )}
+        {(priceFieldAssessments.TARGET_TOUCH.isOperationalCloseVsUnverifiedPriceGap
+          || priceFieldAssessments.STOP_TOUCH.isOperationalCloseVsUnverifiedPriceGap) && (
+          <p role="note" className="text-xs text-amber-200 mt-1.5 break-words rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5">
+            {priceFieldAssessments.TARGET_TOUCH.isOperationalCloseVsUnverifiedPriceGap
+              ? priceFieldAssessments.TARGET_TOUCH.explanation
+              : priceFieldAssessments.STOP_TOUCH.explanation}
+            {" "}This is a gap between the operational close record and independently-unverifiable price-path
+            evidence — not a contradiction.
+          </p>
         )}
         {priceLimitations.length > 0 && (
           <p className="text-xs text-gray-500 mt-1.5 break-words">Price-path limitations: {priceLimitations.join("; ")}</p>
         )}
       </div>
 
+      {/* Layer 2 — Investor Explanation: claims grouped by report_section,
+          each with a named factor title, text+icon evidence-class label,
+          plain-language reason, and a "What You Can Learn" rollup. Every
+          claim in report.claims renders exactly once here. */}
       <div>
-        <h2 className="text-sm font-semibold text-gray-300 mb-2">Governed conclusions</h2>
-        {claims.length === 0 ? (
-          <div className="text-xs text-gray-500">No claims are available for this report.</div>
-        ) : (
-          <div className="rounded-lg border border-dark-border bg-dark-card px-4 py-2">
-            {claims.map((c) => <ClaimRow key={c.claim_id} claim={c} evidenceById={evidenceById} />)}
-          </div>
-        )}
+        <h2 className="text-sm font-semibold text-gray-300 mb-2">What This Report Found</h2>
+        <ClaimExplanationLayer
+          claims={claims}
+          evidenceById={evidenceById}
+          priceFieldAssessments={priceFieldAssessments}
+        />
       </div>
+
+      {/* Layer 3 — Technical Evidence & Audit Trail: original claim text,
+          rule metadata, and raw evidence items, all preserved verbatim and
+          expandable. ClaimRow below is retained for this raw/audit view. */}
+      <details className="text-xs">
+        <summary className="text-gray-400 cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-500 rounded">
+          Technical evidence &amp; audit trail — all claims ({claims.length})
+        </summary>
+        <div className="mt-2 rounded-lg border border-dark-border bg-dark-card px-4 py-2 max-h-96 overflow-y-auto">
+          {claims.map((c) => <ClaimRow key={c.claim_id} claim={c} evidenceById={evidenceById} />)}
+        </div>
+      </details>
 
       {evidenceItems.length > 0 && (
         <details className="text-xs">

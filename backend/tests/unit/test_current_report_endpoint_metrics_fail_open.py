@@ -58,14 +58,17 @@ def _call_endpoint(monkeypatch, *, flag_enabled, trade_row, outbox_row=None, exi
     monkeypatch.setattr(paper_trading, "_conn", _fake_conn_factory(trade_row=trade_row, outbox_row=outbox_row))
     monkeypatch.setattr(paper_trading.report_store, "get_current_report", lambda *a, **k: existing_report)
     if existing_report is not None:
-        monkeypatch.setattr(paper_trading, "_build_current_report_ready_response", lambda report, trade_id: ready_response)
+        monkeypatch.setattr(
+            paper_trading, "_build_current_report_ready_response",
+            lambda report, trade_id, **kwargs: ready_response,
+        )
     response = Response()
     result = paper_trading.get_current_governed_report(trade_id=42, response=response, user_id="user-a")
     return result, response
 
 
-_TRADE_ROW_CLOSED = ("user-a", "CLOSED", "US")
-_TRADE_ROW_OPEN = ("user-a", "OPEN", "US")
+_TRADE_ROW_CLOSED = ("user-a", "CLOSED", "US", "AAPL")
+_TRADE_ROW_OPEN = ("user-a", "OPEN", "US", "AAPL")
 
 _VALID_READY_RESPONSE = paper_trading.CurrentReportReadResponse(
     trade_id=42, availability="READY",

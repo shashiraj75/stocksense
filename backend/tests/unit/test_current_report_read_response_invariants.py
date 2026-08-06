@@ -67,6 +67,8 @@ _REPRESENTATIVE_VALUES = {
         "price_path_rules_version": "1.0.0", "governed_rules_version": "1.0.0",
     },
     "supersedes_report_id": 42,
+    "symbol": "AAPL",
+    "company_name": "Apple Inc.",
 }
 
 _READY_KWARGS = dict(

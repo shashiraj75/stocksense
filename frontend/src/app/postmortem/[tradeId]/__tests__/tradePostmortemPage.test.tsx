@@ -185,9 +185,9 @@ describe("TradePostmortemPage — READY COMPLETE", () => {
     const { default: TradePostmortemPage } = await import("../page");
     renderPage(TradePostmortemPage);
 
-    await waitFor(() => expect(screen.getByText(/target was touched first/i)).toBeInTheDocument());
-    expect(screen.getByText(/WIN/)).toBeInTheDocument();
-    expect(screen.getByText(/entry evidence completeness is limited/i)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText(/target was touched first/i).length).toBeGreaterThan(0));
+    expect(screen.getAllByText(/WIN/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/entry evidence completeness is limited/i).length).toBeGreaterThan(0);
     expect(screen.getByText(/some warning/i)).toBeInTheDocument();
     expect(screen.queryByText(/limited evidence/i)).not.toBeInTheDocument();
   });
@@ -546,8 +546,11 @@ describe("TradePostmortemPage — financial context and closure classification",
     const { default: TradePostmortemPage } = await import("../page");
     renderPage(TradePostmortemPage);
 
-    await waitFor(() => expect(screen.getByText(/₹120\.50/)).toBeInTheDocument());
-    expect(screen.getByText(/₹150\.00/)).toBeInTheDocument(); // MFE
+    // Realized P&L now correctly renders identically in both the summary
+    // card AND the Layer-1 executive-summary sentence (single-source-of-
+    // truth currency formatter) — expect exactly that duplication.
+    await waitFor(() => expect(screen.getAllByText(/₹120\.50/).length).toBe(2));
+    expect(screen.getByText(/₹150\.00/)).toBeInTheDocument(); // MFE (card only)
   });
 
   it("renders USD currency for a US-market report", async () => {
@@ -555,7 +558,7 @@ describe("TradePostmortemPage — financial context and closure classification",
     const { default: TradePostmortemPage } = await import("../page");
     renderPage(TradePostmortemPage);
 
-    await waitFor(() => expect(screen.getByText(/\$120\.50/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText(/\$120\.50/).length).toBe(2));
   });
 
   it("places the sign before the currency symbol for a negative value (-$X.XX, never $-X.XX)", async () => {
@@ -569,7 +572,7 @@ describe("TradePostmortemPage — financial context and closure classification",
     const { default: TradePostmortemPage } = await import("../page");
     renderPage(TradePostmortemPage);
 
-    await waitFor(() => expect(screen.getByText(/-\$50\.00/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText(/-\$50\.00/).length).toBe(2));
     expect(screen.queryByText(/\$-50\.00/)).not.toBeInTheDocument();
   });
 
@@ -578,7 +581,7 @@ describe("TradePostmortemPage — financial context and closure classification",
     const { default: TradePostmortemPage } = await import("../page");
     renderPage(TradePostmortemPage);
 
-    await waitFor(() => expect(screen.getByText(/\+4\.20%/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText(/\+4\.20%/).length).toBeGreaterThan(0));
     expect(screen.queryByText(/\$\+4\.20%/)).not.toBeInTheDocument();
     expect(screen.queryByText(/₹\+4\.20%/)).not.toBeInTheDocument();
   });
@@ -610,6 +613,288 @@ describe("TradePostmortemPage — financial context and closure classification",
 
     await waitFor(() => expect(screen.getByText(/closure classification/i)).toBeInTheDocument());
     expect(screen.getByText(/closure classification/i).parentElement).toHaveTextContent("N/A");
+  });
+});
+
+describe("TradePostmortemPage — price-path reason consistency (report-280 defect regression)", () => {
+  // Reproduces the exact real-world defect: entry evidence is LIMITED
+  // (evidence_gaps), holding-period price coverage is incomplete
+  // (price_path_limitations), exit_mechanism is TARGET_HIT, and all four
+  // price-path top-level values are null. The prior resolver let the
+  // entry-evidence limitation win for all four fields, showing
+  // "Not captured at entry" everywhere.
+  const REPORT_280_SHAPED: CurrentReportReadResponse = {
+    ...BASE_READY,
+    status: "LIMITED_EVIDENCE",
+    structured_report: {
+      postmortem: { outcome: "WIN", realized_pnl_abs: 1896.45, realized_pnl_pct: 2.2, exit_mechanism: "TARGET_HIT" },
+      price_path: {
+        mfe_abs: null, mfe_pct: null, mae_magnitude_abs: null, mae_magnitude_pct: null,
+        target_touch: null, target_touch_type: null, stop_touch: null, stop_touch_type: null,
+        touch_order: null,
+        price_path_limitations: [
+          "requested window 2026-08-04..2026-08-05 but provider only returned bars for 2026-08-05..2026-08-05",
+        ],
+        version_and_provenance: BASE_READY.structured_report!.price_path.version_and_provenance,
+      },
+    } as unknown as CurrentReportReadResponse["structured_report"],
+    claims: [
+      {
+        claim_id: "CLM-280-mfe", report_section: "price_path", factor: "mfe", claim_text: "raw governed text",
+        evidence_class: "INSUFFICIENT_EVIDENCE", confidence_band: "NOT_ASSESSABLE",
+        supporting_evidence_ids: [], opposing_evidence_ids: [], missing_evidence: [], contradiction_flags: [],
+        rule_id: "R-MFE", rule_version: "1.0.0", limitations: [],
+      },
+      {
+        claim_id: "CLM-280-stop", report_section: "governed_price_path", factor: "stop_touch",
+        claim_text: "No compatible crossing of the stop level was observed.",
+        evidence_class: "MECHANICALLY_VERIFIED", confidence_band: "HIGH",
+        supporting_evidence_ids: [], opposing_evidence_ids: [], missing_evidence: [], contradiction_flags: [],
+        rule_id: "R-STOP", rule_version: "1.0.0", limitations: [],
+      },
+    ],
+    evidence_gaps: ["entry evidence completeness is LIMITED"],
+    warnings: [],
+  };
+
+  it("MFE/MAE never show 'Not captured at entry' or 'Client-reported only'", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue(REPORT_280_SHAPED);
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getByTestId("mfe-reason")).toHaveTextContent(
+      "Complete holding-period price coverage was unavailable."
+    ));
+    expect(screen.getByTestId("mae-reason")).toHaveTextContent(
+      "Complete holding-period price coverage was unavailable."
+    );
+    expect(screen.queryByText(/not captured at entry/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/client-reported only/i)).not.toBeInTheDocument();
+  });
+
+  it("target-touch reason explains the operational-vs-verification gap without calling it a contradiction", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue(REPORT_280_SHAPED);
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getByTestId("target-touch-reason")).toHaveTextContent(
+      "The trade was recorded as a target hit, but the available price path could not independently confirm the target crossing."
+    ));
+    expect(screen.getByRole("note")).toHaveTextContent(/not a contradiction/i);
+  });
+
+  it("stop-touch reason explains insufficient boundary evidence and never appears under CONFIRMED", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue(REPORT_280_SHAPED);
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getByTestId("stop-touch-reason")).toHaveTextContent(
+      "The available price path was insufficient to determine whether the stop level was touched."
+    ));
+    // The "What You Can Learn" CONFIRMED bucket must not list Stop Touched.
+    const confirmedHeading = screen.getByText(/^CONFIRMED/i);
+    const confirmedList = confirmedHeading.parentElement?.querySelector("ul");
+    expect(confirmedList?.textContent ?? "").not.toMatch(/stop/i);
+  });
+
+  it("the price-path summary card and the governed-factor section agree (single source of truth)", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue(REPORT_280_SHAPED);
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getByTestId("mfe-reason")).toBeInTheDocument());
+    // The MFE factor-section row (Layer 2) must show the identical reason
+    // text as the summary card — both driven by the same assessment.
+    const cardReason = screen.getByTestId("mfe-reason").textContent;
+    const factorRows = screen.getAllByText("Complete holding-period price coverage was unavailable.");
+    expect(factorRows.length).toBeGreaterThanOrEqual(2); // card + Layer-2 factor row
+    expect(cardReason).toBe("Complete holding-period price coverage was unavailable.");
+  });
+
+  it("MAE and target_touch appear in What You Can Learn even with no matching governed claim (defect A)", async () => {
+    // REPORT_280_SHAPED deliberately has claims for MFE and stop_touch
+    // only — MAE and target_touch have no corresponding claim row at all,
+    // reproducing the real defect: they must still appear as standalone
+    // items, never silently omitted.
+    mockFetchCurrentPostmortemReport.mockResolvedValue(REPORT_280_SHAPED);
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getByText(/^NOT ESTABLISHED/i)).toBeInTheDocument());
+    const notEstablishedList = screen.getByText(/^NOT ESTABLISHED/i).parentElement?.querySelector("ul");
+    expect(notEstablishedList?.textContent ?? "").toMatch(/Maximum Adverse Excursion|MAE/i);
+
+    const supportedHeading = screen.getByText(/^SUPPORTED BUT NOT PROVEN/i);
+    const supportedList = supportedHeading.parentElement?.querySelector("ul");
+    expect(supportedList?.textContent ?? "").toMatch(/Target/i);
+  });
+
+  it("does not duplicate target/stop when both a claim and an assessment exist for the same factor", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue(REPORT_280_SHAPED);
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getByText(/^NOT ESTABLISHED/i)).toBeInTheDocument());
+    // stop_touch HAS a governed claim in REPORT_280_SHAPED — its title
+    // must appear exactly once across the entire "What You Can Learn"
+    // rollup, never once per-claim plus once per-standalone-assessment.
+    const rollup = screen.getByText("What You Can Learn").closest("div");
+    const stopMatches = (rollup?.textContent?.match(/Stop Level Touched/g) ?? []).length;
+    expect(stopMatches).toBe(1);
+  });
+
+  it("a null stop_touch never shows Direct Observation, Verified fact, or Confirmed in the Layer-2 badge", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue(REPORT_280_SHAPED);
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    // The Layer-2 "Stop Level Touched" factor row (governed_price_path
+    // section), NOT the summary-card testid — the card's data-testid
+    // element is the reason text itself, one level up in a different
+    // subtree than the Layer-2 badge under test here.
+    await waitFor(() => expect(screen.getAllByText("Stop Level Touched").length).toBeGreaterThan(0));
+    const factorTitles = screen.getAllByTestId("factor-title");
+    const stopRow = factorTitles.find((el) => el.textContent?.includes("Stop Level Touched"));
+    const badge = stopRow?.nextElementSibling;
+    expect(badge?.textContent ?? "").not.toMatch(/direct observation/i);
+    expect(badge?.textContent ?? "").not.toMatch(/verified fact/i);
+    expect(badge?.textContent ?? "").toMatch(/not established/i);
+  });
+
+  it("the original stop_touch claim.evidence_class (MECHANICALLY_VERIFIED) remains visible in the expanded Layer-3 detail", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue(REPORT_280_SHAPED);
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getAllByText("Stop Level Touched").length).toBeGreaterThan(0));
+    const rows = screen.getAllByText("Details");
+    for (const row of rows) {
+      fireEvent.click(row);
+    }
+    await waitFor(() => expect(screen.getAllByText(/confidence/i).length).toBeGreaterThan(0));
+    // The original claim_text remains accessible verbatim (may appear
+    // more than once — as the badge-overridden card text is different
+    // from this exact expanded "Original claim text:" line).
+    expect(screen.getAllByText(/No compatible crossing of the stop level was observed\./).length).toBeGreaterThan(0);
+  });
+
+  it("Position Management does not assert stop-loss or target was unset when the report shows levels in effect", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue({
+      ...REPORT_280_SHAPED,
+      claims: [
+        ...REPORT_280_SHAPED.claims!,
+        {
+          claim_id: "CLM-280-posmgmt", report_section: "contributor_assessments", factor: "POSITION_MANAGEMENT",
+          claim_text: "raw text", evidence_class: "INSUFFICIENT_EVIDENCE", confidence_band: "NOT_ASSESSABLE",
+          supporting_evidence_ids: [], opposing_evidence_ids: [], missing_evidence: [], contradiction_flags: [],
+          rule_id: "R-POSMGMT", rule_version: "1.0.0", limitations: [],
+        },
+      ],
+    });
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getAllByText("Position Management").length).toBeGreaterThan(0));
+    expect(screen.queryByText(/was not set/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/insufficient to determine how position management affected/i)).toBeInTheDocument();
+  });
+
+  it("genuine entry-time factors still say Not captured at entry", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue({
+      ...REPORT_280_SHAPED,
+      claims: [
+        ...REPORT_280_SHAPED.claims!,
+        {
+          claim_id: "CLM-280-tech", report_section: "signal_scorecard", factor: "technical_signal",
+          claim_text: "raw text", evidence_class: "INSUFFICIENT_EVIDENCE", confidence_band: "NOT_ASSESSABLE",
+          supporting_evidence_ids: [], opposing_evidence_ids: [], missing_evidence: [], contradiction_flags: [],
+          rule_id: "R-TECH", rule_version: "1.0.0", limitations: [],
+        },
+      ],
+    });
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getAllByText("Technical Signal at Entry").length).toBeGreaterThan(0));
+  });
+});
+
+describe("TradePostmortemPage — stock identity (PR #36 targeted correction)", () => {
+  it("displays Company Name (SYMBOL) for a READY India report", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue({
+      ...BASE_READY, market: "IN", symbol: "HDFCBANK", company_name: "HDFC Bank Limited",
+    });
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("stock-identity")).toHaveTextContent("HDFC Bank Limited (HDFCBANK)")
+    );
+  });
+
+  it("displays Company Name (SYMBOL) for a READY US report", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue({
+      ...BASE_READY, market: "US", symbol: "AAPL", company_name: "Apple Inc.",
+    });
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getByTestId("stock-identity")).toHaveTextContent("Apple Inc. (AAPL)"));
+  });
+
+  it("falls back to the symbol alone when company_name is null", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue({
+      ...BASE_READY, symbol: "EMMVEE", company_name: null,
+    });
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getByTestId("stock-identity")).toHaveTextContent("EMMVEE"));
+    expect(screen.queryByText(/unknown stock/i)).not.toBeInTheDocument();
+  });
+
+  it("does not break rendering when symbol/company_name are absent entirely (older response shape)", async () => {
+    const { symbol: _s, company_name: _c, ...withoutIdentity } = BASE_READY;
+    mockFetchCurrentPostmortemReport.mockResolvedValue(withoutIdentity as CurrentReportReadResponse);
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getByText(/Trade Postmortem/i)).toBeInTheDocument());
+    expect(screen.queryByTestId("stock-identity")).not.toBeInTheDocument();
+  });
+
+  it("mentions the identity once in the executive summary without repeating it elsewhere in that sentence", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue({
+      ...BASE_READY, symbol: "HDFCBANK", company_name: "HDFC Bank Limited",
+    });
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => {
+      const summary = screen.getByTestId("layer1-summary").textContent ?? "";
+      const occurrences = summary.split("HDFC Bank Limited").length - 1;
+      expect(occurrences).toBe(1);
+    });
+  });
+
+  it("does not expose stock identity for a nonexistent or other-user trade (unchanged 404 behavior)", async () => {
+    mockFetchCurrentPostmortemReport.mockRejectedValue({ response: { status: 404 } });
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.queryByTestId("stock-identity")).not.toBeInTheDocument());
+  });
+
+  it("long company names wrap rather than causing horizontal overflow (break-words class present)", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue({
+      ...BASE_READY,
+      symbol: "LONGCO",
+      company_name: "A Very Long Hypothetical Company Name Private Limited Corporation International",
+    });
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getByTestId("stock-identity")).toHaveClass("break-words"));
   });
 });
 
@@ -719,8 +1004,8 @@ describe("TradePostmortemPage — evidence value safety", () => {
     const { default: TradePostmortemPage } = await import("../page");
     renderPage(TradePostmortemPage);
 
-    await waitFor(() => expect(screen.getByText(/contradictions:/i)).toBeInTheDocument());
-    expect(screen.getByText(/target and stop both touched same bar/i)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText(/contradiction/i).length).toBeGreaterThan(0));
+    expect(screen.getAllByText(/target and stop both touched same bar/i).length).toBeGreaterThan(0);
   });
 });
 

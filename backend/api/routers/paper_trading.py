@@ -3406,6 +3406,12 @@ _READY_ONLY_FIELDS = (
     "evidence_bundle_version", "market", "report_trading_date", "market_timezone",
     "status", "generated_at", "structured_report", "claims", "evidence_items",
     "evidence_gaps", "warnings", "source_manifest", "supersedes_report_id",
+    # Stock-identity DISPLAY metadata (added for report readability) —
+    # not governed evidence, not part of the persisted report identity,
+    # but still gated behind the same READY-only invariant as everything
+    # else above: a non-READY envelope must never leak symbol/company
+    # identity for a trade the caller hasn't been shown a report for yet.
+    "symbol", "company_name",
 )
 
 
@@ -3473,6 +3479,16 @@ class CurrentReportReadResponse(BaseModel):
     market_timezone: str | None = None
     status: CurrentReportStatus | None = None
     generated_at: datetime | None = None
+    # Stock-identity DISPLAY metadata — additive, nullable, backward
+    # compatible. NOT governed evidence, NOT part of the persisted report
+    # identity, NOT used in any claim/calculation, and does not affect
+    # report_schema_version (still 1.2.0). `symbol` is sourced from the
+    # already-authoritative owned paper_trades row this endpoint already
+    # reads for ownership. `company_name` is a best-effort, read-only,
+    # fail-safe lookup (services.fundamentals_cache.get_company_name) —
+    # None when unavailable, never a guess, never a live quote fetch.
+    symbol: str | None = None
+    company_name: str | None = None
     structured_report: StructuredReportModel | None = None
     # Root cause of the earlier real-PostgreSQL CI failure (run
     # 30768906338) found and fixed: current_report_generation.
@@ -3525,7 +3541,9 @@ class CurrentReportReadResponse(BaseModel):
         return self
 
 
-def _build_current_report_ready_response(report, *, trade_id: int) -> "CurrentReportReadResponse | None":
+def _build_current_report_ready_response(
+    report, *, trade_id: int, symbol: str | None = None, market: str | None = None,
+) -> "CurrentReportReadResponse | None":
     """WC-K — fail-closed conversion boundary between a persisted
     PersistedReport row and the typed READY response. Maps ONLY
     persisted values — never imports a current code constant to fill a
@@ -3540,7 +3558,15 @@ def _build_current_report_ready_response(report, *, trade_id: int) -> "CurrentRe
     INTEGRITY_CONTRADICTION. The caller converts a None result into the
     sanitized INTEGRITY_CONTRADICTION response — this function itself
     never constructs that fallback, so it cannot accidentally leak
-    partial report data through a half-built object."""
+    partial report data through a half-built object.
+
+    `symbol`/`market` come from the already-authoritative owned
+    paper_trades row the caller already read for ownership — NOT
+    persisted on `report` itself. `company_name` is a best-effort,
+    read-only, fail-safe DISPLAY lookup
+    (services.fundamentals_cache.get_company_name) — never causal
+    evidence, never able to make this READY response unavailable; a
+    lookup miss simply leaves company_name=None."""
     try:
         # Report-wide referential integrity: every claim's supporting/
         # opposing evidence_id must resolve to a real evidence_items
@@ -3549,6 +3575,15 @@ def _build_current_report_ready_response(report, *, trade_id: int) -> "CurrentRe
         # runs) rather than a second, independently drifting copy —
         # never repairs or removes a dangling reference, only detects it.
         generation_service.validate_merged_evidence_integrity(report.evidence_items, report.claims)
+        company_name = None
+        if symbol:
+            try:
+                from services import fundamentals_cache
+                company_name = fundamentals_cache.get_company_name(symbol, market=report.market or market or "IN")
+            except Exception:
+                # Display-only lookup — a failure here must never affect
+                # READY availability of the governed report itself.
+                company_name = None
         return CurrentReportReadResponse(
             trade_id=trade_id, availability=CURRENT_REPORT_STATUS_READY,
             report_schema_version=report.report_schema_version,
@@ -3560,6 +3595,8 @@ def _build_current_report_ready_response(report, *, trade_id: int) -> "CurrentRe
             market_timezone=report.market_timezone,
             status=report.status,
             generated_at=report.generated_at,
+            symbol=symbol,
+            company_name=company_name,
             structured_report=report.structured_report,
             claims=report.claims,
             evidence_items=report.evidence_items,
@@ -3615,11 +3652,11 @@ def get_current_governed_report(trade_id: int, response: Response, user_id: str 
     response.headers["Cache-Control"] = "private, no-store"
     with _conn() as conn:
         trade_row = conn.execute(
-            "SELECT user_id, status, market FROM paper_trades WHERE id = %s", (trade_id,),
+            "SELECT user_id, status, market, symbol FROM paper_trades WHERE id = %s", (trade_id,),
         ).fetchone()
         if trade_row is None or trade_row[0] != user_id:
             raise HTTPException(status_code=404, detail="Trade not found", headers=_NO_STORE_HEADERS)
-        trade_owner, trade_status, trade_market = trade_row
+        trade_owner, trade_status, trade_market, trade_symbol = trade_row
 
         # WC-K-15: capability is evaluated only AFTER ownership is
         # established, so a disabled-feature response can never be used
@@ -3647,7 +3684,9 @@ def get_current_governed_report(trade_id: int, response: Response, user_id: str 
             report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
         )
         if report is not None:
-            ready_response = _build_current_report_ready_response(report, trade_id=trade_id)
+            ready_response = _build_current_report_ready_response(
+                report, trade_id=trade_id, symbol=trade_symbol, market=trade_market,
+            )
             if ready_response is None:
                 _cr_metrics.safe_record_availability(CURRENT_REPORT_STATUS_INTEGRITY_CONTRADICTION)
                 return CurrentReportReadResponse(
