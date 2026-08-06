@@ -52,7 +52,7 @@ const CURATED_INSUFFICIENT_REASONS: Record<string, string> = {
   "contributor_assessments::NEWS_OR_EVENT": "No governed news or event evidence was available for this trade.",
   "contributor_assessments::PRICE_NOISE": "No governed evidence was available to separate ordinary price noise from a real signal for this trade.",
   "contributor_assessments::ADMINISTRATIVE_ACTION": "No governed evidence was available to assess whether a corporate action affected this trade.",
-  "contributor_assessments::POSITION_MANAGEMENT": "This trade's stop-loss or target price was not set, so position management could not be assessed.",
+  "contributor_assessments::POSITION_MANAGEMENT": "The available evidence was insufficient to determine how position management affected this trade's outcome.",
 
   "primary_contributor::primary_contributor": "No single contributor to this trade's outcome was strongly supported by the available evidence.",
 

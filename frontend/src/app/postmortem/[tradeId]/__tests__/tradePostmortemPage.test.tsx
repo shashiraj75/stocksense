@@ -711,6 +711,94 @@ describe("TradePostmortemPage — price-path reason consistency (report-280 defe
     expect(cardReason).toBe("Complete holding-period price coverage was unavailable.");
   });
 
+  it("MAE and target_touch appear in What You Can Learn even with no matching governed claim (defect A)", async () => {
+    // REPORT_280_SHAPED deliberately has claims for MFE and stop_touch
+    // only — MAE and target_touch have no corresponding claim row at all,
+    // reproducing the real defect: they must still appear as standalone
+    // items, never silently omitted.
+    mockFetchCurrentPostmortemReport.mockResolvedValue(REPORT_280_SHAPED);
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getByText(/^NOT ESTABLISHED/i)).toBeInTheDocument());
+    const notEstablishedList = screen.getByText(/^NOT ESTABLISHED/i).parentElement?.querySelector("ul");
+    expect(notEstablishedList?.textContent ?? "").toMatch(/Maximum Adverse Excursion|MAE/i);
+
+    const supportedHeading = screen.getByText(/^SUPPORTED BUT NOT PROVEN/i);
+    const supportedList = supportedHeading.parentElement?.querySelector("ul");
+    expect(supportedList?.textContent ?? "").toMatch(/Target/i);
+  });
+
+  it("does not duplicate target/stop when both a claim and an assessment exist for the same factor", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue(REPORT_280_SHAPED);
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getByText(/^NOT ESTABLISHED/i)).toBeInTheDocument());
+    // stop_touch HAS a governed claim in REPORT_280_SHAPED — its title
+    // must appear exactly once across the entire "What You Can Learn"
+    // rollup, never once per-claim plus once per-standalone-assessment.
+    const rollup = screen.getByText("What You Can Learn").closest("div");
+    const stopMatches = (rollup?.textContent?.match(/Stop Level Touched/g) ?? []).length;
+    expect(stopMatches).toBe(1);
+  });
+
+  it("a null stop_touch never shows Direct Observation, Verified fact, or Confirmed in the Layer-2 badge", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue(REPORT_280_SHAPED);
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    // The Layer-2 "Stop Level Touched" factor row (governed_price_path
+    // section), NOT the summary-card testid — the card's data-testid
+    // element is the reason text itself, one level up in a different
+    // subtree than the Layer-2 badge under test here.
+    await waitFor(() => expect(screen.getAllByText("Stop Level Touched").length).toBeGreaterThan(0));
+    const factorTitles = screen.getAllByTestId("factor-title");
+    const stopRow = factorTitles.find((el) => el.textContent?.includes("Stop Level Touched"));
+    const badge = stopRow?.nextElementSibling;
+    expect(badge?.textContent ?? "").not.toMatch(/direct observation/i);
+    expect(badge?.textContent ?? "").not.toMatch(/verified fact/i);
+    expect(badge?.textContent ?? "").toMatch(/not established/i);
+  });
+
+  it("the original stop_touch claim.evidence_class (MECHANICALLY_VERIFIED) remains visible in the expanded Layer-3 detail", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue(REPORT_280_SHAPED);
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getAllByText("Stop Level Touched").length).toBeGreaterThan(0));
+    const rows = screen.getAllByText("Details");
+    for (const row of rows) {
+      fireEvent.click(row);
+    }
+    await waitFor(() => expect(screen.getAllByText(/confidence/i).length).toBeGreaterThan(0));
+    // The original claim_text remains accessible verbatim (may appear
+    // more than once — as the badge-overridden card text is different
+    // from this exact expanded "Original claim text:" line).
+    expect(screen.getAllByText(/No compatible crossing of the stop level was observed\./).length).toBeGreaterThan(0);
+  });
+
+  it("Position Management does not assert stop-loss or target was unset when the report shows levels in effect", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue({
+      ...REPORT_280_SHAPED,
+      claims: [
+        ...REPORT_280_SHAPED.claims!,
+        {
+          claim_id: "CLM-280-posmgmt", report_section: "contributor_assessments", factor: "POSITION_MANAGEMENT",
+          claim_text: "raw text", evidence_class: "INSUFFICIENT_EVIDENCE", confidence_band: "NOT_ASSESSABLE",
+          supporting_evidence_ids: [], opposing_evidence_ids: [], missing_evidence: [], contradiction_flags: [],
+          rule_id: "R-POSMGMT", rule_version: "1.0.0", limitations: [],
+        },
+      ],
+    });
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getAllByText("Position Management").length).toBeGreaterThan(0));
+    expect(screen.queryByText(/was not set/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/insufficient to determine how position management affected/i)).toBeInTheDocument();
+  });
+
   it("genuine entry-time factors still say Not captured at entry", async () => {
     mockFetchCurrentPostmortemReport.mockResolvedValue({
       ...REPORT_280_SHAPED,

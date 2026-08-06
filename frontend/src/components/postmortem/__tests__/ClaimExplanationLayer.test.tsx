@@ -157,9 +157,13 @@ describe("ClaimExplanationLayer", () => {
           claim_text: "No compatible crossing of the stop level was observed.",
         }),
       ];
+      // makeAllNotEstablishedAssessments() supplies assessments for all 4
+      // price fields; only stop_touch has a matching claim here, so the
+      // other 3 (MFE/MAE/TARGET_TOUCH) now correctly appear as standalone
+      // items too (defect-A fix) — 4 total, none CONFIRMED.
       const buckets = bucketClaimsForWhatYouCanLearn(claims, makeAllNotEstablishedAssessments());
       expect(buckets.confirmed).toHaveLength(0);
-      expect(buckets.notEstablished).toHaveLength(1);
+      expect(buckets.notEstablished).toHaveLength(4);
     });
 
     it("classifies stop_touch as CONFIRMED when its assessment says so (value genuinely present)", () => {
@@ -175,15 +179,17 @@ describe("ClaimExplanationLayer", () => {
       expect(buckets.confirmed).toHaveLength(1);
     });
 
-    it("applies the same single-source-of-truth classification to target_touch, mfe and mae", () => {
+    it("applies the same single-source-of-truth classification to target_touch, mfe, mae AND the unclaimed stop_touch", () => {
       const claims = [
         makeClaim({ claim_id: "target", report_section: "governed_price_path", factor: "target_touch", evidence_class: "MECHANICALLY_VERIFIED" }),
         makeClaim({ claim_id: "mfe", report_section: "price_path", factor: "mfe", evidence_class: "MECHANICALLY_VERIFIED" }),
         makeClaim({ claim_id: "mae", report_section: "price_path", factor: "mae", evidence_class: "MECHANICALLY_VERIFIED" }),
       ];
+      // stop_touch has no matching claim here, so it appears as a
+      // standalone price-field item (defect-A fix) — 4 total.
       const buckets = bucketClaimsForWhatYouCanLearn(claims, makeAllNotEstablishedAssessments());
       expect(buckets.confirmed).toHaveLength(0);
-      expect(buckets.notEstablished).toHaveLength(3);
+      expect(buckets.notEstablished).toHaveLength(4);
     });
 
     it("falls back to evidence_class-only bucketing when priceFieldAssessments is not provided", () => {

@@ -21,6 +21,19 @@ const CLAIM_FACTOR_TO_PRICE_FIELD: Record<string, PriceFieldFactor> = {
   mfe: "MFE", mae: "MAE", target_touch: "TARGET_TOUCH", stop_touch: "STOP_TOUCH",
 };
 
+// Reverse of the above — used to look up the SAME curated label a claims-
+// based row would use, for a price-field factor with no matching claim
+// (e.g. MFE/MAE) so its standalone "What You Can Learn" item has an
+// identical title to what the factor section would show if a claim did
+// exist. Uses the current 1.2.0 governed_price_path section labels for
+// target/stop, and the price_path section labels for MFE/MAE.
+const PRICE_FIELD_TO_LABEL_LOOKUP: Record<PriceFieldFactor, { section: string; factor: string }> = {
+  MFE: { section: "price_path", factor: "mfe" },
+  MAE: { section: "price_path", factor: "mae" },
+  TARGET_TOUCH: { section: "governed_price_path", factor: "target_touch" },
+  STOP_TOUCH: { section: "governed_price_path", factor: "stop_touch" },
+};
+
 const EVIDENCE_CLASS_STYLE: Record<string, string> = {
   MECHANICALLY_VERIFIED: "text-bull",
   DIRECTLY_OBSERVED: "text-gray-200",
@@ -36,6 +49,29 @@ const EVIDENCE_CLASS_LABEL: Record<string, string> = {
   EVIDENCE_SUPPORTED: "◐ Supported interpretation",
   CONFLICTING_EVIDENCE: "⚠ Conflicting evidence",
   INSUFFICIENT_EVIDENCE: "○ Insufficient evidence",
+};
+
+// For the four price-path factors, the visible Layer-2 badge is derived
+// from the SAME PriceFieldAssessment as everything else — never from the
+// underlying claim.evidence_class, which can legitimately be
+// MECHANICALLY_VERIFIED/DIRECTLY_OBSERVED while genuinely describing an
+// unavailable metric (see postmortemPriceFieldAssessment.ts). Showing
+// "DIRECT OBSERVATION" for a NOT_ESTABLISHED price field misleadingly
+// implied the metric itself was confirmed — a real defect found during
+// preview QA. The original claim.evidence_class remains unmodified and
+// visible in the expandable Layer-3 detail panel below.
+const LEARNING_CLASSIFICATION_STYLE: Record<string, string> = {
+  CONFIRMED: "text-bull",
+  SUPPORTED_BUT_NOT_PROVEN: "text-brand-500",
+  NOT_ESTABLISHED: "text-neutral",
+  DATA_NEEDED: "text-gray-500",
+};
+
+const LEARNING_CLASSIFICATION_BADGE: Record<string, string> = {
+  CONFIRMED: "✓ Verified",
+  SUPPORTED_BUT_NOT_PROVEN: "◐ Supported but not proven",
+  NOT_ESTABLISHED: "○ Not established",
+  DATA_NEEDED: "○ Data needed",
 };
 
 function plainLanguageReason(claim: PostmortemClaim, priceFieldAssessment?: PriceFieldAssessment): string {
@@ -87,10 +123,14 @@ function FactorClaimRow({
           <div
             className={clsx(
               "text-[11px] font-semibold uppercase mt-0.5",
-              EVIDENCE_CLASS_STYLE[claim.evidence_class]
+              priceFieldAssessment
+                ? LEARNING_CLASSIFICATION_STYLE[priceFieldAssessment.learningClassification]
+                : EVIDENCE_CLASS_STYLE[claim.evidence_class]
             )}
           >
-            {EVIDENCE_CLASS_LABEL[claim.evidence_class] ?? claim.evidence_class}
+            {priceFieldAssessment
+              ? LEARNING_CLASSIFICATION_BADGE[priceFieldAssessment.learningClassification]
+              : (EVIDENCE_CLASS_LABEL[claim.evidence_class] ?? claim.evidence_class)}
           </div>
         </div>
         <span className="text-gray-500 text-xs shrink-0 mt-0.5">{open ? "Hide" : "Details"}</span>
@@ -204,11 +244,26 @@ function SectionGroup({
   );
 }
 
+// Presentation-only learning item — NOT a governed claim, NOT persisted,
+// NOT sent to the backend. Built either from a real PostmortemClaim (the
+// common case) or, for a price-path factor with no matching claim row at
+// all (e.g. MFE/MAE frequently have no separate claim in a given report),
+// directly from that factor's PriceFieldAssessment. Never a synthetic
+// governed claim — this exists purely so "What You Can Learn" can list a
+// factor whose assessment exists even when report.claims[] has no
+// corresponding row, without inventing claim data.
+export interface LearningItem {
+  key: string;
+  title: string;
+  classification: "CONFIRMED" | "SUPPORTED_BUT_NOT_PROVEN" | "NOT_ESTABLISHED" | "DATA_NEEDED";
+  sourceType: "claim" | "price_field_assessment";
+}
+
 export interface WhatYouCanLearnBuckets {
-  confirmed: PostmortemClaim[];
-  supportedNotProven: PostmortemClaim[];
-  notEstablished: PostmortemClaim[];
-  dataNeeded: PostmortemClaim[];
+  confirmed: LearningItem[];
+  supportedNotProven: LearningItem[];
+  notEstablished: LearningItem[];
+  dataNeeded: LearningItem[];
 }
 
 const LEARNING_CLASSIFICATION_TO_BUCKET: Record<string, keyof WhatYouCanLearnBuckets> = {
@@ -218,45 +273,78 @@ const LEARNING_CLASSIFICATION_TO_BUCKET: Record<string, keyof WhatYouCanLearnBuc
   DATA_NEEDED: "dataNeeded",
 };
 
+function evidenceClassToLearningClassification(evidenceClass: string): LearningItem["classification"] {
+  if (evidenceClass === "MECHANICALLY_VERIFIED" || evidenceClass === "DIRECTLY_OBSERVED") return "CONFIRMED";
+  if (evidenceClass === "EVIDENCE_SUPPORTED") return "SUPPORTED_BUT_NOT_PROVEN";
+  if (evidenceClass === "CONFLICTING_EVIDENCE") return "NOT_ESTABLISHED";
+  return "DATA_NEEDED";
+}
+
+/**
+ * Builds the full set of learning items: every governed claim exactly
+ * once, PLUS each of the four price-field assessments exactly once —
+ * deduplicated by canonical factor identity so a price-path factor with
+ * both a governed claim AND an assessment (the common case) is never
+ * listed twice. A price-path factor with NO matching claim (e.g. MFE/MAE
+ * often have none) still gets its own standalone item so it is never
+ * silently omitted from "What You Can Learn".
+ */
+export function buildLearningItems(
+  claims: PostmortemClaim[],
+  priceFieldAssessments?: Record<PriceFieldFactor, PriceFieldAssessment>
+): LearningItem[] {
+  const items: LearningItem[] = [];
+  const seenPriceFields = new Set<PriceFieldFactor>();
+
+  for (const c of claims) {
+    const priceField = CLAIM_FACTOR_TO_PRICE_FIELD[c.factor];
+    const assessment = priceField && priceFieldAssessments ? priceFieldAssessments[priceField] : undefined;
+    if (assessment) {
+      seenPriceFields.add(priceField);
+      items.push({
+        key: c.claim_id, title: getFactorLabel(c.report_section, c.factor).title,
+        classification: assessment.learningClassification, sourceType: "claim",
+      });
+    } else {
+      items.push({
+        key: c.claim_id, title: getFactorLabel(c.report_section, c.factor).title,
+        classification: evidenceClassToLearningClassification(c.evidence_class), sourceType: "claim",
+      });
+    }
+  }
+
+  if (priceFieldAssessments) {
+    (Object.keys(priceFieldAssessments) as PriceFieldFactor[]).forEach((factor) => {
+      if (seenPriceFields.has(factor)) return; // already represented via a governed claim above
+      const assessment = priceFieldAssessments[factor];
+      const lookup = PRICE_FIELD_TO_LABEL_LOOKUP[factor];
+      const label = getFactorLabel(lookup.section, lookup.factor);
+      items.push({
+        key: `price-field-${factor}`, title: label.title,
+        classification: assessment.learningClassification, sourceType: "price_field_assessment",
+      });
+    });
+  }
+
+  return items;
+}
+
+function bucketLearningItems(items: LearningItem[]): WhatYouCanLearnBuckets {
+  const buckets: WhatYouCanLearnBuckets = {
+    confirmed: [], supportedNotProven: [], notEstablished: [], dataNeeded: [],
+  };
+  for (const item of items) {
+    buckets[LEARNING_CLASSIFICATION_TO_BUCKET[item.classification]].push(item);
+  }
+  return buckets;
+}
+
+/** @deprecated kept for existing callers that build items themselves — prefer buildLearningItems + bucketLearningItems. */
 export function bucketClaimsForWhatYouCanLearn(
   claims: PostmortemClaim[],
   priceFieldAssessments?: Record<PriceFieldFactor, PriceFieldAssessment>
 ): WhatYouCanLearnBuckets {
-  const buckets: WhatYouCanLearnBuckets = {
-    confirmed: [],
-    supportedNotProven: [],
-    notEstablished: [],
-    dataNeeded: [],
-  };
-  for (const c of claims) {
-    // Single source of truth: for the four price-path factors, use the
-    // SAME assessment object the summary card and the factor-section row
-    // consume — never independently reclassify from evidence_class alone.
-    // Regression coverage for a real defect found during preview QA: a
-    // governed_price_path claim about stop_touch could be
-    // evidence_class=MECHANICALLY_VERIFIED while genuinely describing an
-    // OBSERVATION ABOUT THE ABSENCE of a crossing, not a positive
-    // confirmation that the level was touched — bucketing that under
-    // CONFIRMED misleadingly implied "Stop touch: confirmed" while the
-    // price-path summary simultaneously showed "Stop touched: N/A".
-    const priceField = CLAIM_FACTOR_TO_PRICE_FIELD[c.factor];
-    const assessment = priceField && priceFieldAssessments ? priceFieldAssessments[priceField] : undefined;
-    if (assessment) {
-      buckets[LEARNING_CLASSIFICATION_TO_BUCKET[assessment.learningClassification]].push(c);
-      continue;
-    }
-
-    if (c.evidence_class === "MECHANICALLY_VERIFIED" || c.evidence_class === "DIRECTLY_OBSERVED") {
-      buckets.confirmed.push(c);
-    } else if (c.evidence_class === "EVIDENCE_SUPPORTED") {
-      buckets.supportedNotProven.push(c);
-    } else if (c.evidence_class === "CONFLICTING_EVIDENCE") {
-      buckets.notEstablished.push(c);
-    } else {
-      buckets.dataNeeded.push(c);
-    }
-  }
-  return buckets;
+  return bucketLearningItems(buildLearningItems(claims, priceFieldAssessments));
 }
 
 function WhatYouCanLearn({
@@ -265,8 +353,8 @@ function WhatYouCanLearn({
   claims: PostmortemClaim[];
   priceFieldAssessments?: Record<PriceFieldFactor, PriceFieldAssessment>;
 }) {
-  const buckets = bucketClaimsForWhatYouCanLearn(claims, priceFieldAssessments);
-  const rows: { label: string; items: PostmortemClaim[]; className: string }[] = [
+  const buckets = bucketLearningItems(buildLearningItems(claims, priceFieldAssessments));
+  const rows: { label: string; items: LearningItem[]; className: string }[] = [
     { label: "CONFIRMED", items: buckets.confirmed, className: "text-bull" },
     { label: "SUPPORTED BUT NOT PROVEN", items: buckets.supportedNotProven, className: "text-brand-500" },
     { label: "NOT ESTABLISHED", items: buckets.notEstablished, className: "text-neutral" },
@@ -283,9 +371,9 @@ function WhatYouCanLearn({
             </div>
             {row.items.length > 0 && (
               <ul className="list-disc list-inside text-xs text-gray-400 mt-0.5">
-                {row.items.map((c) => (
-                  <li key={c.claim_id} className="break-words">
-                    {getFactorLabel(c.report_section, c.factor).title}
+                {row.items.map((item) => (
+                  <li key={item.key} className="break-words">
+                    {item.title}
                   </li>
                 ))}
               </ul>
