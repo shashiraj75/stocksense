@@ -117,8 +117,23 @@ class TestRegistryIntrospection:
 
         assert len(RULE_REGISTRY) > 0
 
+        # RULE_REGISTRY is a process-wide dict; when this test runs as part
+        # of the full suite (not in isolation), other test modules — e.g.
+        # test_postmortem_evidence.py's TestRegisterRule, which exercises
+        # register_rule() itself with throwaway rule_ids like
+        # TEST_DUP_001/TEST_REGISTRY_ONLY_001 — can register their own
+        # fixtures into the SAME registry as a side effect of import order.
+        # Those are not governed report factors and must not be required to
+        # have a matrix row. Scope this check to real governed report
+        # sections (the ones this matrix actually documents) rather than
+        # hardcoding known test rule_id names, so it stays robust to any
+        # future test that pollutes the registry the same way.
+        governed_sections = {e["report_section"] for e in _load_matrix()}
         matrix_rule_ids = {e["rule_id"] for e in _load_matrix()}
-        registry_rule_ids = set(RULE_REGISTRY.keys())
+        registry_rule_ids = {
+            rule_id for rule_id, rule in RULE_REGISTRY.items()
+            if rule.report_section in governed_sections
+        }
 
         missing = registry_rule_ids - matrix_rule_ids
         assert not missing, (
