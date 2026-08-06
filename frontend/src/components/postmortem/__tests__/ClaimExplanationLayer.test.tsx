@@ -5,6 +5,25 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ClaimExplanationLayer, bucketClaimsForWhatYouCanLearn } from "@/components/postmortem/ClaimExplanationLayer";
 import type { PostmortemClaim } from "@/utils/api";
+import type { PriceFieldAssessment, PriceFieldFactor } from "@/utils/postmortemPriceFieldAssessment";
+
+function makeAssessment(
+  factor: PriceFieldFactor, learningClassification: PriceFieldAssessment["learningClassification"]
+): PriceFieldAssessment {
+  return {
+    factor, availability: "UNAVAILABLE", reasonCategory: "TEST", explanation: "test explanation",
+    learningClassification, isOperationalCloseVsUnverifiedPriceGap: false,
+  };
+}
+
+function makeAllNotEstablishedAssessments(): Record<PriceFieldFactor, PriceFieldAssessment> {
+  return {
+    MFE: makeAssessment("MFE", "NOT_ESTABLISHED"),
+    MAE: makeAssessment("MAE", "NOT_ESTABLISHED"),
+    TARGET_TOUCH: makeAssessment("TARGET_TOUCH", "NOT_ESTABLISHED"),
+    STOP_TOUCH: makeAssessment("STOP_TOUCH", "NOT_ESTABLISHED"),
+  };
+}
 
 function makeClaim(overrides: Partial<PostmortemClaim>): PostmortemClaim {
   return {
@@ -129,8 +148,8 @@ describe("ClaimExplanationLayer", () => {
     });
   });
 
-  describe("bucketClaimsForWhatYouCanLearn — cross-checked against the top-level price-path values", () => {
-    it("does not classify stop_touch as CONFIRMED when the top-level stop_touch value is still null", () => {
+  describe("bucketClaimsForWhatYouCanLearn — single-source-of-truth via priceFieldAssessments", () => {
+    it("does not classify stop_touch as CONFIRMED when its assessment is NOT_ESTABLISHED", () => {
       const claims = [
         makeClaim({
           claim_id: "stop", report_section: "governed_price_path", factor: "stop_touch",
@@ -138,45 +157,52 @@ describe("ClaimExplanationLayer", () => {
           claim_text: "No compatible crossing of the stop level was observed.",
         }),
       ];
-      const buckets = bucketClaimsForWhatYouCanLearn(claims, {
-        mfe: null, mae: null, target_touch: null, stop_touch: null,
-      });
+      const buckets = bucketClaimsForWhatYouCanLearn(claims, makeAllNotEstablishedAssessments());
       expect(buckets.confirmed).toHaveLength(0);
       expect(buckets.notEstablished).toHaveLength(1);
     });
 
-    it("does classify stop_touch as CONFIRMED when the top-level value is genuinely present", () => {
+    it("classifies stop_touch as CONFIRMED when its assessment says so (value genuinely present)", () => {
       const claims = [
         makeClaim({
           claim_id: "stop", report_section: "governed_price_path", factor: "stop_touch",
           evidence_class: "MECHANICALLY_VERIFIED", confidence_band: "HIGH",
         }),
       ];
-      const buckets = bucketClaimsForWhatYouCanLearn(claims, {
-        mfe: null, mae: null, target_touch: null, stop_touch: true,
-      });
+      const assessments = makeAllNotEstablishedAssessments();
+      assessments.STOP_TOUCH = makeAssessment("STOP_TOUCH", "CONFIRMED");
+      const buckets = bucketClaimsForWhatYouCanLearn(claims, assessments);
       expect(buckets.confirmed).toHaveLength(1);
     });
 
-    it("applies the same cross-check to target_touch, mfe and mae", () => {
+    it("applies the same single-source-of-truth classification to target_touch, mfe and mae", () => {
       const claims = [
         makeClaim({ claim_id: "target", report_section: "governed_price_path", factor: "target_touch", evidence_class: "MECHANICALLY_VERIFIED" }),
         makeClaim({ claim_id: "mfe", report_section: "price_path", factor: "mfe", evidence_class: "MECHANICALLY_VERIFIED" }),
         makeClaim({ claim_id: "mae", report_section: "price_path", factor: "mae", evidence_class: "MECHANICALLY_VERIFIED" }),
       ];
-      const buckets = bucketClaimsForWhatYouCanLearn(claims, {
-        mfe: null, mae: null, target_touch: null, stop_touch: null,
-      });
+      const buckets = bucketClaimsForWhatYouCanLearn(claims, makeAllNotEstablishedAssessments());
       expect(buckets.confirmed).toHaveLength(0);
       expect(buckets.notEstablished).toHaveLength(3);
     });
 
-    it("falls back to evidence_class-only bucketing when pricePathTopLevelValues is not provided", () => {
+    it("falls back to evidence_class-only bucketing when priceFieldAssessments is not provided", () => {
       const claims = [
         makeClaim({ claim_id: "stop", report_section: "governed_price_path", factor: "stop_touch", evidence_class: "MECHANICALLY_VERIFIED" }),
       ];
       const buckets = bucketClaimsForWhatYouCanLearn(claims);
       expect(buckets.confirmed).toHaveLength(1);
+    });
+
+    it("classifies target_touch as SUPPORTED BUT NOT PROVEN for the TARGET_HIT + null case", () => {
+      const claims = [
+        makeClaim({ claim_id: "target", report_section: "governed_price_path", factor: "target_touch", evidence_class: "DIRECTLY_OBSERVED" }),
+      ];
+      const assessments = makeAllNotEstablishedAssessments();
+      assessments.TARGET_TOUCH = makeAssessment("TARGET_TOUCH", "SUPPORTED_BUT_NOT_PROVEN");
+      const buckets = bucketClaimsForWhatYouCanLearn(claims, assessments);
+      expect(buckets.supportedNotProven).toHaveLength(1);
+      expect(buckets.confirmed).toHaveLength(0);
     });
   });
 });

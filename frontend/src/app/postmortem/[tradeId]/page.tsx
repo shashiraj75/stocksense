@@ -13,9 +13,7 @@ import { InsufficientEvidenceMark } from "@/components/InsufficientEvidenceMark"
 import { isTradePostmortemPricePathEnabled } from "@/utils/featureFlags";
 import { buildLayer1Summary, fmtAbs, fmtPct, currencySymbolFor } from "@/utils/postmortemSummary";
 import { ClaimExplanationLayer } from "@/components/postmortem/ClaimExplanationLayer";
-import {
-  isUnverifiedTargetHitCloseCase, UNVERIFIED_TARGET_HIT_EXPLANATION, resolveAvailabilityReason,
-} from "@/utils/postmortemAvailabilityReason";
+import { resolveAllPriceFieldAssessments } from "@/utils/postmortemPriceFieldAssessment";
 
 // ============================================================================
 // Wave C, WC-N — /postmortem/[tradeId]: the per-trade governed current-report
@@ -402,24 +400,22 @@ function ReadyReport({ report }: { report: CurrentReportReadResponse }) {
   const priceLimitations = Array.isArray(pricePath?.price_path_limitations)
     ? (pricePath!.price_path_limitations as JSONValue[]).filter((v): v is string => typeof v === "string")
     : [];
-  const evidenceGaps = report.evidence_gaps ?? [];
   const warnings = report.warnings ?? [];
 
-  // Deliberately does NOT include source_manifest.exit_trigger_timing_verification:
-  // that field describes whether the CLOSE TRIGGER was independently
-  // server-verified, not whether MFE/MAE/touch fields are computable — see
-  // postmortemAvailabilityReason.ts's module comment for the defect this
-  // fixes. The client-reported/unverified-trigger nuance is surfaced
-  // separately below via isUnverifiedTargetHitCloseCase, scoped to the
-  // specific case it actually describes.
-  const reasonFor = (value: unknown) =>
-    resolveAvailabilityReason({
-      value,
-      reportAvailability: report.availability ?? null,
-      pricePathLimitations: priceLimitations,
-      evidenceGaps,
-      warnings,
-    });
+  // Single source of truth: ONE assessment per price-path factor, shared
+  // by the summary card, the target-hit explanatory note, and "What You
+  // Can Learn" (passed down to ClaimExplanationLayer below) — never
+  // recomputed independently in more than one place. Deliberately never
+  // fed report.evidence_gaps (entry-snapshot limitations) — those must
+  // never classify a holding-period/boundary-verification factor (see
+  // postmortemPriceFieldAssessment.ts's module comment for the real
+  // defect this fixes: an entry-evidence limitation was previously
+  // winning for all four price-path fields).
+  const priceFieldAssessments = resolveAllPriceFieldAssessments({
+    mfe: mfeAbs, mae: maeMagnitudeAbs, targetTouch: targetTouch, stopTouch: stopTouch,
+    reportAvailability: report.availability ?? null, exitMechanism,
+    pricePathLimitations: priceLimitations, warnings,
+  });
 
   const isLimited = report.status === "LIMITED_EVIDENCE";
   const currencySymbol = currencySymbolFor(report.market);
@@ -496,7 +492,7 @@ function ReadyReport({ report }: { report: CurrentReportReadResponse }) {
             <div className="font-medium tabular-nums">{fmtAbs(mfeAbs, currencySymbol)} ({fmtPct(mfePct)})</div>
             {mfeAbs === null && (
               <div className="text-[10px] text-gray-500 mt-0.5 break-words" data-testid="mfe-reason">
-                {reasonFor(mfeAbs)}
+                {priceFieldAssessments.MFE.explanation}
               </div>
             )}
           </div>
@@ -505,7 +501,7 @@ function ReadyReport({ report }: { report: CurrentReportReadResponse }) {
             <div className="font-medium tabular-nums">{fmtAbs(maeMagnitudeAbs, currencySymbol)} ({fmtPct(maeMagnitudePct)})</div>
             {maeMagnitudeAbs === null && (
               <div className="text-[10px] text-gray-500 mt-0.5 break-words" data-testid="mae-reason">
-                {reasonFor(maeMagnitudeAbs)}
+                {priceFieldAssessments.MAE.explanation}
               </div>
             )}
           </div>
@@ -516,7 +512,7 @@ function ReadyReport({ report }: { report: CurrentReportReadResponse }) {
             </div>
             {targetTouch === null && (
               <div className="text-[10px] text-gray-500 mt-0.5 break-words" data-testid="target-touch-reason">
-                {reasonFor(targetTouch)}
+                {priceFieldAssessments.TARGET_TOUCH.explanation}
               </div>
             )}
           </div>
@@ -527,7 +523,7 @@ function ReadyReport({ report }: { report: CurrentReportReadResponse }) {
             </div>
             {stopTouch === null && (
               <div className="text-[10px] text-gray-500 mt-0.5 break-words" data-testid="stop-touch-reason">
-                {reasonFor(stopTouch)}
+                {priceFieldAssessments.STOP_TOUCH.explanation}
               </div>
             )}
           </div>
@@ -535,9 +531,14 @@ function ReadyReport({ report }: { report: CurrentReportReadResponse }) {
         {touchOrder && (
           <p className="text-xs text-gray-500 mt-1.5">Touch sequence: {touchOrder.replace(/_/g, " ").toLowerCase()}</p>
         )}
-        {isUnverifiedTargetHitCloseCase(exitMechanism, targetTouch) && (
+        {(priceFieldAssessments.TARGET_TOUCH.isOperationalCloseVsUnverifiedPriceGap
+          || priceFieldAssessments.STOP_TOUCH.isOperationalCloseVsUnverifiedPriceGap) && (
           <p role="note" className="text-xs text-amber-200 mt-1.5 break-words rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5">
-            {UNVERIFIED_TARGET_HIT_EXPLANATION}
+            {priceFieldAssessments.TARGET_TOUCH.isOperationalCloseVsUnverifiedPriceGap
+              ? priceFieldAssessments.TARGET_TOUCH.explanation
+              : priceFieldAssessments.STOP_TOUCH.explanation}
+            {" "}This is a gap between the operational close record and independently-unverifiable price-path
+            evidence — not a contradiction.
           </p>
         )}
         {priceLimitations.length > 0 && (
@@ -554,9 +555,7 @@ function ReadyReport({ report }: { report: CurrentReportReadResponse }) {
         <ClaimExplanationLayer
           claims={claims}
           evidenceById={evidenceById}
-          pricePathTopLevelValues={{
-            mfe: mfeAbs, mae: maeMagnitudeAbs, target_touch: targetTouch, stop_touch: stopTouch,
-          }}
+          priceFieldAssessments={priceFieldAssessments}
         />
       </div>
 

@@ -11,6 +11,15 @@ import clsx from "clsx";
 import type { PostmortemClaim, EvidenceItem } from "@/utils/api";
 import { getFactorLabel, getReportSectionLabel } from "@/utils/postmortemFactorLabels";
 import { resolveClaimReason } from "@/utils/postmortemClaimReasons";
+import type { PriceFieldAssessment, PriceFieldFactor } from "@/utils/postmortemPriceFieldAssessment";
+
+// Maps a governed claim's `factor` string to the corresponding
+// PriceFieldFactor — both the legacy `price_path::mfe/mae/target_touch/
+// stop_touch` (1.1.0) and current `governed_price_path::target_touch/
+// stop_touch` (1.2.0) sections use these same bare factor strings.
+const CLAIM_FACTOR_TO_PRICE_FIELD: Record<string, PriceFieldFactor> = {
+  mfe: "MFE", mae: "MAE", target_touch: "TARGET_TOUCH", stop_touch: "STOP_TOUCH",
+};
 
 const EVIDENCE_CLASS_STYLE: Record<string, string> = {
   MECHANICALLY_VERIFIED: "text-bull",
@@ -29,27 +38,34 @@ const EVIDENCE_CLASS_LABEL: Record<string, string> = {
   INSUFFICIENT_EVIDENCE: "○ Insufficient evidence",
 };
 
-function plainLanguageReason(claim: PostmortemClaim): string {
+function plainLanguageReason(claim: PostmortemClaim, priceFieldAssessment?: PriceFieldAssessment): string {
   if (claim.evidence_class !== "INSUFFICIENT_EVIDENCE") return "";
-  // Deliberately does NOT surface claim.missing_evidence / claim.limitations
-  // directly — that raw governed text (snake_case identifiers, internal
-  // phrasing like "this codebase" or a sprint reference) leaked into the
-  // investor-facing layer in an earlier version, a real defect found
-  // during preview QA. The exact original text remains available verbatim
-  // in the expandable Layer-3 detail panel below, unmutated.
+  // Single-source-of-truth: for the four price-path factors, use the SAME
+  // assessment object the summary card and "What You Can Learn" consume —
+  // never recompute independently. For every other factor, use the
+  // curated claim-reason resolver. Deliberately does NOT surface
+  // claim.missing_evidence / claim.limitations directly — that raw
+  // governed text (snake_case identifiers, internal phrasing like "this
+  // codebase" or a sprint reference) leaked into the investor-facing
+  // layer in an earlier version, a real defect found during preview QA.
+  // The exact original text remains available verbatim in the expandable
+  // Layer-3 detail panel below, unmutated.
+  if (priceFieldAssessment) return priceFieldAssessment.explanation;
   return resolveClaimReason({ reportSection: claim.report_section, factor: claim.factor });
 }
 
 function FactorClaimRow({
   claim,
   evidenceById,
+  priceFieldAssessment,
 }: {
   claim: PostmortemClaim;
   evidenceById: Map<string, EvidenceItem>;
+  priceFieldAssessment?: PriceFieldAssessment;
 }) {
   const [open, setOpen] = useState(false);
   const { title, curated } = getFactorLabel(claim.report_section, claim.factor);
-  const reason = plainLanguageReason(claim);
+  const reason = plainLanguageReason(claim, priceFieldAssessment);
 
   return (
     <div className="py-2 border-b border-dark-border/50 last:border-0">
@@ -80,10 +96,19 @@ function FactorClaimRow({
         <span className="text-gray-500 text-xs shrink-0 mt-0.5">{open ? "Hide" : "Details"}</span>
       </button>
 
-      {claim.evidence_class === "INSUFFICIENT_EVIDENCE" && (
+      {priceFieldAssessment && priceFieldAssessment.explanation && (
+        // Single-source-of-truth override — a price-path factor always
+        // displays the SAME assessment explanation the summary card uses,
+        // regardless of the underlying claim's evidence_class (a
+        // MECHANICALLY_VERIFIED/DIRECTLY_OBSERVED claim can still
+        // genuinely describe an unavailable metric — see
+        // postmortemPriceFieldAssessment.ts).
+        <div className="text-xs text-gray-400 mt-1 break-words">{priceFieldAssessment.explanation}</div>
+      )}
+      {!priceFieldAssessment && claim.evidence_class === "INSUFFICIENT_EVIDENCE" && (
         <div className="text-xs text-gray-500 mt-1 break-words">{reason}</div>
       )}
-      {claim.evidence_class !== "INSUFFICIENT_EVIDENCE" && (
+      {!priceFieldAssessment && claim.evidence_class !== "INSUFFICIENT_EVIDENCE" && (
         <div className="text-xs text-gray-400 mt-1 break-words">{claim.claim_text}</div>
       )}
 
@@ -151,10 +176,12 @@ function SectionGroup({
   section,
   claims,
   evidenceById,
+  priceFieldAssessments,
 }: {
   section: string;
   claims: PostmortemClaim[];
   evidenceById: Map<string, EvidenceItem>;
+  priceFieldAssessments?: Record<PriceFieldFactor, PriceFieldAssessment>;
 }) {
   const insufficientCount = claims.filter((c) => c.evidence_class === "INSUFFICIENT_EVIDENCE").length;
   return (
@@ -166,9 +193,13 @@ function SectionGroup({
           reliably — each is still listed by name below.
         </p>
       )}
-      {claims.map((c) => (
-        <FactorClaimRow key={c.claim_id} claim={c} evidenceById={evidenceById} />
-      ))}
+      {claims.map((c) => {
+        const priceField = CLAIM_FACTOR_TO_PRICE_FIELD[c.factor];
+        const assessment = priceField && priceFieldAssessments ? priceFieldAssessments[priceField] : undefined;
+        return (
+          <FactorClaimRow key={c.claim_id} claim={c} evidenceById={evidenceById} priceFieldAssessment={assessment} />
+        );
+      })}
     </div>
   );
 }
@@ -180,30 +211,16 @@ export interface WhatYouCanLearnBuckets {
   dataNeeded: PostmortemClaim[];
 }
 
-// Factors whose top-level report value can be independently cross-checked
-// against a claim's evidence_class before allowing a CONFIRMED
-// classification. Regression coverage for a real defect found during
-// preview QA: a governed_price_path claim about stop_touch can be
-// evidence_class=MECHANICALLY_VERIFIED while genuinely describing an
-// OBSERVATION ABOUT THE ABSENCE of a crossing (e.g. "no compatible
-// crossing was observed"), not a positive confirmation that the level was
-// touched — bucketing that under CONFIRMED without checking the actual
-// top-level value misleadingly implied "Stop touch: confirmed" while the
-// price-path summary simultaneously showed "Stop touched: N/A".
-const PRICE_PATH_CROSS_CHECKED_FACTORS = new Set([
-  "mfe", "mae", "target_touch", "stop_touch",
-]);
-
-export interface PricePathTopLevelValues {
-  mfe: unknown;
-  mae: unknown;
-  target_touch: unknown;
-  stop_touch: unknown;
-}
+const LEARNING_CLASSIFICATION_TO_BUCKET: Record<string, keyof WhatYouCanLearnBuckets> = {
+  CONFIRMED: "confirmed",
+  SUPPORTED_BUT_NOT_PROVEN: "supportedNotProven",
+  NOT_ESTABLISHED: "notEstablished",
+  DATA_NEEDED: "dataNeeded",
+};
 
 export function bucketClaimsForWhatYouCanLearn(
   claims: PostmortemClaim[],
-  pricePathTopLevelValues?: PricePathTopLevelValues
+  priceFieldAssessments?: Record<PriceFieldFactor, PriceFieldAssessment>
 ): WhatYouCanLearnBuckets {
   const buckets: WhatYouCanLearnBuckets = {
     confirmed: [],
@@ -212,27 +229,25 @@ export function bucketClaimsForWhatYouCanLearn(
     dataNeeded: [],
   };
   for (const c of claims) {
-    // Cross-check: a price-path claim cannot be classified CONFIRMED when
-    // its own top-level value is null/undefined — the report itself does
-    // not consider the metric available, regardless of what evidence_class
-    // the underlying claim carries.
-    const isPriceValueField = PRICE_PATH_CROSS_CHECKED_FACTORS.has(c.factor);
-    const topLevelValue = pricePathTopLevelValues
-      ? (pricePathTopLevelValues as unknown as Record<string, unknown>)[c.factor]
-      : undefined;
-    const topLevelValueIsMissing = isPriceValueField && pricePathTopLevelValues !== undefined
-      && (topLevelValue === null || topLevelValue === undefined);
+    // Single source of truth: for the four price-path factors, use the
+    // SAME assessment object the summary card and the factor-section row
+    // consume — never independently reclassify from evidence_class alone.
+    // Regression coverage for a real defect found during preview QA: a
+    // governed_price_path claim about stop_touch could be
+    // evidence_class=MECHANICALLY_VERIFIED while genuinely describing an
+    // OBSERVATION ABOUT THE ABSENCE of a crossing, not a positive
+    // confirmation that the level was touched — bucketing that under
+    // CONFIRMED misleadingly implied "Stop touch: confirmed" while the
+    // price-path summary simultaneously showed "Stop touched: N/A".
+    const priceField = CLAIM_FACTOR_TO_PRICE_FIELD[c.factor];
+    const assessment = priceField && priceFieldAssessments ? priceFieldAssessments[priceField] : undefined;
+    if (assessment) {
+      buckets[LEARNING_CLASSIFICATION_TO_BUCKET[assessment.learningClassification]].push(c);
+      continue;
+    }
 
-    if (
-      (c.evidence_class === "MECHANICALLY_VERIFIED" || c.evidence_class === "DIRECTLY_OBSERVED")
-      && !topLevelValueIsMissing
-    ) {
+    if (c.evidence_class === "MECHANICALLY_VERIFIED" || c.evidence_class === "DIRECTLY_OBSERVED") {
       buckets.confirmed.push(c);
-    } else if (topLevelValueIsMissing && c.evidence_class !== "CONFLICTING_EVIDENCE") {
-      // The metric itself remains unavailable — this belongs under NOT
-      // ESTABLISHED, never CONFIRMED, regardless of what the underlying
-      // claim's evidence_class says about the observation itself.
-      buckets.notEstablished.push(c);
     } else if (c.evidence_class === "EVIDENCE_SUPPORTED") {
       buckets.supportedNotProven.push(c);
     } else if (c.evidence_class === "CONFLICTING_EVIDENCE") {
@@ -245,12 +260,12 @@ export function bucketClaimsForWhatYouCanLearn(
 }
 
 function WhatYouCanLearn({
-  claims, pricePathTopLevelValues,
+  claims, priceFieldAssessments,
 }: {
   claims: PostmortemClaim[];
-  pricePathTopLevelValues?: PricePathTopLevelValues;
+  priceFieldAssessments?: Record<PriceFieldFactor, PriceFieldAssessment>;
 }) {
-  const buckets = bucketClaimsForWhatYouCanLearn(claims, pricePathTopLevelValues);
+  const buckets = bucketClaimsForWhatYouCanLearn(claims, priceFieldAssessments);
   const rows: { label: string; items: PostmortemClaim[]; className: string }[] = [
     { label: "CONFIRMED", items: buckets.confirmed, className: "text-bull" },
     { label: "SUPPORTED BUT NOT PROVEN", items: buckets.supportedNotProven, className: "text-brand-500" },
@@ -291,12 +306,12 @@ function WhatYouCanLearn({
 export function ClaimExplanationLayer({
   claims,
   evidenceById,
-  pricePathTopLevelValues,
+  priceFieldAssessments,
 }: {
   claims: PostmortemClaim[];
   evidenceById: Map<string, EvidenceItem>;
-  /** Optional cross-check inputs for the "What You Can Learn" CONFIRMED bucket — see PRICE_PATH_CROSS_CHECKED_FACTORS above. */
-  pricePathTopLevelValues?: PricePathTopLevelValues;
+  /** The single source of truth for MFE/MAE/TARGET_TOUCH/STOP_TOUCH — shared with the summary card and target-hit note in page.tsx. */
+  priceFieldAssessments?: Record<PriceFieldFactor, PriceFieldAssessment>;
 }) {
   if (claims.length === 0) {
     return <div className="text-xs text-gray-500">No claims are available for this report.</div>;
@@ -311,9 +326,12 @@ export function ClaimExplanationLayer({
 
   return (
     <div>
-      <WhatYouCanLearn claims={claims} pricePathTopLevelValues={pricePathTopLevelValues} />
+      <WhatYouCanLearn claims={claims} priceFieldAssessments={priceFieldAssessments} />
       {Array.from(bySection.entries()).map(([section, sectionClaims]) => (
-        <SectionGroup key={section} section={section} claims={sectionClaims} evidenceById={evidenceById} />
+        <SectionGroup
+          key={section} section={section} claims={sectionClaims} evidenceById={evidenceById}
+          priceFieldAssessments={priceFieldAssessments}
+        />
       ))}
     </div>
   );

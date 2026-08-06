@@ -616,6 +616,121 @@ describe("TradePostmortemPage — financial context and closure classification",
   });
 });
 
+describe("TradePostmortemPage — price-path reason consistency (report-280 defect regression)", () => {
+  // Reproduces the exact real-world defect: entry evidence is LIMITED
+  // (evidence_gaps), holding-period price coverage is incomplete
+  // (price_path_limitations), exit_mechanism is TARGET_HIT, and all four
+  // price-path top-level values are null. The prior resolver let the
+  // entry-evidence limitation win for all four fields, showing
+  // "Not captured at entry" everywhere.
+  const REPORT_280_SHAPED: CurrentReportReadResponse = {
+    ...BASE_READY,
+    status: "LIMITED_EVIDENCE",
+    structured_report: {
+      postmortem: { outcome: "WIN", realized_pnl_abs: 1896.45, realized_pnl_pct: 2.2, exit_mechanism: "TARGET_HIT" },
+      price_path: {
+        mfe_abs: null, mfe_pct: null, mae_magnitude_abs: null, mae_magnitude_pct: null,
+        target_touch: null, target_touch_type: null, stop_touch: null, stop_touch_type: null,
+        touch_order: null,
+        price_path_limitations: [
+          "requested window 2026-08-04..2026-08-05 but provider only returned bars for 2026-08-05..2026-08-05",
+        ],
+        version_and_provenance: BASE_READY.structured_report!.price_path.version_and_provenance,
+      },
+    } as unknown as CurrentReportReadResponse["structured_report"],
+    claims: [
+      {
+        claim_id: "CLM-280-mfe", report_section: "price_path", factor: "mfe", claim_text: "raw governed text",
+        evidence_class: "INSUFFICIENT_EVIDENCE", confidence_band: "NOT_ASSESSABLE",
+        supporting_evidence_ids: [], opposing_evidence_ids: [], missing_evidence: [], contradiction_flags: [],
+        rule_id: "R-MFE", rule_version: "1.0.0", limitations: [],
+      },
+      {
+        claim_id: "CLM-280-stop", report_section: "governed_price_path", factor: "stop_touch",
+        claim_text: "No compatible crossing of the stop level was observed.",
+        evidence_class: "MECHANICALLY_VERIFIED", confidence_band: "HIGH",
+        supporting_evidence_ids: [], opposing_evidence_ids: [], missing_evidence: [], contradiction_flags: [],
+        rule_id: "R-STOP", rule_version: "1.0.0", limitations: [],
+      },
+    ],
+    evidence_gaps: ["entry evidence completeness is LIMITED"],
+    warnings: [],
+  };
+
+  it("MFE/MAE never show 'Not captured at entry' or 'Client-reported only'", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue(REPORT_280_SHAPED);
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getByTestId("mfe-reason")).toHaveTextContent(
+      "Complete holding-period price coverage was unavailable."
+    ));
+    expect(screen.getByTestId("mae-reason")).toHaveTextContent(
+      "Complete holding-period price coverage was unavailable."
+    );
+    expect(screen.queryByText(/not captured at entry/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/client-reported only/i)).not.toBeInTheDocument();
+  });
+
+  it("target-touch reason explains the operational-vs-verification gap without calling it a contradiction", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue(REPORT_280_SHAPED);
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getByTestId("target-touch-reason")).toHaveTextContent(
+      "The trade was recorded as a target hit, but the available price path could not independently confirm the target crossing."
+    ));
+    expect(screen.getByRole("note")).toHaveTextContent(/not a contradiction/i);
+  });
+
+  it("stop-touch reason explains insufficient boundary evidence and never appears under CONFIRMED", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue(REPORT_280_SHAPED);
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getByTestId("stop-touch-reason")).toHaveTextContent(
+      "The available price path was insufficient to determine whether the stop level was touched."
+    ));
+    // The "What You Can Learn" CONFIRMED bucket must not list Stop Touched.
+    const confirmedHeading = screen.getByText(/^CONFIRMED/i);
+    const confirmedList = confirmedHeading.parentElement?.querySelector("ul");
+    expect(confirmedList?.textContent ?? "").not.toMatch(/stop/i);
+  });
+
+  it("the price-path summary card and the governed-factor section agree (single source of truth)", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue(REPORT_280_SHAPED);
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getByTestId("mfe-reason")).toBeInTheDocument());
+    // The MFE factor-section row (Layer 2) must show the identical reason
+    // text as the summary card — both driven by the same assessment.
+    const cardReason = screen.getByTestId("mfe-reason").textContent;
+    const factorRows = screen.getAllByText("Complete holding-period price coverage was unavailable.");
+    expect(factorRows.length).toBeGreaterThanOrEqual(2); // card + Layer-2 factor row
+    expect(cardReason).toBe("Complete holding-period price coverage was unavailable.");
+  });
+
+  it("genuine entry-time factors still say Not captured at entry", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue({
+      ...REPORT_280_SHAPED,
+      claims: [
+        ...REPORT_280_SHAPED.claims!,
+        {
+          claim_id: "CLM-280-tech", report_section: "signal_scorecard", factor: "technical_signal",
+          claim_text: "raw text", evidence_class: "INSUFFICIENT_EVIDENCE", confidence_band: "NOT_ASSESSABLE",
+          supporting_evidence_ids: [], opposing_evidence_ids: [], missing_evidence: [], contradiction_flags: [],
+          rule_id: "R-TECH", rule_version: "1.0.0", limitations: [],
+        },
+      ],
+    });
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getAllByText("Technical Signal at Entry").length).toBeGreaterThan(0));
+  });
+});
+
 describe("TradePostmortemPage — stock identity (PR #36 targeted correction)", () => {
   it("displays Company Name (SYMBOL) for a READY India report", async () => {
     mockFetchCurrentPostmortemReport.mockResolvedValue({
