@@ -616,6 +616,85 @@ describe("TradePostmortemPage — financial context and closure classification",
   });
 });
 
+describe("TradePostmortemPage — stock identity (PR #36 targeted correction)", () => {
+  it("displays Company Name (SYMBOL) for a READY India report", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue({
+      ...BASE_READY, market: "IN", symbol: "HDFCBANK", company_name: "HDFC Bank Limited",
+    });
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("stock-identity")).toHaveTextContent("HDFC Bank Limited (HDFCBANK)")
+    );
+  });
+
+  it("displays Company Name (SYMBOL) for a READY US report", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue({
+      ...BASE_READY, market: "US", symbol: "AAPL", company_name: "Apple Inc.",
+    });
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getByTestId("stock-identity")).toHaveTextContent("Apple Inc. (AAPL)"));
+  });
+
+  it("falls back to the symbol alone when company_name is null", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue({
+      ...BASE_READY, symbol: "EMMVEE", company_name: null,
+    });
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getByTestId("stock-identity")).toHaveTextContent("EMMVEE"));
+    expect(screen.queryByText(/unknown stock/i)).not.toBeInTheDocument();
+  });
+
+  it("does not break rendering when symbol/company_name are absent entirely (older response shape)", async () => {
+    const { symbol: _s, company_name: _c, ...withoutIdentity } = BASE_READY;
+    mockFetchCurrentPostmortemReport.mockResolvedValue(withoutIdentity as CurrentReportReadResponse);
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getByText(/Trade Postmortem/i)).toBeInTheDocument());
+    expect(screen.queryByTestId("stock-identity")).not.toBeInTheDocument();
+  });
+
+  it("mentions the identity once in the executive summary without repeating it elsewhere in that sentence", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue({
+      ...BASE_READY, symbol: "HDFCBANK", company_name: "HDFC Bank Limited",
+    });
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => {
+      const summary = screen.getByTestId("layer1-summary").textContent ?? "";
+      const occurrences = summary.split("HDFC Bank Limited").length - 1;
+      expect(occurrences).toBe(1);
+    });
+  });
+
+  it("does not expose stock identity for a nonexistent or other-user trade (unchanged 404 behavior)", async () => {
+    mockFetchCurrentPostmortemReport.mockRejectedValue({ response: { status: 404 } });
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.queryByTestId("stock-identity")).not.toBeInTheDocument());
+  });
+
+  it("long company names wrap rather than causing horizontal overflow (break-words class present)", async () => {
+    mockFetchCurrentPostmortemReport.mockResolvedValue({
+      ...BASE_READY,
+      symbol: "LONGCO",
+      company_name: "A Very Long Hypothetical Company Name Private Limited Corporation International",
+    });
+    const { default: TradePostmortemPage } = await import("../page");
+    renderPage(TradePostmortemPage);
+
+    await waitFor(() => expect(screen.getByTestId("stock-identity")).toHaveClass("break-words"));
+  });
+});
+
 describe("TradePostmortemPage — report evidence manifest", () => {
   it("shows the complete manifest with all governed fields", async () => {
     mockFetchCurrentPostmortemReport.mockResolvedValue(BASE_READY);

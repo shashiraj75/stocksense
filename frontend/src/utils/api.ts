@@ -1071,6 +1071,14 @@ export interface CurrentReportReadResponse {
   market_timezone: string | null;
   status: CurrentReportStatus | null;
   generated_at: string | null;
+  // Stock-identity DISPLAY metadata (PR #36 targeted correction) —
+  // additive, optional/nullable for backward compatibility with an older
+  // response that doesn't carry these fields at all. NOT governed
+  // evidence, NOT part of the persisted report identity. `symbol` comes
+  // from the owned paper_trades row; `company_name` is a best-effort,
+  // read-only lookup that may legitimately be null.
+  symbol?: string | null;
+  company_name?: string | null;
   structured_report: StructuredReportModel | null;
   claims: PostmortemClaim[] | null;
   evidence_items: EvidenceItem[] | null;

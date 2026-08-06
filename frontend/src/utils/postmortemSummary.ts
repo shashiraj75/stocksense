@@ -47,6 +47,8 @@ export interface Layer1Fields {
   status: CurrentReportReadResponse["status"];
   schemaVersion: string | null;
   market: string | null;
+  symbol: string | null;
+  companyName: string | null;
 }
 
 export function extractLayer1Fields(report: CurrentReportReadResponse): Layer1Fields {
@@ -60,7 +62,19 @@ export function extractLayer1Fields(report: CurrentReportReadResponse): Layer1Fi
     status: report.status,
     schemaVersion: report.report_schema_version,
     market: report.market ?? null,
+    symbol: report.symbol ?? null,
+    companyName: report.company_name ?? null,
   };
+}
+
+// Mentions the stock identity exactly once, only in this opening
+// sentence — never repeated elsewhere in the deterministic summary. The
+// present-day company name is DISPLAY metadata only, never implied to be
+// historical analytical evidence.
+function subjectPhrase(fields: Layer1Fields): string {
+  if (fields.companyName && fields.symbol) return `${fields.companyName} (${fields.symbol})`;
+  if (fields.symbol) return fields.symbol;
+  return "This trade";
 }
 
 function outcomeSentence(fields: Layer1Fields): string {
@@ -70,17 +84,25 @@ function outcomeSentence(fields: Layer1Fields): string {
     realizedPnlAbs !== null && realizedPnlPct !== null
       ? ` (${fmtAbs(realizedPnlAbs, currencySymbol)}, ${fmtPct(realizedPnlPct)})`
       : "";
+  const subject = subjectPhrase(fields);
+  const hasIdentity = subject !== "This trade";
   switch (outcome) {
     case "WIN":
-      return `This trade closed as a win${pnlPhrase}.`;
+      return hasIdentity ? `${subject} closed as a win${pnlPhrase}.` : `This trade closed as a win${pnlPhrase}.`;
     case "LOSS":
-      return `This trade closed as a loss${pnlPhrase}.`;
+      return hasIdentity ? `${subject} closed as a loss${pnlPhrase}.` : `This trade closed as a loss${pnlPhrase}.`;
     case "BREAKEVEN":
-      return `This trade closed roughly breakeven${pnlPhrase}.`;
+      return hasIdentity
+        ? `${subject} closed roughly breakeven${pnlPhrase}.`
+        : `This trade closed roughly breakeven${pnlPhrase}.`;
     case "INDETERMINATE":
-      return "This trade's outcome could not be classified from the available data.";
+      return hasIdentity
+        ? `${subject}'s outcome could not be classified from the available data.`
+        : "This trade's outcome could not be classified from the available data.";
     default:
-      return "This trade's outcome is not recorded on this report.";
+      return hasIdentity
+        ? `${subject}'s outcome is not recorded on this report.`
+        : "This trade's outcome is not recorded on this report.";
   }
 }
 

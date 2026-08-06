@@ -429,6 +429,16 @@ function ReadyReport({ report }: { report: CurrentReportReadResponse }) {
     <div className="max-w-4xl mx-auto px-4 py-6 space-y-5">
       <div>
         <h1 className="text-xl font-bold">Trade Postmortem</h1>
+        {/* Stock identity — DISPLAY metadata only, never governed
+            evidence. company_name is the primary readable title when
+            available; symbol always remains visible alongside it. Never
+            "Unknown stock" when the symbol is known, never a live quote
+            fetched merely to show the name. */}
+        {report.symbol && (
+          <p className="text-base font-semibold text-gray-100 mt-1 break-words" data-testid="stock-identity">
+            {report.company_name ? `${report.company_name} (${report.symbol})` : report.symbol}
+          </p>
+        )}
         <p className="text-sm text-gray-500 mt-1">
           {report.market ?? "—"} · Report date {report.report_trading_date ?? "—"}
           {report.generated_at && <> · Generated {new Date(report.generated_at).toLocaleString()}</>}
