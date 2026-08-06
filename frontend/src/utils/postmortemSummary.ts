@@ -12,6 +12,33 @@ function asNum(v: JSONValue | undefined): number | null {
   return typeof v === "number" ? v : null;
 }
 
+// Single-source-of-truth currency formatter — shared by the executive
+// summary paragraph AND the price-path summary cards in page.tsx (do not
+// duplicate this in more than one place; a prior duplicate copy in
+// page.tsx produced "+1896.45" for an India report instead of
+// "+₹1,896.45" — no currency symbol, no thousands grouping).
+//
+// Currency is derived from the persisted report's own `market`, never
+// guessed or defaulted — an unrecognized future market still shows the
+// number, just without inventing a currency symbol for it.
+export function currencySymbolFor(market: string | null): string | null {
+  if (market === "IN") return "₹";
+  if (market === "US") return "$";
+  return null;
+}
+
+export function fmtPct(v: number | null): string {
+  return v === null ? "N/A" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
+}
+
+/** Never applied to percentages — fmtPct above has no currency parameter at all. */
+export function fmtAbs(v: number | null, currencySymbol: string | null): string {
+  if (v === null) return "N/A";
+  const sign = v >= 0 ? "+" : "";
+  const magnitude = Math.abs(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return `${sign}${v < 0 ? "-" : ""}${currencySymbol ?? ""}${magnitude}`;
+}
+
 export interface Layer1Fields {
   outcome: string | null;
   realizedPnlAbs: number | null;
@@ -19,6 +46,7 @@ export interface Layer1Fields {
   exitMechanism: string | null;
   status: CurrentReportReadResponse["status"];
   schemaVersion: string | null;
+  market: string | null;
 }
 
 export function extractLayer1Fields(report: CurrentReportReadResponse): Layer1Fields {
@@ -31,14 +59,16 @@ export function extractLayer1Fields(report: CurrentReportReadResponse): Layer1Fi
     exitMechanism: obj ? asStr(obj.exit_mechanism) : null,
     status: report.status,
     schemaVersion: report.report_schema_version,
+    market: report.market ?? null,
   };
 }
 
 function outcomeSentence(fields: Layer1Fields): string {
-  const { outcome, realizedPnlAbs, realizedPnlPct } = fields;
+  const { outcome, realizedPnlAbs, realizedPnlPct, market } = fields;
+  const currencySymbol = currencySymbolFor(market);
   const pnlPhrase =
     realizedPnlAbs !== null && realizedPnlPct !== null
-      ? ` (${realizedPnlAbs >= 0 ? "+" : ""}${realizedPnlAbs.toFixed(2)}, ${realizedPnlPct >= 0 ? "+" : ""}${realizedPnlPct.toFixed(2)}%)`
+      ? ` (${fmtAbs(realizedPnlAbs, currencySymbol)}, ${fmtPct(realizedPnlPct)})`
       : "";
   switch (outcome) {
     case "WIN":

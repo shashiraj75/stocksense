@@ -11,7 +11,7 @@ import {
 import { useAuth } from "@/lib/AuthContext";
 import { InsufficientEvidenceMark } from "@/components/InsufficientEvidenceMark";
 import { isTradePostmortemPricePathEnabled } from "@/utils/featureFlags";
-import { buildLayer1Summary } from "@/utils/postmortemSummary";
+import { buildLayer1Summary, fmtAbs, fmtPct, currencySymbolFor } from "@/utils/postmortemSummary";
 import { ClaimExplanationLayer } from "@/components/postmortem/ClaimExplanationLayer";
 import {
   isUnverifiedTargetHitCloseCase, UNVERIFIED_TARGET_HIT_EXPLANATION, resolveAvailabilityReason,
@@ -61,27 +61,6 @@ function asStr(v: JSONValue | undefined): string | null {
 }
 function asBool(v: JSONValue | undefined): boolean | null {
   return typeof v === "boolean" ? v : null;
-}
-
-function fmtPct(v: number | null): string {
-  return v === null ? "N/A" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
-}
-
-// Currency is derived from the persisted report's own `market`, never
-// guessed or defaulted — an unrecognized future market still shows the
-// number, just without inventing a currency symbol for it. Never applied
-// to percentages (fmtPct above has no currency parameter at all).
-function currencySymbolFor(market: string | null): string | null {
-  if (market === "IN") return "₹";
-  if (market === "US") return "$";
-  return null;
-}
-
-function fmtAbs(v: number | null, currencySymbol: string | null): string {
-  if (v === null) return "N/A";
-  const sign = v >= 0 ? "+" : "";
-  const magnitude = Math.abs(v).toFixed(2);
-  return `${sign}${v < 0 ? "-" : ""}${currencySymbol ?? ""}${magnitude}`;
 }
 
 // Bounded, safe rendering for an evidence item's `value` — never
@@ -425,13 +404,18 @@ function ReadyReport({ report }: { report: CurrentReportReadResponse }) {
     : [];
   const evidenceGaps = report.evidence_gaps ?? [];
   const warnings = report.warnings ?? [];
-  const exitTriggerTimingVerification = report.source_manifest?.exit_trigger_timing_verification ?? null;
 
+  // Deliberately does NOT include source_manifest.exit_trigger_timing_verification:
+  // that field describes whether the CLOSE TRIGGER was independently
+  // server-verified, not whether MFE/MAE/touch fields are computable — see
+  // postmortemAvailabilityReason.ts's module comment for the defect this
+  // fixes. The client-reported/unverified-trigger nuance is surfaced
+  // separately below via isUnverifiedTargetHitCloseCase, scoped to the
+  // specific case it actually describes.
   const reasonFor = (value: unknown) =>
     resolveAvailabilityReason({
       value,
       reportAvailability: report.availability ?? null,
-      exitTriggerTimingVerification,
       pricePathLimitations: priceLimitations,
       evidenceGaps,
       warnings,
@@ -557,7 +541,13 @@ function ReadyReport({ report }: { report: CurrentReportReadResponse }) {
           claim in report.claims renders exactly once here. */}
       <div>
         <h2 className="text-sm font-semibold text-gray-300 mb-2">What This Report Found</h2>
-        <ClaimExplanationLayer claims={claims} evidenceById={evidenceById} />
+        <ClaimExplanationLayer
+          claims={claims}
+          evidenceById={evidenceById}
+          pricePathTopLevelValues={{
+            mfe: mfeAbs, mae: maeMagnitudeAbs, target_touch: targetTouch, stop_touch: stopTouch,
+          }}
+        />
       </div>
 
       {/* Layer 3 — Technical Evidence & Audit Trail: original claim text,

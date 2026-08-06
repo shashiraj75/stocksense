@@ -32,25 +32,41 @@ describe("resolveAvailabilityReason — precedence and scenario coverage", () =>
     expect(UNVERIFIED_TARGET_HIT_EXPLANATION.toLowerCase()).toContain("not a contradiction");
   });
 
-  it("4. Client-reported unverified trigger -> structured enum, tier 3, never labelled server-verified", () => {
+  it("4. Client-reported unverified trigger -> surfaced only via isUnverifiedTargetHitCloseCase, never as a blanket price-path reason", () => {
+    // Regression test for a real defect found during preview QA: an
+    // earlier version of the resolver treated
+    // source_manifest.exit_trigger_timing_verification=CLIENT_REPORTED_UNVERIFIED
+    // as a blanket tier applied to ALL FOUR price-path fields (MFE, MAE,
+    // target touch, stop touch), so MFE/MAE incorrectly showed
+    // "Client-reported only" even when the real reason was incomplete
+    // provider coverage. The resolver no longer accepts that field at
+    // all — the trigger-verification nuance is surfaced only via
+    // isUnverifiedTargetHitCloseCase, scoped to the specific TARGET_HIT +
+    // target_touch=null case it actually describes.
+    expect(isUnverifiedTargetHitCloseCase("TARGET_HIT", null)).toBe(true);
     const result = resolveAvailabilityReason({
-      value: null, reportAvailability: "READY", exitTriggerTimingVerification: "CLIENT_REPORTED_UNVERIFIED",
+      value: null, reportAvailability: "READY",
       pricePathLimitations: [], evidenceGaps: [], warnings: [],
     });
-    expect(result).toBe("Client-reported only");
+    expect(result).not.toBe("Client-reported only");
     expect(result).not.toMatch(/server[- ]verified/i);
   });
 
-  it("5. Server-verified trigger -> not a gap at all; value presence still wins (tier 1)", () => {
-    // A server-verified trigger implies the value itself would be present —
-    // exitTriggerTimingVerification=SERVER_VERIFIED must never itself map
-    // to a limitation category (it is not in EXACT_TEXT_TABLE / tier-3
-    // check, which only special-cases CLIENT_REPORTED_UNVERIFIED).
+  it("5. MFE/MAE must not receive a client-reported reason merely because the exit trigger was client-reported", () => {
+    // Direct regression coverage for the reported bug: given the exact
+    // real-world scenario (provider coverage gap causing MFE/MAE to be
+    // null, on a trade whose close trigger was client-reported), the
+    // resolver must resolve MFE/MAE from the price-path limitation text,
+    // never from the unrelated trigger-verification field.
     const result = resolveAvailabilityReason({
-      value: true, reportAvailability: "READY", exitTriggerTimingVerification: "SERVER_VERIFIED",
-      pricePathLimitations: [], evidenceGaps: [], warnings: [],
+      value: null, reportAvailability: "READY",
+      pricePathLimitations: [
+        "requested window 2026-08-04..2026-08-05 but provider only returned bars for 2026-08-05..2026-08-05",
+      ],
+      evidenceGaps: [], warnings: [],
     });
-    expect(result).toBe("Available");
+    expect(result).toBe("Provider returned incomplete coverage");
+    expect(result).not.toBe("Client-reported only");
   });
 
   it("6. Missing price-provider sessions -> exact-match table (provider returned no valid bars)", () => {

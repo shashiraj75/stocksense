@@ -12,23 +12,33 @@
 //      from report.status, which is a completeness value like
 //      LIMITED_EVIDENCE and does not gate this tier). A non-READY
 //      availability means the value was never computable at all.
-//   3. source_manifest structured fields — currently only
-//      `exit_trigger_timing_verification`, a real typed enum
-//      (backend/services/postmortem/deterministic.py's
-//      AutoCloseTimingEvidence: CLIENT_REPORTED_UNVERIFIED | SERVER_VERIFIED)
-//      — checked by EXACT value equality, never substring matching.
-//   4. Exact-string lookup against the literal evidence_gaps / warnings /
+//   3. Exact-string lookup against the literal evidence_gaps / warnings /
 //      price_path_limitations strings this codebase is known to emit
 //      today (see the source citations beside EXACT_TEXT_TABLE below).
 //      Exact equality, not regex — an incidental wording change to one of
-//      these strings will fail to match and fall through to tier 5/6
+//      these strings will fail to match and fall through to tier 4/5
 //      rather than silently guessing wrong.
-//   5. A small, narrowly-bounded substring check for the ONE known
+//   4. A small, narrowly-bounded substring check for the ONE known
 //      dynamically-templated message (price_path_acquisition.py's
 //      "requested window {a}..{b} but provider only returned bars for
 //      {c}..{d}") that can never be an exact-match table entry because the
 //      dates vary per trade.
-//   6. Final safe fallback.
+//   5. Final safe fallback.
+//
+// DELIBERATELY NOT a tier here: source_manifest.exit_trigger_timing_verification
+// (CLIENT_REPORTED_UNVERIFIED | SERVER_VERIFIED). That field describes
+// whether the CLOSE TRIGGER (e.g. a TARGET_HIT/STOP_LOSS event) was
+// independently server-verified — it says nothing about whether MFE, MAE,
+// or the touch fields themselves are computable, which depends entirely on
+// price-path evidence coverage. An earlier version of this resolver
+// applied it as a blanket tier to all four price-path fields, which
+// produced "Client-reported only" for MFE/MAE even when the real reason
+// was incomplete provider coverage — a real defect, fixed by removing
+// that tier. The client-reported/unverified-trigger nuance is still
+// surfaced correctly, but only for the specific TARGET_HIT+null-touch case
+// it actually describes, via isUnverifiedTargetHitCloseCase /
+// UNVERIFIED_TARGET_HIT_EXPLANATION below — never as a generic price-path
+// availability reason.
 export type AvailabilityReasonCategory =
   | "Available"
   | "Not captured at entry"
@@ -106,8 +116,6 @@ export interface AvailabilityReasonInput {
   value: unknown;
   /** report.availability (e.g. "READY", "PROCESSING") — the lifecycle field, distinct from report.status. */
   reportAvailability?: string | null;
-  /** source_manifest.exit_trigger_timing_verification — a real typed enum, checked by exact equality. */
-  exitTriggerTimingVerification?: string | null;
   pricePathLimitations: string[];
   evidenceGaps: string[];
   warnings: string[];
@@ -123,24 +131,19 @@ export function resolveAvailabilityReason(input: AvailabilityReasonInput): Avail
     return "Not applicable";
   }
 
-  // Tier 3 — structured source_manifest field, exact enum equality.
-  if (input.exitTriggerTimingVerification === "CLIENT_REPORTED_UNVERIFIED") {
-    return "Client-reported only";
-  }
-
-  // Tier 4 — exact/prefix text-table match against real governed strings.
+  // Tier 3 — exact/prefix text-table match against real governed strings.
   const haystack = [...input.pricePathLimitations, ...input.evidenceGaps, ...input.warnings];
   for (const text of haystack) {
     const match = matchExactOrPrefix(text.trim());
     if (match) return match;
   }
 
-  // Tier 5 — the one known bounded dynamic-template substring.
+  // Tier 4 — the one known bounded dynamic-template substring.
   for (const text of haystack) {
     if (text.includes(BOUNDED_DYNAMIC_SUBSTRING)) return "Provider returned incomplete coverage";
   }
 
-  // Tier 6 — final safe fallback. Never invented.
+  // Tier 5 — final safe fallback. Never invented.
   return FALLBACK;
 }
 

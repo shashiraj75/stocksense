@@ -546,8 +546,11 @@ describe("TradePostmortemPage — financial context and closure classification",
     const { default: TradePostmortemPage } = await import("../page");
     renderPage(TradePostmortemPage);
 
-    await waitFor(() => expect(screen.getByText(/₹120\.50/)).toBeInTheDocument());
-    expect(screen.getByText(/₹150\.00/)).toBeInTheDocument(); // MFE
+    // Realized P&L now correctly renders identically in both the summary
+    // card AND the Layer-1 executive-summary sentence (single-source-of-
+    // truth currency formatter) — expect exactly that duplication.
+    await waitFor(() => expect(screen.getAllByText(/₹120\.50/).length).toBe(2));
+    expect(screen.getByText(/₹150\.00/)).toBeInTheDocument(); // MFE (card only)
   });
 
   it("renders USD currency for a US-market report", async () => {
@@ -555,7 +558,7 @@ describe("TradePostmortemPage — financial context and closure classification",
     const { default: TradePostmortemPage } = await import("../page");
     renderPage(TradePostmortemPage);
 
-    await waitFor(() => expect(screen.getByText(/\$120\.50/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText(/\$120\.50/).length).toBe(2));
   });
 
   it("places the sign before the currency symbol for a negative value (-$X.XX, never $-X.XX)", async () => {
@@ -569,7 +572,7 @@ describe("TradePostmortemPage — financial context and closure classification",
     const { default: TradePostmortemPage } = await import("../page");
     renderPage(TradePostmortemPage);
 
-    await waitFor(() => expect(screen.getByText(/-\$50\.00/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText(/-\$50\.00/).length).toBe(2));
     expect(screen.queryByText(/\$-50\.00/)).not.toBeInTheDocument();
   });
 

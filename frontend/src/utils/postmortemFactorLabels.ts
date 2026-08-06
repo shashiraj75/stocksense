@@ -60,6 +60,28 @@ const SECTION_FACTOR_LABELS: Record<string, FactorLabelEntry> = {
   "price_path::target_touch": { title: "Target Touched During Holding Period" },
   "price_path::stop_touch": { title: "Stop Touched During Holding Period" },
   "price_path::touch_order": { title: "Order in Which Target/Stop Were Touched" },
+  "price_path::price_path_window": { title: "Price-Path Evidence Window (Legacy 1.1.0 Report)" },
+  "price_path::same_bar_ambiguity": { title: "Same-Bar Touch Ambiguity (Legacy 1.1.0 Report)" },
+  "price_path::entry_boundary_ambiguity": { title: "Entry-Day Boundary Ambiguity (Legacy 1.1.0 Report)" },
+  "price_path::exit_boundary_ambiguity": { title: "Exit-Day Boundary Ambiguity (Legacy 1.1.0 Report)" },
+  "price_path::gap_through_level": { title: "Price Gapped Through the Level (Legacy 1.1.0 Report)" },
+  "price_path::mfe_giveback": { title: "Giveback From Peak Favorable Excursion (Legacy 1.1.0 Report)" },
+  "price_path::captured_mfe": { title: "Captured Share of Peak Favorable Excursion (Legacy 1.1.0 Report)" },
+  "price_path::price_basis_compatibility": { title: "Price-Adjustment Basis Compatibility (Legacy 1.1.0 Report)" },
+  "price_path::missing_level_history": { title: "Incomplete Stop/Target Edit History (Legacy 1.1.0 Report)" },
+
+  // governed_price_path — the current (1.2.0) per-level touch authority,
+  // distinct from the legacy price_path::* rows above.
+  "governed_price_path::target_touch": { title: "Target Level Touched" },
+  "governed_price_path::stop_touch": { title: "Stop Level Touched" },
+  "governed_price_path::touch_order": { title: "Touch Sequence" },
+
+  // exit_evidence — built inline (not via RULE_REGISTRY), see exit_evidence.py
+  "exit_evidence::exit_evidence": { title: "Exit Record" },
+  "exit_evidence::exit_mechanism": { title: "How the Trade Closed" },
+  "exit_evidence::exit_execution": { title: "Exit Execution Details" },
+  "exit_evidence::exit_management_levels": { title: "Risk Levels in Effect at Close" },
+  "exit_evidence::exit_trigger_timing": { title: "Close Trigger Verification" },
 };
 
 // Section-agnostic fallback (factor alone), for cases where a factor

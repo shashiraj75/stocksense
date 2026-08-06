@@ -10,6 +10,7 @@ import { useState } from "react";
 import clsx from "clsx";
 import type { PostmortemClaim, EvidenceItem } from "@/utils/api";
 import { getFactorLabel, getReportSectionLabel } from "@/utils/postmortemFactorLabels";
+import { resolveClaimReason } from "@/utils/postmortemClaimReasons";
 
 const EVIDENCE_CLASS_STYLE: Record<string, string> = {
   MECHANICALLY_VERIFIED: "text-bull",
@@ -28,13 +29,15 @@ const EVIDENCE_CLASS_LABEL: Record<string, string> = {
   INSUFFICIENT_EVIDENCE: "○ Insufficient evidence",
 };
 
-const FALLBACK_REASON = "Reason unavailable was not supplied by this report.";
-
 function plainLanguageReason(claim: PostmortemClaim): string {
   if (claim.evidence_class !== "INSUFFICIENT_EVIDENCE") return "";
-  const parts = [...claim.missing_evidence, ...claim.limitations].filter(Boolean);
-  if (parts.length > 0) return parts.join("; ");
-  return FALLBACK_REASON;
+  // Deliberately does NOT surface claim.missing_evidence / claim.limitations
+  // directly — that raw governed text (snake_case identifiers, internal
+  // phrasing like "this codebase" or a sprint reference) leaked into the
+  // investor-facing layer in an earlier version, a real defect found
+  // during preview QA. The exact original text remains available verbatim
+  // in the expandable Layer-3 detail panel below, unmutated.
+  return resolveClaimReason({ reportSection: claim.report_section, factor: claim.factor });
 }
 
 function FactorClaimRow({
@@ -177,7 +180,31 @@ export interface WhatYouCanLearnBuckets {
   dataNeeded: PostmortemClaim[];
 }
 
-export function bucketClaimsForWhatYouCanLearn(claims: PostmortemClaim[]): WhatYouCanLearnBuckets {
+// Factors whose top-level report value can be independently cross-checked
+// against a claim's evidence_class before allowing a CONFIRMED
+// classification. Regression coverage for a real defect found during
+// preview QA: a governed_price_path claim about stop_touch can be
+// evidence_class=MECHANICALLY_VERIFIED while genuinely describing an
+// OBSERVATION ABOUT THE ABSENCE of a crossing (e.g. "no compatible
+// crossing was observed"), not a positive confirmation that the level was
+// touched — bucketing that under CONFIRMED without checking the actual
+// top-level value misleadingly implied "Stop touch: confirmed" while the
+// price-path summary simultaneously showed "Stop touched: N/A".
+const PRICE_PATH_CROSS_CHECKED_FACTORS = new Set([
+  "mfe", "mae", "target_touch", "stop_touch",
+]);
+
+export interface PricePathTopLevelValues {
+  mfe: unknown;
+  mae: unknown;
+  target_touch: unknown;
+  stop_touch: unknown;
+}
+
+export function bucketClaimsForWhatYouCanLearn(
+  claims: PostmortemClaim[],
+  pricePathTopLevelValues?: PricePathTopLevelValues
+): WhatYouCanLearnBuckets {
   const buckets: WhatYouCanLearnBuckets = {
     confirmed: [],
     supportedNotProven: [],
@@ -185,8 +212,27 @@ export function bucketClaimsForWhatYouCanLearn(claims: PostmortemClaim[]): WhatY
     dataNeeded: [],
   };
   for (const c of claims) {
-    if (c.evidence_class === "MECHANICALLY_VERIFIED" || c.evidence_class === "DIRECTLY_OBSERVED") {
+    // Cross-check: a price-path claim cannot be classified CONFIRMED when
+    // its own top-level value is null/undefined — the report itself does
+    // not consider the metric available, regardless of what evidence_class
+    // the underlying claim carries.
+    const isPriceValueField = PRICE_PATH_CROSS_CHECKED_FACTORS.has(c.factor);
+    const topLevelValue = pricePathTopLevelValues
+      ? (pricePathTopLevelValues as unknown as Record<string, unknown>)[c.factor]
+      : undefined;
+    const topLevelValueIsMissing = isPriceValueField && pricePathTopLevelValues !== undefined
+      && (topLevelValue === null || topLevelValue === undefined);
+
+    if (
+      (c.evidence_class === "MECHANICALLY_VERIFIED" || c.evidence_class === "DIRECTLY_OBSERVED")
+      && !topLevelValueIsMissing
+    ) {
       buckets.confirmed.push(c);
+    } else if (topLevelValueIsMissing && c.evidence_class !== "CONFLICTING_EVIDENCE") {
+      // The metric itself remains unavailable — this belongs under NOT
+      // ESTABLISHED, never CONFIRMED, regardless of what the underlying
+      // claim's evidence_class says about the observation itself.
+      buckets.notEstablished.push(c);
     } else if (c.evidence_class === "EVIDENCE_SUPPORTED") {
       buckets.supportedNotProven.push(c);
     } else if (c.evidence_class === "CONFLICTING_EVIDENCE") {
@@ -198,8 +244,13 @@ export function bucketClaimsForWhatYouCanLearn(claims: PostmortemClaim[]): WhatY
   return buckets;
 }
 
-function WhatYouCanLearn({ claims }: { claims: PostmortemClaim[] }) {
-  const buckets = bucketClaimsForWhatYouCanLearn(claims);
+function WhatYouCanLearn({
+  claims, pricePathTopLevelValues,
+}: {
+  claims: PostmortemClaim[];
+  pricePathTopLevelValues?: PricePathTopLevelValues;
+}) {
+  const buckets = bucketClaimsForWhatYouCanLearn(claims, pricePathTopLevelValues);
   const rows: { label: string; items: PostmortemClaim[]; className: string }[] = [
     { label: "CONFIRMED", items: buckets.confirmed, className: "text-bull" },
     { label: "SUPPORTED BUT NOT PROVEN", items: buckets.supportedNotProven, className: "text-brand-500" },
@@ -240,9 +291,12 @@ function WhatYouCanLearn({ claims }: { claims: PostmortemClaim[] }) {
 export function ClaimExplanationLayer({
   claims,
   evidenceById,
+  pricePathTopLevelValues,
 }: {
   claims: PostmortemClaim[];
   evidenceById: Map<string, EvidenceItem>;
+  /** Optional cross-check inputs for the "What You Can Learn" CONFIRMED bucket — see PRICE_PATH_CROSS_CHECKED_FACTORS above. */
+  pricePathTopLevelValues?: PricePathTopLevelValues;
 }) {
   if (claims.length === 0) {
     return <div className="text-xs text-gray-500">No claims are available for this report.</div>;
@@ -257,7 +311,7 @@ export function ClaimExplanationLayer({
 
   return (
     <div>
-      <WhatYouCanLearn claims={claims} />
+      <WhatYouCanLearn claims={claims} pricePathTopLevelValues={pricePathTopLevelValues} />
       {Array.from(bySection.entries()).map(([section, sectionClaims]) => (
         <SectionGroup key={section} section={section} claims={sectionClaims} evidenceById={evidenceById} />
       ))}
