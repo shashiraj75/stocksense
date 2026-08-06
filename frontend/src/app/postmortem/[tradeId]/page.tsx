@@ -11,6 +11,11 @@ import {
 import { useAuth } from "@/lib/AuthContext";
 import { InsufficientEvidenceMark } from "@/components/InsufficientEvidenceMark";
 import { isTradePostmortemPricePathEnabled } from "@/utils/featureFlags";
+import { buildLayer1Summary } from "@/utils/postmortemSummary";
+import { ClaimExplanationLayer } from "@/components/postmortem/ClaimExplanationLayer";
+import {
+  isUnverifiedTargetHitCloseCase, UNVERIFIED_TARGET_HIT_EXPLANATION, resolveAvailabilityReason,
+} from "@/utils/postmortemAvailabilityReason";
 
 // ============================================================================
 // Wave C, WC-N — /postmortem/[tradeId]: the per-trade governed current-report
@@ -418,6 +423,19 @@ function ReadyReport({ report }: { report: CurrentReportReadResponse }) {
   const priceLimitations = Array.isArray(pricePath?.price_path_limitations)
     ? (pricePath!.price_path_limitations as JSONValue[]).filter((v): v is string => typeof v === "string")
     : [];
+  const evidenceGaps = report.evidence_gaps ?? [];
+  const warnings = report.warnings ?? [];
+  const exitTriggerTimingVerification = report.source_manifest?.exit_trigger_timing_verification ?? null;
+
+  const reasonFor = (value: unknown) =>
+    resolveAvailabilityReason({
+      value,
+      reportAvailability: report.availability ?? null,
+      exitTriggerTimingVerification,
+      pricePathLimitations: priceLimitations,
+      evidenceGaps,
+      warnings,
+    });
 
   const isLimited = report.status === "LIMITED_EVIDENCE";
   const currencySymbol = currencySymbolFor(report.market);
@@ -440,6 +458,12 @@ function ReadyReport({ report }: { report: CurrentReportReadResponse }) {
           about what is not.
         </div>
       )}
+
+      {/* Layer 1 — Executive Summary: one deterministic plain-English
+          paragraph built only from governed report fields. */}
+      <div className="rounded-lg border border-dark-border bg-dark-card px-4 py-3 text-sm text-gray-200" data-testid="layer1-summary">
+        {buildLayer1Summary(report)}
+      </div>
 
       <div className="rounded-lg border border-dark-border bg-dark-card px-4 py-3 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
         <div>
@@ -476,42 +500,77 @@ function ReadyReport({ report }: { report: CurrentReportReadResponse }) {
           <div>
             <div className="text-gray-500">Max favorable excursion</div>
             <div className="font-medium tabular-nums">{fmtAbs(mfeAbs, currencySymbol)} ({fmtPct(mfePct)})</div>
+            {mfeAbs === null && (
+              <div className="text-[10px] text-gray-500 mt-0.5 break-words" data-testid="mfe-reason">
+                {reasonFor(mfeAbs)}
+              </div>
+            )}
           </div>
           <div>
             <div className="text-gray-500">Max adverse excursion</div>
             <div className="font-medium tabular-nums">{fmtAbs(maeMagnitudeAbs, currencySymbol)} ({fmtPct(maeMagnitudePct)})</div>
+            {maeMagnitudeAbs === null && (
+              <div className="text-[10px] text-gray-500 mt-0.5 break-words" data-testid="mae-reason">
+                {reasonFor(maeMagnitudeAbs)}
+              </div>
+            )}
           </div>
           <div>
             <div className="text-gray-500">Target touched</div>
             <div className="font-medium">
               {targetTouch === null ? "N/A" : targetTouch ? (targetTouchType ?? "Yes") : "No"}
             </div>
+            {targetTouch === null && (
+              <div className="text-[10px] text-gray-500 mt-0.5 break-words" data-testid="target-touch-reason">
+                {reasonFor(targetTouch)}
+              </div>
+            )}
           </div>
           <div>
             <div className="text-gray-500">Stop touched</div>
             <div className="font-medium">
               {stopTouch === null ? "N/A" : stopTouch ? (stopTouchType ?? "Yes") : "No"}
             </div>
+            {stopTouch === null && (
+              <div className="text-[10px] text-gray-500 mt-0.5 break-words" data-testid="stop-touch-reason">
+                {reasonFor(stopTouch)}
+              </div>
+            )}
           </div>
         </div>
         {touchOrder && (
           <p className="text-xs text-gray-500 mt-1.5">Touch sequence: {touchOrder.replace(/_/g, " ").toLowerCase()}</p>
+        )}
+        {isUnverifiedTargetHitCloseCase(exitMechanism, targetTouch) && (
+          <p role="note" className="text-xs text-amber-200 mt-1.5 break-words rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5">
+            {UNVERIFIED_TARGET_HIT_EXPLANATION}
+          </p>
         )}
         {priceLimitations.length > 0 && (
           <p className="text-xs text-gray-500 mt-1.5 break-words">Price-path limitations: {priceLimitations.join("; ")}</p>
         )}
       </div>
 
+      {/* Layer 2 — Investor Explanation: claims grouped by report_section,
+          each with a named factor title, text+icon evidence-class label,
+          plain-language reason, and a "What You Can Learn" rollup. Every
+          claim in report.claims renders exactly once here. */}
       <div>
-        <h2 className="text-sm font-semibold text-gray-300 mb-2">Governed conclusions</h2>
-        {claims.length === 0 ? (
-          <div className="text-xs text-gray-500">No claims are available for this report.</div>
-        ) : (
-          <div className="rounded-lg border border-dark-border bg-dark-card px-4 py-2">
-            {claims.map((c) => <ClaimRow key={c.claim_id} claim={c} evidenceById={evidenceById} />)}
-          </div>
-        )}
+        <h2 className="text-sm font-semibold text-gray-300 mb-2">What This Report Found</h2>
+        <ClaimExplanationLayer claims={claims} evidenceById={evidenceById} />
       </div>
+
+      {/* Layer 3 — Technical Evidence & Audit Trail: original claim text,
+          rule metadata, and raw evidence items, all preserved verbatim and
+          expandable. ClaimRow below is retained for this raw/audit view. */}
+      <details className="text-xs">
+        <summary className="text-gray-400 cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-500 rounded">
+          Technical evidence &amp; audit trail — all claims ({claims.length})
+        </summary>
+        <div className="mt-2 rounded-lg border border-dark-border bg-dark-card px-4 py-2 max-h-96 overflow-y-auto">
+          {claims.map((c) => <ClaimRow key={c.claim_id} claim={c} evidenceById={evidenceById} />)}
+        </div>
+      </details>
 
       {evidenceItems.length > 0 && (
         <details className="text-xs">

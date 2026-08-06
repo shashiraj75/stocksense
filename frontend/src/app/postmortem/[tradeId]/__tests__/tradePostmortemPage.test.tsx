@@ -185,9 +185,9 @@ describe("TradePostmortemPage — READY COMPLETE", () => {
     const { default: TradePostmortemPage } = await import("../page");
     renderPage(TradePostmortemPage);
 
-    await waitFor(() => expect(screen.getByText(/target was touched first/i)).toBeInTheDocument());
-    expect(screen.getByText(/WIN/)).toBeInTheDocument();
-    expect(screen.getByText(/entry evidence completeness is limited/i)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText(/target was touched first/i).length).toBeGreaterThan(0));
+    expect(screen.getAllByText(/WIN/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/entry evidence completeness is limited/i).length).toBeGreaterThan(0);
     expect(screen.getByText(/some warning/i)).toBeInTheDocument();
     expect(screen.queryByText(/limited evidence/i)).not.toBeInTheDocument();
   });
@@ -578,7 +578,7 @@ describe("TradePostmortemPage — financial context and closure classification",
     const { default: TradePostmortemPage } = await import("../page");
     renderPage(TradePostmortemPage);
 
-    await waitFor(() => expect(screen.getByText(/\+4\.20%/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText(/\+4\.20%/).length).toBeGreaterThan(0));
     expect(screen.queryByText(/\$\+4\.20%/)).not.toBeInTheDocument();
     expect(screen.queryByText(/₹\+4\.20%/)).not.toBeInTheDocument();
   });
@@ -719,8 +719,8 @@ describe("TradePostmortemPage — evidence value safety", () => {
     const { default: TradePostmortemPage } = await import("../page");
     renderPage(TradePostmortemPage);
 
-    await waitFor(() => expect(screen.getByText(/contradictions:/i)).toBeInTheDocument());
-    expect(screen.getByText(/target and stop both touched same bar/i)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText(/contradiction/i).length).toBeGreaterThan(0));
+    expect(screen.getAllByText(/target and stop both touched same bar/i).length).toBeGreaterThan(0);
   });
 });
 
