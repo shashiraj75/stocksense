@@ -16,6 +16,7 @@
 - **Full explainability** — factor breakdown, bull/bear thesis, and reasoning bullets for every call
 - **Learning engine** — tracks prediction outcomes, retrains factor weights weekly via IC (Information Coefficient)
 - **Paper Trading** — test signals with virtual money, track P&L, set stop-losses and targets
+- **Trade Postmortem** — post-trade, evidence-based win/loss analysis for a closed Paper Trade. From a completed trade's history entry, "View Postmortem" opens `/postmortem/[tradeId]`: a deterministic executive summary, factor-by-factor explainability, an investor-facing "What You Can Learn" classification per factor (CONFIRMED / SUPPORTED BUT NOT PROVEN / NOT ESTABLISHED / DATA NEEDED FOR A DEEPER REPORT), and price-path evidence (MFE, MAE, target/stop level touches). Live in Production; see [Trade Postmortem Explainability — Production Closure](Documentation/Engineering-Handbook/Releases/Trade-Postmortem-Explainability-Production-Closure.md).
 - **Price Alerts** — get notified when a stock crosses your target price
 - **Screener & Heatmap** — filter Nifty 100 / S&P 500; sector heatmap with colour-coded performance
 - **Watchlist** — save favourite stocks with live prices and change%

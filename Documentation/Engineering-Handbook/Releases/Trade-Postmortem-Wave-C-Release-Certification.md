@@ -1,5 +1,7 @@
 # Trade Postmortem — Wave C Release Certification
 
+> **HISTORICAL DOCUMENT — PRE-ACTIVATION CERTIFICATION.** This certification predates PR #35/#36 merge and production activation. See [Trade Postmortem Explainability — Production Closure](./Trade-Postmortem-Explainability-Production-Closure.md) for the final live state.
+
 **Status: certified for dark deployment only. Current main has been
 merged into the feature branch. PR #35 has not been merged into main.
 No deployment occurred. No production environment change occurred. No

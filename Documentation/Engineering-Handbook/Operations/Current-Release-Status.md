@@ -4,7 +4,37 @@
 
 **Use this document for current state.** Historical sprint reports, Epic closures, SSDS documents, and audit reports remain authoritative evidence for their own completed scope, but they do not automatically describe the current production operating state.
 
-**As of:** 2026-07-26 — maintained as a live operational register
+**As of:** 2026-08-07 — maintained as a live operational register
+
+---
+
+## Trade Postmortem (Wave C + Explainability)
+
+**Status:** RELEASE COMPLETE — merged, deployed, and activated in Production.
+
+- PR #35 (Wave C base: current-report read API, per-trade frontend,
+  observability) — merged and dark-deployed.
+- PR #36 (Explainability/UX overhaul: three-layer report, factor-specific
+  price-path assessment, `Company Name (SYMBOL)` identity, evidence-coverage
+  matrix) — merged at `5170692f27b1742406a21d67fca8a74d62490c1f`.
+- Both backend (`TRADE_POSTMORTEM_DAILY_ENABLED`) and frontend
+  (`TRADE_POSTMORTEM_PRICE_PATH_ENABLED`) flags enabled in Production.
+- Production validation: 48-hour backend-only stability observation passed;
+  natural production lifecycle verified on a real trade; frontend
+  activation, authenticated Production smoke test, and the
+  Company Name (SYMBOL) identity gate all passed; temporary Preview-only
+  frontend flag and temporary Preview CORS authorization removed after QA;
+  final 60-minute Production observation passed with zero rollback
+  threshold crossed.
+- Full closure evidence:
+  [Trade Postmortem Explainability — Production Closure](../Releases/Trade-Postmortem-Explainability-Production-Closure.md).
+
+**FUTURE POSTMORTEM EVIDENCE COMPLETION WORK** (not a release-stability
+issue — the release above is complete and stable): the evidence *coverage*
+matrix identifies factors where underlying evidence capture is still
+partial. This is tracked separately in the
+[Evidence Completion Roadmap](./Trade-Postmortem-Evidence-Completion-Roadmap.md)
+and does not block or qualify the RELEASE COMPLETE status above.
 
 ---
 
