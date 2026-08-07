@@ -6,6 +6,35 @@
 
 **As of:** 2026-08-07 — maintained as a live operational register
 
+## Major Feature Lifecycle Summary (2026-08-07 reconciliation)
+
+Code-grounded snapshot from the post-Jul-11 documentation reconciliation
+(PR #37). Full evidence and per-commit mapping:
+[Documentation-Current-State-Reconciliation-Ledger-2026-08.md](Documentation-Current-State-Reconciliation-Ledger-2026-08.md).
+Production *runtime* toggle state (vs. code default) is asserted only where
+a specific closure doc says so; otherwise "not independently verifiable
+from this repository checkout" per that ledger's own caveat.
+
+| Subsystem | Classification |
+|---|---|
+| Prediction Engine (confidence, target-price floors) | LIVE BACKEND / OPERATIONAL |
+| Daily Picks (India + US, incl. premarket finalizer) | LIVE USER-FACING / LIVE BACKEND OPERATIONAL |
+| Multibagger (weekly-refresh architecture) | LIVE USER-FACING |
+| Paper Trading | LIVE USER-FACING |
+| Trade Postmortem | LIVE USER-FACING — RELEASE COMPLETE (see below) |
+| Portfolio | LIVE USER-FACING |
+| Watchlist | LIVE USER-FACING |
+| Alerts | LIVE USER-FACING |
+| Validation Engine | LIVE BACKEND / OPERATIONAL |
+| Learning Alpha Engine | FEATURE-FLAGGED OFF (contained, `LEARNING_ALPHA_PRODUCTION_ENABLED`) |
+| RCI | FEATURE-FLAGGED OFF (`RCI_LIVE_STOCK_ANALYSIS_ENABLED`, unchanged since baseline) |
+| SEC PIT Fundamentals | LIVE BACKEND / OPERATIONAL (feeds live US confidence scoring, not shadow-only) |
+| NSE Instrument Master | FOUNDATION / UNINTEGRATED |
+| Market Leadership | FEATURE-FLAGGED OFF / DEPLOYED DORMANT |
+| Intelligence Engine / Universe Builder | SHADOW / EXPERIMENTAL (`INTELLIGENCE_ENGINE_SHADOW_ENABLED`) |
+| Postgres Schema Init | LIVE BACKEND / OPERATIONAL (fail-closed) |
+| Caching / Egress Containment | LIVE BACKEND / OPERATIONAL |
+
 ---
 
 ## Trade Postmortem (Wave C + Explainability)

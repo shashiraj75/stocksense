@@ -136,7 +136,26 @@ All user data lives in Postgres and survives Railway restarts:
 | Alerts | `/alerts` | Price alerts with live trigger detection |
 | Portfolio | `/portfolio` | Holdings with AI signal per position |
 | Paper Trade | `/paper-trading` | Simulated trading with P&L tracker |
+| Trade Postmortem | `/postmortem/[tradeId]` | Explainable close-out report for a closed paper trade (evidence-backed factor breakdown, price-path evidence, contradictions) — flag-gated live in Production (`TRADE_POSTMORTEM_PRICE_PATH_ENABLED`) |
+| Multibagger | `/multibagger` | Weekly-refreshed Multibagger screen (India Saturday / US Sunday) |
 | Validation | `/validation` | Walk-forward hit rate, Sharpe, alpha |
+
+---
+
+## Experimental / Shadow / Dormant (not exposed as live user-facing surfaces)
+
+These exist in the codebase and are covered by tests, but are gated off by
+default and are not part of the live product surface above. See
+[`Documentation/Engineering-Handbook/Operations/Current-Release-Status.md`](Documentation/Engineering-Handbook/Operations/Current-Release-Status.md)
+for the authoritative, current lifecycle classification of every subsystem.
+
+| Subsystem | Classification |
+|---|---|
+| Market Leadership (Relative Strength Rank, Sector Leadership, Trend Lifecycle, Market Breadth) | FEATURE-FLAGGED OFF / DEPLOYED DORMANT — code merged and deployed, all flags off, no UI exposed, scoring influence unconsumed |
+| Learning Alpha Engine production activation | FEATURE-FLAGGED OFF — contained behind `LEARNING_ALPHA_PRODUCTION_ENABLED`, unset by default |
+| Intelligence Engine / Universe Builder shadow observations | SHADOW / EXPERIMENTAL — behind `INTELLIGENCE_ENGINE_SHADOW_ENABLED`, unset by default |
+| NSE Instrument Master (source registry, offline validators) | FOUNDATION / UNINTEGRATED — no production code path consumes it yet |
+| RCI (`RCI_LIVE_STOCK_ANALYSIS_ENABLED`) | FEATURE-FLAGGED OFF — aggregate observability counters deployed, feature itself disabled |
 
 ---
 
