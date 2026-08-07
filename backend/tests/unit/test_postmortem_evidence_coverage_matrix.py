@@ -298,5 +298,125 @@ class TestMatrixDoesNotDrift:
         )
 
 
+class TestDocMatrixSemanticParity:
+    """Direct (not merely structural) parity check between this JSON file
+    and its human-readable companion,
+    Documentation/Engineering-Handbook/Operations/Trade-Postmortem-Evidence-Coverage-Matrix.md.
+
+    Added 2026-08-07 during the post-Jul-11 documentation reconciliation
+    (PR #37) after discovering the two files had drifted: the markdown
+    doc claimed category totals A:14/B:2/C:4/D:8/E:15/F:2 while this JSON
+    (the code-introspected source of truth) actually held A:28/B:2/C:1/
+    D:12/E:2 with no F category — and several individual rows (e.g.
+    governed_price_path target_touch/stop_touch/touch_order) carried a
+    different remediation_category in each file. The other tests in this
+    module only prove the JSON matches the live rule registry; none of
+    them previously caught JSON-vs-doc drift. This class parses the
+    doc's pipe-table and cross-checks status/source_type/
+    verification_level/remediation_category per (report_section,
+    internal_factor, rule_id) key, plus the doc's stated category
+    totals, against this JSON file — narrow, additive, does not touch
+    the registry-introspection tests above.
+    """
+
+    _DOC_PATH = (
+        _TESTS_UNIT_DIR.parent.parent.parent
+        / "Documentation"
+        / "Engineering-Handbook"
+        / "Operations"
+        / "Trade-Postmortem-Evidence-Coverage-Matrix.md"
+    )
+
+    _MATRIX_COLUMNS = (
+        "report_section", "internal_factor", "user_facing_title", "rule_id", "rule_version",
+        "evidence_required", "evidence_currently_captured", "source_type", "verification_level",
+        "freshness_basis", "status", "reason_missing", "affects_new_trades", "affects_legacy_trades",
+        "historically_recoverable", "frontend_improvement_required", "backend_improvement_required",
+        "recommended_phase", "fabrication_risk", "remediation_category",
+    )
+
+    def _parse_doc_rows(self) -> list[dict]:
+        text = self._DOC_PATH.read_text()
+        lines = text.splitlines()
+        header_idx = None
+        for i, line in enumerate(lines):
+            if line.strip().startswith("| report_section |"):
+                header_idx = i
+                break
+        assert header_idx is not None, "could not find the matrix table header in the doc"
+        rows = []
+        # header_idx+1 is the |---|---| separator; data starts at +2.
+        for line in lines[header_idx + 2:]:
+            if not line.strip().startswith("|"):
+                break
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if len(cells) != len(self._MATRIX_COLUMNS):
+                continue
+            rows.append(dict(zip(self._MATRIX_COLUMNS, cells)))
+        return rows
+
+    def test_doc_exists(self):
+        assert self._DOC_PATH.exists(), f"expected companion doc at {self._DOC_PATH}"
+
+    def test_doc_row_count_matches_json(self):
+        doc_rows = self._parse_doc_rows()
+        json_rows = _load_matrix()
+        assert len(doc_rows) == len(json_rows), (
+            f"doc has {len(doc_rows)} matrix rows, json has {len(json_rows)} — "
+            "regenerate the doc's table from the json file"
+        )
+
+    def test_doc_rows_match_json_keys(self):
+        doc_keys = {(r["report_section"], r["internal_factor"], r["rule_id"]) for r in self._parse_doc_rows()}
+        json_keys = {(e["report_section"], e["internal_factor"], e["rule_id"]) for e in _load_matrix()}
+        assert doc_keys == json_keys, (
+            f"doc/json row keys differ - only in doc: {sorted(doc_keys - json_keys)}, "
+            f"only in json: {sorted(json_keys - doc_keys)}"
+        )
+
+    def test_doc_rows_semantically_match_json(self):
+        """For every shared row key, the doc and json must agree on the
+        fields most likely to silently drift and mislead a reader:
+        status, source_type, verification_level, remediation_category."""
+        semantic_fields = ("status", "source_type", "verification_level", "remediation_category")
+        json_by_key = {
+            (e["report_section"], e["internal_factor"], e["rule_id"]): e for e in _load_matrix()
+        }
+        mismatches = []
+        for doc_row in self._parse_doc_rows():
+            key = (doc_row["report_section"], doc_row["internal_factor"], doc_row["rule_id"])
+            json_row = json_by_key.get(key)
+            if json_row is None:
+                continue  # caught by test_doc_rows_match_json_keys
+            for field in semantic_fields:
+                json_val = str(json_row[field])
+                doc_val = doc_row[field]
+                if json_val != doc_val:
+                    mismatches.append((key, field, doc_val, json_val))
+        assert not mismatches, (
+            "doc/json semantic mismatches (key, field, doc_value, json_value): " + repr(mismatches)
+        )
+
+    def test_doc_stated_category_totals_match_json(self):
+        """The doc's 'Row count and category totals' prose must match the
+        json's actual remediation_category distribution — this is the
+        specific claim that was stale (14/2/4/8/15/2+F2 vs the json's
+        real 28/2/1/12/2) before this reconciliation."""
+        from collections import Counter
+
+        json_counts = Counter(e["remediation_category"][:2].strip(".") for e in _load_matrix())
+        text = self._DOC_PATH.read_text()
+        for prefix, count in json_counts.items():
+            needle = f"{prefix}. "
+            assert f"{prefix}. AVAILABLE_NOW: {count}" in text or \
+                   f"{prefix}. EXISTING_DATA_NOT_PROPAGATED: {count}" in text or \
+                   f"{prefix}. REQUIRES_SERVER_VERIFICATION: {count}" in text or \
+                   f"{prefix}. REQUIRES_NEW_ACQUISITION: {count}" in text or \
+                   f"{prefix}. LEGACY_NOT_RECOVERABLE: {count}" in text, (
+                f"doc's stated total for category {prefix} does not match json's actual "
+                f"count of {count} — update the doc's 'Row count and category totals' section"
+            )
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

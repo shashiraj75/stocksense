@@ -17,8 +17,15 @@
 - PR #36 (Explainability/UX overhaul: three-layer report, factor-specific
   price-path assessment, `Company Name (SYMBOL)` identity, evidence-coverage
   matrix) — merged at `5170692f27b1742406a21d67fca8a74d62490c1f`.
-- Both backend (`TRADE_POSTMORTEM_DAILY_ENABLED`) and frontend
-  (`TRADE_POSTMORTEM_PRICE_PATH_ENABLED`) flags enabled in Production.
+- Two independent flag pairs, both enabled in Production: the daily-batch
+  path uses `TRADE_POSTMORTEM_DAILY_ENABLED` (backend) /
+  `NEXT_PUBLIC_TRADE_POSTMORTEM_DAILY_ENABLED` (frontend); the per-trade
+  `/postmortem/[tradeId]` route uses `TRADE_POSTMORTEM_PRICE_PATH_ENABLED`
+  (backend) / `NEXT_PUBLIC_TRADE_POSTMORTEM_PRICE_PATH_ENABLED` (frontend) —
+  each side has both a backend and a frontend twin
+  (`backend/api/routers/paper_trading.py`,
+  `frontend/src/utils/featureFlags.ts`); this is not one backend-only flag
+  paired with one frontend-only flag.
 - Production validation: 48-hour backend-only stability observation passed;
   natural production lifecycle verified on a real trade; frontend
   activation, authenticated Production smoke test, and the
