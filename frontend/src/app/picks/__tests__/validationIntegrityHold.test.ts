@@ -127,6 +127,10 @@ describe("Phase GPI-0 — true two-branch integrity hold", () => {
 
   it("Paper Trade containment is unchanged", () => {
     expect(pageSource).toContain("disabled={isStaleOrUnknown}");
-    expect(pageSource).toContain("showPaperTrade && pick.price && !isStaleOrUnknown");
+    // Phase A1.1 (Production trade 304 correction) — the modal now renders
+    // from an immutable `frozenPick` snapshot captured at modal-open time,
+    // not the live `pick` prop, but the stale/unknown containment gate
+    // itself is unchanged.
+    expect(pageSource).toContain("showPaperTrade && frozenPick && frozenPick.price && !isStaleOrUnknown");
   });
 });

@@ -131,7 +131,36 @@ export function PaperTradeModal({
     }
   }, [prediction]);
 
-  const activeSignal = prediction?.signal ?? initialSignal;
+  // Fix 4 (Phase A1.1, Production trade 304 correction) — for an
+  // unchanged-horizon DAILY_PICK Buy, `entryEvidenceOverride` (computed
+  // below via `horizonMatchesOriginalPick`) is the SAME frozen Daily Pick
+  // context that drives the persisted recommendation evidence. The AI
+  // Signal pill must show that same frozen signal/confidence, not the
+  // live, independently-computed `prediction` query's — those are two
+  // unrelated numbers (a live Prediction Engine call vs. a frozen Daily
+  // Pick), and showing the live one while persisting the frozen one is
+  // exactly the display/persist mismatch that caused trade 304 to record a
+  // different confidence (100) than what the user saw and acted on (70).
+  // This is intentionally computed from `horizonMatchesOriginalPick`
+  // (declared further below) via a hoisted-safe inline recomputation here
+  // is avoided — see `usingFrozenDailyPickEvidence` below instead, which
+  // both this pill and `entryEvidence` share as the single source of truth
+  // for "is this an unchanged-horizon Daily Pick Buy".
+  const originalHorizon = initialHorizon as Horizon;
+  const horizonMatchesOriginalPick = selectedHorizon === originalHorizon;
+  const usingFrozenDailyPickEvidence =
+    entryEvidenceOverride !== undefined && horizonMatchesOriginalPick;
+
+  const activeSignal = usingFrozenDailyPickEvidence
+    ? (entryEvidenceOverride?.recommendation_signal ?? initialSignal)
+    : (prediction?.signal ?? initialSignal);
+  // Only meaningful when NOT using the frozen Daily Pick evidence — the
+  // frozen path never depends on the live Prediction query, so it can
+  // never be "loading" in a way the UI needs to reflect.
+  const isSignalPillLoading = !usingFrozenDailyPickEvidence && predLoading;
+  const activeConfidence = usingFrozenDailyPickEvidence
+    ? (entryEvidenceOverride?.confidence_score ?? null)
+    : (prediction?.confidence ?? null);
   const cost = currentPrice * quantity;
 
   // Only show the distinction when the reference price is a real, different
@@ -196,14 +225,14 @@ export function PaperTradeModal({
   // evidence payload was actually knowable at the moment of submission, and
   // changing evidence_source here would misrepresent where the user
   // navigated from.
-  const originalHorizon = initialHorizon as Horizon;
-  const horizonMatchesOriginalPick = selectedHorizon === originalHorizon;
-  const entryEvidence: EntryEvidencePayload | null =
-    entryEvidenceOverride !== undefined
-      ? (horizonMatchesOriginalPick
-          ? entryEvidenceOverride
-          : buildEntryEvidenceFromPrediction(prediction ?? null))
-      : buildEntryEvidenceFromPrediction(prediction ?? null);
+  // `originalHorizon` / `horizonMatchesOriginalPick` / `usingFrozenDailyPickEvidence`
+  // are declared above (alongside `activeSignal`/`activeConfidence`) so the
+  // AI Signal pill and this persisted-evidence selection share the exact
+  // same "is this an unchanged-horizon Daily Pick Buy" condition — they
+  // must never disagree.
+  const entryEvidence: EntryEvidencePayload | null = usingFrozenDailyPickEvidence
+    ? (entryEvidenceOverride ?? null)
+    : buildEntryEvidenceFromPrediction(prediction ?? null);
 
   // Fix 2 (owner-audit correction, Phase A1) — ONE logical Buy attempt =
   // ONE frozen request payload + ONE stable idempotency key. Previously the
@@ -419,9 +448,9 @@ export function PaperTradeModal({
                 activeSignal === "BUY" ? "bg-bull/10 border-bull/30 text-bull" :
                 activeSignal === "SELL" ? "bg-bear/10 border-bear/30 text-bear" :
                 "bg-white/5 border-white/10 text-gray-400")}>
-                {predLoading ? <Loader2 size={12} className="animate-spin opacity-60" /> : <SignalIcon size={13} />}
-                <span className="font-bold">{predLoading ? "Loading…" : activeSignal}</span>
-                {prediction?.confidence && !predLoading && <span className="opacity-60 ml-auto">{prediction.confidence}%</span>}
+                {isSignalPillLoading ? <Loader2 size={12} className="animate-spin opacity-60" /> : <SignalIcon size={13} />}
+                <span className="font-bold">{isSignalPillLoading ? "Loading…" : activeSignal}</span>
+                {activeConfidence != null && !isSignalPillLoading && <span className="opacity-60 ml-auto">{activeConfidence}%</span>}
               </div>
               <div className="bg-dark-bg rounded-lg px-3 py-1.5 flex items-center gap-2 flex-1">
                 <span className="text-xs text-gray-400">{usingLivePriceOverReference ? "Execution Price" : "Price"}</span>
