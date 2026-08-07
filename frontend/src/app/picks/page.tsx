@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 import { PaperTradeModal } from "@/components/PaperTradeModal";
+import { buildEntryEvidenceFromDailyPick } from "@/utils/entryEvidence";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
 import { UnsupportedMarketNotice } from "@/components/UnsupportedMarketNotice";
 import { INTEGRITY_HOLD_ACTIVE, ValidationIntegrityHold } from "@/components/ValidationIntegrityHold";
@@ -887,6 +888,25 @@ function PickCard({ pick, rank, market, currency, locale, freshness }: { pick: P
           suggestedStopLoss={pick.stop_loss}
           suggestedTargetPrice={pick.target}
           onClose={() => setShowPaperTrade(false)}
+          // Trade Postmortem Evidence Completion, Phase A1 — this is a
+          // Daily Pick Buy: evidence is captured from the Daily Pick
+          // payload the user actually saw (pick), never from a fresh
+          // /api/predictions call, which could describe a different,
+          // possibly since-changed recommendation.
+          evidenceSource="DAILY_PICK"
+          entryEvidenceOverride={buildEntryEvidenceFromDailyPick({
+            price: pick.price,
+            entry_low: pick.entry_low,
+            entry_high: pick.entry_high,
+            stop_loss: pick.stop_loss,
+            target: pick.target,
+            confidence: pick.confidence,
+            fund_score: pick.fund_score,
+            sentiment: pick.sentiment,
+            reasoning: pick.reasoning,
+            generated_at: pick.generated_at ?? null,
+            horizon: pick.horizon,
+          })}
         />
       )}
 

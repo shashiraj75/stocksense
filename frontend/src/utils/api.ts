@@ -770,8 +770,10 @@ export const placePaperBuy = (data: {
   evidence_source?: EvidenceSource;
   entry_evidence?: EntryEvidencePayload | null;
   // Migration-verification hardening gate, Part 7 — client-generated,
-  // reused verbatim for every retry of the SAME logical Buy decision (see
-  // PaperTradeModal's useRef-based generation). Omit entirely for the
+  // reused verbatim for every retry of the SAME logical Buy decision. See
+  // frontend/src/utils/idempotencyKey.ts for generation and
+  // PaperTradeModal's useRef-based `idempotencyKeyRef` for the
+  // per-logical-decision reuse/regeneration policy. Omit entirely for the
   // pre-idempotency backward-compatible path (no exactly-once guarantee).
   idempotency_key?: string;
 }): Promise<PlacePaperBuyResponse> =>

@@ -9,6 +9,57 @@ phases below.
 
 ## Phase A — Existing-data propagation across Buy call sites
 
+> **Phase A1 IMPLEMENTED for FUTURE trades only, and only PARTIALLY for
+> the Daily Pick Buy path** (Trade Postmortem Evidence Completion, Phase
+> A1 — `feature/postmortem-evidence-phase-a-entry-propagation`, corrected
+> 2026-08-07 after an owner audit). Every live Buy entry point in the
+> current product (Daily Picks Buy, Stock Detail recommendation Buy) now
+> propagates the recommendation evidence it GENUINELY HAS AT BUY TIME into
+> `paper_trade_entry_snapshot`, via `frontend/src/utils/entryEvidence.ts`
+> and the corresponding `evidence_source`/`entry_evidence`/
+> `idempotency_key` fields the backend Buy contract already supported. No
+> backend production logic changed. This is NOT the same claim as "every
+> field for every path" — the two paths genuinely differ in what they can
+> honestly send:
+> - `recommendation_signal` and `fundamental_score`: populated by BOTH the
+>   Daily Pick Buy path (`Pick.price`/`Pick.fund_score`) and the Stock
+>   Detail (RESEARCH) Buy path (`Prediction.signal`/
+>   `Prediction.fundamental_score.score`) — A. AVAILABLE_NOW for new
+>   trades on both paths.
+> - `technical_signal` and `sentiment_score`: populated ONLY by the Stock
+>   Detail (RESEARCH) Buy path (`Prediction.technical.overall`/
+>   `Prediction.sentiment_score.score`). The Daily Pick Buy path's `Pick`
+>   type carries only a numeric `tech_score` (not a governed
+>   `technical_signal` string) and a `sentiment` label (not a numeric
+>   score) — converting either into the other field's shape would be
+>   fabrication, so `buildEntryEvidenceFromDailyPick` intentionally leaves
+>   both null. A Daily Pick trade's entry snapshot is therefore genuinely
+>   `PARTIAL` evidence today, not `COMPLETE`, even for a brand-new trade —
+>   see the corrected rows in
+>   [Trade-Postmortem-Evidence-Coverage-Matrix.md](Trade-Postmortem-Evidence-Coverage-Matrix.md).
+>   Closing this specific gap requires the Daily Picks backend to compute
+>   and expose a governed `technical_signal` and a numeric sentiment score
+>   on the `Pick` payload itself — a genuinely new data-shape change, not
+>   merely additional frontend propagation of data that already exists.
+> - A Daily Pick Buy whose horizon is switched away from the pick's
+>   original horizon in the Buy modal now falls back to the Stock Detail
+>   (RESEARCH) evidence builder for the horizon actually bought (a
+>   Prediction is already fetched for the selected horizon in that flow),
+>   rather than reusing the original horizon's stale evidence —
+>   `evidence_source` intentionally stays `DAILY_PICK` in that case since
+>   it still honestly describes where the user navigated from.
+>
+> Legacy trades opened before this change are NOT backfilled — their
+> evidence remains permanently missing where it was never captured at
+> entry. All captured evidence remains CLIENT_REPORTED (not
+> SERVER_VERIFIED); there is still no server-authoritative recommendation
+> identity. A genuine, product-reachable MANUAL Buy path (a Paper Trading
+> Buy with no recommendation behind it) does not currently exist in the
+> UI — only Daily Picks and Stock Detail Buy paths render the Buy modal
+> today, so `MANUAL` remains the backend's safe default for any future
+> caller that doesn't specify a source, not an exercised live path. Phases
+> B/C/D/E below remain entirely unimplemented.
+
 **Evidence produced:** `fundamental_score`, `sentiment_score`, and any
 other `entry_snapshot.RecommendationContext` field that is already defined
 in the schema but not populated by every code path that opens a paper
