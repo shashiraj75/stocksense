@@ -61,10 +61,13 @@ describe("Daily Picks session-freshness containment — wiring", () => {
 
   it("disables the Paper Trade button and prefill for stale/unknown picks", () => {
     expect(pageSource).toContain("disabled={isStaleOrUnknown}");
-    // Phase A1.1 (Production trade 304 correction) — opening the modal now
-    // also freezes an immutable `frozenPick` snapshot, but the containment
-    // gate (never opening for a stale/unknown pick) is unchanged.
-    expect(pageSource).toContain("if (!isStaleOrUnknown) { setFrozenPick(pick); setShowPaperTrade(true); }");
+    // Phase A1.1 (Production trade 304 correction, final decision-context
+    // pass) — opening the modal now freezes a genuinely copy-based
+    // `FrozenDailyPickSnapshot` via `freezeDailyPickSnapshot(pick)` rather
+    // than retaining a reference to the live `pick` object, but the
+    // containment gate (never opening for a stale/unknown pick) is
+    // unchanged.
+    expect(pageSource).toContain("if (!isStaleOrUnknown) { setFrozenPick(freezeDailyPickSnapshot(pick)); setShowPaperTrade(true); }");
     expect(pageSource).toContain("showPaperTrade && frozenPick && frozenPick.price && !isStaleOrUnknown");
   });
 

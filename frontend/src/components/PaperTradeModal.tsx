@@ -118,34 +118,27 @@ export function PaperTradeModal({
   });
   const availableCash = market === "IN" ? portfolio?.cash : portfolio?.cash_usd;
 
-  // When the prediction for the selected horizon loads, sync AI-suggested values
-  // unless the user has already manually edited those fields.
-  useEffect(() => {
-    if (!prediction) return;
-    const levels = (prediction as any).trade_levels;
-    if (levels?.stop_loss != null && !stopLossEdited.current) {
-      setStopLoss(parseFloat(levels.stop_loss).toFixed(2));
-    }
-    if (levels?.take_profit != null && !targetPriceEdited.current) {
-      setTargetPrice(parseFloat(levels.take_profit).toFixed(2));
-    }
-  }, [prediction]);
-
-  // Fix 4 (Phase A1.1, Production trade 304 correction) — for an
-  // unchanged-horizon DAILY_PICK Buy, `entryEvidenceOverride` (computed
-  // below via `horizonMatchesOriginalPick`) is the SAME frozen Daily Pick
-  // context that drives the persisted recommendation evidence. The AI
-  // Signal pill must show that same frozen signal/confidence, not the
-  // live, independently-computed `prediction` query's — those are two
-  // unrelated numbers (a live Prediction Engine call vs. a frozen Daily
-  // Pick), and showing the live one while persisting the frozen one is
-  // exactly the display/persist mismatch that caused trade 304 to record a
-  // different confidence (100) than what the user saw and acted on (70).
-  // This is intentionally computed from `horizonMatchesOriginalPick`
-  // (declared further below) via a hoisted-safe inline recomputation here
-  // is avoided — see `usingFrozenDailyPickEvidence` below instead, which
-  // both this pill and `entryEvidence` share as the single source of truth
-  // for "is this an unchanged-horizon Daily Pick Buy".
+  // Fix 4/5/6 (Phase A1.1 final decision-context correction) — ONE explicit
+  // "active recommendation source" concept, computed once, that ALL
+  // recommendation-facing UI (signal pill, stop/target sync, reference-price
+  // notice) AND the persisted `entryEvidence` read from — not independently
+  // per field. That's what the earlier version of this fix got only
+  // half-right: the AI Signal pill correctly switched to the frozen Daily
+  // Pick's signal/confidence, but the stop/target auto-fill effect further
+  // below still synced straight from the live, independently-fetched
+  // `prediction` query's `trade_levels`, regardless of this condition — a
+  // second, unrelated recommendation source leaking into the same UI/submit
+  // path. Production trade 304 (AMG) is the origin case this whole family of
+  // fixes addresses.
+  //
+  // Unchanged-horizon DAILY_PICK (`usingFrozenDailyPickEvidence === true`):
+  // the frozen `entryEvidenceOverride` is the active source for signal,
+  // confidence, reference price, and suggested stop/target. The live
+  // `prediction` query's `trade_levels` must NOT feed the stop/target input
+  // fields in this case.
+  // RESEARCH / horizon-switched DAILY_PICK (`=== false`): the
+  // selected-horizon `prediction` query is the active source for the same
+  // fields, exactly as before.
   const originalHorizon = initialHorizon as Horizon;
   const horizonMatchesOriginalPick = selectedHorizon === originalHorizon;
   const usingFrozenDailyPickEvidence =
@@ -161,15 +154,67 @@ export function PaperTradeModal({
   const activeConfidence = usingFrozenDailyPickEvidence
     ? (entryEvidenceOverride?.confidence_score ?? null)
     : (prediction?.confidence ?? null);
+  // The recommended stop/target the active source suggests — used ONLY to
+  // drive the auto-fill effect below (never overwrites a manually-edited
+  // field; see that effect's guard). Kept separate from `stopLoss`/
+  // `targetPrice` state (the trade's own submitted values) and from
+  // `entryEvidence.recommended_stop_loss`/`recommended_target_price` (the
+  // persisted evidence fields) — this constant exists purely to give the
+  // sync effect one source to react to.
+  const activeRecommendedStopLoss = usingFrozenDailyPickEvidence
+    ? (entryEvidenceOverride?.recommended_stop_loss ?? null)
+    : ((prediction as any)?.trade_levels?.stop_loss ?? null);
+  const activeRecommendedTargetPrice = usingFrozenDailyPickEvidence
+    ? (entryEvidenceOverride?.recommended_target_price ?? null)
+    : ((prediction as any)?.trade_levels?.take_profit ?? null);
+  // The reference price the ACTIVE recommendation source was generated
+  // against — used for the "Recommendation was generated at ..." notice.
+  // Unchanged DAILY_PICK: the frozen Pick's own reference price (falls back
+  // to the caller-supplied `referencePrice` prop only if the override
+  // somehow lacks one — never fabricated). Horizon-switched DAILY_PICK or
+  // RESEARCH: the selected-horizon Prediction's own reference price when it
+  // has genuinely loaded; falls back to the `referencePrice` prop only while
+  // that Prediction hasn't resolved yet, rather than showing nothing.
+  const activeReferencePrice = usingFrozenDailyPickEvidence
+    ? (entryEvidenceOverride?.recommendation_reference_price ?? referencePrice ?? null)
+    : (prediction?.current_price ?? referencePrice ?? null);
+
+  // Fix 5 — sync the stop-loss/target-price INPUT fields (and therefore what
+  // actually gets submitted) from the ACTIVE recommendation source above,
+  // never straight from `prediction`. Depending on `activeRecommendedStopLoss`/
+  // `activeRecommendedTargetPrice`/`usingFrozenDailyPickEvidence` (rather than
+  // on `prediction` itself) means this effect correctly re-fires on every
+  // relevant transition: a live Prediction resolving, a horizon switch to a
+  // new Prediction, AND a horizon switch BACK to the original Daily Pick
+  // horizon (`usingFrozenDailyPickEvidence` flips back to true even though
+  // the cached Prediction object for that horizon may not have changed
+  // identity) — restoring the frozen Pick's own stop/target rather than
+  // leaving a leftover alternate-horizon Prediction's levels displayed. As
+  // before, a manual edit (`stopLossEdited.current`/`targetPriceEdited.current`)
+  // permanently blocks any further automatic overwrite from any source.
+  useEffect(() => {
+    if (activeRecommendedStopLoss != null && !stopLossEdited.current) {
+      setStopLoss(Number(activeRecommendedStopLoss).toFixed(2));
+    }
+    if (activeRecommendedTargetPrice != null && !targetPriceEdited.current) {
+      setTargetPrice(Number(activeRecommendedTargetPrice).toFixed(2));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRecommendedStopLoss, activeRecommendedTargetPrice, usingFrozenDailyPickEvidence]);
+
   const cost = currentPrice * quantity;
 
-  // Only show the distinction when the reference price is a real, different
-  // number — not for the (already-correct) case where no live quote existed
-  // and currentPrice already equals the reference price.
+  // Fix 6 — the distinction notice now follows the same active source as
+  // everything else above (`activeReferencePrice`), not the static
+  // `referencePrice` prop directly — after a horizon switch the prop alone
+  // could describe a stale reference no longer matching what's actually
+  // being persisted. Only shown when the reference price is a real,
+  // different number — not for the (already-correct) case where no live
+  // quote existed and currentPrice already equals the reference price.
   const usingLivePriceOverReference =
     !isSell &&
-    referencePrice != null && Number.isFinite(referencePrice) && referencePrice > 0 &&
-    Math.abs(currentPrice - referencePrice) > 0.01;
+    activeReferencePrice != null && Number.isFinite(activeReferencePrice) && activeReferencePrice > 0 &&
+    Math.abs(currentPrice - activeReferencePrice) > 0.01;
 
   const pnl = isSell && existingEntryPrice
     ? (currentPrice - existingEntryPrice) * (existingQuantity ?? quantity)
@@ -467,7 +512,7 @@ export function PaperTradeModal({
               <AlertCircle size={13} className="shrink-0 mt-0.5 opacity-70" />
               <span>
                 Using latest market price for paper trade execution. Recommendation was generated at{" "}
-                {currency}{referencePrice!.toLocaleString(undefined, { maximumFractionDigits: 2 })}.
+                {currency}{activeReferencePrice!.toLocaleString(undefined, { maximumFractionDigits: 2 })}.
               </span>
             </div>
           )}

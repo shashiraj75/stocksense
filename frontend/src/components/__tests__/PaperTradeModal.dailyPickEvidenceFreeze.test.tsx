@@ -63,26 +63,22 @@ beforeEach(() => {
     missing_evidence_fields: [], idempotency_enforced: true,
   });
   // A live Prediction query fires unconditionally in the background
-  // (unrelated to evidenceSource) — give it a deliberately different
-  // signal/confidence so any accidental leak into the frozen Daily Pick
-  // display/persistence path would be caught by the assertions below.
-  // trade_levels intentionally MATCH the frozen Daily Pick's own
-  // stop/target: the modal's separate (pre-existing, out of scope here)
-  // AI-suggestion auto-fill effect syncs the user's own editable
-  // stop-loss/target-price INPUT fields from whatever Prediction loads,
-  // regardless of evidenceSource — that behavior is orthogonal to the two
-  // Phase A1.1 defects being fixed here (frozen entryEvidenceOverride /
-  // AI-Signal-pill live-Prediction leak), so keeping these numbers equal
-  // avoids a false failure from that unrelated codepath while still
-  // proving the signal/confidence pill and persisted evidence never leak
-  // the live Prediction's SELL/12.
+  // (unrelated to evidenceSource) — deliberately different across EVERY
+  // dimension (signal, confidence, reference price, stop, target) from the
+  // frozen Daily Pick's own BUY/70/372.18/355.34/398.01, so this test is a
+  // real proof of the invariant rather than a dodge. An earlier version of
+  // this fixture made trade_levels equal the frozen Pick's own stop/target
+  // specifically to avoid tripping the (at-the-time-unfixed) live-Prediction
+  // stop/target leak in the auto-fill effect — that made the test pass
+  // whether or not the leak existed. With fully-distinct values here, the
+  // assertions below only pass once the leak is genuinely closed.
   mockFetchPrediction.mockResolvedValue({
     symbol: "AMG", market: "US", horizon: "short", signal: "SELL", confidence: 12,
-    current_price: 371.76, target_price: 400, generated_at: "2026-08-06T00:00:00Z",
+    current_price: 350.00, target_price: 400, generated_at: "2026-08-06T00:00:00Z",
     reasoning: [], technical: { overall: "SELL", rsi: 30, macd_diff: -0.4 },
     fundamental_score: { score: 40, reasons: [] },
     sentiment_score: { score: -10, label: "BEARISH", bullish: 0.2, bearish: 0.8 },
-    trade_levels: { stop_loss: 355.34, take_profit: 398.01, entry_low: 365, entry_high: 373 },
+    trade_levels: { stop_loss: 350, take_profit: 409.14, entry_low: 340, entry_high: 355 },
   });
   // No live quote — displayPrice falls back to the frozen pick's price,
   // matching the production trace's execution price basis.
@@ -172,17 +168,24 @@ describe("PickCard Daily Pick decision-evidence freeze at modal-open (Phase A1.1
     expect(call.entry_evidence.recommended_stop_loss).toBe(355.34);
     expect(call.entry_evidence.recommended_target_price).toBe(398.01);
     expect(call.entry_evidence.recommendation_reference_price).toBe(372.18);
+    // The trade's OWN submitted stop/target (from the input fields) must
+    // also be the frozen Pick's — never the live Prediction's SELL/12
+    // trade_levels (stop=350, target=409.14), and never the refreshed
+    // pick's values either.
+    expect(call.stop_loss).toBe(355.34);
+    expect(call.target_price).toBe(398.01);
   });
 
-  it("displays and persists the frozen Daily Pick's own signal/confidence for the AI Signal pill, not the live/unrelated Prediction query's", async () => {
+  it("displays and persists the frozen Daily Pick's own signal/confidence/stop/target for the AI Signal pill and inputs, not the live/unrelated Prediction query's (exact production-bug variant, Test A)", async () => {
     const { container } = renderCard(originalPick);
 
     const openButton = await screen.findByRole("button", { name: /paper trade/i });
     fireEvent.click(openButton);
 
     await waitFor(() => expect(mockFetchPrediction).toHaveBeenCalled());
-    // Give the (irrelevant, to this codepath) live Prediction query a tick
-    // to resolve, so a would-be leak has every opportunity to show up.
+    // Give the live Prediction query a tick to resolve, so a would-be leak
+    // (of signal, confidence, stop, or target) has every opportunity to
+    // show up before we assert none of it did.
     await waitFor(() => expect(readModalPillConfidenceText(container)).not.toBeNull());
 
     // The frozen Pick's BUY/70% must be shown — never the live
@@ -191,13 +194,83 @@ describe("PickCard Daily Pick decision-evidence freeze at modal-open (Phase A1.1
     expect(screen.getByText("BUY")).toBeInTheDocument();
     expect(screen.queryByText("SELL")).not.toBeInTheDocument();
 
+    // The stop-loss/target-price INPUT FIELDS must show the frozen Pick's
+    // own 355.34/398.01 — never the live Prediction's 350/409.14
+    // trade_levels. This is the exact leak this correction pass closes.
+    expect(screen.getByDisplayValue("355.34")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("398.01")).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("350.00")).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue("409.14")).not.toBeInTheDocument();
+
+    // The reference-price notice (when shown) must also cite the frozen
+    // Pick's own reference price, never the live Prediction's current_price.
+    const notice = screen.queryByText(/Recommendation was generated at/i);
+    if (notice) {
+      expect(notice.textContent).toContain("372.18");
+      expect(notice.textContent).not.toContain("350");
+    }
+
     const buyButton = await screen.findByRole("button", { name: /buy \d+ shares/i });
     fireEvent.click(buyButton);
 
     await waitFor(() => expect(mockPlacePaperBuy).toHaveBeenCalledTimes(1));
     const call = mockPlacePaperBuy.mock.calls[0][0];
     expect(call.signal).toBe("BUY");
+    expect(call.stop_loss).toBe(355.34);
+    expect(call.target_price).toBe(398.01);
     expect(call.entry_evidence.recommendation_signal).toBe("BUY");
     expect(call.entry_evidence.confidence_score).toBe(70);
+    expect(call.entry_evidence.recommended_stop_loss).toBe(355.34);
+    expect(call.entry_evidence.recommended_target_price).toBe(398.01);
+    expect(call.entry_evidence.recommendation_reference_price).toBe(372.18);
+  });
+
+  it("Test F — copy integrity: mutating/replacing the source Pick object after modal-open does not affect the already-frozen decision context", async () => {
+    // A fresh, test-local clone of `originalPick` — NOT the shared module
+    // const used by the other tests in this file — so the in-place mutation
+    // below can never bleed into other tests regardless of run order.
+    const localSourcePick: Pick = {
+      ...originalPick,
+      reasoning: originalPick.reasoning.map(r => ({ ...r })),
+    };
+    const { rerender, queryClient, container } = renderCard(localSourcePick);
+
+    const openButton = await screen.findByRole("button", { name: /paper trade/i });
+    fireEvent.click(openButton);
+    await screen.findByDisplayValue("355.34");
+
+    // Mutate the ORIGINAL source object's fields directly (simulating a
+    // buggy caller or an in-place cache mutation) — a true copy-based
+    // snapshot must be entirely unaffected by this.
+    (localSourcePick as any).confidence = 999;
+    (localSourcePick as any).stop_loss = 1;
+    (localSourcePick as any).target = 2;
+    (localSourcePick as any).reasoning[0].reason = "mutated after freeze";
+
+    // Also simulate the parent delivering a brand-new object for the same
+    // symbol (the other way a live cache update could reach the modal).
+    const mutatedPick: Pick = { ...localSourcePick, confidence: 999, stop_loss: 1, target: 2 };
+    act(() => {
+      rerender(
+        <QueryClientProvider client={queryClient}>
+          <PickCard pick={mutatedPick} rank={1} market="US" currency="$" locale="en-US" />
+        </QueryClientProvider>
+      );
+    });
+
+    // The already-open modal's frozen context must be entirely unaffected.
+    expect(readModalPillConfidenceText(container)).toBe("70%");
+    expect(screen.getByDisplayValue("355.34")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("398.01")).toBeInTheDocument();
+
+    const buyButton = await screen.findByRole("button", { name: /buy \d+ shares/i });
+    fireEvent.click(buyButton);
+
+    await waitFor(() => expect(mockPlacePaperBuy).toHaveBeenCalledTimes(1));
+    const call = mockPlacePaperBuy.mock.calls[0][0];
+    expect(call.entry_evidence.confidence_score).toBe(70);
+    expect(call.entry_evidence.recommended_stop_loss).toBe(355.34);
+    expect(call.entry_evidence.recommended_target_price).toBe(398.01);
+    expect(call.entry_evidence.recommendation_reasoning[0].reason).toBe("original short-horizon setup");
   });
 });
