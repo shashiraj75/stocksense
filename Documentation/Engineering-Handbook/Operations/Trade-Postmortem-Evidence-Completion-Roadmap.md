@@ -9,6 +9,25 @@ phases below.
 
 ## Phase A — Existing-data propagation across Buy call sites
 
+> **Phase A1 IMPLEMENTED for FUTURE trades only** (Trade Postmortem
+> Evidence Completion, Phase A1 — `feature/postmortem-evidence-phase-a-entry-propagation`).
+> Every live Buy entry point in the current product (Daily Picks Buy,
+> Stock Detail recommendation Buy) now propagates the recommendation
+> evidence it already has at Buy time into `paper_trade_entry_snapshot`,
+> via `frontend/src/utils/entryEvidence.ts` and the corresponding
+> `evidence_source`/`entry_evidence`/`idempotency_key` fields the backend
+> Buy contract already supported. No backend production logic changed.
+> Legacy trades opened before this change are NOT backfilled — their
+> evidence remains permanently missing where it was never captured at
+> entry. All captured evidence remains CLIENT_REPORTED (not
+> SERVER_VERIFIED); there is still no server-authoritative recommendation
+> identity. A genuine, product-reachable MANUAL Buy path (a Paper Trading
+> Buy with no recommendation behind it) does not currently exist in the
+> UI — only Daily Picks and Stock Detail Buy paths render the Buy modal
+> today, so `MANUAL` remains the backend's safe default for any future
+> caller that doesn't specify a source, not an exercised live path. Phases
+> B/C/D/E below remain entirely unimplemented.
+
 **Evidence produced:** `fundamental_score`, `sentiment_score`, and any
 other `entry_snapshot.RecommendationContext` field that is already defined
 in the schema but not populated by every code path that opens a paper

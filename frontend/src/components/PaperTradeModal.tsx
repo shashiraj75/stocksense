@@ -4,10 +4,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { X, TrendingUp, TrendingDown, Minus, AlertCircle, Loader2, ShieldAlert, Target, Clock } from "lucide-react";
 import clsx from "clsx";
 import Link from "next/link";
-import { placePaperBuy, closePaperTrade, fetchPrediction, fetchPaperPortfolio, type Market, type Horizon, type TradeManagementMode } from "@/utils/api";
+import { placePaperBuy, closePaperTrade, fetchPrediction, fetchPaperPortfolio, type Market, type Horizon, type TradeManagementMode, type EvidenceSource, type EntryEvidencePayload } from "@/utils/api";
 import { useAuth } from "@/lib/AuthContext";
 import { getMarketStatus } from "@/utils/marketHours";
 import { computeSuggestedQuantity, RISK_PCT_OF_CAPITAL } from "@/utils/riskBasedSizing";
+import { buildEntryEvidenceFromPrediction } from "@/utils/entryEvidence";
+import { generateBuyIdempotencyKey } from "@/utils/idempotencyKey";
 
 interface Props {
   symbol: string;
@@ -29,6 +31,20 @@ interface Props {
   // it lets the modal tell the user their execution price is not the price
   // the recommendation was generated against, without recomputing anything.
   referencePrice?: number | null;
+  // Trade Postmortem Evidence Completion, Phase A1 — WHERE/WHY the user
+  // opened this trade, not merely where the symbol could also be found.
+  // Defaults to "MANUAL" (the safe, honest default for a caller that
+  // doesn't specify — matches the backend's own default) when omitted.
+  evidenceSource?: EvidenceSource;
+  // When provided (even explicitly `null`), used verbatim as the entry
+  // evidence sent with the Buy — this is how a Daily Pick Buy captures
+  // evidence from the Daily Pick payload the user actually saw, instead of
+  // this modal's own internally-fetched Prediction (which could describe a
+  // different, possibly since-changed recommendation). When omitted
+  // entirely (undefined), the modal builds evidence itself from its own
+  // internally-fetched Prediction for the currently selected horizon — the
+  // correct behavior for a Stock Detail (RESEARCH) Buy.
+  entryEvidenceOverride?: EntryEvidencePayload | null;
 }
 
 const HORIZONS: { key: Horizon; label: string; desc: string }[] = [
@@ -46,7 +62,7 @@ const TRADE_MANAGEMENT_OPTIONS: { key: TradeManagementMode; label: string; desc:
 export function PaperTradeModal({
   symbol, market, currentPrice, signal: initialSignal, horizon: initialHorizon, currency,
   suggestedStopLoss, suggestedTargetPrice, onClose, existingTradeId, existingQuantity, existingEntryPrice,
-  referencePrice,
+  referencePrice, evidenceSource = "MANUAL", entryEvidenceOverride,
 }: Props) {
   const { user } = useAuth();
   const userId = user?.id ?? "";
@@ -161,8 +177,39 @@ export function PaperTradeModal({
     ? ((targetPriceValue - currentPrice) / currentPrice * 100)
     : null;
 
+  // Migration-verification hardening gate, Part 7 completion — one stable
+  // idempotency key per logical Buy decision. Reused across a retry of the
+  // SAME decision (transport error, lost response, user clicking Buy again
+  // with nothing changed); a NEW key is generated whenever the signature of
+  // the actual request inputs changes, which also freezes the evidence
+  // snapshot for that decision (no re-fetching the Prediction between
+  // retries under the same key — the horizon/prediction query above is
+  // cached with a 5-minute staleTime and isn't invalidated by a Buy error).
+  const idempotencyKeyRef = useRef<string | null>(null);
+  const buyInputsSignatureRef = useRef<string | null>(null);
+
+  const entryEvidence: EntryEvidencePayload | null =
+    entryEvidenceOverride !== undefined
+      ? entryEvidenceOverride
+      : buildEntryEvidenceFromPrediction(prediction ?? null);
+
+  function getOrCreateIdempotencyKey(): string {
+    const signature = JSON.stringify({
+      symbol, market, quantity, price: currentPrice, signal: activeSignal,
+      horizon: selectedHorizon,
+      stopLoss: stopLossValue && stopLossValue > 0 ? stopLossValue : null,
+      targetPrice: targetPriceValue && targetPriceValue > 0 ? targetPriceValue : null,
+      tradeManagementMode, evidenceSource, entryEvidence,
+    });
+    if (idempotencyKeyRef.current === null || buyInputsSignatureRef.current !== signature) {
+      idempotencyKeyRef.current = generateBuyIdempotencyKey();
+      buyInputsSignatureRef.current = signature;
+    }
+    return idempotencyKeyRef.current;
+  }
+
   const buyMutation = useMutation({
-    mutationFn: () =>
+    mutationFn: (idempotencyKey: string) =>
       placePaperBuy({
         user_id: userId, symbol, market, quantity,
         price: currentPrice, signal: activeSignal, horizon: selectedHorizon,
@@ -170,6 +217,9 @@ export function PaperTradeModal({
         target_price: targetPriceValue && targetPriceValue > 0 ? targetPriceValue : null,
         email: user?.email,
         trade_management_mode: tradeManagementMode,
+        evidence_source: evidenceSource,
+        entry_evidence: entryEvidence,
+        idempotency_key: idempotencyKey,
       }),
     onSuccess: () => {
       setSuccess(`Bought ${quantity} × ${symbol} @ ${currency}${currentPrice.toLocaleString()}`);
@@ -463,7 +513,17 @@ export function PaperTradeModal({
               Cancel
             </button>
             <button
-              onClick={() => { setError(null); isSell ? sellMutation.mutate() : buyMutation.mutate(); }}
+              onClick={() => {
+                // Defense in depth against a double-click/rapid-Enter race:
+                // bail out synchronously if a mutation is already in flight,
+                // in addition to the `disabled` attribute below (which a
+                // fast enough second event can still slip past before React
+                // re-renders).
+                if (buyMutation.isPending || sellMutation.isPending) return;
+                setError(null);
+                if (isSell) { sellMutation.mutate(); return; }
+                buyMutation.mutate(getOrCreateIdempotencyKey());
+              }}
               disabled={buyMutation.isPending || sellMutation.isPending || marketClosed}
               title={marketClosed ? `${market} market is closed` : undefined}
               className={clsx("flex-1 px-4 py-2 rounded-xl font-semibold text-sm transition-colors",
