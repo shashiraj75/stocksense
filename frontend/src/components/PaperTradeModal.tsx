@@ -83,6 +83,15 @@ export function PaperTradeModal({
   const stopLossEdited = useRef(false);
   const targetPriceEdited = useRef(false);
   const quantityEdited = useRef(false);
+  // Race closure (4) — true only between an EXPLICIT horizon-button click
+  // and that new horizon's Prediction actually resolving (or the user
+  // switching back to a horizon that's already reconciled, e.g. the frozen
+  // Daily Pick horizon). Deliberately NOT set on initial mount — the
+  // ordinary "Prediction hasn't loaded yet" state right after opening the
+  // modal is not this race (there's no stale prior-horizon data on screen
+  // to submit), so gating Buy on it there would be a needless regression
+  // for the common case. See `awaitingMatchingHorizonPrediction` below.
+  const [horizonSwitchPending, setHorizonSwitchPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -144,16 +153,62 @@ export function PaperTradeModal({
   const usingFrozenDailyPickEvidence =
     entryEvidenceOverride !== undefined && horizonMatchesOriginalPick;
 
+  // Phase A1.1 race closure — the useQuery above has no `placeholderData`/
+  // `keepPreviousData`, so react-query itself never surfaces a PRIOR
+  // horizon's cached object under the new queryKey; `prediction` genuinely
+  // goes `undefined` while a newly-selected horizon's fetch is in flight.
+  // The actual race was elsewhere: every `active*` constant below used to
+  // fall back to a stale prop (`initialSignal`, `referencePrice`, the old
+  // `stopLoss`/`targetPrice` input values) whenever `prediction` was
+  // momentarily undefined/loading — which is exactly the transition window
+  // between clicking a new horizon and its Prediction resolving. This
+  // derived value is the single gate that closes that window: it is the
+  // live Prediction ONLY when it is genuinely present AND (belt-and-braces,
+  // since the API response itself carries a `horizon` field) confirmed to
+  // describe the currently selected horizon — never a stale/mismatched
+  // object, and never used merely because `predLoading` happens to be
+  // false between renders.
+  const matchingSelectedHorizonPrediction =
+    prediction && prediction.horizon === selectedHorizon ? prediction : null;
+  // Clears the in-flight horizon-switch gate the instant it's genuinely
+  // resolved: either a real matching Prediction has arrived, or the user
+  // switched back to a horizon the frozen Daily Pick context already covers
+  // (`usingFrozenDailyPickEvidence`) — in which case there is no live
+  // Prediction dependency to wait on at all.
+  useEffect(() => {
+    if (matchingSelectedHorizonPrediction || usingFrozenDailyPickEvidence) {
+      setHorizonSwitchPending(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matchingSelectedHorizonPrediction, usingFrozenDailyPickEvidence, selectedHorizon]);
+  // True only while the user has explicitly navigated to a horizon whose
+  // Prediction hasn't (yet, or ever will) resolve — the narrow "between
+  // horizons with no matching data yet" window fixes 2/3/4 below gate on.
+  // Never true for the frozen Daily Pick path (it has no live-Prediction
+  // dependency at all) and never true once a genuine match has loaded.
+  // `horizonSwitchPending` (below) narrows this further to genuinely
+  // in-flight EXPLICIT horizon switches — never the modal's ordinary
+  // initial-mount loading, which is not a race at all (nothing stale is on
+  // screen yet to submit).
+  const awaitingMatchingHorizonPrediction =
+    horizonSwitchPending && !usingFrozenDailyPickEvidence && !isSell && matchingSelectedHorizonPrediction === null;
+
   const activeSignal = usingFrozenDailyPickEvidence
     ? (entryEvidenceOverride?.recommendation_signal ?? initialSignal)
-    : (prediction?.signal ?? initialSignal);
+    : (matchingSelectedHorizonPrediction?.signal ?? initialSignal);
   // Only meaningful when NOT using the frozen Daily Pick evidence — the
   // frozen path never depends on the live Prediction query, so it can
-  // never be "loading" in a way the UI needs to reflect.
+  // never be "loading" in a way the UI needs to reflect. Uses `predLoading`
+  // directly (not the horizon-switch-gated `awaitingMatchingHorizonPrediction`
+  // below) so the pill's own "Loading…" spinner still covers BOTH the
+  // ordinary initial-mount fetch and any horizon-switch fetch — it already
+  // correctly hid the stale-signal fallback visually before this pass; only
+  // the OTHER active-source constants (confidence/reference/stop/target/
+  // evidence/Buy-gate) had the actual leak this pass closes.
   const isSignalPillLoading = !usingFrozenDailyPickEvidence && predLoading;
   const activeConfidence = usingFrozenDailyPickEvidence
     ? (entryEvidenceOverride?.confidence_score ?? null)
-    : (prediction?.confidence ?? null);
+    : (matchingSelectedHorizonPrediction?.confidence ?? null);
   // The recommended stop/target the active source suggests — used ONLY to
   // drive the auto-fill effect below (never overwrites a manually-edited
   // field; see that effect's guard). Kept separate from `stopLoss`/
@@ -163,21 +218,26 @@ export function PaperTradeModal({
   // sync effect one source to react to.
   const activeRecommendedStopLoss = usingFrozenDailyPickEvidence
     ? (entryEvidenceOverride?.recommended_stop_loss ?? null)
-    : ((prediction as any)?.trade_levels?.stop_loss ?? null);
+    : ((matchingSelectedHorizonPrediction as any)?.trade_levels?.stop_loss ?? null);
   const activeRecommendedTargetPrice = usingFrozenDailyPickEvidence
     ? (entryEvidenceOverride?.recommended_target_price ?? null)
-    : ((prediction as any)?.trade_levels?.take_profit ?? null);
+    : ((matchingSelectedHorizonPrediction as any)?.trade_levels?.take_profit ?? null);
   // The reference price the ACTIVE recommendation source was generated
   // against — used for the "Recommendation was generated at ..." notice.
   // Unchanged DAILY_PICK: the frozen Pick's own reference price (falls back
   // to the caller-supplied `referencePrice` prop only if the override
-  // somehow lacks one — never fabricated). Horizon-switched DAILY_PICK or
-  // RESEARCH: the selected-horizon Prediction's own reference price when it
-  // has genuinely loaded; falls back to the `referencePrice` prop only while
-  // that Prediction hasn't resolved yet, rather than showing nothing.
+  // somehow lacks one — never fabricated).
+  // Horizon-switched DAILY_PICK or RESEARCH: Fix (race closure) — must NOT
+  // fall back to `referencePrice` (the ORIGINAL horizon's reference) while
+  // the newly-selected horizon's Prediction is still in flight/unmatched,
+  // since that would present a stale prior-horizon price as though it
+  // belongs to the new horizon. Only a genuinely matching Prediction's own
+  // reference price is used; while awaiting one, this is null (no
+  // fabricated placeholder), and the notice below is suppressed entirely
+  // during that window (see `usingLivePriceOverReference`).
   const activeReferencePrice = usingFrozenDailyPickEvidence
     ? (entryEvidenceOverride?.recommendation_reference_price ?? referencePrice ?? null)
-    : (prediction?.current_price ?? referencePrice ?? null);
+    : (matchingSelectedHorizonPrediction?.current_price ?? null);
 
   // Fix 5 — sync the stop-loss/target-price INPUT fields (and therefore what
   // actually gets submitted) from the ACTIVE recommendation source above,
@@ -277,7 +337,7 @@ export function PaperTradeModal({
   // must never disagree.
   const entryEvidence: EntryEvidencePayload | null = usingFrozenDailyPickEvidence
     ? (entryEvidenceOverride ?? null)
-    : buildEntryEvidenceFromPrediction(prediction ?? null);
+    : buildEntryEvidenceFromPrediction(matchingSelectedHorizonPrediction);
 
   // Fix 2 (owner-audit correction, Phase A1) — ONE logical Buy attempt =
   // ONE frozen request payload + ONE stable idempotency key. Previously the
@@ -466,7 +526,30 @@ export function PaperTradeModal({
               <div className="grid grid-cols-3 gap-1.5">
                 {HORIZONS.map(({ key, label, desc }) => (
                   <button key={key}
-                    onClick={() => { setSelectedHorizon(key); setError(null); stopLossEdited.current = false; targetPriceEdited.current = false; quantityEdited.current = false; }}
+                    onClick={() => {
+                      setSelectedHorizon(key);
+                      setError(null);
+                      stopLossEdited.current = false;
+                      targetPriceEdited.current = false;
+                      quantityEdited.current = false;
+                      // Race closure (4) — mark an explicit horizon-switch
+                      // transition as in-flight; cleared automatically above
+                      // once a genuine matching Prediction (or the frozen
+                      // Daily Pick context) is confirmed active.
+                      setHorizonSwitchPending(true);
+                      // Race closure (2) — an explicit horizon switch must not
+                      // leave the PRIOR horizon's stop/target numbers sitting in
+                      // the input fields while the new horizon's Prediction is
+                      // still in flight (they'd otherwise be visible/submittable
+                      // as if they belonged to the new horizon). Clearing here is
+                      // safe even when switching back to the frozen Daily Pick
+                      // horizon or to an already-cached horizon: the sync effect
+                      // above re-fires synchronously off `activeRecommendedStopLoss`/
+                      // `activeRecommendedTargetPrice`/`usingFrozenDailyPickEvidence`
+                      // and repopulates immediately once a value is available.
+                      setStopLoss("");
+                      setTargetPrice("");
+                    }}
                     className={clsx("rounded-lg px-2 py-1.5 sm:py-2 text-center border transition-colors",
                       selectedHorizon === key ? "bg-brand-500/20 border-brand-500 text-white" : "bg-dark-bg border-dark-border text-gray-400 hover:border-white/30 hover:text-white")}>
                     <p className="text-xs font-semibold">{label}</p>
@@ -663,20 +746,23 @@ export function PaperTradeModal({
                 // attribute below and the backend's durable idempotency key
                 // are the other two layers of this defense-in-depth.
                 if (buySubmissionInFlightRef.current || buyMutation.isPending || sellMutation.isPending) return;
+                if (!isSell && awaitingMatchingHorizonPrediction) return;
                 setError(null);
                 if (isSell) { sellMutation.mutate(); return; }
                 buySubmissionInFlightRef.current = true;
                 buyMutation.mutate(getOrCreateFrozenBuyRequest());
               }}
-              disabled={buyMutation.isPending || sellMutation.isPending || marketClosed}
-              title={marketClosed ? `${market} market is closed` : undefined}
+              disabled={buyMutation.isPending || sellMutation.isPending || marketClosed || (!isSell && awaitingMatchingHorizonPrediction)}
+              title={marketClosed ? `${market} market is closed` : (!isSell && awaitingMatchingHorizonPrediction) ? "Waiting for the selected horizon's recommendation to load" : undefined}
               className={clsx("flex-1 px-4 py-2 rounded-xl font-semibold text-sm transition-colors",
                 isSell ? "bg-bear hover:bg-red-600 text-white disabled:opacity-50" : "bg-bull hover:bg-green-600 text-white disabled:opacity-50")}>
               {buyMutation.isPending || sellMutation.isPending
                 ? "Placing…"
                 : marketClosed
                   ? "Market Closed"
-                  : isSell ? `Sell ${existingQuantity} shares` : `Buy ${quantity} shares`}
+                  : (!isSell && awaitingMatchingHorizonPrediction)
+                    ? "Loading…"
+                    : isSell ? `Sell ${existingQuantity} shares` : `Buy ${quantity} shares`}
             </button>
           </div>
         </div>
