@@ -1,7 +1,7 @@
 # StockSense360 — Complete Product & Technical Documentation
 
 > **Live Document** — Updated automatically as the product evolves.  
-> Last updated: 2026-07-11 (Session 11)
+> Last updated: 2026-08-07 — added Trade Postmortem chapter (17a.) reflecting the merged and Production-activated Wave C + Explainability release (PR #35, PR #36 @ `5170692f27b1742406a21d67fca8a74d62490c1f`).
 
 ---
 
@@ -50,7 +50,7 @@
 - Delivers Daily Picks — up to 6 BUY ideas per horizon (short / medium / long), screened from the NSE and US universes. India generates once daily (designed schedule: ~2 AM IST). US generates in two stages: a Pre-Open **base** run (06:00 UTC / 10:00 AM Dubai / 11:30 AM IST) followed by a separate, lightweight **Premarket Review** targeting ~6:00 AM America/New_York (backend acceptance window 6:00-7:30 AM ET) — see Product Integrity #007/#008. Automated GitHub Actions triggering is active for both markets and has natural-run completion evidence for both (2026-07-14); scheduled-trigger **timing** has repeatedly fired hours later than its nominal cron time and remains a separate, open reliability concern. See the Current Release Status register (Release 12B) for live operational state and evidence.
 - Shows **why** every signal was generated — factor breakdown, confidence scores, reasoning bullets
 - Provides **trade levels** — entry zone, stop-loss, and target price with R:R ratio
-- Runs a **learning engine** — tracks prediction outcomes and retrains factor weights weekly
+- Runs **Learning Alpha infrastructure** — records prediction/outcome evidence and evaluates adaptive IC/meta-model learning in shadow; adaptive influence on live Daily Picks ranking remains contained behind `LEARNING_ALPHA_PRODUCTION_ENABLED` and is off by default (production ranking uses fixed academic-prior IC weights while containment is active)
 - Supports **screener**, **backtest**, **watchlist**, and **alerts**
 
 ### Supported Markets
@@ -926,6 +926,80 @@ Realised P&L = (exit_price − entry_price) × quantity
 
 ---
 
+## 17a. Trade Postmortem
+
+**Status:** LIVE USER-FACING + LIVE BACKEND OPERATIONAL. Merged (PR #35, PR
+#36 @ `5170692f27b1742406a21d67fca8a74d62490c1f`) and activated in
+Production — both backend and frontend feature flags enabled. Full closure
+evidence:
+[Trade Postmortem Explainability — Production Closure](Engineering-Handbook/Releases/Trade-Postmortem-Explainability-Production-Closure.md).
+
+**Purpose:** Post-trade, evidence-based win/loss analysis for a single
+closed (or closing) Paper Trade — answers "why did this trade actually win
+or lose," grounded in what was actually captured at entry/exit rather than
+post-hoc narrative.
+
+**Files:** `backend/services/postmortem/` (entry snapshot, exit evidence,
+evidence attribution, price-path claim modules, current-report generation,
+outbox worker), `backend/api/routers/paper_trading.py` (current-report
+endpoint, schema versions), `frontend/src/app/postmortem/[tradeId]/`,
+`frontend/src/components/postmortem/`, `frontend/src/utils/postmortem*.ts`.
+
+**Lifecycle:** an entry snapshot is captured when a Paper Trade opens; an
+exit snapshot and price-path evidence are captured when it closes; a
+postmortem "current report" is generated (via an outbox-worker-driven,
+best-effort background job with fail-open observability) and served
+read-only from `GET /api/paper-trading/{tradeId}/current-report` — GET-only,
+no write path in the response contract.
+
+**Frontend flow:** from Paper Trading's closed-trade history, "View
+Postmortem" navigates to the authenticated route `/postmortem/[tradeId]`.
+The page renders a three-layer report: (1) a deterministic executive
+summary with ₹/US$ formatting appropriate to the trade's market and stock
+identity shown as `Company Name (SYMBOL)` (falling back to symbol-only when
+a name isn't resolvable); (2) factor-by-factor explainability with an
+investor-facing "What You Can Learn" classification per factor — CONFIRMED,
+SUPPORTED BUT NOT PROVEN, NOT ESTABLISHED, or DATA NEEDED FOR A DEEPER
+REPORT; (3) an expandable audit-detail layer preserving the original
+governed `evidence_class` per factor, plus price-path evidence (MFE, MAE,
+Target Level Touched, Stop Level Touched, Touch Sequence) used as the
+investor-facing semantic authority for each factor's assessment.
+
+**Evidence classes, gaps, and provenance:** each factor's report line
+carries a source authority, verification level (e.g. `SERVER_STORED` /
+`DIRECTLY_OBSERVED` vs. `CLIENT_REPORTED`), and freshness basis; missing or
+partial evidence is surfaced as an explicit gap/warning rather than
+silently omitted, alongside a source manifest and schema version/provenance
+metadata. The current, row-by-row state of which factors have complete vs.
+partial evidence capture is tracked in the
+[Trade Postmortem Evidence Coverage Matrix](Engineering-Handbook/Operations/Trade-Postmortem-Evidence-Coverage-Matrix.md)
+(kept in sync with `backend/tests/unit/postmortem_evidence_coverage_matrix.json`).
+Known evidence-completeness gaps and the plan to close them are tracked
+separately in the
+[Evidence Completion Roadmap](Engineering-Handbook/Operations/Trade-Postmortem-Evidence-Completion-Roadmap.md)
+— summarized there, not duplicated here.
+
+**Feature flags:** this route (`/postmortem/[tradeId]`) is gated by the
+`TRADE_POSTMORTEM_PRICE_PATH_ENABLED` pair — backend
+(`backend/api/routers/paper_trading.py`) and frontend
+(`NEXT_PUBLIC_TRADE_POSTMORTEM_PRICE_PATH_ENABLED`, via
+`frontend/src/utils/featureFlags.ts`'s `isTradePostmortemPricePathEnabled()`).
+Per the [Explainability Production Closure](Engineering-Handbook/Releases/Trade-Postmortem-Explainability-Production-Closure.md),
+this pair is reported enabled in Production. The separate, older
+`TRADE_POSTMORTEM_DAILY_ENABLED` / `NEXT_PUBLIC_TRADE_POSTMORTEM_DAILY_ENABLED`
+pair gates a different, Sprint 1 daily-batch surface — not this route — and
+its Production runtime state was not independently verified during the
+2026-08-07 documentation reconciliation. See
+[Current Release Status](Engineering-Handbook/Operations/Current-Release-Status.md)
+for the live, authoritative flag state rather than relying on a snapshot
+here.
+
+**Authorization/privacy:** the current-report route is authenticated and
+scoped to the requesting user's own trade; it is GET-only with no
+production write/backfill surface.
+
+---
+
 ## 18. Portfolio Tracker
 
 **File:** `backend/api/routers/portfolio.py`, `frontend/src/app/portfolio/page.tsx`
@@ -1363,7 +1437,7 @@ The hosting platform's ephemeral disk means files written locally are wiped on e
 
 7. **Memory-Efficient** — Cache capped at 300 entries with LRU eviction (memory-safety cap). Concurrent predictions use daemon threads, not asyncio tasks.
 
-8. **Self-Improving** — Outcome logger tracks every prediction. IC engine retrains weekly. Factor weights evolve as the model sees more real-world outcomes.
+8. **Self-Improving (contained)** — Outcome logger tracks every prediction. IC engine and meta-model evaluate adaptive retraining in shadow mode. Adaptive influence on live Daily Picks ranking is feature-gated off by default behind `LEARNING_ALPHA_PRODUCTION_ENABLED` (`backend/services/alpha_engine/containment.py`) — production ranking uses fixed academic-prior IC weights while containment is active. Regime detection (KMeans) runs independently of this gate.
 
 9. **Real-Time Ready** — 15-minute prediction cache, async background computation, React Query polling for live data.
 
@@ -1374,6 +1448,13 @@ The hosting platform's ephemeral disk means files written locally are wiped on e
 ---
 
 ## 27. Changelog
+
+### Documentation reconciliation — 2026-08-07
+
+Documentation-only pass reconciling docs with current `main`
+(`8f9693b0eecc5ba68490dee4d44b8ba86f5f079d`). Added §17a Trade Postmortem
+(merged PR #35 + PR #36 @ `5170692f27b1742406a21d67fca8a74d62490c1f`,
+Production-activated). No application code changed.
 
 ### Session 13 — 2026-07-12
 

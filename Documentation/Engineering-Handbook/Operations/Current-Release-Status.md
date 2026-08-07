@@ -4,7 +4,80 @@
 
 **Use this document for current state.** Historical sprint reports, Epic closures, SSDS documents, and audit reports remain authoritative evidence for their own completed scope, but they do not automatically describe the current production operating state.
 
-**As of:** 2026-07-26 — maintained as a live operational register
+**As of:** 2026-08-07 — maintained as a live operational register
+
+## Major Feature Lifecycle Summary (2026-08-07 reconciliation)
+
+Code-grounded snapshot from the post-Jul-11 documentation reconciliation
+(PR #37). Full evidence and per-commit mapping:
+[Documentation-Current-State-Reconciliation-Ledger-2026-08.md](Documentation-Current-State-Reconciliation-Ledger-2026-08.md).
+Production *runtime* toggle state (vs. code default) is asserted only where
+a specific closure doc says so; otherwise "not independently verifiable
+from this repository checkout" per that ledger's own caveat.
+
+| Subsystem | Classification |
+|---|---|
+| Prediction Engine (confidence, target-price floors) | LIVE BACKEND / OPERATIONAL |
+| Daily Picks (India + US, incl. premarket finalizer) | LIVE USER-FACING / LIVE BACKEND OPERATIONAL |
+| Multibagger (weekly-refresh architecture) | LIVE USER-FACING |
+| Paper Trading | LIVE USER-FACING |
+| Trade Postmortem | LIVE USER-FACING — RELEASE COMPLETE (see below) |
+| Portfolio | LIVE USER-FACING |
+| Watchlist | LIVE USER-FACING |
+| Alerts | LIVE USER-FACING |
+| Validation Engine | LIVE BACKEND / OPERATIONAL |
+| Learning Alpha Engine | FEATURE-FLAGGED OFF (contained, `LEARNING_ALPHA_PRODUCTION_ENABLED`) |
+| RCI | FEATURE-FLAGGED OFF (`RCI_LIVE_STOCK_ANALYSIS_ENABLED`, unchanged since baseline) |
+| SEC EDGAR (live provider, `sec_edgar_adapter.py`) | LIVE BACKEND / OPERATIONAL — feeds live US confidence scoring via `us_financial_strength_adapter.py` → `prediction_engine.py` |
+| SEC PIT store (DP-033 persisted point-in-time facts, `sec_pit_store.py`) | LIVE BACKEND / OPERATIONAL for Validation Engine replay only — its sole production consumer is `validation_engine.py`'s acquisition-free replay path; does NOT feed live prediction/confidence scoring (not imported by `prediction_engine.py` or `daily_picks.py`) — corrected 2026-08-07 after this doc previously conflated it with the live SEC EDGAR row above |
+| NSE Instrument Master | FOUNDATION / UNINTEGRATED |
+| Market Leadership | FEATURE-FLAGGED OFF / DEPLOYED DORMANT |
+| Intelligence Engine / Universe Builder | SHADOW / EXPERIMENTAL (`INTELLIGENCE_ENGINE_SHADOW_ENABLED`) |
+| Postgres Schema Init | LIVE BACKEND / OPERATIONAL (fail-closed) |
+| Caching / Egress Containment | LIVE BACKEND / OPERATIONAL |
+
+---
+
+## Trade Postmortem (Wave C + Explainability)
+
+**Status:** RELEASE COMPLETE — merged, deployed, and activated in Production.
+
+- PR #35 (Wave C base: current-report read API, per-trade frontend,
+  observability) — merged and dark-deployed.
+- PR #36 (Explainability/UX overhaul: three-layer report, factor-specific
+  price-path assessment, `Company Name (SYMBOL)` identity, evidence-coverage
+  matrix) — merged at `5170692f27b1742406a21d67fca8a74d62490c1f`.
+- Two independent flag pairs — this is not one backend-only flag paired with
+  one frontend-only flag; each side has both a backend and a frontend twin
+  (`backend/api/routers/paper_trading.py`,
+  `frontend/src/utils/featureFlags.ts`):
+  - `TRADE_POSTMORTEM_PRICE_PATH_ENABLED` (backend) /
+    `NEXT_PUBLIC_TRADE_POSTMORTEM_PRICE_PATH_ENABLED` (frontend) gates the
+    per-trade `/postmortem/[tradeId]` route this release (PR #35/#36) is
+    about — **reported enabled in Production** per the
+    [Explainability Production Closure](../Releases/Trade-Postmortem-Explainability-Production-Closure.md)'s
+    own validation evidence.
+  - `TRADE_POSTMORTEM_DAILY_ENABLED` (backend) /
+    `NEXT_PUBLIC_TRADE_POSTMORTEM_DAILY_ENABLED` (frontend) gates a
+    separate, older Sprint 1 daily-batch surface — **its Production runtime
+    state was not independently verified during this reconciliation**; do
+    not assume it matches the price-path pair's state.
+- Production validation: 48-hour backend-only stability observation passed;
+  natural production lifecycle verified on a real trade; frontend
+  activation, authenticated Production smoke test, and the
+  Company Name (SYMBOL) identity gate all passed; temporary Preview-only
+  frontend flag and temporary Preview CORS authorization removed after QA;
+  final 60-minute Production observation passed with zero rollback
+  threshold crossed.
+- Full closure evidence:
+  [Trade Postmortem Explainability — Production Closure](../Releases/Trade-Postmortem-Explainability-Production-Closure.md).
+
+**FUTURE POSTMORTEM EVIDENCE COMPLETION WORK** (not a release-stability
+issue — the release above is complete and stable): the evidence *coverage*
+matrix identifies factors where underlying evidence capture is still
+partial. This is tracked separately in the
+[Evidence Completion Roadmap](./Trade-Postmortem-Evidence-Completion-Roadmap.md)
+and does not block or qualify the RELEASE COMPLETE status above.
 
 ---
 

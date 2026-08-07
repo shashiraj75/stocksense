@@ -71,6 +71,18 @@ Nine intelligence domains are named here, each described accurately as it exists
 
 ## Section 4 — Current Status
 
+> This section tracks the Epic-numbered engine architecture (Business
+> Quality, Financial Strength, Growth, Valuation, Recommendation
+> Consolidation/RCI) specifically. Product-surface work outside that
+> numbering — Trade Postmortem (RELEASE COMPLETE, live user-facing),
+> Market Leadership (deployed, all flags off — DEPLOYED DORMANT), Daily
+> Picks reliability hardening, Multibagger's weekly-refresh architecture,
+> and memory/egress containment — is tracked in
+> [`Operations/Current-Release-Status.md`](Engineering-Handbook/Operations/Current-Release-Status.md)
+> and the
+> [post-Jul-11 reconciliation ledger](Engineering-Handbook/Operations/Documentation-Current-State-Reconciliation-Ledger-2026-08.md),
+> not duplicated here.
+
 **Completed:**
 - Epic 001 — Business Quality Intelligence, both markets, closed.
 - Epic 002 — Financial Strength Intelligence, US (non-FINANCIAL, non-REAL_ESTATE) market, closed — see [EPIC-002 Closure](Engineering-Handbook/EPICS/EPIC-002-Financial-Strength-Intelligence-Closure.md).
