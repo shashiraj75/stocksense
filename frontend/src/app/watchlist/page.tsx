@@ -113,7 +113,7 @@ export default function WatchlistPage() {
   });
 
   const remove = useMutation({
-    mutationFn: (symbol: string) => api.delete(`/api/watchlist/${userId}/${symbol}`).then(r => r.data),
+    mutationFn: (symbol: string) => api.delete(`/api/watchlist/${userId}/${encodeURIComponent(symbol)}`).then(r => r.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["watchlist", userId] }),
   });
 
