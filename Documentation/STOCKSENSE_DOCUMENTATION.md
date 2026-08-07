@@ -50,7 +50,7 @@
 - Delivers Daily Picks — up to 6 BUY ideas per horizon (short / medium / long), screened from the NSE and US universes. India generates once daily (designed schedule: ~2 AM IST). US generates in two stages: a Pre-Open **base** run (06:00 UTC / 10:00 AM Dubai / 11:30 AM IST) followed by a separate, lightweight **Premarket Review** targeting ~6:00 AM America/New_York (backend acceptance window 6:00-7:30 AM ET) — see Product Integrity #007/#008. Automated GitHub Actions triggering is active for both markets and has natural-run completion evidence for both (2026-07-14); scheduled-trigger **timing** has repeatedly fired hours later than its nominal cron time and remains a separate, open reliability concern. See the Current Release Status register (Release 12B) for live operational state and evidence.
 - Shows **why** every signal was generated — factor breakdown, confidence scores, reasoning bullets
 - Provides **trade levels** — entry zone, stop-loss, and target price with R:R ratio
-- Runs a **learning engine** — tracks prediction outcomes and retrains factor weights weekly
+- Runs **Learning Alpha infrastructure** — records prediction/outcome evidence and evaluates adaptive IC/meta-model learning in shadow; adaptive influence on live Daily Picks ranking remains contained behind `LEARNING_ALPHA_PRODUCTION_ENABLED` and is off by default (production ranking uses fixed academic-prior IC weights while containment is active)
 - Supports **screener**, **backtest**, **watchlist**, and **alerts**
 
 ### Supported Markets
@@ -1437,7 +1437,7 @@ The hosting platform's ephemeral disk means files written locally are wiped on e
 
 7. **Memory-Efficient** — Cache capped at 300 entries with LRU eviction (memory-safety cap). Concurrent predictions use daemon threads, not asyncio tasks.
 
-8. **Self-Improving** — Outcome logger tracks every prediction. IC engine retrains weekly. Factor weights evolve as the model sees more real-world outcomes.
+8. **Self-Improving (contained)** — Outcome logger tracks every prediction. IC engine and meta-model evaluate adaptive retraining in shadow mode. Adaptive influence on live Daily Picks ranking is feature-gated off by default behind `LEARNING_ALPHA_PRODUCTION_ENABLED` (`backend/services/alpha_engine/containment.py`) — production ranking uses fixed academic-prior IC weights while containment is active. Regime detection (KMeans) runs independently of this gate.
 
 9. **Real-Time Ready** — 15-minute prediction cache, async background computation, React Query polling for live data.
 
