@@ -71,9 +71,13 @@ describe("PaperTradeModal duplicate-submission protection", () => {
         const buyButton = await screen.findByRole("button", { name: /buy \d+ shares/i });
 
     fireEvent.click(buyButton);
-    // Second click fired before the in-flight request resolves — the
-    // in-click synchronous guard (buyMutation.isPending check) plus the
-    // disabled attribute must both prevent a second network call.
+    // Fix 3 (owner-audit correction, Phase A1): all three clicks happen in
+    // the same synchronous event-handling pass, before React has committed
+    // any `isPending` state update — so this specifically exercises the
+    // ref-based `buySubmissionInFlightRef` guard (set synchronously inside
+    // the click handler before `mutate` is even called), not merely
+    // `buyMutation.isPending`, which is not guaranteed to have flipped yet.
+    // The `disabled` attribute below is additional UX defense-in-depth.
     fireEvent.click(buyButton);
     fireEvent.click(buyButton);
 

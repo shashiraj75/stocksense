@@ -177,40 +177,93 @@ export function PaperTradeModal({
     ? ((targetPriceValue - currentPrice) / currentPrice * 100)
     : null;
 
-  // Migration-verification hardening gate, Part 7 completion — one stable
-  // idempotency key per logical Buy decision. Reused across a retry of the
-  // SAME decision (transport error, lost response, user clicking Buy again
-  // with nothing changed); a NEW key is generated whenever the signature of
-  // the actual request inputs changes, which also freezes the evidence
-  // snapshot for that decision (no re-fetching the Prediction between
-  // retries under the same key — the horizon/prediction query above is
-  // cached with a 5-minute staleTime and isn't invalidated by a Buy error).
-  const idempotencyKeyRef = useRef<string | null>(null);
-  const buyInputsSignatureRef = useRef<string | null>(null);
-
+  // Fix 1 (owner-audit correction, Phase A1) — a Daily Pick Buy is opened
+  // with `entryEvidenceOverride` frozen from the ORIGINAL Daily Pick the
+  // user saw at its ORIGINAL horizon. If the user switches this modal's
+  // horizon selector to a different horizon, that frozen override describes
+  // a different recommendation than the one actually being bought — reusing
+  // it would silently mislabel the trade's entry evidence. When the horizon
+  // still matches what the Daily Pick was generated for, the override is
+  // exactly correct and is used verbatim. When it doesn't, this modal falls
+  // back to the same Prediction-based evidence builder Stock Detail (RESEARCH)
+  // Buys use, built from the `prediction` query above — which is already
+  // fetched for `selectedHorizon` unconditionally (see the `useQuery` above,
+  // `enabled: !isSell`) regardless of evidenceSource, so a genuine
+  // horizon-matched Prediction really is available here, not fabricated.
+  // `evidenceSource` intentionally stays whatever the caller passed (e.g.
+  // "DAILY_PICK") even in this fallback branch: the UX-origin of the Buy
+  // (the user came from the Daily Picks page) is a separate fact from which
+  // evidence payload was actually knowable at the moment of submission, and
+  // changing evidence_source here would misrepresent where the user
+  // navigated from.
+  const originalHorizon = initialHorizon as Horizon;
+  const horizonMatchesOriginalPick = selectedHorizon === originalHorizon;
   const entryEvidence: EntryEvidencePayload | null =
     entryEvidenceOverride !== undefined
-      ? entryEvidenceOverride
+      ? (horizonMatchesOriginalPick
+          ? entryEvidenceOverride
+          : buildEntryEvidenceFromPrediction(prediction ?? null))
       : buildEntryEvidenceFromPrediction(prediction ?? null);
 
-  function getOrCreateIdempotencyKey(): string {
-    const signature = JSON.stringify({
-      symbol, market, quantity, price: currentPrice, signal: activeSignal,
-      horizon: selectedHorizon,
-      stopLoss: stopLossValue && stopLossValue > 0 ? stopLossValue : null,
-      targetPrice: targetPriceValue && targetPriceValue > 0 ? targetPriceValue : null,
-      tradeManagementMode, evidenceSource, entryEvidence,
-    });
-    if (idempotencyKeyRef.current === null || buyInputsSignatureRef.current !== signature) {
-      idempotencyKeyRef.current = generateBuyIdempotencyKey();
-      buyInputsSignatureRef.current = signature;
-    }
-    return idempotencyKeyRef.current;
-  }
+  // Fix 2 (owner-audit correction, Phase A1) — ONE logical Buy attempt =
+  // ONE frozen request payload + ONE stable idempotency key. Previously the
+  // idempotency key alone was stabilized, but the request payload itself
+  // (price, entryEvidence, activeSignal, ...) was recomputed from live state
+  // on every retry — so a lost-response retry after a quote/Prediction
+  // change could send a DIFFERENT payload under the SAME key, defeating the
+  // backend's idempotency guarantee (which authenticates the key against a
+  // hash of the request body). `frozenBuyRequestRef` holds the exact
+  // request object (including the key) for the current logical attempt;
+  // `materialInputsSignatureRef` tracks only the inputs a new explicit user
+  // decision can change (quantity/horizon/stop/target/trade-management
+  // mode) — NOT currentPrice/prediction/entryEvidence/activeSignal, since an
+  // automatic quote or Prediction refresh must never by itself start a new
+  // logical attempt. A successful Buy clears both refs so the NEXT Buy
+  // click (a new, later, intentional decision) freshly freezes.
+  const frozenBuyRequestRef = useRef<{
+    idempotency_key: string;
+    user_id: string; symbol: string; market: Market; quantity: number;
+    price: number; signal: string; horizon: Horizon;
+    stop_loss: number | null; target_price: number | null;
+    email?: string;
+    trade_management_mode: TradeManagementMode;
+    evidence_source: EvidenceSource;
+    entry_evidence: EntryEvidencePayload | null;
+  } | null>(null);
+  const materialInputsSignatureRef = useRef<string | null>(null);
+  // Fix 3 — a synchronous (same-tick) in-flight guard. `buyMutation.isPending`
+  // only flips after React commits the mutation's internal state update,
+  // which is not guaranteed to happen before a second click handler runs on
+  // a fast double-click/rapid-Enter; this ref is set synchronously in the
+  // click handler itself, before `mutate` is even called, so it can never
+  // be raced the way `isPending` can.
+  const buySubmissionInFlightRef = useRef(false);
 
-  const buyMutation = useMutation({
-    mutationFn: (idempotencyKey: string) =>
-      placePaperBuy({
+  function getOrCreateFrozenBuyRequest() {
+    // Only a genuine, user-driven change counts as "material" here — the
+    // AI-suggested quantity/stop-loss/target-price auto-fill effects above
+    // (computeSuggestedQuantity, the Prediction-driven stop/target sync)
+    // can change `quantity`/`stopLoss`/`targetPrice` purely because a live
+    // quote or Prediction refreshed, with no user action at all. Gating each
+    // field on its own `*Edited` ref (already tracked for the auto-fill
+    // "don't fight a manual edit" logic above) means an automatic refresh
+    // alone can never perturb this signature and mint an unwanted new key —
+    // only an explicit user edit (or an explicit horizon switch, which
+    // itself resets these refs) does.
+    const materialSignature = JSON.stringify({
+      quantity: quantityEdited.current ? quantity : "auto",
+      horizon: selectedHorizon,
+      stopLoss: stopLossEdited.current
+        ? (stopLossValue && stopLossValue > 0 ? stopLossValue : null)
+        : "auto",
+      targetPrice: targetPriceEdited.current
+        ? (targetPriceValue && targetPriceValue > 0 ? targetPriceValue : null)
+        : "auto",
+      tradeManagementMode,
+    });
+    if (frozenBuyRequestRef.current === null || materialInputsSignatureRef.current !== materialSignature) {
+      frozenBuyRequestRef.current = {
+        idempotency_key: generateBuyIdempotencyKey(),
         user_id: userId, symbol, market, quantity,
         price: currentPrice, signal: activeSignal, horizon: selectedHorizon,
         stop_loss: stopLossValue && stopLossValue > 0 ? stopLossValue : null,
@@ -219,14 +272,28 @@ export function PaperTradeModal({
         trade_management_mode: tradeManagementMode,
         evidence_source: evidenceSource,
         entry_evidence: entryEvidence,
-        idempotency_key: idempotencyKey,
-      }),
+      };
+      materialInputsSignatureRef.current = materialSignature;
+    }
+    return frozenBuyRequestRef.current;
+  }
+
+  const buyMutation = useMutation({
+    mutationFn: (req: NonNullable<typeof frozenBuyRequestRef.current>) => placePaperBuy(req),
     onSuccess: () => {
       setSuccess(`Bought ${quantity} × ${symbol} @ ${currency}${currentPrice.toLocaleString()}`);
       queryClient.invalidateQueries({ queryKey: ["paper-portfolio"] });
+      // A new, later intentional Buy after this success is a NEW logical
+      // attempt — clear the frozen request/key so it freshly freezes.
+      frozenBuyRequestRef.current = null;
+      materialInputsSignatureRef.current = null;
+      buySubmissionInFlightRef.current = false;
       setTimeout(onClose, 1500);
     },
-    onError: (e: any) => setError(e.response?.data?.detail ?? "Failed to place trade"),
+    onError: (e: any) => {
+      buySubmissionInFlightRef.current = false;
+      setError(e.response?.data?.detail ?? "Failed to place trade");
+    },
   });
 
   const sellMutation = useMutation({
@@ -514,15 +581,18 @@ export function PaperTradeModal({
             </button>
             <button
               onClick={() => {
-                // Defense in depth against a double-click/rapid-Enter race:
-                // bail out synchronously if a mutation is already in flight,
-                // in addition to the `disabled` attribute below (which a
-                // fast enough second event can still slip past before React
-                // re-renders).
-                if (buyMutation.isPending || sellMutation.isPending) return;
+                // Fix 3 — defense in depth against a double-click/rapid-Enter
+                // race: the ref guard is checked and set SYNCHRONOUSLY,
+                // before `mutate` is called, so a second click that fires
+                // before React has committed `isPending` (not guaranteed to
+                // happen same-tick) still can't slip through. The `disabled`
+                // attribute below and the backend's durable idempotency key
+                // are the other two layers of this defense-in-depth.
+                if (buySubmissionInFlightRef.current || buyMutation.isPending || sellMutation.isPending) return;
                 setError(null);
                 if (isSell) { sellMutation.mutate(); return; }
-                buyMutation.mutate(getOrCreateIdempotencyKey());
+                buySubmissionInFlightRef.current = true;
+                buyMutation.mutate(getOrCreateFrozenBuyRequest());
               }}
               disabled={buyMutation.isPending || sellMutation.isPending || marketClosed}
               title={marketClosed ? `${market} market is closed` : undefined}

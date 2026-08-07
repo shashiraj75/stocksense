@@ -55,8 +55,19 @@ UTC = dt.timezone.utc
 # ---------------------------------------------------------------------------
 
 def _original_entry_evidence_ctx() -> RecommendationContext:
+    """Fix 5 (owner-audit correction, Phase A1): this fixture is
+    evidence_source RESEARCH, not DAILY_PICK — Stock Detail (RESEARCH) is
+    the only live Buy path that genuinely supplies technical_signal,
+    technical_rsi, technical_macd_diff, and a numeric sentiment_score today
+    (see frontend/src/utils/entryEvidence.ts:buildEntryEvidenceFromPrediction).
+    The current Daily Pick path (buildEntryEvidenceFromDailyPick) leaves
+    technical_signal/sentiment_score null and never sends
+    daily_pick_run_id/daily_pick_rank/model_version — a DAILY_PICK fixture
+    carrying all of these fields would misrepresent real frontend behavior.
+    See TestPhaseA1EntryEvidenceLifecycleDailyPickSparse below for a
+    DAILY_PICK sub-case matching what that path actually produces."""
     return RecommendationContext(
-        evidence_source="DAILY_PICK",
+        evidence_source="RESEARCH",
         simulated_execution_price=101.0,
         recommendation_signal="BUY",
         recommendation_generated_at=dt.datetime(2026, 6, 1, 9, 0, tzinfo=UTC),
@@ -76,13 +87,16 @@ def _original_entry_evidence_ctx() -> RecommendationContext:
         market_regime_score_adj=3.5,
         market_regime_reason="Broad market uptrend confirmed by regime model",
         recommendation_reasoning=["Strong RSI momentum", "Positive earnings surprise"],
-        daily_pick_run_id="run-2026-06-01-a",
-        daily_pick_rank=3,
-        model_version="alpha-engine-v7",
+        # RESEARCH-path Buys never populate these — buildEntryEvidenceFromPrediction
+        # hard-codes them to null (a live Prediction response carries no
+        # governed daily-pick-run/rank/model-version semantics).
+        daily_pick_run_id=None,
+        daily_pick_rank=None,
+        model_version=None,
     )
 
 
-def _build_original_snapshot(trade_id: int = 280) -> EntrySnapshot:
+def _build_original_snapshot(trade_id: int = 900001) -> EntrySnapshot:
     return build_entry_snapshot(
         paper_trade_id=trade_id, user_id="user-aaa", symbol="AAPL", market="US",
         ctx=_original_entry_evidence_ctx(),
@@ -90,7 +104,7 @@ def _build_original_snapshot(trade_id: int = 280) -> EntrySnapshot:
     )
 
 
-def _closed_trade_record(trade_id: int = 280) -> ClosedTradeRecord:
+def _closed_trade_record(trade_id: int = 900001) -> ClosedTradeRecord:
     return ClosedTradeRecord(
         trade_id=trade_id, status="CLOSED", symbol="AAPL", market="US", quantity=10,
         entry_price=101.0, exit_price=125.0, stop_loss=90.0, target_price=130.0,
@@ -100,7 +114,7 @@ def _closed_trade_record(trade_id: int = 280) -> ClosedTradeRecord:
     )
 
 
-def _build_exit_snapshot_for(trade_id: int = 280):
+def _build_exit_snapshot_for(trade_id: int = 900001):
     return build_exit_snapshot(
         paper_trade_id=trade_id, user_id="user-aaa", symbol="AAPL", market="US",
         exit_mechanism=CloseExitMechanism.MANUAL, exit_mechanism_raw="MANUAL",
@@ -203,16 +217,16 @@ class TestPhaseA1EntryEvidenceLifecycle:
             model_version="alpha-engine-v8",
         )
         # A later/different recommendation fixture genuinely exists in the
-        # test — e.g. as if trade 281 were opened afterward against a
-        # fresh run — but is never wired into trade 280's report below.
+        # test — e.g. as if trade 900002 were opened afterward against a
+        # fresh run — but is never wired into trade 900001's report below.
         newer_snapshot_for_a_different_trade = build_entry_snapshot(
-            paper_trade_id=281, user_id="user-aaa", symbol="AAPL", market="US", ctx=newer_ctx,
+            paper_trade_id=900002, user_id="user-aaa", symbol="AAPL", market="US", ctx=newer_ctx,
         )
         assert newer_snapshot_for_a_different_trade.recommendation_signal == "SELL"
 
-        original_snapshot = _build_original_snapshot(trade_id=280)
-        record = _closed_trade_record(trade_id=280)
-        exit_snapshot = _build_exit_snapshot_for(trade_id=280)
+        original_snapshot = _build_original_snapshot(trade_id=900001)
+        record = _closed_trade_record(trade_id=900001)
+        exit_snapshot = _build_exit_snapshot_for(trade_id=900001)
         postmortem = compute_postmortem(record, snapshot=original_snapshot)
 
         payload = build_report_payload(postmortem, original_snapshot, exit_snapshot=exit_snapshot)
@@ -221,7 +235,7 @@ class TestPhaseA1EntryEvidenceLifecycle:
         assert _evidence_item(payload, "technical_signal")["value"] == "BUY"
         assert _evidence_item(payload, "fundamental_score")["value"] == 71.0
         assert _evidence_item(payload, "sentiment_score")["value"] == 64.0
-        # None of the newer values leak into trade 280's report.
+        # None of the newer values leak into trade 900001's report.
         for item in payload.evidence_items:
             if item["category"] == "entry_snapshot":
                 assert item["value"] != "SELL"
@@ -315,7 +329,7 @@ class TestPhaseA1EntryEvidenceLifecycle:
         from services.postmortem.generation_service import generate_and_persist
 
         report, created = generate_and_persist(
-            conn, trade_id=280, user_id="user-aaa", market="US",
+            conn, trade_id=900001, user_id="user-aaa", market="US",
             report_trading_date=dt.date(2026, 6, 5), market_timezone="America/New_York",
             postmortem=postmortem, entry_snapshot=snapshot, exit_snapshot=exit_snapshot,
         )
@@ -336,3 +350,192 @@ class TestPhaseA1EntryEvidenceLifecycle:
         persisted_items = json.loads(evidence_items_json)
         persisted_rec_item = next(i for i in persisted_items if i["name"] == "recommendation_signal")
         assert persisted_rec_item["value"] == "BUY"
+
+
+@pytest.mark.unit
+class TestPhaseA1EntryEvidenceLifecycleDailyPickSparse:
+    """Fix 5 (owner-audit correction, Phase A1) — a sub-case fixture
+    matching what the CURRENT Daily Pick path (buildEntryEvidenceFromDailyPick
+    in frontend/src/utils/entryEvidence.ts) actually sends: technical_signal
+    and sentiment_score are always null (Daily Pick's Pick type carries only
+    tech_score/a sentiment label, not a governed technical_signal string or a
+    numeric sentiment_score), and daily_pick_run_id/daily_pick_rank/
+    model_version are also always null (no governed run/rank identifier
+    exists in the live /api/picks payload). recommendation_signal is always
+    "BUY" (Daily Picks only ever surface BUY-side picks) and fundamental_score
+    IS populated (from pick.fund_score)."""
+
+    def _daily_pick_sparse_ctx(self) -> RecommendationContext:
+        return RecommendationContext(
+            evidence_source="DAILY_PICK",
+            simulated_execution_price=52.0,
+            recommendation_signal="BUY",
+            recommendation_generated_at=dt.datetime(2026, 6, 1, 6, 0, tzinfo=UTC),
+            recommendation_reference_price=50.0,
+            recommendation_entry_low=49.0,
+            recommendation_entry_high=51.0,
+            recommended_stop_loss=45.0,
+            recommended_target_price=60.0,
+            confidence_score=68.0,
+            technical_signal=None,
+            technical_rsi=None,
+            technical_macd_diff=None,
+            fundamental_score=58.0,
+            sentiment_score=None,
+            sentiment_label="NEUTRAL",
+            market_regime_trend=None,
+            market_regime_score_adj=None,
+            market_regime_reason=None,
+            recommendation_reasoning=["MACD bullish cross"],
+            daily_pick_run_id=None,
+            daily_pick_rank=None,
+            model_version=None,
+        )
+
+    def test_daily_pick_sparse_snapshot_matches_real_frontend_behavior(self):
+        snapshot = build_entry_snapshot(
+            paper_trade_id=900003, user_id="user-bbb", symbol="MSFT", market="US",
+            ctx=self._daily_pick_sparse_ctx(), level_history_contract_version="1.0.0",
+        )
+        assert snapshot.evidence_source == "DAILY_PICK"
+        assert snapshot.recommendation_signal == "BUY"
+        assert snapshot.fundamental_score == 58.0
+        # The fields the live Daily Pick path never populates stay null —
+        # asserting a snapshot built from a genuinely sparse DAILY_PICK
+        # context does not silently backfill/fabricate any of them.
+        assert snapshot.technical_signal is None
+        assert snapshot.sentiment_score is None
+        assert snapshot.daily_pick_run_id is None
+        assert snapshot.daily_pick_rank is None
+        assert snapshot.model_version is None
+
+        record = ClosedTradeRecord(
+            trade_id=900003, status="CLOSED", symbol="MSFT", market="US", quantity=5,
+            entry_price=52.0, exit_price=58.0, stop_loss=45.0, target_price=60.0,
+            opened_at=dt.datetime(2026, 6, 1, 9, 30, tzinfo=UTC),
+            closed_at=dt.datetime(2026, 6, 4, 15, 0, tzinfo=UTC),
+            trade_management_mode="manual", exit_reason="MANUAL",
+        )
+        exit_snapshot = build_exit_snapshot(
+            paper_trade_id=900003, user_id="user-bbb", symbol="MSFT", market="US",
+            exit_mechanism=CloseExitMechanism.MANUAL, exit_mechanism_raw="MANUAL",
+            exit_price=58.0, exit_quantity=5,
+            closed_at=dt.datetime(2026, 6, 4, 15, 0, tzinfo=UTC),
+            realized_pnl_abs=30.0, management_mode="manual",
+        )
+        postmortem = compute_postmortem(record, snapshot=snapshot)
+        payload = build_report_payload(postmortem, snapshot, exit_snapshot=exit_snapshot)
+
+        fundamental_item = _evidence_item(payload, "fundamental_score")
+        assert fundamental_item["value"] == 58.0
+        # No evidence_item claims a technical_signal or sentiment_score value
+        # for a trade whose entry snapshot never captured either.
+        tech_items = [i for i in payload.evidence_items if i["name"] == "technical_signal" and i["value"] is not None]
+        sentiment_items = [i for i in payload.evidence_items if i["name"] == "sentiment_score" and i["value"] is not None]
+        assert tech_items == []
+        assert sentiment_items == []
+
+
+@pytest.mark.unit
+class TestBuyRequestToEntrySnapshotCoverage:
+    """Fix 5 (owner-audit correction, Phase A1) — proves the REAL production
+    Buy-time snapshot builder, `_build_snapshot_for_buy` in
+    `backend/api/routers/paper_trading.py`, correctly threads a full
+    `BuyRequest.entry_evidence` payload into the `EntrySnapshot` it returns,
+    without needing ANY change to that function's production logic — it is
+    called here exactly as `paper_buy()` calls it."""
+
+    def test_build_snapshot_for_buy_threads_entry_evidence_exactly(self):
+        import sys
+        from pathlib import Path
+
+        backend_dir = Path(__file__).resolve().parents[2]
+        if str(backend_dir) not in sys.path:
+            sys.path.insert(0, str(backend_dir))
+        from api.routers.paper_trading import BuyRequest, EntryEvidenceRequest, _build_snapshot_for_buy
+
+        entry_evidence = EntryEvidenceRequest(
+            recommendation_signal="BUY",
+            recommendation_generated_at=(dt.datetime.now(UTC) - dt.timedelta(minutes=5)).isoformat(),
+            recommendation_reference_price=100.0,
+            recommendation_entry_low=98.0,
+            recommendation_entry_high=102.0,
+            recommended_stop_loss=90.0,
+            recommended_target_price=130.0,
+            confidence_score=82.0,
+            technical_signal="BUY",
+            technical_rsi=58.0,
+            technical_macd_diff=1.25,
+            fundamental_score=71.0,
+            sentiment_score=64.0,
+            sentiment_label="POSITIVE",
+            market_regime_trend="BULLISH",
+            market_regime_score_adj=3.5,
+            market_regime_reason="Broad market uptrend confirmed by regime model",
+            recommendation_reasoning=[{"indicator": "RSI", "signal": "BUY", "reason": "oversold"}],
+            daily_pick_run_id=None,
+            daily_pick_rank=None,
+            model_version=None,
+        )
+        req = BuyRequest(
+            symbol="AAPL", market="US", quantity=10, price=101.0,
+            signal="BUY", horizon="medium",
+            stop_loss=90.0, target_price=130.0,
+            trade_management_mode="manual",
+            evidence_source="RESEARCH",
+            entry_evidence=entry_evidence,
+        )
+
+        snapshot = _build_snapshot_for_buy(
+            trade_id=900004, user_id="user-ccc", symbol="AAPL", market="US", req=req,
+            level_history_contract_version="1.0.0",
+        )
+
+        assert snapshot.paper_trade_id == 900004
+        assert snapshot.user_id == "user-ccc"
+        assert snapshot.evidence_source == "RESEARCH"
+        assert snapshot.simulated_execution_price == 101.0
+        assert snapshot.user_selected_stop_loss == 90.0
+        assert snapshot.user_selected_target_price == 130.0
+        assert snapshot.recommendation_signal == "BUY"
+        assert snapshot.recommendation_reference_price == 100.0
+        assert snapshot.recommendation_entry_low == 98.0
+        assert snapshot.recommendation_entry_high == 102.0
+        assert snapshot.recommended_stop_loss == 90.0
+        assert snapshot.recommended_target_price == 130.0
+        assert snapshot.confidence_score == 82.0
+        assert snapshot.technical_signal == "BUY"
+        assert snapshot.technical_rsi == 58.0
+        assert snapshot.technical_macd_diff == 1.25
+        assert snapshot.fundamental_score == 71.0
+        assert snapshot.sentiment_score == 64.0
+        assert snapshot.sentiment_label == "POSITIVE"
+        assert snapshot.market_regime_trend == "BULLISH"
+        assert snapshot.market_regime_score_adj == 3.5
+        assert snapshot.market_regime_reason == "Broad market uptrend confirmed by regime model"
+        assert snapshot.recommendation_reasoning == [{"indicator": "RSI", "signal": "BUY", "reason": "oversold"}]
+        assert snapshot.daily_pick_run_id is None
+        assert snapshot.daily_pick_rank is None
+        assert snapshot.model_version is None
+
+    def test_build_snapshot_for_buy_with_no_entry_evidence_produces_honest_nulls(self):
+        import sys
+        from pathlib import Path
+
+        backend_dir = Path(__file__).resolve().parents[2]
+        if str(backend_dir) not in sys.path:
+            sys.path.insert(0, str(backend_dir))
+        from api.routers.paper_trading import BuyRequest, _build_snapshot_for_buy
+
+        req = BuyRequest(
+            symbol="TSLA", market="US", quantity=3, price=250.0,
+            signal="HOLD", horizon="short",
+        )
+        snapshot = _build_snapshot_for_buy(
+            trade_id=900005, user_id="user-ddd", symbol="TSLA", market="US", req=req,
+        )
+        assert snapshot.evidence_source == "MANUAL"
+        assert snapshot.recommendation_signal is None
+        assert snapshot.technical_signal is None
+        assert snapshot.fundamental_score is None
+        assert snapshot.sentiment_score is None
