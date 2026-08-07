@@ -28,7 +28,8 @@ from this repository checkout" per that ledger's own caveat.
 | Validation Engine | LIVE BACKEND / OPERATIONAL |
 | Learning Alpha Engine | FEATURE-FLAGGED OFF (contained, `LEARNING_ALPHA_PRODUCTION_ENABLED`) |
 | RCI | FEATURE-FLAGGED OFF (`RCI_LIVE_STOCK_ANALYSIS_ENABLED`, unchanged since baseline) |
-| SEC PIT Fundamentals | LIVE BACKEND / OPERATIONAL (feeds live US confidence scoring, not shadow-only) |
+| SEC EDGAR (live provider, `sec_edgar_adapter.py`) | LIVE BACKEND / OPERATIONAL — feeds live US confidence scoring via `us_financial_strength_adapter.py` → `prediction_engine.py` |
+| SEC PIT store (DP-033 persisted point-in-time facts, `sec_pit_store.py`) | LIVE BACKEND / OPERATIONAL for Validation Engine replay only — its sole production consumer is `validation_engine.py`'s acquisition-free replay path; does NOT feed live prediction/confidence scoring (not imported by `prediction_engine.py` or `daily_picks.py`) — corrected 2026-08-07 after this doc previously conflated it with the live SEC EDGAR row above |
 | NSE Instrument Master | FOUNDATION / UNINTEGRATED |
 | Market Leadership | FEATURE-FLAGGED OFF / DEPLOYED DORMANT |
 | Intelligence Engine / Universe Builder | SHADOW / EXPERIMENTAL (`INTELLIGENCE_ENGINE_SHADOW_ENABLED`) |
@@ -46,15 +47,21 @@ from this repository checkout" per that ledger's own caveat.
 - PR #36 (Explainability/UX overhaul: three-layer report, factor-specific
   price-path assessment, `Company Name (SYMBOL)` identity, evidence-coverage
   matrix) — merged at `5170692f27b1742406a21d67fca8a74d62490c1f`.
-- Two independent flag pairs, both enabled in Production: the daily-batch
-  path uses `TRADE_POSTMORTEM_DAILY_ENABLED` (backend) /
-  `NEXT_PUBLIC_TRADE_POSTMORTEM_DAILY_ENABLED` (frontend); the per-trade
-  `/postmortem/[tradeId]` route uses `TRADE_POSTMORTEM_PRICE_PATH_ENABLED`
-  (backend) / `NEXT_PUBLIC_TRADE_POSTMORTEM_PRICE_PATH_ENABLED` (frontend) —
-  each side has both a backend and a frontend twin
+- Two independent flag pairs — this is not one backend-only flag paired with
+  one frontend-only flag; each side has both a backend and a frontend twin
   (`backend/api/routers/paper_trading.py`,
-  `frontend/src/utils/featureFlags.ts`); this is not one backend-only flag
-  paired with one frontend-only flag.
+  `frontend/src/utils/featureFlags.ts`):
+  - `TRADE_POSTMORTEM_PRICE_PATH_ENABLED` (backend) /
+    `NEXT_PUBLIC_TRADE_POSTMORTEM_PRICE_PATH_ENABLED` (frontend) gates the
+    per-trade `/postmortem/[tradeId]` route this release (PR #35/#36) is
+    about — **reported enabled in Production** per the
+    [Explainability Production Closure](../Releases/Trade-Postmortem-Explainability-Production-Closure.md)'s
+    own validation evidence.
+  - `TRADE_POSTMORTEM_DAILY_ENABLED` (backend) /
+    `NEXT_PUBLIC_TRADE_POSTMORTEM_DAILY_ENABLED` (frontend) gates a
+    separate, older Sprint 1 daily-batch surface — **its Production runtime
+    state was not independently verified during this reconciliation**; do
+    not assume it matches the price-path pair's state.
 - Production validation: 48-hour backend-only stability observation passed;
   natural production lifecycle verified on a real trade; frontend
   activation, authenticated Production smoke test, and the

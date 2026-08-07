@@ -171,7 +171,8 @@ labels are exactly the eight from the governing prompt.
 | Dashboard (3) | LIVE USER-FACING | `frontend/src/app/dashboard` | Layout compaction (mover cards, market-overview headings), horizon-chip removal / Market Sentiment card deferral. Cosmetic/UX only — no backend or flag change. Recorded per spec's "NO DELTA AFTER BASELINE" instruction: there IS a delta (3 UX commits), so that fallback does not apply here; it is LIVE USER-FACING with minor layout changes only. |
 | Postgres Schema Init (2) | LIVE BACKEND / OPERATIONAL — fail-closed | `backend/services/postgres_store.py` (`fail-closed` design, confirmed by direct grep), `fix/postgres-multistatement-atomicity`, `fix/job-lease-atomicity` (PR #4/#5) | Schema initialization and job-lease/multi-statement atomicity commits are both merged; `postgres_store.py` today implements fail-closed semantics (verified by source read, not just commit message). |
 | Market Leadership (2 direct + `feat/shadow-market-leadership-context`, `feat/market-leadership-trend-context`, and 3 reconciliation-docs PRs merged as part of PR #21-#23) | FEATURE-FLAGGED OFF / DEPLOYED DORMANT | `backend/services/market_leadership/configuration.py`: `engine_enabled()` reads `MARKET_LEADERSHIP_ENGINE_ENABLED`, `ui_enabled()` additionally requires `MARKET_LEADERSHIP_UI_ENABLED`, `scoring_enabled()` requires `MARKET_LEADERSHIP_SCORING_ENABLED` — all three default to unset/off (`os.getenv(...) == "1"`, no default `"1"` anywhere in source). Every setter of these three env vars in this checkout is a test file (`tests/integration/market_leadership/*`, `tests/regression/market_leadership/*`). `api/routers/leadership.py` exists and is included in `main.py`, but its own comment states the flag gate means "an unauthorized/disabled" response is the expected default behavior. No production caller sets these flags. Cannot be classified LIVE without a documented prior release record (none found) — classified DEPLOYED DORMANT (code shipped, route reachable, but gated off by default) rather than SHADOW, since there is no evidence of even a shadow-evaluation cron running it. |
-| SEC PIT Fundamentals (2 direct, plus DP-026 point-in-time remediation/closure PRs #10-#13) | LIVE BACKEND / OPERATIONAL — feeds live US scoring | `backend/services/us_financial_strength_adapter.py` calls `services.sec_edgar_adapter.fetch_us_fundamentals_sec_edgar()` and resolves through `us_provider_precedence.resolve_field()`; `backend/services/prediction_engine.py:759-916` calls `compute_us_financial_strength()` and feeds its `grade` into `_apply_financial_strength_adjustment()`, which adjusts `confidence` for US-market predictions. This is not shadow-only: SEC PIT data measurably influences the live US confidence score. `_facts_cache` on `sec_edgar_adapter.py` was capped (PR #16, `fix/sec-edgar-facts-cache-oversized-cap`) as part of the OOM-containment sweep, confirming it runs in the live request/job path, not an offline-only script. |
+| SEC EDGAR (live provider, `sec_edgar_adapter.py`) — the workstream this ledger tags "SEC PIT Fundamentals" for the 2 direct commits above is actually about this system, not the DP-033 point-in-time store below; see the corrected split immediately below | LIVE BACKEND / OPERATIONAL — feeds live US scoring | `backend/services/us_financial_strength_adapter.py` calls `services.sec_edgar_adapter.fetch_us_fundamentals_sec_edgar()` directly (live acquisition) and resolves through `us_provider_precedence.resolve_field()`; `backend/services/prediction_engine.py:759-916` calls `compute_us_financial_strength()` and feeds its `grade` into `_apply_financial_strength_adjustment()`, which adjusts `confidence` for US-market predictions. This is not shadow-only: live SEC EDGAR data measurably influences the live US confidence score. `_facts_cache` on `sec_edgar_adapter.py` was capped (PR #16, `fix/sec-edgar-facts-cache-oversized-cap`) as part of the OOM-containment sweep, confirming it runs in the live request/job path, not an offline-only script. |
+| **SEC PIT store (DP-033 persisted point-in-time fact store, `backend/services/sec_pit_store.py`) — a genuinely separate system from the live SEC EDGAR provider row above; corrected 2026-08-07 after this reconciliation's first pass conflated the two** | VALIDATION / REPLAY ONLY — does NOT feed live scoring | Repo-wide grep of every caller/importer of `sec_pit_store`, `get_facts_as_of_replay`, `ingest_symbol`, `sec_pit_facts`, `sec_pit_symbol_registry`, `sec_pit_ingestion_runs` finds exactly one production consumer: `backend/services/validation_engine.py`'s `_get_fundamentals_as_of_replay()` (line ~1111), which calls only `sec_pit_store.get_facts_as_of_replay()` / `get_symbol_registry_entry()` — the function's own docstring states it is "genuinely acquisition-free" and "no code path here can reach `services.sec_edgar_adapter`'s live functions under any circumstance." `sec_pit_store.ingest_symbol()` (acquisition) is called only by the standalone `scripts/sec_pit_ingest.py` offline/administrative tool — never by `validation_engine.py` or any request/job path. Neither `prediction_engine.py` nor `daily_picks.py` imports `sec_pit_store` at all — confirmed by grep, zero hits. **Do not read the live SEC EDGAR provider row above as evidence for this row; they are different systems with different consumers.** |
 | CI/Workflow (2) | LIVE BACKEND / OPERATIONAL | `.github/workflows/` | Read-only secret-sync check added then removed same week (`chore(actions): add`/`remove read-only secret sync check`) — net no-op on current `main`; not a live workflow today. |
 | Watchlist (1 in first-parent range: `8f9693b0`, plus earlier watchlist work predating this ledger's scope) | LIVE USER-FACING | `frontend/src/app/watchlist`, `backend/api/routers/watchlist.py` | URL-encoding DELETE fix (`8f9693b0eecc5ba68490dee4d44b8ba86f5f079d`) is the tip of `origin/main` at time of this reconciliation — fixes a real bug (symbols/names with spaces or punctuation, e.g. "AUTO.CORP.OF GOA", failed to unwatch) by encoding the symbol path segment. Confirmed present in current `main.py` route wiring. |
 | Alerts UI (1) | LIVE USER-FACING | `frontend/src/app/alerts`, `backend/api/routers/alerts.py` | Collapsible add-form UX only; no backend/flag change. |
@@ -197,8 +198,8 @@ rows with no residual "Other/Unclassified" tag.
 
 | Flag | Side | Purpose | Default | Fail-open/closed | Lifecycle |
 |---|---|---|---|---|---|
-| `TRADE_POSTMORTEM_PRICE_PATH_ENABLED` / `NEXT_PUBLIC_TRADE_POSTMORTEM_PRICE_PATH_ENABLED` | Backend + Frontend | Gates per-trade `/postmortem/[tradeId]` route and `GET .../current-report` | unset (off) | fail-closed | LIVE USER-FACING (see Current-Release-Status.md: reported enabled in Production; not independently verifiable from this checkout) |
-| `TRADE_POSTMORTEM_DAILY_ENABLED` / `NEXT_PUBLIC_TRADE_POSTMORTEM_DAILY_ENABLED` | Backend + Frontend | Gates the daily-batch postmortem path | unset (off) | fail-closed | LIVE BACKEND/OPERATIONAL per Current-Release-Status.md (production state not independently verifiable from this checkout) |
+| `TRADE_POSTMORTEM_PRICE_PATH_ENABLED` / `NEXT_PUBLIC_TRADE_POSTMORTEM_PRICE_PATH_ENABLED` | Backend + Frontend | Gates per-trade `/postmortem/[tradeId]` route and `GET .../current-report` (PR #35/#36 release) | unset (off) | fail-closed | LIVE USER-FACING — reported enabled in Production per `Trade-Postmortem-Explainability-Production-Closure.md`'s own validation evidence (48hr stability observation, natural lifecycle verification on trade 280, frontend activation, authenticated smoke test); production toggle state itself is sourced from that closure doc's record, not independently re-derived from a repo checkout |
+| `TRADE_POSTMORTEM_DAILY_ENABLED` / `NEXT_PUBLIC_TRADE_POSTMORTEM_DAILY_ENABLED` | Backend + Frontend | Gates a separate, older Sprint 1 daily-batch postmortem surface (`isTradePostmortemDailyEnabled()`, `frontend/src/utils/featureFlags.ts`) — not the same feature as the row above | unset (off), fail-closed by design | fail-closed | Repo default is disabled; **Production runtime state not independently verified during this reconciliation** — no closure document in this repo makes a specific claim about this pair's Production toggle state, so none is asserted here |
 | `MARKET_LEADERSHIP_ENGINE_ENABLED` | Backend | Master gate for the leadership engine | unset (off) | fail-closed | FEATURE-FLAGGED OFF |
 | `MARKET_LEADERSHIP_UI_ENABLED` | Backend | Gates `api/routers/leadership.py` responses (requires engine also enabled) | unset (off) | fail-closed | FEATURE-FLAGGED OFF |
 | `MARKET_LEADERSHIP_SCORING_ENABLED` | Backend | Gates scoring influence; enforced to `services/` grep-only via a regression test | unset (off) | fail-closed | FEATURE-FLAGGED OFF |
@@ -235,10 +236,110 @@ Production runtime state (which of these are actually toggled on in Railway/Verc
 | Provider | Role | Evidence |
 |---|---|---|
 | yfinance | PRODUCTION PRIMARY/FALLBACK (per-field, resolved via `us_provider_precedence.resolve_field()`) | `services/us_financial_strength_adapter.py` fetches yfinance alongside SEC EDGAR for the same 16 unified fields; precedence resolution decides which wins per field |
-| SEC EDGAR (via `sec_edgar_adapter.py`) | PRODUCTION PRIMARY input to US financial-strength scoring | `prediction_engine.py:759-916` calls `compute_us_financial_strength()`, which is fed by `sec_edgar_adapter.fetch_us_fundamentals_sec_edgar()`; confidence adjustment is applied for US-market predictions |
+| SEC EDGAR (via `sec_edgar_adapter.py`, live acquisition) | LIVE PROVIDER INPUT to US financial-strength scoring | `prediction_engine.py:759-916` calls `compute_us_financial_strength()`, which is fed by `sec_edgar_adapter.fetch_us_fundamentals_sec_edgar()`; confidence adjustment is applied for US-market predictions |
+| SEC PIT store (DP-033, `sec_pit_store.py`, persisted point-in-time facts) | VALIDATION/REPLAY ONLY | Sole production consumer is `validation_engine.py`'s `_get_fundamentals_as_of_replay()`, acquisition-free by design; ingestion (`ingest_symbol()`) runs only via the standalone `scripts/sec_pit_ingest.py`. Not imported by `prediction_engine.py` or `daily_picks.py` — does not influence live scoring. |
 | screener.in (via `services/screener_data.py`) | PRODUCTION PRIMARY (India fundamentals) | Direct module presence + `SCREENER_EMAIL`/`SCREENER_PASSWORD`/`SCREEN_BATCH_SIZE` env vars found in the repo-wide flag grep above, implying authenticated production scraping, not an offline-only script |
 | NSE (`nse_client.py`) / BSE (`bse_data.py`) | PRODUCTION PRIMARY (India quotes/bhavcopy) | Direct consumers of the India Daily Picks bhavcopy-correction and session-freshness-gate commits in this ledger |
 | Finnhub | FALLBACK, opt-in (`ENABLE_FINNHUB_FOR_IN`) | Flag name and default-off convention consistent with other opt-in secondary sources in this codebase; not independently traced to a call site this pass |
 | NSE Instrument Master's own source registry | FOUNDATION ONLY | See workstream table above — no production consumer found |
 
 Full exhaustive per-endpoint API delta, per-table persistence delta, and complete data-provider inventory (news/benchmark/valuation sources not listed above) were not separately re-derived line-by-line in this pass beyond what is reported here; this is stated as a known limitation below rather than asserted as complete.
+
+## Corrected and Deepened Inventories (added 2026-08-07, third pass)
+
+This section supersedes the "directional" API/persistence/provider
+inventories from the second pass with content-level, not filename-level,
+diffing.
+
+### API delta — endpoint-level (`git diff` of router file contents, baseline vs `origin/main`, `+` lines matching `@router.(get|post|put|patch|delete)`)
+
+New endpoints added since baseline:
+
+| Method | Path | Router | Auth | Mutation/Read | Feature gate |
+|---|---|---|---|---|---|
+| GET | `/api/predictions/signals/cached-batch` | predictions.py | authenticated (per existing router pattern) | Read | none found |
+| GET | `/api/context` (leadership router) | leadership.py | per `MARKET_LEADERSHIP_UI_ENABLED` gate | Read | `MARKET_LEADERSHIP_UI_ENABLED` (+ `ENGINE_ENABLED`) |
+| PATCH | `/api/paper-trading/trade/{trade_id}` | paper_trading.py | authenticated, user-scoped | Mutation | none found beyond standard auth |
+| GET | `/api/paper-trading/postmortem/daily` | paper_trading.py | authenticated | Read | `TRADE_POSTMORTEM_DAILY_ENABLED` |
+| GET | `/api/paper-trading/postmortem/{trade_id}` | paper_trading.py | authenticated, user-scoped | Read | `TRADE_POSTMORTEM_DAILY_ENABLED` (legacy Sprint 1 per-trade path, distinct from `current-report` below) |
+| GET | `/api/paper-trading/{trade_id}/current-report` | paper_trading.py | authenticated, user-scoped | Read-only, no write/backfill | `TRADE_POSTMORTEM_PRICE_PATH_ENABLED` |
+| POST | `/api/paper-trading/postmortem/{trade_id}/generate` | paper_trading.py | authenticated, user-scoped | Mutation (generates/persists a report) | `TRADE_POSTMORTEM_DAILY_ENABLED` path (per file's own naming convention — not independently re-verified line-by-line which flag guards this specific handler beyond the router's dominant Sprint 1 naming) |
+
+`picks.py` (+199/-42), `multibagger.py` (+237/-21), `validation.py`
+(+23/-6), and `stocks.py` (+17/-3) show substantial content diffs with
+**zero new route decorators** — confirming these are materially changed
+existing-endpoint response bodies/query handling, not new API surface.
+Concretely identified from commit subjects (not re-derived line-by-line for
+every parameter): `GET /api/picks/performance` gained market filtering
+(commit `976c0d4`, "add market filtering to GET /api/picks/performance").
+The remaining handler-level changes in these four files were not
+individually enumerated parameter-by-parameter in this pass — reported as
+a known limitation rather than claimed complete.
+
+`portfolio.py`, `watchlist.py`, and `alerts.py` show **zero diff** at the
+router-file level despite ledger commits tagged to those workstreams — this
+is not an omission: the Watchlist DELETE-encoding fix (`8f9693b0`) and the
+Alerts collapsible-form change are both frontend-only (confirmed by
+`git show --stat` on each commit: `8f9693b0` touches only
+`frontend/src/`, the Alerts PR touches only
+`frontend/src/app/alerts/page.tsx`). No backend route changed for either.
+
+### Persistence delta — actual DDL (inline schema-init code in `backend/services/postgres_store.py`, `git diff` baseline vs `origin/main`)
+
+New tables: `paper_trade_entry_snapshot`, `paper_trade_exit_snapshot`,
+`paper_trade_postmortem_outbox`, `paper_trade_postmortem_report`,
+`alpha_observations`, `multibagger_refresh_jobs`, `heavy_workload_leases`,
+`multibagger_staging`.
+
+New columns (selected, not exhaustive): `predictions.market`,
+`outcomes.market` (both `NOT NULL`), `score_snapshots.market`,
+`paper_trades.recommendation_source` /
+`daily_pick_run_id` / `daily_pick_rank` / `recommendation_generated_at` /
+`recommendation_reference_price` / `recommendation_entry_low` /
+`recommendation_entry_high` / `recommendation_original_stop_loss` /
+`recommendation_original_target` / `model_version` /
+`execution_slippage_pct` / `signal_override` /
+`levels_modified_after_entry` / `level_history_contract_version` /
+`stop_modified_after_entry` / `target_modified_after_entry`.
+
+New indexes (selected): `idx_score_snapshots_symbol_market`,
+`idx_paper_trade_entry_snapshot_user`, `idx_paper_trade_exit_snapshot_user`,
+`idx_paper_trade_pm_outbox_claim`, `idx_paper_trade_pm_outbox_user`,
+`idx_paper_trade_pm_report_user`, `idx_paper_trade_pm_report_status`,
+`idx_paper_trade_pm_report_market_date`,
+`idx_alpha_observations_market_horizon_session`,
+`idx_alpha_observations_run`, `idx_alpha_observations_symbol_market_horizon`,
+`idx_heavy_workload_leases_owner`, `idx_multibagger_staging_job`,
+`idx_daily_picks_cache_market_status`.
+
+New constraints: `chk_paper_trades_level_history_contract_version`,
+`chk_paper_trades_governed_level_history_tuple`.
+
+`heavy_workload_leases` is the job-lease table backing the
+`fix/job-lease-atomicity` (PR #4) and orphan-job-recovery work in the Daily
+Picks workstream. This DDL-level pass covers `postgres_store.py`'s inline
+schema only — it does not separately re-verify every table against the
+`sec_pit_store.py`, `instrument_master`, or `market_leadership` modules'
+own possibly-separate schema-init code in this pass; noted as a limitation.
+
+### Data-provider role inventory — corrected, call-site-traced (not env-var-name-inferred)
+
+| Provider | Classification | Call-site evidence |
+|---|---|---|
+| yfinance | PRODUCTION PRIMARY/FALLBACK (per-field via `us_provider_precedence.resolve_field()`) | `us_financial_strength_adapter.py` fetches yfinance alongside SEC EDGAR for the same 16 fields |
+| SEC EDGAR (live, `sec_edgar_adapter.py`) | LIVE PROVIDER INPUT | `prediction_engine.py:759-916` → `us_financial_strength_adapter.py` → `sec_edgar_adapter.fetch_us_fundamentals_sec_edgar()`; feeds live US confidence adjustment |
+| SEC PIT store (DP-033, `sec_pit_store.py`) | VALIDATION/REPLAY ONLY | Sole consumer `validation_engine.py`'s acquisition-free replay path; ingestion only via standalone `scripts/sec_pit_ingest.py`; not imported by `prediction_engine.py`/`daily_picks.py` — corrected from the second pass, which incorrectly conflated this with the SEC EDGAR row above |
+| screener.in (`screener_data.py`) | PRODUCTION PRIMARY (India fundamentals) | Authenticated production scraping (`SCREENER_EMAIL`/`SCREENER_PASSWORD`/`SCREEN_BATCH_SIZE`), consumed by the India Daily Picks/Multibagger fundamentals-refresh path |
+| NSE (`nse_client.py`) | PRODUCTION PRIMARY (India quotes/bhavcopy) | Direct consumer of the India Daily Picks bhavcopy-correction and session-freshness-gate commits |
+| BSE (`bse_data.py`) | PRODUCTION FALLBACK (India), not independently re-traced to a specific call site this pass beyond module presence | — |
+| Finnhub | PRODUCTION FALLBACK, opt-in (`ENABLE_FINNHUB_FOR_IN`) | Flag-gated; exact call site not re-traced this pass |
+| NSE Instrument Master's source registry | FOUNDATION ONLY | No production consumer (see workstream table above) |
+| Market Leadership's own data sources | Not independently traced this pass — the engine itself is FEATURE-FLAGGED OFF/DEPLOYED DORMANT, so whatever sources it reads are gated behind the same off-by-default flags | — |
+| News/RSS sources | Not independently re-traced to specific call sites this pass; `fa0afe3d0e` ("fix stale news feed") confirms a live, already-shipped news feed exists and is maintained, consistent with LIVE USER-FACING | — |
+| Benchmark/index data (for price-path contradictions, MFE/MAE) | Confirmed ABSENT as a distinct acquisition path — the Evidence Matrix's own JSON explicitly states "no benchmark acquisition exists" for every `CONTRADICTIONS`-section factor requiring it (see the Evidence Coverage Matrix's `D. REQUIRES_NEW_ACQUISITION` rows) | `postmortem_evidence_coverage_matrix.json` |
+
+**Known limitation, stated honestly:** BSE, Finnhub, and Market Leadership's
+own upstream data sources were not traced to their exact call sites with
+the same rigor as yfinance/SEC EDGAR/SEC PIT/screener.in/NSE in this pass —
+their classifications above are lower-confidence than the others and are
+marked as such rather than asserted with the same certainty.

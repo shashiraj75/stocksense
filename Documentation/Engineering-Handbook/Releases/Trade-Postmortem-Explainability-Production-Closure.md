@@ -25,9 +25,27 @@ current.
 
 ## Production activation state
 
-- Both the backend and frontend Trade Postmortem feature flags
-  (`TRADE_POSTMORTEM_DAILY_ENABLED`, `TRADE_POSTMORTEM_PRICE_PATH_ENABLED`)
-  are reported enabled in Production.
+**Corrected 2026-08-07** (post-Jul-11 documentation reconciliation, PR #37):
+this section previously stated that both Trade Postmortem flag pairs "are
+reported enabled in Production," which conflated two independent, separately
+gated features. `TRADE_POSTMORTEM_DAILY_ENABLED` /
+`NEXT_PUBLIC_TRADE_POSTMORTEM_DAILY_ENABLED` is the older Sprint 1 daily
+surface (`frontend/src/utils/featureFlags.ts`: `isTradePostmortemDailyEnabled()`,
+a fail-closed presentation gate, repo default disabled) — a genuinely
+separate feature from the per-trade Wave C/Explainability release this
+document closes. `TRADE_POSTMORTEM_PRICE_PATH_ENABLED` /
+`NEXT_PUBLIC_TRADE_POSTMORTEM_PRICE_PATH_ENABLED` gates the
+`/postmortem/[tradeId]` route this document is actually about.
+
+- The **`TRADE_POSTMORTEM_PRICE_PATH_ENABLED`** pair (backend + frontend) is
+  reported enabled in Production per this closure's own validation evidence
+  below (natural production lifecycle verification on trade 280, frontend
+  activation, authenticated Production smoke test).
+- The **`TRADE_POSTMORTEM_DAILY_ENABLED`** pair's Production runtime state
+  was **not independently verified during this reconciliation** — it belongs
+  to the separate Sprint 1 daily surface, not this PR #35/#36 release, and no
+  evidence in this document's own validation record below speaks to it. Do
+  not infer its state from this closure record.
 - Authenticated route: `/postmortem/[tradeId]` (frontend).
 - Read-only API: `GET /api/paper-trading/{tradeId}/current-report`
   (backend, `backend/api/routers/paper_trading.py`) — GET-only, no

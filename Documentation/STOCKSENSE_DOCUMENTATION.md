@@ -979,10 +979,18 @@ separately in the
 [Evidence Completion Roadmap](Engineering-Handbook/Operations/Trade-Postmortem-Evidence-Completion-Roadmap.md)
 — summarized there, not duplicated here.
 
-**Feature flags:** `TRADE_POSTMORTEM_DAILY_ENABLED` (backend) and
-`TRADE_POSTMORTEM_PRICE_PATH_ENABLED` (frontend, via
-`frontend/src/utils/featureFlags.ts`) — both enabled in Production as of
-this writing; see [Current Release Status](Engineering-Handbook/Operations/Current-Release-Status.md)
+**Feature flags:** this route (`/postmortem/[tradeId]`) is gated by the
+`TRADE_POSTMORTEM_PRICE_PATH_ENABLED` pair — backend
+(`backend/api/routers/paper_trading.py`) and frontend
+(`NEXT_PUBLIC_TRADE_POSTMORTEM_PRICE_PATH_ENABLED`, via
+`frontend/src/utils/featureFlags.ts`'s `isTradePostmortemPricePathEnabled()`).
+Per the [Explainability Production Closure](Engineering-Handbook/Releases/Trade-Postmortem-Explainability-Production-Closure.md),
+this pair is reported enabled in Production. The separate, older
+`TRADE_POSTMORTEM_DAILY_ENABLED` / `NEXT_PUBLIC_TRADE_POSTMORTEM_DAILY_ENABLED`
+pair gates a different, Sprint 1 daily-batch surface — not this route — and
+its Production runtime state was not independently verified during the
+2026-08-07 documentation reconciliation. See
+[Current Release Status](Engineering-Handbook/Operations/Current-Release-Status.md)
 for the live, authoritative flag state rather than relying on a snapshot
 here.
 

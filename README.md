@@ -98,13 +98,28 @@ All scores on 0–100 scale. Score ≥ 60 → BUY · 45–59 → HOLD · < 45 �
 
 Weights are dynamically modulated by volatility and market regime (BULL / BEAR / SIDEWAYS).
 
-### Learning Alpha Engine (Daily Picks)
-1. **Outcome resolution** — compare past predictions vs actual returns
-2. **IC engine** — Bayesian-shrunk Information Coefficients per factor (activates after 60+ outcomes)
-3. **Regime detection** — KMeans clustering on VIX, S&P 500, crude, gold, USD/INR
-4. **Z-score normalisation** — cross-sectional factor normalisation
-5. **Meta-model** — XGBoost / Ridge trained on outcomes (activates after 180+ outcomes)
-6. **Portfolio optimisation** — Ledoit-Wolf covariance, max 40% per position
+### Learning Alpha Engine (Daily Picks) — infrastructure built, adaptive influence feature-gated off by default
+
+Corrected 2026-08-07: this was previously listed as a live-sounding
+production feature ("activates after N outcomes"). Per
+`backend/services/alpha_engine/containment.py`, with
+`LEARNING_ALPHA_PRODUCTION_ENABLED` unset (the repo default), Daily Picks
+ranking uses fixed academic-prior IC weights, not this engine's live
+adaptation:
+
+1. **Outcome resolution** — records predictions vs. actual returns into `predictions`/`outcomes`.
+2. **IC engine** — Bayesian-shrunk Information Coefficients per factor; computes in shadow mode for observability (activates after 60+ outcomes) but its output does not overwrite production ranking while containment is active.
+3. **Regime detection** — KMeans clustering on VIX, S&P 500, crude, gold, USD/INR; this one component runs independently of the containment flag (`weight_adapter.run_adaptation`).
+4. **Z-score normalisation** — cross-sectional factor normalisation, shadow-only under containment.
+5. **Meta-model** — XGBoost / Ridge trained on outcomes (activates after 180+ outcomes), shadow-only under containment.
+6. **Portfolio optimisation** — Ledoit-Wolf covariance, max 40% per position.
+
+In short: this engine records and evaluates prediction/outcome evidence
+continuously, but its adaptive production influence on live Daily Picks
+ranking remains feature-gated off by default. See the "Experimental /
+Shadow / Dormant" section below and
+[`Current-Release-Status.md`](Documentation/Engineering-Handbook/Operations/Current-Release-Status.md)
+for the authoritative current state.
 
 ---
 
