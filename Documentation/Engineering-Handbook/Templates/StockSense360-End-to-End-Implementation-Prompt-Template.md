@@ -2,7 +2,7 @@
 
 StockSense360 Senior Programmer End-to-End Implementation Standard
 Standard: SES-006
-Version: 1.0
+Version: 1.1
 
 Copy this template into a new prompt for any material StockSense360 implementation work (see [SES-006 §2](../SES/SES-006-End-to-End-Implementation-and-Release-Standard.md#2-applicability) for what counts). Fill in every bracketed placeholder. For every item in the PROMPT COVERAGE DECLARATION, mark it **INCLUDED**, **EXCLUDED WITH REASON**, or **NOT APPLICABLE** — an item marked excluded with no reason does not satisfy SES-006 §5.
 
@@ -45,6 +45,31 @@ Copy this template into a new prompt for any material StockSense360 implementati
 | Deployment | INCLUDED / EXCLUDED WITH REASON | |
 | Production verification | INCLUDED / EXCLUDED WITH REASON | |
 | Natural-run verification | INCLUDED / NOT APPLICABLE | |
+
+## MULTIDISCIPLINARY REVIEW DECLARATION
+
+Per [SES-006 §3A](../SES/SES-006-End-to-End-Implementation-and-Release-Standard.md#3a-multidisciplinary-principal-engineering-intelligence) (role definitions and concern lists are not repeated here). For each lens, mark **MATERIALLY APPLICABLE**, **CONSIDERED — NO MATERIAL ACTION REQUIRED**, or **NOT APPLICABLE — <reason>**.
+
+| Lens | Status |
+|---|---|
+| Data Engineer | |
+| Principal Data Engineer | |
+| Data Architect | |
+| ML Engineer | |
+| Data Scientist / Quant | |
+| MLOps Engineer | |
+| Financial Domain Expert | |
+| Compliance Officer | |
+
+## EVIDENCE REUSE DECLARATION
+
+Per [SES-006 §19A](../SES/SES-006-End-to-End-Implementation-and-Release-Standard.md#19a-evidence-reuse--non-repetition--execution-efficiency-standard).
+
+- Authoritative base SHA: [SHA]
+- Reusable prior evidence: [what's being reused, and from what prior verified state]
+- Invalidation conditions: [what would make reused evidence stale]
+- Checks that do NOT need repetition: [list, with reason]
+- Checks that MUST be rerun because this change can invalidate them: [list]
 
 ### Safety Boundary
 
