@@ -25,7 +25,7 @@ type ReasonItem = { indicator: string; signal: string; reason: string };
 type QualityFactors = { score?: number; sector?: string; piotroski?: number | null; breakdown?: Record<string, number> };
 type FactorZScores = { tech?: number; fund?: number; sentiment?: number; quality?: number };
 
-type Pick = {
+export type Pick = {
   symbol: string; name: string; price: number; target: number;
   stop_loss?: number; entry_low?: number; entry_high?: number;
   risk_reward?: number; confidence: number; tech_score?: number;
@@ -40,6 +40,56 @@ type Pick = {
   generation_reference_price_basis?: string | null;
   generation_reference_as_of?: string | null;
 };
+
+// Fix 4 (Phase A1.1 final decision-context correction) — a genuinely
+// immutable, copy-based point-in-time snapshot of the Daily Pick decision
+// context, captured at the moment the Paper Trade modal is opened. The
+// earlier version of this fix (`setFrozenPick(pick)`) stored the SAME
+// object reference from the parent Picks list's react-query cache in state
+// — that happened to work because react-query replaces rather than mutates
+// its cache data on refetch, but the contract shouldn't rely on that never
+// changing. This is narrowly typed to only the fields PaperTradeModal (and
+// the `buildEntryEvidenceFromDailyPick` evidence builder it feeds) actually
+// need — a subset of `Pick`, mirroring `DailyPickEvidenceSource` in
+// entryEvidence.ts plus the couple of extra display-only fields (symbol,
+// horizon) that helper doesn't need but the modal does.
+export type FrozenDailyPickSnapshot = {
+  symbol: string;
+  price: number;
+  horizon: string;
+  entry_low?: number;
+  entry_high?: number;
+  stop_loss?: number;
+  target: number;
+  confidence: number;
+  fund_score?: number;
+  sentiment?: string;
+  reasoning: ReasonItem[];
+  generated_at?: string | null;
+};
+
+// Explicit, typed field-by-field copy — deliberately NOT a broad
+// `JSON.parse(JSON.stringify(...))` hack. Clones the nested `reasoning`
+// array (and its item objects) rather than sharing the source array/object
+// references, so a later mutation of the source `pick.reasoning` entries
+// (or the parent swapping in a new array for the same symbol) can never
+// reach back into an already-open modal's frozen context.
+function freezeDailyPickSnapshot(pick: Pick): FrozenDailyPickSnapshot {
+  return {
+    symbol: pick.symbol,
+    price: pick.price,
+    horizon: pick.horizon,
+    entry_low: pick.entry_low,
+    entry_high: pick.entry_high,
+    stop_loss: pick.stop_loss,
+    target: pick.target,
+    confidence: pick.confidence,
+    fund_score: pick.fund_score,
+    sentiment: pick.sentiment,
+    reasoning: (pick.reasoning ?? []).map(r => ({ ...r })),
+    generated_at: pick.generated_at ?? null,
+  };
+}
 
 type AlphaEngineMeta = { ic_weights?: Record<string, number>; regime?: string; n_scored?: number; n_buy?: number; meta_model?: boolean };
 type GlobalContext = { score?: number; levels?: Record<string, number>; changes?: Record<string, number> };
@@ -579,7 +629,11 @@ function LivePerformanceTracker({ horizon, currency, locale, benchmarkLabel }: {
 }
 
 // ── Pick Card ─────────────────────────────────────────────────────────────────
-function PickCard({ pick, rank, market, currency, locale, freshness }: { pick: Pick; rank: number; market: "IN" | "US"; currency: string; locale: string; freshness?: FreshnessResult | null }) {
+// Exported (in addition to being used internally by DailyPicksPage below)
+// so Phase A1.1 regression tests can render it directly and simulate a
+// parent Picks-list react-query refetch by re-rendering with a new `pick`
+// prop, without needing to stand up the full page's data-fetching stack.
+export function PickCard({ pick, rank, market, currency, locale, freshness }: { pick: Pick; rank: number; market: "IN" | "US"; currency: string; locale: string; freshness?: FreshnessResult | null }) {
   // India Daily Picks session-freshness containment (Phase 0). `freshness`
   // is only ever passed for the IN market — US Daily Picks and any legacy
   // caller that omits the prop render exactly as before this change.
@@ -588,6 +642,18 @@ function PickCard({ pick, rank, market, currency, locale, freshness }: { pick: P
   const router = useRouter();
   const [expanded, setExpanded] = useState(false);
   const [showPaperTrade, setShowPaperTrade] = useState(false);
+  // Phase A1.1 (Production trade 304 correction) — capture ONE immutable
+  // copy of the Daily Pick decision context at the moment the modal is
+  // opened. `pick` is a prop sourced from the parent Picks list's
+  // react-query cache (refetchInterval: 60s/5min — see the query below) and
+  // WILL change out from under this component on a background refetch even
+  // while the modal stays open and mounted. Without this freeze, the AI
+  // Signal pill / persisted evidence built from a live `pick` reference
+  // could silently diverge from what the user actually saw when they
+  // decided to buy — that's exactly what happened in Production trade 304.
+  // `frozenPick` is set once at open time and never re-synced from `pick`
+  // while the modal is open; a later re-open re-freezes fresh.
+  const [frozenPick, setFrozenPick] = useState<FrozenDailyPickSnapshot | null>(null);
 
   // Daily Picks are a frozen snapshot from generation time (once or twice
   // daily) — entry zone/target/stop are all computed against pick.price as
@@ -855,7 +921,7 @@ function PickCard({ pick, rank, market, currency, locale, freshness }: { pick: P
       {/* Action bar */}
       <div className="flex border-t border-dark-border">
         <button
-          onClick={(e) => { e.stopPropagation(); if (!isStaleOrUnknown) setShowPaperTrade(true); }}
+          onClick={(e) => { e.stopPropagation(); if (!isStaleOrUnknown) { setFrozenPick(freezeDailyPickSnapshot(pick)); setShowPaperTrade(true); } }}
           disabled={isStaleOrUnknown}
           title={isStaleOrUnknown ? "Paper Trade is disabled until this pick's price reference is refreshed" : undefined}
           className={clsx("flex items-center gap-1.5 px-4 py-2.5 text-xs transition-colors border-r border-dark-border font-medium",
@@ -870,42 +936,51 @@ function PickCard({ pick, rank, market, currency, locale, freshness }: { pick: P
         </button>
       </div>
 
-      {showPaperTrade && pick.price && !isStaleOrUnknown && (
+      {showPaperTrade && frozenPick && frozenPick.price && !isStaleOrUnknown && (
         <PaperTradeModal
-          symbol={pick.symbol}
+          symbol={frozenPick.symbol}
           market={market}
           // Prefer the live/refreshed quote (displayPrice already resolves to
-          // livePrice when valid, falling back to pick.price otherwise — the
-          // same selectPriceBasis rule the card itself uses above) so a BUY
-          // paper trade executes at the current market price, not the frozen
-          // generation-time price. referencePrice lets the modal show that
-          // distinction to the user when the two genuinely differ.
-          currentPrice={displayPrice ?? pick.price}
-          referencePrice={pick.price}
+          // livePrice when valid, falling back to the frozen pick's price
+          // otherwise — the same selectPriceBasis rule the card itself uses
+          // above) so a BUY paper trade executes at the current market
+          // price, not the frozen generation-time price. Execution price is
+          // intentionally NOT frozen — only the Daily Pick's own
+          // recommendation/decision context (below) is. referencePrice lets
+          // the modal show that distinction to the user when the two
+          // genuinely differ.
+          currentPrice={displayPrice ?? frozenPick.price}
+          // Phase A1.1 — everything below this point is sourced from
+          // `frozenPick`, the immutable copy captured at modal-open time
+          // (see the `setFrozenPick(pick)` call above), NOT the live `pick`
+          // prop, which can change out from under this component on a
+          // background Picks-list refetch while the modal stays open.
+          referencePrice={frozenPick.price}
           signal="BUY"
-          horizon={pick.horizon}
+          horizon={frozenPick.horizon}
           currency={currency}
-          suggestedStopLoss={pick.stop_loss}
-          suggestedTargetPrice={pick.target}
+          suggestedStopLoss={frozenPick.stop_loss}
+          suggestedTargetPrice={frozenPick.target}
           onClose={() => setShowPaperTrade(false)}
           // Trade Postmortem Evidence Completion, Phase A1 — this is a
           // Daily Pick Buy: evidence is captured from the Daily Pick
-          // payload the user actually saw (pick), never from a fresh
+          // payload the user actually saw (the frozen snapshot, never a
+          // live/refreshed `pick` reference), never from a fresh
           // /api/predictions call, which could describe a different,
           // possibly since-changed recommendation.
           evidenceSource="DAILY_PICK"
           entryEvidenceOverride={buildEntryEvidenceFromDailyPick({
-            price: pick.price,
-            entry_low: pick.entry_low,
-            entry_high: pick.entry_high,
-            stop_loss: pick.stop_loss,
-            target: pick.target,
-            confidence: pick.confidence,
-            fund_score: pick.fund_score,
-            sentiment: pick.sentiment,
-            reasoning: pick.reasoning,
-            generated_at: pick.generated_at ?? null,
-            horizon: pick.horizon,
+            price: frozenPick.price,
+            entry_low: frozenPick.entry_low,
+            entry_high: frozenPick.entry_high,
+            stop_loss: frozenPick.stop_loss,
+            target: frozenPick.target,
+            confidence: frozenPick.confidence,
+            fund_score: frozenPick.fund_score,
+            sentiment: frozenPick.sentiment,
+            reasoning: frozenPick.reasoning,
+            generated_at: frozenPick.generated_at ?? null,
+            horizon: frozenPick.horizon,
           })}
         />
       )}
