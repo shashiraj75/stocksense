@@ -3,7 +3,7 @@
 **Status:** Active — governing.
 **Applies to:** material StockSense360 implementation work — see §2 for the exact boundary.
 **Specializes:** SES-001. References SES-002 (Python), SES-003 (Testing), SES-004 (Documentation), SES-005 (Branding) rather than duplicating them.
-**Version:** 1.0
+**Version:** 1.1
 
 ---
 
@@ -52,6 +52,19 @@ For work SES-006 governs, act simultaneously as:
 - technical-documentation owner.
 
 This means accountability for correctness, backward compatibility, decision integrity (no scoring/ranking/confidence logic silently altered), production safety, user-facing consistency, complete testing, and evidence-based release verification — not just for writing code that runs.
+
+## 3A. Multidisciplinary Principal Engineering Intelligence
+
+For work SES-006 governs, the §3 roles are applied **together with** eight additional professional lenses. Each lens must be **considered**; only lenses with materially relevant concerns generate work. A lens may be declared **NOT MATERIALLY APPLICABLE** with a concise reason. **The existence of a lens must never justify speculative features, unnecessary refactoring, unnecessary providers/tables/migrations/model changes, unnecessary documentation, or unrelated scope expansion.**
+
+- **Data Engineer** — ingestion, transformation, quality, schemas, lineage, provenance, failure behavior.
+- **Principal Data Engineer** — scalability, reliability, maintainability, operational efficiency, architectural trade-offs, long-term platform consequences.
+- **Data Architect** — canonical models, contracts, system boundaries, ownership, interoperability, provenance architecture, backward compatibility.
+- **ML Engineer** — feature correctness, training/inference parity, leakage prevention, reproducibility, deterministic model integration, inference reliability.
+- **Data Scientist / Quant** — statistical validity, outcome definition, calibration, signal efficacy, factor interaction, regime dependence, overfitting, look-ahead bias, survivorship bias, selection bias, sample-size sufficiency, walk-forward/out-of-sample validity.
+- **MLOps Engineer** — model/data/version lineage, reproducible runs, experiment tracking, feature/data drift, observability, shadow deployment, champion/challenger validation, rollback.
+- **Financial Domain Expert** — accounting and financial-statement semantics, market structure, financial metrics, valuation/fundamental/momentum interpretation, horizon appropriateness, India/US differences, economically meaningful outcome interpretation.
+- **Compliance Officer** — auditability, explainability, provenance, evidence retention, misleading financial claims, confidence/conviction representation, controlled Production mutations, user-facing risk language.
 
 ## 4. Investigation Before Modification
 
@@ -291,6 +304,19 @@ If a prompt governed by this standard is later found to have been incomplete aga
 - state exactly which SES-006 requirement it missed;
 - replace it with **one** complete, corrected prompt that covers the full remaining lifecycle;
 - do not stack multiple partial add-on prompts patching the gap piecemeal, unless a genuine safety boundary (§18) requires the split.
+
+## 19A. Evidence Reuse / Non-Repetition / Execution Efficiency Standard
+
+The rigor SES-006 (including §3A) requires must not become repeated work, scope creep, or excessive token/tool consumption. This section is binding on all SES-006-governed work:
+
+- **Reconcile once** — establish current repo/SHA/branch/working-tree/deployment-state/governing-docs before implementation, then rely on it.
+- **Verified-evidence ledger** — reuse already-proven facts while their invalidation conditions remain false. Evidence is invalidated only by: code change, data change, configuration change, environment change, schema change, provider change, or an explicitly time-sensitive freshness requirement.
+- **No blind repetition** — don't repeat an expensive repository investigation / live-provider validation / full test suite / build / production query / deployment verification / forensic analysis unless a subsequent change could invalidate its result or the governing release gate explicitly requires one final execution.
+- **Incremental verification** — use the smallest relevant tests during implementation; run the broader required suite once against the final candidate SHA at release gates; don't rerun the complete suite after every small edit.
+- **Same-SHA reuse** — a successful check against the exact same immutable SHA may be reused unless environment/freshness semantics require otherwise.
+- **No speculative work** — prefer existing architecture/schemas/helpers/providers/test infrastructure; new abstractions/dependencies/providers/tables/migrations require explicit evidence the existing design can't safely satisfy the requirement.
+- **Smallest correct diff** — no unrelated cleanup or opportunistic refactoring.
+- **Stop when proven** — once all governing acceptance criteria and release gates are satisfied, stop; no speculative defect hunting without a concrete evidence-based reason.
 
 ## 20. Required Completion States
 
