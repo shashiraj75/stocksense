@@ -13,6 +13,6 @@ Before starting SES-006-governed work, state the prompt coverage declaration and
 
 Do not narrow scope by silently treating related frontend, documentation, workflow, testing, or deployment work as "out of scope" — if something is genuinely excluded, say so explicitly with a reason, per SES-006 §5.
 
-All SES-006-governed work must also comply with (A) the Multidisciplinary Principal Engineering Intelligence Standard (SES-006 §3A) and (B) the Evidence Reuse / Non-Repetition / Execution Efficiency Standard (SES-006's efficiency section) — materially applicable multidisciplinary concerns are mandatory, but a non-applicable role must never be used to manufacture work merely to appear compliant.
+All SES-006-governed work must also comply with (A) the Multidisciplinary Principal Engineering Intelligence Standard (SES-006 §3A) and (B) the Evidence Reuse / Non-Repetition / Execution Efficiency Standard (SES-006 §19A) — materially applicable multidisciplinary concerns are mandatory, but a non-applicable role must never be used to manufacture work merely to appear compliant.
 
 Do not duplicate the full Engineering Handbook here — this file only points to it.

@@ -154,7 +154,7 @@ Fill this out as the final evidence report for any implementation delivered unde
 
 ## 25A. Multidisciplinary and Efficiency Declarations
 
-These must not be claimed blindly — state real evidence per §SES-006 §3A / §19A. Any non-zero value blocks a READY classification.
+These must not be claimed blindly — state real evidence per SES-006 §3A / §19A. Any non-zero value blocks a READY classification.
 
 ```
 MULTIDISCIPLINARY MATERIAL RISKS UNADDRESSED: 0
