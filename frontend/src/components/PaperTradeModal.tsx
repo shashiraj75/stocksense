@@ -467,9 +467,35 @@ export function PaperTradeModal({
     return frozenBuyRequestRef.current;
   }
 
+  // POST-SUCCESS SAME-MODAL REACTIVATION RACE fix — an explicit terminal
+  // latch for THIS modal instance's Buy operation. `buyMutation.isPending`
+  // flips to false the instant the mutation settles, which happens BEFORE
+  // this still-mounted instance's deferred `onClose` (1.5s later, see
+  // `setTimeout(onClose, 1500)` below) actually unmounts it — leaving a real
+  // multi-second window where the Buy button's `disabled` expression, if it
+  // only checked `isPending`/lock flags, would re-evaluate to enabled and
+  // let the SAME modal fire a second genuine Buy with a freshly-minted
+  // idempotency key (a new key because `frozenBuyRequestRef`/lock were
+  // already cleared for the terminal success — see onSuccess below). This
+  // latch is a plain `useState` (not a ref) specifically because the Buy
+  // button's `disabled`/label expressions must re-render when it flips, and
+  // it is set as the FIRST statement in `onSuccess` — before `setSuccess`,
+  // the query invalidation, clearing `frozenBuyRequestRef`, or releasing the
+  // shared lock — so no render in between can ever see isPending===false
+  // without this also being true. Once true, it never resets for this
+  // instance (a NEW logical Buy can only start after this instance actually
+  // unmounts and a fresh instance mounts with fresh state).
+  const [buySucceededTerminal, setBuySucceededTerminal] = useState(false);
+  // Same defect class, applied to Close/Sell (Phase 12) — sellMutation
+  // shares the identical disabled-only-by-isPending pattern on the same
+  // button, so the same reactivation window exists there too.
+  const [sellSucceededTerminal, setSellSucceededTerminal] = useState(false);
+
   const buyMutation = useMutation({
     mutationFn: (req: NonNullable<typeof frozenBuyRequestRef.current>) => placePaperBuy(req),
     onSuccess: () => {
+      // Must be first — see `buySucceededTerminal` declaration above.
+      setBuySucceededTerminal(true);
       setSuccess(`Bought ${quantity} × ${symbol} @ ${currency}${currentPrice.toLocaleString()}`);
       queryClient.invalidateQueries({ queryKey: ["paper-portfolio"] });
       // A new, later intentional Buy after this success is a NEW logical
@@ -557,6 +583,8 @@ export function PaperTradeModal({
   const sellMutation = useMutation({
     mutationFn: () => closePaperTrade(existingTradeId!, userId, currentPrice),
     onSuccess: () => {
+      // Must be first — same terminal-latch rationale as buyMutation.onSuccess.
+      setSellSucceededTerminal(true);
       setSuccess(`Sold ${existingQuantity} × ${symbol} @ ${currency}${currentPrice.toLocaleString()}`);
       queryClient.invalidateQueries({ queryKey: ["paper-portfolio"] });
       if (closeOpKey) releaseBuyLock(closeOpKey);
@@ -630,7 +658,7 @@ export function PaperTradeModal({
           </div>
           <button
             onClick={onClose}
-            disabled={buyMutation.isPending || sellMutation.isPending || buyLockedByOtherInstance || sellLockedByOtherInstance}
+            disabled={buyMutation.isPending || sellMutation.isPending || buyLockedByOtherInstance || sellLockedByOtherInstance || buySucceededTerminal || sellSucceededTerminal}
             title={(buyLockedByOtherInstance || sellLockedByOtherInstance) ? "A purchase for this pick is still processing — please wait" : undefined}
             className="text-gray-500 hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:text-gray-500">
             <X size={18} />
@@ -880,7 +908,7 @@ export function PaperTradeModal({
                 time an abort reaches it — see PaperTradeModal.tsx module
                 docs / task E rationale). */}
             <button onClick={onClose}
-              disabled={buyMutation.isPending || sellMutation.isPending || buyLockedByOtherInstance || sellLockedByOtherInstance}
+              disabled={buyMutation.isPending || sellMutation.isPending || buyLockedByOtherInstance || sellLockedByOtherInstance || buySucceededTerminal || sellSucceededTerminal}
               title={(buyLockedByOtherInstance || sellLockedByOtherInstance) ? "A purchase for this pick is still processing — please wait" : undefined}
               className="flex-1 px-4 py-2 rounded-xl border border-dark-border text-gray-400 hover:text-white hover:border-white/30 transition-colors text-sm disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:text-gray-400 disabled:hover:border-dark-border">
               Cancel
@@ -902,6 +930,16 @@ export function PaperTradeModal({
                 // lock a PRIOR instance may have left pending.
                 if (buySubmissionInFlightRef.current || buyMutation.isPending || sellMutation.isPending) return;
                 if (buyLockedByOtherInstance || sellLockedByOtherInstance) return;
+                // POST-SUCCESS SAME-MODAL REACTIVATION RACE fix — once this
+                // instance's Buy/Sell has succeeded, it must NEVER submit
+                // again, regardless of what isPending/lock flags say (they
+                // are deliberately cleared on success — see onSuccess
+                // above). This is the click-handler half of the same
+                // terminal-latch defense the `disabled` attribute below
+                // also encodes; correctness must not depend on the
+                // `disabled` attribute alone (same defense-in-depth pattern
+                // as `buySubmissionInFlightRef` vs. `isPending` above).
+                if (buySucceededTerminal || sellSucceededTerminal) return;
                 if (!isSell && awaitingMatchingHorizonPrediction) return;
                 setError(null);
                 if (isSell) {
@@ -914,11 +952,11 @@ export function PaperTradeModal({
                 reserveBuyLock(buyOpKey, req.idempotency_key);
                 buyMutation.mutate(req);
               }}
-              disabled={buyMutation.isPending || sellMutation.isPending || marketClosed || (!isSell && awaitingMatchingHorizonPrediction) || buyLockedByOtherInstance || sellLockedByOtherInstance}
+              disabled={buyMutation.isPending || sellMutation.isPending || marketClosed || (!isSell && awaitingMatchingHorizonPrediction) || buyLockedByOtherInstance || sellLockedByOtherInstance || buySucceededTerminal || sellSucceededTerminal}
               title={marketClosed ? `${market} market is closed` : (!isSell && awaitingMatchingHorizonPrediction) ? "Waiting for the selected horizon's recommendation to load" : (buyLockedByOtherInstance || sellLockedByOtherInstance) ? "Already processing — please wait" : undefined}
               className={clsx("flex-1 px-4 py-2 rounded-xl font-semibold text-sm transition-colors",
                 isSell ? "bg-bear hover:bg-red-600 text-white disabled:opacity-50" : "bg-bull hover:bg-green-600 text-white disabled:opacity-50")}>
-              {buyMutation.isPending || sellMutation.isPending || buyLockedByOtherInstance || sellLockedByOtherInstance
+              {buyMutation.isPending || sellMutation.isPending || buyLockedByOtherInstance || sellLockedByOtherInstance || buySucceededTerminal || sellSucceededTerminal
                 ? "Placing…"
                 : marketClosed
                   ? "Market Closed"
