@@ -14,6 +14,7 @@ isolation, idempotent replay, reset cleanup are already proven there
 and are not duplicated here).
 """
 import datetime as dt
+import uuid
 
 import pytest
 
@@ -47,7 +48,12 @@ def _enable_price_path_flag(monkeypatch):
 
 
 def _buy(client, user_id, **overrides):
-    body = {"symbol": "AAPL", "market": "US", "quantity": 1, "price": 100.0}
+    # Owner-authorized hardening — idempotency_key is now REQUIRED by
+    # POST /buy. Each call gets its own fresh key by default (distinct
+    # UUID per call) since these represent independently legitimate Buy
+    # attempts; a test needing retry/reuse passes idempotency_key=
+    # explicitly via **overrides, which takes precedence.
+    body = {"symbol": "AAPL", "market": "US", "quantity": 1, "price": 100.0, "idempotency_key": f"ptbuy-test-{uuid.uuid4()}"}
     body.update(overrides)
     return client.post("/api/paper-trading/buy", json=body, headers=make_auth_header(user_id))
 

@@ -3,6 +3,7 @@ Wave C, Gate WC-K — real-PostgreSQL behavioral proof for the
 authorization-safe, side-effect-free current-report read API:
 GET /api/paper-trading/{trade_id}/current-report.
 """
+import uuid
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -49,7 +50,13 @@ def _patch_price_path_provider(monkeypatch):
 
 
 def _buy(client, user_id, **overrides):
-    body = {"symbol": "AAPL", "market": "US", "quantity": 1, "price": 100.0}
+    # Owner-authorized hardening — idempotency_key is now REQUIRED by
+    # POST /buy. Each call gets its own fresh key by default (a distinct
+    # UUID per call), since these helper calls represent independently
+    # legitimate Buy attempts in these tests, not retries of one logical
+    # operation; a test that specifically needs a retry/reuse passes
+    # idempotency_key= explicitly via **overrides, which takes precedence.
+    body = {"symbol": "AAPL", "market": "US", "quantity": 1, "price": 100.0, "idempotency_key": f"ptbuy-test-{uuid.uuid4()}"}
     body.update(overrides)
     return client.post("/api/paper-trading/buy", json=body, headers=make_auth_header(user_id))
 

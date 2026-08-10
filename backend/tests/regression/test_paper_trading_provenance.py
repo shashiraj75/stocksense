@@ -29,6 +29,7 @@ Regression proofs:
 
 import math
 import time
+import uuid
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -69,12 +70,25 @@ class _RecordingConn:
         self.calls = []
         self._fetchone_results = list(fetchone_results or [])
         self._fetchall_results = []
+        self._pending_reservation_insert = False
 
     def execute(self, sql, params=None):
         self.calls.append((sql, params))
+        # Owner-authorized hardening — idempotency_key is now REQUIRED, so
+        # every Buy now also issues the idempotency reservation
+        # "INSERT ... RETURNING id" before the debit/insert statements this
+        # fake was built to simulate. Answered synthetically here (never
+        # consumes `_fetchone_results`, which stays reserved for the
+        # financial statements exactly as before this change).
+        self._pending_reservation_insert = (
+            "INSERT INTO paper_trade_idempotency_key" in sql and "RETURNING id" in sql
+        )
         return self
 
     def fetchone(self):
+        if self._pending_reservation_insert:
+            self._pending_reservation_insert = False
+            return (777001,)
         return self._fetchone_results.pop(0) if self._fetchone_results else None
 
     def fetchall(self):
@@ -128,6 +142,11 @@ def _insert_call(made_conns):
 
 
 def _buy(client, body):
+    # Owner-authorized hardening — idempotency_key is now REQUIRED by
+    # POST /buy; default to a fresh per-call key unless the caller already
+    # set one, so this file's ~20 provenance-focused bodies (written before
+    # that change) don't each need editing individually.
+    body = {"idempotency_key": f"ptbuy-test-{uuid.uuid4()}", **body}
     factory, made = _buy_conn_factory()
     with patch.object(
         __import__("api.routers.paper_trading", fromlist=["_conn"]), "_conn", factory

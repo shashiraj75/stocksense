@@ -6,6 +6,7 @@ opened.
 """
 import json as _json
 import time
+import uuid
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -39,8 +40,11 @@ def _auth() -> dict:
 
 
 def _buy_body(**entry_evidence_overrides):
+    # Owner-authorized hardening — idempotency_key is now REQUIRED by
+    # POST /buy; every body built here gets a fresh default key.
     return {
         "symbol": "AAPL", "market": "US", "quantity": 1, "price": 101.0,
+        "idempotency_key": f"ptbuy-test-{uuid.uuid4()}",
         "entry_evidence": entry_evidence_overrides,
     }
 
@@ -49,12 +53,24 @@ class _RecordingConn:
     def __init__(self, fetchone_results=None):
         self.calls = []
         self._fetchone_results = list(fetchone_results or [])
+        self._pending_reservation_insert = False
 
     def execute(self, sql, params=None):
         self.calls.append((sql, params))
+        # Owner-authorized hardening — idempotency_key is now REQUIRED, so
+        # every Buy now also issues the reservation
+        # "INSERT INTO paper_trade_idempotency_key ... RETURNING id" before
+        # the statements this fake was built to simulate. Answered
+        # synthetically here (never consumes `_fetchone_results`).
+        self._pending_reservation_insert = (
+            "INSERT INTO paper_trade_idempotency_key" in sql and "RETURNING id" in sql
+        )
         return self
 
     def fetchone(self):
+        if self._pending_reservation_insert:
+            self._pending_reservation_insert = False
+            return (777001,)
         return self._fetchone_results.pop(0) if self._fetchone_results else None
 
     def __enter__(self):
@@ -76,6 +92,9 @@ def _default_conns():
 
 
 def _mocked_buy(client, body, conns=None):
+    # Belt-and-braces: also inject a default key for any body constructed
+    # inline rather than via `_buy_body` above.
+    body = {"idempotency_key": f"ptbuy-test-{uuid.uuid4()}", **body}
     pending = list(conns if conns is not None else _default_conns())
     made = []
 

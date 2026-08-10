@@ -214,12 +214,25 @@ BASE_BODY = {"symbol": "AAPL", "market": "US", "quantity": 1, "price": 101.0}
 
 @pytest.mark.integration
 class TestIdempotencyBasics:
-    def test_no_key_behaves_exactly_as_before(self, client):
+    def test_missing_key_is_rejected_deterministically_no_trade_no_debit(self, client):
+        # Owner-authorized hardening (post-incident) — idempotency_key was
+        # previously optional and this test asserted the old fail-open
+        # behavior ("no key behaves exactly as before": 200,
+        # idempotency_enforced=False, no dedup guarantee at all). That
+        # design is exactly what let the TCS double-Buy incident happen: a
+        # remounted modal could fire a second Buy with no key and no
+        # server-side protection. The contract is now the opposite: a Buy
+        # request missing idempotency_key is rejected at the Pydantic
+        # request-boundary (422) BEFORE paper_buy() runs at all — zero
+        # trade row inserted, zero cash debited, zero idempotency
+        # reservation row created.
         shared = _new_shared_db()
+        cash_before = shared["cash_usd"]
         resp = _buy(client, BASE_BODY, shared)
-        assert resp.status_code == 200
-        assert resp.json()["idempotency_enforced"] is False
+        assert resp.status_code == 422
+        assert shared["next_trade_id"] == 1  # no trade row was ever inserted
         assert len(shared["idem_rows"]) == 0
+        assert shared["cash_usd"] == cash_before  # no debit
 
     def test_first_request_with_key_succeeds_and_reserves(self, client):
         shared = _new_shared_db()
