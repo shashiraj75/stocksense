@@ -92,7 +92,12 @@ jobs:
             -H "x-secret: ${{ secrets.PICKS_SECRET }}" \
             "https://stocksense-production-7e0d.up.railway.app/api/picks/recover?market=IN&reason=in_watchdog_missing_or_stale")
           echo "Recovery HTTP code: $HTTP_CODE"
-          echo "Recovery response body: $(cat "${RUNNER_TEMP}/in_recover_body.json")"
+          # Follow-up correction (2026-08-10, diagnostics/log-safety
+          # hardening): only bounded, known-safe fields are echoed — never
+          # the raw response (attempt_governed_recovery()'s no-op reasons
+          # like precheck_failed carry no free-form text, but this stays
+          # consistent with the primary workflows regardless).
+          echo "Recovery response (safe fields): $(jq -c '{triggered, reason, market, job_id}' "${RUNNER_TEMP}/in_recover_body.json" 2>/dev/null || echo '{"parse_error":true}')"
           # Follow-up correction (2026-08-10): see daily_picks_in.yml for why
           # the body crosses steps via a RUNNER_TEMP file, never a
           # GITHUB_OUTPUT expression-interpolation round-trip — a recovery

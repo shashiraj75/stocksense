@@ -47,15 +47,13 @@ jobs:
             -H "x-secret: ${{ secrets.PICKS_SECRET }}" \
             "https://stocksense-production-7e0d.up.railway.app/api/picks/generate?market=IN")
           echo "Trigger HTTP code: $HTTP_CODE"
-          echo "Trigger response body: $(cat "${RUNNER_TEMP}/in_trigger_body.json")"
-          # Follow-up correction (2026-08-10): the trigger response body is
-          # handed off via the on-disk file at RUNNER_TEMP (shared across
-          # steps in this job), never through a GITHUB_OUTPUT
-          # expression-interpolation round-trip. Only the numeric HTTP code
-          # (never free-form backend text) crosses that boundary, so a
-          # response body containing a quote, apostrophe, or newline can
-          # never break shell quoting or get interpolated as shell content
-          # in the next step.
+          # Follow-up correction (2026-08-10, diagnostics/log-safety
+          # hardening): only bounded, known-safe fields are ever echoed to
+          # the human-visible log — never the raw/full response body (which
+          # may carry a free-form backend `message` string). The file-based
+          # RUNNER_TEMP handoff itself is unchanged; it's still read
+          # in full by jq/the poller internally, just not printed here.
+          echo "Trigger response (safe fields): $(jq -c '{status, market, job_id}' "${RUNNER_TEMP}/in_trigger_body.json" 2>/dev/null || echo '{"parse_error":true}')"
           echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
 
       - name: Verify India pick generation actually completed and published

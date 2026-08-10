@@ -162,3 +162,29 @@ def test_primary_workflows_response_body_never_directly_interpolated_into_shell(
         src = open(os.path.join(_WORKFLOWS_DIR, name)).read()
         assert "RUNNER_TEMP" in src
         assert "steps.trigger.outputs.body" not in src
+
+
+def test_india_primary_workflow_does_not_echo_raw_response_body():
+    """Diagnostics/log-safety hardening (2026-08-10 follow-up, Finding 2):
+    the trigger step must not echo the full/raw backend response body to
+    the human-visible log — only bounded safe fields extracted via jq. The
+    RUNNER_TEMP file-based handoff itself (used internally by jq/the
+    poller) is unaffected; this only asserts against printing it whole."""
+    src = open(os.path.join(_WORKFLOWS_DIR, "daily_picks_in.yml")).read()
+    assert "Trigger response body: $(cat" not in src
+    assert "jq -c '{status, market, job_id}'" in src
+    assert "RUNNER_TEMP" in src  # handoff mechanism itself still intact
+
+
+def test_us_primary_workflow_does_not_echo_raw_response_body():
+    src = open(os.path.join(_WORKFLOWS_DIR, "daily_picks_us.yml")).read()
+    assert "Trigger response body: $(cat" not in src
+    assert "jq -c '{status, market, job_id}'" in src
+    assert "RUNNER_TEMP" in src
+
+
+def test_india_watchdog_does_not_echo_raw_recovery_response_body():
+    src = open(os.path.join(_WORKFLOWS_DIR, "daily_picks_in_watchdog.yml")).read()
+    assert "Recovery response body: $(cat" not in src
+    assert "jq -c '{triggered, reason, market, job_id}'" in src
+    assert "RUNNER_TEMP" in src

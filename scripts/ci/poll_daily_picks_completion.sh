@@ -72,8 +72,28 @@ need() { command -v "$1" >/dev/null 2>&1 || { echo "[poll] FATAL: missing requir
 need curl
 need jq
 
-TRIGGER_STATUS="$(echo "$TRIGGER_BODY" | jq -r '.status // empty')"
-JOB_ID="$(echo "$TRIGGER_BODY" | jq -r '.job_id // empty')"
+# Follow-up correction (2026-08-10, diagnostics/log-safety hardening): the
+# trigger response body is never reproduced verbatim in any log line below
+# (it can carry an arbitrary free-form backend `message` string). If it
+# isn't even valid JSON, that's reported via the fixed label
+# "malformed_trigger_response" rather than echoing whatever the un-parseable
+# content was. Otherwise, only bounded, known-safe fields (http_code,
+# parsed status if present, market, whether job_id was present/absent) are
+# logged — normal per-poll status logging further down is unaffected.
+if echo "$TRIGGER_BODY" | jq -e . >/dev/null 2>&1; then
+  TRIGGER_BODY_VALID_JSON=1
+  TRIGGER_STATUS="$(echo "$TRIGGER_BODY" | jq -r '.status // empty')"
+  JOB_ID="$(echo "$TRIGGER_BODY" | jq -r '.job_id // empty')"
+else
+  TRIGGER_BODY_VALID_JSON=0
+  TRIGGER_STATUS=""
+  JOB_ID=""
+fi
+
+if [ "$TRIGGER_BODY_VALID_JSON" -ne 1 ]; then
+  echo "[poll] FAILURE: malformed_trigger_response market=${MARKET} http_code=${TRIGGER_HTTP_CODE} — trigger response body was not valid JSON." >&2
+  exit 1
+fi
 
 # Outcome C: already fresh — success, no duplicate job, no polling.
 if [ "$TRIGGER_HTTP_CODE" = "200" ] && [ "$TRIGGER_STATUS" = "already_fresh" ]; then
@@ -86,14 +106,16 @@ fi
 if { [ "$TRIGGER_HTTP_CODE" = "202" ] && [ "$TRIGGER_STATUS" = "accepted" ]; } \
    || { [ "$TRIGGER_HTTP_CODE" = "409" ] && [ "$TRIGGER_STATUS" = "already_running" ]; }; then
   if [ -z "$JOB_ID" ] || [ "$JOB_ID" = "null" ]; then
-    echo "[poll] FAILURE: trigger_http_code=${TRIGGER_HTTP_CODE} status=${TRIGGER_STATUS} but no job_id in response body — cannot safely bind to job identity. body=${TRIGGER_BODY}" >&2
+    echo "[poll] FAILURE: trigger_http_code=${TRIGGER_HTTP_CODE} status=${TRIGGER_STATUS} market=${MARKET} job_id_present=false — cannot safely bind to job identity." >&2
     exit 1
   fi
   echo "[poll] outcome=${TRIGGER_STATUS} market=${MARKET} bound_job_id=${JOB_ID} — polling /api/picks/status for completion."
 else
   # Outcome D: genuine trigger failure (409 resource_busy, 503
-  # durable_job_state_unavailable, non-2xx, malformed body, etc).
-  echo "[poll] FAILURE: trigger did not yield a recognized success outcome. http_code=${TRIGGER_HTTP_CODE} status=${TRIGGER_STATUS:-<none>} body=${TRIGGER_BODY}" >&2
+  # durable_job_state_unavailable, non-2xx, unrecognized status, etc). Only
+  # the parsed status/http_code/market/job_id-presence are logged — never
+  # the raw body or an arbitrary backend `message` value.
+  echo "[poll] FAILURE: trigger did not yield a recognized success outcome. http_code=${TRIGGER_HTTP_CODE} status=${TRIGGER_STATUS:-<none>} market=${MARKET} job_id_present=$([ -n "$JOB_ID" ] && [ "$JOB_ID" != "null" ] && echo true || echo false)" >&2
   exit 1
 fi
 

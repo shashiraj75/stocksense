@@ -281,19 +281,85 @@ class TestPollerAlreadyFreshNoop:
 @pytest.mark.integration
 class TestPollerMalformedOrUnrecognizedTrigger:
     def test_13_malformed_trigger_response_is_failure(self, tmp_path):
-        """A trigger body that isn't valid JSON, or an HTTP code/status
-        combination the script doesn't recognize (e.g. 409 resource_busy,
-        503 durable_job_state_unavailable), must be reported as a genuine
-        trigger failure — never silently treated as a success."""
-        result = _run_poller(tmp_path, "503", "not valid json at all", status_responses=[])
+        """A trigger body that isn't valid JSON must be reported as a
+        genuine trigger failure via the fixed 'malformed_trigger_response'
+        label — never silently treated as a success, and (diagnostics/
+        log-safety hardening, 2026-08-10 follow-up) never by reproducing
+        the raw un-parseable content in the log."""
+        RAW_GARBAGE = "not valid json at all -- canary-should-not-appear-xyz123"
+        result = _run_poller(tmp_path, "503", RAW_GARBAGE, status_responses=[])
         assert result.returncode != 0
-        assert "did not yield a recognized success outcome" in result.stderr
+        assert "malformed_trigger_response" in result.stderr
+        assert RAW_GARBAGE not in result.stdout
+        assert RAW_GARBAGE not in result.stderr
+        assert "canary-should-not-appear-xyz123" not in result.stdout
+        assert "canary-should-not-appear-xyz123" not in result.stderr
 
     def test_13b_resource_busy_409_is_failure(self, tmp_path):
+        """A well-formed but unrecognized status/http_code combination
+        (409 resource_busy) is a genuine failure, and — diagnostics/
+        log-safety hardening — the failure log reports only bounded safe
+        fields (http_code/status/market/job_id_present), never an
+        arbitrary backend `message` string, even though this particular
+        response happens not to carry one."""
         trigger_body = json.dumps({"status": "resource_busy", "market": _MARKET})
         result = _run_poller(tmp_path, "409", trigger_body, status_responses=[])
         assert result.returncode != 0
         assert "did not yield a recognized success outcome" in result.stderr
+        assert "status=resource_busy" in result.stderr
+        assert f"market={_MARKET}" in result.stderr
+
+    def test_13c_unrecognized_trigger_message_field_never_echoed(self, tmp_path):
+        """(Finding 4, item 7) Feed a well-formed-but-unrecognized trigger
+        response whose `message` field contains a canary string, and prove
+        the canary never appears anywhere in the poller's output — the
+        failure log must report only parsed status/http_code/market/
+        job_id-presence, never the free-form backend message."""
+        CANARY = "CANARY-SECRET-LOOKING-MESSAGE-987"
+        trigger_body = json.dumps({
+            "status": "durable_job_state_unavailable",
+            "market": _MARKET,
+            "message": f"Could not verify durable active job state — internal detail: {CANARY}",
+        })
+        result = _run_poller(tmp_path, "503", trigger_body, status_responses=[])
+        assert result.returncode != 0
+        assert CANARY not in result.stdout
+        assert CANARY not in result.stderr
+
+    def test_13d_missing_job_id_failure_never_echoes_raw_body(self, tmp_path):
+        """The 'accepted/already_running but no job_id' failure path also
+        must not reproduce the raw trigger body — only job_id_present=false
+        plus the other bounded safe fields."""
+        trigger_body = json.dumps({
+            "status": "accepted",
+            "message": "no job_id here on purpose — canary-body-content-should-not-leak",
+        })
+        result = _run_poller(tmp_path, "202", trigger_body, status_responses=[])
+        assert result.returncode != 0
+        assert "job_id_present=false" in result.stderr
+        assert "canary-body-content-should-not-leak" not in result.stdout
+        assert "canary-body-content-should-not-leak" not in result.stderr
+
+    def test_13e_safe_operational_fields_still_visible_in_normal_polling(self, tmp_path):
+        """(Finding 4, item 8) Sanity check that the log-safety hardening
+        did not over-sanitize into complete silence: normal per-poll status
+        fields (job_id/market/status/phase/processed/total/heartbeat/
+        last_progress/has_today/last_successful_generated_at) remain fully
+        visible in the success path."""
+        trigger_body = json.dumps({"status": "accepted", "job_id": "job-visible-1"})
+        responses = [
+            _status(job_status="running", processed=3, total=10, phase="scoring",
+                    job_id="job-visible-1"),
+            _status(job_status="completed", has_today=True,
+                    last_successful_generated_at="2026-08-10T20:45:00Z",
+                    job_id="job-visible-1"),
+        ]
+        result = _run_poller(tmp_path, "202", trigger_body, responses)
+        assert result.returncode == 0, result.stderr
+        assert "job_id=job-visible-1" in result.stdout or "bound_job_id=job-visible-1" in result.stdout
+        assert "phase=scoring" in result.stdout
+        assert "processed=3" in result.stdout
+        assert "total=10" in result.stdout
 
 
 @pytest.mark.integration

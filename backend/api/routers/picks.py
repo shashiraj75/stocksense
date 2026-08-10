@@ -1,3 +1,4 @@
+import logging
 import os
 import uuid
 from datetime import datetime, timezone
@@ -5,6 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
 from fastapi.responses import JSONResponse
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 PICKS_SECRET = os.getenv("PICKS_SECRET", "")  # must be set in production environment
 _VALID_MARKETS = ("IN", "US")
@@ -362,10 +364,18 @@ def trigger_generation(background_tasks: BackgroundTasks, market: str = "IN", x_
         try:
             active = _get_active_job(market)
         except Exception as e:
+            # Follow-up correction (2026-08-10, diagnostics/log-safety
+            # hardening): the real exception (which can contain internal
+            # details — table/column names, driver error text) is logged
+            # server-side only, never returned in the HTTP response body.
+            # GitHub Actions logs (and any other caller) only ever see a
+            # fixed, safe status/message pair.
+            log.warning(f"[picks] [{market}] durable active-job lookup failed while "
+                        f"resolving already_running identity: {e}")
             return JSONResponse(
                 status_code=503,
                 content={"status": "durable_job_state_unavailable", "market": market,
-                         "message": f"Could not verify active job identity: {e}"},
+                         "message": "Could not verify durable active job state."},
             )
         if active and active.get("job_id"):
             return JSONResponse(
