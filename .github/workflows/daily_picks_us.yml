@@ -33,6 +33,9 @@ jobs:
   generate-picks-us:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Check Railway backend is healthy
         run: |
           echo "Checking Railway backend at $(date -u) UTC..."
@@ -58,11 +61,27 @@ jobs:
           fi
 
       - name: Trigger US pick generation
+        id: trigger
         run: |
           echo "Triggering US daily picks generation at $(date -u) UTC..."
-          curl -sS --fail-with-body --max-time 30 \
+          HTTP_CODE=$(curl -sS --max-time 30 -o "${RUNNER_TEMP}/us_trigger_body.json" -w "%{http_code}" \
             -X POST \
             -H "x-secret: ${{ secrets.PICKS_SECRET }}" \
-            "https://stocksense-production-7e0d.up.railway.app/api/picks/generate?market=US"
-          echo ""
-          echo "US generation started or already fresh. Monitor /api/picks/status?market=US for progress."
+            "https://stocksense-production-7e0d.up.railway.app/api/picks/generate?market=US")
+          echo "Trigger HTTP code: $HTTP_CODE"
+          # Follow-up correction (2026-08-10, diagnostics/log-safety
+          # hardening): only bounded, known-safe fields are echoed — see
+          # daily_picks_in.yml for the full rationale. The RUNNER_TEMP
+          # file-based handoff itself is unchanged.
+          echo "Trigger response (safe fields): $(jq -c '{status, market, job_id}' "${RUNNER_TEMP}/us_trigger_body.json" 2>/dev/null || echo '{"parse_error":true}')"
+          echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
+
+      - name: Verify US pick generation actually completed and published
+        run: |
+          chmod +x scripts/ci/poll_daily_picks_completion.sh
+          TRIGGER_BODY="$(cat "${RUNNER_TEMP}/us_trigger_body.json")"
+          scripts/ci/poll_daily_picks_completion.sh \
+            "https://stocksense-production-7e0d.up.railway.app" \
+            "US" \
+            "${{ steps.trigger.outputs.http_code }}" \
+            "$TRIGGER_BODY"

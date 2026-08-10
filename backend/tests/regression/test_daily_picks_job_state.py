@@ -393,17 +393,122 @@ def test_post_generate_returns_200_when_already_fresh():
 
 
 def test_post_generate_returns_409_when_already_running_in_memory():
-    """POST /generate returns 409 when in-memory _generating flag is True."""
+    """POST /generate returns 409 when in-memory _generating flag is True.
+
+    Follow-up correction (2026-08-10): this response must now include the
+    exact durable job_id (looked up via get_active_daily_picks_job) so a
+    caller that needs to MONITOR the active run — the GitHub Actions
+    poller — has an identity to bind to. A bare already_running with no
+    job_id previously made a legitimate active run indistinguishable from
+    an unmonitorable one and could cause a false CI failure."""
     import services.daily_picks as _dp
 
     with patch("services.daily_picks.picks_generated_today", return_value=False), \
          patch.dict("os.environ", {"USE_POSTGRES": "1"}), \
-         patch.dict(_dp._generating, {"IN": True}):
+         patch.dict(_dp._generating, {"IN": True}), \
+         patch("services.postgres_store.get_active_daily_picks_job",
+               return_value={"job_id": "active-job-in-memory-path"}):
         resp = _picks_client().post("/api/picks/generate?market=IN",
                                     headers={"x-secret": "secret"})
 
     assert resp.status_code == 409
-    assert resp.json()["status"] == "already_running"
+    data = resp.json()
+    assert data["status"] == "already_running"
+    assert data["job_id"] == "active-job-in-memory-path"
+
+
+def test_post_generate_reports_state_inconsistency_when_in_memory_flag_has_no_durable_job():
+    """Follow-up correction (2026-08-10): if the in-memory _generating flag
+    claims a job is running but no corresponding durable active job can be
+    found (e.g. a crashed process that never cleared its local flag), this
+    is a genuine state inconsistency — it must be reported honestly via the
+    existing durable_job_state_unavailable classification, never with a
+    fabricated job_id."""
+    import services.daily_picks as _dp
+
+    with patch("services.daily_picks.picks_generated_today", return_value=False), \
+         patch.dict("os.environ", {"USE_POSTGRES": "1"}), \
+         patch.dict(_dp._generating, {"IN": True}), \
+         patch("services.postgres_store.get_active_daily_picks_job", return_value=None):
+        resp = _picks_client().post("/api/picks/generate?market=IN",
+                                    headers={"x-secret": "secret"})
+
+    assert resp.status_code == 503
+    data = resp.json()
+    assert data["status"] == "durable_job_state_unavailable"
+    assert "job_id" not in data
+
+
+def test_post_generate_already_running_in_memory_surfaces_lookup_errors_honestly():
+    """If the durable active-job lookup itself raises, that must surface as
+    durable_job_state_unavailable, not a silently-swallowed 409 with no
+    job_id and not a crash."""
+    import services.daily_picks as _dp
+
+    with patch("services.daily_picks.picks_generated_today", return_value=False), \
+         patch.dict("os.environ", {"USE_POSTGRES": "1"}), \
+         patch.dict(_dp._generating, {"IN": True}), \
+         patch("services.postgres_store.get_active_daily_picks_job",
+               side_effect=Exception("db unavailable")):
+        resp = _picks_client().post("/api/picks/generate?market=IN",
+                                    headers={"x-secret": "secret"})
+
+    assert resp.status_code == 503
+    assert resp.json()["status"] == "durable_job_state_unavailable"
+
+
+def test_post_generate_already_running_lookup_error_response_never_leaks_exception_text():
+    """Diagnostics/log-safety hardening (2026-08-10 follow-up, Finding 1):
+    the durable-active-job-lookup exception branch must return a stable,
+    safe response — never str(e) or any exception content in the HTTP
+    response body. A canary string embedded in the simulated exception
+    (which could realistically resemble a DSN, table name, or driver error)
+    must never appear anywhere in the JSON response."""
+    import services.daily_picks as _dp
+
+    CANARY = "postgresql://internal-user:s3cr3t@10.0.0.5:5432/db CANARY-EXC-TEXT"
+    with patch("services.daily_picks.picks_generated_today", return_value=False), \
+         patch.dict("os.environ", {"USE_POSTGRES": "1"}), \
+         patch.dict(_dp._generating, {"IN": True}), \
+         patch("services.postgres_store.get_active_daily_picks_job",
+               side_effect=Exception(CANARY)):
+        resp = _picks_client().post("/api/picks/generate?market=IN",
+                                    headers={"x-secret": "secret"})
+
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["status"] == "durable_job_state_unavailable"
+    assert body["message"] == "Could not verify durable active job state."
+    raw_text = resp.text
+    assert CANARY not in raw_text
+    assert "s3cr3t" not in raw_text
+    assert "postgresql://" not in raw_text
+
+
+def test_post_generate_already_running_lookup_error_is_still_logged_server_side(caplog):
+    """Diagnostics/log-safety hardening (2026-08-10 follow-up, Finding 1):
+    the real exception must still be diagnosable internally via the
+    existing logger (market + context), even though it's excluded from the
+    HTTP response — sanitizing the response must not mean losing the
+    ability to debug the real failure server-side."""
+    import logging
+    import services.daily_picks as _dp
+
+    CANARY = "internal-db-error-detail-CANARY-456"
+    with caplog.at_level(logging.WARNING, logger="api.routers.picks"), \
+         patch("services.daily_picks.picks_generated_today", return_value=False), \
+         patch.dict("os.environ", {"USE_POSTGRES": "1"}), \
+         patch.dict(_dp._generating, {"IN": True}), \
+         patch("services.postgres_store.get_active_daily_picks_job",
+               side_effect=Exception(CANARY)):
+        resp = _picks_client().post("/api/picks/generate?market=IN",
+                                    headers={"x-secret": "secret"})
+
+    assert resp.status_code == 503
+    assert CANARY not in resp.text  # confirmed absent from the response...
+    logged_text = "\n".join(r.getMessage() for r in caplog.records)
+    assert CANARY in logged_text  # ...but present in the server-side log
+    assert "IN" in logged_text    # with market context
 
 
 def test_post_generate_returns_409_when_db_reserve_conflict():
