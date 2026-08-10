@@ -10,6 +10,7 @@ tests never touch a real database or network.
 import datetime as dt
 import json as _json
 import time
+import uuid
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -56,12 +57,29 @@ class _RecordingConn:
         self._fetchone_results = list(fetchone_results or [])
         self.committed_statement_count = None
         self.rolled_back = False
+        self._pending_reservation_insert = False
 
     def execute(self, sql, params=None):
         self.calls.append((sql, params))
+        # Owner-authorized hardening — idempotency_key is now REQUIRED, so
+        # every Buy now ALSO issues the reservation
+        # "INSERT INTO paper_trade_idempotency_key ... RETURNING id" before
+        # the debit/trade-insert statements this fake was originally built
+        # to simulate. Rather than editing every call site's
+        # `fetchone_results` list to prepend a reservation row (this file
+        # alone has ~20), the reservation's own `.fetchone()` is answered
+        # synthetically here — it never consumes from `_fetchone_results`,
+        # which stays reserved for the financial statements exactly as
+        # before this change.
+        self._pending_reservation_insert = (
+            "INSERT INTO paper_trade_idempotency_key" in sql and "RETURNING id" in sql
+        )
         return self
 
     def fetchone(self):
+        if self._pending_reservation_insert:
+            self._pending_reservation_insert = False
+            return (777001,)  # synthetic fresh idempotency-reservation row id
         return self._fetchone_results.pop(0) if self._fetchone_results else None
 
     def __enter__(self):
@@ -110,6 +128,13 @@ def _insert_calls(made_conns, table_fragment):
 
 
 def _buy(client, body, conns):
+    # Owner-authorized hardening — idempotency_key is now REQUIRED by
+    # POST /buy. This suite's bodies were written before that change and
+    # mostly don't set one; injecting a default here (only when the caller
+    # hasn't already set one) keeps every existing test's intent (atomic
+    # trade+snapshot persistence under a mocked connection) unchanged
+    # without editing every one of this file's ~20 call sites individually.
+    body = {"idempotency_key": f"ptbuy-test-{uuid.uuid4()}", **body}
     factory, made = _buy_conn_factory(list(conns))
     with patch.object(
         __import__("api.routers.paper_trading", fromlist=["_conn"]), "_conn", factory
@@ -128,6 +153,7 @@ def _buy_raw_json(client, body, conns):
     exactly that, via stdlib `json.dumps` (allow_nan=True, the default),
     to prove the backend's own `math.isfinite` validation — not httpx's
     encoder — is what actually rejects them."""
+    body = {"idempotency_key": f"ptbuy-test-{uuid.uuid4()}", **body}
     factory, made = _buy_conn_factory(list(conns))
     raw = _json.dumps(body)
     with patch.object(
@@ -171,7 +197,14 @@ class TestAtomicEntrySnapshotPersistence:
         assert any("INSERT INTO paper_trade_entry_snapshot" in sql for sql, _ in buy_conn.calls)
         assert any("UPDATE paper_portfolio" in sql for sql, _ in buy_conn.calls)
         assert buy_conn.rolled_back is False
-        assert buy_conn.committed_statement_count == 3  # debit UPDATE + trade INSERT + snapshot INSERT
+        # Owner-authorized hardening — idempotency_key is now REQUIRED, so
+        # idempotency_enforced is always True and the idempotency-completion
+        # UPDATE (SET status='COMPLETED' ...) always runs as a 4th statement
+        # inside this same transaction block, alongside the debit UPDATE +
+        # trade INSERT + snapshot INSERT. (The idempotency RESERVATION
+        # INSERT itself runs BEFORE this transaction block opens — see
+        # paper_buy — so it is correctly NOT one of these 4.)
+        assert buy_conn.committed_statement_count == 4
 
     def test_snapshot_insert_failure_rolls_back_and_returns_500_not_200(self, client):
         """If the snapshot INSERT raises, the whole request must fail loudly

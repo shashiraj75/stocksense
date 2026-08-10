@@ -54,12 +54,24 @@ class _RecordingConn:
         self.calls = []
         self._fetchone_results = list(fetchone_results or [])
         self._fetchall_results = list(fetchall_results or [])
+        self._pending_reservation_insert = False
 
     def execute(self, sql, params=None):
         self.calls.append((sql, params))
+        # Owner-authorized hardening — idempotency_key is now REQUIRED, so
+        # every Buy now also issues the reservation
+        # "INSERT INTO paper_trade_idempotency_key ... RETURNING id" before
+        # the statements this fake was built to simulate. Answered
+        # synthetically here (never consumes `_fetchone_results`).
+        self._pending_reservation_insert = (
+            "INSERT INTO paper_trade_idempotency_key" in sql and "RETURNING id" in sql
+        )
         return self
 
     def fetchone(self):
+        if self._pending_reservation_insert:
+            self._pending_reservation_insert = False
+            return (777001,)
         return self._fetchone_results.pop(0) if self._fetchone_results else None
 
     @contextmanager
@@ -90,7 +102,11 @@ def _fake_conn(fetchone_results=None, fetchall_results=None):
 
 PAPER_TRADING_ROUTES = [
     ("get", "/api/paper-trading/portfolio", None),
-    ("post", "/api/paper-trading/buy", {"symbol": "AAPL", "market": "US", "quantity": 1, "price": 100.0}),
+    # Owner-authorized hardening — idempotency_key is now REQUIRED by
+    # POST /buy; included here so these authorization-focused tests (401/
+    # 403/cross-user checks) aren't incidentally affected by the separate
+    # 422 a missing key would now also produce.
+    ("post", "/api/paper-trading/buy", {"symbol": "AAPL", "market": "US", "quantity": 1, "price": 100.0, "idempotency_key": "authz-test-key-fixed"}),
     ("post", "/api/paper-trading/sell/1", {"price": 100.0}),
     ("patch", "/api/paper-trading/trade/1", {"stop_loss": 90.0}),
     ("patch", "/api/paper-trading/trades/1/management-mode", {"trade_management_mode": "auto"}),
@@ -153,6 +169,7 @@ class TestPaperTradingAuth:
             body = {
                 "symbol": "AAPL", "market": "US", "quantity": 1, "price": 100.0,
                 "user_id": "user-victim", "email": "victim@example.com",
+                "idempotency_key": "authz-attacker-key",
             }
             resp = client.post("/api/paper-trading/buy", json=body, headers=_auth("user-attacker"))
         # Pydantic ignores the unknown extra fields; request proceeds authorized as user-attacker.

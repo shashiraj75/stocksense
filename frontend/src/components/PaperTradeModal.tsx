@@ -10,6 +10,7 @@ import { getMarketStatus } from "@/utils/marketHours";
 import { computeSuggestedQuantity, RISK_PCT_OF_CAPITAL } from "@/utils/riskBasedSizing";
 import { buildEntryEvidenceFromPrediction } from "@/utils/entryEvidence";
 import { generateBuyIdempotencyKey } from "@/utils/idempotencyKey";
+import { buyOperationKey, closeOperationKey, getBuyLock, reserveBuyLock, releaseBuyLock } from "@/utils/paperBuyLock";
 
 interface Props {
   symbol: string;
@@ -373,6 +374,38 @@ export function PaperTradeModal({
   // be raced the way `isPending` can.
   const buySubmissionInFlightRef = useRef(false);
 
+  // Defense-in-depth (A/B) — the stable "logical Buy operation" identifier
+  // for THIS pick, scoped to userId+market+symbol+the ORIGINAL horizon the
+  // modal was opened for (not `selectedHorizon`, which the user can change
+  // mid-session before submitting — the operation identity must not shift
+  // underneath an in-flight lock just because the horizon selector moved).
+  // See frontend/src/utils/paperBuyLock.ts for why this lives at module
+  // scope instead of component state: it must survive this component
+  // unmounting when Cancel/X closes the modal while a Buy is still
+  // in-flight, so a remounted modal for the SAME pick recognizes the prior
+  // operation as still pending instead of presenting a fresh, unlocked Buy.
+  const buyOpKey = buyOperationKey(userId, market, symbol, originalHorizon);
+  // True the instant this component mounts (or re-renders) if a PRIOR
+  // instance for this exact pick left an operation pending when it
+  // unmounted — this is what actually closes the remount gap; local
+  // `buyMutation.isPending`/`buySubmissionInFlightRef` alone cannot, since
+  // both reset to a blank slate on remount.
+  const sharedBuyLock = !isSell ? getBuyLock(buyOpKey) : undefined;
+  // A pending lock only blocks THIS instance when it belongs to a
+  // DIFFERENT logical attempt than the one this instance itself currently
+  // holds — i.e. `frozenBuyRequestRef.current` is null (nothing frozen
+  // yet here) or its key doesn't match the lock's key. When they DO match
+  // (this instance is the one that reserved the lock, including after an
+  // ambiguous/network failure — see the buyMutation.onError lifecycle
+  // notes below), the lock must NOT block this instance's own same-key
+  // retry click, only a genuinely different instance's fresh attempt.
+  const buyLockedByOtherInstance =
+    sharedBuyLock?.status === "pending" &&
+    frozenBuyRequestRef.current?.idempotency_key !== sharedBuyLock.idempotencyKey;
+  // Module-level lock recheck poll — see below (after sellLockedByOtherInstance
+  // is computed) for why this exists.
+  const [, forceLockRecheck] = useState(0);
+
   function getOrCreateFrozenBuyRequest() {
     // Only a genuine, user-driven change counts as "material" here — the
     // AI-suggested quantity/stop-loss/target-price auto-fill effects above
@@ -395,7 +428,29 @@ export function PaperTradeModal({
         : "auto",
       tradeManagementMode,
     });
-    if (frozenBuyRequestRef.current === null || materialInputsSignatureRef.current !== materialSignature) {
+    // (B) Reuse the shared lock's key when a prior instance of THIS same
+    // component (before an unmount/remount via Cancel/X) already froze one
+    // for this exact operation and it's still pending — this is what makes
+    // the key stable across remount, not just across this instance's own
+    // re-renders. Only reused while pending: once the operation reaches a
+    // terminal state the lock is released (see buyMutation callbacks
+    // below) and this falls through to minting a genuinely new key for the
+    // next, later, intentional Buy.
+    const lockedKey = getBuyLock(buyOpKey);
+    if (lockedKey?.status === "pending" && lockedKey.idempotencyKey && frozenBuyRequestRef.current === null) {
+      frozenBuyRequestRef.current = {
+        idempotency_key: lockedKey.idempotencyKey,
+        user_id: userId, symbol, market, quantity,
+        price: currentPrice, signal: activeSignal, horizon: selectedHorizon,
+        stop_loss: stopLossValue && stopLossValue > 0 ? stopLossValue : null,
+        target_price: targetPriceValue && targetPriceValue > 0 ? targetPriceValue : null,
+        email: user?.email,
+        trade_management_mode: tradeManagementMode,
+        evidence_source: evidenceSource,
+        entry_evidence: entryEvidence,
+      };
+      materialInputsSignatureRef.current = materialSignature;
+    } else if (frozenBuyRequestRef.current === null || materialInputsSignatureRef.current !== materialSignature) {
       frozenBuyRequestRef.current = {
         idempotency_key: generateBuyIdempotencyKey(),
         user_id: userId, symbol, market, quantity,
@@ -422,22 +477,95 @@ export function PaperTradeModal({
       frozenBuyRequestRef.current = null;
       materialInputsSignatureRef.current = null;
       buySubmissionInFlightRef.current = false;
+      // (B/E) Terminal (success) — release the shared lock. A remount of
+      // this modal for the same pick after this point (e.g. reopened from
+      // Daily Picks again) is a genuinely NEW Buy decision and must mint a
+      // new key, not reuse this now-completed one.
+      releaseBuyLock(buyOpKey);
       setTimeout(onClose, 1500);
     },
     onError: (e: any) => {
       buySubmissionInFlightRef.current = false;
-      setError(e.response?.data?.detail ?? "Failed to place trade");
+      // (E) Full key-lifecycle lifecycle decision point — DEFINITIVE vs
+      // AMBIGUOUS failure are handled differently on purpose:
+      //
+      // DEFINITIVE (e.response is present — the backend actually received
+      // the request, ran it to completion inside its own atomic
+      // transaction, and returned a real HTTP error status: 400
+      // insufficient funds/market closed, 409 idempotency conflict, 422
+      // validation, etc.). Our backend's transactional design (see
+      // backend/api/routers/paper_trading.py's `with conn.transaction():`
+      // comment) means a response — success OR error — is authoritative:
+      // if we got one at all, the backend definitely knows its own final
+      // state, so it is safe to treat this operation as terminal. The
+      // shared lock is released so the user can retry as a genuinely NEW
+      // logical operation (new key next click); local
+      // `frozenBuyRequestRef` is intentionally left alone so a SAME-
+      // instance immediate retry (no remount in between) still reuses the
+      // same key for the specific "lost-response retry" pattern this
+      // suite already covers — reserveBuyLock() on the next click just
+      // re-registers that same key against the now-empty lock slot.
+      //
+      // AMBIGUOUS (e.response is absent — a network error, timeout, or
+      // aborted request: the client genuinely does not know whether the
+      // backend received/committed the request). Per task requirement
+      // (e): do NOT release the lock and do NOT let a later click silently
+      // mint a brand-new key here — that would risk a second real trade if
+      // the original request actually did land server-side. The lock
+      // stays "pending" under the SAME idempotency key. A same-instance
+      // retry click is still allowed (see `buyLockedByOtherInstance`'s
+      // "belongs to THIS instance" carve-out above) and reuses that exact
+      // key — which is exactly what makes it safe: replaying the SAME key
+      // against the backend's reservation table either replays the
+      // original completed result, reports "already in progress", or
+      // proceeds fresh if the original genuinely never reached the
+      // server — never a second independent trade. A remounted instance
+      // (Cancel/X then reopen) still sees this as locked and blocked,
+      // consistent with "no new key on ambiguous failure" — this is the
+      // "authoritative reconciliation" the task refers to: the backend's
+      // idempotency table, not a client-side timer/poll.
+      const isDefinitiveFailure = e?.response != null;
+      if (isDefinitiveFailure) {
+        releaseBuyLock(buyOpKey);
+      }
+      setError(e.response?.data?.detail ?? "Failed to place trade — network issue, retry to confirm");
     },
   });
+
+  // (F) Same remount-survival lock as the Buy side, keyed on the specific
+  // trade being closed — see closeOperationKey's docstring for why this
+  // never carries/sends an idempotency key (close_service.py's row lock +
+  // status check is already the authoritative dedup; this only closes the
+  // frontend's "reopen after Cancel/X" UI gap).
+  const closeOpKey = isSell && existingTradeId != null ? closeOperationKey(userId, existingTradeId) : null;
+  const sellLockedByOtherInstance = closeOpKey ? getBuyLock(closeOpKey)?.status === "pending" : false;
+
+  // The shared lock is a plain module-level Map, not React state, so
+  // nothing re-renders this instance automatically when a PRIOR instance's
+  // in-flight request (the one that left this lock pending) eventually
+  // resolves in the background after that prior instance unmounted. Poll
+  // at a low frequency purely to pick that up — this only ever runs while
+  // this instance believes the operation is locked by someone else, and
+  // stops the moment it isn't.
+  useEffect(() => {
+    if (!buyLockedByOtherInstance && !sellLockedByOtherInstance) return;
+    const id = setInterval(() => forceLockRecheck((n) => n + 1), 750);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [buyLockedByOtherInstance, sellLockedByOtherInstance]);
 
   const sellMutation = useMutation({
     mutationFn: () => closePaperTrade(existingTradeId!, userId, currentPrice),
     onSuccess: () => {
       setSuccess(`Sold ${existingQuantity} × ${symbol} @ ${currency}${currentPrice.toLocaleString()}`);
       queryClient.invalidateQueries({ queryKey: ["paper-portfolio"] });
+      if (closeOpKey) releaseBuyLock(closeOpKey);
       setTimeout(onClose, 1500);
     },
-    onError: (e: any) => setError(e.response?.data?.detail ?? "Failed to close trade"),
+    onError: (e: any) => {
+      if (closeOpKey) releaseBuyLock(closeOpKey);
+      setError(e.response?.data?.detail ?? "Failed to close trade");
+    },
   });
 
   const SignalIcon = activeSignal === "BUY" ? TrendingUp : activeSignal === "SELL" ? TrendingDown : Minus;
@@ -500,7 +628,11 @@ export function PaperTradeModal({
               </span>
             </p>
           </div>
-          <button onClick={onClose} className="text-gray-500 hover:text-white transition-colors">
+          <button
+            onClick={onClose}
+            disabled={buyMutation.isPending || sellMutation.isPending || buyLockedByOtherInstance || sellLockedByOtherInstance}
+            title={(buyLockedByOtherInstance || sellLockedByOtherInstance) ? "A purchase for this pick is still processing — please wait" : undefined}
+            className="text-gray-500 hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:text-gray-500">
             <X size={18} />
           </button>
         </div>
@@ -731,9 +863,26 @@ export function PaperTradeModal({
         {/* Sticky footer */}
         <div className="px-4 sm:px-5 py-2.5 sm:py-3 border-t border-dark-border shrink-0 space-y-1.5 sm:space-y-2">
           <p className="text-[10px] text-gray-600 text-center">AI pre-filled · editable · Virtual money only</p>
+          {(buyLockedByOtherInstance || sellLockedByOtherInstance) && (
+            <p className="text-[10px] text-yellow-300 text-center">
+              A {isSell ? "sale" : "purchase"} for this {isSell ? "trade" : "pick"} is still processing — please wait for it to finish before trying again.
+            </p>
+          )}
           <div className="flex gap-2">
+            {/* (E) Option A — Cancel/X are disabled for the whole in-flight
+                window, including a window re-opened after a prior instance
+                left the shared lock pending. Correctness over
+                responsiveness: closing the modal must never make the user
+                believe a still-resolving request has been abandoned, since
+                the axios POST already in flight cannot be aborted
+                server-side-safely from here (no AbortController wiring, and
+                even with one, the server may have already committed by the
+                time an abort reaches it — see PaperTradeModal.tsx module
+                docs / task E rationale). */}
             <button onClick={onClose}
-              className="flex-1 px-4 py-2 rounded-xl border border-dark-border text-gray-400 hover:text-white hover:border-white/30 transition-colors text-sm">
+              disabled={buyMutation.isPending || sellMutation.isPending || buyLockedByOtherInstance || sellLockedByOtherInstance}
+              title={(buyLockedByOtherInstance || sellLockedByOtherInstance) ? "A purchase for this pick is still processing — please wait" : undefined}
+              className="flex-1 px-4 py-2 rounded-xl border border-dark-border text-gray-400 hover:text-white hover:border-white/30 transition-colors text-sm disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:text-gray-400 disabled:hover:border-dark-border">
               Cancel
             </button>
             <button
@@ -745,18 +894,31 @@ export function PaperTradeModal({
                 // happen same-tick) still can't slip through. The `disabled`
                 // attribute below and the backend's durable idempotency key
                 // are the other two layers of this defense-in-depth.
+                // (A) The shared-lock check is the layer that actually
+                // covers the unmount/remount gap the other three don't:
+                // `buySubmissionInFlightRef`/`isPending` are blank on a
+                // freshly remounted instance, but `buyLockedByOtherInstance`
+                // / `sellLockedByOtherInstance` reflect the module-level
+                // lock a PRIOR instance may have left pending.
                 if (buySubmissionInFlightRef.current || buyMutation.isPending || sellMutation.isPending) return;
+                if (buyLockedByOtherInstance || sellLockedByOtherInstance) return;
                 if (!isSell && awaitingMatchingHorizonPrediction) return;
                 setError(null);
-                if (isSell) { sellMutation.mutate(); return; }
+                if (isSell) {
+                  if (closeOpKey) reserveBuyLock(closeOpKey);
+                  sellMutation.mutate();
+                  return;
+                }
                 buySubmissionInFlightRef.current = true;
-                buyMutation.mutate(getOrCreateFrozenBuyRequest());
+                const req = getOrCreateFrozenBuyRequest();
+                reserveBuyLock(buyOpKey, req.idempotency_key);
+                buyMutation.mutate(req);
               }}
-              disabled={buyMutation.isPending || sellMutation.isPending || marketClosed || (!isSell && awaitingMatchingHorizonPrediction)}
-              title={marketClosed ? `${market} market is closed` : (!isSell && awaitingMatchingHorizonPrediction) ? "Waiting for the selected horizon's recommendation to load" : undefined}
+              disabled={buyMutation.isPending || sellMutation.isPending || marketClosed || (!isSell && awaitingMatchingHorizonPrediction) || buyLockedByOtherInstance || sellLockedByOtherInstance}
+              title={marketClosed ? `${market} market is closed` : (!isSell && awaitingMatchingHorizonPrediction) ? "Waiting for the selected horizon's recommendation to load" : (buyLockedByOtherInstance || sellLockedByOtherInstance) ? "Already processing — please wait" : undefined}
               className={clsx("flex-1 px-4 py-2 rounded-xl font-semibold text-sm transition-colors",
                 isSell ? "bg-bear hover:bg-red-600 text-white disabled:opacity-50" : "bg-bull hover:bg-green-600 text-white disabled:opacity-50")}>
-              {buyMutation.isPending || sellMutation.isPending
+              {buyMutation.isPending || sellMutation.isPending || buyLockedByOtherInstance || sellLockedByOtherInstance
                 ? "Placing…"
                 : marketClosed
                   ? "Market Closed"

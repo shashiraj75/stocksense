@@ -655,23 +655,31 @@ class BuyRequest(BaseModel):
     evidence_source: Literal["MANUAL", "SCREENER", "DAILY_PICK", "RESEARCH"] = "MANUAL"
     entry_evidence: EntryEvidenceRequest | None = None
 
-    # Migration-verification hardening gate, Part 7 — Buy idempotency.
-    # Optional for backward compatibility: an old client that omits this
-    # entirely gets exactly today's behavior (no dedup guarantee at all,
-    # same as before this field existed) — see paper_buy's
-    # `idempotency_enforced` flag in its own response. A client that DOES
-    # supply one gets the full durable, exactly-once guarantee described in
-    # services/postmortem/idempotency.py.
-    idempotency_key: str | None = None
+    # Owner-authorized hardening (post-incident, TCS double-Buy) — the
+    # optional idempotency_key design below is INTENTIONALLY NOT what ships
+    # anymore. It silently fell back to "no dedup guarantee at all" for any
+    # request that omitted the key — exactly the gap a remounted
+    # PaperTradeModal (Cancel/X unmount racing an in-flight Buy) exploited
+    # to place two live TCS positions. The field is now REQUIRED: a Buy
+    # request that omits it is rejected by FastAPI/Pydantic at the request
+    # boundary (422, before this handler function even runs — no trade row
+    # is ever created and no cash is ever debited for such a request), not
+    # silently processed without a durable exactly-once guarantee. The
+    # sole production caller (frontend/src/components/PaperTradeModal.tsx
+    # via placePaperBuy) already always sends one and needed no change.
+    # Internal/backend-test callers that used to omit it must now supply an
+    # explicit key too — see the updated test fixtures across
+    # backend/tests/{integration,postgres_integration,regression,unit} for
+    # the corresponding per-call key generation.
+    idempotency_key: str
 
     @field_validator("idempotency_key")
     @classmethod
     def _validate_idempotency_key(cls, v):
-        if v is not None:
-            try:
-                validate_idempotency_key_format(v)
-            except ValueError as e:
-                raise ValueError(str(e))
+        try:
+            validate_idempotency_key_format(v)
+        except ValueError as e:
+            raise ValueError(str(e))
         return v
 
 
@@ -1937,47 +1945,48 @@ def paper_buy(request: Request, req: BuyRequest, user_id: str = Depends(get_curr
     cost = req.price * req.quantity
     _ensure_portfolio(user_id)  # make sure the row exists before the conditional debit below
 
-    # Migration-verification hardening gate, Part 7 — Buy idempotency.
-    # `idempotency_enforced` is False for any request that omits the key
-    # (full backward compatibility: identical behavior to before this
-    # field existed). The fingerprint covers only the financially material
-    # fields (see idempotency.compute_request_fingerprint) — never
-    # symbol/quantity/timestamp matching alone, so two genuine purchases of
-    # the same stock and quantity with two different keys remain
-    # independently valid.
-    idempotency_enforced = req.idempotency_key is not None
-    fingerprint = None
-    if idempotency_enforced:
-        fingerprint = compute_request_fingerprint(
-            market=req.market, symbol=req.symbol, quantity=req.quantity, price=req.price,
-            stop_loss=req.stop_loss, target_price=req.target_price,
-            trade_management_mode=req.trade_management_mode, evidence_source=req.evidence_source,
-            entry_evidence_schema_version=SNAPSHOT_SCHEMA_VERSION,
-        )
+    # Owner-authorized hardening (post-incident) — idempotency_key is now a
+    # REQUIRED field on BuyRequest (see its definition above), so this is
+    # unconditionally enforced for every request that reaches this point at
+    # all; a request that omitted the key never got this far (422 at the
+    # Pydantic boundary, before `_ensure_portfolio`/any DB write above).
+    # `idempotency_enforced` is kept (always True now) purely so the
+    # response shape (`PlacePaperBuyResponse.idempotency_enforced`) stays
+    # stable for any client/test still reading that field. The fingerprint
+    # covers only the financially material fields (see
+    # idempotency.compute_request_fingerprint) — never symbol/quantity/
+    # timestamp matching alone, so two genuine purchases of the same stock
+    # and quantity with two DIFFERENT keys remain independently valid (no
+    # (user_id, symbol) uniqueness was introduced anywhere).
+    idempotency_enforced = True
+    fingerprint = compute_request_fingerprint(
+        market=req.market, symbol=req.symbol, quantity=req.quantity, price=req.price,
+        stop_loss=req.stop_loss, target_price=req.target_price,
+        trade_management_mode=req.trade_management_mode, evidence_source=req.evidence_source,
+        entry_evidence_schema_version=SNAPSHOT_SCHEMA_VERSION,
+    )
 
     with _conn() as conn:
-        reservation = None
-        if idempotency_enforced:
-            reservation = _resolve_idempotency_reservation(conn, user_id, req.idempotency_key, fingerprint)
-            if reservation.action == IdempotencyAction.REPLAY_COMPLETED.value:
-                return reservation.response_body
-            if reservation.action == IdempotencyAction.CONFLICT_FINGERPRINT_MISMATCH.value:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "error_code": "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST",
-                        "message": "This idempotency_key was already used for a Buy request with different terms. Use a new key for a genuinely new Buy decision.",
-                    },
-                )
-            if reservation.action == IdempotencyAction.STILL_IN_PROGRESS.value:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "error_code": "BUY_ALREADY_IN_PROGRESS",
-                        "message": "A Buy request with this idempotency_key is still being processed. Retry shortly with the same key.",
-                    },
-                )
-            # else PROCEED_FRESH or PROCEED_RECLAIMED — reservation.row_id is set, continue below.
+        reservation = _resolve_idempotency_reservation(conn, user_id, req.idempotency_key, fingerprint)
+        if reservation.action == IdempotencyAction.REPLAY_COMPLETED.value:
+            return reservation.response_body
+        if reservation.action == IdempotencyAction.CONFLICT_FINGERPRINT_MISMATCH.value:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error_code": "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST",
+                    "message": "This idempotency_key was already used for a Buy request with different terms. Use a new key for a genuinely new Buy decision.",
+                },
+            )
+        if reservation.action == IdempotencyAction.STILL_IN_PROGRESS.value:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error_code": "BUY_ALREADY_IN_PROGRESS",
+                    "message": "A Buy request with this idempotency_key is still being processed. Retry shortly with the same key.",
+                },
+            )
+        # else PROCEED_FRESH or PROCEED_RECLAIMED — reservation.row_id is set, continue below.
 
         _buy_transaction_started_at = _time.monotonic()
         try:

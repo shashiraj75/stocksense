@@ -484,6 +484,8 @@ class TestBuyRequestToEntrySnapshotCoverage:
             trade_management_mode="manual",
             evidence_source="RESEARCH",
             entry_evidence=entry_evidence,
+            # Owner-authorized hardening — idempotency_key is now REQUIRED.
+            idempotency_key="unit-test-key-900004",
         )
 
         snapshot = _build_snapshot_for_buy(
@@ -530,6 +532,7 @@ class TestBuyRequestToEntrySnapshotCoverage:
         req = BuyRequest(
             symbol="TSLA", market="US", quantity=3, price=250.0,
             signal="HOLD", horizon="short",
+            idempotency_key="unit-test-key-900005",
         )
         snapshot = _build_snapshot_for_buy(
             trade_id=900005, user_id="user-ddd", symbol="TSLA", market="US", req=req,

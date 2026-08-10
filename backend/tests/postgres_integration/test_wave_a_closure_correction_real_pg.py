@@ -7,6 +7,7 @@ Never mocks _conn.
 """
 import threading
 import time
+import uuid
 
 import pytest
 
@@ -54,8 +55,11 @@ def _fetch_flags(pg_conn, trade_id):
 
 
 def _buy(client, user_id, **body_overrides):
+    # Owner-authorized hardening — idempotency_key is now REQUIRED by
+    # POST /buy; default to a fresh key per call (overridable).
     body = {"symbol": "AAPL", "market": "US", "quantity": 1, "price": 100.0,
-            "stop_loss": 90.0, "target_price": 120.0}
+            "stop_loss": 90.0, "target_price": 120.0,
+            "idempotency_key": f"ptbuy-test-{uuid.uuid4()}"}
     body.update(body_overrides)
     return client.post("/api/paper-trading/buy", json=body, headers=make_auth_header(user_id))
 

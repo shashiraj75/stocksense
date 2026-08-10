@@ -6,6 +6,7 @@ disposable PostgreSQL instance's trigger/constraint/transaction
 behavior, which a hand-written fake connection cannot prove.
 """
 import threading
+import uuid
 
 import pytest
 
@@ -284,8 +285,10 @@ class TestSnapshotsCloseAndReset:
         ensure_portfolio(pg_conn, unique_user_id)
         buy_resp = client.post(
             "/api/paper-trading/buy",
+            # Owner-authorized hardening — idempotency_key is now REQUIRED.
             json={"symbol": "AAPL", "market": "US", "quantity": 1, "price": 100.0,
-                  "stop_loss": 90.0, "target_price": 120.0},
+                  "stop_loss": 90.0, "target_price": 120.0,
+                  "idempotency_key": f"ptbuy-test-{uuid.uuid4()}"},
             headers=make_auth_header(unique_user_id),
         )
         assert buy_resp.status_code == 200
