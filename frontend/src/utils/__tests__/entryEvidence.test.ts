@@ -129,12 +129,53 @@ describe("buildEntryEvidenceFromDailyPick", () => {
     expect(evidence?.recommended_target_price).toBe(120);
     expect(evidence?.daily_pick_run_id).toBeNull();
     expect(evidence?.daily_pick_rank).toBeNull();
-    // Fields the Daily Pick payload doesn't genuinely carry stay null
+    // Fields the Daily Pick payload never genuinely carries stay null
+    // (technical_rsi/macd_diff have no Daily Pick equivalent at all).
     expect(evidence?.technical_rsi).toBeNull();
+    expect(evidence?.technical_macd_diff).toBeNull();
+    // Not supplied on this fixture pick -> stays null (not fabricated).
+    expect(evidence?.technical_signal).toBeNull();
     expect(evidence?.sentiment_score).toBeNull();
   });
 
   it("returns null for a missing pick", () => {
     expect(buildEntryEvidenceFromDailyPick(null)).toBeNull();
+  });
+
+  // Phase A1 evidence-gap closure: technical_signal / sentiment_score are
+  // now genuine additive fields on the Daily Pick payload, sourced from the
+  // exact same PredictionEngine computation as the Research path — consumed
+  // here verbatim, never derived from tech_score or the sentiment label.
+  it("maps a genuine technical_signal and sentiment_score when the backend provides them", () => {
+    const evidence = buildEntryEvidenceFromDailyPick({
+      price: 100, entry_low: 98, entry_high: 102, stop_loss: 90, target: 120,
+      confidence: 75, fund_score: 60, sentiment: "BULLISH",
+      technical_signal: "BUY", sentiment_score: 63.5,
+      reasoning: [], generated_at: "2026-08-01T00:00:00Z", horizon: "short",
+    });
+    expect(evidence?.technical_signal).toBe("BUY");
+    expect(evidence?.sentiment_score).toBe(63.5);
+    expect(evidence?.sentiment_label).toBe("BULLISH");
+  });
+
+  it("preserves a genuine numeric 0 sentiment_score via finiteOrNull, not truthiness", () => {
+    const evidence = buildEntryEvidenceFromDailyPick({
+      price: 100, confidence: 75, technical_signal: "SELL", sentiment_score: 0,
+      reasoning: [], horizon: "short",
+    });
+    expect(evidence?.sentiment_score).toBe(0);
+    expect(evidence?.sentiment_score).not.toBeNull();
+  });
+
+  it("does not fabricate technical_signal/sentiment_score when the backend omits them", () => {
+    const evidence = buildEntryEvidenceFromDailyPick({
+      price: 100, confidence: 75, tech_score: 90, sentiment: "BULLISH",
+      reasoning: [], horizon: "short",
+    });
+    // A high tech_score/bullish label must not get converted into a
+    // fabricated technical_signal or sentiment_score.
+    expect(evidence?.technical_signal).toBeNull();
+    expect(evidence?.sentiment_score).toBeNull();
+    expect(evidence?.sentiment_label).toBe("BULLISH");
   });
 });

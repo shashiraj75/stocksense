@@ -33,6 +33,10 @@ export type Pick = {
   summary?: string; quality_factors?: QualityFactors; factor_zscores?: FactorZScores;
   combined_alpha?: number; portfolio_weight?: number; regime_label?: string;
   score_band?: string; horizon: string;
+  // Phase A1 evidence-gap closure — additive, absent on picks generated
+  // before this field existed (legacy cached/historical picks).
+  technical_signal?: string | null;
+  sentiment_score?: number | null;
   // Release 12A generation-reference provenance (absent on legacy picks)
   generated_at?: string | null;
   generation_reference_price?: number | null;
@@ -64,6 +68,8 @@ export type FrozenDailyPickSnapshot = {
   confidence: number;
   fund_score?: number;
   sentiment?: string;
+  technical_signal?: string | null;
+  sentiment_score?: number | null;
   reasoning: ReasonItem[];
   generated_at?: string | null;
 };
@@ -86,6 +92,8 @@ function freezeDailyPickSnapshot(pick: Pick): FrozenDailyPickSnapshot {
     confidence: pick.confidence,
     fund_score: pick.fund_score,
     sentiment: pick.sentiment,
+    technical_signal: pick.technical_signal ?? null,
+    sentiment_score: pick.sentiment_score ?? null,
     reasoning: (pick.reasoning ?? []).map(r => ({ ...r })),
     generated_at: pick.generated_at ?? null,
   };
@@ -978,6 +986,8 @@ export function PickCard({ pick, rank, market, currency, locale, freshness }: { 
             confidence: frozenPick.confidence,
             fund_score: frozenPick.fund_score,
             sentiment: frozenPick.sentiment,
+            technical_signal: frozenPick.technical_signal,
+            sentiment_score: frozenPick.sentiment_score,
             reasoning: frozenPick.reasoning,
             generated_at: frozenPick.generated_at ?? null,
             horizon: frozenPick.horizon,

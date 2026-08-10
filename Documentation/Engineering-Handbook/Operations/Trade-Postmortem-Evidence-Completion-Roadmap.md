@@ -9,38 +9,45 @@ phases below.
 
 ## Phase A — Existing-data propagation across Buy call sites
 
-> **Phase A1 IMPLEMENTED for FUTURE trades only, and only PARTIALLY for
-> the Daily Pick Buy path** (Trade Postmortem Evidence Completion, Phase
-> A1 — `feature/postmortem-evidence-phase-a-entry-propagation`, corrected
-> 2026-08-07 after an owner audit). Every live Buy entry point in the
+> **Phase A1 IMPLEMENTED for FUTURE trades only** (Trade Postmortem
+> Evidence Completion, Phase A1 —
+> `feature/postmortem-evidence-phase-a-entry-propagation`, corrected
+> 2026-08-07 after an owner audit; extended by the Daily Picks Phase A1
+> Evidence-Gap Closure, 2026-08-10). Every live Buy entry point in the
 > current product (Daily Picks Buy, Stock Detail recommendation Buy) now
 > propagates the recommendation evidence it GENUINELY HAS AT BUY TIME into
 > `paper_trade_entry_snapshot`, via `frontend/src/utils/entryEvidence.ts`
 > and the corresponding `evidence_source`/`entry_evidence`/
 > `idempotency_key` fields the backend Buy contract already supported. No
-> backend production logic changed. This is NOT the same claim as "every
-> field for every path" — the two paths genuinely differ in what they can
-> honestly send:
+> backend production logic (scoring/ranking/selection) changed. This is
+> NOT the same claim as "every field is always populated" — a field stays
+> null whenever the underlying value was genuinely never computed:
 > - `recommendation_signal` and `fundamental_score`: populated by BOTH the
 >   Daily Pick Buy path (`Pick.price`/`Pick.fund_score`) and the Stock
 >   Detail (RESEARCH) Buy path (`Prediction.signal`/
 >   `Prediction.fundamental_score.score`) — A. AVAILABLE_NOW for new
 >   trades on both paths.
-> - `technical_signal` and `sentiment_score`: populated ONLY by the Stock
+> - `technical_signal` and `sentiment_score`: as of the 2026-08-10 Daily
+>   Picks Phase A1 Evidence-Gap Closure, now populated by BOTH the Stock
 >   Detail (RESEARCH) Buy path (`Prediction.technical.overall`/
->   `Prediction.sentiment_score.score`). The Daily Pick Buy path's `Pick`
->   type carries only a numeric `tech_score` (not a governed
->   `technical_signal` string) and a `sentiment` label (not a numeric
->   score) — converting either into the other field's shape would be
->   fabrication, so `buildEntryEvidenceFromDailyPick` intentionally leaves
->   both null. A Daily Pick trade's entry snapshot is therefore genuinely
->   `PARTIAL` evidence today, not `COMPLETE`, even for a brand-new trade —
->   see the corrected rows in
+>   `Prediction.sentiment_score.score`) AND the Daily Pick Buy path.
+>   Investigation found both values already existed inside the Daily
+>   Picks backend's own generation computation
+>   (`_predict_stock()` in `backend/services/daily_picks.py`) — the SAME
+>   `PredictionEngine.predict()` call the Research path uses, discarded
+>   before publication rather than genuinely absent. `technical_signal`
+>   (`result["technical"]["overall"]`, the same BUY/SELL/HOLD vocabulary)
+>   and `sentiment_score` (`result["sentiment_score"]["score"]`, the
+>   genuine numeric score, already carried internally for cross-sectional
+>   ranking) are now additively exposed on the published `Pick` payload
+>   and consumed verbatim by `buildEntryEvidenceFromDailyPick` — never
+>   derived from `Pick.tech_score` (threshold conversion) or `Pick.sentiment`
+>   (label-to-number mapping), which would have been fabrication. Both stay
+>   null exactly when PredictionEngine genuinely didn't produce a value
+>   (e.g. sentiment data unavailable) — see the corrected rows in
 >   [Trade-Postmortem-Evidence-Coverage-Matrix.md](Trade-Postmortem-Evidence-Coverage-Matrix.md).
->   Closing this specific gap requires the Daily Picks backend to compute
->   and expose a governed `technical_signal` and a numeric sentiment score
->   on the `Pick` payload itself — a genuinely new data-shape change, not
->   merely additional frontend propagation of data that already exists.
+>   Daily Pick trades opened before this closure remain permanently null
+>   for these two fields, same as any other pre-phase legacy trade.
 > - A Daily Pick Buy whose horizon is switched away from the pick's
 >   original horizon in the Buy modal now falls back to the Stock Detail
 >   (RESEARCH) evidence builder for the horizon actually bought (a

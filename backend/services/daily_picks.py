@@ -882,6 +882,16 @@ def _predict_stock(symbol: str, horizon: str, market: str = "IN") -> dict | None
             "tech_score":     result.get("technical", {}).get("score", 50),
             "fund_score":     result.get("fundamental_score", {}).get("score", 50),
             "sentiment_score": float(_sent_raw) if _sent_available else None,
+            # Phase A1 evidence-gap closure (Daily Picks): the SAME governed
+            # technical-signal vocabulary (BUY/SELL/HOLD) the Stock
+            # Detail/Research path exposes as `technical.overall` — both
+            # paths read it from the identical get_signal_summary(df) call
+            # inside this same PredictionEngine.predict() invocation, so
+            # this is not a derived/thresholded value, it's the authoritative
+            # value itself. Always present whenever `result` reached this
+            # point (get_signal_summary always returns "overall" — no
+            # separate availability gate is needed, unlike sentiment above).
+            "technical_signal": result.get("technical", {}).get("overall"),
             # DP-009: explicit None-check, not `or 50` — that truthiness
             # fallback silently turned a genuine 0 into a fabricated neutral
             # 50 (Python's `or` treats 0/0.0 as falsy). A genuine 0 is real

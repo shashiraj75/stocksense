@@ -88,6 +88,15 @@ export interface DailyPickEvidenceSource {
   tech_score?: number | null;
   fund_score?: number | null;
   sentiment?: string | null;
+  // Phase A1 evidence-gap closure: the governed technical-signal vocabulary
+  // (BUY/SELL/HOLD) and the genuine numeric sentiment score, both additive
+  // fields the Daily Picks backend now emits from the exact same
+  // PredictionEngine.predict() computation the Research/Stock Detail path
+  // already exposes via `technical.overall` / `sentiment_score.score`. Null
+  // when the backend genuinely didn't produce them (e.g. legacy cached
+  // picks generated before this field existed) — never fabricated here.
+  technical_signal?: string | null;
+  sentiment_score?: number | null;
   reasoning?: { indicator: string; signal: string; reason: string }[] | null;
   generated_at?: string | null;
   horizon?: string | null;
@@ -118,11 +127,17 @@ export function buildEntryEvidenceFromDailyPick(
     recommended_stop_loss: finiteOrNull(pick.stop_loss),
     recommended_target_price: finiteOrNull(pick.target),
     confidence_score: finiteOrNull(pick.confidence),
-    technical_signal: null,
+    // Phase A1 evidence-gap closure: consume ONLY the newly authoritative
+    // `technical_signal` / `sentiment_score` fields the backend now emits
+    // directly from the Daily Pick's own generation computation — never
+    // derived from `tech_score` (threshold conversion) or from the
+    // `sentiment` label (label-to-number mapping). Stays null exactly when
+    // the backend didn't genuinely produce a value.
+    technical_signal: stringOrNull(pick.technical_signal ?? null),
     technical_rsi: null,
     technical_macd_diff: null,
     fundamental_score: finiteOrNull(pick.fund_score),
-    sentiment_score: null,
+    sentiment_score: finiteOrNull(pick.sentiment_score),
     sentiment_label: stringOrNull(pick.sentiment ?? null),
     market_regime_trend: null,
     market_regime_score_adj: null,
