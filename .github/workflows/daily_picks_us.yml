@@ -64,25 +64,23 @@ jobs:
         id: trigger
         run: |
           echo "Triggering US daily picks generation at $(date -u) UTC..."
-          HTTP_CODE=$(curl -sS --max-time 30 -o /tmp/trigger_body.json -w "%{http_code}" \
+          HTTP_CODE=$(curl -sS --max-time 30 -o "${RUNNER_TEMP}/us_trigger_body.json" -w "%{http_code}" \
             -X POST \
             -H "x-secret: ${{ secrets.PICKS_SECRET }}" \
             "https://stocksense-production-7e0d.up.railway.app/api/picks/generate?market=US")
-          BODY=$(cat /tmp/trigger_body.json)
           echo "Trigger HTTP code: $HTTP_CODE"
-          echo "Trigger response body: $BODY"
+          echo "Trigger response body: $(cat "${RUNNER_TEMP}/us_trigger_body.json")"
+          # Follow-up correction (2026-08-10): see daily_picks_in.yml for why
+          # the body crosses steps via a RUNNER_TEMP file, never a
+          # GITHUB_OUTPUT expression-interpolation round-trip.
           echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
-          {
-            echo "body<<TRIGGER_BODY_EOF"
-            echo "$BODY"
-            echo "TRIGGER_BODY_EOF"
-          } >> "$GITHUB_OUTPUT"
 
       - name: Verify US pick generation actually completed and published
         run: |
           chmod +x scripts/ci/poll_daily_picks_completion.sh
+          TRIGGER_BODY="$(cat "${RUNNER_TEMP}/us_trigger_body.json")"
           scripts/ci/poll_daily_picks_completion.sh \
             "https://stocksense-production-7e0d.up.railway.app" \
             "US" \
             "${{ steps.trigger.outputs.http_code }}" \
-            '${{ steps.trigger.outputs.body }}'
+            "$TRIGGER_BODY"

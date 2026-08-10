@@ -128,7 +128,14 @@ for i in $(seq 1 "$MAX_POLLS"); do
     continue
   fi
 
-  if [ "$JOB_STATUS" = "failed" ] || [ "$JOB_STATUS" = "interrupted" ]; then
+  # Terminal non-success set, reconciled against the actual DB CHECK
+  # constraint on daily_picks_jobs.status (backend/services/postgres_store.py):
+  #   CHECK (status IN ('queued', 'running', 'completed', 'failed',
+  #                      'interrupted', 'expired'))
+  # 'expired' is a real, DB-enforced terminal state (follow-up correction,
+  # 2026-08-10) — omitting it here would let an expired job silently keep
+  # this script polling until timeout instead of failing immediately.
+  if [ "$JOB_STATUS" = "failed" ] || [ "$JOB_STATUS" = "interrupted" ] || [ "$JOB_STATUS" = "expired" ]; then
     echo "[poll] FAILURE: bound job_id=${JOB_ID} reached terminal non-success status=${JOB_STATUS}." >&2
     exit 1
   fi

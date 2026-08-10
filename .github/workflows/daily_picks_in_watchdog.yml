@@ -87,37 +87,64 @@ jobs:
         if: steps.freshness.outputs.has_today != 'true'
         run: |
           echo "India picks NOT fresh (has_today=${{ steps.freshness.outputs.has_today }}) — invoking governed recovery at $(date -u) UTC..."
-          HTTP_CODE=$(curl -sS --max-time 30 -o /tmp/recover_body.json -w "%{http_code}" \
+          HTTP_CODE=$(curl -sS --max-time 30 -o "${RUNNER_TEMP}/in_recover_body.json" -w "%{http_code}" \
             -X POST \
             -H "x-secret: ${{ secrets.PICKS_SECRET }}" \
             "https://stocksense-production-7e0d.up.railway.app/api/picks/recover?market=IN&reason=in_watchdog_missing_or_stale")
-          BODY=$(cat /tmp/recover_body.json)
           echo "Recovery HTTP code: $HTTP_CODE"
-          echo "Recovery response body: $BODY"
+          echo "Recovery response body: $(cat "${RUNNER_TEMP}/in_recover_body.json")"
+          # Follow-up correction (2026-08-10): see daily_picks_in.yml for why
+          # the body crosses steps via a RUNNER_TEMP file, never a
+          # GITHUB_OUTPUT expression-interpolation round-trip — a recovery
+          # response containing a quote/apostrophe/newline must never be
+          # able to break the shell quoting of the next step.
           echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
-          {
-            echo "body<<RECOVER_BODY_EOF"
-            echo "$BODY"
-            echo "RECOVER_BODY_EOF"
-          } >> "$GITHUB_OUTPUT"
 
       - name: Verify recovery actually completed and published (not just accepted)
         if: steps.freshness.outputs.has_today != 'true'
         run: |
-          TRIGGERED=$(echo '${{ steps.recover.outputs.body }}' | jq -r '.triggered // false')
-          REASON=$(echo '${{ steps.recover.outputs.body }}' | jq -r '.reason // empty')
+          # Follow-up correction (2026-08-10): already_fresh and
+          # already_running are NOT semantically equivalent no-ops.
+          # already_fresh means the obligation is already satisfied — a
+          # true no-op. already_running means a job is genuinely still in
+          # flight — the obligation is NOT yet satisfied, and this watchdog
+          # must monitor that exact job to a real terminal+published
+          # outcome before it may declare success, using attempt_governed_
+          # recovery()'s own authoritative job_id (never inferred from
+          # timestamps or another market's state).
+          RECOVER_BODY="$(cat "${RUNNER_TEMP}/in_recover_body.json")"
+          TRIGGERED=$(echo "$RECOVER_BODY" | jq -r '.triggered // false')
+          REASON=$(echo "$RECOVER_BODY" | jq -r '.reason // empty')
+          JOB_ID=$(echo "$RECOVER_BODY" | jq -r '.job_id // empty')
+
+          if [ "$REASON" = "already_fresh" ] && [ "$TRIGGERED" != "true" ]; then
+            echo "Recovery no-op with reason=already_fresh — obligation already satisfied. Exiting successfully without polling."
+            exit 0
+          fi
+
+          if [ "$REASON" = "already_running" ] && [ "$TRIGGERED" != "true" ]; then
+            if [ -z "$JOB_ID" ] || [ "$JOB_ID" = "null" ]; then
+              echo "Recovery reported already_running but no authoritative job_id was returned — cannot safely bind to job identity. Reporting FAILURE honestly (not inferring identity from timestamps or another market's state)." >&2
+              exit 1
+            fi
+            echo "Recovery found an already-running job (job_id=$JOB_ID) — this obligation is NOT yet satisfied; monitoring it to a real terminal+published outcome via the shared poller."
+            POLL_BODY=$(jq -nc --arg job_id "$JOB_ID" '{"status":"already_running","job_id":$job_id}')
+            chmod +x scripts/ci/poll_daily_picks_completion.sh
+            scripts/ci/poll_daily_picks_completion.sh \
+              "https://stocksense-production-7e0d.up.railway.app" \
+              "IN" \
+              "409" \
+              "$POLL_BODY"
+            exit $?
+          fi
 
           if [ "$TRIGGERED" != "true" ]; then
-            if [ "$REASON" = "already_fresh" ] || [ "$REASON" = "already_running" ]; then
-              echo "Recovery no-op with reason=$REASON — this is expected/safe (picks became fresh, or a legitimate job is already in flight). Exiting successfully without polling."
-              exit 0
-            fi
             echo "Recovery was NOT triggered and reason ($REASON) is not a benign no-op — reporting FAILURE honestly." >&2
             exit 1
           fi
 
-          # Recovery job_id was reserved and started — verify its ACTUAL
-          # outcome via the shared poller, reusing the exact same
+          # Recovery job_id was reserved and a NEW job started — verify its
+          # ACTUAL outcome via the shared poller, reusing the exact same
           # completion+publication proof Phase A requires for the primary
           # workflows. /recover's contract (always-200, "triggered"/"reason"
           # in the body) differs from /generate's HTTP-code-carries-outcome
@@ -125,7 +152,6 @@ jobs:
           # the shared poller already understands (status=accepted,
           # http_code=202) — the poller's own job-identity/status/
           # publication-evidence logic is reused as-is, not duplicated.
-          JOB_ID=$(echo '${{ steps.recover.outputs.body }}' | jq -r '.job_id // empty')
           if [ -z "$JOB_ID" ] || [ "$JOB_ID" = "null" ]; then
             echo "Recovery reported triggered=true but no job_id was returned — cannot safely bind to job identity." >&2
             exit 1

@@ -42,25 +42,28 @@ jobs:
         id: trigger
         run: |
           echo "Triggering IN daily picks generation at $(date -u) UTC..."
-          HTTP_CODE=$(curl -sS --max-time 30 -o /tmp/trigger_body.json -w "%{http_code}" \
+          HTTP_CODE=$(curl -sS --max-time 30 -o "${RUNNER_TEMP}/in_trigger_body.json" -w "%{http_code}" \
             -X POST \
             -H "x-secret: ${{ secrets.PICKS_SECRET }}" \
             "https://stocksense-production-7e0d.up.railway.app/api/picks/generate?market=IN")
-          BODY=$(cat /tmp/trigger_body.json)
           echo "Trigger HTTP code: $HTTP_CODE"
-          echo "Trigger response body: $BODY"
+          echo "Trigger response body: $(cat "${RUNNER_TEMP}/in_trigger_body.json")"
+          # Follow-up correction (2026-08-10): the trigger response body is
+          # handed off via the on-disk file at RUNNER_TEMP (shared across
+          # steps in this job), never through a GITHUB_OUTPUT
+          # expression-interpolation round-trip. Only the numeric HTTP code
+          # (never free-form backend text) crosses that boundary, so a
+          # response body containing a quote, apostrophe, or newline can
+          # never break shell quoting or get interpolated as shell content
+          # in the next step.
           echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
-          {
-            echo "body<<TRIGGER_BODY_EOF"
-            echo "$BODY"
-            echo "TRIGGER_BODY_EOF"
-          } >> "$GITHUB_OUTPUT"
 
       - name: Verify India pick generation actually completed and published
         run: |
           chmod +x scripts/ci/poll_daily_picks_completion.sh
+          TRIGGER_BODY="$(cat "${RUNNER_TEMP}/in_trigger_body.json")"
           scripts/ci/poll_daily_picks_completion.sh \
             "https://stocksense-production-7e0d.up.railway.app" \
             "IN" \
             "${{ steps.trigger.outputs.http_code }}" \
-            '${{ steps.trigger.outputs.body }}'
+            "$TRIGGER_BODY"

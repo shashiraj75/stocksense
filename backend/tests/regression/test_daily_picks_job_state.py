@@ -393,17 +393,68 @@ def test_post_generate_returns_200_when_already_fresh():
 
 
 def test_post_generate_returns_409_when_already_running_in_memory():
-    """POST /generate returns 409 when in-memory _generating flag is True."""
+    """POST /generate returns 409 when in-memory _generating flag is True.
+
+    Follow-up correction (2026-08-10): this response must now include the
+    exact durable job_id (looked up via get_active_daily_picks_job) so a
+    caller that needs to MONITOR the active run — the GitHub Actions
+    poller — has an identity to bind to. A bare already_running with no
+    job_id previously made a legitimate active run indistinguishable from
+    an unmonitorable one and could cause a false CI failure."""
     import services.daily_picks as _dp
 
     with patch("services.daily_picks.picks_generated_today", return_value=False), \
          patch.dict("os.environ", {"USE_POSTGRES": "1"}), \
-         patch.dict(_dp._generating, {"IN": True}):
+         patch.dict(_dp._generating, {"IN": True}), \
+         patch("services.postgres_store.get_active_daily_picks_job",
+               return_value={"job_id": "active-job-in-memory-path"}):
         resp = _picks_client().post("/api/picks/generate?market=IN",
                                     headers={"x-secret": "secret"})
 
     assert resp.status_code == 409
-    assert resp.json()["status"] == "already_running"
+    data = resp.json()
+    assert data["status"] == "already_running"
+    assert data["job_id"] == "active-job-in-memory-path"
+
+
+def test_post_generate_reports_state_inconsistency_when_in_memory_flag_has_no_durable_job():
+    """Follow-up correction (2026-08-10): if the in-memory _generating flag
+    claims a job is running but no corresponding durable active job can be
+    found (e.g. a crashed process that never cleared its local flag), this
+    is a genuine state inconsistency — it must be reported honestly via the
+    existing durable_job_state_unavailable classification, never with a
+    fabricated job_id."""
+    import services.daily_picks as _dp
+
+    with patch("services.daily_picks.picks_generated_today", return_value=False), \
+         patch.dict("os.environ", {"USE_POSTGRES": "1"}), \
+         patch.dict(_dp._generating, {"IN": True}), \
+         patch("services.postgres_store.get_active_daily_picks_job", return_value=None):
+        resp = _picks_client().post("/api/picks/generate?market=IN",
+                                    headers={"x-secret": "secret"})
+
+    assert resp.status_code == 503
+    data = resp.json()
+    assert data["status"] == "durable_job_state_unavailable"
+    assert "job_id" not in data
+
+
+def test_post_generate_already_running_in_memory_surfaces_lookup_errors_honestly():
+    """If the durable active-job lookup itself raises, that must surface as
+    durable_job_state_unavailable, not a silently-swallowed 409 with no
+    job_id and not a crash."""
+    import services.daily_picks as _dp
+
+    with patch("services.daily_picks.picks_generated_today", return_value=False), \
+         patch.dict("os.environ", {"USE_POSTGRES": "1"}), \
+         patch.dict(_dp._generating, {"IN": True}), \
+         patch("services.postgres_store.get_active_daily_picks_job",
+               side_effect=Exception("db unavailable")):
+        resp = _picks_client().post("/api/picks/generate?market=IN",
+                                    headers={"x-secret": "secret"})
+
+    assert resp.status_code == 503
+    assert resp.json()["status"] == "durable_job_state_unavailable"
 
 
 def test_post_generate_returns_409_when_db_reserve_conflict():

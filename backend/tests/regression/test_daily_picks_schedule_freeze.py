@@ -124,3 +124,41 @@ def test_primary_workflows_now_poll_status_not_just_trigger():
         src = open(os.path.join(_WORKFLOWS_DIR, name)).read()
         assert "poll_daily_picks_completion.sh" in src
         assert "/api/picks/status" in src or "poll_daily_picks_completion.sh" in src
+
+
+# ── Follow-up correction (2026-08-10): already_fresh vs already_running ───────
+
+def test_india_watchdog_distinguishes_already_fresh_from_already_running():
+    """already_fresh (obligation satisfied) and already_running (obligation
+    still in progress) must not be collapsed into one benign no-op branch —
+    already_running must be monitored to a real terminal+published outcome
+    via the shared poller, using the recovery response's own job_id."""
+    src = open(os.path.join(_WORKFLOWS_DIR, "daily_picks_in_watchdog.yml")).read()
+    assert 'REASON" = "already_fresh"' in src
+    assert 'REASON" = "already_running"' in src
+    # already_running must feed into the shared poller with a bound job_id
+    # (status=already_running, http_code=409) — not treated as an immediate
+    # no-op the way already_fresh is.
+    assert "poll_daily_picks_completion.sh" in src
+    assert '"status":"already_running"' in src
+    assert '"409"' in src
+
+
+def test_india_watchdog_response_body_never_directly_interpolated_into_shell():
+    """Shell/JSON handoff safety (follow-up correction, 2026-08-10): the
+    backend-controlled recovery response body must cross step boundaries
+    via an on-disk RUNNER_TEMP file, never via a GITHUB_OUTPUT expression
+    interpolated directly into `run:` shell text — a response body
+    containing a single quote could otherwise break out of
+    `'${{ steps.X.outputs.body }}'` shell quoting and be interpreted as
+    shell content."""
+    src = open(os.path.join(_WORKFLOWS_DIR, "daily_picks_in_watchdog.yml")).read()
+    assert "RUNNER_TEMP" in src
+    assert "steps.recover.outputs.body" not in src
+
+
+def test_primary_workflows_response_body_never_directly_interpolated_into_shell():
+    for name in ("daily_picks_in.yml", "daily_picks_us.yml"):
+        src = open(os.path.join(_WORKFLOWS_DIR, name)).read()
+        assert "RUNNER_TEMP" in src
+        assert "steps.trigger.outputs.body" not in src

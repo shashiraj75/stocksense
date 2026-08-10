@@ -2366,17 +2366,45 @@ def attempt_governed_recovery(market: str, reason: str) -> dict:
     if picks_generated_today(market):
         return {"triggered": False, "reason": "already_fresh"}
 
+    # Daily Picks Scheduler & Completion Reliability Hardening, follow-up
+    # correction (2026-08-10): an already_running response is only useful to
+    # a caller that needs to MONITOR the active run (e.g. the India
+    # watchdog) if it carries the exact durable job_id — never a fabricated
+    # one. Both detection paths below (the fast in-process flag and the
+    # durable DB lookup) now attach the real job_id from
+    # get_active_daily_picks_job(), the same authoritative source
+    # /api/picks/status already uses. If the in-memory flag claims a job is
+    # running but no corresponding durable active job can be found, that is
+    # a genuine state inconsistency (e.g. a crashed process that never
+    # cleared its local flag) — this is reported honestly via the existing
+    # "precheck_failed" classification (the vocabulary this function
+    # already uses for "could not safely determine what to do") rather than
+    # inventing a new reason or fabricating a job_id.
+    from services.postgres_store import (
+        get_active_daily_picks_job,
+        count_daily_picks_job_attempts_since,
+    )
+
     with _generating_lock:
-        if _generating.get(market, False):
-            return {"triggered": False, "reason": "already_running"}
+        in_memory_running = _generating.get(market, False)
+    if in_memory_running:
+        try:
+            active = get_active_daily_picks_job(market)
+        except Exception as e:
+            log.warning(f"[picks] [{market}] [watchdog] durable active-job lookup failed: {e}")
+            return {"triggered": False, "reason": "precheck_failed"}
+        if active and active.get("job_id"):
+            return {"triggered": False, "reason": "already_running", "job_id": active["job_id"]}
+        log.warning(
+            f"[picks] [{market}] [watchdog] in-memory generating flag is set but no durable "
+            f"active job was found — state inconsistency, not reporting a fabricated job_id"
+        )
+        return {"triggered": False, "reason": "precheck_failed"}
 
     try:
-        from services.postgres_store import (
-            get_active_daily_picks_job,
-            count_daily_picks_job_attempts_since,
-        )
-        if get_active_daily_picks_job(market) is not None:
-            return {"triggered": False, "reason": "already_running"}
+        active = get_active_daily_picks_job(market)
+        if active is not None:
+            return {"triggered": False, "reason": "already_running", "job_id": active.get("job_id")}
 
         today_local_midnight_utc = datetime.combine(
             _market_local_date(datetime.now(timezone.utc), market),

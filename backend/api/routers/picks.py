@@ -341,14 +341,48 @@ def trigger_generation(background_tasks: BackgroundTasks, market: str = "IN", x_
                      "message": f"{market} picks already generated for today."},
         )
 
-    # Step 4: Fast-path in-memory check (avoids DB round-trip if local flag is already set)
+    # Step 4: Fast-path in-memory check (avoids DB round-trip if local flag is already set).
+    # Daily Picks Scheduler & Completion Reliability Hardening, follow-up
+    # correction (2026-08-10): this response is now looked up against the
+    # durable job state (get_active_daily_picks_job) before being returned,
+    # so callers that need to MONITOR the active run (the GitHub Actions
+    # poller) always get the real job_id — never a bare 409 with no
+    # identity to bind to, which previously made a legitimate active run
+    # indistinguishable from an unmonitorable one. If the in-memory flag is
+    # set but no corresponding durable active job can be found, that is a
+    # genuine state inconsistency (e.g. a crashed process that never
+    # cleared its local flag) — reported honestly as
+    # durable_job_state_unavailable (the existing classification this
+    # module already uses for "durable job state could not be read/
+    # trusted"), never a fabricated job_id.
     with _dp._generating_lock:
-        if _dp._generating.get(market, False):
+        in_memory_running = _dp._generating.get(market, False)
+    if in_memory_running:
+        from services.postgres_store import get_active_daily_picks_job as _get_active_job
+        try:
+            active = _get_active_job(market)
+        except Exception as e:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "durable_job_state_unavailable", "market": market,
+                         "message": f"Could not verify active job identity: {e}"},
+            )
+        if active and active.get("job_id"):
             return JSONResponse(
                 status_code=409,
-                content={"status": "already_running", "market": market,
-                         "message": f"{market} picks generation is already in progress."},
+                content={
+                    "status": "already_running",
+                    "market": market,
+                    "job_id": active.get("job_id"),
+                    "message": f"{market} picks generation is already in progress.",
+                },
             )
+        return JSONResponse(
+            status_code=503,
+            content={"status": "durable_job_state_unavailable", "market": market,
+                     "message": f"{market} generation appears active in-process but no durable "
+                                 "active job record was found — state inconsistency."},
+        )
 
     # Step 5-6a: Atomic durable job reservation + heavy-workload lease
     # (Product Integrity #010 §10, replacing #009's two-separate-calls
