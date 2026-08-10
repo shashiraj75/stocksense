@@ -1,0 +1,139 @@
+name: Daily Stock Picks — India Recovery Watchdog
+
+# Daily Picks Scheduler & Completion Reliability Hardening (2026-08).
+#
+# PURPOSE: India's equivalent of the fail-safe the US Premarket Finalizer
+# (daily_picks_us_premarket.yml) has had since the 2026-07-22 incident —
+# but built explicitly for India rather than copied, since India has no
+# premarket-finalizer concept to piggyback on. This is a FAIL-SAFE, never
+# a routine second primary scheduler: under normal conditions the primary
+# India cron (daily_picks_in.yml, 20:37 UTC / 2:07 AM IST) completes on its
+# own and this workflow no-ops.
+#
+# WINDOW CHOICE (tuning parameter, not a proven optimum): 22:37 UTC — two
+# hours after the primary cron's 20:37 UTC trigger. Generation is
+# documented elsewhere (trigger_generation()'s own /api/picks/generate
+# response message) as taking roughly 10-20 minutes; two hours gives
+# generous room for GitHub Actions scheduler dispatch delay (this repo has
+# observed multi-hour dispatch delay on a different Daily Picks workflow —
+# see Product-Integrity-001C) on top of that, while still recovering well
+# before the next India trading day begins. Same Sun-Thu UTC days as the
+# primary cron (= Mon-Fri IST market days).
+#
+# SAFETY: freshness is checked FIRST — if today's IN picks are already
+# published, this workflow logs and exits cleanly, doing nothing else. If
+# not fresh, it calls the NEW POST /api/picks/recover endpoint, which is a
+# thin HTTP wrapper around the EXISTING, unmodified
+# services.daily_picks.attempt_governed_recovery() (already used by the US
+# premarket finalizer) — no parallel recovery logic was built. That
+# function reserves a job through the exact same atomic
+# try_reserve_daily_picks_job_with_lease() path /api/picks/generate uses,
+# so it can never create a second, competing job if the primary run is
+# still legitimately in progress or already completed between this
+# workflow's freshness check and its recovery call. After invoking
+# recovery, this workflow polls /api/picks/status itself to verify the
+# recovery's actual outcome — it never treats "recovery POST accepted" as
+# "recovery succeeded" (the same defect class Phase A fixes for the
+# primary trigger).
+
+on:
+  schedule:
+    - cron: "37 22 * * 0-4"
+  workflow_dispatch:
+
+jobs:
+  india-recovery-watchdog:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check Railway backend is healthy
+        run: |
+          echo "Checking Railway backend at $(date -u) UTC..."
+          HEALTHY=0
+          for i in $(seq 1 5); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
+              https://stocksense-production-7e0d.up.railway.app/health)
+            echo "Attempt $i: HTTP $STATUS"
+            if [ "$STATUS" = "200" ]; then
+              echo "Server is ready!"
+              HEALTHY=1
+              break
+            fi
+            sleep 10
+          done
+          if [ "$HEALTHY" != "1" ]; then
+            echo "Railway backend is not healthy after 5 attempts."
+            exit 1
+          fi
+
+      - name: Check today's India picks freshness
+        id: freshness
+        run: |
+          STATUS_JSON=$(curl -sS --max-time 20 \
+            "https://stocksense-production-7e0d.up.railway.app/api/picks/status?market=IN")
+          echo "Status response: $STATUS_JSON"
+          HAS_TODAY=$(echo "$STATUS_JSON" | jq -r 'if .has_today == null then "null" else (.has_today|tostring) end')
+          echo "has_today=$HAS_TODAY" >> "$GITHUB_OUTPUT"
+
+      - name: No-op — today's India picks already fresh
+        if: steps.freshness.outputs.has_today == 'true'
+        run: |
+          echo "India picks are already fresh for today (has_today=true). Watchdog exiting cleanly — no recovery needed."
+
+      - name: Invoke governed recovery
+        id: recover
+        if: steps.freshness.outputs.has_today != 'true'
+        run: |
+          echo "India picks NOT fresh (has_today=${{ steps.freshness.outputs.has_today }}) — invoking governed recovery at $(date -u) UTC..."
+          HTTP_CODE=$(curl -sS --max-time 30 -o /tmp/recover_body.json -w "%{http_code}" \
+            -X POST \
+            -H "x-secret: ${{ secrets.PICKS_SECRET }}" \
+            "https://stocksense-production-7e0d.up.railway.app/api/picks/recover?market=IN&reason=in_watchdog_missing_or_stale")
+          BODY=$(cat /tmp/recover_body.json)
+          echo "Recovery HTTP code: $HTTP_CODE"
+          echo "Recovery response body: $BODY"
+          echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
+          {
+            echo "body<<RECOVER_BODY_EOF"
+            echo "$BODY"
+            echo "RECOVER_BODY_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify recovery actually completed and published (not just accepted)
+        if: steps.freshness.outputs.has_today != 'true'
+        run: |
+          TRIGGERED=$(echo '${{ steps.recover.outputs.body }}' | jq -r '.triggered // false')
+          REASON=$(echo '${{ steps.recover.outputs.body }}' | jq -r '.reason // empty')
+
+          if [ "$TRIGGERED" != "true" ]; then
+            if [ "$REASON" = "already_fresh" ] || [ "$REASON" = "already_running" ]; then
+              echo "Recovery no-op with reason=$REASON — this is expected/safe (picks became fresh, or a legitimate job is already in flight). Exiting successfully without polling."
+              exit 0
+            fi
+            echo "Recovery was NOT triggered and reason ($REASON) is not a benign no-op — reporting FAILURE honestly." >&2
+            exit 1
+          fi
+
+          # Recovery job_id was reserved and started — verify its ACTUAL
+          # outcome via the shared poller, reusing the exact same
+          # completion+publication proof Phase A requires for the primary
+          # workflows. /recover's contract (always-200, "triggered"/"reason"
+          # in the body) differs from /generate's HTTP-code-carries-outcome
+          # contract, so the job_id is repackaged into the small envelope
+          # the shared poller already understands (status=accepted,
+          # http_code=202) — the poller's own job-identity/status/
+          # publication-evidence logic is reused as-is, not duplicated.
+          JOB_ID=$(echo '${{ steps.recover.outputs.body }}' | jq -r '.job_id // empty')
+          if [ -z "$JOB_ID" ] || [ "$JOB_ID" = "null" ]; then
+            echo "Recovery reported triggered=true but no job_id was returned — cannot safely bind to job identity." >&2
+            exit 1
+          fi
+          POLL_BODY=$(jq -nc --arg job_id "$JOB_ID" '{"status":"accepted","job_id":$job_id}')
+          chmod +x scripts/ci/poll_daily_picks_completion.sh
+          scripts/ci/poll_daily_picks_completion.sh \
+            "https://stocksense-production-7e0d.up.railway.app" \
+            "IN" \
+            "202" \
+            "$POLL_BODY"

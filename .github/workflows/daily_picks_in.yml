@@ -11,6 +11,9 @@ jobs:
   generate-picks-in:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Check Railway backend is healthy
         run: |
           echo "Checking Railway backend at $(date -u) UTC..."
@@ -36,11 +39,28 @@ jobs:
           fi
 
       - name: Trigger India pick generation
+        id: trigger
         run: |
           echo "Triggering IN daily picks generation at $(date -u) UTC..."
-          curl -sS --fail-with-body --max-time 30 \
+          HTTP_CODE=$(curl -sS --max-time 30 -o /tmp/trigger_body.json -w "%{http_code}" \
             -X POST \
             -H "x-secret: ${{ secrets.PICKS_SECRET }}" \
-            "https://stocksense-production-7e0d.up.railway.app/api/picks/generate?market=IN"
-          echo ""
-          echo "IN generation started or already fresh. Monitor /api/picks/status?market=IN for progress."
+            "https://stocksense-production-7e0d.up.railway.app/api/picks/generate?market=IN")
+          BODY=$(cat /tmp/trigger_body.json)
+          echo "Trigger HTTP code: $HTTP_CODE"
+          echo "Trigger response body: $BODY"
+          echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
+          {
+            echo "body<<TRIGGER_BODY_EOF"
+            echo "$BODY"
+            echo "TRIGGER_BODY_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify India pick generation actually completed and published
+        run: |
+          chmod +x scripts/ci/poll_daily_picks_completion.sh
+          scripts/ci/poll_daily_picks_completion.sh \
+            "https://stocksense-production-7e0d.up.railway.app" \
+            "IN" \
+            "${{ steps.trigger.outputs.http_code }}" \
+            '${{ steps.trigger.outputs.body }}'

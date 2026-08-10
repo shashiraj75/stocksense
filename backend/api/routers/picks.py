@@ -489,3 +489,47 @@ async def premarket_finalize(market: str = "US", x_secret: str = Header(None)):
     from services.premarket_finalizer import finalize_premarket
     result = await finalize_premarket(market)
     return JSONResponse(status_code=200, content=result)
+
+
+@router.post("/recover")
+def trigger_recovery(market: str = "IN", reason: str = "watchdog_check", x_secret: str = Header(None)):
+    """
+    Daily Picks Scheduler & Completion Reliability Hardening (2026-08):
+    thin, generic HTTP entry point over the EXISTING
+    services.daily_picks.attempt_governed_recovery() — the same governed,
+    bounded, atomically-reserved recovery path the US premarket finalizer
+    has called internally since the 2026-07-22 incident. This endpoint adds
+    no new recovery logic of its own; it exists only because a scheduled
+    watchdog (e.g. the India recovery watchdog workflow) runs as a GitHub
+    Actions job and has no way to call the in-process Python function
+    directly — HTTP is the only bridge available to it.
+
+    Safe to call for ANY market at ANY time: attempt_governed_recovery()
+    itself checks freshness first (no-ops if today's picks are already
+    published), checks for an active job (no-ops if one is legitimately
+    running), and reserves a new job through the exact same
+    try_reserve_daily_picks_job_with_lease() atomic reservation the primary
+    /generate endpoint uses — so this can never create a second, competing
+    job for a market that already has one queued/running. Bounded to
+    _MAX_DAILY_RECOVERY_ATTEMPTS total job rows per market per session date.
+
+    Protected by the same X-Secret header as /generate and /premarket-finalize.
+
+    HTTP contract (always 200 — outcome is in the body, matching /generate's
+    and /premarket-finalize's existing pattern of never inferring status
+    from the HTTP code alone):
+      {"triggered": true,  "job_id": "...", "market": "...", "reason": "..."}
+      {"triggered": false, "reason": "already_fresh" | "already_running" |
+                                       "max_attempts_reached" |
+                                       "durable_job_state_unavailable" |
+                                       "reservation_failed" | "precheck_failed" |
+                                       "resource_busy", ...}
+    """
+    if x_secret != PICKS_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid secret")
+    market = _norm_market(market)
+
+    import services.daily_picks as _dp
+    result = _dp.attempt_governed_recovery(market, reason=reason)
+    result.setdefault("market", market)
+    return JSONResponse(status_code=200, content=result)
