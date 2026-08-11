@@ -41,8 +41,11 @@ function getSectorColor(pct: number | null): string {
   return "border-red-400/80";
 }
 
+type ViewMode = "stock" | "sector";
+
 export default function HeatmapPage() {
   const [market] = useMarketPreference(["IN", "US"] as const, "IN");
+  const [view, setView] = useState<ViewMode>("stock");
   const router = useRouter();
 
   const { data, isLoading, isFetching, isError, dataUpdatedAt } = useQuery({
@@ -78,6 +81,21 @@ export default function HeatmapPage() {
           </div>
         </div>
         <div className="flex items-center gap-3 ml-auto">
+          {/* View toggle */}
+          <div className="flex items-center gap-0.5 bg-dark-card border border-dark-border rounded-lg p-0.5 text-xs">
+            {([["stock", "By Stock"], ["sector", "By Sector"]] as const).map(([mode, label]) => (
+              <button
+                key={mode}
+                onClick={() => setView(mode)}
+                className={clsx(
+                  "px-3 py-1 rounded-md font-medium transition-colors",
+                  view === mode ? "bg-brand-500/20 text-brand-400" : "text-gray-500 hover:text-gray-300"
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           {/* Live status / loading badge — always visible */}
           <div className={clsx(
             "flex items-center gap-1.5 text-xs rounded-lg px-3 py-1.5 border transition-all",
@@ -146,6 +164,31 @@ export default function HeatmapPage() {
         <div className="bg-dark-card border border-dark-border rounded-xl p-10 text-center text-gray-500">
           <p className="text-sm">Market closed · Loading last session data…</p>
           <p className="text-xs mt-1 text-gray-600">Data will appear automatically once retrieved.</p>
+        </div>
+      ) : view === "sector" ? (
+        <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))" }}>
+          {sectors.map(sector => (
+            <button
+              key={sector.sector}
+              onClick={() => setView("stock")}
+              title={`${sector.sector}: ${sector.avg_change !== null ? `${sector.avg_change >= 0 ? "+" : ""}${sector.avg_change}%` : "no data"} · ${sector.loaded}/${sector.total} stocks loaded · Click to see stocks`}
+              className={clsx(
+                "rounded-xl px-4 py-6 text-center transition-opacity hover:opacity-75 active:scale-95 cursor-pointer",
+                getColorTextClass(sector.avg_change)
+              )}
+              style={getColorStyle(sector.avg_change)}
+            >
+              <div className="text-sm font-bold leading-tight">{sector.sector}</div>
+              <div className="text-lg mt-1 font-bold tabular-nums">
+                {sector.avg_change !== null
+                  ? `${sector.avg_change >= 0 ? "+" : ""}${sector.avg_change}%`
+                  : "—"}
+              </div>
+              {sector.loaded < sector.total && (
+                <div className="text-[10px] mt-1 opacity-70">{sector.loaded}/{sector.total} loaded</div>
+              )}
+            </button>
+          ))}
         </div>
       ) : (
         <div className="space-y-4">
