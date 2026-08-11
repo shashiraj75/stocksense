@@ -48,14 +48,32 @@ MARKET="${2:?market required (IN|US)}"
 TRIGGER_HTTP_CODE="${3:?trigger http code required}"
 TRIGGER_BODY="${4:?trigger response body (JSON) required}"
 
-# Operational tuning parameters — initial values, not proven optima.
-# Generation is documented elsewhere (trigger_generation()'s own response
-# message: "picks will be ready in ~10-20 minutes") as taking roughly
-# 10-20 minutes end-to-end; 30 x 60s polls (30 minutes) gives a
-# conservative ~50% buffer above the documented high end before this
-# script gives up and reports a polling-timeout failure.
+# Operational tuning parameters — calibrated from real Production evidence,
+# not from the originally-documented (and now known-wrong) "~10-20 minutes"
+# generation-time claim.
+#
+# Follow-up correction (2026-08-11): both markets' FIRST natural post-merge
+# Production runs exceeded the original 30 x 60s (30-minute) outer window
+# while remaining continuously healthy the entire time (steady `processed`
+# progress, fresh heartbeat, derived_job_health=ok at every single poll —
+# never stalled, just genuinely still running):
+#   - India job f260f473-3d41-497a-b844-b2e44d1db2bc: accepted ~21:23:13 UTC
+#     2026-08-10, completed+published at 2026-08-10T22:09:20Z — ~46 min.
+#   - US job b390a7e9-32e6-4f63-845f-4d2b03eb80b8: accepted ~06:42:48 UTC
+#     2026-08-11, completed+published at 2026-08-11T07:24:31Z — ~41m43s.
+# Both workflow runs reported FAILURE solely because the window was too
+# short — a false-negative (the architecture correctly refused to claim
+# success for a genuinely-unfinished job), not a false-success.
+#
+# 90 x 60s (90 minutes) is chosen as roughly 2x the largest observed
+# healthy runtime (~46 min) as a conservative outer bound. This is an
+# evidence-based estimate from an N=2 sample, NOT presented as
+# mathematically optimal — it is expected to be revisited once more
+# natural-run history accumulates. Deliberately NOT retained: the old
+# "generation normally takes ~10-20 minutes" assumption, which production
+# evidence has now disproven.
 POLL_INTERVAL_SECS="${POLL_INTERVAL_SECS:-60}"
-MAX_POLLS="${MAX_POLLS:-30}"
+MAX_POLLS="${MAX_POLLS:-90}"
 # A job is considered stuck if its heartbeat/progress hasn't moved in this
 # long — matches the backend's own _HEARTBEAT_UNRESPONSIVE_SECS (180s)
 # used by /api/picks/status's derived_job_health, so this script's

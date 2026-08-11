@@ -385,6 +385,77 @@ class TestPollerZeroValuesSurviveShellHandling:
 
 
 @pytest.mark.integration
+class TestPollerWindowCalibration:
+    """Follow-up correction (2026-08-11): MAX_POLLS default raised from 30
+    to 90 after both markets' first natural Production runs (~42-46 min)
+    exceeded the old 30-minute outer window while remaining continuously
+    healthy. These tests prove (A) poll #30 is no longer a special/magic
+    boundary a healthy job can run past, (B) the NEW outer bound is still
+    enforced (via a small test-only MAX_POLLS override, never a real
+    90-minute or even 90-second wait), and (K) the script's actual
+    Production default (MAX_POLLS unset) is now 90, not 30."""
+
+    def test_a_healthy_job_survives_past_old_30_poll_boundary_then_completes(self, tmp_path):
+        """Simulate 32 consecutive healthy 'running' responses (past the
+        OLD 30-poll boundary) for the exact same bound job_id, with
+        derived_job_health=ok throughout, followed by a completed+published
+        response. Uses a test-only MAX_POLLS=40 (not the real 90) so the
+        test still runs near-instantly (POLL_INTERVAL_SECS=0) while
+        proving the old 30-poll cutoff has no special significance anymore."""
+        trigger_body = json.dumps({"status": "accepted", "job_id": "job-abc-123"})
+        running_responses = [
+            _status(job_status="running", processed=i, total=100, derived_job_health="ok")
+            for i in range(1, 33)  # 32 healthy polls, past the old MAX_POLLS=30
+        ]
+        responses = running_responses + [
+            _status(job_status="completed", has_today=True,
+                    last_successful_generated_at="2026-08-11T07:24:31Z"),
+        ]
+        result = _run_poller(tmp_path, "202", trigger_body, responses, max_polls="40")
+        assert result.returncode == 0, result.stderr
+        assert "SUCCESS" in result.stdout
+        assert "attempt 31/40" in result.stdout
+        assert "attempt 32/40" in result.stdout
+
+    def test_b_new_outer_bound_still_enforced_with_small_override(self, tmp_path):
+        """The expanded window is not unbounded: a job that keeps running
+        forever without completing must still exit non-zero once the
+        (test-overridden, small) outer bound is hit."""
+        trigger_body = json.dumps({"status": "accepted", "job_id": "job-abc-123"})
+        responses = [_status(job_status="running", derived_job_health="ok")]
+        result = _run_poller(tmp_path, "202", trigger_body, responses, max_polls="4")
+        assert result.returncode != 0
+        assert "polling window exhausted (4 x" in result.stderr
+
+    def test_k_production_default_max_polls_is_90_not_30(self, tmp_path):
+        """Invoke the script with MAX_POLLS left UNSET (deleted from the
+        env, not just omitted from the override dict) and confirm from its
+        own logged output that it computed the real Production default of
+        90, not the old 30. POLL_INTERVAL_SECS is still forced to 0 so the
+        test doesn't actually wait 90 minutes — this only asserts the
+        *bound* the script computes, not a real exhaustion of it."""
+        trigger_body = json.dumps({"status": "accepted", "job_id": "job-abc-123"})
+        responses = [
+            _status(job_status="completed", has_today=True,
+                    last_successful_generated_at="2026-08-11T07:24:31Z"),
+        ]
+        stub_dir = _stub_curl_dir(tmp_path, responses)
+        env = dict(os.environ)
+        env["PATH"] = stub_dir + os.pathsep + env["PATH"]
+        env["POLL_INTERVAL_SECS"] = "0"
+        env.pop("MAX_POLLS", None)  # ensure truly unset -> script's own default applies
+        env["STALE_HEARTBEAT_SECS"] = "180"
+
+        result = subprocess.run(
+            ["bash", _SCRIPT, _BASE_URL, _MARKET, "202", trigger_body],
+            env=env, capture_output=True, text=True, timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "attempt 1/90" in result.stdout
+        assert "attempt 1/30" not in result.stdout
+
+
+@pytest.mark.integration
 class TestPollerResumesAfterTransientUnreachableStatus:
     def test_status_endpoint_unreachable_then_recovers(self, tmp_path):
         """Not one of the 13 numbered cases, but proves the retry-on-
