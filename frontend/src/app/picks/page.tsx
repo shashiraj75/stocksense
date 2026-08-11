@@ -2,7 +2,9 @@
 import { useState } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
-import { api, fetchQuote } from "@/utils/api";
+import { api, fetchQuote, fetchPaperPortfolio } from "@/utils/api";
+import { useAuth } from "@/lib/AuthContext";
+import { buildOpenTradeCountMap, openTradeCountKey } from "@/utils/openTradeCount";
 import { computeEstimatedUpsidePct, hasValidGenerationBasis, isValidPrice, selectPriceBasis } from "@/utils/priceBasis";
 import { evaluateEntryZoneActionability, isQuoteVerifiedComparable, isVerifiedOutsideEntryZone, selectUnverifiedEntryZoneNote } from "@/utils/actionability";
 import { getMarketStatus } from "@/utils/marketHours";
@@ -641,7 +643,7 @@ function LivePerformanceTracker({ horizon, currency, locale, benchmarkLabel }: {
 // so Phase A1.1 regression tests can render it directly and simulate a
 // parent Picks-list react-query refetch by re-rendering with a new `pick`
 // prop, without needing to stand up the full page's data-fetching stack.
-export function PickCard({ pick, rank, market, currency, locale, freshness }: { pick: Pick; rank: number; market: "IN" | "US"; currency: string; locale: string; freshness?: FreshnessResult | null }) {
+export function PickCard({ pick, rank, market, currency, locale, freshness, openTradeCount }: { pick: Pick; rank: number; market: "IN" | "US"; currency: string; locale: string; freshness?: FreshnessResult | null; openTradeCount?: number }) {
   // India Daily Picks session-freshness containment (Phase 0). `freshness`
   // is only ever passed for the IN market — US Daily Picks and any legacy
   // caller that omits the prop render exactly as before this change.
@@ -937,6 +939,20 @@ export function PickCard({ pick, rank, market, currency, locale, freshness }: { 
         >
           <FlaskConical size={11} /> Paper Trade
         </button>
+        {/* Paper Trading Repeat-Buy Awareness (Phase 1) — purely informational
+            count of the user's own OPEN Paper Trades for this (market,
+            symbol), summed across all horizons. Never shown for zero/loading/
+            error/unauthenticated states (see openTradeCount prop contract in
+            the parent page), never a warning color, never a new disable
+            condition on the button above — repeat Buys remain fully allowed. */}
+        {!!openTradeCount && openTradeCount > 0 && (
+          <span
+            className="flex items-center px-2.5 py-2.5 text-[11px] text-gray-400 border-r border-dark-border shrink-0"
+            title="Your existing open Paper Trades for this stock in this market, across all horizons"
+          >
+            {openTradeCount} open trade{openTradeCount === 1 ? "" : "s"}
+          </span>
+        )}
         <button onClick={() => setExpanded(e => !e)}
           className="flex-1 flex items-center justify-between px-4 py-2.5 text-xs text-gray-500 hover:text-white hover:bg-dark-border/20 transition-colors">
           <span className="font-medium flex items-center gap-1.5"><Zap size={11} /> Full factor analysis</span>
@@ -1099,6 +1115,30 @@ export default function DailyPicksPage() {
   const [showTruth, setShowTruth] = useState(false);
 
   const marketCfg = MARKETS.find(m => m.key === market)!;
+
+  // Paper Trading Repeat-Buy Awareness (Phase 1) — reuses the exact same
+  // `["paper-portfolio", userId]` query key / fetchPaperPortfolio contract
+  // that PaperTradeModal.tsx and paper-trading/page.tsx already use, so a
+  // successful Buy's existing `invalidateQueries({queryKey:
+  // ["paper-portfolio"]})` (in PaperTradeModal.tsx) naturally refetches
+  // this subscriber too — no new invalidation mechanism needed. One
+  // page-level query serves every PickCard below; no per-card/per-symbol
+  // fetch. `enabled: !!userId` means unauthenticated users issue zero
+  // portfolio requests. No refetchInterval here deliberately — this is an
+  // informational count, not a live position tracker; TanStack Query's
+  // default staleTime (0) means this observer still triggers its own
+  // mount-time fetch/refetch-on-window-focus independent of the other
+  // paper-trading page's polling, which is exactly the desired behavior
+  // (fresh on page view, updated after a real invalidation) without
+  // inheriting that other page's 30s poll.
+  const { user } = useAuth();
+  const userId = user?.id ?? "";
+  const { data: portfolioForCounts } = useQuery({
+    queryKey: ["paper-portfolio", userId],
+    queryFn: () => fetchPaperPortfolio(userId, user?.email),
+    enabled: !!userId,
+  });
+  const openTradeCountMap = portfolioForCounts ? buildOpenTradeCountMap(portfolioForCounts.open_trades) : null;
 
   const { data: rawDailyPicksData, isLoading, error: queryError } = useQuery<DailyPicksResponse>({
     queryKey: ["daily-picks", market],
@@ -1517,7 +1557,7 @@ export default function DailyPicksPage() {
         </div>
       ) : visiblePicks.length > 0 ? (
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {visiblePicks.map((pick, i) => <PickCard key={pick.symbol} pick={pick} rank={i + 1} market={market} currency={currency} locale={marketCfg.locale} freshness={freshnessBySymbol?.[pick.symbol]} />)}
+          {visiblePicks.map((pick, i) => <PickCard key={pick.symbol} pick={pick} rank={i + 1} market={market} currency={currency} locale={marketCfg.locale} freshness={freshnessBySymbol?.[pick.symbol]} openTradeCount={openTradeCountMap?.get(openTradeCountKey(market, pick.symbol))} />)}
         </div>
       ) : highConvictionOnly && picks.length > 0 ? (
         // Distinct from the "no BUY signals at all" empty state below — real
