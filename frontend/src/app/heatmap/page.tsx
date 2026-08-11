@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { api } from "@/utils/api";
@@ -12,14 +12,23 @@ import { UnsupportedMarketNotice } from "@/components/UnsupportedMarketNotice";
 type Stock  = { symbol: string; change_pct: number | null };
 type Sector = { sector: string; avg_change: number | null; stocks: Stock[]; loaded: number; total: number };
 
-function getColor(pct: number | null): string {
+// Magnitude 0 -> light (near background), magnitude >=3% -> darkest/most saturated.
+// Uses inline HSL so brightness scales monotonically with |pct|, unlike the
+// previous Tailwind opacity buckets (e.g. green-900/60 could render lighter
+// than green-600/80 because more of the dark background showed through).
+function getColorStyle(pct: number | null): CSSProperties {
+  if (pct === null) return {};
+  const magnitude = Math.min(Math.abs(pct), 3) / 3; // 0..1
+  const hue = pct >= 0 ? 142 : 0; // green : red
+  const lightness = 48 - magnitude * 34; // 48% (light) -> 14% (dark)
+  const saturation = 45 + magnitude * 30;
+  return { backgroundColor: `hsl(${hue} ${saturation}% ${lightness}%)` };
+}
+
+function getColorTextClass(pct: number | null): string {
   if (pct === null) return "bg-gray-800 text-gray-500 border border-gray-700";
-  if (pct >= 3)  return "bg-green-500 text-white";
-  if (pct >= 1)  return "bg-green-600/80 text-white";
-  if (pct >= 0)  return "bg-green-900/60 text-green-300";
-  if (pct >= -1) return "bg-red-900/60 text-red-300";
-  if (pct >= -3) return "bg-red-600/80 text-white";
-  return "bg-red-500 text-white";
+  const magnitude = Math.min(Math.abs(pct), 3) / 3;
+  return magnitude >= 0.4 ? "text-white" : (pct >= 0 ? "text-green-950" : "text-red-950");
 }
 
 function getSectorColor(pct: number | null): string {
@@ -98,19 +107,22 @@ export default function HeatmapPage() {
       <div className="flex items-center gap-3 flex-wrap text-xs text-gray-400">
         <span>Change today:</span>
         {[
-          { label: ">+3%",       cls: "bg-green-500" },
-          { label: "+1% to +3%", cls: "bg-green-600/80" },
-          { label: "0% to +1%",  cls: "bg-green-900/60" },
-          { label: "-1% to 0%",  cls: "bg-red-900/60" },
-          { label: "-3% to -1%", cls: "bg-red-600/80" },
-          { label: "<-3%",       cls: "bg-red-500" },
-          { label: "No data",    cls: "bg-gray-800 border border-gray-700" },
+          { label: ">+3%",       pct: 3 },
+          { label: "+1% to +3%", pct: 1.5 },
+          { label: "0% to +1%",  pct: 0.3 },
+          { label: "-1% to 0%",  pct: -0.3 },
+          { label: "-3% to -1%", pct: -1.5 },
+          { label: "<-3%",       pct: -3 },
         ].map(l => (
           <div key={l.label} className="flex items-center gap-1.5">
-            <div className={clsx("w-3 h-3 rounded-sm", l.cls)} />
+            <div className="w-3 h-3 rounded-sm" style={getColorStyle(l.pct)} />
             <span>{l.label}</span>
           </div>
         ))}
+        <div className="flex items-center gap-1.5">
+          <div className="w-3 h-3 rounded-sm bg-gray-800 border border-gray-700" />
+          <span>No data</span>
+        </div>
       </div>
 
       {/* Heatmap grid */}
@@ -168,8 +180,9 @@ export default function HeatmapPage() {
                       title={stock.change_pct !== null ? `${stock.symbol}: ${stock.change_pct >= 0 ? "+" : ""}${stock.change_pct}% · Right-click for options` : `${stock.symbol}: no data`}
                       className={clsx(
                         "rounded-lg px-2 py-3 text-center w-full transition-opacity hover:opacity-75 active:scale-95 cursor-pointer",
-                        getColor(stock.change_pct)
+                        getColorTextClass(stock.change_pct)
                       )}
+                      style={getColorStyle(stock.change_pct)}
                     >
                       <div className="text-xs font-bold font-mono leading-tight truncate">{stock.symbol}</div>
                       <div className="text-xs mt-0.5 font-medium tabular-nums">
