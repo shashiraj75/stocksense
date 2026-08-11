@@ -1,9 +1,11 @@
 """
 Validation API — exposes walk-forward backtest results to the frontend.
 """
+import hmac
 import logging
+import os
 import numpy as np
-from fastapi import APIRouter, Query, BackgroundTasks
+from fastapi import APIRouter, Query, BackgroundTasks, Header, HTTPException
 from fastapi.responses import JSONResponse
 from typing import Literal
 
@@ -12,6 +14,28 @@ from services.safe_errors import safe_error_message
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# V-SEC1 — reuses the project's established shared admin-secret convention:
+# same PICKS_SECRET env var, same X-Secret header, same fail-closed
+# comparison already proven for /api/predictions/debug/state (Release 14B —
+# both sides must be non-empty after stripping before any comparison is
+# attempted; an unconfigured/blank secret must never "match" a blank
+# header). Read independently here (not imported from picks.py/
+# predictions.py) to keep this a single-file, isolated change with zero
+# coupling to those routes' own protection — same rationale predictions.py's
+# _DEBUG_SECRET already documents. Additionally uses hmac.compare_digest for
+# constant-time comparison, which neither existing convention does.
+_VALIDATION_RUN_SECRET = os.getenv("PICKS_SECRET", "")
+
+
+def _require_validation_secret(x_secret: str | None) -> None:
+    """Fail-closed: rejects unless both the configured secret and the
+    supplied header are non-empty, non-whitespace, and exactly equal after
+    stripping. Never logs or echoes the value either side."""
+    configured = (_VALIDATION_RUN_SECRET or "").strip()
+    provided = (x_secret or "").strip()
+    if not configured or not provided or not hmac.compare_digest(provided, configured):
+        raise HTTPException(status_code=401, detail="Invalid secret")
 
 
 def _safe_json(obj):
@@ -38,12 +62,22 @@ async def trigger_validation(
     background_tasks: BackgroundTasks,
     horizon: Literal["short", "medium", "long"] = Query("medium"),
     universe: Literal["nifty100", "midcap", "us"] = Query("nifty100"),
+    x_secret: str | None = Header(None),
 ):
     """
     Trigger a walk-forward validation run.
     universe: nifty100 (default) | midcap | us
     Returns immediately — poll /status for progress, /results for output.
+
+    Protected by X-Secret header (V-SEC1) — checked before anything else,
+    including the concurrency/claim check below, so an unauthenticated
+    caller can never learn whether a run is currently active. The internal
+    scheduler (api/main.py's _validation_schedule_loop/_catchup_validation)
+    calls run_validation() directly as a Python function and never goes
+    through this HTTP route, so it is unaffected by this check.
     """
+    _require_validation_secret(x_secret)
+
     from services.validation_engine import run_validation, get_run_status, claim_validation_job
 
     # Claim the run slot synchronously so the response can carry the real,

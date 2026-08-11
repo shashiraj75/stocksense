@@ -398,9 +398,18 @@ class TestStatusApiSurfacesIdentity:
     def test_run_endpoint_message_reflects_requested_universe(self, client, monkeypatch):
         # Prevent a real run: the background task must be a no-op.
         monkeypatch.setattr(ve, "run_validation", lambda **kw: {})
+        # V-SEC1: /run is now X-Secret-protected — see
+        # tests/regression/test_validation_run_endpoint_auth.py for the
+        # dedicated auth test matrix; this call just needs a valid header
+        # to keep exercising its own (unrelated) behavior.
+        import api.routers.validation as validation_router
+        monkeypatch.setattr(validation_router, "_VALIDATION_RUN_SECRET", "test-secret")
         with ve._status_lock:
             ve._run_status["running"] = False
-        body = client.post("/api/validation/run?horizon=short&universe=us").json()
+        body = client.post(
+            "/api/validation/run?horizon=short&universe=us",
+            headers={"X-Secret": "test-secret"},
+        ).json()
         assert body.get("status") == "started"
         # Pre-fix the message hardcoded "across all Nifty 100 stocks" for a
         # US run — the message must reference the universe actually requested.
@@ -408,6 +417,9 @@ class TestStatusApiSurfacesIdentity:
         assert body.get("job", {}).get("universe_id") == "us"
 
     def test_already_running_response_identifies_the_active_job(self, client, monkeypatch):
+        # V-SEC1: /run is now X-Secret-protected.
+        import api.routers.validation as validation_router
+        monkeypatch.setattr(validation_router, "_VALIDATION_RUN_SECRET", "test-secret")
         with ve._status_lock:
             saved = dict(ve._run_status)
             ve._run_status.clear()
@@ -420,7 +432,10 @@ class TestStatusApiSurfacesIdentity:
                 ),
             })
         try:
-            body = client.post("/api/validation/run?horizon=medium&universe=nifty100").json()
+            body = client.post(
+                "/api/validation/run?horizon=medium&universe=nifty100",
+                headers={"X-Secret": "test-secret"},
+            ).json()
             assert body.get("status") == "already_running"
             # The client must be able to tell the active job is US — the
             # exact information the original defect withheld.

@@ -354,9 +354,17 @@ class TestPublicAPIBoundary:
             return []
 
         _mock_io(monkeypatch, fake_backtest)
+        # V-SEC1: /run is now X-Secret-protected — unrelated to this test's
+        # own concern (hostile exception text sanitization), just needs a
+        # valid header to keep exercising the real background run.
+        import api.routers.validation as validation_router
+        monkeypatch.setattr(validation_router, "_VALIDATION_RUN_SECRET", "test-secret")
 
         with caplog.at_level(logging.ERROR, logger="services.validation_engine"):
-            run_resp = client.post("/api/validation/run?horizon=short&universe=us")
+            run_resp = client.post(
+                "/api/validation/run?horizon=short&universe=us",
+                headers={"X-Secret": "test-secret"},
+            )
             assert run_resp.status_code == 200
             status_resp = client.get("/api/validation/status")
 
