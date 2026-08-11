@@ -1,12 +1,12 @@
 "use client";
 import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/utils/api";
 import { resolveActiveJobView } from "@/utils/validationJobView";
 import { DataLimitationsNotice } from "@/components/DataLimitationsNotice";
 import {
   FlaskConical, TrendingUp, TrendingDown, Target, Zap,
-  BarChart3, CheckCircle2, XCircle, AlertCircle, Loader2, Play, RefreshCw,
+  BarChart3, CheckCircle2, XCircle, AlertCircle, Loader2, RefreshCw,
 } from "lucide-react";
 
 type ScoreBucket = {
@@ -192,13 +192,14 @@ export default function ValidationPage() {
     staleTime: 2000,
   });
 
-  const { mutate: triggerRun, isPending: triggering } = useMutation({
-    mutationFn: () => api.post(`/api/validation/run?horizon=${horizon}&universe=${universe}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["validation-status"] });
-      qc.invalidateQueries({ queryKey: ["validation-results"] });
-    },
-  });
+  // V-SEC2: the public manual production-job trigger control (and its
+  // mutation, which posted to the backend's job-start route) was removed
+  // from this page entirely — that backend route now requires a header
+  // credential (V-SEC1) which must never reach browser code. Manual
+  // production validation runs remain possible only through that
+  // protected backend route, invoked by an authorized operator with
+  // server-side credentials — never from this page. Automatic scheduled
+  // validation (internal, not HTTP-triggered) is unaffected.
 
   const res = results?.available ? results : null;
   const isRunning = status?.running === true;
@@ -229,7 +230,9 @@ export default function ValidationPage() {
             </span>
           </div>
           <p className="text-sm text-gray-400">
-            Historical accuracy of the AI model across {universeLabel}. Runs automatically every Sunday.
+            Historical accuracy of the AI model across {universeLabel}. Validation is recomputed
+            automatically — medium-horizon results are scheduled daily; long-horizon results are
+            scheduled weekly on Sunday.
           </p>
         </div>
       </div>
@@ -265,7 +268,7 @@ export default function ValidationPage() {
         ))}
       </div>
 
-      {/* Horizon selector + run controls */}
+      {/* Horizon selector */}
       <div className="bg-dark-card border border-dark-border rounded-xl p-4 space-y-4">
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div className="flex gap-2">
@@ -285,23 +288,20 @@ export default function ValidationPage() {
             ))}
           </div>
 
-          <button
-            onClick={() => triggerRun()}
-            disabled={isRunning || triggering}
-            className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-sm font-semibold transition-colors ml-auto"
-          >
-            {isRunning
-              ? (showProgressForView
-                  ? <><Loader2 size={14} className="animate-spin" /> Running… {status?.progress}/{status?.total}</>
-                  : <><Loader2 size={14} className="animate-spin" /> Another validation is running</>)
-              : <><Play size={14} /> Run Now ({universeLabel} · {horizon})</>
-            }
-          </button>
+          {/* V-SEC2: read-only progress indicator for an already-running scheduled
+              job — never a control that starts one. Purely informational; driven
+              by the same live /status poll the log panel below already uses. */}
+          {isRunning && showProgressForView && (
+            <span className="flex items-center gap-2 text-xs text-gray-400">
+              <Loader2 size={14} className="animate-spin" /> Validation running… {status?.progress}/{status?.total}
+            </span>
+          )}
         </div>
 
         <p className="text-xs text-gray-600">
-          Medium-horizon runs every day at 6:00 AM IST. Long-horizon runs every Sunday at 6:00 AM IST.
-          Use "Run Now" to trigger on-demand — ~15 min for medium, ~25 min for long.
+          Validation is recomputed automatically on a fixed internal schedule — this page cannot
+          trigger a new run. Manual production runs are restricted to an authorized operator using a
+          protected backend endpoint, never from this page.
         </p>
 
         {/* Active job from another universe/horizon — never rendered as this view's run */}
@@ -337,7 +337,7 @@ export default function ValidationPage() {
           <BarChart3 size={40} className="text-gray-600 mb-4" />
           <h3 className="text-lg font-semibold text-gray-300 mb-2">No validation results yet for {horizon} horizon · {universeLabel}</h3>
           <p className="text-sm text-gray-500 max-w-sm">
-            Click "Run Now" to start, or wait for the automatic Sunday run.
+            Results will appear here after the next automatic validation run completes.
           </p>
         </div>
       )}
@@ -356,7 +356,7 @@ export default function ValidationPage() {
             <span>Stocks tested: <strong className="text-gray-300">{res.n_stocks_tested}</strong></span>
             <span>Total signals: <strong className="text-gray-300">{res.total_signals?.toLocaleString()}</strong></span>
             <span>BUY signals: <strong className="text-gray-300">{res.buy_signals?.toLocaleString()}</strong></span>
-            <span>Last run: <strong className="text-gray-300">
+            <span>Validation completed: <strong className="text-gray-300">
               {res.run_at ? new Date(res.run_at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }) : "—"}
             </strong></span>
             <button
@@ -365,10 +365,15 @@ export default function ValidationPage() {
                 qc.invalidateQueries({ queryKey: ["validation-stocks", horizon] });
               }}
               className="flex items-center gap-1 text-gray-500 hover:text-white transition-colors"
+              aria-label="Refresh displayed results"
             >
-              <RefreshCw size={11} /> refresh
+              <RefreshCw size={11} /> Refresh displayed results
             </button>
           </div>
+          <p className="text-xs text-gray-600 -mt-2">
+            This is the last successful validation completion for the selected horizon and universe —
+            not necessarily the underlying market data&apos;s own freshness.
+          </p>
 
           {/* DP-026 — always rendered, not conditioned on the API's
               data_limitations field (legacy runs predate it but carry the
