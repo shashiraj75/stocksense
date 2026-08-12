@@ -2438,24 +2438,34 @@ def _fetchall(sql_pg: str, sql_sq: str, params=()):
 
 
 def get_latest_results(horizon: str | None = None, universe: str = "nifty100") -> dict:
-    """Return the most recent validation summary (or per-horizon breakdown) for a given universe."""
+    """Return the most recent validation summary (or per-horizon breakdown) for a given universe.
+
+    V-SNAP1B — additionally returns the canonical database `run_id`
+    (the selected val_runs.id), authoritative over any value that may
+    happen to already exist inside the stored summary JSON (set last,
+    below, so it can never be overridden by JSON content). Eligibility
+    (`summary IS NOT NULL`) matches resolve_eligible_run_id()'s own
+    predicate exactly — see that function's docstring for why this is
+    the correct, proven eligibility definition and not an invented one.
+    """
     try:
         _init_db()
         if horizon:
             row = _fetchone(
-                "SELECT summary FROM val_runs WHERE horizon=%s AND universe=%s ORDER BY id DESC LIMIT 1",
-                "SELECT summary FROM val_runs WHERE horizon=? AND universe=? ORDER BY id DESC LIMIT 1",
+                "SELECT id, summary FROM val_runs WHERE horizon=%s AND universe=%s AND summary IS NOT NULL ORDER BY id DESC LIMIT 1",
+                "SELECT id, summary FROM val_runs WHERE horizon=? AND universe=? AND summary IS NOT NULL ORDER BY id DESC LIMIT 1",
                 (horizon, universe)
             )
         else:
             row = _fetchone(
-                "SELECT summary FROM val_runs WHERE universe=%s ORDER BY id DESC LIMIT 1",
-                "SELECT summary FROM val_runs WHERE universe=? ORDER BY id DESC LIMIT 1",
+                "SELECT id, summary FROM val_runs WHERE universe=%s AND summary IS NOT NULL ORDER BY id DESC LIMIT 1",
+                "SELECT id, summary FROM val_runs WHERE universe=? AND summary IS NOT NULL ORDER BY id DESC LIMIT 1",
                 (universe,)
             )
         if not row:
             return {"available": False, "message": "No validation run found. Run /api/validation/run first."}
-        summary = row[0] if _USE_POSTGRES else row["summary"]
+        db_run_id = row[0] if _USE_POSTGRES else row["id"]
+        summary = row[1] if _USE_POSTGRES else row["summary"]
         data = summary if isinstance(summary, dict) else json.loads(summary)
         # Defense-in-depth for rows persisted before public diagnostic
         # sanitization existed — never rewrites the stored row (`data` is a
@@ -2476,6 +2486,10 @@ def get_latest_results(horizon: str | None = None, universe: str = "nifty100") -
                 "reason": "persisted before the benchmark evidence contract existed",
                 "methodology_version": None,
             }
+        # V-SNAP1B — set LAST, after spreading nothing yet: this is the
+        # authoritative database identity, always wins over any run_id
+        # the stored JSON might already happen to contain.
+        data["run_id"] = db_run_id
         return {"available": True, **data}
     except Exception as e:
         return {"available": False, "error": safe_error_message(
@@ -2535,6 +2549,47 @@ def get_track_record_summary(market: str, horizon: str) -> list[dict]:
     return out
 
 
+def resolve_eligible_run_id(run_id: int | None, horizon: str, universe: str) -> int | None:
+    """V-SNAP1B — resolve and validate the run to use for a request,
+    using the SAME eligibility definition as get_latest_results()'s own
+    WHERE clause: `summary IS NOT NULL`.
+
+    This is the proven eligibility rule (not an invented one): every
+    val_runs row is inserted exactly once, atomically, by
+    run_validation()'s single INSERT — with `summary` already fully
+    computed in the SAME statement (see that function's persistence
+    block). There is no "running"/"failed"/partial row state
+    representable in this schema at all; a row either does not exist
+    yet, or already has a non-null summary. `summary IS NOT NULL` is
+    therefore always true today, but is enforced explicitly (not
+    assumed) for the same defensive reason V-VAL1/V-PS2 filter on
+    `correct IS NOT NULL`/finite-return checks elsewhere in this file.
+
+    If `run_id` is given, it must additionally belong to the requested
+    horizon+universe and be eligible, or None is returned — the caller
+    must fail closed (never silently substitute the latest run). If
+    `run_id` is None, resolves the latest eligible run for
+    horizon+universe, or None if none exists. All queries are
+    parameterized and bounded (`LIMIT 1` / an exact primary-key lookup).
+    """
+    _init_db()
+    if run_id is not None:
+        row = _fetchone(
+            "SELECT id FROM val_runs WHERE id=%s AND horizon=%s AND universe=%s AND summary IS NOT NULL",
+            "SELECT id FROM val_runs WHERE id=? AND horizon=? AND universe=? AND summary IS NOT NULL",
+            (run_id, horizon, universe)
+        )
+        return run_id if row else None
+    row = _fetchone(
+        "SELECT id FROM val_runs WHERE horizon=%s AND universe=%s AND summary IS NOT NULL ORDER BY id DESC LIMIT 1",
+        "SELECT id FROM val_runs WHERE horizon=? AND universe=? AND summary IS NOT NULL ORDER BY id DESC LIMIT 1",
+        (horizon, universe)
+    )
+    if not row:
+        return None
+    return row[0] if _USE_POSTGRES else row["id"]
+
+
 def get_per_stock_results(run_id: int | None = None, horizon: str = "medium", universe: str = "nifty100") -> list[dict]:
     """Return per-stock BUY hit rate and average return for the latest (or given) run in a universe.
 
@@ -2565,14 +2620,23 @@ def get_per_stock_results(run_id: int | None = None, horizon: str = "medium", un
     try:
         _init_db()
         if run_id is None:
-            row = _fetchone(
-                "SELECT id FROM val_runs WHERE horizon=%s AND universe=%s ORDER BY id DESC LIMIT 1",
-                "SELECT id FROM val_runs WHERE horizon=? AND universe=? ORDER BY id DESC LIMIT 1",
-                (horizon, universe)
-            )
-            if not row:
+            # V-SNAP1C — reuse resolve_eligible_run_id() rather than a
+            # separate ad hoc "latest run" query, so this internal
+            # fallback path (used directly by get_single_stock_accuracy,
+            # which has no run_id to pin against) applies the SAME proven
+            # `summary IS NOT NULL` eligibility definition as
+            # get_latest_results()/the /results/stocks router path —
+            # closing a dormant inconsistency the V-SNAP1B independent
+            # review flagged (unreachable today per that function's own
+            # docstring, since every row is written with `summary`
+            # already populated, but no longer merely assumed here).
+            # Passing run_id=None here resolves latest-eligible, exactly
+            # mirroring this branch's prior behavior and error contract
+            # (empty list when no eligible run exists) — not a second,
+            # ambiguous resolution of an already-given run_id.
+            run_id = resolve_eligible_run_id(None, horizon, universe)
+            if run_id is None:
                 return []
-            run_id = row[0] if _USE_POSTGRES else row["id"]
 
         # V-PS2 — a historical NaN/Infinity fwd_return_pct (root-caused
         # against production runs 227/228, see the V-PS1/V-PS2 phases)

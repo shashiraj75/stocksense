@@ -261,7 +261,7 @@ class TestLegacyPersistedSummarySanitization:
             "universe": "us",
             "horizon": "short",
         }
-        fake_row = {"summary": json.dumps(legacy_summary)}
+        fake_row = {"id": 1, "summary": json.dumps(legacy_summary)}
         monkeypatch.setattr(ve, "_init_db", lambda: None)
         monkeypatch.setattr(ve, "_USE_POSTGRES", False)
         monkeypatch.setattr(ve, "_fetchone", lambda sql_pg, sql_sq, params=(): fake_row)
@@ -279,7 +279,7 @@ class TestLegacyPersistedSummarySanitization:
         legacy_summary = {
             "benchmark_unavailable_reason": "benchmark_fetch_failed: connection to db.internal failed",
         }
-        fake_row = {"summary": json.dumps(legacy_summary)}
+        fake_row = {"id": 1, "summary": json.dumps(legacy_summary)}
         monkeypatch.setattr(ve, "_init_db", lambda: None)
         monkeypatch.setattr(ve, "_USE_POSTGRES", False)
         monkeypatch.setattr(ve, "_fetchone", lambda sql_pg, sql_sq, params=(): fake_row)
@@ -293,7 +293,7 @@ class TestLegacyPersistedSummarySanitization:
         function is ever invoked confirms the stored row cannot be
         mutated by this sanitization."""
         legacy_summary = {"benchmark_unavailable_reason": f"benchmark_fetch_failed: {HOSTILE_MESSAGE}"}
-        fake_row = {"summary": json.dumps(legacy_summary)}
+        fake_row = {"id": 1, "summary": json.dumps(legacy_summary)}
         write_attempted = {"called": False}
 
         def _no_write_conn():
@@ -313,7 +313,7 @@ class TestLegacyPersistedSummarySanitization:
         stable code must pass through unchanged — sanitization must not
         alter a value that was never unsafe."""
         legacy_summary = {"benchmark_unavailable_reason": "insufficient_benchmark_history_for_horizon"}
-        fake_row = {"summary": json.dumps(legacy_summary)}
+        fake_row = {"id": 1, "summary": json.dumps(legacy_summary)}
         monkeypatch.setattr(ve, "_init_db", lambda: None)
         monkeypatch.setattr(ve, "_USE_POSTGRES", False)
         monkeypatch.setattr(ve, "_fetchone", lambda sql_pg, sql_sq, params=(): fake_row)
@@ -325,7 +325,7 @@ class TestLegacyPersistedSummarySanitization:
         """A row that never had benchmark_unavailable_reason at all (very
         old legacy rows, or a successful run) must not gain a spurious key."""
         legacy_summary = {"buy_hit_rate_pct": 61.0}
-        fake_row = {"summary": json.dumps(legacy_summary)}
+        fake_row = {"id": 1, "summary": json.dumps(legacy_summary)}
         monkeypatch.setattr(ve, "_init_db", lambda: None)
         monkeypatch.setattr(ve, "_USE_POSTGRES", False)
         monkeypatch.setattr(ve, "_fetchone", lambda sql_pg, sql_sq, params=(): fake_row)
@@ -377,7 +377,7 @@ class TestPublicAPIBoundary:
             "benchmark_unavailable_reason": f"benchmark_fetch_failed: {HOSTILE_MESSAGE}",
             "buy_hit_rate_pct": 50.0,
         }
-        fake_row = {"summary": json.dumps(legacy_summary)}
+        fake_row = {"id": 1, "summary": json.dumps(legacy_summary)}
         monkeypatch.setattr(ve, "_init_db", lambda: None)
         monkeypatch.setattr(ve, "_USE_POSTGRES", False)
         monkeypatch.setattr(ve, "_fetchone", lambda sql_pg, sql_sq, params=(): fake_row)

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, cleanup, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 // V-VAL1 — validation-metric and presentation integrity regression coverage.
@@ -15,21 +15,30 @@ vi.mock("@/utils/api", () => ({
   api: { get: (...args: unknown[]) => mockGet(...args) },
 }));
 
-const { default: ValidationPage, exactBinomialTwoSidedPValue } = await import("../page");
+const { default: ValidationPage, exactBinomialTwoSidedPValue, runIdsCoherent } = await import("../page");
 
 function renderPage() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
-  return render(
+  const result = render(
     <QueryClientProvider client={queryClient}>
       <ValidationPage />
     </QueryClientProvider>,
   );
+  // queryClient is exposed (additively — every other call site still just
+  // calls renderPage() and ignores the return value) so V-SNAP1C's
+  // corrected race test can synchronize on genuine React Query cache
+  // state rather than guessing at a microtask-flush depth.
+  return { ...result, queryClient };
 }
 
 const BASE_RESULTS = {
   available: true,
+  // V-SNAP1D — a valid canonical run_id (positive safe integer) is now
+  // required for a snapshot to promote/render at all; every fixture that
+  // spreads BASE_RESULTS inherits this unless it explicitly overrides it.
+  run_id: 1,
   horizon: "medium",
   n_stocks_tested: 3,
   run_at: "2026-08-11T00:35:24.157619+00:00",
@@ -75,9 +84,15 @@ function mockApi({
   results = BASE_RESULTS,
   stocks = MANY_STOCKS,
 }: { results?: object | null; stocks?: object[] } = {}) {
+  // V-SNAP1D — the per-stock mock must carry the SAME run_id as the
+  // aggregate `results` fixture (falling back to 1, matching
+  // BASE_RESULTS's own default) so the two stay pinned/coherent under
+  // the new fail-closed identity check, exactly mirroring what a real
+  // backend does.
+  const resolvedRunId = (results as { run_id?: number } | null)?.run_id ?? 1;
   mockGet.mockImplementation((url: string) => {
     if (url.includes("/results/stocks")) {
-      return Promise.resolve({ data: { available: true, stocks } });
+      return Promise.resolve({ data: { available: true, run_id: resolvedRunId, stocks } });
     }
     if (url.includes("/results?")) {
       return Promise.resolve({ data: results ?? { available: false } });
@@ -664,5 +679,505 @@ describe("PR #52 security/cadence invariants unchanged", () => {
     renderPage();
     await screen.findByText(/Validation completed/i);
     expect(screen.queryByText(/^Last run/i)).not.toBeInTheDocument();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// V-SNAP1B — IMMUTABLE VALIDATION SNAPSHOT PINNING.
+//
+// Closes a proven race (V-SNAP1A forensic investigation): the aggregate and
+// per-stock endpoints each independently select the latest run at the
+// instant they're called, so a new run completing between the two requests
+// could combine aggregate metrics from one run with per-stock rows from a
+// different, newer run. The fix is an atomic candidate-to-active snapshot
+// transition — fetch the aggregate candidate, fetch its per-stock
+// counterpart PINNED to that candidate's own run_id, verify both agree on
+// run_id/horizon/universe, and only then promote both together in one
+// state update. The previous complete snapshot must remain visible for the
+// whole verification window.
+// ─────────────────────────────────────────────────────────────────────────
+describe("V-SNAP1B — atomic snapshot pinning", () => {
+  function runResults(runId: number, overrides: object = {}) {
+    return { ...BASE_RESULTS, run_id: runId, ...overrides };
+  }
+
+  function stocksFor(runId: number, symbol: string) {
+    return {
+      available: true,
+      run_id: runId,
+      stocks: [
+        { symbol, total_signals: 20, buy_signal_count: 20, evaluated_buy_count: 20,
+          buy_hits: 11, hit_rate_pct: 55.0, buy_return_count: 20, avg_fwd_return_pct: 1.2, buy_avg_return_pct: 2.0 },
+      ],
+    };
+  }
+
+  it("requests per-stock data pinned to the aggregate's own run_id", async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url.includes("/results/stocks")) return Promise.resolve({ data: stocksFor(7, "RUNA") });
+      if (url.includes("/results?")) return Promise.resolve({ data: runResults(7) });
+      if (url.includes("/status")) return Promise.resolve({ data: { running: false, progress: 0, total: 0, started_at: null, log: [] } });
+      return Promise.resolve({ data: {} });
+    });
+    renderPage();
+    await screen.findByText("RUNA");
+    const stockCall = mockGet.mock.calls.find(c => (c[0] as string).includes("/results/stocks"));
+    expect(stockCall?.[0]).toContain("run_id=7");
+  });
+
+  it("never renders a mixed combination: aggregate B is never displayed with stocks A, and stocks B never displayed with aggregate A", async () => {
+    // V-SNAP1C correction: the prior version of this test distinguished
+    // ONLY per-stock symbols. React Query's stale-while-revalidate default
+    // keeps showing the previous per-stock query result while a background
+    // refetch is pending, which can accidentally satisfy a symbol-only
+    // assertion even in the pre-fix implementation (proven in the V-SNAP1B
+    // independent review's disposable-worktree base comparison — see Stage
+    // 3 evidence below). This version distinguishes BOTH the aggregate
+    // (n_stocks_tested, a value the page actually renders as "Stocks
+    // tested: N") and the per-stock symbol, and synchronizes on a real,
+    // implementation-agnostic signal (the candidate aggregate fetch for
+    // run B having resolved) rather than a fixed sleep — so a mixed
+    // aggregate-B/stocks-A (or aggregate-A/stocks-B) render is directly
+    // observable and cannot be masked by unrelated caching behavior.
+    let releaseB: (() => void) | null = null;
+    const bPending = new Promise<{ data: object }>((resolve) => { releaseB = () => resolve({ data: stocksFor(2, "RUNB") }); });
+
+    let currentRunId = 1;
+    mockGet.mockImplementation((url: string) => {
+      if (url.includes("/results/stocks")) {
+        if (currentRunId === 1) return Promise.resolve({ data: stocksFor(1, "RUNA") });
+        return bPending; // run 2's per-stock fetch is deliberately held pending
+      }
+      if (url.includes("/results?")) {
+        return Promise.resolve({ data: runResults(currentRunId, { n_stocks_tested: currentRunId === 1 ? 111 : 222 }) });
+      }
+      if (url.includes("/status")) return Promise.resolve({ data: { running: false, progress: 0, total: 0, started_at: null, log: [] } });
+      return Promise.resolve({ data: {} });
+    });
+
+    const { queryClient } = renderPage();
+    await screen.findByText("RUNA");
+    expect(screen.getByText("111")).toBeInTheDocument(); // aggregate A-only value
+    expect(screen.queryByText("222")).not.toBeInTheDocument();
+    expect(screen.queryByText("RUNB")).not.toBeInTheDocument();
+
+    // Refresh discovers run B. Its aggregate resolves immediately (a plain
+    // resolved Promise); its per-stock fetch is held pending on `bPending`.
+    currentRunId = 2;
+    fireEvent.click(screen.getByRole("button", { name: /refresh displayed results/i }));
+
+    // Deterministic synchronization point — not a fixed sleep, not a
+    // guessed microtask-flush depth: poll the REAL React Query cache
+    // (via the QueryClient exposed by renderPage) until it genuinely
+    // holds aggregate B's resolved data. This is an implementation-
+    // agnostic, directly observable fact — it becomes true in BOTH the
+    // fixed and the pre-fix implementation as soon as React Query has
+    // actually finished processing run B's aggregate response, however
+    // many internal ticks that takes. `waitFor` polls with real timers,
+    // so it lets React's scheduler (which is not purely microtask-based)
+    // fully settle, unlike a fixed count of `Promise.resolve()` hops.
+    await waitFor(() => {
+      const cached = queryClient.getQueryData<{ n_stocks_tested?: number }>(["validation-results", "medium", "nifty100"]);
+      expect(cached?.n_stocks_tested).toBe(222);
+    });
+    // One more flush guarantees any React state update triggered by that
+    // cache change has committed to the DOM before the assertions below.
+    await act(async () => {});
+
+    // Only the complete run-A snapshot may be visible: aggregate A's own
+    // value and stock A's own symbol, together — never aggregate B's
+    // value paired with stock A, and never aggregate A paired with any
+    // trace of run B.
+    expect(screen.getByText("111")).toBeInTheDocument();
+    expect(screen.getByText("RUNA")).toBeInTheDocument();
+    expect(screen.queryByText("222")).not.toBeInTheDocument();
+    expect(screen.queryByText("RUNB")).not.toBeInTheDocument();
+
+    // Release run B's per-stock fetch — it must now atomically replace the
+    // entire snapshot (both aggregate and per-stock together), in one
+    // committed render containing B's values and none of A's.
+    releaseB!();
+    await waitFor(() => expect(screen.getByText("222")).toBeInTheDocument());
+    expect(screen.getByText("RUNB")).toBeInTheDocument();
+    expect(screen.queryByText("111")).not.toBeInTheDocument();
+    expect(screen.queryByText("RUNA")).not.toBeInTheDocument();
+  });
+
+  it("keeps the last complete snapshot and shows a non-destructive error when the candidate's per-stock fetch fails", async () => {
+    let currentRunId = 1;
+    mockGet.mockImplementation((url: string) => {
+      if (url.includes("/results/stocks")) {
+        if (currentRunId === 1) return Promise.resolve({ data: stocksFor(1, "RUNA") });
+        return Promise.reject(new Error("network error"));
+      }
+      if (url.includes("/results?")) return Promise.resolve({ data: runResults(currentRunId) });
+      if (url.includes("/status")) return Promise.resolve({ data: { running: false, progress: 0, total: 0, started_at: null, log: [] } });
+      return Promise.resolve({ data: {} });
+    });
+
+    renderPage();
+    await screen.findByText("RUNA");
+
+    currentRunId = 2;
+    fireEvent.click(screen.getByRole("button", { name: /refresh displayed results/i }));
+
+    await waitFor(() => expect(screen.getByTestId("refresh-error-banner")).toBeInTheDocument());
+    expect(screen.getByText("RUNA")).toBeInTheDocument();
+  });
+
+  it("keeps the last complete snapshot when the candidate's per-stock response reports a mismatched run_id", async () => {
+    let currentRunId = 1;
+    mockGet.mockImplementation((url: string) => {
+      if (url.includes("/results/stocks")) {
+        // Simulate a stale/mismatched per-stock response — its own run_id
+        // doesn't match the aggregate candidate's run_id.
+        return Promise.resolve({ data: currentRunId === 1 ? stocksFor(1, "RUNA") : stocksFor(999, "WRONGRUN") });
+      }
+      if (url.includes("/results?")) return Promise.resolve({ data: runResults(currentRunId) });
+      if (url.includes("/status")) return Promise.resolve({ data: { running: false, progress: 0, total: 0, started_at: null, log: [] } });
+      return Promise.resolve({ data: {} });
+    });
+
+    renderPage();
+    await screen.findByText("RUNA");
+
+    currentRunId = 2;
+    fireEvent.click(screen.getByRole("button", { name: /refresh displayed results/i }));
+
+    await waitFor(() => expect(screen.getByTestId("refresh-error-banner")).toBeInTheDocument());
+    expect(screen.getByText("RUNA")).toBeInTheDocument();
+    expect(screen.queryByText("WRONGRUN")).not.toBeInTheDocument();
+  });
+
+  it("clears the active snapshot immediately on horizon change — never shows stale prior-view data", async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url.includes("/results/stocks")) return Promise.resolve({ data: stocksFor(1, "RUNA") });
+      if (url.includes("/results?horizon=medium")) return Promise.resolve({ data: runResults(1) });
+      if (url.includes("/results?horizon=long")) return new Promise(() => {}); // never resolves
+      if (url.includes("/status")) return Promise.resolve({ data: { running: false, progress: 0, total: 0, started_at: null, log: [] } });
+      return Promise.resolve({ data: {} });
+    });
+
+    renderPage();
+    await screen.findByText("RUNA");
+
+    fireEvent.click(screen.getByRole("button", { name: /^Long/i }));
+
+    await waitFor(() => expect(screen.queryByText("RUNA")).not.toBeInTheDocument());
+    expect(screen.getByText(/Loading results/i)).toBeInTheDocument();
+  });
+
+  it("clears the active snapshot immediately on universe change — never shows stale prior-view data", async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url.includes("/results/stocks")) return Promise.resolve({ data: stocksFor(1, "RUNA") });
+      if (url.includes("universe=nifty100")) return Promise.resolve({ data: runResults(1) });
+      if (url.includes("universe=us")) return new Promise(() => {}); // never resolves
+      if (url.includes("/status")) return Promise.resolve({ data: { running: false, progress: 0, total: 0, started_at: null, log: [] } });
+      return Promise.resolve({ data: {} });
+    });
+
+    renderPage();
+    await screen.findByText("RUNA");
+
+    fireEvent.click(screen.getByRole("button", { name: /🇺🇸 US/i }));
+
+    await waitFor(() => expect(screen.queryByText("RUNA")).not.toBeInTheDocument());
+    expect(screen.getByText(/Loading results/i)).toBeInTheDocument();
+  });
+
+  // V-SNAP1D correction — REWRITTEN, not deleted: the prior version of
+  // this test asserted that an aggregate with no run_id would still
+  // promote normally, unpinned, as "backward-compatible latest
+  // behavior." That is the exact publication-blocking defect the final
+  // independent V-SNAP1 review found: it's indistinguishable from what a
+  // pre-V-SNAP1 backend serves during deployment skew, and accepting it
+  // silently reopens the original race this whole phase closes. The
+  // corrected contract: an identity-less aggregate candidate must never
+  // be promoted, and must never even trigger an unpinned per-stock
+  // request — the page shows an honest unavailable state instead.
+  it("an identity-less aggregate (no run_id) never promotes and never triggers an unpinned per-stock request", async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url.includes("/results/stocks")) return Promise.resolve({ data: { available: true, stocks: MANY_STOCKS } });
+      if (url.includes("/results?")) return Promise.resolve({ data: { ...BASE_RESULTS, run_id: undefined } });
+      if (url.includes("/status")) return Promise.resolve({ data: { running: false, progress: 0, total: 0, started_at: null, log: [] } });
+      return Promise.resolve({ data: {} });
+    });
+    renderPage();
+    await screen.findByText(/No validation results yet/i);
+    expect(screen.queryByText(/BUY Hit Rate/i)).not.toBeInTheDocument();
+    const stockCall = mockGet.mock.calls.find(c => (c[0] as string).includes("/results/stocks"));
+    expect(stockCall).toBeUndefined(); // no unpinned per-stock request was ever made
+  });
+
+  it("zero-BUY symbols can exist in the API response but are honestly excluded from the BUY-performance table (129-vs-126 contract)", async () => {
+    const withZeroBuy = [
+      ...MANY_STOCKS,
+      { symbol: "ZEROBUY", total_signals: 5, buy_signal_count: 0, evaluated_buy_count: 0,
+        buy_hits: null, hit_rate_pct: null, buy_return_count: 0, avg_fwd_return_pct: null, buy_avg_return_pct: null },
+    ];
+    mockGet.mockImplementation((url: string) => {
+      if (url.includes("/results/stocks")) return Promise.resolve({ data: { available: true, run_id: 1, stocks: withZeroBuy } });
+      if (url.includes("/results?")) return Promise.resolve({ data: runResults(1) });
+      if (url.includes("/status")) return Promise.resolve({ data: { running: false, progress: 0, total: 0, started_at: null, log: [] } });
+      return Promise.resolve({ data: {} });
+    });
+    renderPage();
+    await screen.findByText(/showing 1–40 of 65/i);
+    // ZEROBUY is present in the mocked API payload (65 + 1 = 66 total rows)
+    // but must never appear in the BUY-performance table, since it has zero
+    // BUY signals — the table's own count must stay 65, not 66.
+    expect(screen.queryByText("ZEROBUY")).not.toBeInTheDocument();
+    expect(screen.queryByText(/showing 1–40 of 66/i)).not.toBeInTheDocument();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// V-SNAP1C — render-time run-identity coherence guard (second, independent
+// defense layer). A Snapshot can only ever be constructed by the verified
+// promotion effect in page.tsx, so a mismatched pair should never actually
+// reach the render path in practice — this directly unit-tests the pure
+// guard function itself, proving that IF a mismatched pair were ever
+// constructed (a future bug reintroducing the exact defect this phase
+// closed), the render path would independently refuse it rather than
+// relying solely on the promotion-time check.
+// ─────────────────────────────────────────────────────────────────────────
+describe("V-SNAP1C/D — runIdsCoherent render-time guard", () => {
+  function available(runId: unknown) {
+    return { available: true as const, run_id: runId as number | undefined };
+  }
+  function stock(runId: unknown) {
+    return { run_id: runId as number | undefined, stocks: [] };
+  }
+
+  it("accepts a matching run_id pair", () => {
+    expect(runIdsCoherent(available(5), stock(5))).toBe(true);
+  });
+
+  it("accepts equal positive safe-integer IDs at the boundary", () => {
+    expect(runIdsCoherent(available(Number.MAX_SAFE_INTEGER), stock(Number.MAX_SAFE_INTEGER))).toBe(true);
+  });
+
+  it("rejects a mismatched run_id pair — the exact defect this phase closes", () => {
+    expect(runIdsCoherent(available(5), stock(6))).toBe(false);
+  });
+
+  it("rejects aggregate run_id present but per-stock run_id missing", () => {
+    expect(runIdsCoherent(available(5), stock(undefined))).toBe(false);
+  });
+
+  it("rejects per-stock run_id present but aggregate run_id missing", () => {
+    expect(runIdsCoherent(available(undefined), stock(5))).toBe(false);
+  });
+
+  // V-SNAP1D correction — REWRITTEN, not deleted: the prior version of
+  // this test asserted the OPPOSITE (that both sides omitting run_id was
+  // "coherent" as backward compatibility). That was the exact publication-
+  // blocking defect the V-SNAP1 final independent review found: during
+  // Vercel/Railway deployment skew, a backend rollback, or communication
+  // with a pre-V-SNAP1 backend, both the aggregate and per-stock responses
+  // genuinely omit run_id — accepting that pairing as "coherent" silently
+  // reopens the original unpinned-latest-vs-latest race with no user-
+  // visible signal. A missing identity on either or both sides must now
+  // be rejected, not trusted.
+  it("rejects a pair where both sides omit run_id — closes the deployment-skew hole (was incorrectly 'coherent' before V-SNAP1D)", () => {
+    expect(runIdsCoherent(available(undefined), stock(undefined))).toBe(false);
+    expect(runIdsCoherent(available(null), stock(null))).toBe(false);
+  });
+
+  it("rejects zero as a run_id on either side", () => {
+    expect(runIdsCoherent(available(0), stock(0))).toBe(false);
+    expect(runIdsCoherent(available(0), stock(5))).toBe(false);
+    expect(runIdsCoherent(available(5), stock(0))).toBe(false);
+  });
+
+  it("rejects negative run_ids", () => {
+    expect(runIdsCoherent(available(-1), stock(-1))).toBe(false);
+    expect(runIdsCoherent(available(-5), stock(5))).toBe(false);
+  });
+
+  it("rejects fractional run_ids", () => {
+    expect(runIdsCoherent(available(1.5), stock(1.5))).toBe(false);
+    expect(runIdsCoherent(available(5), stock(5.5))).toBe(false);
+  });
+
+  it("rejects NaN", () => {
+    expect(runIdsCoherent(available(NaN), stock(NaN))).toBe(false);
+    expect(runIdsCoherent(available(NaN), stock(5))).toBe(false);
+  });
+
+  it("rejects positive and negative Infinity", () => {
+    expect(runIdsCoherent(available(Infinity), stock(Infinity))).toBe(false);
+    expect(runIdsCoherent(available(-Infinity), stock(-Infinity))).toBe(false);
+  });
+
+  it("rejects a run_id above Number.MAX_SAFE_INTEGER (not a safe integer)", () => {
+    const tooLarge = Number.MAX_SAFE_INTEGER + 2;
+    expect(runIdsCoherent(available(tooLarge), stock(tooLarge))).toBe(false);
+  });
+
+  it("rejects a numeric string at runtime even though TypeScript would normally prevent it", () => {
+    // Runtime JSON payloads are not type-checked — a hostile/buggy backend
+    // could send "5" (string) instead of 5 (number). No implicit
+    // coercion (Number(...), unary +, ==) is allowed to paper over this.
+    expect(runIdsCoherent(available("5"), stock("5"))).toBe(false);
+    expect(runIdsCoherent(available("5"), stock(5))).toBe(false);
+  });
+
+  it("accepts an unavailable aggregate regardless of stock-side run_id (nothing to compare)", () => {
+    expect(runIdsCoherent({ available: false }, stock(5))).toBe(true);
+    expect(runIdsCoherent({ available: false }, stock(undefined))).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// V-SNAP1D — FAIL CLOSED ON IDENTITY-LESS OR INVALID FRONTEND SNAPSHOTS.
+//
+// Page-level integration coverage for the deployment-skew contract: an
+// identity-less or invalid aggregate/per-stock response must never be
+// promoted or rendered as a verified snapshot, and must never trigger an
+// unpinned per-stock request — regardless of whether this is the initial
+// load or a refresh with a previously active, valid snapshot.
+// ─────────────────────────────────────────────────────────────────────────
+describe("V-SNAP1D — fail closed on identity-less or invalid snapshots", () => {
+  function runResults(runId: unknown, overrides: object = {}) {
+    return { ...BASE_RESULTS, run_id: runId, ...overrides };
+  }
+  function stocksFor(runId: unknown, symbol: string) {
+    return { available: true, run_id: runId, stocks: [
+      { symbol, total_signals: 20, buy_signal_count: 20, evaluated_buy_count: 20,
+        buy_hits: 11, hit_rate_pct: 55.0, buy_return_count: 20, avg_fwd_return_pct: 1.2, buy_avg_return_pct: 2.0 },
+    ] };
+  }
+
+  it("initial load: identity-less aggregate shows the honest unavailable state, never a verified snapshot", async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url.includes("/results/stocks")) return Promise.resolve({ data: stocksFor(undefined, "OLDSTOCK") });
+      if (url.includes("/results?")) return Promise.resolve({ data: runResults(undefined) });
+      if (url.includes("/status")) return Promise.resolve({ data: { running: false, progress: 0, total: 0, started_at: null, log: [] } });
+      return Promise.resolve({ data: {} });
+    });
+    renderPage();
+    await screen.findByText(/No validation results yet/i);
+    expect(screen.queryByText("OLDSTOCK")).not.toBeInTheDocument();
+    expect(screen.queryByText(/BUY Hit Rate/i)).not.toBeInTheDocument();
+  });
+
+  it("initial load: identity-less aggregate never initiates an unpinned /results/stocks request", async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url.includes("/results/stocks")) return Promise.resolve({ data: stocksFor(undefined, "OLDSTOCK") });
+      if (url.includes("/results?")) return Promise.resolve({ data: runResults(undefined) });
+      if (url.includes("/status")) return Promise.resolve({ data: { running: false, progress: 0, total: 0, started_at: null, log: [] } });
+      return Promise.resolve({ data: {} });
+    });
+    renderPage();
+    await screen.findByText(/No validation results yet/i);
+    const stockCall = mockGet.mock.calls.find(c => (c[0] as string).includes("/results/stocks"));
+    expect(stockCall).toBeUndefined();
+  });
+
+  it("refresh: an identity-less candidate aggregate never triggers an unpinned per-stock request, and preserves the active pinned snapshot", async () => {
+    let phase: "initial" | "skew" = "initial";
+    mockGet.mockImplementation((url: string) => {
+      if (url.includes("/results/stocks")) return Promise.resolve({ data: stocksFor(1, "RUNA") });
+      if (url.includes("/results?")) {
+        return Promise.resolve({ data: phase === "initial" ? runResults(1) : runResults(undefined) });
+      }
+      if (url.includes("/status")) return Promise.resolve({ data: { running: false, progress: 0, total: 0, started_at: null, log: [] } });
+      return Promise.resolve({ data: {} });
+    });
+    renderPage();
+    await screen.findByText("RUNA");
+
+    phase = "skew"; // simulates a backend rollback / deployment skew mid-session
+    mockGet.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: /refresh displayed results/i }));
+
+    await waitFor(() => expect(screen.getByTestId("refresh-error-banner")).toBeInTheDocument());
+    expect(screen.getByText("RUNA")).toBeInTheDocument(); // active A preserved, never destroyed
+    const stockCall = mockGet.mock.calls.find(c => (c[0] as string).includes("/results/stocks"));
+    expect(stockCall).toBeUndefined(); // no unpinned per-stock request was issued for the skewed candidate
+  });
+
+  it("valid aggregate B whose per-stock response omits run_id: does not promote, keeps active A, shows an honest error", async () => {
+    let currentRunId = 1;
+    mockGet.mockImplementation((url: string) => {
+      if (url.includes("/results/stocks")) {
+        if (currentRunId === 1) return Promise.resolve({ data: stocksFor(1, "RUNA") });
+        return Promise.resolve({ data: { available: true, stocks: [
+          { symbol: "RUNB", total_signals: 1, buy_signal_count: 1, evaluated_buy_count: 1, buy_hits: 1,
+            hit_rate_pct: 100, buy_return_count: 1, avg_fwd_return_pct: 1, buy_avg_return_pct: 1 },
+        ] } }); // valid aggregate, but its per-stock response has NO run_id
+      }
+      if (url.includes("/results?")) return Promise.resolve({ data: runResults(currentRunId) });
+      if (url.includes("/status")) return Promise.resolve({ data: { running: false, progress: 0, total: 0, started_at: null, log: [] } });
+      return Promise.resolve({ data: {} });
+    });
+    renderPage();
+    await screen.findByText("RUNA");
+
+    currentRunId = 2;
+    fireEvent.click(screen.getByRole("button", { name: /refresh displayed results/i }));
+
+    await waitFor(() => expect(screen.getByTestId("refresh-error-banner")).toBeInTheDocument());
+    expect(screen.getByText("RUNA")).toBeInTheDocument();
+    expect(screen.queryByText("RUNB")).not.toBeInTheDocument();
+  });
+
+  it("valid aggregate B whose per-stock response has a malformed (fractional) run_id: does not promote, keeps active A", async () => {
+    let currentRunId = 1;
+    mockGet.mockImplementation((url: string) => {
+      if (url.includes("/results/stocks")) {
+        if (currentRunId === 1) return Promise.resolve({ data: stocksFor(1, "RUNA") });
+        return Promise.resolve({ data: stocksFor(2.5, "RUNB") }); // fractional — invalid
+      }
+      if (url.includes("/results?")) return Promise.resolve({ data: runResults(currentRunId) });
+      if (url.includes("/status")) return Promise.resolve({ data: { running: false, progress: 0, total: 0, started_at: null, log: [] } });
+      return Promise.resolve({ data: {} });
+    });
+    renderPage();
+    await screen.findByText("RUNA");
+
+    currentRunId = 2;
+    fireEvent.click(screen.getByRole("button", { name: /refresh displayed results/i }));
+
+    await waitFor(() => expect(screen.getByTestId("refresh-error-banner")).toBeInTheDocument());
+    expect(screen.getByText("RUNA")).toBeInTheDocument();
+    expect(screen.queryByText("RUNB")).not.toBeInTheDocument();
+  });
+
+  it("deployment-skew end-to-end: old-backend-shaped responses (no run_id anywhere) never render as a verified snapshot", async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url.includes("/results/stocks")) return Promise.resolve({ data: { available: true, stocks: [
+        { symbol: "OLDSTOCK", total_signals: 1, buy_signal_count: 1, evaluated_buy_count: 1, buy_hits: 1,
+          hit_rate_pct: 100, buy_return_count: 1, avg_fwd_return_pct: 1, buy_avg_return_pct: 1 },
+      ] } });
+      if (url.includes("/results?")) return Promise.resolve({ data: { ...BASE_RESULTS, run_id: undefined } });
+      if (url.includes("/status")) return Promise.resolve({ data: { running: false, progress: 0, total: 0, started_at: null, log: [] } });
+      return Promise.resolve({ data: {} });
+    });
+    renderPage();
+    await screen.findByText(/No validation results yet/i);
+    expect(screen.queryByText("OLDSTOCK")).not.toBeInTheDocument();
+    const stockCall = mockGet.mock.calls.find(c => (c[0] as string).includes("/results/stocks"));
+    expect(stockCall).toBeUndefined();
+  });
+
+  it("valid A-to-valid-B atomic transition still works after the fail-closed correction", async () => {
+    let currentRunId = 1;
+    mockGet.mockImplementation((url: string) => {
+      if (url.includes("/results/stocks")) return Promise.resolve({ data: stocksFor(currentRunId, currentRunId === 1 ? "RUNA" : "RUNB") });
+      if (url.includes("/results?")) return Promise.resolve({ data: runResults(currentRunId) });
+      if (url.includes("/status")) return Promise.resolve({ data: { running: false, progress: 0, total: 0, started_at: null, log: [] } });
+      return Promise.resolve({ data: {} });
+    });
+    renderPage();
+    await screen.findByText("RUNA");
+
+    currentRunId = 2;
+    fireEvent.click(screen.getByRole("button", { name: /refresh displayed results/i }));
+
+    await waitFor(() => expect(screen.getByText("RUNB")).toBeInTheDocument());
+    expect(screen.queryByText("RUNA")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("refresh-error-banner")).not.toBeInTheDocument();
   });
 });
