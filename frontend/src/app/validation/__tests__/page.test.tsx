@@ -1181,3 +1181,183 @@ describe("V-SNAP1D — fail closed on identity-less or invalid snapshots", () =>
     expect(screen.queryByTestId("refresh-error-banner")).not.toBeInTheDocument();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// V-FRESH1B — DURABLE VALIDATION EVIDENCE METADATA AND HONEST FRESHNESS
+// DISCLOSURE (Option A: a durable metadata-and-disclosure foundation, NOT
+// a complete fresh/stale classifier — see the backend's _compute_freshness
+// docstring for the full rationale). No exchange-calendar utility and no
+// completion-SLO contract exist yet, so every response resolves to
+// freshness.status === "unknown" with one specific, honest reason — never
+// "fresh"/"stale"/"schedule-consistent"/"schedule-missed".
+// ─────────────────────────────────────────────────────────────────────────
+describe("V-FRESH1B — freshness disclosure", () => {
+  const FULL_EVIDENCE = {
+    symbols_requested: 42, symbols_fetch_attempted: 42, symbols_with_input_data: 40,
+    symbols_with_sufficient_data: 38, symbols_processed: 38, symbols_with_signals: 6,
+    symbols_with_evaluated_outcomes: 6, fetch_exception_count: 1, empty_data_count: 1,
+    insufficient_data_count: 2, calculation_exception_count: 0,
+    input_latest_bar_date_min: "2026-08-10", input_latest_bar_date_max: "2026-08-11",
+    signal_date_min: "2020-01-05", signal_date_max: "2026-08-01",
+    evaluated_exit_date_min: "2020-04-01", evaluated_exit_date_max: "2026-05-01",
+  };
+  const UNKNOWN_FRESHNESS = {
+    status: "unknown", reason: "calendar_or_completion_slo_unavailable",
+    validation_completed_at: BASE_RESULTS.run_at, input_data_recency: "unknown", outcome_evidence_recency: "unknown",
+  };
+
+  it("legacy run (no validation_evidence) renders 'Freshness not yet verifiable' with the legacy reason", async () => {
+    mockApi({ results: { ...BASE_RESULTS, freshness: {
+      status: "unknown", reason: "legacy_run_without_evidence_metadata",
+      validation_completed_at: BASE_RESULTS.run_at, input_data_recency: "unknown", outcome_evidence_recency: "unknown",
+    } } });
+    renderPage();
+    await screen.findByTestId("freshness-disclosure");
+    expect(screen.getByText(/Freshness not yet verifiable/i)).toBeInTheDocument();
+    expect(screen.getByText(/This stored run predates durable input and outcome evidence metadata/i)).toBeInTheDocument();
+  });
+
+  it("short horizon explains that no automatic schedule is defined", async () => {
+    mockApi({ results: { ...BASE_RESULTS, horizon: "short", freshness: {
+      status: "unknown", reason: "schedule_not_defined",
+      validation_completed_at: BASE_RESULTS.run_at, input_data_recency: "unknown", outcome_evidence_recency: "unknown",
+    } } });
+    renderPage();
+    await screen.findByTestId("freshness-disclosure");
+    expect(screen.getByText(/No automatic validation schedule is currently defined for this horizon/i)).toBeInTheDocument();
+  });
+
+  it("medium/long with future evidence explains calendar-aware freshness is not yet available", async () => {
+    mockApi({ results: { ...BASE_RESULTS, validation_evidence: FULL_EVIDENCE, freshness: UNKNOWN_FRESHNESS } });
+    renderPage();
+    await screen.findByTestId("freshness-disclosure");
+    expect(screen.getByText(/market-calendar-aware freshness is not yet available/i)).toBeInTheDocument();
+  });
+
+  it("'Validation completed' remains distinct, unchanged, and still sourced from run_at", async () => {
+    mockApi({ results: { ...BASE_RESULTS, validation_evidence: FULL_EVIDENCE, freshness: UNKNOWN_FRESHNESS } });
+    renderPage();
+    await screen.findByText(/Validation completed/i);
+    await screen.findByTestId("freshness-disclosure");
+  });
+
+  it("renders the actual input latest-bar range separately when present", async () => {
+    mockApi({ results: { ...BASE_RESULTS, validation_evidence: FULL_EVIDENCE, freshness: UNKNOWN_FRESHNESS } });
+    renderPage();
+    const disclosure = await screen.findByTestId("freshness-disclosure");
+    expect(disclosure.textContent).toMatch(/Latest input bars across[\s\S]*40[\s\S]*symbols ranged from[\s\S]*2026-08-10[\s\S]*to[\s\S]*2026-08-11/i);
+  });
+
+  it("labels the signal-date range only as signal dates, never as input-data-through", async () => {
+    mockApi({ results: { ...BASE_RESULTS, validation_evidence: FULL_EVIDENCE, freshness: UNKNOWN_FRESHNESS } });
+    renderPage();
+    const disclosure = await screen.findByTestId("freshness-disclosure");
+    expect(disclosure.textContent).toMatch(/Signals in this run span[\s\S]*2020-01-05[\s\S]*to[\s\S]*2026-08-01/i);
+    expect(disclosure.textContent).toMatch(/signal dates, not input-data-through/i);
+  });
+
+  it("labels the evaluated-exit range only as evaluated outcome dates", async () => {
+    mockApi({ results: { ...BASE_RESULTS, validation_evidence: FULL_EVIDENCE, freshness: UNKNOWN_FRESHNESS } });
+    renderPage();
+    const disclosure = await screen.findByTestId("freshness-disclosure");
+    expect(disclosure.textContent).toMatch(/Evaluated outcomes use exit bars from[\s\S]*2020-04-01[\s\S]*to[\s\S]*2026-05-01/i);
+  });
+
+  it("displays honest unavailable wording, never a fabricated date, when evidence date fields are null", async () => {
+    const partial = { ...FULL_EVIDENCE, input_latest_bar_date_min: null, input_latest_bar_date_max: null };
+    mockApi({ results: { ...BASE_RESULTS, validation_evidence: partial, freshness: UNKNOWN_FRESHNESS } });
+    renderPage();
+    const disclosure = await screen.findByTestId("freshness-disclosure");
+    expect(disclosure.textContent).not.toMatch(/Latest input bars/i);
+  });
+
+  it("diagnostic counters use factual labels, never 'coverage' or 'eligibility'", async () => {
+    mockApi({ results: { ...BASE_RESULTS, validation_evidence: FULL_EVIDENCE, freshness: UNKNOWN_FRESHNESS } });
+    renderPage();
+    const disclosure = await screen.findByTestId("freshness-disclosure");
+    expect(disclosure.textContent).toMatch(/42 requested/i);
+    expect(disclosure.textContent).toMatch(/40 returned price data/i);
+    expect(disclosure.textContent).toMatch(/38 had sufficient history/i);
+    expect(disclosure.textContent).toMatch(/38 were processed/i);
+    expect(disclosure.textContent).toMatch(/6 produced signals/i);
+    expect(disclosure.textContent).toMatch(/6 produced evaluated outcomes/i);
+    expect(disclosure.textContent).not.toMatch(/coverage/i);
+    expect(disclosure.textContent).not.toMatch(/eligib/i);
+  });
+
+  it("valid-data/no-signal symbols are never presented as a failure count", async () => {
+    mockApi({ results: { ...BASE_RESULTS, validation_evidence: FULL_EVIDENCE, freshness: UNKNOWN_FRESHNESS } });
+    renderPage();
+    const disclosure = await screen.findByTestId("freshness-disclosure");
+    fireEvent.click(screen.getByText(/Diagnostic detail/i));
+    expect(disclosure.textContent).toMatch(/Fetch exceptions: 1/);
+    expect(disclosure.textContent).toMatch(/Empty data: 1/);
+    expect(disclosure.textContent).toMatch(/Insufficient data: 2/);
+    expect(disclosure.textContent).toMatch(/Calculation exceptions: 0/);
+  });
+
+  it("partial diagnostic evidence (only some date ranges present) remains understandable, not broken", async () => {
+    const partial = {
+      ...FULL_EVIDENCE,
+      signal_date_min: null, signal_date_max: null,
+      evaluated_exit_date_min: null, evaluated_exit_date_max: null,
+    };
+    mockApi({ results: { ...BASE_RESULTS, validation_evidence: partial, freshness: UNKNOWN_FRESHNESS } });
+    renderPage();
+    const disclosure = await screen.findByTestId("freshness-disclosure");
+    expect(disclosure.textContent).toMatch(/Latest input bars/i);
+    expect(disclosure.textContent).not.toMatch(/Signals in this run span/i);
+    expect(disclosure.textContent).not.toMatch(/Evaluated outcomes use exit bars/i);
+  });
+
+  it("available historical data remains fully visible when freshness is unknown", async () => {
+    mockApi({ results: { ...BASE_RESULTS, validation_evidence: FULL_EVIDENCE, freshness: UNKNOWN_FRESHNESS } });
+    renderPage();
+    await screen.findByTestId("freshness-disclosure");
+    await screen.findByText(/BUY Hit Rate/i);
+    expect(screen.getByText(/Overall Accuracy/i)).toBeInTheDocument();
+  });
+
+  it("'Refresh displayed results' remains unchanged and GET-only alongside the disclosure", async () => {
+    mockApi({ results: { ...BASE_RESULTS, validation_evidence: FULL_EVIDENCE, freshness: UNKNOWN_FRESHNESS } });
+    renderPage();
+    await screen.findByTestId("freshness-disclosure");
+    mockGet.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: /refresh displayed results/i }));
+    await waitFor(() => expect(mockGet).toHaveBeenCalled());
+    for (const call of mockGet.mock.calls) {
+      expect(call[0]).not.toContain("/api/validation/run");
+    }
+  });
+
+  it("has no 'Run Now' control anywhere alongside the disclosure", async () => {
+    mockApi({ results: { ...BASE_RESULTS, validation_evidence: FULL_EVIDENCE, freshness: UNKNOWN_FRESHNESS } });
+    renderPage();
+    await screen.findByTestId("freshness-disclosure");
+    expect(screen.queryByText(/run now/i)).not.toBeInTheDocument();
+  });
+
+  it("cadence wording remains accurate alongside the disclosure", async () => {
+    mockApi({ results: { ...BASE_RESULTS, validation_evidence: FULL_EVIDENCE, freshness: UNKNOWN_FRESHNESS } });
+    renderPage();
+    await screen.findByTestId("freshness-disclosure");
+    await screen.findByText(/medium-horizon results are scheduled daily/i);
+    await screen.findByText(/long-horizon results are scheduled weekly on Sunday/i);
+  });
+
+  it("no response is labelled fresh or stale anywhere in the rendered disclosure", async () => {
+    mockApi({ results: { ...BASE_RESULTS, validation_evidence: FULL_EVIDENCE, freshness: UNKNOWN_FRESHNESS } });
+    renderPage();
+    const disclosure = await screen.findByTestId("freshness-disclosure");
+    expect(disclosure.textContent).not.toMatch(/\bfresh\b/i);
+    expect(disclosure.textContent).not.toMatch(/\bstale\b/i);
+  });
+
+  it("run-ID pinning still requires matching aggregate/per-stock run_id alongside the disclosure", async () => {
+    mockApi({ results: { ...BASE_RESULTS, run_id: 1, validation_evidence: FULL_EVIDENCE, freshness: UNKNOWN_FRESHNESS } });
+    renderPage();
+    await screen.findByTestId("freshness-disclosure");
+    const stockCall = mockGet.mock.calls.find(c => (c[0] as string).includes("/results/stocks"));
+    expect(stockCall?.[0]).toContain("run_id=1");
+  });
+});

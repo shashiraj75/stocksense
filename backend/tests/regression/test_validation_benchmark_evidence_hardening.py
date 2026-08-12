@@ -383,7 +383,7 @@ class TestAcquisitionCoverageThreshold:
 @pytest.mark.regression
 class TestPostAlignmentSignalCoverageGate:
     def test_zero_benchmark_valid_signals_cannot_produce_a_completed_result(self, monkeypatch):
-        def _fake_backtest(sym, hor, benchmark_df, market, universe=None, _exclusions=None, _window_stats=None):
+        def _fake_backtest(sym, hor, benchmark_df, market, universe=None, _exclusions=None, _window_stats=None, _diag=None):
             if _window_stats is not None:
                 _window_stats["considered"] = 10
                 _window_stats["benchmark_valid"] = 0  # every window excluded
@@ -398,7 +398,7 @@ class TestPostAlignmentSignalCoverageGate:
         assert job["failure_code"] == "BENCHMARK_ALIGNMENT_COVERAGE_INSUFFICIENT"
 
     def test_insufficient_post_alignment_coverage_writes_no_val_runs_or_val_signals(self, monkeypatch):
-        def _fake_backtest(sym, hor, benchmark_df, market, universe=None, _exclusions=None, _window_stats=None):
+        def _fake_backtest(sym, hor, benchmark_df, market, universe=None, _exclusions=None, _window_stats=None, _diag=None):
             if _window_stats is not None:
                 _window_stats["considered"] = 100
                 _window_stats["benchmark_valid"] = 1  # 1% coverage — far below 95%
@@ -410,7 +410,7 @@ class TestPostAlignmentSignalCoverageGate:
             ve.run_validation(horizon="short", universe="us")
 
     def test_compute_metrics_never_called_on_insufficient_signal_coverage(self, monkeypatch):
-        def _fake_backtest(sym, hor, benchmark_df, market, universe=None, _exclusions=None, _window_stats=None):
+        def _fake_backtest(sym, hor, benchmark_df, market, universe=None, _exclusions=None, _window_stats=None, _diag=None):
             if _window_stats is not None:
                 _window_stats["considered"] = 100
                 _window_stats["benchmark_valid"] = 0
@@ -427,7 +427,7 @@ class TestPostAlignmentSignalCoverageGate:
         prior_result = {"available": True, "buy_hit_rate_pct": 61.0, "run_at": "2026-01-01T00:00:00Z"}
         monkeypatch.setattr(ve, "get_latest_results", lambda **kw: dict(prior_result))
 
-        def _fake_backtest(sym, hor, benchmark_df, market, universe=None, _exclusions=None, _window_stats=None):
+        def _fake_backtest(sym, hor, benchmark_df, market, universe=None, _exclusions=None, _window_stats=None, _diag=None):
             if _window_stats is not None:
                 _window_stats["considered"] = 10
                 _window_stats["benchmark_valid"] = 0
@@ -448,7 +448,7 @@ class TestPostAlignmentSignalCoverageGate:
         # actually completes and returns disclosed counts to assert on.
         per_symbol = {"considered": 20, "benchmark_valid": 19}
 
-        def _fake_backtest(sym, hor, benchmark_df, market, universe=None, _exclusions=None, _window_stats=None):
+        def _fake_backtest(sym, hor, benchmark_df, market, universe=None, _exclusions=None, _window_stats=None, _diag=None):
             if _window_stats is not None:
                 _window_stats["considered"] = per_symbol["considered"]
                 _window_stats["benchmark_valid"] = per_symbol["benchmark_valid"]
@@ -470,7 +470,7 @@ class TestPostAlignmentSignalCoverageGate:
         assert metrics.get("signals_excluded_benchmark") is None
 
     def test_failed_status_includes_stable_benchmark_evidence_with_coverage_counts(self, monkeypatch):
-        def _fake_backtest(sym, hor, benchmark_df, market, universe=None, _exclusions=None, _window_stats=None):
+        def _fake_backtest(sym, hor, benchmark_df, market, universe=None, _exclusions=None, _window_stats=None, _diag=None):
             if _window_stats is not None:
                 _window_stats["considered"] = 10
                 _window_stats["benchmark_valid"] = 0
