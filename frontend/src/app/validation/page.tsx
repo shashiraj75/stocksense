@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/utils/api";
 import { resolveActiveJobView } from "@/utils/validationJobView";
@@ -28,6 +28,11 @@ type ValidationResult = {
   available: boolean;
   message?: string;
   horizon?: string;
+  // V-SNAP1B — the canonical val_runs.id for this aggregate result,
+  // authoritative over anything the stored summary JSON might contain.
+  // Used to pin the per-stock fetch to this exact run, closing the
+  // aggregate/per-stock snapshot race.
+  run_id?: number | null;
   n_stocks_tested?: number;
   run_at?: string;
   total_signals?: number;
@@ -111,6 +116,54 @@ type RunStatus = {
   // rendered as a Nifty 100 run (validation job-identity fix, 2026-07).
   job?: ValidationJob | null;
 };
+
+type StockDataPayload = { available?: boolean; run_id?: number | null; stocks: StockResult[] };
+
+// V-SNAP1B — an atomically-promoted, self-consistent pair: `results` and
+// `stockData` in a Snapshot always describe the SAME validation run for the
+// SAME horizon/universe. Never construct one outside promoteSnapshot below.
+type Snapshot = {
+  horizon: string;
+  universe: string;
+  results: ValidationResult;
+  stockData: StockDataPayload;
+};
+
+// V-SNAP1D — canonical frontend validity predicate for a validation run
+// identity. The backend uses a positive auto-incrementing/BIGSERIAL
+// identity (val_runs.id) — a valid canonical run_id must be a genuine
+// JS `number`, finite, an integer, a SAFE integer, and strictly greater
+// than zero. No coercion (`Number(...)`, `parseInt`, unary `+`, `==`, or
+// truthiness) — a runtime payload that sends a numeric STRING, 0, a
+// negative value, a fraction, NaN, +/-Infinity, or a value beyond
+// Number.MAX_SAFE_INTEGER is rejected outright, not silently accepted.
+function isValidRunId(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+// V-SNAP1C/D — second, independent defense layer (redundant with, not a
+// replacement for, the promotion-time `identityMatches` check and the
+// `seqRef` sequence guard). A Snapshot is only ever constructed by the
+// verified promotion effect below, so this should always be true by
+// construction — but the render path re-checks it anyway, so a future
+// edit that adds another `setActive()` call site (or any other bug that
+// slips a mismatched pair through) cannot silently render mixed
+// aggregate/per-stock data even if that first layer is ever broken.
+//
+// V-SNAP1D correction: the prior version of this function treated a pair
+// where BOTH sides omitted run_id as "coherent," reasoning it as legacy-
+// backend backward compatibility. The final independent V-SNAP1 review
+// found this reopens the exact race V-SNAP1 exists to close during any
+// Vercel/Railway deployment skew, a backend rollback, or communication
+// with a pre-V-SNAP1 backend — both endpoints would independently select
+// their own "latest" run again, exactly as before this whole phase, with
+// no signal to the user that the displayed pairing was never actually
+// verified. A missing OR invalid identity on either side is now rejected,
+// never trusted — there is no backward-compatibility carve-out.
+export function runIdsCoherent(results: ValidationResult, stockData: StockDataPayload): boolean {
+  if (results.available !== true) return true; // unavailable result has no per-stock run to compare against
+  return isValidRunId(results.run_id) && isValidRunId(stockData.run_id) && results.run_id === stockData.run_id;
+}
 
 const HORIZONS = [
   { key: "short",  label: "Short",  sub: "5-day forward" },
@@ -291,20 +344,136 @@ export default function ValidationPage() {
   const [stockPage, setStockPage] = useState(1);
   const qc = useQueryClient();
 
-  const { data: results, isLoading: resultsLoading } = useQuery<ValidationResult>({
+  // V-SNAP1B — IMMUTABLE VALIDATION SNAPSHOT PINNING.
+  //
+  // The aggregate `/results` endpoint and the per-stock `/results/stocks`
+  // endpoint each independently select the latest eligible run at the
+  // instant they're called. Fetching them via two separate hooks that each
+  // render directly (the pre-V-SNAP1B design) can transiently combine
+  // aggregate metrics from one run with per-stock rows from a different,
+  // newer run if a new run completes in the gap between the two requests.
+  //
+  // Fix: `results` below is only ever the CANDIDATE aggregate fetch — it is
+  // never rendered directly. `active` is the only state the JSX below
+  // reads, and it is updated in exactly one atomic setState call, only
+  // after: (1) the candidate aggregate resolves, (2) its per-stock
+  // counterpart is fetched PINNED to that aggregate's own `run_id`, and
+  // (3) both are confirmed to describe the same run/horizon/universe. The
+  // previous complete snapshot stays visible for the entire duration of
+  // that verification — never a partial/mixed intermediate state.
+  const { data: candidateResults, isLoading: candidateLoading } = useQuery<ValidationResult>({
     queryKey: ["validation-results", horizon, universe],
     queryFn: () => api.get(`/api/validation/results?horizon=${horizon}&universe=${universe}`).then(r => r.data),
     refetchOnWindowFocus: false,
     staleTime: 60_000,
   });
 
-  const { data: stockData } = useQuery<{ available?: boolean; stocks: StockResult[] }>({
-    queryKey: ["validation-stocks", horizon, universe],
-    queryFn: () => api.get(`/api/validation/results/stocks?horizon=${horizon}&universe=${universe}`).then(r => r.data),
-    enabled: results?.available === true,
-    refetchOnWindowFocus: false,
-    staleTime: 60_000,
-  });
+  const [active, setActive] = useState<Snapshot | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  // Bumped whenever the view (horizon/universe) changes OR a new candidate
+  // aggregate arrives — an in-flight promotion whose sequence number no
+  // longer matches the latest is stale and must never commit, closing the
+  // window where a slow candidate B's per-stock fetch resolves after an
+  // even newer candidate C has already started.
+  const seqRef = useRef(0);
+  // V-SNAP1D — a ref mirror of `active`, read synchronously inside the
+  // promotion effect below to decide "is this the very first snapshot, or
+  // is there already a complete one to preserve on failure" WITHOUT
+  // depending on `active` in that effect's own dependency array (which
+  // would cause it to also re-run — and re-issue a request — every time
+  // `setActive` itself fires, an unwanted feedback loop). Always kept in
+  // sync with `active` at every setActive/clear call site.
+  const activeRef = useRef<Snapshot | null>(null);
+
+  // Horizon/universe change clears the active snapshot immediately — no
+  // retained stale display of the previous view's data under the new tab.
+  useEffect(() => {
+    seqRef.current += 1;
+    activeRef.current = null;
+    setActive(null);
+    setRefreshError(null);
+  }, [horizon, universe]);
+
+  useEffect(() => {
+    if (!candidateResults) return;
+    const mySeq = ++seqRef.current;
+    const viewHorizon = horizon;
+    const viewUniverse = universe;
+
+    if (candidateResults.available !== true) {
+      // No per-stock race to close — a genuinely unavailable aggregate has
+      // no per-stock data to mismatch against. Promote immediately.
+      const snapshot: Snapshot = { horizon: viewHorizon, universe: viewUniverse, results: candidateResults, stockData: { available: false, stocks: [] } };
+      activeRef.current = snapshot;
+      setActive(snapshot);
+      setRefreshError(null);
+      return;
+    }
+
+    const candidateRunId = candidateResults.run_id;
+    if (!isValidRunId(candidateRunId)) {
+      // V-SNAP1D — FAIL CLOSED: no valid canonical run_id on the
+      // aggregate candidate. This is indistinguishable from a pre-
+      // V-SNAP1 backend, a Vercel/Railway deployment-skew window, or a
+      // rollback — there is no way to safely pin a per-stock request, so
+      // none is ever issued (never an unpinned "latest" request — that
+      // is the exact race this whole phase exists to close). Never
+      // promote, never fabricate a coherent snapshot.
+      if (activeRef.current === null) {
+        // Initial load with no valid identity: an honest, generic
+        // unavailable state — never a verified snapshot, and no
+        // technical implementation detail exposed.
+        const snapshot: Snapshot = {
+          horizon: viewHorizon, universe: viewUniverse,
+          results: { available: false, message: "A consistent validation snapshot is temporarily unavailable." },
+          stockData: { available: false, stocks: [] },
+        };
+        activeRef.current = snapshot;
+        setActive(snapshot);
+      } else {
+        // A previously active, valid snapshot exists — keep it fully
+        // intact and show a non-destructive refresh error instead.
+        setRefreshError("Refresh failed — a consistent validation snapshot is temporarily unavailable.");
+      }
+      return;
+    }
+
+    const stocksUrl = `/api/validation/results/stocks?horizon=${viewHorizon}&universe=${viewUniverse}&run_id=${candidateRunId}`;
+
+    api.get(stocksUrl).then(r => r.data as StockDataPayload).then((stockResp) => {
+      if (seqRef.current !== mySeq) return; // superseded — never commit a stale promotion
+      const identityMatches = stockResp?.available === true
+        && isValidRunId(stockResp.run_id) && stockResp.run_id === candidateRunId;
+      if (identityMatches) {
+        const snapshot: Snapshot = { horizon: viewHorizon, universe: viewUniverse, results: candidateResults, stockData: stockResp };
+        activeRef.current = snapshot;
+        setActive(snapshot);
+        setRefreshError(null);
+      } else {
+        // Per-stock refresh failed, or returned a missing/invalid/
+        // mismatched run identity — keep whatever complete snapshot is
+        // currently active and show an honest, non-destructive refresh
+        // error instead of a mixed or unverified render.
+        setRefreshError("Refresh failed — per-stock data for the latest run is unavailable. Showing the last complete snapshot.");
+      }
+    }).catch(() => {
+      if (seqRef.current !== mySeq) return;
+      setRefreshError("Refresh failed — per-stock data for the latest run is unavailable. Showing the last complete snapshot.");
+    });
+  }, [candidateResults, horizon, universe]);
+
+  // V-SNAP1C — synchronous render-time coherence guard (second defense
+  // layer): active horizon/universe must match the current selection, AND
+  // the snapshot's own aggregate/per-stock run identity must agree. Any
+  // failure here renders the existing loading/unavailable path — never a
+  // silent substitution of mismatched or stale data.
+  const showingSnapshot = active !== null
+    && active.horizon === horizon
+    && active.universe === universe
+    && runIdsCoherent(active.results, active.stockData);
+  const resultsLoading = !showingSnapshot && candidateLoading;
+  const results = showingSnapshot ? active!.results : undefined;
+  const stockData = showingSnapshot ? active!.stockData : undefined;
 
   // Reset per-stock pagination whenever the underlying dataset changes —
   // otherwise switching horizon/universe could leave "Load more" state
@@ -490,8 +659,12 @@ export default function ValidationPage() {
             </strong></span>
             <button
               onClick={() => {
+                // V-SNAP1B: this only invalidates the CANDIDATE aggregate
+                // fetch. The pinned per-stock fetch and atomic promotion are
+                // driven entirely by the candidate-arrival effect above —
+                // the currently active, complete snapshot stays visible
+                // until a new candidate is fully verified.
                 qc.invalidateQueries({ queryKey: ["validation-results", horizon] });
-                qc.invalidateQueries({ queryKey: ["validation-stocks", horizon] });
               }}
               className="flex items-center gap-1 text-gray-500 hover:text-white transition-colors"
               aria-label="Refresh displayed results"
@@ -499,6 +672,15 @@ export default function ValidationPage() {
               <RefreshCw size={11} /> Refresh displayed results
             </button>
           </div>
+          {refreshError && (
+            <div
+              data-testid="refresh-error-banner"
+              className="flex items-start gap-2 text-xs text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 rounded-lg px-3 py-2 -mt-2"
+            >
+              <AlertCircle size={13} className="mt-0.5 shrink-0" />
+              <span>{refreshError}</span>
+            </div>
+          )}
           <p className="text-xs text-gray-600 -mt-2">
             This is the last successful validation completion for the selected horizon and universe —
             not necessarily the underlying market data&apos;s own freshness.

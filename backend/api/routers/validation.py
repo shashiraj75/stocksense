@@ -154,16 +154,36 @@ def get_results(
 def get_stock_results(
     horizon: Literal["short", "medium", "long"] = Query("medium"),
     universe: Literal["nifty100", "midcap", "us"] = Query("nifty100"),
+    run_id: int | None = Query(None),
 ):
-    """Per-stock hit rate and average return breakdown for the latest run."""
-    from services.validation_engine import get_per_stock_results
+    """Per-stock hit rate and average return breakdown for the given run.
+
+    V-SNAP1B — optional `run_id` pins the response to one exact,
+    immutable validation run (matching the run_id the aggregate
+    /results endpoint returns), closing the race where a newer run
+    could complete between the aggregate and per-stock requests. Every
+    response now also includes the resolved `run_id` so the frontend
+    can verify identity before rendering. An explicit `run_id` that
+    doesn't exist, or belongs to a different horizon/universe, or is
+    not eligible, fails closed with the same generic sanitized
+    unavailable response already used elsewhere on this router — never
+    a silent fallback to latest, and never a distinguishable error that
+    would let a caller probe which specific reason caused it.
+    """
+    from services.validation_engine import get_per_stock_results, resolve_eligible_run_id
     try:
+        resolved_run_id = resolve_eligible_run_id(run_id, horizon, universe)
+        if resolved_run_id is None:
+            return _json_response({
+                "available": False, "horizon": horizon, "run_id": None, "stocks": [],
+                "error": "Validation data is temporarily unavailable.",
+            })
         return _json_response({
-            "available": True, "horizon": horizon,
-            "stocks": get_per_stock_results(horizon=horizon, universe=universe),
+            "available": True, "horizon": horizon, "run_id": resolved_run_id,
+            "stocks": get_per_stock_results(run_id=resolved_run_id, horizon=horizon, universe=universe),
         })
     except Exception as e:
-        return _json_response({"available": False, "horizon": horizon, "stocks": [], "error": safe_error_message(
+        return _json_response({"available": False, "horizon": horizon, "run_id": None, "stocks": [], "error": safe_error_message(
             log, "validation.get_stock_results", e, "Validation data is temporarily unavailable.")})
 
 

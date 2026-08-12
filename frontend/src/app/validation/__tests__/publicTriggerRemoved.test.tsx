@@ -42,6 +42,12 @@ function renderPage() {
 
 const RESULTS = {
   available: true,
+  // V-SNAP1D — a valid canonical run_id is now required for the page to
+  // promote/render a snapshot at all; without it this fixture's data
+  // would be (correctly) treated as identity-less and never rendered,
+  // which is unrelated to what this file actually tests (the public
+  // trigger's removal). Additive only — no assertion changed.
+  run_id: 1,
   horizon: "medium",
   n_stocks_tested: 3,
   run_at: "2026-08-11T00:35:24.157619+00:00",
@@ -64,7 +70,8 @@ const RESULTS = {
 function mockApi({ results = RESULTS, running = false }: { results?: object | null; running?: boolean } = {}) {
   mockGet.mockImplementation((url: string) => {
     if (url.includes("/results/stocks")) {
-      return Promise.resolve({ data: { available: true, stocks: [] } });
+      const resolvedRunId = (results as { run_id?: number } | null)?.run_id ?? 1;
+      return Promise.resolve({ data: { available: true, run_id: resolvedRunId, stocks: [] } });
     }
     if (url.includes("/results?")) {
       return Promise.resolve({ data: results ?? { available: false } });
