@@ -1542,10 +1542,20 @@ def _backtest_stock(
 # ── Aggregate metrics ─────────────────────────────────────────────────────────
 
 def _max_consec_wrong(buys: list[dict]) -> int:
+    # V-PS2B — `correct` is tri-state (True/False/None; a retained V-PS2A
+    # unevaluated signal is None). Raw truthiness (`if not s["correct"]`)
+    # treated None as a wrong result — an unknown outcome is neither a
+    # hit nor a miss, so it must reset the streak without incrementing
+    # it. Deliberately NOT pre-filtered: filtering None out would bridge
+    # two genuine streaks across an evidentiary gap that never actually
+    # happened consecutively.
     ordered = sorted(buys, key=lambda s: s.get("signal_date", ""))
     best = cur = 0
     for s in ordered:
-        if not s["correct"]:
+        c = s["correct"]
+        if c is None:
+            cur = 0
+        elif not c:
             cur += 1
             best = max(best, cur)
         else:
@@ -1554,10 +1564,14 @@ def _max_consec_wrong(buys: list[dict]) -> int:
 
 
 def _max_consec_right(buys: list[dict]) -> int:
+    # V-PS2B — same tri-state contract as _max_consec_wrong() above.
     ordered = sorted(buys, key=lambda s: s.get("signal_date", ""))
     best = cur = 0
     for s in ordered:
-        if s["correct"]:
+        c = s["correct"]
+        if c is None:
+            cur = 0
+        elif c:
             cur += 1
             best = max(best, cur)
         else:

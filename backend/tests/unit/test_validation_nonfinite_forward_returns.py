@@ -352,3 +352,93 @@ class TestSafeJsonNormalizesNonFiniteFloats:
         decoded = json.loads(bytes(response.body))
         assert decoded["stocks"][0]["avg_fwd_return_pct"] is None
         assert decoded["stocks"][1]["avg_fwd_return_pct"] == 1.23
+
+
+# ── E. Tri-state streak handling (V-PS2B) ───────────────────────────────────
+
+@pytest.mark.regression
+class TestStreakHelpersTreatUnknownOutcomeAsNeitherHitNorMiss:
+    """Independent-review finding: _max_consec_wrong()/_max_consec_right()
+    used raw Python truthiness on `correct` (`if not s["correct"]:` /
+    `if s["correct"]:`). Since V-PS2A's retained-unevaluated signals use
+    `correct=None`, `not None` is True — a signal whose outcome was never
+    measurable was silently counted as a genuine MISS by
+    _max_consec_wrong(), and (as an all-branches consequence) treated as
+    a non-hit by _max_consec_right() too, with no explicit tri-state
+    contract distinguishing "unknown" from "wrong".
+
+    Concrete reproduction: [True, None, True] contains zero genuine
+    misses, but _max_consec_wrong() reported 1 before this correction.
+
+    Required contract: True extends the right streak and resets wrong;
+    False extends the wrong streak and resets right; None is NEITHER —
+    it resets BOTH streaks (an unknown outcome breaks chronological
+    consecutiveness) without incrementing either. None must not be
+    pre-filtered, since filtering would incorrectly bridge two genuine
+    streaks across an evidentiary gap that never actually happened
+    consecutively in the model's own history."""
+
+    @staticmethod
+    def _buys(outcomes):
+        """Build a chronologically-dated buys list from a list of
+        True/False/None `correct` values, in order — signal_date is the
+        ordering key _max_consec_wrong/_max_consec_right sort by."""
+        return [
+            {"signal_date": f"2026-01-{i+1:02d}", "correct": c}
+            for i, c in enumerate(outcomes)
+        ]
+
+    @pytest.mark.parametrize("outcomes,expected_right,expected_wrong", [
+        ([], 0, 0),
+        ([None], 0, 0),
+        ([True], 1, 0),
+        ([False], 0, 1),
+        ([True, True], 2, 0),
+        ([False, False], 0, 2),
+        ([True, None, True], 1, 0),
+        ([False, None, False], 0, 1),
+        ([True, True, None, True], 2, 0),
+        ([False, False, None, False], 0, 2),
+        ([None, True, True, None], 2, 0),
+        ([None, False, False, None], 0, 2),
+        ([True, False, None, False, True], 1, 1),
+    ])
+    def test_tri_state_streak_vectors(self, outcomes, expected_right, expected_wrong):
+        buys = self._buys(outcomes)
+        assert ve._max_consec_right(buys) == expected_right
+        assert ve._max_consec_wrong(buys) == expected_wrong
+
+    def test_input_is_sorted_chronologically_before_evaluation(self):
+        """Out-of-order input must produce the same answer as its
+        chronologically ordered equivalent — proves the existing sort
+        (unchanged by this correction) is still honored."""
+        chronological = self._buys([True, True, None, True])
+        shuffled = [chronological[2], chronological[0], chronological[3], chronological[1]]
+        assert ve._max_consec_right(shuffled) == ve._max_consec_right(chronological) == 2
+        assert ve._max_consec_wrong(shuffled) == ve._max_consec_wrong(chronological) == 0
+
+    def test_database_style_zero_one_integers_behave_like_false_true(self):
+        """A row read back from SQL (correct as 0/1, not Python bool) must
+        behave identically to the equivalent True/False."""
+        buys = [
+            {"signal_date": "2026-01-01", "correct": 1},
+            {"signal_date": "2026-01-02", "correct": None},
+            {"signal_date": "2026-01-03", "correct": 1},
+        ]
+        assert ve._max_consec_right(buys) == 1
+        assert ve._max_consec_wrong(buys) == 0
+
+    def test_all_evaluated_behavior_unchanged(self):
+        """Control: a dataset with no None outcomes at all must produce
+        exactly the same result as before this correction — proves the
+        fix is additive, not a behavior change for fully-evaluated runs."""
+        buys = self._buys([True, True, False, True, True, True, False, False])
+        assert ve._max_consec_right(buys) == 3
+        assert ve._max_consec_wrong(buys) == 2
+
+    def test_input_list_is_not_mutated(self):
+        buys = self._buys([True, None, False])
+        original = [dict(b) for b in buys]
+        ve._max_consec_right(buys)
+        ve._max_consec_wrong(buys)
+        assert buys == original
