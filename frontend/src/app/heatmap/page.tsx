@@ -9,8 +9,13 @@ import { StockContextMenu } from "@/components/StockContextMenu";
 import { useMarketPreference } from "@/hooks/useMarketPreference";
 import { UnsupportedMarketNotice } from "@/components/UnsupportedMarketNotice";
 
-type Stock  = { symbol: string; change_pct: number | null };
-type Sector = { sector: string; avg_change: number | null; stocks: Stock[]; loaded: number; total: number };
+type Stock  = { symbol: string; change_pct: number | null; change: number | null };
+type Sector = { sector: string; avg_change: number | null; avg_change_points: number | null; stocks: Stock[]; loaded: number; total: number };
+
+function fmtPoints(pts: number | null): string {
+  if (pts === null) return "";
+  return ` (${pts >= 0 ? "+" : ""}${pts})`;
+}
 
 // Magnitude 0 -> light (near background), magnitude >=3% -> darkest/most saturated.
 // Uses inline HSL so brightness scales monotonically with |pct|, unlike the
@@ -27,8 +32,7 @@ function getColorStyle(pct: number | null): CSSProperties {
 
 function getColorTextClass(pct: number | null): string {
   if (pct === null) return "bg-gray-800 text-gray-500 border border-gray-700";
-  const magnitude = Math.min(Math.abs(pct), 3) / 3;
-  return magnitude >= 0.4 ? "text-white" : (pct >= 0 ? "text-green-950" : "text-red-950");
+  return "text-white";
 }
 
 function getSectorColor(pct: number | null): string {
@@ -181,7 +185,7 @@ export default function HeatmapPage() {
               <div className="text-sm font-bold leading-tight">{sector.sector}</div>
               <div className="text-lg mt-1 font-bold tabular-nums">
                 {sector.avg_change !== null
-                  ? `${sector.avg_change >= 0 ? "+" : ""}${sector.avg_change}%`
+                  ? `${sector.avg_change >= 0 ? "+" : ""}${sector.avg_change}%${fmtPoints(sector.avg_change_points)}`
                   : "—"}
               </div>
               {sector.loaded < sector.total && (
@@ -209,7 +213,7 @@ export default function HeatmapPage() {
                   sector.avg_change === null ? "text-gray-500"
                   : sector.avg_change >= 0 ? "text-green-400" : "text-red-400")}>
                   {sector.avg_change !== null
-                    ? `${sector.avg_change >= 0 ? "+" : ""}${sector.avg_change}%`
+                    ? `${sector.avg_change >= 0 ? "+" : ""}${sector.avg_change}%${fmtPoints(sector.avg_change_points)}`
                     : "—"}
                 </span>
               </div>
@@ -220,7 +224,7 @@ export default function HeatmapPage() {
                   <StockContextMenu key={stock.symbol} symbol={stock.symbol} market={market}>
                     <button
                       onClick={() => router.push(`/stock/${encodeURIComponent(stock.symbol)}?market=${market}`)}
-                      title={stock.change_pct !== null ? `${stock.symbol}: ${stock.change_pct >= 0 ? "+" : ""}${stock.change_pct}% · Right-click for options` : `${stock.symbol}: no data`}
+                      title={stock.change_pct !== null ? `${stock.symbol}: ${stock.change_pct >= 0 ? "+" : ""}${stock.change_pct}%${fmtPoints(stock.change)} · Right-click for options` : `${stock.symbol}: no data`}
                       className={clsx(
                         "rounded-lg px-2 py-3 text-center w-full transition-opacity hover:opacity-75 active:scale-95 cursor-pointer",
                         getColorTextClass(stock.change_pct)
@@ -230,7 +234,7 @@ export default function HeatmapPage() {
                       <div className="text-xs font-bold font-mono leading-tight truncate">{stock.symbol}</div>
                       <div className="text-xs mt-0.5 font-medium tabular-nums">
                         {stock.change_pct !== null
-                          ? `${stock.change_pct >= 0 ? "+" : ""}${stock.change_pct}%`
+                          ? `${stock.change_pct >= 0 ? "+" : ""}${stock.change_pct}%${fmtPoints(stock.change)}`
                           : "—"}
                       </div>
                     </button>

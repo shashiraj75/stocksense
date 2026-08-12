@@ -307,13 +307,13 @@ def get_gainers_losers(index: str = "NIFTY 50") -> tuple[list[dict], list[dict]]
         return [], []
 
 
-def get_sector_changes(sector: str) -> Optional[dict[str, float]]:
+def get_sector_changes(sector: str) -> Optional[dict[str, dict[str, float]]]:
     """
-    Return {symbol: change_pct} for all stocks in a sector index.
+    Return {symbol: {"change_pct": ..., "change": ...}} for all stocks in a sector index.
     Returns None if the sector has no mapped NSE index.
     """
     nse_index = SECTOR_TO_NSE_INDEX.get(sector)
     if not nse_index:
         return None
     stocks = fetch_index(nse_index)
-    return {s["symbol"]: s["change_pct"] for s in stocks}
+    return {s["symbol"]: {"change_pct": s["change_pct"], "change": s["change"]} for s in stocks}
