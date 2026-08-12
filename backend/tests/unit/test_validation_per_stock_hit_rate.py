@@ -363,6 +363,26 @@ def test_aggregate_buy_return_count_excludes_null_returns():
     assert m["buy_return_count"] == 1
 
 
+def test_aggregate_retained_unevaluated_signal_counts_only_toward_total():
+    """V-PS2A — the exact shape _backtest_stock() now persists for a valid
+    entry whose exit price never became observable: predicted=BUY,
+    correct=None, fwd_return_pct=None, alpha_pct=None together. It must
+    count toward buy_signal_count (the prediction existed) and toward
+    NOTHING else — not evaluated_buy_count, not buy_hits, not
+    buy_return_count — via the real _compute_metrics() boundary, not a
+    re-derivation of the formula."""
+    signals = [
+        _signal("BUY", correct=1, fwd_return_pct=5.0),
+        _signal("BUY", correct=None, fwd_return_pct=None, alpha_pct=None, actual_direction=None),
+    ]
+    m = _compute_metrics(signals, benchmark_return_pct=0.5, horizon="medium")
+    assert m["buy_signal_count"] == 2
+    assert m["evaluated_buy_count"] == 1
+    assert m["buy_hits"] == 1
+    assert m["buy_return_count"] == 1
+    assert m["buy_hit_rate_pct"] == 100.0
+
+
 def test_aggregate_hit_rate_is_never_reconstructed_from_a_rounded_percentage():
     # 2/3 = 66.666...% which rounds to 66.7% — buy_hits must be the exact
     # integer 2, not round(66.7/100 * 3) which could silently diverge for
@@ -463,3 +483,170 @@ def test_buy_outperformance_uses_valid_return_cohort_and_stays_none_if_empty():
     m = _compute_metrics(signals, benchmark_return_pct=1.0, horizon="medium")
     assert m["avg_return_on_buy_pct"] is None
     assert m["buy_outperformance_pct"] is None
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# V-PS2 — historical per-stock aggregation must exclude non-finite
+# fwd_return_pct from every denominator (evaluated_buy_count, buy_hits,
+# buy_return_count, avg_ret, buy_avg_ret), and must never let AVG() over a
+# single NaN/Infinity row poison that symbol's aggregate — root-caused
+# against actual production runs 227/228 (see V-PS1). A row whose
+# fwd_return_pct is NaN/Infinity has a `correct` value that was derived
+# from a NaN alpha (alpha = NaN - benchmark => NaN; `NaN > 0` is False in
+# Python) — a FABRICATED miss, not a genuine evaluated outcome — so such a
+# row must be excluded from evaluated_buy_count/buy_hits too, not just from
+# the return average.
+# ═════════════════════════════════════════════════════════════════════════
+
+import math
+
+
+def test_nan_fwd_return_excluded_from_avg_return_not_poisoning_the_whole_symbol(isolated_db):
+    run_id = _insert_run(isolated_db)
+    _insert_signal(isolated_db, run_id, "POISON", "medium", "BUY", correct=1, fwd_return_pct=10.0)
+    _insert_signal(isolated_db, run_id, "POISON", "medium", "BUY", correct=0, fwd_return_pct=float("nan"))
+
+    rows = ve.get_per_stock_results(run_id=run_id, horizon="medium", universe="nifty100")
+    r = next(x for x in rows if x["symbol"] == "POISON")
+
+    assert r["avg_fwd_return_pct"] is not None and math.isfinite(r["avg_fwd_return_pct"])
+    assert r["buy_avg_return_pct"] is not None and math.isfinite(r["buy_avg_return_pct"])
+    # The NaN row must not count as a valid return: only the one finite
+    # 10.0 return contributes, so the average must be exactly 10.0, not
+    # NaN and not a fabricated blend.
+    assert r["avg_fwd_return_pct"] == 10.0
+    assert r["buy_avg_return_pct"] == 10.0
+    assert r["buy_return_count"] == 1
+
+
+def test_nan_fwd_return_row_excluded_from_evaluated_buy_count_and_hits(isolated_db):
+    """The core fabricated-miss defect: a BUY row whose fwd_return_pct is
+    NaN was persisted with correct=0 (a false miss derived from a NaN
+    alpha) — this row must NOT be counted as a genuine evaluated outcome
+    at all, in either direction."""
+    run_id = _insert_run(isolated_db)
+    _insert_signal(isolated_db, run_id, "GHOST", "medium", "BUY", correct=1, fwd_return_pct=5.0)
+    _insert_signal(isolated_db, run_id, "GHOST", "medium", "BUY", correct=0, fwd_return_pct=float("nan"))
+
+    rows = ve.get_per_stock_results(run_id=run_id, horizon="medium", universe="nifty100")
+    r = next(x for x in rows if x["symbol"] == "GHOST")
+
+    assert r["buy_signal_count"] == 2  # the raw BUY count is unaffected
+    assert r["evaluated_buy_count"] == 1  # the NaN row is excluded, not counted as a miss
+    assert r["buy_hits"] == 1
+    assert r["hit_rate_pct"] == 100.0  # not 50.0, which would count the fabricated miss
+
+
+def test_infinity_fwd_return_also_excluded(isolated_db):
+    run_id = _insert_run(isolated_db)
+    _insert_signal(isolated_db, run_id, "INFSYM", "medium", "BUY", correct=1, fwd_return_pct=float("inf"))
+    _insert_signal(isolated_db, run_id, "INFSYM", "medium", "BUY", correct=1, fwd_return_pct=-float("inf"))
+    _insert_signal(isolated_db, run_id, "INFSYM", "medium", "BUY", correct=1, fwd_return_pct=3.0)
+
+    rows = ve.get_per_stock_results(run_id=run_id, horizon="medium", universe="nifty100")
+    r = next(x for x in rows if x["symbol"] == "INFSYM")
+
+    assert r["buy_return_count"] == 1
+    assert r["buy_avg_return_pct"] == 3.0
+    assert r["evaluated_buy_count"] == 1
+    assert r["hit_rate_pct"] == 100.0
+
+
+def test_hold_row_with_nan_return_does_not_affect_buy_metrics(isolated_db):
+    """A non-BUY row's non-finite return must not leak into BUY-only
+    denominators — it only affects the ALL-signal avg_fwd_return_pct,
+    which must also exclude it (never poison symbol-wide avg either)."""
+    run_id = _insert_run(isolated_db)
+    _insert_signal(isolated_db, run_id, "MIXED", "medium", "BUY", correct=1, fwd_return_pct=8.0)
+    _insert_signal(isolated_db, run_id, "MIXED", "medium", "HOLD", correct=0, fwd_return_pct=float("nan"))
+
+    rows = ve.get_per_stock_results(run_id=run_id, horizon="medium", universe="nifty100")
+    r = next(x for x in rows if x["symbol"] == "MIXED")
+
+    assert r["buy_return_count"] == 1
+    assert r["buy_avg_return_pct"] == 8.0
+    assert r["avg_fwd_return_pct"] == 8.0  # HOLD's NaN excluded from the all-signal average too
+
+
+def test_symbol_with_only_nonfinite_outcomes_returns_unavailable_not_zero(isolated_db):
+    run_id = _insert_run(isolated_db)
+    _insert_signal(isolated_db, run_id, "ALLBAD", "medium", "BUY", correct=0, fwd_return_pct=float("nan"))
+    _insert_signal(isolated_db, run_id, "ALLBAD", "medium", "BUY", correct=1, fwd_return_pct=float("inf"))
+
+    rows = ve.get_per_stock_results(run_id=run_id, horizon="medium", universe="nifty100")
+    r = next(x for x in rows if x["symbol"] == "ALLBAD")
+
+    assert r["buy_signal_count"] == 2
+    assert r["evaluated_buy_count"] == 0
+    assert r["buy_hits"] is None  # SUM() over zero evaluated rows is SQL NULL, never a fabricated 0
+    assert r["hit_rate_pct"] is None  # never a fabricated 0%
+    assert r["buy_return_count"] == 0
+    assert r["buy_avg_return_pct"] is None
+
+
+def test_symbol_with_valid_and_invalid_rows_only_counts_valid_ones(isolated_db):
+    run_id = _insert_run(isolated_db)
+    _insert_signal(isolated_db, run_id, "PARTIAL", "medium", "BUY", correct=1, fwd_return_pct=4.0)
+    _insert_signal(isolated_db, run_id, "PARTIAL", "medium", "BUY", correct=0, fwd_return_pct=6.0)
+    _insert_signal(isolated_db, run_id, "PARTIAL", "medium", "BUY", correct=0, fwd_return_pct=float("nan"))
+
+    rows = ve.get_per_stock_results(run_id=run_id, horizon="medium", universe="nifty100")
+    r = next(x for x in rows if x["symbol"] == "PARTIAL")
+
+    assert r["buy_signal_count"] == 3
+    assert r["evaluated_buy_count"] == 2
+    assert r["buy_hits"] == 1
+    assert r["hit_rate_pct"] == 50.0
+    assert r["buy_return_count"] == 2
+    assert r["buy_avg_return_pct"] == 5.0
+
+
+def test_control_symbol_with_no_invalid_rows_completely_unaffected(isolated_db):
+    """A symbol with zero non-finite rows must produce byte-identical
+    results to the pre-fix formula — this correction changes nothing
+    about valid-row arithmetic."""
+    run_id = _insert_run(isolated_db)
+    _insert_signal(isolated_db, run_id, "CLEAN", "medium", "BUY", correct=1, fwd_return_pct=2.0)
+    _insert_signal(isolated_db, run_id, "CLEAN", "medium", "BUY", correct=1, fwd_return_pct=4.0)
+
+    rows = ve.get_per_stock_results(run_id=run_id, horizon="medium", universe="nifty100")
+    r = next(x for x in rows if x["symbol"] == "CLEAN")
+
+    assert r["buy_signal_count"] == 2
+    assert r["evaluated_buy_count"] == 2
+    assert r["buy_hits"] == 2
+    assert r["hit_rate_pct"] == 100.0
+    assert r["buy_return_count"] == 2
+    assert r["buy_avg_return_pct"] == 3.0
+
+
+def test_sqlite_actually_stores_and_compares_nan_as_expected(isolated_db):
+    """Explicit proof (not assumption) that SQLite's REAL storage of a
+    Python float('nan') round-trips as a value whose self-equality is
+    never truthy — SQLite returns NULL (not 0) for `NaN = NaN`, a
+    genuinely different representation than PostgreSQL's `false`, but
+    functionally equivalent inside `CASE WHEN ... THEN x END`: SQLite
+    treats a NULL condition as not-taken, identical in effect to `false`.
+    This is exactly what the finite-value predicate this fix relies on
+    (`x = x`) depends on across both dialects — proven here, not assumed."""
+    run_id = _insert_run(isolated_db)
+    _insert_signal(isolated_db, run_id, "SQLITECHK", "medium", "BUY", correct=1, fwd_return_pct=float("nan"))
+
+    with sqlite3.connect(isolated_db) as conn:
+        row = conn.execute(
+            "SELECT fwd_return_pct = fwd_return_pct FROM val_signals WHERE symbol='SQLITECHK'"
+        ).fetchone()
+    assert row[0] in (0, None)  # never truthy (1) for a NaN — SQLite's own falsy representation is NULL
+
+
+def test_deterministic_ordering_and_symbol_tiebreak_unaffected_by_nan_symbol(isolated_db):
+    """A poisoned symbol must not disturb the deterministic ordering of
+    the other, unaffected symbols."""
+    run_id = _insert_run(isolated_db)
+    _insert_signal(isolated_db, run_id, "ZEBRA", "medium", "BUY", correct=1, fwd_return_pct=5.0)
+    _insert_signal(isolated_db, run_id, "ALPHA", "medium", "BUY", correct=1, fwd_return_pct=5.0)
+    _insert_signal(isolated_db, run_id, "POISONED", "medium", "BUY", correct=0, fwd_return_pct=float("nan"))
+
+    rows = ve.get_per_stock_results(run_id=run_id, horizon="medium", universe="nifty100")
+    symbols = [r["symbol"] for r in rows if r["symbol"] in ("ZEBRA", "ALPHA")]
+    assert symbols == ["ALPHA", "ZEBRA"]

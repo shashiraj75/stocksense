@@ -3,6 +3,7 @@ Validation API — exposes walk-forward backtest results to the frontend.
 """
 import hmac
 import logging
+import math
 import os
 import numpy as np
 from fastapi import APIRouter, Query, BackgroundTasks, Header, HTTPException
@@ -39,17 +40,33 @@ def _require_validation_secret(x_secret: str | None) -> None:
 
 
 def _safe_json(obj):
-    """Recursively convert numpy scalars / ndarrays to native Python types."""
+    """Recursively convert numpy scalars / ndarrays to native Python types,
+    and normalize any non-finite float (NaN, +/-Infinity — built-in or
+    NumPy) to None.
+
+    V-PS2 — Starlette's JSONResponse renders with allow_nan=False, so a
+    single non-finite value anywhere in the payload previously raised
+    `ValueError: Out of range float values are not JSON compliant: nan`
+    and took down the ENTIRE response (see get_stock_results' router
+    docstring / V-PS1's root-cause trace) — one bad historical row could
+    make a whole universe/horizon's per-stock endpoint unavailable. This
+    is defense in depth, not a substitute for excluding invalid values at
+    the aggregation layer (see get_per_stock_results' `clean` CTE) — by
+    the time a value reaches here, it should already be None, but this
+    guarantees the API boundary itself can never crash on one regardless.
+    """
     if isinstance(obj, dict):
         return {k: _safe_json(v) for k, v in obj.items()}
-    if isinstance(obj, list):
+    if isinstance(obj, (list, tuple)):
         return [_safe_json(v) for v in obj]
     if isinstance(obj, np.integer):
         return int(obj)
     if isinstance(obj, np.floating):
-        return float(obj)
+        obj = float(obj)
     if isinstance(obj, np.ndarray):
-        return obj.tolist()
+        return _safe_json(obj.tolist())
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
     return obj
 
 

@@ -1341,10 +1341,39 @@ def _backtest_stock(
             try:
                 window_stats["considered"] += 1
                 entry = float(df["Close"].iloc[i])
-                exit_ = float(df["Close"].iloc[i + fwd_days])
-                if entry == 0:
+                # V-PS2 — a NaN Close (a genuine market-data gap) at the
+                # ENTRY date means there was never an observable, tradeable
+                # price to enter this hypothetical position at — the whole
+                # window cannot produce a signal (this row also feeds
+                # _score_at()'s technical sub-scores below, so an invalid
+                # entry poisons the prediction itself, not just its
+                # outcome). Only entry==0 (division-by-zero) is rejected
+                # here too — a genuine 0 EXIT price is a valid total loss,
+                # handled below, never rejected.
+                if not np.isfinite(entry) or entry == 0:
                     continue
-                fwd_ret = (exit_ - entry) / entry * 100
+
+                # V-PS2A — exit-price validity is handled separately from
+                # entry: the model's prediction (composite score/predicted
+                # label, computed below from data up to and including the
+                # ENTRY date only) already exists independent of whether
+                # the FUTURE exit price ever became observable. A missing/
+                # non-finite exit means the OUTCOME cannot be measured —
+                # not that the prediction never happened. `fwd_ret=None`
+                # represents this honestly; the signal is still recorded
+                # (see get_per_stock_results()'s evaluated/return cohort
+                # contract, which already treats a None fwd_return_pct as
+                # "not yet evaluated", never as a fabricated loss).
+                exit_ = float(df["Close"].iloc[i + fwd_days])
+                if np.isfinite(exit_):
+                    fwd_ret = (exit_ - entry) / entry * 100
+                    # Defense against any other unexpected arithmetic
+                    # result (e.g. an extreme-magnitude entry) — a
+                    # non-finite fwd_ret must never reach persistence.
+                    if not np.isfinite(fwd_ret):
+                        fwd_ret = None
+                else:
+                    fwd_ret = None
 
                 # Benchmark forward return over same window (for alpha
                 # calculation) — genuine evidence required at BOTH the
@@ -1420,16 +1449,35 @@ def _backtest_stock(
                 #   BUY is correct  if stock outperforms the benchmark by > 0 over fwd window
                 #   SELL is correct if stock underperforms the benchmark by > 0 over fwd window
                 #   HOLD is correct if stock is within ±threshold% of the benchmark return
-                alpha = fwd_ret - benchmark_fwd_ret
-                if predicted == "BUY":
-                    correct = alpha > 0
-                elif predicted == "SELL":
-                    correct = alpha < 0
+                #
+                # V-PS2A — an unmeasurable outcome (fwd_ret is None, exit
+                # price never became available) must never be classified
+                # at all: `alpha = None - benchmark_fwd_ret` would raise,
+                # and even a defensive `alpha = NaN` would previously have
+                # been silently classified `correct=False` by `NaN > 0`
+                # (Python's NaN-comparison semantics) — a fabricated miss.
+                # correct/alpha/actual_direction all stay honestly None
+                # for this signal; it is still recorded (see below) with
+                # its prediction intact, just without a graded outcome.
+                if fwd_ret is not None:
+                    alpha = fwd_ret - benchmark_fwd_ret
+                    if not np.isfinite(alpha):
+                        alpha = None
                 else:
-                    correct = abs(alpha) <= threshold * 100
+                    alpha = None
 
-                # Keep absolute direction for context (used in avg return calcs)
-                actual_dir = "UP" if fwd_ret >= threshold * 100 else ("DOWN" if fwd_ret <= -threshold * 100 else "FLAT")
+                if alpha is not None:
+                    if predicted == "BUY":
+                        correct_val = int(alpha > 0)
+                    elif predicted == "SELL":
+                        correct_val = int(alpha < 0)
+                    else:
+                        correct_val = int(abs(alpha) <= threshold * 100)
+                    # Keep absolute direction for context (used in avg return calcs)
+                    actual_dir = "UP" if fwd_ret >= threshold * 100 else ("DOWN" if fwd_ret <= -threshold * 100 else "FLAT")
+                else:
+                    correct_val = None
+                    actual_dir = None
 
                 signals.append({
                     "symbol":          symbol,
@@ -1445,15 +1493,22 @@ def _backtest_stock(
                     # not persisted to val_signals' fixed columns, in-memory
                     # only, used solely for the confidence_buckets report below.
                     "confidence":      _confidence_from_composite(composite, predicted),
-                    "fwd_return_pct":  round(fwd_ret, 3),
+                    # V-PS2A — None when the exit price never became
+                    # observable (see the exit-validity block above); the
+                    # existing evaluated/return cohort contract in
+                    # _compute_metrics()/get_per_stock_results() already
+                    # treats a None fwd_return_pct as "not yet evaluated",
+                    # never as a fabricated loss.
+                    "fwd_return_pct":  round(fwd_ret, 3) if fwd_ret is not None else None,
                     # Persisted column/JSON key name (val_signals.nifty_fwd_ret_pct) —
                     # kept unchanged to avoid a schema migration; the underlying
                     # value is the run's benchmark forward return regardless of
-                    # market (Nifty 50 for IN, S&P 500 for US).
+                    # market (Nifty 50 for IN, S&P 500 for US). Always finite
+                    # here — benchmark_ok/finiteness was already gated above.
                     "nifty_fwd_ret_pct": round(benchmark_fwd_ret, 3),
-                    "alpha_pct":       round(alpha, 3),
+                    "alpha_pct":       round(alpha, 3) if alpha is not None else None,
                     "actual_direction": actual_dir,
-                    "correct":         int(correct),
+                    "correct":         correct_val,
                     # DP-026 remediation — additive-only, same non-persisted
                     # pattern as "confidence" above (not a val_signals fixed
                     # column; used solely for _compute_metrics()'s coverage
@@ -1487,10 +1542,20 @@ def _backtest_stock(
 # ── Aggregate metrics ─────────────────────────────────────────────────────────
 
 def _max_consec_wrong(buys: list[dict]) -> int:
+    # V-PS2B — `correct` is tri-state (True/False/None; a retained V-PS2A
+    # unevaluated signal is None). Raw truthiness (`if not s["correct"]`)
+    # treated None as a wrong result — an unknown outcome is neither a
+    # hit nor a miss, so it must reset the streak without incrementing
+    # it. Deliberately NOT pre-filtered: filtering None out would bridge
+    # two genuine streaks across an evidentiary gap that never actually
+    # happened consecutively.
     ordered = sorted(buys, key=lambda s: s.get("signal_date", ""))
     best = cur = 0
     for s in ordered:
-        if not s["correct"]:
+        c = s["correct"]
+        if c is None:
+            cur = 0
+        elif not c:
             cur += 1
             best = max(best, cur)
         else:
@@ -1499,10 +1564,14 @@ def _max_consec_wrong(buys: list[dict]) -> int:
 
 
 def _max_consec_right(buys: list[dict]) -> int:
+    # V-PS2B — same tri-state contract as _max_consec_wrong() above.
     ordered = sorted(buys, key=lambda s: s.get("signal_date", ""))
     best = cur = 0
     for s in ordered:
-        if s["correct"]:
+        c = s["correct"]
+        if c is None:
+            cur = 0
+        elif c:
             cur += 1
             best = max(best, cur)
         else:
@@ -2505,32 +2574,61 @@ def get_per_stock_results(run_id: int | None = None, horizon: str = "medium", un
                 return []
             run_id = row[0] if _USE_POSTGRES else row["id"]
 
+        # V-PS2 — a historical NaN/Infinity fwd_return_pct (root-caused
+        # against production runs 227/228, see the V-PS1/V-PS2 phases)
+        # poisons AVG() for that whole symbol and crashes JSON
+        # serialization for the whole endpoint. The `clean` CTE nulls out
+        # any non-finite fwd_return_pct BEFORE it reaches any aggregate —
+        # `x = x` excludes NaN (false for NaN in both dialects; SQLite
+        # returns NULL rather than 0 for it, which is equally not-true
+        # inside a CASE WHEN, proven in
+        # test_sqlite_actually_stores_and_compares_nan_as_expected), and
+        # the bound +/-Infinity parameters (not string literals, so they
+        # bind identically in both dialects) exclude both infinities. A
+        # row nulled out here is treated exactly like a genuinely missing
+        # fwd_return_pct by every existing downstream `IS NOT NULL`
+        # check — no formula below this point changes.
+        _POS_INF, _NEG_INF = float("inf"), float("-inf")
         rows = _fetchall(
-            """SELECT symbol,
+            """WITH clean AS (
+                   SELECT symbol, predicted, correct,
+                          CASE WHEN fwd_return_pct = fwd_return_pct
+                                AND fwd_return_pct < %s AND fwd_return_pct > %s
+                               THEN fwd_return_pct END AS fwd_return_pct
+                   FROM val_signals
+                   WHERE run_id=%s AND horizon=%s
+               )
+               SELECT symbol,
                       COUNT(*) AS total,
                       AVG(fwd_return_pct) AS avg_ret,
                       COUNT(CASE WHEN predicted='BUY' THEN 1 END) AS buy_signal_count,
-                      COUNT(CASE WHEN predicted='BUY' AND correct IS NOT NULL THEN 1 END) AS evaluated_buy_count,
-                      SUM(CASE WHEN predicted='BUY' AND correct IS NOT NULL THEN correct END) AS buy_hits,
+                      COUNT(CASE WHEN predicted='BUY' AND correct IS NOT NULL AND fwd_return_pct IS NOT NULL THEN 1 END) AS evaluated_buy_count,
+                      SUM(CASE WHEN predicted='BUY' AND correct IS NOT NULL AND fwd_return_pct IS NOT NULL THEN correct END) AS buy_hits,
                       COUNT(CASE WHEN predicted='BUY' AND fwd_return_pct IS NOT NULL THEN 1 END) AS buy_return_count,
                       AVG(CASE WHEN predicted='BUY' AND fwd_return_pct IS NOT NULL THEN fwd_return_pct END) AS buy_avg_ret
-               FROM val_signals
-               WHERE run_id=%s AND horizon=%s
+               FROM clean
                GROUP BY symbol
                ORDER BY buy_avg_ret DESC NULLS LAST, symbol ASC""",
-            """SELECT symbol,
+            """WITH clean AS (
+                   SELECT symbol, predicted, correct,
+                          CASE WHEN fwd_return_pct = fwd_return_pct
+                                AND fwd_return_pct < ? AND fwd_return_pct > ?
+                               THEN fwd_return_pct END AS fwd_return_pct
+                   FROM val_signals
+                   WHERE run_id=? AND horizon=?
+               )
+               SELECT symbol,
                       COUNT(*) AS total,
                       AVG(fwd_return_pct) AS avg_ret,
                       COUNT(CASE WHEN predicted='BUY' THEN 1 END) AS buy_signal_count,
-                      COUNT(CASE WHEN predicted='BUY' AND correct IS NOT NULL THEN 1 END) AS evaluated_buy_count,
-                      SUM(CASE WHEN predicted='BUY' AND correct IS NOT NULL THEN correct END) AS buy_hits,
+                      COUNT(CASE WHEN predicted='BUY' AND correct IS NOT NULL AND fwd_return_pct IS NOT NULL THEN 1 END) AS evaluated_buy_count,
+                      SUM(CASE WHEN predicted='BUY' AND correct IS NOT NULL AND fwd_return_pct IS NOT NULL THEN correct END) AS buy_hits,
                       COUNT(CASE WHEN predicted='BUY' AND fwd_return_pct IS NOT NULL THEN 1 END) AS buy_return_count,
                       AVG(CASE WHEN predicted='BUY' AND fwd_return_pct IS NOT NULL THEN fwd_return_pct END) AS buy_avg_ret
-               FROM val_signals
-               WHERE run_id=? AND horizon=?
+               FROM clean
                GROUP BY symbol
                ORDER BY buy_avg_ret DESC NULLS LAST, symbol ASC""",
-            (run_id, horizon)
+            (_POS_INF, _NEG_INF, run_id, horizon)
         )
 
         def _v(r, key, idx):
