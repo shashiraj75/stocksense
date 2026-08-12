@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/utils/api";
 import { resolveActiveJobView } from "@/utils/validationJobView";
@@ -33,6 +33,13 @@ type ValidationResult = {
   total_signals?: number;
   buy_signals?: number;
   sell_signals?: number;
+  // V-VAL1 evaluated-cohort fields (additive — buy_signals above is the
+  // legacy predicted-BUY count, kept unchanged). evaluated_buy_count/
+  // buy_hits are the exact integers the Wilson interval must use — never
+  // buy_signals, never a hit count reconstructed from buy_hit_rate_pct.
+  evaluated_buy_count?: number;
+  buy_hits?: number | null;
+  buy_return_count?: number;
   overall_accuracy_pct?: number | null;
   buy_hit_rate_pct?: number | null;
   sell_hit_rate_pct?: number | null;
@@ -51,16 +58,31 @@ type ValidationResult = {
   score_buckets?: ScoreBucket[];
   factor_ic?: FactorIC;
   nifty_avg_fwd_return_pct?: number | null;
+  hold_signals?: number;
+  data_limitations?: {
+    fundamentals_point_in_time?: boolean;
+    fundamentals_point_in_time_coverage_pct?: number | null;
+  } | null;
 };
 
+// Cohort contract (V-VAL1, matches services/validation_engine.py's
+// get_per_stock_results): buy_signal_count is every persisted BUY row;
+// evaluated_buy_count is the subset with a resolved correctness outcome
+// (today always equal to buy_signal_count by application invariant, but
+// not assumed so — see the backend docstring); hit_rate_pct is null, not
+// a fabricated 0%, when evaluated_buy_count is 0. buy_return_count is the
+// separate cohort behind buy_avg_return_pct (BUY rows with a valid
+// return), independent of the hit-rate cohort.
 type StockResult = {
   symbol: string;
   total_signals: number;
-  correct: number;
-  hit_rate_pct: number;
+  buy_signal_count: number;
+  evaluated_buy_count: number;
+  buy_hits: number | null;
+  hit_rate_pct: number | null;
+  buy_return_count: number;
   avg_fwd_return_pct: number | null;
   buy_avg_return_pct: number | null;
-  buy_signal_count: number;
 };
 
 type ValidationJob = {
@@ -141,7 +163,7 @@ function ICBar({ label, value, color }: { label: string; value: number | null; c
       </div>
       <p className="text-xs text-gray-600">
         {Math.abs(value) > 0.05
-          ? "✅ Statistically meaningful"
+          ? "✅ Meaningful by convention (|IC| > 0.05) — not a significance test"
           : Math.abs(value) > 0.02
           ? "🟡 Weak signal"
           : "❌ Near zero — noise"}
@@ -150,24 +172,123 @@ function ICBar({ label, value, color }: { label: string; value: number | null; c
   );
 }
 
-// Normal approximation to binomial CDF (one-tailed p-value for hit rate > 50%)
-function binomialPValue(n: number, hitRatePct: number): { p: number; z: number; significant: boolean } | null {
-  if (!n || n < 30) return null;
-  const k = (hitRatePct / 100) * n;
-  const z = (k - n * 0.5) / Math.sqrt(n * 0.25);
-  // Approximation of upper-tail p from z-score
-  const p = (() => {
-    const t = 1 / (1 + 0.2316419 * Math.abs(z));
-    const poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
-    const pNorm = 1 - (1 / Math.sqrt(2 * Math.PI)) * Math.exp(-z * z / 2) * poly;
-    return z >= 0 ? 1 - pNorm : pNorm;
-  })();
-  return { p: Math.max(0.0001, p), z: Math.round(z * 100) / 100, significant: p < 0.05 };
+// Exact two-sided binomial test of evaluated BUY outcomes against a 50%
+// null hit rate. Standard definition (matches R's binom.test()/scipy's
+// binomtest(alternative="two-sided"), verified against scipy in the
+// backend test suite for these exact vectors): sum P(X=i) over every
+// outcome i in Binomial(evaluatedCount, 0.5) whose probability is <= the
+// probability of the OBSERVED outcome (successes).
+//
+// V-VAL1 correction: the prior implementation was a normal (Gaussian)
+// APPROXIMATION to the binomial CDF — mislabeled by omission, since the
+// page called the result "Statistical Significance" with no qualifier —
+// and reconstructed its "successes" input from the ROUNDED displayed
+// hit-rate percentage times the TOTAL predicted BUY count
+// (Math.round(hitRatePct/100 * buy_signals)), not the exact evaluated
+// hit count. Both defects are fixed here: this is now a genuine exact
+// test (no normal approximation, no minimum-n gate — unlike the old
+// n>=30 requirement, an exact test is valid for any n>=1) using the
+// exact integer buy_hits/evaluated_buy_count fields.
+//
+// Two-sided, not one-sided: the prior code's z>=0/z<0 branching computed
+// a one-tailed p-value in whichever direction the observed rate landed —
+// not a standard, named hypothesis. This correction adopts the standard
+// two-sided test explicitly (the more conservative choice — a two-sided
+// p-value is never smaller than the corresponding one-sided p-value, so
+// this cannot manufacture a more "favourable" significance result).
+//
+// No new dependency: log-factorial computed once via a cumulative sum,
+// giving an O(n) exact evaluation without an external stats library.
+//
+// Numerical/performance safety (V-VAL1 audit, verified — see this file's
+// test suite for the corresponding assertions, not just this comment):
+//   - Complexity is O(n), not O(n²): logFact[] is built once via a single
+//     cumulative pass (n additions), and logPmf(i) inside the summation
+//     loop is O(1) — three array lookups and fixed-count arithmetic, never
+//     a fresh per-call recomputation of the factorial sum.
+//   - No overflow: all factorial/probability arithmetic happens in LOG
+//     space until the final per-term Math.exp() — n! for realistic n
+//     (thousands of signals) would overflow a plain double, but ln(n!)
+//     never does.
+//   - No unsafe underflow: Math.exp() of a very negative log-probability
+//     correctly saturates to exactly 0 (a real double value, not NaN/
+//     -Infinity propagating outward) and simply contributes nothing to
+//     the sum — the correct behavior for a genuinely negligible outcome.
+//   - Tolerance: `tol` scales with |logPk| (the observed outcome's own
+//     log-probability magnitude) rather than being a fixed epsilon, so it
+//     stays proportionate whether the observed outcome is likely (logPk
+//     near 0) or a deep tail event (logPk very negative) — loose enough to
+//     absorb the ~n*epsilon floating-point error accumulated by the
+//     cumulative logFact sum, tight enough (1e-9 relative) not to
+//     conflate genuinely distinct outcome probabilities.
+//   - Output is always finite and in [0,1] by construction: p starts at 0
+//     and only accumulates non-negative Math.exp() terms (never negative,
+//     never NaN), and the final Math.min(1, p) is a defensive ceiling
+//     clamp for floating-point summation drift at the boundary (e.g. all
+//     outcomes selected, which should sum to ~1.0 but can round to
+//     1.0000000000000002).
+//   - Runtime: O(n) with n bounded by realistic evaluated-BUY-signal
+//     counts (thousands, not millions) executes in low single-digit
+//     milliseconds — no risk of blocking the browser's main thread.
+export function exactBinomialTwoSidedPValue(
+  successes: number, trials: number
+): { p: number; significant: boolean } | null {
+  if (!Number.isFinite(successes) || !Number.isFinite(trials)) return null;
+  if (trials <= 0 || successes < 0 || successes > trials) return null; // malformed input — fail safe
+  const n = trials, k = successes, p0 = 0.5;
+  const logFact = new Float64Array(n + 1);
+  for (let i = 1; i <= n; i++) logFact[i] = logFact[i - 1] + Math.log(i);
+  const logP0 = Math.log(p0), log1mP0 = Math.log(1 - p0);
+  const logPmf = (i: number) => logFact[n] - logFact[i] - logFact[n - i] + i * logP0 + (n - i) * log1mP0;
+  const logPk = logPmf(k);
+  const tol = 1e-9 * Math.max(1, Math.abs(logPk));
+  let p = 0;
+  for (let i = 0; i <= n; i++) {
+    if (logPmf(i) <= logPk + tol) p += Math.exp(logPmf(i));
+  }
+  p = Math.min(1, p);
+  return { p, significant: p < 0.05 };
 }
+
+// 95% Wilson score interval for a binomial proportion — preferred over the
+// naive normal (Wald) interval because it stays inside [0,100] and doesn't
+// collapse to a false zero-width interval at n=1 the way Wald does.
+//
+// Takes EXACT integer successes/evaluatedCount — never total BUY signals,
+// never a hit count reconstructed from a rounded displayed percentage
+// (e.g. Math.round(53.7/100 * n), which can silently diverge from the
+// real integer hit count for some n). Callers must pass the backend's own
+// buy_hits/evaluated_buy_count fields.
+function wilson95(successes: number, evaluatedCount: number): { lo: number; hi: number } | null {
+  if (!evaluatedCount || evaluatedCount <= 0) return null;
+  if (!Number.isFinite(successes) || !Number.isFinite(evaluatedCount)) return null;
+  if (successes < 0 || successes > evaluatedCount) return null; // malformed input — fail safe, no fabricated output
+  const n = evaluatedCount;
+  const z = 1.959963985; // 95%
+  const phat = successes / n;
+  const denom = 1 + (z * z) / n;
+  const center = phat + (z * z) / (2 * n);
+  const margin = z * Math.sqrt((phat * (1 - phat)) / n + (z * z) / (4 * n * n));
+  const lo = (center - margin) / denom;
+  const hi = (center + margin) / denom;
+  return { lo: Math.round(Math.max(0, lo) * 1000) / 10, hi: Math.round(Math.min(1, hi) * 1000) / 10 };
+}
+
+// Centralized "limited sample" display thresholds — a sample below this
+// size is dimmed and marked in every table on this page, rather than
+// scattering magic numbers through JSX. These are display-only cues, NOT
+// claims of statistical significance — sample size alone never proves
+// significance; see the "BUY Hit-Rate Binomial Check" card's own p-value
+// for the one place on this page that actually runs a significance test
+// (and even that one is scoped to a single metric, not the whole model).
+const MIN_RELIABLE_SCORE_BUCKET_N = 30;
+const MIN_RELIABLE_STOCK_BUY_N = 10;
+const PER_STOCK_PAGE_SIZE = 40;
 
 export default function ValidationPage() {
   const [horizon, setHorizon] = useState<"short" | "medium" | "long">("medium");
   const [universe, setUniverse] = useState<"nifty100" | "midcap" | "us">("nifty100");
+  const [stockPage, setStockPage] = useState(1);
   const qc = useQueryClient();
 
   const { data: results, isLoading: resultsLoading } = useQuery<ValidationResult>({
@@ -184,6 +305,13 @@ export default function ValidationPage() {
     refetchOnWindowFocus: false,
     staleTime: 60_000,
   });
+
+  // Reset per-stock pagination whenever the underlying dataset changes —
+  // otherwise switching horizon/universe could leave "Load more" state
+  // pointing past the new dataset's length.
+  useEffect(() => {
+    setStockPage(1);
+  }, [horizon, universe]);
 
   const { data: status } = useQuery<RunStatus>({
     queryKey: ["validation-status"],
@@ -241,8 +369,9 @@ export default function ValidationPage() {
       <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4 flex items-start gap-3">
         <AlertCircle size={18} className="text-yellow-400 mt-0.5 shrink-0" />
         <div className="text-sm text-yellow-300/80">
-          <strong className="text-yellow-300">Walk-forward guarantee:</strong> At each historical date, the model only uses data
-          available <em>before</em> that date — no look-ahead bias. Correctness is <em>benchmark-relative</em>:{" "}
+          <strong className="text-yellow-300">Walk-forward guarantee:</strong> At each historical date, the model only uses <em>price/technical</em> data
+          available <em>before</em> that date — no look-ahead bias on price-derived scores. (Fundamentals are a separate exception —
+          see the limitation notice below.) Correctness is <em>benchmark-relative</em>:{" "}
           a <strong className="text-yellow-300">BUY</strong> is correct only if the stock <em>outperforms</em> {benchmarkName} over the forward window;
           a <strong className="text-yellow-300">SELL</strong> is correct only if it <em>underperforms</em> {benchmarkName};
           a <strong className="text-yellow-300">HOLD</strong> is correct if it stays within ±threshold% of {benchmarkName}.{" "}
@@ -377,15 +506,47 @@ export default function ValidationPage() {
 
           {/* DP-026 — always rendered, not conditioned on the API's
               data_limitations field (legacy runs predate it but carry the
-              same limitation). */}
+              same limitation). The shared component's copy is written for
+              the India case (still not point-in-time) and is intentionally
+              left unmodified here — it's reused on other pages beyond this
+              remediation's scope. For US, where THIS RUN's own
+              data_limitations disclosure (a field the backend computes per
+              run from its actual stored fund_pit_available/scoring-version
+              evidence, not a hardcoded claim) reports genuine point-in-time
+              fundamentals, we add an accurate market-specific correction
+              directly below it rather than editing the shared copy. */}
           <DataLimitationsNotice />
+          {universe === "us" && res.data_limitations?.fundamentals_point_in_time === true && (
+            <div className="flex items-start gap-2 rounded-lg border border-green-500/25 bg-green-500/[0.06] px-3 py-2">
+              <CheckCircle2 size={14} className="text-green-300 mt-0.5 shrink-0" />
+              <p className="text-[11px] leading-relaxed text-green-200/90">
+                <strong className="text-green-200">US correction:</strong> unlike the notice above
+                (written for India, which is not yet point-in-time), US fundamentals in this run ARE
+                reconstructed as-of each historical signal date from persisted SEC EDGAR filings
+                {res.data_limitations.fundamentals_point_in_time_coverage_pct != null && (
+                  <> — {res.data_limitations.fundamentals_point_in_time_coverage_pct}% of signals
+                  found an eligible filing; the remainder used a disclosed neutral fallback</>
+                )}. This is a separately-versioned scoring formula (ROE + net margin only), not
+                equivalent to the legacy PE+ROE+revenue-growth formula India still uses.
+              </p>
+            </div>
+          )}
 
           {/* Primary metrics */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <StatCard
               label={`BUY Hit Rate (vs ${benchmarkName})`}
               value={res.buy_hit_rate_pct != null ? `${res.buy_hit_rate_pct}%` : null}
-              sub={`% of BUY calls that beat ${benchmarkName}`}
+              sub={(() => {
+                const base = `% of BUY calls that beat ${benchmarkName}`;
+                // Exact evaluated n and hit count — never buy_signals (the
+                // total predicted-BUY count) and never a hit count
+                // reconstructed from the rounded displayed percentage.
+                if (res.buy_hits == null || !res.evaluated_buy_count) return base;
+                const ci = wilson95(res.buy_hits, res.evaluated_buy_count);
+                const nSuffix = ` (n=${res.evaluated_buy_count.toLocaleString()} evaluated)`;
+                return ci ? `${base} · 95% CI [${ci.lo}%, ${ci.hi}%]${nSuffix}` : `${base}${nSuffix}`;
+              })()}
               color={
                 (res.buy_hit_rate_pct ?? 0) >= 60 ? "text-green-400" :
                 (res.buy_hit_rate_pct ?? 0) >= 53 ? "text-yellow-400" : "text-red-400"
@@ -447,41 +608,83 @@ export default function ValidationPage() {
             <StatCard
               label="Overall Accuracy"
               value={res.overall_accuracy_pct != null ? `${res.overall_accuracy_pct}%` : null}
-              sub="All signals (BUY + SELL + HOLD)"
-              color={
-                (res.overall_accuracy_pct ?? 0) >= 58 ? "text-green-400" :
-                (res.overall_accuracy_pct ?? 0) >= 52 ? "text-yellow-400" : "text-red-400"
-              }
+              // V-VAL1 correction: buy_signals/sell_signals/hold_signals are
+              // PREDICTED-class counts (what the model called), not an
+              // actual/ground-truth class distribution — max(predicted
+              // counts)/total is the model's prediction MIX, not a valid
+              // majority-class accuracy baseline (that requires the
+              // distribution of actual labels, which this response does
+              // not expose). Do not reintroduce that calculation without a
+              // genuine actual-label source backing it.
+              sub="Accuracy across evaluated BUY, SELL and HOLD predictions. This summary does not currently expose an actual-class distribution for a naïve majority-label baseline."
+              color="text-white"
             />
           </div>
 
           {/* Statistical significance + drawdown */}
           {(() => {
-            const pv = res.buy_signals && res.buy_hit_rate_pct != null
-              ? binomialPValue(res.buy_signals, res.buy_hit_rate_pct)
-              : null;
+            // Exact evaluated evidence only — never total buy_signals,
+            // never a hit count reconstructed from a rounded percentage.
+            // Section 3: an unavailable sample (evaluated_buy_count === 0,
+            // or buy_hits missing) must render an EXPLICIT unavailable
+            // state, not be silently hidden.
+            const evidenceKnown = res.evaluated_buy_count != null;
+            const hasEvidence = res.buy_hits != null && !!res.evaluated_buy_count;
+            const pv = hasEvidence ? exactBinomialTwoSidedPValue(res.buy_hits!, res.evaluated_buy_count!) : null;
+            const smallSample = !!res.evaluated_buy_count && res.evaluated_buy_count < 30;
             return (
               <div className="grid md:grid-cols-2 gap-4">
                 {/* P-value card */}
-                {pv && (
-                  <div className={`rounded-xl border p-4 ${pv.significant ? "bg-green-500/10 border-green-500/30" : "bg-yellow-500/10 border-yellow-500/30"}`}>
+                {evidenceKnown && (
+                  <div className={`rounded-xl border p-4 ${!pv ? "bg-dark-card border-dark-border" : pv.significant ? "bg-green-500/10 border-green-500/30" : "bg-yellow-500/10 border-yellow-500/30"}`}>
                     <div className="flex items-center gap-2 mb-2">
-                      {pv.significant
-                        ? <CheckCircle2 size={15} className="text-green-400" />
-                        : <AlertCircle size={15} className="text-yellow-400" />}
-                      <p className="text-xs font-semibold text-gray-300">Statistical Significance</p>
+                      {pv ? (
+                        pv.significant
+                          ? <CheckCircle2 size={15} className="text-green-400" />
+                          : <AlertCircle size={15} className="text-yellow-400" />
+                      ) : <AlertCircle size={15} className="text-gray-500" />}
+                      {/* V-VAL1 correction: scoped away from the broad,
+                          unqualified "Statistical Significance" title — this
+                          card tests exactly one metric (the evaluated BUY
+                          hit rate vs. a 50% null), not the model. Never
+                          rename this back to a broad "validated"/"proven"-
+                          style title without the same scoping this comment
+                          documents. */}
+                      <p className="text-xs font-semibold text-gray-300">BUY Hit-Rate Binomial Check</p>
                     </div>
-                    <p className={`text-2xl font-bold font-mono mb-1 ${pv.significant ? "text-green-400" : "text-yellow-400"}`}>
-                      p = {pv.p < 0.001 ? "<0.001" : pv.p.toFixed(3)}
-                    </p>
-                    <p className="text-xs text-gray-400">
-                      z-score: {pv.z} · n = {res.buy_signals?.toLocaleString()} BUY signals
-                    </p>
-                    <p className="text-xs mt-1.5">
-                      {pv.significant
-                        ? <span className="text-green-400">✅ Hit rate is statistically better than random (p &lt; 0.05)</span>
-                        : <span className="text-yellow-400">⚠️ Hit rate is not yet statistically significant — need more signals</span>}
-                    </p>
+                    {pv ? (
+                      <>
+                        <p className={`text-2xl font-bold font-mono mb-1 ${pv.significant ? "text-green-400" : "text-yellow-400"}`}>
+                          p = {pv.p < 0.001 ? "<0.001" : pv.p.toFixed(3)}
+                        </p>
+                        <p className="text-xs text-gray-400">
+                          {res.buy_hits!.toLocaleString()}/{res.evaluated_buy_count!.toLocaleString()} evaluated BUY
+                          signals (n) · p₀ = 50% · two-sided
+                          {smallSample && <span className="text-yellow-500"> · small sample</span>}
+                        </p>
+                        <p className="text-xs mt-1.5 text-gray-400">
+                          Exact two-sided binomial check of evaluated BUY outcomes against a 50% null.
+                          Unadjusted — historical signals can overlap and be correlated by stock, date,
+                          holding window and market regime, so the independent-trial assumption behind
+                          this p-value is not established, and repeated checks across markets, horizons
+                          or score buckets carry multiple-testing risk this single number does not
+                          account for. Indicative/descriptive evidence only — not confirmatory proof of
+                          model skill, and a statistical difference here does not establish economic
+                          value, future profitability, or that the AI Score is calibrated.
+                        </p>
+                        <p className="text-xs mt-1.5">
+                          {pv.significant
+                            ? <span className="text-green-400">Below the conventional 0.05 threshold for this unadjusted BUY-outcome check.</span>
+                            : <span className="text-yellow-400">Not below the conventional 0.05 threshold for this unadjusted BUY-outcome check.</span>}
+                        </p>
+                      </>
+                    ) : (
+                      <p className="text-sm text-gray-500">
+                        {res.evaluated_buy_count === 0
+                          ? "Unavailable — no evaluated BUY signals in this sample."
+                          : "Unavailable — malformed evaluated-BUY evidence."}
+                      </p>
+                    )}
                   </div>
                 )}
                 {/* Drawdown / streak card */}
@@ -491,11 +694,11 @@ export default function ValidationPage() {
                     <div className="grid grid-cols-3 gap-3">
                       {res.max_drawdown_pct != null && (
                         <div>
-                          <p className="text-xs text-gray-500 mb-0.5">Max Drawdown</p>
+                          <p className="text-xs text-gray-500 mb-0.5">Max Drawdown<sup>†</sup></p>
                           <p className={`text-lg font-bold font-mono ${res.max_drawdown_pct > 25 ? "text-red-400" : res.max_drawdown_pct > 15 ? "text-yellow-400" : "text-green-400"}`}>
                             -{res.max_drawdown_pct}%
                           </p>
-                          <p className="text-xs text-gray-400">peak-to-trough</p>
+                          <p className="text-xs text-gray-400">equal-weight signal-date return curve</p>
                         </div>
                       )}
                       {res.max_consecutive_wrong != null && (
@@ -517,6 +720,16 @@ export default function ValidationPage() {
                         </div>
                       )}
                     </div>
+                    {res.max_drawdown_pct != null && (
+                      <p className="text-xs text-gray-600">
+                        † Peak-to-trough on the equal-weight mean BUY return per signal-date,
+                        compounded chronologically — NOT a capital-allocated portfolio. Multiple BUY
+                        signals on the same historical date (the common case) are averaged into one
+                        date-level return rather than compounded sequentially, so the result does not
+                        depend on which signal happened to be processed first; it still makes no
+                        capital-allocation, transaction-cost, or execution-timing assumption.
+                      </p>
+                    )}
                   </div>
                 )}
               </div>
@@ -526,10 +739,15 @@ export default function ValidationPage() {
           {/* Score bucket table */}
           {res.score_buckets && res.score_buckets.length > 0 && (
             <div className="bg-dark-card border border-dark-border rounded-xl p-5">
-              <p className="text-sm font-semibold text-white mb-1">Signal Precision by Confidence Score</p>
+              <p className="text-sm font-semibold text-white mb-1">Signal Performance by AI Score</p>
               <p className="text-xs text-gray-500 mb-4">
-                Among BUY signals in each score range, what % beat the {benchmarkName} benchmark?
-                A well-calibrated model shows hit rate rising with score.
+                Among BUY signals in each composite AI-score range, what % beat the {benchmarkName} benchmark?
+                This score is a raw composite ranking input, not a calibrated probability — this table
+                is a descriptive breakdown, not proof the score is well-calibrated. Rows below{" "}
+                {MIN_RELIABLE_SCORE_BUCKET_N} signals (dimmed, marked *) are too small to draw a
+                conclusion from; among the adequately-sampled rows, a genuinely informative score
+                would show hit rate rising with score — if it doesn&apos;t, that&apos;s evidence the
+                score isn&apos;t reliably separating outcomes in this sample, not a display bug.
               </p>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -543,12 +761,15 @@ export default function ValidationPage() {
                   </thead>
                   <tbody>
                     {res.score_buckets.map((b) => {
+                      const lowN = b.count < MIN_RELIABLE_SCORE_BUCKET_N;
                       const hr = b.hit_rate_pct ?? 0;
-                      const hrColor = hr >= 60 ? "text-green-400" : hr >= 52 ? "text-yellow-400" : "text-red-400";
-                      const retColor = (b.avg_return_pct ?? 0) >= 0 ? "text-green-400" : "text-red-400";
+                      const hrColor = lowN ? "text-gray-500" : hr >= 60 ? "text-green-400" : hr >= 52 ? "text-yellow-400" : "text-red-400";
+                      const retColor = lowN ? "text-gray-500" : (b.avg_return_pct ?? 0) >= 0 ? "text-green-400" : "text-red-400";
                       return (
-                        <tr key={b.score_range} className="border-b border-dark-border/50 hover:bg-dark-border/10">
-                          <td className="py-2.5 pr-4 font-mono text-white font-semibold">{b.score_range}</td>
+                        <tr key={b.score_range} className={`border-b border-dark-border/50 hover:bg-dark-border/10 ${lowN ? "opacity-60" : ""}`}>
+                          <td className="py-2.5 pr-4 font-mono text-white font-semibold">
+                            {b.score_range}{lowN && <span className="text-gray-500">*</span>}
+                          </td>
                           <td className="text-right pr-4 text-gray-400">{b.count}</td>
                           <td className={`text-right pr-4 font-semibold ${hrColor}`}>
                             {b.hit_rate_pct != null ? `${b.hit_rate_pct}%` : "—"}
@@ -564,6 +785,11 @@ export default function ValidationPage() {
                   </tbody>
                 </table>
               </div>
+              {res.score_buckets.some(b => b.count < MIN_RELIABLE_SCORE_BUCKET_N) && (
+                <p className="text-xs text-gray-600 mt-2">
+                  * fewer than {MIN_RELIABLE_SCORE_BUCKET_N} signals — limited sample, interpret cautiously
+                </p>
+              )}
             </div>
           )}
 
@@ -571,9 +797,24 @@ export default function ValidationPage() {
           {res.factor_ic && (
             <div className="bg-dark-card border border-dark-border rounded-xl p-5">
               <p className="text-sm font-semibold text-white mb-1">Factor Information Coefficients</p>
+              <p className="text-xs text-gray-500 mb-2">
+                IC = Pearson correlation between each factor&apos;s score and actual forward return
+                across all signals (BUY + SELL + HOLD) at this horizon, computed only when at least
+                30 valid score/return pairs exist for that factor (otherwise shown as unavailable).
+                IC &gt; 0.05 = meaningful by convention. IC ≈ 0 = noise. Negative = contrarian.
+              </p>
               <p className="text-xs text-gray-500 mb-4">
-                IC = Pearson correlation between each factor&apos;s score and actual forward return.
-                IC &gt; 0.05 = meaningful. IC ≈ 0 = noise. Negative = contrarian.
+                <strong className="text-gray-400">IC vs. the score table above are different tests:</strong>{" "}
+                IC measures whether the score linearly <em>ranks</em> continuous forward returns across
+                every signal; the score table above measures a binary <em>beat-the-benchmark</em> hit
+                rate only for BUY signals above the 60-point threshold. A near-zero Composite Score IC
+                does not contradict a rising hit-rate pattern in the table — they can genuinely diverge —
+                but it does mean the composite score should not be read as reliably ranking future
+                returns. The Composite Score (unlike the four factors below it) includes a fundamentals
+                sub-score; for India, that sub-score reuses a current-day snapshot rather than a
+                point-in-time reconstruction (see the fundamentals limitation notice above), so
+                Composite Score IC for India may be affected by that same look-ahead exposure — the four
+                price/technical factors below are not.
               </p>
               <div className="space-y-4">
                 <ICBar label="Composite Score"                    value={res.factor_ic.composite} color="bg-purple-500" />
@@ -591,44 +832,74 @@ export default function ValidationPage() {
               Per-stock validation data is temporarily unavailable — this is not the same as zero BUY signals.
             </div>
           )}
-          {stockData?.stocks && stockData.available !== false && stockData.stocks.length > 0 && (
-            <div className="bg-dark-card border border-dark-border rounded-xl p-5">
-              <p className="text-sm font-semibold text-white mb-4">
-                Per-Stock Results ({stockData.stocks.filter(s => s.buy_signal_count > 0).length} stocks with BUY signals, sorted by BUY return)
-              </p>
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="text-gray-500 border-b border-dark-border">
-                      <th className="text-left py-2 pr-3">Symbol</th>
-                      <th className="text-right pr-3">BUY signals</th>
-                      <th className="text-right pr-3">Hit Rate</th>
-                      <th className="text-right">Avg BUY Return</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {stockData.stocks
-                      .filter(s => s.buy_signal_count > 0)
-                      .slice(0, 40)
-                      .map((s) => (
-                        <tr key={s.symbol} className="border-b border-dark-border/30 hover:bg-dark-border/10">
-                          <td className="py-2 pr-3 font-mono font-semibold text-white">{s.symbol}</td>
-                          <td className="text-right pr-3 text-gray-400">{s.buy_signal_count}</td>
-                          <td className={`text-right pr-3 font-semibold ${s.hit_rate_pct >= 60 ? "text-green-400" : s.hit_rate_pct >= 50 ? "text-yellow-400" : "text-red-400"}`}>
-                            {s.hit_rate_pct}%
-                          </td>
-                          <td className={`text-right font-semibold ${(s.buy_avg_return_pct ?? 0) >= 0 ? "text-green-400" : "text-red-400"}`}>
-                            {s.buy_avg_return_pct != null
-                              ? `${s.buy_avg_return_pct > 0 ? "+" : ""}${s.buy_avg_return_pct}%`
-                              : "—"}
-                          </td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
+          {stockData?.stocks && stockData.available !== false && stockData.stocks.length > 0 && (() => {
+            // Stable sort order: backend ORDER BY buy_avg_ret DESC NULLS LAST
+            // (services/validation_engine.py get_per_stock_results) — highest
+            // average BUY return first. Pagination below preserves that order.
+            const withBuys = stockData.stocks.filter(s => s.buy_signal_count > 0);
+            const visibleTo = Math.min(stockPage * PER_STOCK_PAGE_SIZE, withBuys.length);
+            const shown = withBuys.slice(0, visibleTo);
+            const hasMore = visibleTo < withBuys.length;
+            return (
+              <div className="bg-dark-card border border-dark-border rounded-xl p-5">
+                <p className="text-sm font-semibold text-white mb-1">
+                  Per-Stock Results — showing 1–{shown.length} of {withBuys.length} stocks with
+                  BUY signals, sorted by avg. BUY return (highest first)
+                </p>
+                <p className="text-xs text-gray-500 mb-4">
+                  Rows with fewer than {MIN_RELIABLE_STOCK_BUY_N} evaluated BUY signals (dimmed,
+                  marked *) are a limited sample for a per-stock hit rate — a single evaluated
+                  signal can only be 0% or 100%.
+                </p>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-gray-500 border-b border-dark-border">
+                        <th className="text-left py-2 pr-3">Symbol</th>
+                        <th className="text-right pr-3">BUY signals</th>
+                        <th className="text-right pr-3">Hit Rate</th>
+                        <th className="text-right">Avg BUY Return</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {shown.map((s) => {
+                        const lowN = s.evaluated_buy_count < MIN_RELIABLE_STOCK_BUY_N;
+                        return (
+                          <tr key={s.symbol} className={`border-b border-dark-border/30 hover:bg-dark-border/10 ${lowN ? "opacity-60" : ""}`}>
+                            <td className="py-2 pr-3 font-mono font-semibold text-white">
+                              {s.symbol}{lowN && <span className="text-gray-500" aria-label="limited sample">*</span>}
+                            </td>
+                            <td className="text-right pr-3 text-gray-400">
+                              {s.evaluated_buy_count}
+                              {s.evaluated_buy_count !== s.buy_signal_count && (
+                                <span className="text-gray-600"> / {s.buy_signal_count}</span>
+                              )}
+                            </td>
+                            <td className={`text-right pr-3 font-semibold ${lowN ? "text-gray-500" : (s.hit_rate_pct ?? 0) >= 60 ? "text-green-400" : (s.hit_rate_pct ?? 0) >= 50 ? "text-yellow-400" : "text-red-400"}`}>
+                              {s.hit_rate_pct != null ? `${s.hit_rate_pct}%` : "unavailable"}
+                            </td>
+                            <td className={`text-right font-semibold ${lowN ? "text-gray-500" : (s.buy_avg_return_pct ?? 0) >= 0 ? "text-green-400" : "text-red-400"}`}>
+                              {s.buy_avg_return_pct != null
+                                ? `${s.buy_avg_return_pct > 0 ? "+" : ""}${s.buy_avg_return_pct}%`
+                                : "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                {hasMore && (
+                  <button
+                    onClick={() => setStockPage(p => p + 1)}
+                    className="mt-4 w-full py-2 rounded-lg text-sm font-medium bg-dark-border text-gray-300 hover:text-white hover:bg-dark-border/70 transition-colors"
+                  >
+                    Load more ({withBuys.length - visibleTo} remaining)
+                  </button>
+                )}
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* How to interpret */}
           <div className="bg-dark-card border border-dark-border rounded-xl p-5">
