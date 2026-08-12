@@ -1185,6 +1185,7 @@ def _backtest_stock(
     universe: str | None = None,
     _exclusions: list | None = None,
     _window_stats: dict | None = None,
+    _diag: dict | None = None,
 ) -> list[dict]:
     """
     Walk-forward backtest for one stock over HORIZON_PERIOD[horizon].
@@ -1220,6 +1221,20 @@ def _backtest_stock(
     counter across threads, for a clearer and more portable long-term
     count contract than a single shared append-only list.
 
+    `_diag` (V-FRESH1B) — an optional dict, following the exact same
+    per-call/per-worker-owned pattern as `_window_stats` (never a single
+    dict shared/mutated across threads — the caller creates one fresh
+    dict per symbol before submitting to the pool, and only that
+    symbol's own worker thread ever writes to it). Populated with
+    exactly one terminal-path classification —
+    "fetch_exception" | "empty_data" | "insufficient_data" |
+    "calculation_exception" | "processed" — plus, only when the fetched
+    dataframe was non-empty, the symbol's own actual first/last input-bar
+    dates (`input_first_date`/`input_last_date`, `YYYY-MM-DD` strings).
+    This is diagnostic evidence only — it answers "what happened to this
+    symbol's data" for future coverage/freshness disclosure, and must
+    never be interpreted as a data-through or freshness claim by itself.
+
     Returns list of signal dicts, empty list on error, insufficient data, or
     an entirely benchmark-unavailable date range (all logged with full
     symbol/market/universe/horizon context so a caller reviewing effective
@@ -1230,6 +1245,10 @@ def _backtest_stock(
     window_stats = _window_stats if _window_stats is not None else {}
     window_stats.setdefault("considered", 0)
     window_stats.setdefault("benchmark_valid", 0)
+    if _diag is not None:
+        _diag.setdefault("terminal_path", None)
+        _diag.setdefault("input_first_date", None)
+        _diag.setdefault("input_last_date", None)
     yf_sym = _resolve_yahoo_symbol(symbol, market)
     fwd_days  = HORIZON_DAYS[horizon]
     step      = HORIZON_STEP[horizon]
@@ -1238,15 +1257,48 @@ def _backtest_stock(
     # Need ≥200 rows for EMA-200 to be meaningful; start signal loop from row 200
     MIN_WARMUP = 200
 
+    # V-FRESH1B — the fetch call gets its own narrow try/except so a
+    # provider-level failure (fetch_exception) is distinguishable from an
+    # empty-but-successful response (empty_data) and from a downstream
+    # calculation failure (calculation_exception, caught by the existing
+    # outer try/except further below). Previously all three collapsed
+    # into the same silent `[]` return with no durable distinction (see
+    # V-FRESH1A2's forensic finding on run 221/long-US) — this restructure
+    # is diagnostic-only and does not change any existing return value or
+    # control flow for callers that don't pass `_diag`.
     try:
         df = yf.Ticker(yf_sym).history(period=HORIZON_PERIOD[horizon])
+    except Exception as e:
+        log.warning(
+            "[validation] price fetch failed — symbol=%s yf_symbol=%s market=%s "
+            "universe=%s horizon=%s error=%s",
+            symbol, yf_sym, market, universe, horizon, e,
+        )
+        if _diag is not None:
+            _diag["terminal_path"] = "fetch_exception"
+        return []
+
+    if df.empty:
+        if _diag is not None:
+            _diag["terminal_path"] = "empty_data"
+        return []
+
+    if _diag is not None:
+        _diag["input_first_date"] = str(df.index[0])[:10]
+        _diag["input_last_date"] = str(df.index[-1])[:10]
+
+    try:
         if len(df) < MIN_WARMUP + fwd_days:
             log.info(
                 "[validation] insufficient history — symbol=%s yf_symbol=%s market=%s "
                 "universe=%s horizon=%s rows=%d needed=%d",
                 symbol, yf_sym, market, universe, horizon, len(df), MIN_WARMUP + fwd_days,
             )
+            if _diag is not None:
+                _diag["terminal_path"] = "insufficient_data"
             return []
+        if _diag is not None:
+            _diag["terminal_path"] = "processed"
         # Do NOT call compute_indicators on full df — that causes look-ahead bias.
         # Raw OHLCV df is kept clean; indicators are computed per window inside loop.
 
@@ -1375,6 +1427,15 @@ def _backtest_stock(
                 else:
                     fwd_ret = None
 
+                # V-FRESH1B — the actual exit bar's own date, read directly
+                # from the dataframe index at the same position already
+                # used to compute exit_/fwd_ret above (df.index[i +
+                # fwd_days]) — never reconstructed via calendar arithmetic.
+                # Only set when the outcome is genuinely evaluated
+                # (fwd_ret is not None); an unresolved outcome must not
+                # fabricate an exit date.
+                exit_date = str(df.index[i + fwd_days])[:10] if fwd_ret is not None else None
+
                 # Benchmark forward return over same window (for alpha
                 # calculation) — genuine evidence required at BOTH the
                 # entry and exit dates, plus regime evidence at entry
@@ -1483,6 +1544,11 @@ def _backtest_stock(
                     "symbol":          symbol,
                     "horizon":         horizon,
                     "signal_date":     str(df.index[i])[:10],
+                    # V-FRESH1B — in-memory only, not persisted to
+                    # val_signals' fixed columns (same pattern as
+                    # "confidence" below) — aggregated by run_validation()
+                    # into evaluated_exit_date_min/max.
+                    "exit_date":       exit_date,
                     "composite_score": composite,
                     "tech_score":      sc["tech"],
                     "rs_score":        sc["rs"],
@@ -1536,7 +1602,70 @@ def _backtest_stock(
             "universe=%s horizon=%s error=%s",
             symbol, yf_sym, market, universe, horizon, e,
         )
+        if _diag is not None:
+            _diag["terminal_path"] = "calculation_exception"
         return []
+
+
+def _build_validation_evidence(
+    n_stocks: int,
+    diag_by_symbol: dict,
+    window_stats_by_symbol: dict,
+    symbols_with_signals: set,
+    all_signals: list,
+) -> dict:
+    """V-FRESH1B — assembles factual, durable validation-evidence
+    diagnostics purely from data already computed during this run.
+    Stored additively inside the existing immutable summary JSON (no
+    schema change — see run_validation's persistence block and
+    get_latest_results()'s read-time freshness derivation). Every
+    count/date here is directly derived from per-symbol diagnostics
+    (`_backtest_stock`'s `_diag`/`_window_stats` outputs) and persisted
+    signal dicts — nothing is invented, nothing is backfilled, nothing
+    is calendar-derived. `symbols_with_signals` is factual (how many
+    symbols produced ≥1 signal) — deliberately never described as
+    "coverage" or "eligibility" anywhere this value is surfaced (see
+    V-FRESH1A2's corrected forensic finding).
+    """
+    terminal_counts = {
+        "fetch_exception": 0, "empty_data": 0, "insufficient_data": 0,
+        "calculation_exception": 0, "processed": 0,
+    }
+    input_last_dates: list[str] = []
+    symbols_processed = 0  # actually entered the per-window loop (>=1 window considered)
+    for sym, diag in diag_by_symbol.items():
+        tp = diag.get("terminal_path")
+        if tp in terminal_counts:
+            terminal_counts[tp] += 1
+        if diag.get("input_last_date") is not None:
+            input_last_dates.append(diag["input_last_date"])
+        stats = window_stats_by_symbol.get(sym)
+        if stats and stats.get("considered", 0) > 0:
+            symbols_processed += 1
+
+    signal_dates = [s["signal_date"] for s in all_signals if s.get("signal_date")]
+    exit_dates = [s["exit_date"] for s in all_signals if s.get("exit_date")]
+    evaluated_symbols = {s["symbol"] for s in all_signals if s.get("exit_date")}
+
+    return {
+        "symbols_requested": n_stocks,
+        "symbols_fetch_attempted": len(diag_by_symbol),
+        "symbols_with_input_data": len(input_last_dates),
+        "symbols_with_sufficient_data": terminal_counts["processed"],
+        "symbols_processed": symbols_processed,
+        "symbols_with_signals": len(symbols_with_signals),
+        "symbols_with_evaluated_outcomes": len(evaluated_symbols),
+        "fetch_exception_count": terminal_counts["fetch_exception"],
+        "empty_data_count": terminal_counts["empty_data"],
+        "insufficient_data_count": terminal_counts["insufficient_data"],
+        "calculation_exception_count": terminal_counts["calculation_exception"],
+        "input_latest_bar_date_min": min(input_last_dates) if input_last_dates else None,
+        "input_latest_bar_date_max": max(input_last_dates) if input_last_dates else None,
+        "signal_date_min": min(signal_dates) if signal_dates else None,
+        "signal_date_max": max(signal_dates) if signal_dates else None,
+        "evaluated_exit_date_min": min(exit_dates) if exit_dates else None,
+        "evaluated_exit_date_max": max(exit_dates) if exit_dates else None,
+    }
 
 
 # ── Aggregate metrics ─────────────────────────────────────────────────────────
@@ -2145,6 +2274,11 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
         # a clearer, more portable long-term count contract than
         # `excluded_benchmark` above.
         window_stats_by_symbol: dict[str, dict] = {}
+        # V-FRESH1B — each stock gets its own fresh diagnostic dict, exactly
+        # mirroring window_stats_by_symbol's per-worker-owned pattern above
+        # (never a single dict shared/mutated across threads). Aggregated
+        # by the main thread only after every future has resolved.
+        diag_by_symbol: dict[str, dict] = {}
         done = 0
 
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -2152,9 +2286,12 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
             for sym in stocks:
                 stats = {"considered": 0, "benchmark_valid": 0}
                 window_stats_by_symbol[sym] = stats
+                diag = {"terminal_path": None, "input_first_date": None, "input_last_date": None}
+                diag_by_symbol[sym] = diag
                 futures[pool.submit(
                     _backtest_stock, sym, horizon, bench_df, market,
                     universe=universe, _exclusions=excluded_benchmark, _window_stats=stats,
+                    _diag=diag,
                 )] = sym
             for future in as_completed(futures):
                 sym = futures[future]
@@ -2177,6 +2314,14 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
                         "universe=%s horizon=%s",
                         sym, market, universe, horizon,
                     )
+                    # V-FRESH1B — a truly unexpected exception escaping
+                    # _backtest_stock's own outer try/except (which already
+                    # catches everything internal) means this symbol's
+                    # diagnostic was never set — classify it here so every
+                    # requested symbol always has exactly one terminal
+                    # path, preserving the reconciliation invariant.
+                    if diag_by_symbol.get(sym, {}).get("terminal_path") is None:
+                        diag_by_symbol.setdefault(sym, {})["terminal_path"] = "calculation_exception"
                     done += 1
                     with _status_lock:
                         _run_status["progress"] = done
@@ -2275,6 +2420,9 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
         # (both live inside the JSON/JSONB summary column).
         metrics["n_stocks_requested"]     = n_stocks
         metrics["n_stocks_with_signals"]  = len(symbols_with_signals)
+        metrics["validation_evidence"] = _build_validation_evidence(
+            n_stocks, diag_by_symbol, window_stats_by_symbol, symbols_with_signals, all_signals,
+        )
         metrics["run_at"] = datetime.now(timezone.utc).isoformat()
         # benchmark_data_available/benchmark_unavailable_reason are always
         # True/None on this path now — an unavailable/invalid benchmark
@@ -2437,6 +2585,49 @@ def _fetchall(sql_pg: str, sql_sq: str, params=()):
         return conn.execute(sql_sq, params).fetchall()
 
 
+def _compute_freshness(data: dict) -> dict:
+    """V-FRESH1B — Option A (durable metadata-and-disclosure foundation,
+    NOT a complete freshness classifier). Derived at READ time from
+    already-persisted data, never stored — the policy may evolve
+    independently of rows already written.
+
+    Deliberately never returns "fresh", "stale", "schedule-consistent",
+    "schedule-missed", "within_expected_cadence" or
+    "past_expected_cadence" — all of those require a trusted exchange-
+    calendar and a completion-SLO/grace-period contract, neither of
+    which exists yet (V-FRESH1A/V-FRESH1A2 forensic findings). Every
+    branch here resolves to "unknown" with one specific, honest reason:
+      - short horizon: no automatic schedule exists at all —
+        "schedule_not_defined", regardless of evidence presence.
+      - medium/long, no `validation_evidence` (every row persisted
+        before this phase): "legacy_run_without_evidence_metadata".
+      - medium/long, `validation_evidence` present (future runs only):
+        "calendar_or_completion_slo_unavailable" — the factual dates/
+        counters exist, but nothing here can yet judge them against a
+        trusted calendar or a completion-SLO.
+
+    `available: true` with `freshness.status: "unknown"` is valid and
+    expected — availability and freshness are independent dimensions.
+    """
+    run_horizon = data.get("horizon")
+    evidence = data.get("validation_evidence")
+
+    if run_horizon == "short":
+        reason = "schedule_not_defined"
+    elif evidence is None:
+        reason = "legacy_run_without_evidence_metadata"
+    else:
+        reason = "calendar_or_completion_slo_unavailable"
+
+    return {
+        "status": "unknown",
+        "reason": reason,
+        "validation_completed_at": data.get("run_at"),
+        "input_data_recency": "unknown",
+        "outcome_evidence_recency": "unknown",
+    }
+
+
 def get_latest_results(horizon: str | None = None, universe: str = "nifty100") -> dict:
     """Return the most recent validation summary (or per-horizon breakdown) for a given universe.
 
@@ -2490,6 +2681,9 @@ def get_latest_results(horizon: str | None = None, universe: str = "nifty100") -
         # authoritative database identity, always wins over any run_id
         # the stored JSON might already happen to contain.
         data["run_id"] = db_run_id
+        # V-FRESH1B — additive, read-time-derived honest disclosure (never
+        # stored — policy may evolve independently of persisted rows).
+        data["freshness"] = _compute_freshness(data)
         return {"available": True, **data}
     except Exception as e:
         return {"available": False, "error": safe_error_message(

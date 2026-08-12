@@ -68,6 +68,43 @@ type ValidationResult = {
     fundamentals_point_in_time?: boolean;
     fundamentals_point_in_time_coverage_pct?: number | null;
   } | null;
+  // V-FRESH1B — additive, present only on runs computed after this phase
+  // shipped; absent on every legacy row. Factual diagnostic evidence
+  // only — symbols_with_signals is deliberately never described as
+  // "coverage" or "eligibility" anywhere this is rendered (see
+  // V-FRESH1A2's corrected forensic finding).
+  validation_evidence?: {
+    symbols_requested: number;
+    symbols_fetch_attempted: number;
+    symbols_with_input_data: number;
+    symbols_with_sufficient_data: number;
+    symbols_processed: number;
+    symbols_with_signals: number;
+    symbols_with_evaluated_outcomes: number;
+    fetch_exception_count: number;
+    empty_data_count: number;
+    insufficient_data_count: number;
+    calculation_exception_count: number;
+    input_latest_bar_date_min: string | null;
+    input_latest_bar_date_max: string | null;
+    signal_date_min: string | null;
+    signal_date_max: string | null;
+    evaluated_exit_date_min: string | null;
+    evaluated_exit_date_max: string | null;
+  } | null;
+  // V-FRESH1B — always present, always "unknown" in this phase (Option
+  // A: a durable metadata-and-disclosure foundation, not a complete
+  // freshness classifier — see backend's _compute_freshness docstring).
+  freshness?: {
+    status: "unknown";
+    reason:
+      | "schedule_not_defined"
+      | "legacy_run_without_evidence_metadata"
+      | "calendar_or_completion_slo_unavailable";
+    validation_completed_at: string | null;
+    input_data_recency: "unknown";
+    outcome_evidence_recency: "unknown";
+  } | null;
 };
 
 // Cohort contract (V-VAL1, matches services/validation_engine.py's
@@ -685,6 +722,76 @@ export default function ValidationPage() {
             This is the last successful validation completion for the selected horizon and universe —
             not necessarily the underlying market data&apos;s own freshness.
           </p>
+
+          {/* V-FRESH1B — Option A: a durable metadata-and-disclosure
+              foundation, NOT a complete fresh/stale classifier. No
+              exchange-calendar utility and no completion-SLO contract
+              exist yet, so this is always neutral/unknown in this phase —
+              never styled red/green, never worded as "fresh" or "stale".
+              Available data remains fully visible above regardless. */}
+          {res.freshness && (
+            <div
+              data-testid="freshness-disclosure"
+              className="rounded-lg border border-dark-border bg-dark-card/50 px-3 py-2.5 space-y-1.5"
+            >
+              <p className="text-xs font-semibold text-gray-300">Freshness not yet verifiable</p>
+              <p className="text-xs text-gray-500">
+                {res.freshness.reason === "schedule_not_defined" &&
+                  "No automatic validation schedule is currently defined for this horizon."}
+                {res.freshness.reason === "legacy_run_without_evidence_metadata" &&
+                  "This stored run predates durable input and outcome evidence metadata."}
+                {res.freshness.reason === "calendar_or_completion_slo_unavailable" &&
+                  "Input and outcome dates are recorded, but market-calendar-aware freshness is not yet available."}
+              </p>
+              {res.validation_evidence && (
+                <div className="text-xs text-gray-500 space-y-1 pt-1">
+                  {(res.validation_evidence.input_latest_bar_date_min || res.validation_evidence.input_latest_bar_date_max) && (
+                    <p>
+                      Latest input bars across{" "}
+                      <span className="text-gray-400">{res.validation_evidence.symbols_with_input_data}</span> symbols
+                      ranged from{" "}
+                      <span className="text-gray-400">{res.validation_evidence.input_latest_bar_date_min ?? "—"}</span> to{" "}
+                      <span className="text-gray-400">{res.validation_evidence.input_latest_bar_date_max ?? "—"}</span>.
+                    </p>
+                  )}
+                  {(res.validation_evidence.signal_date_min || res.validation_evidence.signal_date_max) && (
+                    <p>
+                      Signals in this run span{" "}
+                      <span className="text-gray-400">{res.validation_evidence.signal_date_min ?? "—"}</span> to{" "}
+                      <span className="text-gray-400">{res.validation_evidence.signal_date_max ?? "—"}</span>{" "}
+                      (signal dates, not input-data-through).
+                    </p>
+                  )}
+                  {(res.validation_evidence.evaluated_exit_date_min || res.validation_evidence.evaluated_exit_date_max) && (
+                    <p>
+                      Evaluated outcomes use exit bars from{" "}
+                      <span className="text-gray-400">{res.validation_evidence.evaluated_exit_date_min ?? "—"}</span> to{" "}
+                      <span className="text-gray-400">{res.validation_evidence.evaluated_exit_date_max ?? "—"}</span>.
+                    </p>
+                  )}
+                  <p>
+                    {res.validation_evidence.symbols_requested} requested ·{" "}
+                    {res.validation_evidence.symbols_with_input_data} returned price data ·{" "}
+                    {res.validation_evidence.symbols_with_sufficient_data} had sufficient history ·{" "}
+                    {res.validation_evidence.symbols_processed} were processed ·{" "}
+                    {res.validation_evidence.symbols_with_signals} produced signals ·{" "}
+                    {res.validation_evidence.symbols_with_evaluated_outcomes} produced evaluated outcomes
+                  </p>
+                  <details className="pt-0.5">
+                    <summary className="cursor-pointer text-gray-600 hover:text-gray-400">
+                      Diagnostic detail
+                    </summary>
+                    <p className="pt-1 text-gray-600">
+                      Fetch exceptions: {res.validation_evidence.fetch_exception_count} · Empty data:{" "}
+                      {res.validation_evidence.empty_data_count} · Insufficient data:{" "}
+                      {res.validation_evidence.insufficient_data_count} · Calculation exceptions:{" "}
+                      {res.validation_evidence.calculation_exception_count}
+                    </p>
+                  </details>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* DP-026 — always rendered, not conditioned on the API's
               data_limitations field (legacy runs predate it but carry the
