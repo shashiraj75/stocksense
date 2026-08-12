@@ -1510,14 +1510,49 @@ def _max_consec_right(buys: list[dict]) -> int:
     return best
 
 
-def _max_drawdown(rets: list[float]) -> float | None:
-    """Peak-to-trough drawdown on a hypothetical equal-weight BUY portfolio."""
-    if not rets:
+def _max_drawdown(buys: list[dict]) -> float | None:
+    """Peak-to-trough drawdown of the equal-weight SIGNAL-DATE return curve.
+
+    NOT a capital-allocated portfolio backtest — see the label this value
+    is displayed under ("Max drawdown of the equal-weight signal-date
+    return curve"). It makes no capital-allocation, transaction-cost, or
+    execution-timing assumption; signals on the same date can represent
+    genuinely concurrent/overlapping positions, which this metric does
+    not attempt to model.
+
+    Contract (order-invariant by construction, not just by sorting):
+      1. Group BUY signals with a non-null fwd_return_pct by signal_date.
+      2. Each date's return is the equal-weight mean of that date's
+         signal returns — this is what removes intra-date ordering as a
+         variable at all, rather than relying on a stable sort of
+         individual signals (whose original order reflects
+         ThreadPoolExecutor completion order in run_validation(), not
+         anything meaningful).
+      3. Sort the resulting (one row per date) series chronologically.
+      4. Compound that deterministic date-level series into an equity
+         curve and compute peak-to-trough drawdown on it.
+    """
+    from collections import defaultdict
+
+    by_date: dict[str, list[float]] = defaultdict(list)
+    for s in buys:
+        r = s.get("fwd_return_pct")
+        if r is None:
+            continue
+        by_date[s.get("signal_date", "")].append(r)
+
+    if not by_date:
         return None
+
+    date_returns = [
+        (date, sum(rets) / len(rets))
+        for date, rets in sorted(by_date.items(), key=lambda kv: kv[0])
+    ]
+
     equity = 100.0
     peak = equity
     max_dd = 0.0
-    for r in rets:
+    for _date, r in date_returns:
         equity *= (1 + r / 100)
         if equity > peak:
             peak = equity
@@ -1647,12 +1682,28 @@ def _compute_metrics(
     fwd_days = HORIZON_DAYS.get(horizon, 5)
 
     def _hit_rate(subset):
-        if not subset: return None
-        return round(sum(s["correct"] for s in subset) / len(subset) * 100, 1)
+        evaluated = [s for s in subset if s.get("correct") is not None]
+        if not evaluated: return None
+        return round(sum(s["correct"] for s in evaluated) / len(evaluated) * 100, 1)
+
+    # V-VAL1 aggregate evaluated-BUY-cohort contract (additive, does not
+    # remove/rename any existing field). `correct`/`fwd_return_pct` are
+    # never None on an in-memory signal dict as of this writing —
+    # run_validation()'s per-window loop only appends a signal once both
+    # are fully computed (see _backtest_stock) — but this filters
+    # defensively on `is not None` rather than assuming that invariant,
+    # so evaluated_buy_count/buy_return_count would genuinely diverge from
+    # buy_signal_count if that ever changed, instead of silently
+    # miscounting. buy_hits is a real integer count, never reconstructed
+    # from a rounded percentage.
+    evaluated_buys      = [s for s in buys if s.get("correct") is not None]
+    buy_hits_count      = sum(1 for s in evaluated_buys if s["correct"])
+    buy_return_signals  = [s for s in buys if s.get("fwd_return_pct") is not None]
 
     def _avg_ret(subset):
-        if not subset: return None
-        return round(np.mean([s["fwd_return_pct"] for s in subset]), 2)
+        vals = [s["fwd_return_pct"] for s in subset if s.get("fwd_return_pct") is not None]
+        if not vals: return None
+        return round(float(np.mean(vals)), 2)
 
     def _sharpe(rets, rf=0.0):
         arr = np.array(rets)
@@ -1720,7 +1771,7 @@ def _compute_metrics(
     # benchmark would misleadingly imply the model produced flat signals
     # rather than no signals at all. outperformance requires BOTH sides to
     # be genuinely available.
-    buy_rets   = [s["fwd_return_pct"] for s in buys]
+    buy_rets   = [s["fwd_return_pct"] for s in buy_return_signals]
     buy_alphas = [s["alpha_pct"] for s in buys if s.get("alpha_pct") is not None]
     model_avg  = _avg_ret(buys)
     outperformance = (
@@ -1737,8 +1788,24 @@ def _compute_metrics(
         "buy_signals":      len(buys),
         "sell_signals":     len(sells),
         "hold_signals":     len(holds),
-        # Benchmark-relative hit rate (primary metric — stock must beat Nifty to be "correct")
-        "buy_hit_rate_pct":           _hit_rate(buys),
+        # V-VAL1 additive cohort fields — buy_signals above (legacy name,
+        # kept unchanged) and buy_signal_count are the identical value
+        # under a clearer name; evaluated_buy_count/buy_hits/
+        # buy_return_count are new. NOTE: buy_signals/sell_signals/
+        # hold_signals are PREDICTED-class counts (what the model called),
+        # not an actual/ground-truth class distribution — see the
+        # frontend's Overall Accuracy sub-text for why these must never be
+        # read as a majority-class accuracy baseline.
+        "buy_signal_count":    len(buys),
+        "evaluated_buy_count": len(evaluated_buys),
+        "buy_hits":            buy_hits_count,
+        "buy_return_count":    len(buy_return_signals),
+        # Benchmark-relative hit rate (primary metric — stock must beat Nifty
+        # to be "correct"). Now explicitly buy_hits/evaluated_buy_count
+        # rather than _hit_rate(buys) — identical value today (evaluated_buy_
+        # count == len(buys) under the current invariant) but honestly
+        # derived from the evaluated cohort rather than the raw BUY count.
+        "buy_hit_rate_pct":           round(buy_hits_count / len(evaluated_buys) * 100, 1) if evaluated_buys else None,
         "sell_hit_rate_pct":          _hit_rate(sells),
         "overall_accuracy_pct":       _hit_rate(signals),
         # Return metrics
@@ -1758,7 +1825,7 @@ def _compute_metrics(
         # Streak / drawdown analysis on BUY signals ordered by signal_date
         "max_consecutive_wrong":  _max_consec_wrong(buys),
         "max_consecutive_right":  _max_consec_right(buys),
-        "max_drawdown_pct":       _max_drawdown(buy_rets),
+        "max_drawdown_pct":       _max_drawdown(buys),
         "score_buckets":          buckets,
         "confidence_buckets":     confidence_buckets,
         "sell_confidence_buckets": sell_confidence_buckets,
@@ -2384,7 +2451,32 @@ def get_track_record_summary(market: str, horizon: str) -> list[dict]:
 
 
 def get_per_stock_results(run_id: int | None = None, horizon: str = "medium", universe: str = "nifty100") -> list[dict]:
-    """Return per-stock hit rate and average return for the latest (or given) run in a universe."""
+    """Return per-stock BUY hit rate and average return for the latest (or given) run in a universe.
+
+    Cohort contract (V-VAL1):
+      buy_signal_count   — every persisted BUY row for the symbol.
+      evaluated_buy_count — BUY rows with a non-null `correct` outcome.
+      buy_hits           — evaluated BUY rows classified correct.
+      hit_rate_pct        = buy_hits / evaluated_buy_count * 100, or None
+                             if evaluated_buy_count is 0 (never a fabricated 0%).
+      buy_return_count    — BUY rows with a non-null `fwd_return_pct`.
+      buy_avg_return_pct  — mean fwd_return_pct over buy_return_count, or
+                             None if buy_return_count is 0.
+
+    As of this writing, run_validation()'s per-signal loop only ever
+    appends a signal (and therefore only ever persists a val_signals row)
+    once `correct` and `fwd_return_pct` are both fully computed — a window
+    whose evidence is unavailable is skipped via `continue` before
+    appending, never persisted with a null outcome. So
+    evaluated_buy_count == buy_signal_count and buy_return_count ==
+    buy_signal_count hold for every row this codebase currently writes.
+    That is an application invariant, not a schema guarantee (`correct`
+    and `fwd_return_pct` are nullable columns) — the query below filters
+    on `IS NOT NULL` explicitly rather than assuming the invariant, so a
+    future violation (a manual insert, a new write path) would show up
+    as evaluated_buy_count/buy_return_count genuinely differing from
+    buy_signal_count, not as a silently wrong percentage.
+    """
     try:
         _init_db()
         if run_id is None:
@@ -2400,42 +2492,59 @@ def get_per_stock_results(run_id: int | None = None, horizon: str = "medium", un
         rows = _fetchall(
             """SELECT symbol,
                       COUNT(*) AS total,
-                      SUM(correct) AS correct,
                       AVG(fwd_return_pct) AS avg_ret,
-                      AVG(CASE WHEN predicted='BUY' THEN fwd_return_pct END) AS buy_ret,
-                      COUNT(CASE WHEN predicted='BUY' THEN 1 END) AS buy_count
+                      COUNT(CASE WHEN predicted='BUY' THEN 1 END) AS buy_signal_count,
+                      COUNT(CASE WHEN predicted='BUY' AND correct IS NOT NULL THEN 1 END) AS evaluated_buy_count,
+                      SUM(CASE WHEN predicted='BUY' AND correct IS NOT NULL THEN correct END) AS buy_hits,
+                      COUNT(CASE WHEN predicted='BUY' AND fwd_return_pct IS NOT NULL THEN 1 END) AS buy_return_count,
+                      AVG(CASE WHEN predicted='BUY' AND fwd_return_pct IS NOT NULL THEN fwd_return_pct END) AS buy_avg_ret
                FROM val_signals
                WHERE run_id=%s AND horizon=%s
                GROUP BY symbol
-               ORDER BY buy_ret DESC NULLS LAST""",
+               ORDER BY buy_avg_ret DESC NULLS LAST, symbol ASC""",
             """SELECT symbol,
                       COUNT(*) AS total,
-                      SUM(correct) AS correct,
                       AVG(fwd_return_pct) AS avg_ret,
-                      AVG(CASE WHEN predicted='BUY' THEN fwd_return_pct END) AS buy_ret,
-                      COUNT(CASE WHEN predicted='BUY' THEN 1 END) AS buy_count
+                      COUNT(CASE WHEN predicted='BUY' THEN 1 END) AS buy_signal_count,
+                      COUNT(CASE WHEN predicted='BUY' AND correct IS NOT NULL THEN 1 END) AS evaluated_buy_count,
+                      SUM(CASE WHEN predicted='BUY' AND correct IS NOT NULL THEN correct END) AS buy_hits,
+                      COUNT(CASE WHEN predicted='BUY' AND fwd_return_pct IS NOT NULL THEN 1 END) AS buy_return_count,
+                      AVG(CASE WHEN predicted='BUY' AND fwd_return_pct IS NOT NULL THEN fwd_return_pct END) AS buy_avg_ret
                FROM val_signals
                WHERE run_id=? AND horizon=?
                GROUP BY symbol
-               ORDER BY buy_ret DESC NULLS LAST""",
+               ORDER BY buy_avg_ret DESC NULLS LAST, symbol ASC""",
             (run_id, horizon)
         )
 
         def _v(r, key, idx):
             return r[idx] if _USE_POSTGRES else r[key]
 
-        return [
-            {
-                "symbol":            _v(r, "symbol", 0),
-                "total_signals":     _v(r, "total", 1),
-                "correct":           _v(r, "correct", 2),
-                "hit_rate_pct":      round(_v(r, "correct", 2) / _v(r, "total", 1) * 100, 1) if _v(r, "total", 1) else 0,
-                "avg_fwd_return_pct": round(_v(r, "avg_ret", 3), 2) if _v(r, "avg_ret", 3) is not None else None,
-                "buy_avg_return_pct": round(_v(r, "buy_ret", 4), 2) if _v(r, "buy_ret", 4) is not None else None,
-                "buy_signal_count":  _v(r, "buy_count", 5),
-            }
-            for r in rows
-        ]
+        results = []
+        for r in rows:
+            evaluated_buy_count = _v(r, "evaluated_buy_count", 4)
+            buy_hits = _v(r, "buy_hits", 5)
+            buy_return_count = _v(r, "buy_return_count", 6)
+            buy_avg_ret = _v(r, "buy_avg_ret", 7)
+            results.append({
+                "symbol":             _v(r, "symbol", 0),
+                "total_signals":      _v(r, "total", 1),
+                "avg_fwd_return_pct": round(_v(r, "avg_ret", 2), 2) if _v(r, "avg_ret", 2) is not None else None,
+                "buy_signal_count":   _v(r, "buy_signal_count", 3),
+                "evaluated_buy_count": evaluated_buy_count,
+                "buy_hits":           buy_hits,
+                # Legacy compatibility alias — this endpoint is a public API
+                # surface (get_per_stock_results is called directly by
+                # /api/validation/results/stocks and /results/stock/{symbol};
+                # an external caller may exist beyond this repo's own
+                # frontend, which no longer reads this key). Same value as
+                # buy_hits under its pre-V-VAL1 name; do not remove.
+                "correct":            buy_hits,
+                "hit_rate_pct":       round(buy_hits / evaluated_buy_count * 100, 1) if evaluated_buy_count else None,
+                "buy_return_count":   buy_return_count,
+                "buy_avg_return_pct": round(buy_avg_ret, 2) if buy_avg_ret is not None else None,
+            })
+        return results
     except Exception:
         return []
 
