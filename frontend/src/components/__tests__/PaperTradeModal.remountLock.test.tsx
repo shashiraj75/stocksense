@@ -83,7 +83,7 @@ describe("PaperTradeModal shared in-flight Buy lock (remount survival)", () => {
     mockPlacePaperBuy.mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }));
 
     const onClose1 = vi.fn();
-    const { unmount } = renderModal(onClose1);
+    const { unmount: unmount1 } = renderModal(onClose1);
     const buyButton = await screen.findByRole("button", { name: /buy \d+ shares/i });
     await waitFor(() => expect(screen.getByText(/Risk-based suggestion/i)).toBeInTheDocument());
     fireEvent.click(buyButton);
@@ -93,21 +93,33 @@ describe("PaperTradeModal shared in-flight Buy lock (remount survival)", () => {
     // Simulate Cancel/X unmounting the modal while the request is still
     // in flight (this is what onClose does in the real app — the parent
     // page stops rendering PaperTradeModal).
-    unmount();
+    unmount1();
 
     // Reopen the SAME pick — a fresh instance/mount, exactly like the
-    // Daily Picks page re-rendering the modal.
+    // Daily Picks page re-rendering the modal. Capture its render result
+    // (unlike the original version of this test) so it can be explicitly
+    // unmounted below, mirroring modal #1 — the real app never has two
+    // PaperTradeModal instances mounted at once, and leaving this one
+    // mounted after we're done asserting against it would let it become a
+    // SECOND live "Buy 100 shares" control once the shared lock clears
+    // (its own `buyLockedByOtherInstance` flips back to false and its
+    // label reverts), which is exactly the false-duplicate-button failure
+    // this correction removes.
     const onClose2 = vi.fn();
-    renderModal(onClose2);
+    const { unmount: unmount2 } = renderModal(onClose2);
 
     // The Buy button in the reopened instance must be disabled/blocked —
     // this is the crux of the regression: without the shared lock, this
     // fresh instance has isPending===false and would allow a second POST.
     const buyButtonAgain = await screen.findByRole("button", { name: /placing|buy \d+ shares/i });
+    expect(buyButtonAgain).toBeDisabled();
     fireEvent.click(buyButtonAgain);
 
-    // Give any (incorrect) second submission a chance to fire.
-    await new Promise((r) => setTimeout(r, 20));
+    // Give any (incorrect) second submission a chance to fire. A click on
+    // a `disabled` button never dispatches in the DOM at all, so there is
+    // nothing asynchronous to actually wait on here — flush the microtask
+    // queue once (deterministic) rather than a real-time sleep.
+    await Promise.resolve();
     expect(mockPlacePaperBuy).toHaveBeenCalledTimes(1);
 
     // Resolve the original in-flight request now.
@@ -118,9 +130,27 @@ describe("PaperTradeModal shared in-flight Buy lock (remount survival)", () => {
       missing_evidence_fields: [], idempotency_enforced: true,
     });
 
-    // Once resolved, the lock is released — a genuinely NEW Buy click
-    // afterwards is allowed and gets a NEW key.
-    await waitFor(() => {}, { timeout: 50 }).catch(() => {});
+    // Deterministically wait for the shared lock to actually clear —
+    // `releaseBuyLock` deletes the module-level entry on a successful
+    // response (see paperBuyLock.ts), so `getBuyLock` returning undefined
+    // IS the observable "released" state. This replaces the previous
+    // `await waitFor(() => {}, { timeout: 50 })`, whose callback never
+    // throws and so could resolve on its very first check — a real-time
+    // wait that provided no actual synchronization guarantee at all.
+    const { getBuyLock, buyOperationKey } = await import("@/utils/paperBuyLock");
+    const buyOpKey = buyOperationKey("user-1", "IN", "TCS", "medium");
+    await waitFor(() => expect(getBuyLock(buyOpKey)).toBeUndefined());
+
+    // Modal #2 has done its job (proving the shared lock blocks it) —
+    // explicitly remove it before opening modal #3, exactly like the real
+    // app always unmounts a closed modal before a new one is opened.
+    // Leaving it mounted would let ITS Buy button re-enable now that the
+    // lock is released, producing a second live "Buy 100 shares" control
+    // alongside modal #3's — a duplicate the real app's own lifecycle
+    // (one modal rendered at a time) can never produce.
+    unmount2();
+    expect(screen.queryByRole("button", { name: /buy \d+ shares/i })).not.toBeInTheDocument();
+
     mockPlacePaperBuy.mockResolvedValueOnce({
       message: "ok", trade_id: 2, symbol: "TCS", market: "IN", quantity: 1, entry_price: 100,
       cost: 100, remaining_cash: 99800, entry_evidence_captured: true, snapshot_schema_version: "1.0",
