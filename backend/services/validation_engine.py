@@ -1531,7 +1531,21 @@ def _max_drawdown(buys: list[dict]) -> float | None:
       3. Sort the resulting (one row per date) series chronologically.
       4. Compound that deterministic date-level series into an equity
          curve and compute peak-to-trough drawdown on it.
+
+    Return-domain contract (fail closed): for a long-equity percentage
+    return, -100% (total loss) is the valid floor — a return below -100%,
+    or a non-finite/non-numeric value, is impossible for a long equity
+    position and means the upstream evidence is malformed, not that a
+    real drawdown event occurred. Any such value invalidates the WHOLE
+    metric (returns None) rather than being clamped, replaced, or
+    silently dropped while the remaining rows compute an apparently-valid
+    number — a partial result over a corrupted cohort is indistinguishable
+    from a genuine one and would misrepresent the metric's integrity.
+    Genuinely missing (None) returns are excluded from the cohort before
+    this validation runs, per the existing evaluated-cohort contract —
+    that is an intentional exclusion, not a malformed value.
     """
+    import math
     from collections import defaultdict
 
     by_date: dict[str, list[float]] = defaultdict(list)
@@ -1539,6 +1553,8 @@ def _max_drawdown(buys: list[dict]) -> float | None:
         r = s.get("fwd_return_pct")
         if r is None:
             continue
+        if not isinstance(r, (int, float)) or not math.isfinite(r) or r < -100:
+            return None
         by_date[s.get("signal_date", "")].append(r)
 
     if not by_date:

@@ -105,3 +105,106 @@ def test_deterministic_repeated_execution():
     buys = [_buy("2026-01-02", -10.0), _buy("2026-01-01", 5.0), _buy("2026-01-01", 15.0)]
     results = {_max_drawdown(list(buys)) for _ in range(5)}
     assert len(results) == 1
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# V-VAL1 correction — return-domain validation (fail closed).
+#
+# For a long-equity percentage return: exactly -100% (total loss) is the
+# valid floor. A return below -100%, or a non-finite/non-numeric value, is
+# impossible for a long equity position and indicates malformed upstream
+# evidence, not a real drawdown event. Any such value must invalidate the
+# WHOLE metric (return None), never be clamped, replaced, or silently
+# dropped while computing an apparently-valid drawdown from the remaining
+# rows — a partial calculation over a corrupted cohort would look
+# indistinguishable from a genuine one.
+# ═════════════════════════════════════════════════════════════════════════
+
+import math
+
+
+def test_exactly_minus_100_percent_is_valid():
+    buys = [_buy("2026-01-01", -100.0)]
+    assert _max_drawdown(buys) is not None
+
+
+def test_exactly_minus_100_percent_produces_100_percent_drawdown():
+    # Equity: 100 -> 0. Peak 100, trough 0. Drawdown = 100.0%.
+    buys = [_buy("2026-01-01", -100.0)]
+    assert _max_drawdown(buys) == 100.0
+
+
+def test_return_below_minus_100_percent_is_unavailable():
+    buys = [_buy("2026-01-01", -150.0)]
+    assert _max_drawdown(buys) is None
+
+
+def test_nan_return_is_unavailable():
+    buys = [_buy("2026-01-01", float("nan"))]
+    assert _max_drawdown(buys) is None
+
+
+def test_positive_infinity_return_is_unavailable():
+    buys = [_buy("2026-01-01", math.inf)]
+    assert _max_drawdown(buys) is None
+
+
+def test_negative_infinity_return_is_unavailable():
+    buys = [_buy("2026-01-01", -math.inf)]
+    assert _max_drawdown(buys) is None
+
+
+def test_non_numeric_return_is_unavailable():
+    # Malformed upstream evidence (e.g. a string) reaching this function —
+    # the schema does not enforce a numeric type on fwd_return_pct any more
+    # than it enforces NOT NULL, so this is defended the same way.
+    buys = [_buy("2026-01-01", "not-a-number")]
+    assert _max_drawdown(buys) is None
+
+
+def test_invalid_value_among_otherwise_valid_rows_invalidates_whole_metric():
+    buys = [
+        _buy("2026-01-01", 10.0),
+        _buy("2026-01-02", -150.0),  # impossible — below -100%
+        _buy("2026-01-03", 5.0),
+    ]
+    # Must NOT silently drop the malformed row and compute a drawdown from
+    # the two remaining valid ones — the whole metric is unavailable.
+    assert _max_drawdown(buys) is None
+
+
+def test_invalid_value_in_a_same_date_group_invalidates_whole_metric():
+    buys = [
+        _buy("2026-01-01", 10.0),
+        _buy("2026-01-01", math.nan),  # same date as a valid signal
+        _buy("2026-01-02", 5.0),
+    ]
+    assert _max_drawdown(buys) is None
+
+
+def test_invalidation_is_input_order_invariant():
+    valid = [_buy("2026-01-01", 10.0), _buy("2026-01-03", 5.0)]
+    invalid = _buy("2026-01-02", -200.0)
+
+    first = [invalid] + valid
+    middle = [valid[0], invalid, valid[1]]
+    last = valid + [invalid]
+
+    assert _max_drawdown(first) is None
+    assert _max_drawdown(middle) is None
+    assert _max_drawdown(last) is None
+
+
+def test_null_return_still_excluded_before_validation_not_invalidating():
+    # A genuinely missing (None) return is excluded from the cohort BEFORE
+    # domain validation runs — this is the pre-existing, intentional
+    # null-exclusion contract (see test_missing_invalid_returns_excluded_
+    # from_date_aggregation above), not a malformed-value case. It must
+    # NOT invalidate the whole metric the way a below-floor or non-finite
+    # value does.
+    buys = [
+        _buy("2026-01-01", 10.0),
+        {"signal_date": "2026-01-01", "fwd_return_pct": None, "predicted": "BUY"},
+        _buy("2026-01-02", -5.0),
+    ]
+    assert _max_drawdown(buys) == 5.0
