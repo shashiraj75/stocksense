@@ -1018,11 +1018,23 @@ def test_atomic_primitive_respects_result_uniqueness_real_postgres(pg_conn, pg_d
     # accepted or misclassified.
     ve.mark_attempt_failed_retryable(attempt_b["id"], owner="w2", fencing_token=lease_b["fencing_token"],
                                       now=T0 + timedelta(minutes=1, seconds=2))
+    # mark_attempt_failed_retryable() clears the lease's active_attempt_id
+    # binding but does NOT release ownership itself — the lease row is
+    # still owned by "w2" and still unexpired (600s duration). Without an
+    # explicit release here, w3's acquisition below correctly returns
+    # {"ok": False, "reason": "already_leased"} (a real, correct rejection,
+    # not a bug) and indexing ["fencing_token"] on that result is the
+    # actual defect this correction fixes — not a production issue.
+    released_b = ve.release_validation_execution_lease(
+        owner="w2", fencing_token=lease_b["fencing_token"], now=T0 + timedelta(minutes=1, seconds=3),
+    )
+    assert released_b["ok"] is True
     slot_c = ve.get_or_create_schedule_slot(
         horizon="medium", universe="nifty100", scheduled_slot=T0 + timedelta(minutes=2),
         schedule_version="v1", now=T0 + timedelta(minutes=2),
     )
     lease_c = ve.acquire_validation_execution_lease(owner="w3", now=T0 + timedelta(minutes=2), lease_duration_seconds=600)
+    assert lease_c["ok"] is True
     attempt_c = ve.create_schedule_attempt(slot_id=slot_c["id"], trigger_type="scheduler", owner="w3",
                                             fencing_token=lease_c["fencing_token"], now=T0 + timedelta(minutes=2))
     ve.mark_attempt_running(attempt_c["id"], owner="w3", fencing_token=lease_c["fencing_token"],
