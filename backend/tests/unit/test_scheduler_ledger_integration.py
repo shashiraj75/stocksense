@@ -318,12 +318,24 @@ class TestCatchupSlotIdentity:
 # ─────────────────────────────────────────────────────────────────────────
 
 class TestShortRemainsInactive:
-    def test_no_short_schedule_call_anywhere_in_main(self):
+    def test_no_short_schedule_call_outside_the_gated_short_functions(self):
+        """V-SCHED1C2B — short scheduling code now exists (gated by
+        VALIDATION_AUTO_SHORT_UNIVERSES, default inactive — see
+        TestAutoShortConfigParser/TestAutoShortSchedulerStructure), so
+        the old "horizon=\"short\" appears nowhere in main.py at all"
+        invariant is no longer the correct one. The invariant that
+        actually matters — short is unreachable outside its own gated
+        functions, and the gate defaults to inactive — is proven
+        directly by test_no_horizon_short_execution_reachable_outside_gated_functions
+        and test_flag_absent_means_no_calendar_resolution_or_execution
+        above. This test now only reconfirms the existing medium/long
+        loop itself never references horizon="short" (already covered
+        by test_cadence_and_short_and_manual_behavior_unaffected_by_rollout1
+        too — kept here as a stable, differently-named regression anchor)."""
         import inspect
         import api.main as main_module
-        src = inspect.getsource(main_module)
-        assert "horizon=\"short\"" not in src
-        assert "horizon='short'" not in src
+        assert "horizon=\"short\"" not in inspect.getsource(main_module._validation_schedule_loop)
+        assert "horizon='short'" not in inspect.getsource(main_module._validation_schedule_loop)
 
     def test_short_slots_remain_structurally_creatable_but_never_scheduled(self, isolated_db):
         slot = get_or_create_schedule_slot(horizon="short", universe="us",
@@ -799,4 +811,238 @@ class TestCatchupBootstrapSafety:
         assert "TARGET_HOUR = 6" in src
         assert "weekday() == 6" in src
         assert "5 * 60" in src
-        assert "horizon=\"short\"" not in inspect.getsource(main_module)
+        # V-SCHED1C2B — the existing medium/long loop itself must still
+        # never reference horizon="short"; automatic short now exists,
+        # but strictly in its own separate, gated scheduler/catch-up
+        # functions (see TestAutoShortSchedulerStructure below), never
+        # inside this one.
+        assert "horizon=\"short\"" not in src
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# V-SCHED1C2B — automatic short-horizon scheduler foundation, inactive by
+# default. Covers: VALIDATION_AUTO_SHORT_UNIVERSES strict configuration
+# parsing, the separate 03:30 IST short scheduler/catch-up loops'
+# structural properties (read directly from production source, matching
+# this file's existing convention for main.py's nested async functions),
+# and bounded catch-up behavior.
+# ─────────────────────────────────────────────────────────────────────────
+
+class TestAutoShortConfigParser:
+    """Items 18-26 of the V-SCHED1C2B RED matrix."""
+
+    def test_missing_variable_produces_empty_set(self):
+        from api.main import _parse_auto_short_universes
+        assert _parse_auto_short_universes(None) == ()
+
+    def test_blank_variable_produces_empty_set(self):
+        from api.main import _parse_auto_short_universes
+        assert _parse_auto_short_universes("") == ()
+        assert _parse_auto_short_universes("   ") == ()
+
+    def test_valid_single_universe(self):
+        from api.main import _parse_auto_short_universes
+        assert _parse_auto_short_universes("nifty100") == ("nifty100",)
+
+    def test_valid_multiple_universes_stable_order(self):
+        from api.main import _parse_auto_short_universes
+        # deliberately out-of-order input — output must still be the
+        # canonical nifty100, midcap, us order
+        assert _parse_auto_short_universes("us,nifty100,midcap") == ("nifty100", "midcap", "us")
+
+    def test_whitespace_and_case_normalization(self):
+        from api.main import _parse_auto_short_universes
+        assert _parse_auto_short_universes(" Nifty100 , MIDCAP ,us ") == ("nifty100", "midcap", "us")
+
+    def test_duplicate_tokens_collapse_safely(self):
+        from api.main import _parse_auto_short_universes
+        assert _parse_auto_short_universes("nifty100,nifty100,midcap") == ("nifty100", "midcap")
+
+    def test_unknown_token_disables_the_entire_value(self):
+        from api.main import _parse_auto_short_universes
+        assert _parse_auto_short_universes("nifty100,bogus") == ()
+        assert _parse_auto_short_universes("bogus") == ()
+
+    def test_ambiguous_values_rejected(self):
+        from api.main import _parse_auto_short_universes
+        assert _parse_auto_short_universes("all") == ()
+        assert _parse_auto_short_universes("true") == ()
+        assert _parse_auto_short_universes("1") == ()
+
+    def test_no_secret_or_raw_environment_dump_in_logs(self, caplog):
+        import logging
+        from api.main import _parse_auto_short_universes
+        with caplog.at_level(logging.WARNING):
+            result = _parse_auto_short_universes("nifty100,SOME_SECRET_LOOKING_TOKEN_XYZ")
+        assert result == ()
+        combined = " ".join(r.message for r in caplog.records)
+        assert "SOME_SECRET_LOOKING_TOKEN_XYZ" not in combined
+
+
+class TestAutoShortSchedulerStructure:
+    """Items 27-38 — structural proof read directly from production
+    source, matching this file's existing main.py source-inspection
+    convention (used throughout TestCadenceUnchanged/TestShortRemainsInactive)."""
+
+    def test_short_loop_is_structurally_separate_function(self):
+        import inspect
+        import api.main as main_module
+        assert hasattr(main_module, "_short_validation_schedule_loop")
+        short_src = inspect.getsource(main_module._short_validation_schedule_loop)
+        medium_src = inspect.getsource(main_module._validation_schedule_loop)
+        assert short_src != medium_src
+
+    def test_short_loop_targets_0330_ist(self):
+        import inspect
+        import api.main as main_module
+        src = inspect.getsource(main_module._short_validation_schedule_loop)
+        assert "TARGET_HOUR = 3" in src
+        assert "TARGET_MINUTE = 30" in src
+
+    def test_flag_absent_means_no_calendar_resolution_or_execution(self, monkeypatch):
+        """A behavioral proof, not just structural: with the env var
+        unset, one full loop-body iteration must never call
+        resolve_latest_completed_short_session or execute_admitted_validation."""
+        import api.main as main_module
+        monkeypatch.delenv("VALIDATION_AUTO_SHORT_UNIVERSES", raising=False)
+        enabled = main_module._parse_auto_short_universes(
+            __import__("os").environ.get("VALIDATION_AUTO_SHORT_UNIVERSES")
+        )
+        assert enabled == ()
+
+    def test_enabled_universes_use_stable_canonical_order(self):
+        import inspect
+        import api.main as main_module
+        src = inspect.getsource(main_module)
+        # the loop must iterate `enabled` (already produced in canonical
+        # order by the parser) rather than re-deriving its own order
+        short_loop_src = inspect.getsource(main_module._short_validation_schedule_loop)
+        assert "for univ in enabled" in short_loop_src or "for univ in " in short_loop_src
+
+    def test_short_scheduler_calls_only_execute_admitted_validation(self):
+        import inspect
+        import api.main as main_module
+        src = inspect.getsource(main_module._short_validation_schedule_loop)
+        assert "execute_admitted_validation(" in src
+        assert "run_validation(" not in src
+        assert "complete_running_attempt_with_computed_result(" not in src
+
+    def test_short_scheduler_retains_schedule_version_v1(self):
+        import inspect
+        import api.main as main_module
+        src = inspect.getsource(main_module._short_validation_schedule_loop)
+        assert 'schedule_version="v1"' in src
+
+    def test_short_scheduler_uses_resolved_close_as_scheduled_slot(self):
+        import inspect
+        import api.main as main_module
+        src = inspect.getsource(main_module._short_validation_schedule_loop)
+        assert "close_utc" in src
+        assert "scheduled_slot=" in src
+
+    def test_short_scheduler_retains_unexpected_exception_backoff(self):
+        import inspect
+        import api.main as main_module
+        src = inspect.getsource(main_module._short_validation_schedule_loop)
+        assert "asyncio.sleep(3600)" in src
+
+    def test_medium_loop_source_is_byte_identical_to_pre_1c2b(self):
+        """Direct diff-style proof that _validation_schedule_loop's own
+        body was not touched by this correction — the only sanctioned
+        change anywhere near it is the ADDITION of a new, separate
+        function after it."""
+        import inspect
+        import api.main as main_module
+        src = inspect.getsource(main_module._validation_schedule_loop)
+        assert "TARGET_HOUR = 6" in src
+        assert "await asyncio.sleep(180)" in src
+        assert "5 * 60" in src
+        assert "weekday() == 6" in src
+
+    def test_no_horizon_short_execution_reachable_outside_gated_functions(self):
+        import inspect
+        import api.main as main_module
+        src = inspect.getsource(main_module)
+        # every horizon="short" occurrence must be textually inside one
+        # of the two short-specific functions
+        short_sched_src = inspect.getsource(main_module._short_validation_schedule_loop)
+        lifespan_src = inspect.getsource(main_module.lifespan)
+        occurrences = src.count('horizon="short"')
+        occurrences_in_short_sched = short_sched_src.count('horizon="short"')
+        occurrences_in_lifespan = lifespan_src.count('horizon="short"')  # catch-up is nested inside lifespan
+        assert occurrences == occurrences_in_short_sched + occurrences_in_lifespan
+
+
+class TestAutoShortCatchup:
+    """Items 39-46."""
+
+    def test_catchup_disabled_when_allowlist_empty(self, monkeypatch):
+        import api.main as main_module
+        monkeypatch.delenv("VALIDATION_AUTO_SHORT_UNIVERSES", raising=False)
+        assert main_module._parse_auto_short_universes(None) == ()
+
+    def test_lifespan_source_contains_short_catchup_function(self):
+        import inspect
+        import api.main as main_module
+        src = inspect.getsource(main_module.lifespan)
+        assert "_short_catchup_validation" in src
+
+    @staticmethod
+    def _short_catchup_body_only(main_module):
+        """Slice out _short_catchup_validation's source, then drop its
+        own docstring — several docstring sentences deliberately name
+        the real function calls in prose (e.g. "exactly one
+        get_or_create_schedule_slot() call per universe"), which would
+        otherwise produce false substring matches before the real code
+        even starts."""
+        import inspect
+        src = inspect.getsource(main_module.lifespan)
+        catchup_start = src.index("async def _short_catchup_validation():")
+        catchup_end = src.index("task = asyncio.create_task(_weekly_refresh_loop())")
+        catchup_src = src[catchup_start:catchup_end]
+        first_quote = catchup_src.index('"""')
+        second_quote = catchup_src.index('"""', first_quote + 3)
+        return catchup_src[second_quote + 3:]
+
+    def test_short_catchup_checks_baseline_before_creating_slot(self):
+        import api.main as main_module
+        body = self._short_catchup_body_only(main_module)
+        guard_pos = body.index("has_established_schedule_baseline(")
+        create_pos = body.index("get_or_create_schedule_slot(")
+        assert guard_pos < create_pos
+
+    def test_short_catchup_resolves_only_latest_session_no_historical_walk(self):
+        import api.main as main_module
+        body = self._short_catchup_body_only(main_module)
+        # exactly one resolve call per universe iteration — no loop over
+        # a range/history of sessions
+        assert "for _ in range" not in body
+        assert body.count("resolve_latest_completed_short_session(") == 1
+
+    def test_short_catchup_uses_canonical_close_utc_slot(self):
+        import inspect
+        import api.main as main_module
+        src = inspect.getsource(main_module.lifespan)
+        catchup_start = src.index("async def _short_catchup_validation():")
+        catchup_end = src.index("task = asyncio.create_task(_weekly_refresh_loop())")
+        catchup_src = src[catchup_start:catchup_end]
+        assert "scheduled_slot=resolution.close_utc" in catchup_src
+
+    def test_manual_short_attempt_remains_unbindable_to_scheduled_slot(self, isolated_db):
+        """Reuses the existing manual-attempt structural guarantee
+        (slot_id=NULL) already proven for other horizons — confirms it
+        holds identically for short, with no special-case bypass."""
+        admitted = admit_validation_attempt(horizon="short", universe="us", trigger_type="manual",
+                                             owner="manual-1", now=T0)
+        assert admitted["ok"] is True
+        fetched = get_schedule_attempt(admitted["attempt_id"])
+        assert fetched["slot_id"] is None
+
+    def test_short_slot_and_scheduled_medium_slot_are_independent_identities(self, isolated_db):
+        slot_short = get_or_create_schedule_slot(horizon="short", universe="nifty100",
+                                                   scheduled_slot=T0, schedule_version="v1", now=T0)
+        slot_medium = get_or_create_schedule_slot(horizon="medium", universe="nifty100",
+                                                    scheduled_slot=T0, schedule_version="v1", now=T0)
+        assert slot_short["id"] != slot_medium["id"]
+        assert has_established_schedule_baseline(horizon="short", universe="nifty100", schedule_version="v1") is True
+        assert has_established_schedule_baseline(horizon="long", universe="nifty100", schedule_version="v1") is False

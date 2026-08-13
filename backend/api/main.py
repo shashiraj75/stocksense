@@ -226,6 +226,126 @@ async def _price_alerts_check_loop():
         await asyncio.sleep(90)  # every 90s — far more responsive than email needs to be, still cheap
 
 
+_AUTO_SHORT_VALID_UNIVERSES = ("nifty100", "midcap", "us")
+
+
+def _parse_auto_short_universes(raw: str | None) -> tuple[str, ...]:
+    """V-SCHED1C2B — strict parser for VALIDATION_AUTO_SHORT_UNIVERSES.
+    This is both the feature gate and the staged-rollout control for
+    automatic short-horizon scheduling.
+
+    Semantics:
+      - missing/None or blank (after stripping): no automatic short
+        scheduling — returns ().
+      - a comma-separated subset of exactly "nifty100", "midcap", "us"
+        (whitespace/case-normalized, duplicates collapsed) — returns
+        that subset in the fixed canonical order (nifty100, midcap, us),
+        regardless of input order.
+      - ANY unrecognized token (including ambiguous values like "all",
+        "true", "1") fails closed for the ENTIRE value — returns (),
+        enabling NO universe, never a partial enable. This is
+        deliberate: an operator typo must never silently activate a
+        subset different from what was intended.
+
+    Never logs the raw environment value — only that it was rejected —
+    so a typo'd or malformed value can never leak into logs verbatim.
+    """
+    if not raw or not raw.strip():
+        return ()
+    tokens = [t.strip().lower() for t in raw.split(",") if t.strip()]
+    if not tokens:
+        return ()
+    seen: list[str] = []
+    for token in tokens:
+        if token not in _AUTO_SHORT_VALID_UNIVERSES:
+            log.warning(
+                "[validation_short_scheduler] VALIDATION_AUTO_SHORT_UNIVERSES contains an "
+                "unrecognized token — disabling all automatic short scheduling until corrected."
+            )
+            return ()
+        if token not in seen:
+            seen.append(token)
+    return tuple(u for u in _AUTO_SHORT_VALID_UNIVERSES if u in seen)
+
+
+async def _short_validation_schedule_loop():
+    """
+    V-SCHED1C2B — automatic short-horizon scheduler, structurally
+    SEPARATE from _validation_schedule_loop (medium/long) above. Evaluated
+    at 03:30 IST (22:00 UTC the previous day) — confirmed safely after the
+    previous NYSE regular close in both EDT (20:00 UTC) and EST (21:00
+    UTC), with clear separation before the existing 06:00 IST medium/long
+    window.
+
+    Inactive by default: VALIDATION_AUTO_SHORT_UNIVERSES is re-read from
+    the environment on EVERY cycle (never cached at startup), so an
+    ordinary redeploy/config change can enable or disable it without a
+    code change. Missing/blank/invalid values enable NO universe — no
+    calendar resolution, no slot creation, no admission, no execution
+    occurs at all in that case.
+
+    Each enabled universe is evaluated strictly sequentially (awaited to
+    completion before the next begins) — never concurrently within this
+    process — and only through execute_admitted_validation(), the same
+    shared admission path medium/long/catch-up/manual already use, so
+    the global lease, fencing, heartbeat, and atomic persistence
+    invariants are inherited unchanged, not reimplemented.
+    """
+    from datetime import datetime, timezone, timedelta
+    import uuid
+    from services.market_calendar import resolve_latest_completed_short_session
+    from services.validation_engine import execute_admitted_validation
+
+    await asyncio.sleep(220)  # let server fully settle; distinct stagger from the medium/long loop's 180s
+    log.info("[validation_short_scheduler] started")
+    IST = timezone(timedelta(hours=5, minutes=30))
+    TARGET_HOUR = 3
+    TARGET_MINUTE = 30
+    owner = f"scheduler-short-{uuid.uuid4()}"
+
+    while True:
+        try:
+            now_ist = datetime.now(IST)
+            next_run = now_ist.replace(hour=TARGET_HOUR, minute=TARGET_MINUTE, second=0, microsecond=0)
+            if now_ist >= next_run:
+                next_run += timedelta(days=1)
+            sleep_secs = (next_run - now_ist).total_seconds()
+            log.info(f"[validation_short_scheduler] next short evaluation at {next_run.isoformat()} IST (in {sleep_secs/3600:.1f}h)")
+            await asyncio.sleep(sleep_secs)
+
+            enabled = _parse_auto_short_universes(os.getenv("VALIDATION_AUTO_SHORT_UNIVERSES"))
+            if not enabled:
+                log.info("[validation_short_scheduler] no universes enabled — skipping this cycle")
+                continue
+
+            loop = asyncio.get_event_loop()
+            now_utc = datetime.now(timezone.utc)
+            for univ in enabled:
+                try:
+                    resolution = resolve_latest_completed_short_session(univ, now_utc=now_utc)
+                    if resolution.status != "eligible":
+                        log.info(f"[validation_short_scheduler] short/{univ} not eligible — reason={resolution.reason}")
+                        continue
+                    log.info(f"[validation_short_scheduler] starting short/{univ} run (session={resolution.session_date})…")
+                    result = await loop.run_in_executor(
+                        None,
+                        lambda u=univ, close_utc=resolution.close_utc: execute_admitted_validation(
+                            horizon="short", universe=u, trigger_type="scheduler", owner=owner,
+                            scheduled_slot=close_utc, schedule_version="v1",
+                        ),
+                    )
+                    if result.get("ok"):
+                        log.info(f"[validation_short_scheduler] short/{univ} complete (run_id={result.get('run_id')})")
+                    else:
+                        log.warning(f"[validation_short_scheduler] short/{univ} rejected/failed — reason={result.get('reason')}")
+                except Exception as e:
+                    log.warning(f"[validation_short_scheduler] short/{univ} error: {e}")
+
+        except Exception as e:
+            log.warning(f"[validation_short_scheduler] scheduler error: {e}")
+            await asyncio.sleep(3600)  # back off 1h on unexpected error, same convention as the medium/long loop
+
+
 async def _validation_schedule_loop():
     """
     Run walk-forward validation on a schedule (IST = UTC+5:30):
@@ -605,6 +725,76 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             log.warning(f"[catchup] validation catch-up error: {e}")
 
+    async def _short_catchup_validation():
+        """V-SCHED1C2B — bounded, per-universe short-horizon startup
+        catch-up, structurally separate from _catchup_validation
+        (medium/nifty100) above. Inactive by default: VALIDATION_AUTO_
+        SHORT_UNIVERSES is re-read here too, so an empty/unset allowlist
+        skips entirely with zero calendar resolution or ledger touch.
+
+        For each ENABLED universe, resolves ONLY the single latest
+        completed applicable session (never a historical backlog walk —
+        exactly one resolve_latest_completed_short_session() call per
+        universe, exactly one get_or_create_schedule_slot() call per
+        universe) and — exactly like medium's own bootstrap guard —
+        skips cleanly without creating any slot/attempt if no baseline
+        has ever been established for that exact (short, universe, v1)
+        identity yet. This guarantees the first deployment can never
+        launch an unexpected three-run bootstrap storm: the first
+        baseline for each universe is established only by a later normal
+        03:30 IST scheduler window for an already-enabled universe."""
+        from datetime import datetime, timezone
+        import uuid
+        await asyncio.sleep(340)  # distinct stagger from medium catch-up's 300s
+        try:
+            enabled = _parse_auto_short_universes(os.getenv("VALIDATION_AUTO_SHORT_UNIVERSES"))
+            if not enabled:
+                return
+            from services.market_calendar import resolve_latest_completed_short_session
+            from services.validation_engine import (
+                get_or_create_schedule_slot, execute_admitted_validation, has_established_schedule_baseline,
+            )
+            now_utc = datetime.now(timezone.utc)
+            loop3 = asyncio.get_running_loop()
+            for univ in enabled:
+                try:
+                    resolution = resolve_latest_completed_short_session(univ, now_utc=now_utc)
+                    if resolution.status != "eligible":
+                        log.info(f"[short_catchup] short/{univ} not eligible — reason={resolution.reason}")
+                        continue
+                    if not has_established_schedule_baseline(horizon="short", universe=univ, schedule_version="v1"):
+                        log.info(
+                            f"[short_catchup] no established schedule baseline yet for short/{univ} — "
+                            "this is the first deployment, not a missed run; skipping bootstrap "
+                            "catch-up. The normal scheduler will establish the first slot at the "
+                            "next 03:30 IST window."
+                        )
+                        continue
+                    slot = get_or_create_schedule_slot(
+                        horizon="short", universe=univ, scheduled_slot=resolution.close_utc,
+                        schedule_version="v1", now=now_utc,
+                    )
+                    if slot["status"] != "due":
+                        log.info(f"[short_catchup] short/{univ} slot already {slot['status']} — skipping")
+                        continue
+                    log.info(f"[short_catchup] missed short/{univ} session {resolution.session_date} — running now…")
+                    owner = f"catchup-short-{uuid.uuid4()}"
+                    result = await loop3.run_in_executor(
+                        None,
+                        lambda: execute_admitted_validation(
+                            horizon="short", universe=univ, trigger_type="catchup",
+                            owner=owner, slot_id=slot["id"],
+                        ),
+                    )
+                    if result.get("ok"):
+                        log.info(f"[short_catchup] short/{univ} catch-up complete (run_id={result.get('run_id')})")
+                    else:
+                        log.warning(f"[short_catchup] short/{univ} rejected/failed — reason={result.get('reason')}")
+                except Exception as e:
+                    log.warning(f"[short_catchup] short/{univ} error: {e}")
+        except Exception as e:
+            log.warning(f"[short_catchup] validation catch-up error: {e}")
+
     task = asyncio.create_task(_weekly_refresh_loop())
     keepalive = asyncio.create_task(_keepalive_loop())
     outcome_task = asyncio.create_task(_outcome_resolver_loop())
@@ -612,6 +802,8 @@ async def lifespan(app: FastAPI):
     crumb_task = asyncio.create_task(_yfinance_crumb_loop())
     validation_task = asyncio.create_task(_validation_schedule_loop())
     catchup_task = asyncio.create_task(_catchup_validation())
+    short_validation_task = asyncio.create_task(_short_validation_schedule_loop())
+    short_catchup_task = asyncio.create_task(_short_catchup_validation())
     from zoneinfo import ZoneInfo
     from datetime import timezone as _tz, timedelta as _td
     _IST = _tz(_td(hours=5, minutes=30))

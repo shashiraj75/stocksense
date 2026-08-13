@@ -1043,3 +1043,196 @@ def test_atomic_primitive_respects_result_uniqueness_real_postgres(pg_conn, pg_d
                                            result_run_id=run_id, now=T0 + timedelta(minutes=2, seconds=1))
     assert dup["ok"] is False
     assert dup["reason"] == "result_already_linked"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# V-SCHED1C2B — automatic short-horizon scheduler foundation. No new
+# ledger primitives were added for short — horizon is just a string field
+# already flowing unmodified through every existing primitive — so these
+# tests prove the already-proven mechanisms (uniqueness, global lease,
+# concurrency, stale recovery, atomic completion, no-orphan) behave
+# IDENTICALLY for horizon="short" as they already do for medium/long,
+# real PostgreSQL evidence included per the RED matrix items 47-54.
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_repeated_canonical_short_slot_creation_is_idempotent_real_postgres(pg_conn, pg_database_url):
+    import services.validation_engine as ve
+    ve._USE_POSTGRES = True
+    _reset_ledger_tables(pg_conn)
+
+    first = ve.get_or_create_schedule_slot(horizon="short", universe="nifty100",
+                                            scheduled_slot=T0, schedule_version="v1", now=T0)
+    second = ve.get_or_create_schedule_slot(horizon="short", universe="nifty100",
+                                             scheduled_slot=T0, schedule_version="v1", now=T0)
+    assert first["id"] == second["id"]
+    count = pg_conn.execute(
+        "SELECT COUNT(*) FROM validation_schedule_slots WHERE horizon='short' AND universe='nifty100'"
+    ).fetchone()[0]
+    assert count == 1
+
+
+def test_different_short_universes_share_close_timestamp_without_collision_real_postgres(pg_conn, pg_database_url):
+    """Distinct universes resolving to the same calendar close instant
+    (e.g. nifty100 and midcap both close at the same NSE session close)
+    must not collide — the UNIQUE constraint is (horizon, universe,
+    scheduled_slot, schedule_version), universe is part of the key."""
+    import services.validation_engine as ve
+    ve._USE_POSTGRES = True
+    _reset_ledger_tables(pg_conn)
+
+    slot_nifty = ve.get_or_create_schedule_slot(horizon="short", universe="nifty100",
+                                                  scheduled_slot=T0, schedule_version="v1", now=T0)
+    slot_midcap = ve.get_or_create_schedule_slot(horizon="short", universe="midcap",
+                                                   scheduled_slot=T0, schedule_version="v1", now=T0)
+    assert slot_nifty["id"] != slot_midcap["id"]
+    count = pg_conn.execute(
+        "SELECT COUNT(*) FROM validation_schedule_slots WHERE horizon='short' AND scheduled_slot=%s",
+        (T0,),
+    ).fetchone()[0]
+    assert count == 2
+
+
+def test_scheduled_short_admission_obeys_global_lease_real_postgres(pg_conn, pg_database_url):
+    import services.validation_engine as ve
+    ve._USE_POSTGRES = True
+    _reset_ledger_tables(pg_conn)
+
+    ve.acquire_validation_execution_lease(owner="other", now=T0, lease_duration_seconds=600)
+    result = ve.admit_validation_attempt(horizon="short", universe="nifty100", trigger_type="scheduler",
+                                          owner="scheduler-short-1", scheduled_slot=T0, now=T0 + timedelta(seconds=1))
+    assert result["ok"] is False
+
+
+def test_two_concurrent_replicas_admit_at_most_one_active_short_attempt_real_postgres(pg_conn, pg_database_url):
+    import queue
+    import psycopg
+    import services.validation_engine as ve
+    ve._USE_POSTGRES = True
+    _reset_ledger_tables(pg_conn)
+
+    results = queue.Queue()
+    barrier = threading.Barrier(2)
+
+    def replica(owner):
+        barrier.wait()
+        try:
+            r = ve.admit_validation_attempt(horizon="short", universe="nifty100", trigger_type="scheduler",
+                                             owner=owner, scheduled_slot=T0, now=T0, lease_duration_seconds=600)
+            results.put((owner, r, None))
+        except Exception as e:
+            results.put((owner, None, e))
+
+    t1 = threading.Thread(target=replica, args=("replica-a",))
+    t2 = threading.Thread(target=replica, args=("replica-b",))
+    t1.start(); t2.start()
+    t1.join(timeout=20)
+    t2.join(timeout=20)
+    assert not t1.is_alive() and not t2.is_alive()
+
+    collected = {}
+    while not results.empty():
+        owner, r, err = results.get()
+        collected[owner] = (r, err)
+
+    for owner, (r, err) in collected.items():
+        if isinstance(err, psycopg.errors.DeadlockDetected):
+            pytest.fail(f"{owner} hit a real PostgreSQL deadlock — lock ordering regression")
+        assert err is None
+
+    ok_count = sum(1 for r, _ in collected.values() if r["ok"])
+    assert ok_count == 1, "exactly one replica must win global admission for the identical short slot"
+
+
+def test_scheduled_versus_manual_short_contention_preserves_single_admission_real_postgres(pg_conn, pg_database_url):
+    import services.validation_engine as ve
+    ve._USE_POSTGRES = True
+    _reset_ledger_tables(pg_conn)
+
+    scheduled = ve.admit_validation_attempt(horizon="short", universe="nifty100", trigger_type="scheduler",
+                                             owner="scheduler-short-1", scheduled_slot=T0, now=T0)
+    assert scheduled["ok"] is True
+    manual = ve.admit_validation_attempt(horizon="short", universe="us", trigger_type="manual",
+                                          owner="manual-1", now=T0 + timedelta(seconds=1))
+    assert manual["ok"] is False  # global lease already held
+
+
+def test_stale_recovery_and_retry_behave_identically_for_short_real_postgres(pg_conn, pg_database_url):
+    import services.validation_engine as ve
+    ve._USE_POSTGRES = True
+    _reset_ledger_tables(pg_conn)
+
+    slot = ve.get_or_create_schedule_slot(horizon="short", universe="nifty100",
+                                           scheduled_slot=T0, schedule_version="v1", now=T0)
+    lease1 = ve.acquire_validation_execution_lease(owner="w1", now=T0, lease_duration_seconds=1)
+    attempt = ve.create_schedule_attempt(slot_id=slot["id"], trigger_type="scheduler",
+                                          owner="w1", fencing_token=lease1["fencing_token"], now=T0)
+    ve.mark_attempt_running(attempt["id"], owner="w1", fencing_token=lease1["fencing_token"], now=T0)
+
+    expired = T0 + timedelta(seconds=2)
+    recovered = ve.admit_validation_attempt(horizon="short", universe="nifty100", trigger_type="scheduler",
+                                             owner="w2", scheduled_slot=T0, now=expired, lease_duration_seconds=600)
+    assert recovered["ok"] is True
+    assert ve.get_schedule_attempt(attempt["id"])["status"] == "abandoned"
+
+
+def test_completion_links_exactly_one_result_to_correct_short_slot_real_postgres(pg_conn, pg_database_url):
+    import services.validation_engine as ve
+    ve._USE_POSTGRES = True
+    _reset_ledger_tables(pg_conn)
+
+    slot = ve.get_or_create_schedule_slot(horizon="short", universe="nifty100",
+                                           scheduled_slot=T0, schedule_version="v1", now=T0)
+    lease = ve.acquire_validation_execution_lease(owner="w1", now=T0, lease_duration_seconds=600)
+    attempt = ve.create_schedule_attempt(slot_id=slot["id"], trigger_type="scheduler",
+                                          owner="w1", fencing_token=lease["fencing_token"], now=T0)
+    ve.mark_attempt_running(attempt["id"], owner="w1", fencing_token=lease["fencing_token"], now=T0)
+    completion = ve.complete_running_attempt_with_computed_result(
+        attempt["id"], owner="w1", fencing_token=lease["fencing_token"],
+        horizon="short", universe="nifty100", run_at=T0.isoformat(),
+        n_stocks=1, n_signals=1, summary_json="{}", signal_rows=[_signal_row(horizon="short")],
+        now=T0 + timedelta(seconds=30),
+    )
+    assert completion["ok"] is True
+    fetched = pg_conn.execute(
+        "SELECT status, result_run_id FROM validation_schedule_attempts WHERE id=%s", (attempt["id"],)
+    ).fetchone()
+    assert fetched == ("completed", completion["run_id"])
+    fetched_slot = pg_conn.execute(
+        "SELECT status FROM validation_schedule_slots WHERE id=%s", (slot["id"],)
+    ).fetchone()
+    assert fetched_slot[0] == "completed"
+
+
+def test_no_orphan_short_result_survives_fencing_loss_real_postgres(pg_conn, pg_database_url):
+    """Reuses the exact V-SCHED1C1-proven no-orphan mechanism for
+    horizon="short" — a stale worker fenced out by a genuine reclaim
+    creates zero val_runs/val_signals rows."""
+    import services.validation_engine as ve
+    ve._USE_POSTGRES = True
+    _reset_ledger_tables(pg_conn)
+
+    pre_existing = _insert_val_run(pg_conn, horizon="short", universe="nifty100")
+
+    slot = ve.get_or_create_schedule_slot(horizon="short", universe="nifty100",
+                                           scheduled_slot=T0, schedule_version="v1", now=T0)
+    lease_a = ve.acquire_validation_execution_lease(owner="worker-a", now=T0, lease_duration_seconds=1)
+    attempt_a = ve.create_schedule_attempt(slot_id=slot["id"], trigger_type="scheduler",
+                                            owner="worker-a", fencing_token=lease_a["fencing_token"], now=T0)
+    ve.mark_attempt_running(attempt_a["id"], owner="worker-a", fencing_token=lease_a["fencing_token"], now=T0)
+
+    reclaim_time = T0 + timedelta(seconds=2)
+    admitted_b = ve.admit_validation_attempt(
+        horizon="short", universe="midcap", trigger_type="scheduler", owner="worker-b",
+        scheduled_slot=T0, now=reclaim_time, lease_duration_seconds=600,
+    )
+    assert admitted_b["ok"] is True
+
+    completion_a = ve.complete_running_attempt_with_computed_result(
+        attempt_a["id"], owner="worker-a", fencing_token=lease_a["fencing_token"],
+        horizon="short", universe="nifty100", run_at=T0.isoformat(),
+        n_stocks=1, n_signals=1, summary_json="{}", signal_rows=[_signal_row(horizon="short")],
+        now=reclaim_time + timedelta(seconds=1),
+    )
+    assert completion_a["ok"] is False
+    assert _val_runs_count(pg_conn) == 1  # only the pre-existing row
+    assert _val_signals_count(pg_conn) == 0
