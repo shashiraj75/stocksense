@@ -559,7 +559,27 @@ async def lifespan(app: FastAPI):
             today_6am = now.replace(hour=6, minute=0, second=0, microsecond=0)
             if now < today_6am:
                 return  # before today's scheduled window — nothing to catch up
-            from services.validation_engine import get_or_create_schedule_slot, execute_admitted_validation
+            from services.validation_engine import (
+                get_or_create_schedule_slot, execute_admitted_validation, has_established_schedule_baseline,
+            )
+            # V-SCHED1C1-ROLLOUT1 — bootstrap safety: an empty, never-
+            # activated ledger (the very first deployment of this feature,
+            # started after 06:00 IST) must NOT be treated as "a run was
+            # missed". get_or_create_schedule_slot would otherwise create
+            # today's slot on the spot and catch-up would immediately fire
+            # a validation run on first boot — there is nothing to have
+            # missed yet. Once the normal scheduler (or a genuine future
+            # catch-up) has established ANY slot for this identity, this
+            # guard is permanently satisfied and normal catch-up behavior
+            # resumes unchanged.
+            if not has_established_schedule_baseline(horizon="medium", universe="nifty100", schedule_version="v1"):
+                log.info(
+                    "[catchup] no established schedule baseline yet for medium/nifty100 — "
+                    "this is the first deployment, not a missed run; skipping bootstrap "
+                    "catch-up. The normal scheduler will establish the first slot at the "
+                    "next 06:00 IST window."
+                )
+                return
             slot_instant = today_6am.astimezone(timezone.utc)
             slot = get_or_create_schedule_slot(
                 horizon="medium", universe="nifty100", scheduled_slot=slot_instant,

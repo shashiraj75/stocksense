@@ -29,6 +29,7 @@ from services.validation_engine import (
     get_schedule_attempt,
     get_schedule_slot,
     get_validation_execution_lease,
+    has_established_schedule_baseline,
     mark_attempt_running,
     recover_stale_active_attempt,
     release_validation_execution_lease,
@@ -673,3 +674,129 @@ class TestOrphanResultPrevention:
         assert completion["ok"] is True
         assert _val_runs_count(isolated_db) == 2  # midcap's + this nifty100 retry's
         assert _latest_val_run_id(isolated_db, horizon="medium", universe="nifty100") == completion["run_id"]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# V-SCHED1C1-ROLLOUT1 — first-deployment catch-up bootstrap safety.
+# Before this correction, _catchup_validation() called
+# get_or_create_schedule_slot() unconditionally on any post-06:00-IST
+# startup — on the very first deployment of this feature (an empty,
+# never-activated ledger), this would create today's slot on the spot and
+# immediately fire a "catch-up" validation run, even though nothing was
+# ever actually missed. has_established_schedule_baseline() distinguishes
+# "never run before" (skip, bootstrap-safe) from "a real baseline exists
+# and today's slot is genuinely due" (catch up, unchanged behavior).
+# ─────────────────────────────────────────────────────────────────────────
+
+class TestCatchupBootstrapSafety:
+    def test_no_baseline_on_a_completely_empty_ledger(self, isolated_db):
+        """RED-proving: an empty ledger (nothing ever scheduled) must
+        report no established baseline for medium/nifty100."""
+        assert has_established_schedule_baseline(
+            horizon="medium", universe="nifty100", schedule_version="v1"
+        ) is False
+
+    def test_baseline_becomes_true_after_any_slot_ever_created(self, isolated_db):
+        """A single slot creation — however it happens (normal scheduler,
+        catch-up, or a test) — permanently establishes the baseline for
+        that exact (horizon, universe, schedule_version) identity."""
+        assert has_established_schedule_baseline(
+            horizon="medium", universe="nifty100", schedule_version="v1"
+        ) is False
+        get_or_create_schedule_slot(horizon="medium", universe="nifty100",
+                                     scheduled_slot=T0, schedule_version="v1", now=T0)
+        assert has_established_schedule_baseline(
+            horizon="medium", universe="nifty100", schedule_version="v1"
+        ) is True
+
+    def test_baseline_is_scoped_exactly_to_horizon_universe_version(self, isolated_db):
+        """Establishing a baseline for one universe must not leak into
+        another — the guard is exact-identity scoped, matching the same
+        exact-canonical-slot discipline as catch-up's own suppression fix."""
+        get_or_create_schedule_slot(horizon="medium", universe="nifty100",
+                                     scheduled_slot=T0, schedule_version="v1", now=T0)
+        assert has_established_schedule_baseline(
+            horizon="medium", universe="midcap", schedule_version="v1"
+        ) is False
+        assert has_established_schedule_baseline(
+            horizon="long", universe="nifty100", schedule_version="v1"
+        ) is False
+
+    def test_normal_scheduler_establishes_first_baseline_at_next_window(self, isolated_db, monkeypatch):
+        """The normal scheduled path (not catch-up) is exactly how a
+        first-ever deployment is expected to establish its baseline —
+        unaffected by this guard, since the guard lives only in catch-up."""
+        assert has_established_schedule_baseline(
+            horizon="medium", universe="nifty100", schedule_version="v1"
+        ) is False
+        _fake_run_validation_factory(monkeypatch, isolated_db)
+        result = execute_admitted_validation(horizon="medium", universe="nifty100", trigger_type="scheduler",
+                                              owner="scheduler-1", scheduled_slot=T0, now=_real_now())
+        assert result["ok"] is True
+        assert has_established_schedule_baseline(
+            horizon="medium", universe="nifty100", schedule_version="v1"
+        ) is True
+
+    def test_genuinely_missing_later_slot_still_catches_up_once_baseline_exists(self, isolated_db, monkeypatch):
+        """Once a baseline is established (day 1's slot completed), a
+        genuinely missing LATER day's slot must still be caught up exactly
+        once — the guard must never suppress real catch-up, only the
+        bootstrap false-positive."""
+        _fake_run_validation_factory(monkeypatch, isolated_db)
+        day1 = execute_admitted_validation(horizon="medium", universe="nifty100", trigger_type="scheduler",
+                                            owner="scheduler-1", scheduled_slot=T0, now=_real_now())
+        assert day1["ok"] is True
+        assert has_established_schedule_baseline(
+            horizon="medium", universe="nifty100", schedule_version="v1"
+        ) is True
+
+        day2 = T0 + timedelta(days=1)
+        day2_slot = get_or_create_schedule_slot(horizon="medium", universe="nifty100",
+                                                  scheduled_slot=day2, schedule_version="v1", now=day2)
+        assert day2_slot["status"] == "due"  # genuinely missed — must still catch up
+        _fake_run_validation_factory(monkeypatch, isolated_db)
+        catchup = execute_admitted_validation(horizon="medium", universe="nifty100", trigger_type="catchup",
+                                               owner="catchup-1", slot_id=day2_slot["id"], now=_real_now())
+        assert catchup["ok"] is True
+        assert get_schedule_slot(day2_slot["id"])["status"] == "completed"
+
+    def test_existing_due_slot_still_reported_due_regardless_of_baseline_guard(self, isolated_db):
+        """The baseline guard is orthogonal to slot due/non-due semantics
+        — once a baseline exists, an existing slot's own status is
+        unaffected by this correction."""
+        get_or_create_schedule_slot(horizon="medium", universe="nifty100",
+                                     scheduled_slot=T0, schedule_version="v1", now=T0)
+        slot = get_or_create_schedule_slot(horizon="medium", universe="nifty100",
+                                            scheduled_slot=T0, schedule_version="v1", now=T0)
+        assert slot["status"] == "due"
+
+    def test_catchup_source_checks_baseline_before_creating_todays_slot(self):
+        """Structural proof (matches this file's existing source-inspection
+        convention for main.py's nested async functions): the bootstrap
+        guard must be checked BEFORE get_or_create_schedule_slot is ever
+        called in _catchup_validation — the check must gate slot creation,
+        not merely exist somewhere in the function."""
+        import inspect
+        import api.main as main_module
+        src = inspect.getsource(main_module)
+        catchup_start = src.index("async def _catchup_validation():")
+        catchup_src = src[catchup_start:src.index("task = asyncio.create_task(_weekly_refresh_loop())")]
+        guard_pos = catchup_src.index("has_established_schedule_baseline(")
+        create_pos = catchup_src.index("get_or_create_schedule_slot(\n")
+        assert guard_pos < create_pos, (
+            "has_established_schedule_baseline must be checked BEFORE "
+            "get_or_create_schedule_slot is called, not after"
+        )
+
+    def test_cadence_and_short_and_manual_behavior_unaffected_by_rollout1(self):
+        """Sanity cross-check (Stage 3's non-regression list) — this
+        correction touches only the catch-up bootstrap path; the
+        scheduler's own cadence constants and the short-horizon inactivity
+        invariant are untouched by it."""
+        import inspect
+        import api.main as main_module
+        src = inspect.getsource(main_module._validation_schedule_loop)
+        assert "TARGET_HOUR = 6" in src
+        assert "weekday() == 6" in src
+        assert "5 * 60" in src
+        assert "horizon=\"short\"" not in inspect.getsource(main_module)

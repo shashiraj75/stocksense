@@ -3423,6 +3423,27 @@ def get_schedule_attempt(attempt_id: int) -> dict | None:
     )
 
 
+def has_established_schedule_baseline(horizon: str, universe: str, schedule_version: str = "v1") -> bool:
+    """Read-only — never mutates state. True iff at least one schedule
+    slot has EVER been created for this (horizon, universe,
+    schedule_version) — regardless of which specific scheduled_slot
+    instant. Deliberately NOT scoped to "today's" slot: this answers
+    "has the ledger ever established a baseline for this identity", not
+    "is there a slot for right now". Used by the startup catch-up
+    bootstrap guard (V-SCHED1C1-ROLLOUT1) to distinguish a genuinely
+    missed run (a baseline exists, but today's slot is due) from the
+    very first deployment ever (no baseline exists yet at all) — the
+    catch-up path must never treat "never run before" as "missed a run"."""
+    row = _fetchone_ledger(
+        "SELECT 1 FROM validation_schedule_slots "
+        "WHERE horizon=%s AND universe=%s AND schedule_version=%s LIMIT 1",
+        "SELECT 1 FROM validation_schedule_slots "
+        "WHERE horizon=? AND universe=? AND schedule_version=? LIMIT 1",
+        (horizon, universe, schedule_version),
+    )
+    return row is not None
+
+
 def get_validation_execution_lease() -> dict | None:
     """Read-only — never mutates state."""
     return _fetchone_ledger(
