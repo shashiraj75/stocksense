@@ -327,7 +327,15 @@ def test_terminal_slot_protection_real_postgres(pg_conn, pg_database_url):
     ve.complete_attempt_with_result(attempt["id"], owner="w1", fencing_token=lease["fencing_token"],
                                      result_run_id=run_id, now=T0)
 
+    # w1's lease is still held and unexpired after completion — release it
+    # explicitly (as the real lifecycle requires) before w2 can acquire it.
+    release_result = ve.release_validation_execution_lease(
+        owner="w1", fencing_token=lease["fencing_token"], now=T0 + timedelta(minutes=1)
+    )
+    assert release_result["ok"] is True
+
     lease2 = ve.acquire_validation_execution_lease(owner="w2", now=T0 + timedelta(minutes=1), lease_duration_seconds=600)
+    assert lease2["ok"] is True
     result = ve.create_schedule_attempt(slot_id=slot["id"], trigger_type="scheduler", owner="w2",
                                          fencing_token=lease2["fencing_token"], now=T0 + timedelta(minutes=1))
     assert result["ok"] is False
