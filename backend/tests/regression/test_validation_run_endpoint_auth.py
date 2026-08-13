@@ -40,10 +40,20 @@ TEST_SECRET = "test-validation-secret"
 
 
 @pytest.fixture(autouse=True)
-def _isolate(monkeypatch):
+def _isolate(monkeypatch, tmp_path):
     """Deterministic secret for these tests; validation job-slot state is
-    reset before and after so no test leaks 'running' into another."""
+    reset before and after so no test leaks 'running' into another.
+
+    V-SCHED1C1 — the manual trigger route now admits through the V-SCHED1B
+    durable ledger (services.validation_engine.admit_validation_attempt),
+    which requires the ledger tables to exist. Point _DB_PATH at an
+    isolated per-test SQLite file so this suite never touches the real
+    local/production database, matching this file's existing "no test
+    writes production data" invariant."""
     monkeypatch.setattr(validation_router, "_VALIDATION_RUN_SECRET", TEST_SECRET)
+    monkeypatch.setattr(ve, "_DB_PATH", str(tmp_path / "validation_run_auth_test.db"))
+    monkeypatch.setattr(ve, "_db_initialised", False)
+    ve._init_db()
     with ve._status_lock:
         saved = dict(ve._run_status)
         ve._run_status.clear()
@@ -234,15 +244,16 @@ class TestConcurrencyProtectionUnchangedByAuth:
     def test_authenticated_call_while_another_run_is_active_still_reports_already_running(
         self, client, mock_run_validation
     ):
-        with ve._status_lock:
-            ve._run_status.update({
-                "running": True, "progress": 1, "total": 200,
-                "started_at": "2026-08-11T00:00:00+00:00", "log": [],
-                "job": ve._new_job_identity(
-                    market="US", universe_id="us", horizon="short",
-                    benchmark="^GSPC", total=200, trigger_type="api",
-                ),
-            })
+        # V-SCHED1C1 — concurrency protection now lives in the V-SCHED1B
+        # durable global execution lease, not the old in-memory
+        # ve._run_status flag. Simulate "another run is active" the way
+        # the real system now represents it: a currently-held, unexpired
+        # lease under a different owner.
+        from datetime import datetime, timezone
+        held = ve.acquire_validation_execution_lease(
+            owner="other-worker", now=datetime.now(timezone.utc), lease_duration_seconds=600,
+        )
+        assert held["ok"] is True  # sanity: this test's own setup must succeed
         resp = client.post(
             "/api/validation/run?horizon=short&universe=us",
             headers={"X-Secret": TEST_SECRET},
@@ -304,11 +315,14 @@ class TestInternalSchedulerUnaffected:
         assert "trigger_validation" not in src
         assert "X-Secret" not in src
         assert "_VALIDATION_RUN_SECRET" not in src
-        # Sanity: both internal triggers ARE present and call run_validation
-        # directly, proving this isn't a false pass from a stripped-down file.
+        # Sanity: both internal triggers ARE present and, since V-SCHED1C1,
+        # go through the shared ledger-admission path (execute_admitted_
+        # validation) rather than calling run_validation() directly or the
+        # HTTP route — proving this isn't a false pass from a stripped-down
+        # file, and that no separate admission logic was hand-rolled here.
         assert "_validation_schedule_loop" in src
         assert "_catchup_validation" in src
-        assert src.count("run_validation(") >= 3  # scheduler loop, long-horizon block, catch-up
+        assert src.count("execute_admitted_validation(") >= 3  # scheduler medium block, long block, catch-up
 
     def test_run_validation_itself_has_no_new_auth_requirement(self):
         # The core function the scheduler calls must remain callable with

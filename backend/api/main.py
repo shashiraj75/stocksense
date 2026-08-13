@@ -233,12 +233,24 @@ async def _validation_schedule_loop():
       - Long horizon:   every Sunday at 06:00 IST (00:30 UTC)
     Sleeps until the next scheduled window, then fires in a thread pool
     so it never blocks the event loop.
+
+    V-SCHED1C1 — each run now goes through
+    services.validation_engine.execute_admitted_validation(), the single
+    shared admission path (also used by _catchup_validation and the
+    authenticated manual /run route) built on the V-SCHED1B durable ledger
+    and global execution lease. A rejected/failed admission is logged
+    distinctly from a genuine completion — this closes the previously
+    forensically-confirmed defect where a rejected claim was logged
+    identically to "complete" because the scheduler discarded
+    run_validation()'s return value entirely.
     """
     from datetime import datetime, timezone, timedelta
+    import uuid
     await asyncio.sleep(180)  # let server fully settle first
     log.info("[validation_scheduler] started")
     IST = timezone(timedelta(hours=5, minutes=30))
     TARGET_HOUR = 6  # 6:00 AM IST
+    owner = f"scheduler-{uuid.uuid4()}"
 
     while True:
         try:
@@ -252,13 +264,23 @@ async def _validation_schedule_loop():
             await asyncio.sleep(sleep_secs)
 
             # Run medium validation for all three universes — staggered by 5 min each
-            from services.validation_engine import run_validation
+            from services.validation_engine import execute_admitted_validation
             loop = asyncio.get_event_loop()
+            slot_instant = next_run.astimezone(timezone.utc)
             for univ in ("nifty100", "midcap", "us"):
                 try:
                     log.info(f"[validation_scheduler] starting medium/{univ} run…")
-                    await loop.run_in_executor(None, lambda u=univ: run_validation(horizon="medium", universe=u, trigger_type="scheduler"))
-                    log.info(f"[validation_scheduler] medium/{univ} complete")
+                    result = await loop.run_in_executor(
+                        None,
+                        lambda u=univ: execute_admitted_validation(
+                            horizon="medium", universe=u, trigger_type="scheduler", owner=owner,
+                            scheduled_slot=slot_instant, schedule_version="v1",
+                        ),
+                    )
+                    if result.get("ok"):
+                        log.info(f"[validation_scheduler] medium/{univ} complete (run_id={result.get('run_id')})")
+                    else:
+                        log.warning(f"[validation_scheduler] medium/{univ} rejected/failed — reason={result.get('reason')}")
                 except Exception as e:
                     log.warning(f"[validation_scheduler] medium/{univ} error: {e}")
                 await asyncio.sleep(5 * 60)  # 5-min gap between universe runs
@@ -268,8 +290,17 @@ async def _validation_schedule_loop():
                 for univ in ("nifty100", "midcap", "us"):
                     try:
                         log.info(f"[validation_scheduler] Sunday — starting long/{univ} run…")
-                        await loop.run_in_executor(None, lambda u=univ: run_validation(horizon="long", universe=u, trigger_type="scheduler"))
-                        log.info(f"[validation_scheduler] long/{univ} complete")
+                        result = await loop.run_in_executor(
+                            None,
+                            lambda u=univ: execute_admitted_validation(
+                                horizon="long", universe=u, trigger_type="scheduler", owner=owner,
+                                scheduled_slot=slot_instant, schedule_version="v1",
+                            ),
+                        )
+                        if result.get("ok"):
+                            log.info(f"[validation_scheduler] long/{univ} complete (run_id={result.get('run_id')})")
+                        else:
+                            log.warning(f"[validation_scheduler] long/{univ} rejected/failed — reason={result.get('reason')}")
                     except Exception as e:
                         log.warning(f"[validation_scheduler] long/{univ} error: {e}")
                     await asyncio.sleep(5 * 60)
@@ -507,8 +538,20 @@ async def lifespan(app: FastAPI):
 
     # Catch-up validation: if server restarted after 6 AM IST and today's run
     # was missed (e.g. due to deployment), fire it in the background.
+    #
+    # V-SCHED1C1 — fixes the forensically-confirmed "any-universe
+    # suppression" defect: the old any-universe get_last_run_time("medium")
+    # lookup could suppress catch-up for medium/nifty100 specifically just
+    # because medium/midcap or medium/us happened to run more recently.
+    # Suppression is now scoped to the exact canonical (medium, nifty100,
+    # today's 06:00 IST slot, schedule_version) slot's own status — a slot
+    # that is anything other than 'due' has already been claimed or
+    # resolved for exactly that identity, nothing else's activity can
+    # suppress it. Coverage is deliberately NOT expanded to midcap/us/long
+    # in this phase — same scope as the pre-V-SCHED1C1 catch-up.
     async def _catchup_validation():
         from datetime import datetime, timezone, timedelta
+        import uuid
         await asyncio.sleep(300)  # wait 5 min for server to fully settle
         try:
             IST = timezone(timedelta(hours=5, minutes=30))
@@ -516,17 +559,29 @@ async def lifespan(app: FastAPI):
             today_6am = now.replace(hour=6, minute=0, second=0, microsecond=0)
             if now < today_6am:
                 return  # before today's scheduled window — nothing to catch up
-            # Check when the last medium run was
-            from services.validation_engine import get_last_run_time
-            last_run = get_last_run_time("medium")
-            if last_run and last_run >= today_6am:
-                log.info("[catchup] validation already ran today — skipping")
+            from services.validation_engine import get_or_create_schedule_slot, execute_admitted_validation
+            slot_instant = today_6am.astimezone(timezone.utc)
+            slot = get_or_create_schedule_slot(
+                horizon="medium", universe="nifty100", scheduled_slot=slot_instant,
+                schedule_version="v1", now=datetime.now(timezone.utc),
+            )
+            if slot["status"] != "due":
+                log.info(f"[catchup] medium/nifty100 slot already {slot['status']} — skipping")
                 return
-            from services.validation_engine import run_validation
             log.info("[catchup] missed today's 6 AM validation — running now…")
+            owner = f"catchup-{uuid.uuid4()}"
             loop2 = asyncio.get_running_loop()
-            await loop2.run_in_executor(None, lambda: run_validation(horizon="medium", trigger_type="scheduler"))
-            log.info("[catchup] catch-up validation complete")
+            result = await loop2.run_in_executor(
+                None,
+                lambda: execute_admitted_validation(
+                    horizon="medium", universe="nifty100", trigger_type="catchup",
+                    owner=owner, slot_id=slot["id"],
+                ),
+            )
+            if result.get("ok"):
+                log.info(f"[catchup] catch-up validation complete (run_id={result.get('run_id')})")
+            else:
+                log.warning(f"[catchup] catch-up rejected/failed — reason={result.get('reason')}")
         except Exception as e:
             log.warning(f"[catchup] validation catch-up error: {e}")
 

@@ -2264,9 +2264,27 @@ def _compute_metrics(
 # ── Main runner ───────────────────────────────────────────────────────────────
 
 def run_validation(horizon: str = "medium", universe: str = "nifty100", max_workers: int = 6,
-                   trigger_type: str = "internal", _claimed_job: dict | None = None) -> dict:
+                   trigger_type: str = "internal", _claimed_job: dict | None = None,
+                   progress_callback=None, _persist: bool = True, _fence_check=None) -> dict:
     """
     Run a full walk-forward validation.
+
+    `_persist` and `_fence_check` are internal, underscore-prefixed
+    parameters used ONLY by the V-SCHED1C1 ledger-backed execution path
+    (execute_and_complete_admitted_attempt) — every direct/legacy caller
+    keeps the exact prior behavior (_persist=True, no fence checking).
+    When `_persist=False`, this function performs every computation step
+    identically but does NOT insert into val_runs/val_signals; instead
+    metrics["_persist_payload"] carries everything the caller needs to
+    hand to the atomic fenced primitive complete_running_attempt_with_
+    computed_result(), and metrics["run_id"] is left unset (persistence,
+    and therefore the run_id, only exist after that atomic commit
+    succeeds). `_fence_check`, if given, is called at the same cooperative
+    checkpoint as `progress_callback` (after each stock's backtest
+    completes); if it returns a truthy "fenced" signal, the remaining
+    futures are cancelled and _FencedOutDuringComputation is raised
+    immediately — no persistence of any kind is attempted for a
+    computation known to be stale.
 
     universe options (case-sensitive, exact match — no other value accepted):
       "nifty100"  — Nifty 100 large-cap India (default, ~125 stocks)
@@ -2278,7 +2296,15 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
     _require_known_universe. There is no fallback to NIFTY_100 and no
     default market.
 
-    Stores results in Postgres/SQLite and returns summary metrics.
+    Stores results in Postgres/SQLite and returns summary metrics, including
+    the persisted `val_runs.id` as metrics["run_id"].
+
+    `progress_callback`, if given, is called as `progress_callback(done,
+    total)` after each stock's backtest completes (main thread only, same
+    point _run_status["progress"] is updated) — V-SCHED1C1 uses this for
+    ledger-lease heartbeat renewal tied to genuine forward progress, never
+    a blind timer. Optional and backward compatible; existing direct
+    callers that don't pass it are unaffected.
     """
     _require_known_universe(universe)
 
@@ -2502,6 +2528,29 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
                             _run_status["job"]["processed"] = done
                             _run_status["job"]["current_symbol"] = sym
                             _run_status["job"]["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    if progress_callback is not None:
+                        try:
+                            progress_callback(done, n_stocks)
+                        except Exception:
+                            log.warning("[validation] progress_callback raised — ignored, run continues")
+                    if _fence_check is not None:
+                        fenced = False
+                        try:
+                            fenced = bool(_fence_check())
+                        except Exception:
+                            log.warning("[validation] _fence_check raised — treating as fenced-out")
+                            fenced = True
+                        if fenced:
+                            for f in futures:
+                                f.cancel()
+                            log.warning(
+                                "[validation] fencing lost mid-run (done=%d/%d) — aborting before "
+                                "any persistence, no result will be computed further",
+                                done, n_stocks,
+                            )
+                            raise _FencedOutDuringComputation()
+                except _FencedOutDuringComputation:
+                    raise
                 except Exception:
                     log.exception(
                         "[validation] symbol backtest raised — symbol=%s market=%s "
@@ -2660,6 +2709,32 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
             for s in all_signals
         ]
 
+        if not _persist:
+            # V-SCHED1C1 ledger-backed path — computation only. No val_runs/
+            # val_signals row is written here; the caller must hand this
+            # payload to complete_running_attempt_with_computed_result(),
+            # which performs the insert atomically with its own fencing
+            # re-check. Nothing about this branch touches the database.
+            metrics["_persist_payload"] = {
+                "run_at": metrics["run_at"],
+                "horizon": horizon,
+                "n_stocks": n_stocks,
+                "n_signals": len(all_signals),
+                "summary_json": json.dumps(clean_metrics),
+                "universe": universe,
+                "signal_rows": signal_rows,
+            }
+            with _status_lock:
+                _run_status.update({"running": False, "log": _run_status["log"] + ["✅ Validation complete"]})
+                if _run_status.get("job") is not None:
+                    _run_status["job"].update({
+                        "status": "completed",
+                        "completed_at": job_snapshot["completed_at"],
+                        "processed": done,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    })
+            return metrics
+
         with _db_lock:
             if _USE_POSTGRES:
                 conn = _pg_conn()
@@ -2700,6 +2775,8 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         [(run_id,) + r for r in signal_rows]
                     )
+
+        metrics["run_id"] = run_id
 
         with _status_lock:
             _run_status.update({"running": False, "log": _run_status["log"] + ["✅ Validation complete"]})
@@ -4422,3 +4499,439 @@ def complete_attempt_with_result(attempt_id: int, owner: str, fencing_token: int
                 raise
             finally:
                 conn.close()
+
+
+class _FencedOutDuringComputation(Exception):
+    """Raised internally by run_validation() when its optional _fence_check
+    callback reports the caller's lease/fencing token has been superseded
+    mid-run. Stops the stock-backtest loop as soon as safely possible and
+    guarantees no val_runs/val_signals persistence is ever attempted for
+    this computation — persistence only happens via the atomic fenced
+    primitive below, which independently re-verifies fencing anyway, but
+    a computation known to be stale should not even reach that call."""
+
+
+def complete_running_attempt_with_computed_result(
+    attempt_id: int, owner: str, fencing_token: int, *,
+    horizon: str, universe: str, run_at: str, n_stocks: int, n_signals: int,
+    summary_json: str, signal_rows: list, now: datetime,
+) -> dict:
+    """V-SCHED1C1 correction — the ONE atomic fenced primitive that turns a
+    computed-but-not-yet-persisted validation result into a durable,
+    linked, completed attempt. Unlike the legacy run_validation() persist
+    path (kept only for direct/legacy callers — see _persist=False below),
+    this function performs the val_runs/val_signals INSERT itself, inside
+    the SAME transaction as the fencing check and the attempt/slot/lease
+    transition, following the documented lock order lease -> attempt ->
+    slot -> result:
+      1-5. lock+verify the lease (owner, token, unexpired, active_attempt_id
+           == this attempt);
+      6-8. lock+verify the attempt (status == 'running') and, if bound,
+           its slot (active_attempt_id == this attempt);
+      9-10. insert the val_runs row and its val_signals rows;
+      11-15. link result_run_id, complete the attempt, complete the slot,
+             clear slot/lease active-attempt bindings;
+      16. commit once.
+    Any failure at any step rolls back the WHOLE transaction — the
+    val_runs/val_signals rows never survive a fencing/ownership failure,
+    so a stale/fenced-out worker can never create an orphan result row or
+    become the publicly-selected latest result."""
+    _require_utc(now, param="now")
+    now_iso = _iso(now)
+
+    with _db_lock:
+        if _USE_POSTGRES:
+            conn = _pg_conn()
+            try:
+                with conn.transaction():
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT active_attempt_id FROM validation_execution_leases "
+                            "WHERE resource_key=%s AND lease_owner=%s AND fencing_token=%s AND expires_at > %s "
+                            "FOR UPDATE",
+                            (GLOBAL_LEASE_RESOURCE_KEY, owner, fencing_token, now),
+                        )
+                        lease = _pg_dict_fetchone(cur)
+                        if lease is None or lease["active_attempt_id"] != attempt_id:
+                            return {"ok": False, "reason": "not_owner_or_expired_lease"}
+
+                        cur.execute(
+                            "SELECT id, slot_id, horizon, universe, status "
+                            "FROM validation_schedule_attempts WHERE id=%s FOR UPDATE",
+                            (attempt_id,),
+                        )
+                        attempt = _pg_dict_fetchone(cur)
+                        if attempt is None:
+                            return {"ok": False, "reason": "attempt_not_found"}
+                        if attempt["status"] != "running":
+                            return {"ok": False, "reason": "illegal_transition"}
+                        if attempt["horizon"] != horizon or attempt["universe"] != universe:
+                            return {"ok": False, "reason": "result_identity_mismatch"}
+
+                        slot_id = attempt["slot_id"]
+                        if slot_id is not None:
+                            cur.execute(
+                                "SELECT id, active_attempt_id FROM validation_schedule_slots WHERE id=%s FOR UPDATE",
+                                (slot_id,),
+                            )
+                            slot = _pg_dict_fetchone(cur)
+                            if slot is None or slot["active_attempt_id"] != attempt_id:
+                                return {"ok": False, "reason": "not_active_attempt_for_slot"}
+
+                        cur.execute(
+                            "INSERT INTO val_runs (run_at, horizon, n_stocks, n_signals, summary, universe) "
+                            "VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
+                            (run_at, horizon, n_stocks, n_signals, summary_json, universe),
+                        )
+                        result_run_id = cur.fetchone()[0]
+                        if signal_rows:
+                            cur.executemany(
+                                """INSERT INTO val_signals
+                                   (run_id, symbol, horizon, signal_date, composite_score,
+                                    tech_score, rs_score, obv_score, mfi_score,
+                                    predicted, fwd_return_pct, nifty_fwd_ret_pct, alpha_pct,
+                                    actual_direction, correct)
+                                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                                [(result_run_id,) + r for r in signal_rows]
+                            )
+
+                        cur.execute(
+                            "UPDATE validation_schedule_attempts "
+                            "SET status='completed', completed_at=%s, result_run_id=%s, updated_at=%s "
+                            "WHERE id=%s",
+                            (now, result_run_id, now, attempt_id),
+                        )
+                        if slot_id is not None:
+                            cur.execute(
+                                "UPDATE validation_schedule_slots "
+                                "SET status='completed', active_attempt_id=NULL, updated_at=%s WHERE id=%s",
+                                (now, slot_id),
+                            )
+                        cur.execute(
+                            "UPDATE validation_execution_leases "
+                            "SET active_attempt_id=NULL, updated_at=%s "
+                            "WHERE resource_key=%s AND active_attempt_id=%s",
+                            (now, GLOBAL_LEASE_RESOURCE_KEY, attempt_id),
+                        )
+                        return {"ok": True, "id": attempt_id, "slot_id": slot_id, "run_id": result_run_id}
+            finally:
+                conn.close()
+        else:
+            conn = _get_ledger_sqlite_conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                lease = conn.execute(
+                    "SELECT active_attempt_id FROM validation_execution_leases "
+                    "WHERE resource_key=? AND lease_owner=? AND fencing_token=? AND expires_at > ?",
+                    (GLOBAL_LEASE_RESOURCE_KEY, owner, fencing_token, now_iso),
+                ).fetchone()
+                if lease is None or lease["active_attempt_id"] != attempt_id:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "not_owner_or_expired_lease"}
+
+                attempt = conn.execute(
+                    "SELECT id, slot_id, horizon, universe, status "
+                    "FROM validation_schedule_attempts WHERE id=?", (attempt_id,)
+                ).fetchone()
+                if attempt is None:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "attempt_not_found"}
+                if attempt["status"] != "running":
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "illegal_transition"}
+                if attempt["horizon"] != horizon or attempt["universe"] != universe:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "result_identity_mismatch"}
+
+                slot_id = attempt["slot_id"]
+                if slot_id is not None:
+                    slot = conn.execute(
+                        "SELECT id, active_attempt_id FROM validation_schedule_slots WHERE id=?", (slot_id,)
+                    ).fetchone()
+                    if slot is None or slot["active_attempt_id"] != attempt_id:
+                        conn.execute("ROLLBACK")
+                        return {"ok": False, "reason": "not_active_attempt_for_slot"}
+
+                cur = conn.execute(
+                    "INSERT INTO val_runs (run_at, horizon, n_stocks, n_signals, summary, universe) VALUES (?,?,?,?,?,?)",
+                    (run_at, horizon, n_stocks, n_signals, summary_json, universe),
+                )
+                result_run_id = cur.lastrowid
+                if signal_rows:
+                    conn.executemany(
+                        """INSERT INTO val_signals
+                           (run_id, symbol, horizon, signal_date, composite_score,
+                            tech_score, rs_score, obv_score, mfi_score,
+                            predicted, fwd_return_pct, nifty_fwd_ret_pct, alpha_pct,
+                            actual_direction, correct)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        [(result_run_id,) + r for r in signal_rows]
+                    )
+
+                conn.execute(
+                    "UPDATE validation_schedule_attempts "
+                    "SET status='completed', completed_at=?, result_run_id=?, updated_at=? WHERE id=?",
+                    (now_iso, result_run_id, now_iso, attempt_id),
+                )
+                if slot_id is not None:
+                    conn.execute(
+                        "UPDATE validation_schedule_slots "
+                        "SET status='completed', active_attempt_id=NULL, updated_at=? WHERE id=?",
+                        (now_iso, slot_id),
+                    )
+                conn.execute(
+                    "UPDATE validation_execution_leases "
+                    "SET active_attempt_id=NULL, updated_at=? WHERE resource_key=? AND active_attempt_id=?",
+                    (now_iso, GLOBAL_LEASE_RESOURCE_KEY, attempt_id),
+                )
+                conn.execute("COMMIT")
+                return {"ok": True, "id": attempt_id, "slot_id": slot_id, "run_id": result_run_id}
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            finally:
+                conn.close()
+
+
+# ── V-SCHED1C1 — shared execution-admission orchestration ─────────────────────
+# The single internal path used by the scheduler, catch-up, and the
+# authenticated manual trigger to run validation through the V-SCHED1B
+# durable ledger. No caller maintains separate admission logic — main.py's
+# scheduler/catch-up and api/routers/validation.py's /run route both call
+# these functions rather than run_validation() directly.
+#
+# Split into two phases so the manual HTTP route can synchronously attempt
+# admission (fast: lease + attempt creation + running transition) before
+# ever reporting acceptance to the caller, then hand off only the
+# potentially long-running actual validation execution to a background
+# task — never the reverse.
+
+def admit_validation_attempt(horizon: str, universe: str, trigger_type: str, owner: str, *,
+                              slot_id: int | None = None, scheduled_slot: datetime | None = None,
+                              schedule_version: str = "v1", now: datetime | None = None,
+                              lease_duration_seconds: int = 600) -> dict:
+    """Phase 1 — fast and synchronous. Never executes the actual validation
+    run. In order:
+      1. acquire the global execution lease for `owner`;
+      2. if the lease was reclaimed from a stale prior holder
+         (recovery_required), recover it via the fenced V-SCHED1B primitive
+         before proceeding — fail closed (release and reject) if recovery
+         itself fails;
+      3. for trigger_type in (scheduler, catchup): resolve/create the
+         canonical scheduled slot (unless slot_id already given) and create
+         a scheduled attempt bound to it; for trigger_type manual: create an
+         unbound (slot_id=NULL) manual attempt;
+      4. mark the attempt running.
+    Returns {"ok": True, "attempt_id", "fencing_token", "owner"} or
+    {"ok": False, "reason": <code>} — a caller must never report acceptance
+    on a False result."""
+    if trigger_type not in ("scheduler", "catchup", "manual"):
+        raise ValueError(f"admit_validation_attempt: trigger_type must be scheduler/catchup/manual, got {trigger_type!r}")
+    if now is None:
+        now = datetime.now(timezone.utc)
+    now = _require_utc(now, param="now")
+
+    lease = acquire_validation_execution_lease(owner=owner, now=now, lease_duration_seconds=lease_duration_seconds)
+    if not lease.get("ok"):
+        return {"ok": False, "reason": lease.get("reason", "already_leased")}
+
+    fencing_token = lease["fencing_token"]
+
+    if lease.get("recovery_required"):
+        recovery = recover_stale_active_attempt(owner=owner, fencing_token=fencing_token, now=now)
+        if not recovery.get("ok"):
+            # Fail closed — do not admit a new attempt while a stale
+            # binding could not be cleanly resolved. Release what we hold
+            # (nothing is bound to this owner yet) so a future caller can retry.
+            release_validation_execution_lease(owner=owner, fencing_token=fencing_token, now=now)
+            return {"ok": False, "reason": f"recovery_failed:{recovery.get('reason', 'unknown')}"}
+
+    if trigger_type in ("scheduler", "catchup"):
+        if slot_id is None:
+            if scheduled_slot is None:
+                release_validation_execution_lease(owner=owner, fencing_token=fencing_token, now=now)
+                return {"ok": False, "reason": "missing_scheduled_slot"}
+            slot = get_or_create_schedule_slot(
+                horizon=horizon, universe=universe, scheduled_slot=scheduled_slot,
+                schedule_version=schedule_version, now=now,
+            )
+            slot_id = slot["id"]
+        attempt = create_schedule_attempt(
+            slot_id=slot_id, trigger_type=trigger_type, owner=owner,
+            fencing_token=fencing_token, now=now,
+        )
+    else:
+        attempt = create_manual_attempt(horizon=horizon, universe=universe, owner=owner,
+                                         fencing_token=fencing_token, now=now)
+
+    if not attempt.get("ok"):
+        release_validation_execution_lease(owner=owner, fencing_token=fencing_token, now=now)
+        return {"ok": False, "reason": attempt.get("reason", "attempt_creation_failed")}
+
+    attempt_id = attempt["id"]
+    running = mark_attempt_running(attempt_id, owner=owner, fencing_token=fencing_token, now=now)
+    if not running.get("ok"):
+        # Should be unreachable (we just created this attempt under this
+        # exact lease), but fail closed rather than silently proceeding —
+        # abandon the attempt so it can't be left stuck claimed.
+        mark_attempt_abandoned_terminal(attempt_id, owner=owner, fencing_token=fencing_token, now=now,
+                                         failure_category="ADMISSION_RACE",
+                                         failure_summary="mark_attempt_running failed immediately after creation")
+        return {"ok": False, "reason": "mark_running_failed"}
+
+    return {"ok": True, "attempt_id": attempt_id, "fencing_token": fencing_token, "owner": owner}
+
+
+def execute_and_complete_admitted_attempt(attempt_id: int, owner: str, fencing_token: int,
+                                           horizon: str, universe: str, trigger_type: str, *,
+                                           lease_duration_seconds: int = 600,
+                                           heartbeat_every_n_stocks: int = 10,
+                                           max_workers: int = 6) -> dict:
+    """Phase 2 — runs the actual validation for an attempt already admitted
+    by admit_validation_attempt(), then atomically completes/fails it.
+
+    V-SCHED1C1-C1 correction: run_validation() is called with _persist=False
+    — it computes but never writes val_runs/val_signals. Heartbeat renewal
+    is tied to observable forward progress (every `heartbeat_every_n_stocks`
+    completed stocks, via run_validation's progress_callback/_fence_check
+    checkpoint) — never an unconditionally-renewing blind timer. The moment
+    a heartbeat is rejected (fencing_token superseded), the NEXT checkpoint
+    inside run_validation() cancels remaining work and raises
+    _FencedOutDuringComputation — execution does not run to completion under
+    a known-stale token. Final persistence — the val_runs/val_signals insert
+    itself — happens only inside complete_running_attempt_with_computed_
+    result(), one atomic transaction that independently re-verifies owner/
+    token/expiry/active_attempt_id before writing anything. So even a
+    fencing loss that occurs after the last heartbeat (a window this
+    cooperative checkpoint cannot close) is still caught: the atomic
+    primitive's own fencing check runs immediately before its own insert,
+    in the same transaction, and rolls back the insert if it fails. No
+    val_runs/val_signals row can ever survive under a stale/superseded
+    identity."""
+    fenced_out = {"value": False}
+
+    def _on_progress_fence_check():
+        hb = heartbeat_validation_execution_lease(
+            owner=owner, fencing_token=fencing_token, now=datetime.now(timezone.utc),
+            lease_duration_seconds=lease_duration_seconds,
+        )
+        if not hb.get("ok"):
+            fenced_out["value"] = True
+            return True
+        return False
+
+    def _on_progress(done, total):
+        if done % heartbeat_every_n_stocks != 0 and done != total:
+            return
+        _on_progress_fence_check()
+
+    def _release_if_still_ours(now: datetime) -> None:
+        # Best-effort: after a terminal attempt transition, the lease's
+        # active_attempt_id is already cleared, so this owner's lease now
+        # holds nothing — release it so the NEXT admission (by this same
+        # owner reused across universes, or any other) is never blocked
+        # behind a lease no attempt actually needs anymore. A failure here
+        # (already reclaimed by someone else) is expected and harmless —
+        # there is nothing left for this owner to release in that case.
+        release_validation_execution_lease(owner=owner, fencing_token=fencing_token, now=now)
+
+    def _fence_checkpoint():
+        # Same predicate the heartbeat itself uses (bool(fenced_out) after
+        # _on_progress runs) — run_validation() calls this right after
+        # progress_callback at every cooperative checkpoint, so a fencing
+        # loss detected on heartbeat N is acted on at checkpoint N, not
+        # silently carried to the end of the run.
+        return fenced_out["value"]
+
+    try:
+        metrics = run_validation(horizon=horizon, universe=universe, max_workers=max_workers,
+                                  trigger_type=trigger_type, progress_callback=_on_progress,
+                                  _persist=False, _fence_check=_fence_checkpoint)
+    except _FencedOutDuringComputation:
+        log.warning(
+            "[validation] attempt %s lost its lease during execution (fenced out) — "
+            "computation aborted before any persistence was attempted", attempt_id,
+        )
+        # Do NOT mark the attempt failed, release the lease, or clear any
+        # binding here — this owner's token is already superseded; the new
+        # owner holds the lease and must not have its state touched by the
+        # stale worker in any way.
+        return {"ok": False, "reason": "fenced_out_during_execution"}
+    except Exception:
+        log.exception("[validation] execute_and_complete_admitted_attempt: run_validation raised")
+        fail_now = datetime.now(timezone.utc)
+        mark_attempt_failed_retryable(attempt_id, owner=owner, fencing_token=fencing_token, now=fail_now,
+                                       failure_category="RUN_EXCEPTION")
+        _release_if_still_ours(fail_now)
+        return {"ok": False, "reason": "run_exception"}
+
+    complete_now = datetime.now(timezone.utc)
+
+    if fenced_out["value"]:
+        # Computation finished naturally between the last checkpoint and
+        # the fenced flag being observed here (a narrow window — the
+        # checkpoint runs after every heartbeat_every_n_stocks stocks, so
+        # this covers the tail after the final checkpoint). No persistence
+        # has happened yet (_persist=False), so nothing to roll back — just
+        # decline to call the atomic primitive at all.
+        log.warning(
+            "[validation] attempt %s lost its lease during execution (fenced out, "
+            "detected after final checkpoint) — no result will be persisted", attempt_id,
+        )
+        return {"ok": False, "reason": "fenced_out_during_execution"}
+
+    payload = metrics.get("_persist_payload")
+    if payload is None:
+        # run_validation's own internal in-memory claim rejected it
+        # (metrics.get("error") set) or some other path produced no
+        # computed payload — nothing to persist; fail the attempt so its
+        # slot (if any) returns to due for a future retry.
+        mark_attempt_failed_retryable(attempt_id, owner=owner, fencing_token=fencing_token, now=complete_now,
+                                       failure_category="NO_RESULT_RUN_ID",
+                                       failure_summary=str(metrics.get("error"))[:200] if metrics.get("error") else None)
+        _release_if_still_ours(complete_now)
+        return {"ok": False, "reason": "no_result_run_id"}
+
+    completion = complete_running_attempt_with_computed_result(
+        attempt_id, owner=owner, fencing_token=fencing_token,
+        horizon=payload["horizon"], universe=payload["universe"], run_at=payload["run_at"],
+        n_stocks=payload["n_stocks"], n_signals=payload["n_signals"],
+        summary_json=payload["summary_json"], signal_rows=payload["signal_rows"],
+        now=complete_now,
+    )
+    if not completion.get("ok"):
+        # The atomic primitive rolled back the ENTIRE transaction on any
+        # ownership/fencing/attempt/slot failure — no val_runs/val_signals
+        # row was left behind (unlike the pre-correction path, there is no
+        # "orphaned_run_id" possible here: either everything committed
+        # together, or nothing did).
+        return {"ok": False, "reason": completion.get("reason", "completion_failed")}
+
+    result_run_id = completion["run_id"]
+    metrics["run_id"] = result_run_id
+    _release_if_still_ours(complete_now)
+    return {"ok": True, "attempt_id": attempt_id, "run_id": result_run_id, "metrics": metrics}
+
+
+def execute_admitted_validation(horizon: str, universe: str, trigger_type: str, owner: str, *,
+                                 slot_id: int | None = None, scheduled_slot: datetime | None = None,
+                                 schedule_version: str = "v1", now: datetime | None = None,
+                                 lease_duration_seconds: int = 600, heartbeat_every_n_stocks: int = 10,
+                                 max_workers: int = 6) -> dict:
+    """Convenience wrapper combining both phases for callers that don't
+    need the synchronous-admission/background-execution split (the
+    scheduler and catch-up — both already run entirely inside a background
+    executor thread from the moment they're invoked)."""
+    admitted = admit_validation_attempt(
+        horizon=horizon, universe=universe, trigger_type=trigger_type, owner=owner,
+        slot_id=slot_id, scheduled_slot=scheduled_slot, schedule_version=schedule_version,
+        now=now, lease_duration_seconds=lease_duration_seconds,
+    )
+    if not admitted.get("ok"):
+        return admitted
+    return execute_and_complete_admitted_attempt(
+        admitted["attempt_id"], admitted["owner"], admitted["fencing_token"],
+        horizon, universe, trigger_type,
+        lease_duration_seconds=lease_duration_seconds,
+        heartbeat_every_n_stocks=heartbeat_every_n_stocks, max_workers=max_workers,
+    )

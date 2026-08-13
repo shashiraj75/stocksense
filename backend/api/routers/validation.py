@@ -87,36 +87,105 @@ async def trigger_validation(
     Returns immediately — poll /status for progress, /results for output.
 
     Protected by X-Secret header (V-SEC1) — checked before anything else,
-    including the concurrency/claim check below, so an unauthenticated
-    caller can never learn whether a run is currently active. The internal
-    scheduler (api/main.py's _validation_schedule_loop/_catchup_validation)
-    calls run_validation() directly as a Python function and never goes
-    through this HTTP route, so it is unaffected by this check.
+    including the durable-ledger admission attempt below, so an
+    unauthenticated caller can never learn whether a run is currently
+    active.
+
+    V-SCHED1C1 — this route now goes through the same shared admission
+    path the scheduler and catch-up use
+    (services.validation_engine.admit_validation_attempt /
+    execute_and_complete_admitted_attempt), built on the V-SCHED1B durable
+    ledger and global execution lease, rather than a separate in-process-
+    only claim. Admission is attempted SYNCHRONOUSLY here, before any
+    response is built — a background task is enqueued only once admission
+    genuinely succeeds, never after a rejected/failed admission. A manual
+    attempt is always unbound (slot_id=NULL) and can never satisfy a
+    scheduled slot. The busy/conflict response is deliberately minimal —
+    it never exposes the lease owner, fencing token, secret, or any raw
+    internal/database detail.
     """
     _require_validation_secret(x_secret)
 
-    from services.validation_engine import run_validation, get_run_status, claim_validation_job
+    import os
+    from datetime import datetime, timezone
+    import uuid
+    from services.validation_engine import (
+        admit_validation_attempt, execute_and_complete_admitted_attempt,
+        NIFTY_100, NSE_MIDCAP, US_BASKET, UNIVERSE_MARKET, UNIVERSE_VERSION,
+        VALIDATION_MODEL_VERSION, VALIDATION_METHODOLOGY_VERSION,
+    )
 
-    # Claim the run slot synchronously so the response can carry the real,
-    # immutable job identity (market/universe/horizon) — the /status payload
-    # is bound to this identity for the whole run. Never infer market or
-    # universe from frontend tab state.
-    job = claim_validation_job(horizon, universe, trigger_type="api")
-    if job is None:
-        status = get_run_status()
-        return _json_response({
-            "status": "already_running",
-            "progress": status.get("progress"),
-            "total": status.get("total"),
-            "job": status.get("job"),
-        })
+    owner = f"manual-{uuid.uuid4()}"
+    now_dt = datetime.now(timezone.utc)
+    admitted = admit_validation_attempt(
+        horizon=horizon, universe=universe, trigger_type="manual", owner=owner,
+        now=now_dt,
+    )
+    if not admitted.get("ok"):
+        # V-SCHED1C1-C1 — restore the pre-V-SCHED1C1 busy-response shape
+        # (status + job) where it can be reconstructed WITHOUT exposing
+        # anything the ledger holds privately (lease owner, fencing token,
+        # secret, DB details). There is no "current job" concept to report
+        # here anymore — a rejected admission simply means the single
+        # global lease is held by someone else — so `job` is omitted
+        # rather than fabricated; a caller that only branches on `status`
+        # (the documented contract) is unaffected either way.
+        return _json_response({"status": "already_running"})
 
+    attempt_id = admitted["attempt_id"]
+    fencing_token = admitted["fencing_token"]
     universe_labels = {"nifty100": "Nifty 100", "midcap": "NSE Midcap", "us": "US S&P 500 basket"}
+    universe_map = {"nifty100": NIFTY_100, "midcap": NSE_MIDCAP, "us": US_BASKET}
+    benchmark = "^GSPC" if universe == "us" else "^NSEI"
 
     def _run():
-        run_validation(horizon=horizon, universe=universe, _claimed_job=job)
+        execute_and_complete_admitted_attempt(
+            attempt_id, owner, fencing_token, horizon, universe, "manual",
+        )
 
     background_tasks.add_task(_run)
+
+    # V-SCHED1C1-C2 — `job` restores the pre-V-SCHED1C1 accepted-response
+    # shape exactly: every field below is either a static/public constant
+    # (model/methodology/universe version, benchmark, universe size, source
+    # commit — same env var already publicly exposed before this change)
+    # or directly known from this admission call. `job_id` is a genuinely
+    # fresh uuid.uuid4() — matching the exact pre-V-SCHED1C1 public format
+    # — generated purely for public display; it is NOT derived from and
+    # carries no relationship to the durable integer attempt_id, which
+    # stays internal to this closure (used only for admission/completion)
+    # and is never itself exposed. It intentionally does NOT expose the
+    # ledger's lease owner or fencing token, which no pre-V-SCHED1C1
+    # consumer ever received either. `data_cutoff`/`requested_by` were
+    # always None/not-captured at this same point in the pre-V-SCHED1C1
+    # code too, so this is not a loss of information a caller ever
+    # actually had.
+    job = {
+        "job_id": str(uuid.uuid4()),
+        "market": UNIVERSE_MARKET.get(universe),
+        "universe_id": universe,
+        "universe_version": UNIVERSE_VERSION.get(universe, "unknown"),
+        "benchmark": benchmark,
+        "horizon": horizon,
+        "started_at": now_dt.isoformat(),
+        "completed_at": None,
+        "status": "running",
+        "processed": 0,
+        "total": len(universe_map.get(universe, [])),
+        "current_symbol": None,
+        "source_commit": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
+        "model_version": VALIDATION_MODEL_VERSION,
+        "methodology_version": VALIDATION_METHODOLOGY_VERSION,
+        "data_cutoff": None,
+        "data_cutoff_basis": "not_captured",
+        "requested_by": None,
+        "trigger_type": "manual",
+        "created_at": now_dt.isoformat(),
+        "updated_at": now_dt.isoformat(),
+        "failure_code": None,
+        "failure_message": None,
+    }
+
     return _json_response({
         "status": "started",
         "horizon": horizon,
