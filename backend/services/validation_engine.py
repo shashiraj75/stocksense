@@ -27,7 +27,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -648,6 +648,113 @@ CREATE INDEX IF NOT EXISTS idx_val_signals_score ON val_signals(composite_score)
 -- default, so our own access is unaffected. Idempotent.
 ALTER TABLE val_runs    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE val_signals ENABLE ROW LEVEL SECURITY;
+
+-- V-SCHED1B — durable validation scheduling ledger foundation (inert; not
+-- called by any production code path yet, see run_validation()'s module
+-- docstring and _validation_schedule_loop in api/main.py, both unchanged
+-- by this phase). Three deliberately separate entities — see the V-SCHED1A2
+-- forensic report for why a single-table model was rejected: a canonical
+-- scheduled slot cannot itself represent multiple auditable retry attempts,
+-- and neither can represent the pre-existing system-wide one-run-at-a-time
+-- rule, which spans every horizon/universe/manual trigger, not one slot.
+
+CREATE TABLE IF NOT EXISTS validation_schedule_slots (
+    id               BIGSERIAL PRIMARY KEY,
+    horizon          TEXT NOT NULL,
+    universe         TEXT NOT NULL,
+    scheduled_slot   TIMESTAMPTZ NOT NULL,
+    schedule_version TEXT NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'due'
+                     CHECK (status IN ('due','running','completed','failed','skipped','abandoned')),
+    -- The attempt currently entitled to transition this slot. Set the
+    -- moment an attempt is created (in the SAME transaction as the slot's
+    -- due->running move) and cleared the moment that attempt reaches any
+    -- terminal state. A second, older attempt for this slot (e.g. one
+    -- whose lease was reclaimed) can never mutate the slot once this no
+    -- longer points at it — ownership is checked explicitly, not inferred
+    -- from slot status alone, since multiple historical attempts can
+    -- exist for one slot across retries.
+    active_attempt_id BIGINT,
+    created_at       TIMESTAMPTZ NOT NULL,
+    updated_at       TIMESTAMPTZ NOT NULL,
+    UNIQUE (horizon, universe, scheduled_slot, schedule_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_vss_status ON validation_schedule_slots(status);
+CREATE INDEX IF NOT EXISTS idx_vss_lookup ON validation_schedule_slots(horizon, universe, scheduled_slot);
+
+CREATE TABLE IF NOT EXISTS validation_schedule_attempts (
+    id                  BIGSERIAL PRIMARY KEY,
+    slot_id             BIGINT REFERENCES validation_schedule_slots(id),
+    -- Durable target identity, stored on the attempt itself (not just
+    -- reachable via slot_id) so a manual attempt (slot_id NULL) still has
+    -- an auditable, queryable horizon/universe, and so a scheduled/
+    -- catchup attempt's target can be verified to match its slot's target
+    -- without a join at write time. For scheduled/catchup attempts this
+    -- is copied from the slot at creation and never diverges from it —
+    -- enforced in the same transaction that creates the attempt.
+    horizon             TEXT NOT NULL,
+    universe            TEXT NOT NULL,
+    attempt_number      INTEGER NOT NULL,
+    trigger_type        TEXT NOT NULL CHECK (trigger_type IN ('scheduler','catchup','manual')),
+    status              TEXT NOT NULL DEFAULT 'claimed'
+                        CHECK (status IN ('claimed','running','completed','failed','abandoned')),
+    -- Populated only once this attempt validly reaches 'running' under a
+    -- currently-held lease — an audit trail of who actually executed it,
+    -- independent of lease_fencing_token's role in gating writes.
+    lease_owner         TEXT,
+    lease_fencing_token BIGINT,
+    started_at          TIMESTAMPTZ,
+    heartbeat_at        TIMESTAMPTZ,
+    completed_at        TIMESTAMPTZ,
+    result_run_id       BIGINT REFERENCES val_runs(id),
+    failure_category    TEXT,
+    failure_summary     TEXT,
+    created_at          TIMESTAMPTZ NOT NULL,
+    updated_at          TIMESTAMPTZ NOT NULL,
+    UNIQUE (slot_id, attempt_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_vsa_slot   ON validation_schedule_attempts(slot_id);
+CREATE INDEX IF NOT EXISTS idx_vsa_horiz  ON validation_schedule_attempts(horizon, universe);
+CREATE INDEX IF NOT EXISTS idx_vsa_trig   ON validation_schedule_attempts(trigger_type);
+CREATE INDEX IF NOT EXISTS idx_vsa_status ON validation_schedule_attempts(status);
+-- One val_runs row may belong to at most one attempt; multiple NULLs
+-- (uncompleted attempts) remain allowed under a standard unique index
+-- in both dialects. Named so complete_attempt_with_result can map a
+-- violation on THIS specific constraint (and no other) to the
+-- explicit 'result_already_linked' conflict.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vsa_result_unique ON validation_schedule_attempts(result_run_id);
+
+CREATE TABLE IF NOT EXISTS validation_execution_leases (
+    resource_key   TEXT PRIMARY KEY,
+    lease_owner    TEXT,
+    fencing_token  BIGINT NOT NULL DEFAULT 0,
+    acquired_at    TIMESTAMPTZ,
+    heartbeat_at   TIMESTAMPTZ,
+    expires_at     TIMESTAMPTZ,
+    -- The single attempt currently globally admitted under this lease.
+    -- NULL means the lease owns no active validation attempt and a new
+    -- one may be admitted. Deliberately NOT reset to NULL by lease
+    -- reclaim (acquire_validation_execution_lease) — a reclaim after
+    -- expiry must surface a stale admitted attempt to the new owner
+    -- (recovery_required in its return value) rather than silently
+    -- losing that identity; only recover_stale_active_attempt() or a
+    -- normal terminal transition may clear it. No FK to
+    -- validation_schedule_attempts(id) — application-enforced only,
+    -- since this column is set exclusively by create_schedule_attempt/
+    -- create_manual_attempt to their own newly-inserted row's id.
+    active_attempt_id BIGINT,
+    updated_at     TIMESTAMPTZ NOT NULL
+);
+
+INSERT INTO validation_execution_leases (resource_key, fencing_token, updated_at)
+VALUES ('validation-global', 0, now())
+ON CONFLICT (resource_key) DO NOTHING;
+
+ALTER TABLE validation_schedule_slots    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE validation_schedule_attempts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE validation_execution_leases  ENABLE ROW LEVEL SECURITY;
 """
 
 # Synced with official NSE Nifty 100 index (June 2026) + popular large-caps
@@ -823,6 +930,30 @@ def _get_sqlite_conn() -> sqlite3.Connection:
     return conn
 
 
+def _get_ledger_sqlite_conn() -> sqlite3.Connection:
+    """V-SCHED1B ledger-only connection helper. SQLite does not enforce
+    declared FOREIGN KEY constraints unless `PRAGMA foreign_keys = ON` is
+    issued per-connection (it is OFF by default) — enabling it here,
+    scoped to the ledger's own connections only, rather than on the
+    shared `_get_sqlite_conn()` used by every pre-existing val_runs/
+    val_signals code path in this module, deliberately avoids widening
+    this correction's blast radius to unrelated, already-established
+    behavior outside V-SCHED1B's authorized file allowlist.
+
+    `isolation_level=None` puts the driver in true autocommit mode so
+    ledger compound operations can issue an explicit `BEGIN IMMEDIATE`
+    (acquiring SQLite's write lock up front, before any read used to
+    decide what to write) and an explicit COMMIT/ROLLBACK spanning
+    multiple statements — the implicit, deferred-lock transaction the
+    sqlite3 module would otherwise open automatically is not strong
+    enough for the atomic, lock-then-decide compound transitions this
+    module needs."""
+    conn = sqlite3.connect(_DB_PATH, timeout=30, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
 _db_initialised = False
 
 def _init_db():
@@ -885,6 +1016,69 @@ def _init_db():
                     "UPDATE val_runs SET universe = "
                     "COALESCE(json_extract(summary, '$.universe'), 'nifty100') "
                     "WHERE universe = 'nifty100'"
+                )
+                # V-SCHED1B — SQLite mirror of the Postgres ledger schema above.
+                c.executescript("""
+                CREATE TABLE IF NOT EXISTS validation_schedule_slots (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    horizon          TEXT NOT NULL,
+                    universe         TEXT NOT NULL,
+                    scheduled_slot   TEXT NOT NULL,
+                    schedule_version TEXT NOT NULL,
+                    status           TEXT NOT NULL DEFAULT 'due'
+                                     CHECK (status IN ('due','running','completed','failed','skipped','abandoned')),
+                    active_attempt_id INTEGER,
+                    created_at       TEXT NOT NULL,
+                    updated_at       TEXT NOT NULL,
+                    UNIQUE (horizon, universe, scheduled_slot, schedule_version)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_vss_status ON validation_schedule_slots(status);
+                CREATE INDEX IF NOT EXISTS idx_vss_lookup ON validation_schedule_slots(horizon, universe, scheduled_slot);
+
+                CREATE TABLE IF NOT EXISTS validation_schedule_attempts (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    slot_id             INTEGER REFERENCES validation_schedule_slots(id),
+                    horizon             TEXT NOT NULL,
+                    universe            TEXT NOT NULL,
+                    attempt_number      INTEGER NOT NULL,
+                    trigger_type        TEXT NOT NULL CHECK (trigger_type IN ('scheduler','catchup','manual')),
+                    status              TEXT NOT NULL DEFAULT 'claimed'
+                                        CHECK (status IN ('claimed','running','completed','failed','abandoned')),
+                    lease_owner         TEXT,
+                    lease_fencing_token INTEGER,
+                    started_at          TEXT,
+                    heartbeat_at        TEXT,
+                    completed_at        TEXT,
+                    result_run_id       INTEGER REFERENCES val_runs(id),
+                    failure_category    TEXT,
+                    failure_summary     TEXT,
+                    created_at          TEXT NOT NULL,
+                    updated_at          TEXT NOT NULL,
+                    UNIQUE (slot_id, attempt_number)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_vsa_slot   ON validation_schedule_attempts(slot_id);
+                CREATE INDEX IF NOT EXISTS idx_vsa_horiz  ON validation_schedule_attempts(horizon, universe);
+                CREATE INDEX IF NOT EXISTS idx_vsa_trig   ON validation_schedule_attempts(trigger_type);
+                CREATE INDEX IF NOT EXISTS idx_vsa_status ON validation_schedule_attempts(status);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_vsa_result_unique ON validation_schedule_attempts(result_run_id);
+
+                CREATE TABLE IF NOT EXISTS validation_execution_leases (
+                    resource_key   TEXT PRIMARY KEY,
+                    lease_owner    TEXT,
+                    fencing_token  INTEGER NOT NULL DEFAULT 0,
+                    acquired_at    TEXT,
+                    heartbeat_at   TEXT,
+                    expires_at     TEXT,
+                    active_attempt_id INTEGER,
+                    updated_at     TEXT NOT NULL
+                );
+                """)
+                c.execute(
+                    "INSERT OR IGNORE INTO validation_execution_leases "
+                    "(resource_key, fencing_token, updated_at) VALUES (?, 0, ?)",
+                    ("validation-global", datetime.now(timezone.utc).isoformat()),
                 )
         _db_initialised = True
 
@@ -3011,3 +3205,1220 @@ def get_all_run_summaries() -> list[dict]:
         return results
     except Exception:
         return []
+
+
+
+
+# ── V-SCHED1B — durable validation scheduling ledger (inert foundation) ───────
+# Not called by _validation_schedule_loop, _catchup_validation, or
+# run_validation() in this phase — see V-SCHED1C for integration.
+#
+# CORRECTION (post-second-independent-review): the global lease now owns a
+# durable `active_attempt_id` binding. NO scheduled or manual attempt may
+# be created without FIRST holding the global lease, verified atomically
+# inside the SAME transaction that creates the attempt — closing the gap
+# where two different slots could each independently reach 'running'
+# before either caller ever contended for the global lease. At most one
+# claimed/running attempt can exist system-wide at any time: the lease
+# row's active_attempt_id is the single source of truth for that
+# invariant, set in the same transaction as attempt creation and cleared
+# in the same transaction as every terminal attempt transition.
+#
+# A process that crashes after admission (attempt created, lease bound)
+# but before completion leaves the lease's active_attempt_id pointing at
+# a now-stale attempt. Lease reclaim (acquire_validation_execution_lease)
+# deliberately does NOT clear this on its own — it surfaces it via
+# `recovery_required`/`stale_active_attempt_id` in its return value, and
+# the new owner must explicitly call recover_stale_active_attempt() before
+# any new attempt can be admitted. This makes the recovery an explicit,
+# auditable step rather than a silent side effect of reclaiming the lease.
+#
+# Three deliberately separate entities (see V-SCHED1A2's forensic report
+# for why a single-table model was rejected):
+#   - validation_schedule_slots    — canonical scheduled obligation.
+#   - validation_schedule_attempts — auditable execution attempt, bound
+#     (scheduler/catchup) or unbound (manual, slot_id NULL, horizon/
+#     universe durably recorded on the attempt itself).
+#   - validation_execution_leases  — single global singleton, now with a
+#     durable active-attempt binding enforcing true global admission.
+#
+# Lock ordering (PostgreSQL) — every multi-row ledger transaction acquires
+# row locks in this SAME order, with no exception:
+#     1. validation_execution_leases (the single 'validation-global' row)
+#     2. validation_schedule_attempts, if an existing attempt is involved
+#     3. validation_schedule_slots, if the attempt is bound to a slot
+#     4. val_runs, only for complete_attempt_with_result, after 1-3
+# create_schedule_attempt/create_manual_attempt lock lease then slot (no
+# attempt row exists yet to lock). recover_stale_active_attempt and
+# _compound_transition both lock lease then attempt then slot. This single
+# consistent order is what prevents an AB-BA deadlock between any two
+# concurrent ledger operations — see the second independent review's
+# finding that an earlier revision had _compound_transition locking
+# attempt-then-lease while recover_stale_active_attempt locked
+# lease-then-attempt, a reversal capable of a real PostgreSQL deadlock in
+# the "stale worker wakes up while a new owner is recovering it" scenario.
+
+GLOBAL_LEASE_RESOURCE_KEY = "validation-global"
+
+VALID_SLOT_STATUSES = {"due", "running", "completed", "failed", "skipped", "abandoned"}
+VALID_ATTEMPT_STATUSES = {"claimed", "running", "completed", "failed", "abandoned"}
+VALID_TRIGGER_TYPES = {"scheduler", "catchup", "manual"}
+VALID_HORIZONS = {"short", "medium", "long"}
+
+
+def _require_utc(dt: datetime, *, param: str = "now") -> datetime:
+    """Fail-closed timestamp contract: every timestamp accepted by this
+    module must be timezone-aware and UTC. A naive datetime is ambiguous
+    and is never silently assumed to be UTC."""
+    if dt.tzinfo is None:
+        raise ValueError(f"{param} must be timezone-aware (UTC) — naive datetimes are rejected, never assumed")
+    return dt.astimezone(timezone.utc)
+
+
+def _iso(dt: datetime) -> str:
+    return _require_utc(dt).isoformat()
+
+
+def _require_valid_horizon(horizon: str) -> None:
+    if horizon not in VALID_HORIZONS:
+        raise ValueError(f"horizon must be one of {sorted(VALID_HORIZONS)}, got {horizon!r}")
+
+
+def _ledger_row_to_dict(row) -> dict | None:
+    if row is None:
+        return None
+    return dict(row)
+
+
+def _pg_dict_fetchone(cur) -> dict | None:
+    row = cur.fetchone()
+    if row is None:
+        return None
+    cols = [d.name for d in cur.description]
+    return dict(zip(cols, row))
+
+
+def _pg_dict_fetchall(cur) -> list[dict]:
+    rows = cur.fetchall()
+    cols = [d.name for d in cur.description]
+    return [dict(zip(cols, r)) for r in rows]
+
+
+def _fetchone_ledger(sql_pg: str, sql_sq: str, params=()) -> dict | None:
+    """Read-only helper — never mutates state."""
+    if _USE_POSTGRES:
+        conn = _pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_pg, params)
+                return _pg_dict_fetchone(cur)
+        finally:
+            conn.close()
+    with _get_ledger_sqlite_conn() as conn:
+        row = conn.execute(sql_sq, params).fetchone()
+        return _ledger_row_to_dict(row)
+
+
+_SLOT_COLUMNS = "id, horizon, universe, scheduled_slot, schedule_version, status, active_attempt_id, created_at, updated_at"
+_ATTEMPT_COLUMNS = (
+    "id, slot_id, horizon, universe, attempt_number, trigger_type, status, lease_owner, "
+    "lease_fencing_token, started_at, heartbeat_at, completed_at, result_run_id, "
+    "failure_category, failure_summary, created_at, updated_at"
+)
+_LEASE_COLUMNS = "resource_key, lease_owner, fencing_token, acquired_at, heartbeat_at, expires_at, active_attempt_id, updated_at"
+
+
+def get_schedule_slot(slot_id: int) -> dict | None:
+    """Read-only — never mutates state."""
+    return _fetchone_ledger(
+        f"SELECT {_SLOT_COLUMNS} FROM validation_schedule_slots WHERE id=%s",
+        f"SELECT {_SLOT_COLUMNS} FROM validation_schedule_slots WHERE id=?",
+        (slot_id,),
+    )
+
+
+def get_schedule_attempt(attempt_id: int) -> dict | None:
+    """Read-only — never mutates state."""
+    return _fetchone_ledger(
+        f"SELECT {_ATTEMPT_COLUMNS} FROM validation_schedule_attempts WHERE id=%s",
+        f"SELECT {_ATTEMPT_COLUMNS} FROM validation_schedule_attempts WHERE id=?",
+        (attempt_id,),
+    )
+
+
+def get_validation_execution_lease() -> dict | None:
+    """Read-only — never mutates state."""
+    return _fetchone_ledger(
+        f"SELECT {_LEASE_COLUMNS} FROM validation_execution_leases WHERE resource_key=%s",
+        f"SELECT {_LEASE_COLUMNS} FROM validation_execution_leases WHERE resource_key=?",
+        (GLOBAL_LEASE_RESOURCE_KEY,),
+    )
+
+
+# ── Canonical scheduled slot — idempotent create (no lease involvement:
+# creating the durable slot ROW is not "activating" it — see
+# create_schedule_attempt for the lease-gated activation step) ──────────────
+
+def get_or_create_schedule_slot(horizon: str, universe: str, scheduled_slot: datetime,
+                                 schedule_version: str, now: datetime) -> dict:
+    _require_utc(now, param="now")
+    _require_valid_horizon(horizon)
+    _require_known_universe(universe)
+    slot_iso = _iso(scheduled_slot)
+    now_iso = _iso(now)
+    with _db_lock:
+        if _USE_POSTGRES:
+            conn = _pg_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO validation_schedule_slots "
+                        "(horizon, universe, scheduled_slot, schedule_version, status, created_at, updated_at) "
+                        "VALUES (%s,%s,%s,%s,'due',%s,%s) "
+                        "ON CONFLICT (horizon, universe, scheduled_slot, schedule_version) DO NOTHING "
+                        f"RETURNING {_SLOT_COLUMNS}",
+                        (horizon, universe, scheduled_slot, schedule_version, now, now),
+                    )
+                    row = _pg_dict_fetchone(cur)
+                    if row is None:
+                        cur.execute(
+                            f"SELECT {_SLOT_COLUMNS} FROM validation_schedule_slots "
+                            "WHERE horizon=%s AND universe=%s AND scheduled_slot=%s AND schedule_version=%s",
+                            (horizon, universe, scheduled_slot, schedule_version),
+                        )
+                        row = _pg_dict_fetchone(cur)
+                    return row
+            finally:
+                conn.close()
+        else:
+            with _get_ledger_sqlite_conn() as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO validation_schedule_slots "
+                    "(horizon, universe, scheduled_slot, schedule_version, status, created_at, updated_at) "
+                    "VALUES (?,?,?,?,'due',?,?)",
+                    (horizon, universe, slot_iso, schedule_version, now_iso, now_iso),
+                )
+                row = conn.execute(
+                    f"SELECT {_SLOT_COLUMNS} FROM validation_schedule_slots "
+                    "WHERE horizon=? AND universe=? AND scheduled_slot=? AND schedule_version=?",
+                    (horizon, universe, slot_iso, schedule_version),
+                ).fetchone()
+                return _ledger_row_to_dict(row)
+
+
+# ── Global execution lease — now the single source of truth for whether
+# ANY attempt may be admitted system-wide ─────────────────────────────────────
+
+def acquire_validation_execution_lease(owner: str, now: datetime, lease_duration_seconds: int) -> dict:
+    """Atomic CAS acquisition of the single global 'validation-global'
+    lease row. Succeeds only if currently unheld (lease_owner IS NULL) or
+    expires_at <= now (INCLUSIVE boundary). Every successful acquisition
+    strictly increments fencing_token in the same statement.
+
+    Deliberately does NOT touch active_attempt_id on reclaim — if the
+    lease being reclaimed still has one bound (the previous holder
+    crashed/was killed after admitting an attempt but before it reached a
+    terminal state), that identity is preserved and surfaced back to the
+    caller via `recovery_required`/`stale_active_attempt_id` rather than
+    silently discarded. The caller MUST call recover_stale_active_attempt()
+    before create_schedule_attempt/create_manual_attempt will admit
+    anything new — both refuse to proceed while active_attempt_id is
+    still bound."""
+    _require_utc(now, param="now")
+    now_iso = _iso(now)
+    expires_at = now + timedelta(seconds=lease_duration_seconds)
+    expires_iso = _iso(expires_at)
+    with _db_lock:
+        if _USE_POSTGRES:
+            conn = _pg_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE validation_execution_leases "
+                        "SET lease_owner=%s, fencing_token=fencing_token+1, "
+                        "acquired_at=%s, heartbeat_at=%s, expires_at=%s, updated_at=%s "
+                        "WHERE resource_key=%s AND (lease_owner IS NULL OR expires_at <= %s) "
+                        "RETURNING fencing_token, active_attempt_id",
+                        (owner, now, now, expires_at, now, GLOBAL_LEASE_RESOURCE_KEY, now),
+                    )
+                    row = cur.fetchone()
+                    if row is None:
+                        return {"ok": False, "reason": "already_leased"}
+                    token, stale_id = row[0], row[1]
+                    return {
+                        "ok": True, "fencing_token": token, "owner": owner, "expires_at": expires_iso,
+                        "recovery_required": stale_id is not None, "stale_active_attempt_id": stale_id,
+                    }
+            finally:
+                conn.close()
+        else:
+            with _get_ledger_sqlite_conn() as conn:
+                cur = conn.execute(
+                    "UPDATE validation_execution_leases "
+                    "SET lease_owner=?, fencing_token=fencing_token+1, "
+                    "acquired_at=?, heartbeat_at=?, expires_at=?, updated_at=? "
+                    "WHERE resource_key=? AND (lease_owner IS NULL OR expires_at <= ?)",
+                    (owner, now_iso, now_iso, expires_iso, now_iso, GLOBAL_LEASE_RESOURCE_KEY, now_iso),
+                )
+                if cur.rowcount == 0:
+                    return {"ok": False, "reason": "already_leased"}
+                row = conn.execute(
+                    "SELECT fencing_token, active_attempt_id FROM validation_execution_leases WHERE resource_key=?",
+                    (GLOBAL_LEASE_RESOURCE_KEY,),
+                ).fetchone()
+                stale_id = row["active_attempt_id"]
+                return {
+                    "ok": True, "fencing_token": row["fencing_token"], "owner": owner, "expires_at": expires_iso,
+                    "recovery_required": stale_id is not None, "stale_active_attempt_id": stale_id,
+                }
+
+
+def heartbeat_validation_execution_lease(owner: str, fencing_token: int, now: datetime,
+                                          lease_duration_seconds: int) -> dict:
+    """Renews only if owner+fencing_token still exactly match the current
+    row. Deterministic PRIMITIVE only — V-SCHED1B runs no production
+    heartbeat loop."""
+    _require_utc(now, param="now")
+    now_iso = _iso(now)
+    expires_at = now + timedelta(seconds=lease_duration_seconds)
+    expires_iso = _iso(expires_at)
+    with _db_lock:
+        if _USE_POSTGRES:
+            conn = _pg_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE validation_execution_leases "
+                        "SET heartbeat_at=%s, expires_at=%s, updated_at=%s "
+                        "WHERE resource_key=%s AND lease_owner=%s AND fencing_token=%s "
+                        "RETURNING fencing_token",
+                        (now, expires_at, now, GLOBAL_LEASE_RESOURCE_KEY, owner, fencing_token),
+                    )
+                    row = cur.fetchone()
+                    if row is None:
+                        return {"ok": False, "reason": "not_owner_or_stale_token"}
+                    return {"ok": True, "fencing_token": row[0], "expires_at": expires_iso}
+            finally:
+                conn.close()
+        else:
+            with _get_ledger_sqlite_conn() as conn:
+                cur = conn.execute(
+                    "UPDATE validation_execution_leases "
+                    "SET heartbeat_at=?, expires_at=?, updated_at=? "
+                    "WHERE resource_key=? AND lease_owner=? AND fencing_token=?",
+                    (now_iso, expires_iso, now_iso, GLOBAL_LEASE_RESOURCE_KEY, owner, fencing_token),
+                )
+                if cur.rowcount == 0:
+                    return {"ok": False, "reason": "not_owner_or_stale_token"}
+                return {"ok": True, "fencing_token": fencing_token, "expires_at": expires_iso}
+
+
+def release_validation_execution_lease(owner: str, fencing_token: int, now: datetime) -> dict:
+    """Requires the CURRENT owner+fencing_token. Rejects — explicitly,
+    with reason 'active_attempt_bound' — while active_attempt_id is
+    non-null, so a lease can never be released out from under an attempt
+    still believed to be admitted (that would silently orphan it; the
+    caller must complete/fail/abandon the attempt, or call
+    recover_stale_active_attempt, first). fencing_token is never reset by
+    release — it stays monotonically increasing for the row's whole
+    history, only ever bumped again by the next successful acquisition."""
+    _require_utc(now, param="now")
+    now_iso = _iso(now)
+    with _db_lock:
+        if _USE_POSTGRES:
+            conn = _pg_conn()
+            try:
+                with conn.transaction():
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT lease_owner, fencing_token, active_attempt_id "
+                            "FROM validation_execution_leases WHERE resource_key=%s FOR UPDATE",
+                            (GLOBAL_LEASE_RESOURCE_KEY,),
+                        )
+                        row = _pg_dict_fetchone(cur)
+                        if row is None or row["lease_owner"] != owner or row["fencing_token"] != fencing_token:
+                            return {"ok": False, "reason": "not_owner_or_stale_token"}
+                        if row["active_attempt_id"] is not None:
+                            return {"ok": False, "reason": "active_attempt_bound"}
+                        cur.execute(
+                            "UPDATE validation_execution_leases "
+                            "SET lease_owner=NULL, expires_at=NULL, updated_at=%s WHERE resource_key=%s",
+                            (now, GLOBAL_LEASE_RESOURCE_KEY),
+                        )
+                        return {"ok": True}
+            finally:
+                conn.close()
+        else:
+            conn = _get_ledger_sqlite_conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT lease_owner, fencing_token, active_attempt_id "
+                    "FROM validation_execution_leases WHERE resource_key=?",
+                    (GLOBAL_LEASE_RESOURCE_KEY,),
+                ).fetchone()
+                if row is None or row["lease_owner"] != owner or row["fencing_token"] != fencing_token:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "not_owner_or_stale_token"}
+                if row["active_attempt_id"] is not None:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "active_attempt_bound"}
+                conn.execute(
+                    "UPDATE validation_execution_leases SET lease_owner=NULL, expires_at=NULL, updated_at=? "
+                    "WHERE resource_key=?",
+                    (now_iso, GLOBAL_LEASE_RESOURCE_KEY),
+                )
+                conn.execute("COMMIT")
+                return {"ok": True}
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            finally:
+                conn.close()
+
+
+def recover_stale_active_attempt(owner: str, fencing_token: int, now: datetime, *,
+                                  recovery_category: str = "STALE_LEASE_RECOVERY",
+                                  recovery_summary: str | None = None) -> dict:
+    """Explicit, fenced recovery for an attempt left admitted by a worker
+    that crashed/died before reaching a terminal state. The caller MUST
+    be the CURRENT lease holder (post-reclaim via acquire_validation_
+    execution_lease, whose `recovery_required`/`stale_active_attempt_id`
+    fields point here). ONE transaction:
+      1. lock the lease row, verify owner+fencing_token match current and
+         the lease is unexpired at `now`;
+      2. verify active_attempt_id is actually set (else conflict —
+         nothing to recover);
+      3. lock the stale attempt row, verify it is still claimed/running
+         (a benign race: something else may have already resolved it —
+         treated as a conflict, never silently re-resolved);
+      4. mark it 'abandoned' with the given sanitized category/summary —
+         its historical lease_owner/lease_fencing_token (the ORIGINAL
+         claimer) are preserved, never overwritten with the new owner's
+         identity, so the audit trail stays accurate;
+      5. if it was bound to a slot, return that slot to 'due' and clear
+         its active_attempt_id (only if still pointing at this attempt);
+      6. clear the lease's active_attempt_id so new admission can proceed;
+      7. commit."""
+    _require_utc(now, param="now")
+    now_iso = _iso(now)
+    with _db_lock:
+        if _USE_POSTGRES:
+            conn = _pg_conn()
+            try:
+                with conn.transaction():
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT lease_owner, fencing_token, active_attempt_id "
+                            "FROM validation_execution_leases WHERE resource_key=%s FOR UPDATE",
+                            (GLOBAL_LEASE_RESOURCE_KEY,),
+                        )
+                        lease = _pg_dict_fetchone(cur)
+                        if lease is None or lease["lease_owner"] != owner or lease["fencing_token"] != fencing_token:
+                            return {"ok": False, "reason": "not_owner_or_stale_token"}
+                        cur.execute(
+                            "SELECT expires_at FROM validation_execution_leases WHERE resource_key=%s",
+                            (GLOBAL_LEASE_RESOURCE_KEY,),
+                        )
+                        expires_row = cur.fetchone()
+                        if expires_row is None or expires_row[0] is None or expires_row[0] <= now:
+                            return {"ok": False, "reason": "not_owner_or_expired_lease"}
+                        stale_attempt_id = lease["active_attempt_id"]
+                        if stale_attempt_id is None:
+                            return {"ok": False, "reason": "no_stale_attempt"}
+
+                        cur.execute(
+                            "SELECT id, slot_id, status FROM validation_schedule_attempts WHERE id=%s FOR UPDATE",
+                            (stale_attempt_id,),
+                        )
+                        attempt = _pg_dict_fetchone(cur)
+                        if attempt is None or attempt["status"] not in ("claimed", "running"):
+                            return {"ok": False, "reason": "attempt_not_recoverable"}
+
+                        cur.execute(
+                            "UPDATE validation_schedule_attempts "
+                            "SET status='abandoned', completed_at=%s, failure_category=%s, "
+                            "failure_summary=%s, updated_at=%s WHERE id=%s",
+                            (now, recovery_category, recovery_summary, now, stale_attempt_id),
+                        )
+                        slot_id = attempt["slot_id"]
+                        if slot_id is not None:
+                            cur.execute(
+                                "UPDATE validation_schedule_slots "
+                                "SET status='due', active_attempt_id=NULL, updated_at=%s "
+                                "WHERE id=%s AND active_attempt_id=%s",
+                                (now, slot_id, stale_attempt_id),
+                            )
+                        cur.execute(
+                            "UPDATE validation_execution_leases "
+                            "SET active_attempt_id=NULL, updated_at=%s "
+                            "WHERE resource_key=%s AND lease_owner=%s AND fencing_token=%s",
+                            (now, GLOBAL_LEASE_RESOURCE_KEY, owner, fencing_token),
+                        )
+                        return {"ok": True, "recovered_attempt_id": stale_attempt_id, "slot_id": slot_id}
+            finally:
+                conn.close()
+        else:
+            conn = _get_ledger_sqlite_conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                lease = conn.execute(
+                    "SELECT lease_owner, fencing_token, active_attempt_id, expires_at "
+                    "FROM validation_execution_leases WHERE resource_key=?",
+                    (GLOBAL_LEASE_RESOURCE_KEY,),
+                ).fetchone()
+                if lease is None or lease["lease_owner"] != owner or lease["fencing_token"] != fencing_token:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "not_owner_or_stale_token"}
+                if lease["expires_at"] is None or lease["expires_at"] <= now_iso:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "not_owner_or_expired_lease"}
+                stale_attempt_id = lease["active_attempt_id"]
+                if stale_attempt_id is None:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "no_stale_attempt"}
+
+                attempt = conn.execute(
+                    "SELECT id, slot_id, status FROM validation_schedule_attempts WHERE id=?",
+                    (stale_attempt_id,),
+                ).fetchone()
+                if attempt is None or attempt["status"] not in ("claimed", "running"):
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "attempt_not_recoverable"}
+
+                conn.execute(
+                    "UPDATE validation_schedule_attempts "
+                    "SET status='abandoned', completed_at=?, failure_category=?, failure_summary=?, updated_at=? "
+                    "WHERE id=?",
+                    (now_iso, recovery_category, recovery_summary, now_iso, stale_attempt_id),
+                )
+                slot_id = attempt["slot_id"]
+                if slot_id is not None:
+                    conn.execute(
+                        "UPDATE validation_schedule_slots "
+                        "SET status='due', active_attempt_id=NULL, updated_at=? "
+                        "WHERE id=? AND active_attempt_id=?",
+                        (now_iso, slot_id, stale_attempt_id),
+                    )
+                conn.execute(
+                    "UPDATE validation_execution_leases "
+                    "SET active_attempt_id=NULL, updated_at=? "
+                    "WHERE resource_key=? AND lease_owner=? AND fencing_token=?",
+                    (now_iso, GLOBAL_LEASE_RESOURCE_KEY, owner, fencing_token),
+                )
+                conn.execute("COMMIT")
+                return {"ok": True, "recovered_attempt_id": stale_attempt_id, "slot_id": slot_id}
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            finally:
+                conn.close()
+
+
+# ── Attempt creation — now requires and verifies global-lease admission
+# BEFORE any attempt row exists, atomically with slot activation ──────────────
+
+def create_schedule_attempt(slot_id: int, trigger_type: str, owner: str, fencing_token: int, now: datetime) -> dict:
+    """Requires the caller to already hold the global lease. ONE
+    transaction on ONE connection:
+      1. lock the lease row, verify owner+fencing_token match the CURRENT
+         lease and it is unexpired at `now`;
+      2. verify the lease's active_attempt_id IS NULL — a second attempt
+         (scheduled OR manual) can never be admitted while one is already
+         bound, closing the gap where two different slots could each
+         reach 'running' before either caller held the lease;
+      3. lock the slot row, verify it is 'due' with no active attempt;
+      4. allocate the next attempt_number (slot lock makes this race-free
+         for this slot; the lease check above makes it globally
+         impossible for a second slot to reach this point concurrently
+         while admitted);
+      5. insert the attempt as 'claimed', horizon/universe copied from
+         the slot, lease_owner/lease_fencing_token recorded on it;
+      6. move the slot to 'running', set its active_attempt_id;
+      7. set the lease's active_attempt_id to the new attempt;
+      8. commit — or roll back everything on any failure."""
+    if trigger_type not in ("scheduler", "catchup"):
+        raise ValueError(f"create_schedule_attempt: trigger_type must be 'scheduler' or 'catchup', got {trigger_type!r}")
+    _require_utc(now, param="now")
+    now_iso = _iso(now)
+
+    with _db_lock:
+        if _USE_POSTGRES:
+            conn = _pg_conn()
+            try:
+                with conn.transaction():
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT lease_owner, fencing_token, expires_at, active_attempt_id "
+                            "FROM validation_execution_leases WHERE resource_key=%s FOR UPDATE",
+                            (GLOBAL_LEASE_RESOURCE_KEY,),
+                        )
+                        lease = _pg_dict_fetchone(cur)
+                        if (lease is None or lease["lease_owner"] != owner or lease["fencing_token"] != fencing_token
+                                or lease["expires_at"] is None or lease["expires_at"] <= now):
+                            return {"ok": False, "reason": "not_owner_or_expired_lease"}
+                        if lease["active_attempt_id"] is not None:
+                            return {"ok": False, "reason": "active_attempt_already_bound"}
+
+                        cur.execute(
+                            "SELECT id, horizon, universe, status, active_attempt_id "
+                            "FROM validation_schedule_slots WHERE id=%s FOR UPDATE",
+                            (slot_id,),
+                        )
+                        slot = _pg_dict_fetchone(cur)
+                        if slot is None:
+                            return {"ok": False, "reason": "slot_not_found"}
+                        if slot["status"] != "due" or slot["active_attempt_id"] is not None:
+                            return {"ok": False, "reason": "slot_not_claimable"}
+
+                        cur.execute(
+                            "SELECT COALESCE(MAX(attempt_number), 0) + 1 "
+                            "FROM validation_schedule_attempts WHERE slot_id=%s",
+                            (slot_id,),
+                        )
+                        next_number = cur.fetchone()[0]
+
+                        cur.execute(
+                            "INSERT INTO validation_schedule_attempts "
+                            "(slot_id, horizon, universe, attempt_number, trigger_type, status, "
+                            "lease_owner, lease_fencing_token, created_at, updated_at) "
+                            "VALUES (%s,%s,%s,%s,%s,'claimed',%s,%s,%s,%s) "
+                            f"RETURNING {_ATTEMPT_COLUMNS}",
+                            (slot_id, slot["horizon"], slot["universe"], next_number, trigger_type,
+                             owner, fencing_token, now, now),
+                        )
+                        attempt = _pg_dict_fetchone(cur)
+
+                        cur.execute(
+                            "UPDATE validation_schedule_slots "
+                            "SET status='running', active_attempt_id=%s, updated_at=%s WHERE id=%s",
+                            (attempt["id"], now, slot_id),
+                        )
+                        cur.execute(
+                            "UPDATE validation_execution_leases "
+                            "SET active_attempt_id=%s, updated_at=%s WHERE resource_key=%s",
+                            (attempt["id"], now, GLOBAL_LEASE_RESOURCE_KEY),
+                        )
+                        attempt["ok"] = True
+                        return attempt
+            finally:
+                conn.close()
+        else:
+            conn = _get_ledger_sqlite_conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                lease = conn.execute(
+                    "SELECT lease_owner, fencing_token, expires_at, active_attempt_id "
+                    "FROM validation_execution_leases WHERE resource_key=?",
+                    (GLOBAL_LEASE_RESOURCE_KEY,),
+                ).fetchone()
+                if (lease is None or lease["lease_owner"] != owner or lease["fencing_token"] != fencing_token
+                        or lease["expires_at"] is None or lease["expires_at"] <= now_iso):
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "not_owner_or_expired_lease"}
+                if lease["active_attempt_id"] is not None:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "active_attempt_already_bound"}
+
+                slot = conn.execute(
+                    "SELECT id, horizon, universe, status, active_attempt_id "
+                    "FROM validation_schedule_slots WHERE id=?",
+                    (slot_id,),
+                ).fetchone()
+                if slot is None:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "slot_not_found"}
+                if slot["status"] != "due" or slot["active_attempt_id"] is not None:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "slot_not_claimable"}
+
+                next_number = conn.execute(
+                    "SELECT COALESCE(MAX(attempt_number), 0) + 1 FROM validation_schedule_attempts WHERE slot_id=?",
+                    (slot_id,),
+                ).fetchone()[0]
+
+                cur = conn.execute(
+                    "INSERT INTO validation_schedule_attempts "
+                    "(slot_id, horizon, universe, attempt_number, trigger_type, status, "
+                    "lease_owner, lease_fencing_token, created_at, updated_at) "
+                    "VALUES (?,?,?,?,?,'claimed',?,?,?,?)",
+                    (slot_id, slot["horizon"], slot["universe"], next_number, trigger_type,
+                     owner, fencing_token, now_iso, now_iso),
+                )
+                attempt_id = cur.lastrowid
+
+                conn.execute(
+                    "UPDATE validation_schedule_slots "
+                    "SET status='running', active_attempt_id=?, updated_at=? WHERE id=?",
+                    (attempt_id, now_iso, slot_id),
+                )
+                conn.execute(
+                    "UPDATE validation_execution_leases SET active_attempt_id=?, updated_at=? WHERE resource_key=?",
+                    (attempt_id, now_iso, GLOBAL_LEASE_RESOURCE_KEY),
+                )
+                row = conn.execute(
+                    f"SELECT {_ATTEMPT_COLUMNS} FROM validation_schedule_attempts WHERE id=?", (attempt_id,)
+                ).fetchone()
+                conn.execute("COMMIT")
+                result = _ledger_row_to_dict(row)
+                result["ok"] = True
+                return result
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            finally:
+                conn.close()
+
+
+def create_manual_attempt(horizon: str, universe: str, owner: str, fencing_token: int, now: datetime) -> dict:
+    """Requires the caller to already hold the global lease — identical
+    admission gate to create_schedule_attempt, but never touches any
+    slot (slot_id is always NULL). No caller-supplied idempotency key is
+    accepted: a future integration's key must be server-derived from the
+    X-Secret-authenticated caller, never accepted verbatim from a
+    client/browser."""
+    _require_utc(now, param="now")
+    _require_valid_horizon(horizon)
+    _require_known_universe(universe)
+    now_iso = _iso(now)
+    with _db_lock:
+        if _USE_POSTGRES:
+            conn = _pg_conn()
+            try:
+                with conn.transaction():
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT lease_owner, fencing_token, expires_at, active_attempt_id "
+                            "FROM validation_execution_leases WHERE resource_key=%s FOR UPDATE",
+                            (GLOBAL_LEASE_RESOURCE_KEY,),
+                        )
+                        lease = _pg_dict_fetchone(cur)
+                        if (lease is None or lease["lease_owner"] != owner or lease["fencing_token"] != fencing_token
+                                or lease["expires_at"] is None or lease["expires_at"] <= now):
+                            return {"ok": False, "reason": "not_owner_or_expired_lease"}
+                        if lease["active_attempt_id"] is not None:
+                            return {"ok": False, "reason": "active_attempt_already_bound"}
+
+                        cur.execute(
+                            "INSERT INTO validation_schedule_attempts "
+                            "(slot_id, horizon, universe, attempt_number, trigger_type, status, "
+                            "lease_owner, lease_fencing_token, created_at, updated_at) "
+                            "VALUES (NULL,%s,%s,1,'manual','claimed',%s,%s,%s,%s) "
+                            f"RETURNING {_ATTEMPT_COLUMNS}",
+                            (horizon, universe, owner, fencing_token, now, now),
+                        )
+                        attempt = _pg_dict_fetchone(cur)
+                        cur.execute(
+                            "UPDATE validation_execution_leases "
+                            "SET active_attempt_id=%s, updated_at=%s WHERE resource_key=%s",
+                            (attempt["id"], now, GLOBAL_LEASE_RESOURCE_KEY),
+                        )
+                        attempt["ok"] = True
+                        return attempt
+            finally:
+                conn.close()
+        else:
+            conn = _get_ledger_sqlite_conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                lease = conn.execute(
+                    "SELECT lease_owner, fencing_token, expires_at, active_attempt_id "
+                    "FROM validation_execution_leases WHERE resource_key=?",
+                    (GLOBAL_LEASE_RESOURCE_KEY,),
+                ).fetchone()
+                if (lease is None or lease["lease_owner"] != owner or lease["fencing_token"] != fencing_token
+                        or lease["expires_at"] is None or lease["expires_at"] <= now_iso):
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "not_owner_or_expired_lease"}
+                if lease["active_attempt_id"] is not None:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "active_attempt_already_bound"}
+
+                cur = conn.execute(
+                    "INSERT INTO validation_schedule_attempts "
+                    "(slot_id, horizon, universe, attempt_number, trigger_type, status, "
+                    "lease_owner, lease_fencing_token, created_at, updated_at) "
+                    "VALUES (NULL,?,?,1,'manual','claimed',?,?,?,?)",
+                    (horizon, universe, owner, fencing_token, now_iso, now_iso),
+                )
+                attempt_id = cur.lastrowid
+                conn.execute(
+                    "UPDATE validation_execution_leases SET active_attempt_id=?, updated_at=? WHERE resource_key=?",
+                    (attempt_id, now_iso, GLOBAL_LEASE_RESOURCE_KEY),
+                )
+                row = conn.execute(
+                    f"SELECT {_ATTEMPT_COLUMNS} FROM validation_schedule_attempts WHERE id=?", (attempt_id,)
+                ).fetchone()
+                conn.execute("COMMIT")
+                result = _ledger_row_to_dict(row)
+                result["ok"] = True
+                return result
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            finally:
+                conn.close()
+
+
+# ── Compound attempt+slot(+lease) transitions — ONE transaction per operation ─
+
+def _compound_transition(attempt_id: int, owner: str, fencing_token: int, now: datetime, *,
+                          from_statuses: tuple[str, ...], to_status: str,
+                          new_slot_status_if_bound: str | None, clear_active_attempt: bool,
+                          clear_lease_binding: bool,
+                          attempt_extra_set_pg: str = "", attempt_extra_set_sq: str = "",
+                          attempt_extra_params_pg: tuple = (), attempt_extra_params_sq: tuple = ()) -> dict:
+    """Shared core for every attempt(+slot)(+lease) mutation. ONE
+    transaction on ONE connection, acquiring locks in the SAME global
+    order every ledger operation uses (see the module-level "Lock
+    ordering" note above `GLOBAL_LEASE_RESOURCE_KEY`):
+    lease -> attempt -> slot -> result (as applicable). Locking the lease
+    FIRST here — not the attempt, as an earlier revision did — is what
+    closes the AB-BA deadlock the second independent review found between
+    this function and recover_stale_active_attempt (which always locked
+    lease-then-attempt); both now agree on the same order, so no two
+    ledger transactions can ever hold locks in opposite sequence.
+      1. lock the lease row CURRENTLY held by (owner, fencing_token),
+         unexpired at `now`, and verify its active_attempt_id equals THIS
+         attempt;
+      2. lock and read the attempt row, verify its status is one of
+         `from_statuses`;
+      3. if bound to a slot, lock that slot and verify
+         slot.active_attempt_id == attempt_id;
+      4. update the attempt;
+      5. if bound and `new_slot_status_if_bound` given, update the slot
+         in the SAME transaction;
+      6. if `clear_lease_binding`, clear the lease's active_attempt_id
+         (guarded — only if it still equals this attempt_id) in the SAME
+         transaction, freeing the lease for the next admission;
+      7. commit — or roll back the WHOLE operation on any failure."""
+    _require_utc(now, param="now")
+    now_iso = _iso(now)
+    placeholders_sq = ",".join(["?"] * len(from_statuses))
+    placeholders_pg = ",".join(["%s"] * len(from_statuses))
+
+    with _db_lock:
+        if _USE_POSTGRES:
+            conn = _pg_conn()
+            try:
+                with conn.transaction():
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT active_attempt_id FROM validation_execution_leases "
+                            "WHERE resource_key=%s AND lease_owner=%s AND fencing_token=%s AND expires_at > %s "
+                            "FOR UPDATE",
+                            (GLOBAL_LEASE_RESOURCE_KEY, owner, fencing_token, now),
+                        )
+                        lease = _pg_dict_fetchone(cur)
+                        if lease is None or lease["active_attempt_id"] != attempt_id:
+                            return {"ok": False, "reason": "not_owner_or_expired_lease"}
+
+                        cur.execute(
+                            "SELECT id, slot_id, status FROM validation_schedule_attempts WHERE id=%s FOR UPDATE",
+                            (attempt_id,),
+                        )
+                        attempt = _pg_dict_fetchone(cur)
+                        if attempt is None:
+                            return {"ok": False, "reason": "attempt_not_found"}
+                        if attempt["status"] not in from_statuses:
+                            return {"ok": False, "reason": "illegal_transition"}
+
+                        slot_id = attempt["slot_id"]
+                        if slot_id is not None:
+                            cur.execute(
+                                "SELECT id, active_attempt_id FROM validation_schedule_slots WHERE id=%s FOR UPDATE",
+                                (slot_id,),
+                            )
+                            slot = _pg_dict_fetchone(cur)
+                            if slot is None or slot["active_attempt_id"] != attempt_id:
+                                return {"ok": False, "reason": "not_active_attempt_for_slot"}
+
+                        cur.execute(
+                            f"UPDATE validation_schedule_attempts "
+                            f"SET status=%s, updated_at=%s{attempt_extra_set_pg} WHERE id=%s",
+                            (to_status, now, *attempt_extra_params_pg, attempt_id),
+                        )
+
+                        if slot_id is not None and new_slot_status_if_bound is not None:
+                            new_active = None if clear_active_attempt else attempt_id
+                            cur.execute(
+                                "UPDATE validation_schedule_slots "
+                                "SET status=%s, active_attempt_id=%s, updated_at=%s WHERE id=%s",
+                                (new_slot_status_if_bound, new_active, now, slot_id),
+                            )
+                        elif slot_id is not None and clear_active_attempt:
+                            cur.execute(
+                                "UPDATE validation_schedule_slots SET active_attempt_id=NULL, updated_at=%s WHERE id=%s",
+                                (now, slot_id),
+                            )
+
+                        if clear_lease_binding:
+                            cur.execute(
+                                "UPDATE validation_execution_leases "
+                                "SET active_attempt_id=NULL, updated_at=%s "
+                                "WHERE resource_key=%s AND active_attempt_id=%s",
+                                (now, GLOBAL_LEASE_RESOURCE_KEY, attempt_id),
+                            )
+
+                        return {"ok": True, "id": attempt_id, "slot_id": slot_id}
+            finally:
+                conn.close()
+        else:
+            conn = _get_ledger_sqlite_conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                # Same lease -> attempt -> slot order as the PostgreSQL branch
+                # above, for consistency — SQLite's BEGIN IMMEDIATE already
+                # takes a whole-database write lock, so statement order here
+                # cannot itself deadlock, but keeping one documented order
+                # everywhere avoids this file ever becoming a second source
+                # of truth that silently drifts from the PostgreSQL path.
+                lease = conn.execute(
+                    "SELECT active_attempt_id FROM validation_execution_leases "
+                    "WHERE resource_key=? AND lease_owner=? AND fencing_token=? AND expires_at > ?",
+                    (GLOBAL_LEASE_RESOURCE_KEY, owner, fencing_token, now_iso),
+                ).fetchone()
+                if lease is None or lease["active_attempt_id"] != attempt_id:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "not_owner_or_expired_lease"}
+
+                attempt = conn.execute(
+                    "SELECT id, slot_id, status FROM validation_schedule_attempts WHERE id=?", (attempt_id,)
+                ).fetchone()
+                if attempt is None:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "attempt_not_found"}
+                if attempt["status"] not in from_statuses:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "illegal_transition"}
+
+                slot_id = attempt["slot_id"]
+                if slot_id is not None:
+                    slot = conn.execute(
+                        "SELECT id, active_attempt_id FROM validation_schedule_slots WHERE id=?", (slot_id,)
+                    ).fetchone()
+                    if slot is None or slot["active_attempt_id"] != attempt_id:
+                        conn.execute("ROLLBACK")
+                        return {"ok": False, "reason": "not_active_attempt_for_slot"}
+
+                conn.execute(
+                    f"UPDATE validation_schedule_attempts SET status=?, updated_at=?{attempt_extra_set_sq} WHERE id=?",
+                    (to_status, now_iso, *attempt_extra_params_sq, attempt_id),
+                )
+
+                if slot_id is not None and new_slot_status_if_bound is not None:
+                    new_active = None if clear_active_attempt else attempt_id
+                    conn.execute(
+                        "UPDATE validation_schedule_slots SET status=?, active_attempt_id=?, updated_at=? WHERE id=?",
+                        (new_slot_status_if_bound, new_active, now_iso, slot_id),
+                    )
+                elif slot_id is not None and clear_active_attempt:
+                    conn.execute(
+                        "UPDATE validation_schedule_slots SET active_attempt_id=NULL, updated_at=? WHERE id=?",
+                        (now_iso, slot_id),
+                    )
+
+                if clear_lease_binding:
+                    conn.execute(
+                        "UPDATE validation_execution_leases SET active_attempt_id=NULL, updated_at=? "
+                        "WHERE resource_key=? AND active_attempt_id=?",
+                        (now_iso, GLOBAL_LEASE_RESOURCE_KEY, attempt_id),
+                    )
+
+                conn.execute("COMMIT")
+                return {"ok": True, "id": attempt_id, "slot_id": slot_id}
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            finally:
+                conn.close()
+
+
+def mark_attempt_running(attempt_id: int, owner: str, fencing_token: int, now: datetime) -> dict:
+    """claimed -> running. Lease stays bound to this attempt (not
+    cleared) — it is still the one globally admitted attempt."""
+    return _compound_transition(
+        attempt_id, owner, fencing_token, now,
+        from_statuses=("claimed",), to_status="running",
+        new_slot_status_if_bound=None, clear_active_attempt=False, clear_lease_binding=False,
+        attempt_extra_set_pg=", started_at=COALESCE(started_at,%s), heartbeat_at=%s",
+        attempt_extra_set_sq=", started_at=COALESCE(started_at,?), heartbeat_at=?",
+        attempt_extra_params_pg=(now, now), attempt_extra_params_sq=(_iso(now), _iso(now)),
+    )
+
+
+def mark_attempt_failed_retryable(attempt_id: int, owner: str, fencing_token: int, now: datetime, *,
+                                   failure_category: str | None = None, failure_summary: str | None = None) -> dict:
+    """claimed/running -> failed; bound slot returns to 'due'; lease
+    binding is cleared, freeing global admission for the next attempt."""
+    return _compound_transition(
+        attempt_id, owner, fencing_token, now,
+        from_statuses=("claimed", "running"), to_status="failed",
+        new_slot_status_if_bound="due", clear_active_attempt=True, clear_lease_binding=True,
+        attempt_extra_set_pg=", completed_at=%s, failure_category=%s, failure_summary=%s",
+        attempt_extra_set_sq=", completed_at=?, failure_category=?, failure_summary=?",
+        attempt_extra_params_pg=(now, failure_category, failure_summary),
+        attempt_extra_params_sq=(_iso(now), failure_category, failure_summary),
+    )
+
+
+def mark_attempt_failed_terminal(attempt_id: int, owner: str, fencing_token: int, now: datetime, *,
+                                  failure_category: str | None = None, failure_summary: str | None = None) -> dict:
+    """claimed/running -> failed; bound slot moves to 'failed' (terminal,
+    non-retryable); lease binding cleared."""
+    return _compound_transition(
+        attempt_id, owner, fencing_token, now,
+        from_statuses=("claimed", "running"), to_status="failed",
+        new_slot_status_if_bound="failed", clear_active_attempt=True, clear_lease_binding=True,
+        attempt_extra_set_pg=", completed_at=%s, failure_category=%s, failure_summary=%s",
+        attempt_extra_set_sq=", completed_at=?, failure_category=?, failure_summary=?",
+        attempt_extra_params_pg=(now, failure_category, failure_summary),
+        attempt_extra_params_sq=(_iso(now), failure_category, failure_summary),
+    )
+
+
+def mark_attempt_abandoned_retry(attempt_id: int, owner: str, fencing_token: int, now: datetime, *,
+                                  failure_category: str | None = None, failure_summary: str | None = None) -> dict:
+    """claimed/running -> abandoned; bound slot returns to 'due'; lease
+    binding cleared."""
+    return _compound_transition(
+        attempt_id, owner, fencing_token, now,
+        from_statuses=("claimed", "running"), to_status="abandoned",
+        new_slot_status_if_bound="due", clear_active_attempt=True, clear_lease_binding=True,
+        attempt_extra_set_pg=", completed_at=%s, failure_category=%s, failure_summary=%s",
+        attempt_extra_set_sq=", completed_at=?, failure_category=?, failure_summary=?",
+        attempt_extra_params_pg=(now, failure_category, failure_summary),
+        attempt_extra_params_sq=(_iso(now), failure_category, failure_summary),
+    )
+
+
+def mark_attempt_abandoned_terminal(attempt_id: int, owner: str, fencing_token: int, now: datetime, *,
+                                     failure_category: str | None = None, failure_summary: str | None = None) -> dict:
+    """claimed/running -> abandoned; bound slot moves to 'abandoned'
+    (terminal); lease binding cleared."""
+    return _compound_transition(
+        attempt_id, owner, fencing_token, now,
+        from_statuses=("claimed", "running"), to_status="abandoned",
+        new_slot_status_if_bound="abandoned", clear_active_attempt=True, clear_lease_binding=True,
+        attempt_extra_set_pg=", completed_at=%s, failure_category=%s, failure_summary=%s",
+        attempt_extra_set_sq=", completed_at=?, failure_category=?, failure_summary=?",
+        attempt_extra_params_pg=(now, failure_category, failure_summary),
+        attempt_extra_params_sq=(_iso(now), failure_category, failure_summary),
+    )
+
+
+def complete_attempt_with_result(attempt_id: int, owner: str, fencing_token: int,
+                                  result_run_id: int, now: datetime) -> dict:
+    """running -> completed, attaching result_run_id; bound slot moves to
+    'completed'; lease binding cleared. Deliberately NOT built on the
+    shared _compound_transition core — completion has one more resource
+    to lock (val_runs) and one more invariant to enforce (one-to-one
+    result linkage) than any other transition, so it gets its own
+    self-contained transaction following the SAME documented lock order:
+    lease -> attempt -> slot -> result.
+      1. lock+verify the lease (current owner/token, unexpired,
+         active_attempt_id == this attempt);
+      2. lock+verify the attempt (status == 'running');
+      3. if bound to a slot, lock+verify it (active_attempt_id ==
+         this attempt);
+      4. lock the val_runs row and verify it exists and its
+         horizon/universe match this attempt's own — applies identically
+         to manual and scheduled attempts;
+      5. verify no OTHER attempt already has this result_run_id — safe to
+         check with a plain read here (not a second FOR UPDATE) because
+         step 4's lock on the val_runs row already serializes every other
+         completion attempting to claim that same result: a concurrent
+         completion for the same result_run_id would itself be blocked at
+         step 4 until this transaction commits or rolls back;
+      6. perform the atomic completion (attempt+slot+lease) in the same
+         transaction;
+      7. commit.
+    The named UNIQUE INDEX (idx_vsa_result_unique) remains as
+    database-level defense in depth — if it fires anyway (e.g. a future
+    code path bypasses this function), the violation is caught, the
+    transaction is confirmed rolled back, and it maps ONLY to
+    'result_already_linked'; any other integrity error propagates
+    unchanged as a distinct internal failure, never mislabeled."""
+    _require_utc(now, param="now")
+    now_iso = _iso(now)
+
+    with _db_lock:
+        if _USE_POSTGRES:
+            conn = _pg_conn()
+            try:
+                import psycopg.errors
+
+                # `with conn.transaction():` only ROLLBACKs when an exception
+                # escapes the block — catching the UniqueViolation and simply
+                # `return`ing would exit the block normally after the
+                # transaction was already poisoned by the failed UPDATE at
+                # the PostgreSQL protocol level, relying on ambiguous
+                # commit-on-aborted-transaction semantics. Instead, this
+                # sentinel is raised to force the block to exit via its
+                # exception path (a guaranteed, explicit ROLLBACK) and is
+                # caught OUTSIDE the transaction block, after rollback has
+                # already completed.
+                class _ResultAlreadyLinked(Exception):
+                    pass
+
+                try:
+                    with conn.transaction():
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                "SELECT active_attempt_id FROM validation_execution_leases "
+                                "WHERE resource_key=%s AND lease_owner=%s AND fencing_token=%s AND expires_at > %s "
+                                "FOR UPDATE",
+                                (GLOBAL_LEASE_RESOURCE_KEY, owner, fencing_token, now),
+                            )
+                            lease = _pg_dict_fetchone(cur)
+                            if lease is None or lease["active_attempt_id"] != attempt_id:
+                                return {"ok": False, "reason": "not_owner_or_expired_lease"}
+
+                            cur.execute(
+                                "SELECT id, slot_id, horizon, universe, status "
+                                "FROM validation_schedule_attempts WHERE id=%s FOR UPDATE",
+                                (attempt_id,),
+                            )
+                            attempt = _pg_dict_fetchone(cur)
+                            if attempt is None:
+                                return {"ok": False, "reason": "attempt_not_found"}
+                            if attempt["status"] != "running":
+                                return {"ok": False, "reason": "illegal_transition"}
+
+                            slot_id = attempt["slot_id"]
+                            if slot_id is not None:
+                                cur.execute(
+                                    "SELECT id, active_attempt_id FROM validation_schedule_slots WHERE id=%s FOR UPDATE",
+                                    (slot_id,),
+                                )
+                                slot = _pg_dict_fetchone(cur)
+                                if slot is None or slot["active_attempt_id"] != attempt_id:
+                                    return {"ok": False, "reason": "not_active_attempt_for_slot"}
+
+                            cur.execute(
+                                "SELECT horizon, universe FROM val_runs WHERE id=%s FOR UPDATE",
+                                (result_run_id,),
+                            )
+                            run_row = _pg_dict_fetchone(cur)
+                            if run_row is None:
+                                return {"ok": False, "reason": "result_run_id_not_found"}
+                            if run_row["horizon"] != attempt["horizon"] or run_row["universe"] != attempt["universe"]:
+                                return {"ok": False, "reason": "result_identity_mismatch"}
+
+                            cur.execute(
+                                "SELECT id FROM validation_schedule_attempts WHERE result_run_id=%s",
+                                (result_run_id,),
+                            )
+                            existing = cur.fetchone()
+                            if existing is not None and existing[0] != attempt_id:
+                                return {"ok": False, "reason": "result_already_linked"}
+
+                            try:
+                                cur.execute(
+                                    "UPDATE validation_schedule_attempts "
+                                    "SET status='completed', completed_at=%s, result_run_id=%s, updated_at=%s "
+                                    "WHERE id=%s",
+                                    (now, result_run_id, now, attempt_id),
+                                )
+                            except psycopg.errors.UniqueViolation as e:
+                                if "idx_vsa_result_unique" in str(e):
+                                    raise _ResultAlreadyLinked() from e
+                                raise
+
+                            if slot_id is not None:
+                                cur.execute(
+                                    "UPDATE validation_schedule_slots "
+                                    "SET status='completed', active_attempt_id=NULL, updated_at=%s WHERE id=%s",
+                                    (now, slot_id),
+                                )
+                            cur.execute(
+                                "UPDATE validation_execution_leases "
+                                "SET active_attempt_id=NULL, updated_at=%s "
+                                "WHERE resource_key=%s AND active_attempt_id=%s",
+                                (now, GLOBAL_LEASE_RESOURCE_KEY, attempt_id),
+                            )
+                            return {"ok": True, "id": attempt_id, "slot_id": slot_id}
+                except _ResultAlreadyLinked:
+                    return {"ok": False, "reason": "result_already_linked"}
+            finally:
+                conn.close()
+        else:
+            conn = _get_ledger_sqlite_conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                lease = conn.execute(
+                    "SELECT active_attempt_id FROM validation_execution_leases "
+                    "WHERE resource_key=? AND lease_owner=? AND fencing_token=? AND expires_at > ?",
+                    (GLOBAL_LEASE_RESOURCE_KEY, owner, fencing_token, now_iso),
+                ).fetchone()
+                if lease is None or lease["active_attempt_id"] != attempt_id:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "not_owner_or_expired_lease"}
+
+                attempt = conn.execute(
+                    "SELECT id, slot_id, horizon, universe, status "
+                    "FROM validation_schedule_attempts WHERE id=?", (attempt_id,)
+                ).fetchone()
+                if attempt is None:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "attempt_not_found"}
+                if attempt["status"] != "running":
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "illegal_transition"}
+
+                slot_id = attempt["slot_id"]
+                if slot_id is not None:
+                    slot = conn.execute(
+                        "SELECT id, active_attempt_id FROM validation_schedule_slots WHERE id=?", (slot_id,)
+                    ).fetchone()
+                    if slot is None or slot["active_attempt_id"] != attempt_id:
+                        conn.execute("ROLLBACK")
+                        return {"ok": False, "reason": "not_active_attempt_for_slot"}
+
+                run_row = conn.execute(
+                    "SELECT horizon, universe FROM val_runs WHERE id=?", (result_run_id,)
+                ).fetchone()
+                if run_row is None:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "result_run_id_not_found"}
+                if run_row["horizon"] != attempt["horizon"] or run_row["universe"] != attempt["universe"]:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "result_identity_mismatch"}
+
+                existing = conn.execute(
+                    "SELECT id FROM validation_schedule_attempts WHERE result_run_id=?", (result_run_id,)
+                ).fetchone()
+                if existing is not None and existing["id"] != attempt_id:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "result_already_linked"}
+
+                try:
+                    conn.execute(
+                        "UPDATE validation_schedule_attempts "
+                        "SET status='completed', completed_at=?, result_run_id=?, updated_at=? WHERE id=?",
+                        (now_iso, result_run_id, now_iso, attempt_id),
+                    )
+                except sqlite3.IntegrityError as e:
+                    if "idx_vsa_result_unique" in str(e) or "UNIQUE constraint failed: validation_schedule_attempts.result_run_id" in str(e):
+                        conn.execute("ROLLBACK")
+                        return {"ok": False, "reason": "result_already_linked"}
+                    raise  # unexpected integrity error — let the outer handler roll back once and propagate it distinctly
+
+                if slot_id is not None:
+                    conn.execute(
+                        "UPDATE validation_schedule_slots "
+                        "SET status='completed', active_attempt_id=NULL, updated_at=? WHERE id=?",
+                        (now_iso, slot_id),
+                    )
+                conn.execute(
+                    "UPDATE validation_execution_leases "
+                    "SET active_attempt_id=NULL, updated_at=? WHERE resource_key=? AND active_attempt_id=?",
+                    (now_iso, GLOBAL_LEASE_RESOURCE_KEY, attempt_id),
+                )
+                conn.execute("COMMIT")
+                return {"ok": True, "id": attempt_id, "slot_id": slot_id}
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            finally:
+                conn.close()
