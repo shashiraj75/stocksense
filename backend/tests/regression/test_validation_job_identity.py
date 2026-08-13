@@ -21,6 +21,7 @@ writes (SES-003).
 """
 import sqlite3
 import threading
+import uuid
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -368,7 +369,13 @@ class TestStatusApiSurfacesIdentity:
     foreign-universe active job; /run must not hardcode 'Nifty 100'."""
 
     @pytest.fixture
-    def client(self):
+    def client(self, tmp_path, monkeypatch):
+        # V-SCHED1C1 — /run now admits through the V-SCHED1B durable ledger,
+        # which requires the ledger tables; isolate them per-test so this
+        # suite never touches the real local/production database.
+        monkeypatch.setattr(ve, "_DB_PATH", str(tmp_path / "job_identity_test.db"))
+        monkeypatch.setattr(ve, "_db_initialised", False)
+        ve._init_db()
         from fastapi.testclient import TestClient
         from api.main import app
         return TestClient(app)
@@ -414,37 +421,86 @@ class TestStatusApiSurfacesIdentity:
         # Pre-fix the message hardcoded "across all Nifty 100 stocks" for a
         # US run — the message must reference the universe actually requested.
         assert "Nifty 100" not in body.get("message", "")
+        assert body.get("universe") == "us"
+        # V-SCHED1C1-C1/C2 — the pre-V-SCHED1C1 accepted-response "job"
+        # shape is restored exactly: every field is either a static/public
+        # constant or directly known at admission time, never the ledger's
+        # lease owner or fencing token — and job_id is a genuine fresh
+        # uuid.uuid4(), exactly matching the pre-V-SCHED1C1 public format.
+        assert body.get("job", {}).get("market") == "US"
         assert body.get("job", {}).get("universe_id") == "us"
+        assert body.get("job", {}).get("horizon") == "short"
+        assert body.get("job", {}).get("status") == "running"
+        job_id = body["job"]["job_id"]
+        uuid.UUID(job_id)  # raises ValueError if not a valid UUID string
+        for private_field in ("owner", "fencing_token", "lease_owner", "secret", "attempt_id"):
+            assert private_field not in body["job"]
+
+    def test_run_endpoint_job_id_is_a_fresh_uuid_distinct_per_accepted_call(self, tmp_path, monkeypatch):
+        """V-SCHED1C1-C2 — job_id must be a genuinely fresh UUID per
+        accepted call, not derived from (and therefore never colliding
+        predictably with) the durable integer attempt_id. Two fully
+        independent isolated databases stand in for two separate accepted
+        calls — this test is about job_id generation, not ledger
+        concurrency (already covered elsewhere), so each call gets a clean
+        lease rather than juggling release semantics for an attempt this
+        test never completes."""
+        from fastapi.testclient import TestClient
+        from api.main import app
+        import api.routers.validation as validation_router
+        monkeypatch.setattr(validation_router, "_VALIDATION_RUN_SECRET", "test-secret")
+        monkeypatch.setattr(ve, "run_validation", lambda **kw: {})
+
+        job_ids = []
+        for i, db_name in enumerate(("job_id_uniqueness_a.db", "job_id_uniqueness_b.db")):
+            monkeypatch.setattr(ve, "_DB_PATH", str(tmp_path / db_name))
+            monkeypatch.setattr(ve, "_db_initialised", False)
+            ve._init_db()
+            with ve._status_lock:
+                ve._run_status["running"] = False
+            client = TestClient(app)
+            body = client.post(
+                "/api/validation/run?horizon=medium&universe=nifty100",
+                headers={"X-Secret": "test-secret"},
+            ).json()
+            assert body.get("status") == "started"
+            job_id = body["job"]["job_id"]
+            uuid.UUID(job_id)
+            job_ids.append(job_id)
+
+        assert job_ids[0] != job_ids[1]
 
     def test_already_running_response_identifies_the_active_job(self, client, monkeypatch):
         # V-SEC1: /run is now X-Secret-protected.
         import api.routers.validation as validation_router
         monkeypatch.setattr(validation_router, "_VALIDATION_RUN_SECRET", "test-secret")
-        with ve._status_lock:
-            saved = dict(ve._run_status)
-            ve._run_status.clear()
-            ve._run_status.update({
-                "running": True, "progress": 1, "total": 200,
-                "started_at": "2026-07-24T00:00:00+00:00", "log": [],
-                "job": ve._new_job_identity(
-                    market="US", universe_id="us", horizon="short",
-                    benchmark="^GSPC", total=200, trigger_type="api",
-                ),
-            })
+        # V-SCHED1C1 — concurrency is now the V-SCHED1B durable global
+        # execution lease, not the old in-memory ve._run_status flag.
+        from datetime import datetime, timezone
+        held = ve.acquire_validation_execution_lease(
+            owner="other-worker", now=datetime.now(timezone.utc), lease_duration_seconds=600,
+        )
+        assert held["ok"] is True
         try:
             body = client.post(
                 "/api/validation/run?horizon=medium&universe=nifty100",
                 headers={"X-Secret": "test-secret"},
             ).json()
             assert body.get("status") == "already_running"
-            # The client must be able to tell the active job is US — the
-            # exact information the original defect withheld.
-            assert body.get("job", {}).get("market") == "US"
-            assert body.get("job", {}).get("universe_id") == "us"
+            # V-SCHED1C1 — Stage 8 explicitly requires the busy/conflict
+            # response to stay minimal and never expose the lease owner,
+            # fencing token, or any internal identity of the active
+            # attempt — the original defect this test guarded against (a
+            # foreign-universe job silently masquerading as the caller's
+            # own) is now closed at a different, stronger layer: the
+            # durable lease itself makes cross-attempt confusion
+            # structurally impossible, so the client no longer needs (and
+            # must not receive) the active job's own details to be safe.
+            assert body == {"status": "already_running"}
         finally:
-            with ve._status_lock:
-                ve._run_status.clear()
-                ve._run_status.update(saved)
+            ve.release_validation_execution_lease(
+                owner="other-worker", fencing_token=held["fencing_token"], now=datetime.now(timezone.utc),
+            )
 
 
 @pytest.mark.regression

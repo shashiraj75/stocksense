@@ -342,7 +342,16 @@ class TestPublicAPIBoundary:
     fixture text — the router boundary itself must be safe end-to-end."""
 
     @pytest.fixture
-    def client(self):
+    def client(self, tmp_path, monkeypatch):
+        # V-SCHED1C1 — /run now admits through the V-SCHED1B durable ledger,
+        # which requires the ledger tables; isolate them per-test so this
+        # suite never depends on global module state left behind by
+        # another test's run and never touches the real local/production
+        # database.
+        import services.validation_engine as ve
+        monkeypatch.setattr(ve, "_DB_PATH", str(tmp_path / "public_error_sanitization_test.db"))
+        monkeypatch.setattr(ve, "_db_initialised", False)
+        ve._init_db()
         from fastapi.testclient import TestClient
         from api.main import app
         return TestClient(app)
