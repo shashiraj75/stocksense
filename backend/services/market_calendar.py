@@ -25,10 +25,13 @@ library.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
 import pandas_market_calendars as mcal
+
+log = logging.getLogger(__name__)
 
 # NSE lunar/festival holiday data in the underlying calendar package is
 # only reliably populated through this date (directly verified: querying
@@ -159,3 +162,57 @@ def resolve_latest_completed_short_session(universe: str, *, now_utc: datetime) 
         )
 
     return _unknown(universe, "no_completed_session_in_lookback_window", exchange)
+
+
+# ── V-SCHED1C2D — shared VALIDATION_AUTO_SHORT_UNIVERSES parser ────────────
+# Originally defined only in api/main.py (V-SCHED1C2B) for the scheduler's
+# own gate. Moved here so BOTH the scheduler (api.main, which re-reads the
+# environment every cycle) and the read-time freshness classification
+# (services.validation_engine._short_universe_auto_scheduled) call the
+# exact same parser — never two independently maintained copies of the
+# same allowlist semantics that could silently drift apart. This module
+# has no import of api.main or validation_engine, so importing this
+# function from either introduces no circular import.
+
+AUTO_SHORT_VALID_UNIVERSES = ("nifty100", "midcap", "us")
+
+
+def parse_auto_short_universes(raw: str | None) -> tuple[str, ...]:
+    """Strict parser for VALIDATION_AUTO_SHORT_UNIVERSES. This is both the
+    automatic-short scheduler's feature gate and the staged-rollout
+    control, and (as of V-SCHED1C2D) the single source of truth freshness
+    classification also consults to decide whether a given short
+    horizon/universe is currently auto-scheduled.
+
+    Semantics:
+      - missing/None or blank (after stripping): no automatic short
+        scheduling — returns ().
+      - a comma-separated subset of exactly "nifty100", "midcap", "us"
+        (whitespace/case-normalized, duplicates collapsed) — returns
+        that subset in the fixed canonical order (nifty100, midcap, us),
+        regardless of input order.
+      - ANY unrecognized token (including ambiguous values like "all",
+        "true", "1") fails closed for the ENTIRE value — returns (),
+        enabling NO universe, never a partial enable. This is
+        deliberate: an operator typo must never silently activate a
+        subset different from what was intended.
+
+    Never logs the raw environment value — only that it was rejected —
+    so a typo'd or malformed value can never leak into logs verbatim.
+    """
+    if not raw or not raw.strip():
+        return ()
+    tokens = [t.strip().lower() for t in raw.split(",") if t.strip()]
+    if not tokens:
+        return ()
+    seen: list[str] = []
+    for token in tokens:
+        if token not in AUTO_SHORT_VALID_UNIVERSES:
+            log.warning(
+                "[validation_short_scheduler] VALIDATION_AUTO_SHORT_UNIVERSES contains an "
+                "unrecognized token — disabling all automatic short scheduling until corrected."
+            )
+            return ()
+        if token not in seen:
+            seen.append(token)
+    return tuple(u for u in AUTO_SHORT_VALID_UNIVERSES if u in seen)

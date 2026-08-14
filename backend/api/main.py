@@ -226,46 +226,14 @@ async def _price_alerts_check_loop():
         await asyncio.sleep(90)  # every 90s — far more responsive than email needs to be, still cheap
 
 
-_AUTO_SHORT_VALID_UNIVERSES = ("nifty100", "midcap", "us")
-
-
-def _parse_auto_short_universes(raw: str | None) -> tuple[str, ...]:
-    """V-SCHED1C2B — strict parser for VALIDATION_AUTO_SHORT_UNIVERSES.
-    This is both the feature gate and the staged-rollout control for
-    automatic short-horizon scheduling.
-
-    Semantics:
-      - missing/None or blank (after stripping): no automatic short
-        scheduling — returns ().
-      - a comma-separated subset of exactly "nifty100", "midcap", "us"
-        (whitespace/case-normalized, duplicates collapsed) — returns
-        that subset in the fixed canonical order (nifty100, midcap, us),
-        regardless of input order.
-      - ANY unrecognized token (including ambiguous values like "all",
-        "true", "1") fails closed for the ENTIRE value — returns (),
-        enabling NO universe, never a partial enable. This is
-        deliberate: an operator typo must never silently activate a
-        subset different from what was intended.
-
-    Never logs the raw environment value — only that it was rejected —
-    so a typo'd or malformed value can never leak into logs verbatim.
-    """
-    if not raw or not raw.strip():
-        return ()
-    tokens = [t.strip().lower() for t in raw.split(",") if t.strip()]
-    if not tokens:
-        return ()
-    seen: list[str] = []
-    for token in tokens:
-        if token not in _AUTO_SHORT_VALID_UNIVERSES:
-            log.warning(
-                "[validation_short_scheduler] VALIDATION_AUTO_SHORT_UNIVERSES contains an "
-                "unrecognized token — disabling all automatic short scheduling until corrected."
-            )
-            return ()
-        if token not in seen:
-            seen.append(token)
-    return tuple(u for u in _AUTO_SHORT_VALID_UNIVERSES if u in seen)
+# V-SCHED1C2D — the allowlist and its parser now live in
+# services/market_calendar.py, the single shared implementation both this
+# scheduler and services.validation_engine's freshness classification
+# call — never two independently maintained copies. This module-level
+# alias keeps every existing call site (`_parse_auto_short_universes(...)`)
+# and every existing test import (`from api.main import
+# _parse_auto_short_universes`) working unchanged.
+from services.market_calendar import parse_auto_short_universes as _parse_auto_short_universes  # noqa: E402
 
 
 async def _short_validation_schedule_loop():

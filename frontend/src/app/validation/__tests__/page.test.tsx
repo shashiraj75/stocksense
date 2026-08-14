@@ -1361,3 +1361,191 @@ describe("V-FRESH1B — freshness disclosure", () => {
     expect(stockCall?.[0]).toContain("run_id=1");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// V-SCHED1C2D — HONEST AUTOMATIC-SHORT CADENCE AND FRESHNESS DISCLOSURE.
+// India short (nifty100/midcap) is now genuinely auto-scheduled in
+// production (VALIDATION_AUTO_SHORT_UNIVERSES=nifty100,midcap); US short
+// remains inactive. Wording must follow the backend's own freshness
+// classification (never be hardcoded "India = scheduled"), never claim
+// actual freshness merely from schedule enablement, and disclose that
+// short-horizon accuracy uses overlapping 5-trading-day windows.
+// ─────────────────────────────────────────────────────────────────────────
+describe("V-SCHED1C2D — automatic short cadence and disclosure wording", () => {
+  const SHORT_ENABLED_FRESHNESS = {
+    status: "unknown", reason: "calendar_or_completion_slo_unavailable",
+    validation_completed_at: "2026-08-14T00:00:00+00:00", input_data_recency: "unknown", outcome_evidence_recency: "unknown",
+  };
+  const SHORT_DISABLED_FRESHNESS = {
+    status: "unknown", reason: "schedule_not_defined",
+    validation_completed_at: "2026-08-14T00:00:00+00:00", input_data_recency: "unknown", outcome_evidence_recency: "unknown",
+  };
+
+  function mockShortAware(universe: "nifty100" | "midcap" | "us", freshness: object | null) {
+    mockGet.mockImplementation((url: string) => {
+      if (url.includes("/results/stocks")) {
+        return Promise.resolve({ data: { available: true, run_id: 1, stocks: MANY_STOCKS } });
+      }
+      if (url.includes(`/results?horizon=short&universe=${universe}`)) {
+        return Promise.resolve({
+          data: freshness
+            ? { ...BASE_RESULTS, run_id: 1, horizon: "short", freshness }
+            : { available: false },
+        });
+      }
+      if (url.includes("/results?horizon=medium")) {
+        return Promise.resolve({ data: { ...BASE_RESULTS, run_id: 1 } });
+      }
+      if (url.includes("/results?horizon=long")) {
+        return Promise.resolve({ data: { ...BASE_RESULTS, run_id: 1, horizon: "long" } });
+      }
+      if (url.includes("/status")) {
+        return Promise.resolve({ data: { running: false, progress: 0, total: 0, started_at: null, log: [] } });
+      }
+      return Promise.resolve({ data: {} });
+    });
+  }
+
+  // ── 13/14 — enabled India short universes get the exact automatic cadence wording ──
+
+  it("Short/nifty100 enabled gets the exact automatic cadence wording", async () => {
+    mockShortAware("nifty100", SHORT_ENABLED_FRESHNESS);
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /^Short/i }));
+    await screen.findByTestId("freshness-disclosure");
+    expect(screen.getByText(
+      /Short-horizon results for this universe are scheduled automatically once per newly completed eligible exchange session\. Eligibility is evaluated daily at 03:30 IST\./i,
+    )).toBeInTheDocument();
+  });
+
+  it("Short/midcap enabled gets the exact automatic cadence wording", async () => {
+    mockShortAware("midcap", SHORT_ENABLED_FRESHNESS);
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /^Short/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Midcap/i }));
+    await screen.findByTestId("freshness-disclosure");
+    expect(screen.getByText(
+      /Short-horizon results for this universe are scheduled automatically once per newly completed eligible exchange session\. Eligibility is evaluated daily at 03:30 IST\./i,
+    )).toBeInTheDocument();
+  });
+
+  // ── 15 — disabled short/us gets the exact unscheduled wording ──────────────
+
+  it("Short/us disabled gets the exact unscheduled wording, not the enabled wording", async () => {
+    mockShortAware("us", SHORT_DISABLED_FRESHNESS);
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /^Short/i }));
+    fireEvent.click(screen.getByRole("button", { name: /🇺🇸 US/i }));
+    await screen.findByTestId("freshness-disclosure");
+    // Rendered honestly in two independent places (the top cadence summary
+    // and the per-run freshness box) — both must agree, so at least one match
+    // is required, not exactly one.
+    expect(screen.getAllByText(
+      /No automatic validation schedule is currently defined for this horizon and universe\./i,
+    ).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/scheduled automatically once per newly completed eligible exchange session/i))
+      .not.toBeInTheDocument();
+  });
+
+  it("does not display the enabled wording merely because the selected universe is India — it follows the backend classification", async () => {
+    // India universe, but the backend says it's NOT enabled (e.g. rolled back) — must show disabled wording.
+    mockShortAware("nifty100", SHORT_DISABLED_FRESHNESS);
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /^Short/i }));
+    await screen.findByTestId("freshness-disclosure");
+    expect(screen.getAllByText(/No automatic validation schedule is currently defined for this horizon and universe\./i).length)
+      .toBeGreaterThan(0);
+    expect(screen.queryByText(/scheduled automatically once per newly completed eligible exchange session/i))
+      .not.toBeInTheDocument();
+  });
+
+  // ── 16 — scheduled-but-not-verifiable Short gets the exact completion-SLO wording ──
+
+  it("enabled short universe explains completion-SLO freshness, not 'market-calendar-aware freshness is not yet available'", async () => {
+    mockShortAware("nifty100", SHORT_ENABLED_FRESHNESS);
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /^Short/i }));
+    const disclosure = await screen.findByTestId("freshness-disclosure");
+    expect(disclosure.textContent).toMatch(
+      /Automatic scheduling is active for this universe, but end-to-end completion-SLO freshness is not yet independently verifiable\./i,
+    );
+    expect(disclosure.textContent).not.toMatch(/market-calendar-aware freshness is not yet available/i);
+  });
+
+  it("disabled short/us keeps the original honest unscheduled freshness explanation", async () => {
+    mockShortAware("us", SHORT_DISABLED_FRESHNESS);
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /^Short/i }));
+    fireEvent.click(screen.getByRole("button", { name: /🇺🇸 US/i }));
+    const disclosure = await screen.findByTestId("freshness-disclosure");
+    expect(disclosure.textContent).toMatch(/No automatic validation schedule is currently defined for this horizon and universe/i);
+  });
+
+  // ── 17/18/19 — overlapping 5-day-window disclosure only for Short ──────────
+
+  it("Short displays the overlapping 5-trading-day-window disclosure", async () => {
+    mockShortAware("nifty100", SHORT_ENABLED_FRESHNESS);
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /^Short/i }));
+    await screen.findByTestId("freshness-disclosure");
+    expect(screen.getByText(
+      /Short-horizon accuracy statistics are recomputed for each eligible completed session using overlapping 5-trading-day forward windows\. Consecutive runs therefore are not independent samples\./i,
+    )).toBeInTheDocument();
+  });
+
+  it("medium does not display the overlapping-window disclosure", async () => {
+    mockApi({ results: { ...BASE_RESULTS, horizon: "medium" } });
+    renderPage();
+    await screen.findByText(/BUY Hit Rate/i);
+    expect(screen.queryByText(/overlapping 5-trading-day forward windows/i)).not.toBeInTheDocument();
+  });
+
+  it("long does not display the overlapping-window disclosure", async () => {
+    mockApi({ results: { ...BASE_RESULTS, horizon: "long" } });
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /^Long/i }));
+    await screen.findByText(/BUY Hit Rate/i);
+    expect(screen.queryByText(/overlapping 5-trading-day forward windows/i)).not.toBeInTheDocument();
+  });
+
+  // ── 20 — medium/long cadence wording remains intact when Short is selected ──
+
+  it("medium/long cadence wording remains intact even while Short is the selected tab", async () => {
+    mockShortAware("nifty100", SHORT_ENABLED_FRESHNESS);
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /^Short/i }));
+    await screen.findByTestId("freshness-disclosure");
+    expect(screen.getByText(/medium-horizon results are scheduled daily/i)).toBeInTheDocument();
+    expect(screen.getByText(/long-horizon results are scheduled weekly on Sunday/i)).toBeInTheDocument();
+  });
+
+  // ── 21-24 — no mutation surface anywhere alongside the new short wording ──
+
+  it("no 'Run Now' control, no POST to /api/validation/run, refresh stays GET-only for an enabled short universe", async () => {
+    mockShortAware("nifty100", SHORT_ENABLED_FRESHNESS);
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /^Short/i }));
+    await screen.findByTestId("freshness-disclosure");
+    expect(screen.queryByText(/run now/i)).not.toBeInTheDocument();
+
+    mockGet.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: /refresh displayed results/i }));
+    await waitFor(() => expect(mockGet).toHaveBeenCalled());
+    for (const call of mockGet.mock.calls) {
+      expect(call[0]).not.toContain("/api/validation/run");
+    }
+  });
+
+  // ── 25 — unavailable/error states remain honest for short ──────────────────
+
+  it("short universe with no results yet shows the honest empty state, never a fabricated schedule claim", async () => {
+    mockShortAware("us", null);
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /^Short/i }));
+    fireEvent.click(screen.getByRole("button", { name: /🇺🇸 US/i }));
+    await screen.findByText(/No validation results yet for short horizon/i);
+    expect(screen.queryByTestId("freshness-disclosure")).not.toBeInTheDocument();
+    expect(screen.queryByText(/scheduled automatically once per newly completed eligible exchange session/i))
+      .not.toBeInTheDocument();
+  });
+});
