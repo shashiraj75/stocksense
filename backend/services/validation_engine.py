@@ -35,6 +35,7 @@ import yfinance as yf
 
 from services.safe_errors import safe_error_message
 from services.technical_indicators import compute_indicators
+from services import market_calendar
 from services import sec_edgar_adapter
 from services import sec_pit_store
 
@@ -2856,6 +2857,25 @@ def _fetchall(sql_pg: str, sql_sq: str, params=()):
         return conn.execute(sql_sq, params).fetchall()
 
 
+def _short_universe_auto_scheduled(universe: str | None) -> bool:
+    """Whether VALIDATION_AUTO_SHORT_UNIVERSES currently enables automatic
+    short-horizon scheduling for `universe`. Re-read from the environment
+    on every call (never cached at import time) — mirrors the api.main
+    automatic-short scheduler's own bounded, fail-closed re-read, so
+    freshness classification and the scheduler's own admission gate can
+    never silently drift apart. Calls
+    services.market_calendar.parse_auto_short_universes — the single
+    shared parser implementation (see api.main._parse_auto_short_
+    universes, which is the same function object, not a copy) — via
+    module attribute access (`market_calendar.parse_auto_short_
+    universes`, not a bound name import) so the shared implementation can
+    still be substituted/observed by a caller for testing."""
+    if not universe:
+        return False
+    enabled = market_calendar.parse_auto_short_universes(os.getenv("VALIDATION_AUTO_SHORT_UNIVERSES"))
+    return universe in enabled
+
+
 def _compute_freshness(data: dict) -> dict:
     """V-FRESH1B — Option A (durable metadata-and-disclosure foundation,
     NOT a complete freshness classifier). Derived at READ time from
@@ -2868,10 +2888,24 @@ def _compute_freshness(data: dict) -> dict:
     calendar and a completion-SLO/grace-period contract, neither of
     which exists yet (V-FRESH1A/V-FRESH1A2 forensic findings). Every
     branch here resolves to "unknown" with one specific, honest reason:
-      - short horizon: no automatic schedule exists at all —
-        "schedule_not_defined", regardless of evidence presence.
+      - short horizon, universe NOT currently auto-scheduled (per
+        VALIDATION_AUTO_SHORT_UNIVERSES — see
+        _short_universe_auto_scheduled): "schedule_not_defined",
+        regardless of evidence presence. This remains the correct,
+        honest answer for a universe that has never had an automatic
+        schedule at all (today: short/us).
+      - short horizon, universe IS currently auto-scheduled (V-SCHED1C2D
+        — today: short/nifty100, short/midcap): the schedule genuinely
+        exists, but a trusted exchange-calendar-aware freshness judgment
+        and a completion-SLO/grace-period contract still do not exist —
+        so this shares medium/long's own honest
+        "calendar_or_completion_slo_unavailable" reason below, NEVER a
+        new "scheduled"/"fresh"/"current" label. Schedule enablement and
+        actual data freshness are deliberately kept as separate
+        concepts — enabling the schedule changes the REASON a run's
+        freshness can't be judged yet, never the "unknown" status.
       - medium/long, no `validation_evidence` (every row persisted
-        before this phase): "legacy_run_without_evidence_metadata".
+        before V-FRESH1B): "legacy_run_without_evidence_metadata".
       - medium/long, `validation_evidence` present (future runs only):
         "calendar_or_completion_slo_unavailable" — the factual dates/
         counters exist, but nothing here can yet judge them against a
@@ -2881,10 +2915,15 @@ def _compute_freshness(data: dict) -> dict:
     expected — availability and freshness are independent dimensions.
     """
     run_horizon = data.get("horizon")
+    universe = data.get("universe")
     evidence = data.get("validation_evidence")
 
     if run_horizon == "short":
-        reason = "schedule_not_defined"
+        reason = (
+            "calendar_or_completion_slo_unavailable"
+            if _short_universe_auto_scheduled(universe)
+            else "schedule_not_defined"
+        )
     elif evidence is None:
         reason = "legacy_run_without_evidence_metadata"
     else:

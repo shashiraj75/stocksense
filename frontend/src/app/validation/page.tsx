@@ -540,6 +540,20 @@ export default function ValidationPage() {
   const benchmarkName = universe === "us" ? "S&P 500" : "Nifty";
   const universeLabel = UNIVERSES.find(u => u.key === universe)?.label ?? universe;
 
+  // V-SCHED1C2D — whether the SELECTED horizon/universe is currently
+  // auto-scheduled, derived entirely from the backend's own freshness
+  // classification (never hardcoded "India = scheduled" here) —
+  // res.freshness.reason is "calendar_or_completion_slo_unavailable" only
+  // when services.validation_engine._short_universe_auto_scheduled found
+  // this universe in the live VALIDATION_AUTO_SHORT_UNIVERSES allowlist;
+  // it is "schedule_not_defined" otherwise. Requires res.horizon to
+  // actually match the selected short tab so a stale/foreign-view result
+  // (e.g. still showing a prior tab's data while the new one loads) can
+  // never be misread as this tab's schedule state.
+  const shortAutoScheduled =
+    horizon === "short" && res?.horizon === "short" &&
+    res?.freshness?.reason === "calendar_or_completion_slo_unavailable";
+
   // Selected view vs active running job: only render live progress under this
   // tab when the active job's identity actually matches the selection. A job
   // from another universe/horizon gets an explicit banner instead — never
@@ -567,6 +581,14 @@ export default function ValidationPage() {
             Historical accuracy of the AI model across {universeLabel}. Validation is recomputed
             automatically — medium-horizon results are scheduled daily; long-horizon results are
             scheduled weekly on Sunday.
+            {horizon === "short" && (
+              <>
+                {" "}
+                {shortAutoScheduled
+                  ? "Short-horizon results for this universe are scheduled automatically once per newly completed eligible exchange session. Eligibility is evaluated daily at 03:30 IST."
+                  : "No automatic validation schedule is currently defined for this horizon and universe."}
+              </>
+            )}
           </p>
         </div>
       </div>
@@ -584,6 +606,27 @@ export default function ValidationPage() {
           "Avg BUY Return" and "Profitable BUY %" measure <em>absolute</em> return (not vs {benchmarkName}) — all other metrics are alpha-based.
         </div>
       </div>
+
+      {/* V-SCHED1C2D — statistical-independence disclosure specific to Short:
+          a 5-trading-day forward window recomputed once per newly completed
+          session means consecutive short-horizon runs' evaluation windows
+          overlap substantially. Adjacent to the walk-forward guarantee above,
+          medium/long only (their 21/63-day windows and daily/weekly cadence
+          don't share this same overlap concern in the same way). Describes
+          the dependence honestly — does not claim it invalidates the results. */}
+      {horizon === "short" && (
+        <div
+          data-testid="short-overlapping-window-disclosure"
+          className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4 flex items-start gap-3"
+        >
+          <AlertCircle size={18} className="text-yellow-400 mt-0.5 shrink-0" />
+          <div className="text-sm text-yellow-300/80">
+            Short-horizon accuracy statistics are recomputed for each eligible completed session
+            using overlapping 5-trading-day forward windows. Consecutive runs therefore are not
+            independent samples.
+          </div>
+        </div>
+      )}
 
       {/* Universe selector */}
       <div className="flex gap-2">
@@ -737,10 +780,21 @@ export default function ValidationPage() {
               <p className="text-xs font-semibold text-gray-300">Freshness not yet verifiable</p>
               <p className="text-xs text-gray-500">
                 {res.freshness.reason === "schedule_not_defined" &&
-                  "No automatic validation schedule is currently defined for this horizon."}
+                  "No automatic validation schedule is currently defined for this horizon and universe."}
                 {res.freshness.reason === "legacy_run_without_evidence_metadata" &&
                   "This stored run predates durable input and outcome evidence metadata."}
-                {res.freshness.reason === "calendar_or_completion_slo_unavailable" &&
+                {/* V-SCHED1C2D — calendar_or_completion_slo_unavailable is shared by
+                    two genuinely different situations: medium/long (no automatic-short
+                    schedule concept applies at all — the original wording, unchanged)
+                    vs. an auto-scheduled short universe (nifty100/midcap today — a real
+                    schedule exists, but end-to-end completion-SLO freshness still can't
+                    be independently verified). Never claim the short scheduler's own
+                    market-calendar resolution is "unavailable" here — it has a real
+                    exchange calendar (see services/market_calendar.py); only the
+                    completion-SLO/grace-period judgment is what's still missing. */}
+                {res.freshness.reason === "calendar_or_completion_slo_unavailable" && res.horizon === "short" &&
+                  "Automatic scheduling is active for this universe, but end-to-end completion-SLO freshness is not yet independently verifiable."}
+                {res.freshness.reason === "calendar_or_completion_slo_unavailable" && res.horizon !== "short" &&
                   "Input and outcome dates are recorded, but market-calendar-aware freshness is not yet available."}
               </p>
               {res.validation_evidence && (

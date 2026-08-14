@@ -509,6 +509,135 @@ class TestComputeFreshness:
         assert result["outcome_evidence_recency"] == "unknown"
 
 
+# ── V-SCHED1C2D — freshness follows the runtime VALIDATION_AUTO_SHORT_
+# UNIVERSES allowlist, per-universe, instead of unconditionally treating
+# every short-horizon run as unscheduled. Enabled short universes are
+# still never claimed "fresh" or "current" merely from being scheduled —
+# they get the SAME calendar_or_completion_slo_unavailable reason medium/
+# long already use once evidence exists, never a new "scheduled"/"fresh"
+# label. A disabled short universe (including short/us today) keeps the
+# original honest schedule_not_defined reason.
+
+class TestComputeFreshnessAutoShortSchedule:
+    def test_missing_variable_short_nifty100_is_schedule_not_defined(self, monkeypatch):
+        monkeypatch.delenv("VALIDATION_AUTO_SHORT_UNIVERSES", raising=False)
+        data = {"horizon": "short", "universe": "nifty100", "run_at": "2026-08-14T00:00:00+00:00"}
+        result = _compute_freshness(data)
+        assert result["reason"] == "schedule_not_defined"
+
+    def test_blank_variable_short_midcap_is_schedule_not_defined(self, monkeypatch):
+        monkeypatch.setenv("VALIDATION_AUTO_SHORT_UNIVERSES", "   ")
+        data = {"horizon": "short", "universe": "midcap", "run_at": "2026-08-14T00:00:00+00:00"}
+        result = _compute_freshness(data)
+        assert result["reason"] == "schedule_not_defined"
+
+    def test_enabled_nifty100_gets_calendar_slo_reason_not_schedule_not_defined(self, monkeypatch):
+        monkeypatch.setenv("VALIDATION_AUTO_SHORT_UNIVERSES", "nifty100,midcap")
+        data = {"horizon": "short", "universe": "nifty100", "run_at": "2026-08-14T00:00:00+00:00"}
+        result = _compute_freshness(data)
+        assert result["status"] == "unknown"
+        assert result["reason"] == "calendar_or_completion_slo_unavailable"
+
+    def test_enabled_midcap_gets_calendar_slo_reason(self, monkeypatch):
+        monkeypatch.setenv("VALIDATION_AUTO_SHORT_UNIVERSES", "nifty100,midcap")
+        data = {"horizon": "short", "universe": "midcap", "run_at": "2026-08-14T00:00:00+00:00"}
+        result = _compute_freshness(data)
+        assert result["reason"] == "calendar_or_completion_slo_unavailable"
+
+    def test_disabled_us_stays_schedule_not_defined_even_with_india_enabled(self, monkeypatch):
+        monkeypatch.setenv("VALIDATION_AUTO_SHORT_UNIVERSES", "nifty100,midcap")
+        data = {"horizon": "short", "universe": "us", "run_at": "2026-08-14T00:00:00+00:00"}
+        result = _compute_freshness(data)
+        assert result["reason"] == "schedule_not_defined"
+
+    def test_us_enabled_alone_gets_calendar_slo_reason(self, monkeypatch):
+        monkeypatch.setenv("VALIDATION_AUTO_SHORT_UNIVERSES", "us")
+        data = {"horizon": "short", "universe": "us", "run_at": "2026-08-14T00:00:00+00:00"}
+        result = _compute_freshness(data)
+        assert result["reason"] == "calendar_or_completion_slo_unavailable"
+
+    def test_invalid_variable_value_fails_closed_for_every_short_universe(self, monkeypatch):
+        monkeypatch.setenv("VALIDATION_AUTO_SHORT_UNIVERSES", "all")
+        for universe in ("nifty100", "midcap", "us"):
+            data = {"horizon": "short", "universe": universe, "run_at": "2026-08-14T00:00:00+00:00"}
+            result = _compute_freshness(data)
+            assert result["reason"] == "schedule_not_defined", f"universe={universe}"
+
+    def test_medium_freshness_unaffected_by_short_variable_state(self, monkeypatch):
+        monkeypatch.setenv("VALIDATION_AUTO_SHORT_UNIVERSES", "nifty100,midcap,us")
+        data = {
+            "horizon": "medium", "universe": "nifty100", "run_at": "2026-08-14T00:00:00+00:00",
+            "validation_evidence": {"symbols_requested": 134},
+        }
+        result = _compute_freshness(data)
+        assert result["reason"] == "calendar_or_completion_slo_unavailable"
+
+        monkeypatch.delenv("VALIDATION_AUTO_SHORT_UNIVERSES", raising=False)
+        result_disabled = _compute_freshness(data)
+        assert result_disabled["reason"] == result["reason"]
+
+    def test_long_freshness_unaffected_by_short_variable_state(self, monkeypatch):
+        monkeypatch.setenv("VALIDATION_AUTO_SHORT_UNIVERSES", "nifty100,midcap,us")
+        data = {
+            "horizon": "long", "universe": "us", "run_at": "2026-08-14T00:00:00+00:00",
+            "validation_evidence": {"symbols_requested": 42},
+        }
+        result = _compute_freshness(data)
+        assert result["reason"] == "calendar_or_completion_slo_unavailable"
+
+        monkeypatch.delenv("VALIDATION_AUTO_SHORT_UNIVERSES", raising=False)
+        result_disabled = _compute_freshness(data)
+        assert result_disabled["reason"] == result["reason"]
+
+    def test_legacy_medium_without_evidence_still_gets_legacy_reason_regardless_of_short_config(self, monkeypatch):
+        monkeypatch.setenv("VALIDATION_AUTO_SHORT_UNIVERSES", "nifty100,midcap")
+        data = {"horizon": "medium", "universe": "nifty100", "run_at": "2026-08-14T00:00:00+00:00"}
+        result = _compute_freshness(data)
+        assert result["reason"] == "legacy_run_without_evidence_metadata"
+
+    def test_enabled_short_universe_status_never_becomes_fresh_or_current(self, monkeypatch):
+        """Schedule enablement alone must never be conflated with actual
+        data freshness — enabling the schedule changes the REASON, never
+        the status. status must remain "unknown", and the reason must
+        never be a fresh/current-sounding label."""
+        monkeypatch.setenv("VALIDATION_AUTO_SHORT_UNIVERSES", "nifty100,midcap")
+        data = {"horizon": "short", "universe": "nifty100", "run_at": "2026-08-14T00:00:00+00:00"}
+        result = _compute_freshness(data)
+        assert result["status"] == "unknown"
+        forbidden = {"fresh", "current", "up_to_date", "stale", "schedule-consistent"}
+        assert result["reason"] not in forbidden
+        assert result["status"] not in forbidden
+
+    def test_parser_has_one_production_implementation_shared_by_scheduler_and_freshness(self, monkeypatch):
+        """Both the scheduler (api.main) and freshness classification
+        (services.validation_engine) must call the exact same parser
+        object from services.market_calendar — never two independently
+        maintained copies of the same allowlist semantics. Proven two
+        ways: identity (api.main's name IS market_calendar's function),
+        and behaviorally (patching market_calendar's parser changes what
+        _compute_freshness sees, proving it isn't a local copy)."""
+        import services.market_calendar as mc
+        from api.main import _parse_auto_short_universes as main_parser
+
+        assert main_parser is mc.parse_auto_short_universes
+
+        monkeypatch.setenv("VALIDATION_AUTO_SHORT_UNIVERSES", "nifty100")
+        monkeypatch.setattr(mc, "parse_auto_short_universes", lambda raw: ())
+        data = {"horizon": "short", "universe": "nifty100", "run_at": "2026-08-14T00:00:00+00:00"}
+        result = _compute_freshness(data)
+        assert result["reason"] == "schedule_not_defined", (
+            "patching services.market_calendar.parse_auto_short_universes did not change "
+            "_compute_freshness's behavior — it must be calling a local copy, not the shared function"
+        )
+
+    def test_freshness_module_imports_the_shared_parser_not_a_local_copy(self):
+        import services.market_calendar as mc
+        assert hasattr(mc, "parse_auto_short_universes")
+        # validation_engine must not define its own competing allowlist —
+        # it may only reference market_calendar's.
+        assert not hasattr(ve, "_AUTO_SHORT_VALID_UNIVERSES")
+
+
 # ── F. get_latest_results() integration — legacy vs future rows, DB-backed ─
 
 class TestGetLatestResultsFreshnessIntegration:
