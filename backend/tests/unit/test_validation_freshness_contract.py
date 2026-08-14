@@ -110,7 +110,7 @@ def _bench_df_for(stock_df):
 class TestBacktestStockDiagnostics:
     def test_fetch_exception_is_classified_distinctly(self, monkeypatch):
         class _RaisingTicker(_FakeTicker):
-            def history(self, period=None):
+            def history(self, period=None, timeout=None):
                 raise ConnectionError("provider unreachable")
 
         monkeypatch.setattr(ve.yf, "Ticker", _RaisingTicker)
@@ -123,7 +123,7 @@ class TestBacktestStockDiagnostics:
 
     def test_empty_dataframe_is_classified_distinctly(self, monkeypatch):
         class _EmptyTicker(_FakeTicker):
-            def history(self, period=None):
+            def history(self, period=None, timeout=None):
                 return pd.DataFrame()
 
         monkeypatch.setattr(ve.yf, "Ticker", _EmptyTicker)
@@ -137,7 +137,7 @@ class TestBacktestStockDiagnostics:
         stock_df = _synthetic_stock_ohlcv(n=100)  # well below MIN_WARMUP(200)+fwd_days
 
         class _ShortTicker(_FakeTicker):
-            def history(self, period=None):
+            def history(self, period=None, timeout=None):
                 return stock_df
 
         monkeypatch.setattr(ve.yf, "Ticker", _ShortTicker)
@@ -154,7 +154,7 @@ class TestBacktestStockDiagnostics:
         stock_df = _synthetic_stock_ohlcv(n=260)
 
         class _Ticker(_FakeTicker):
-            def history(self, period=None):
+            def history(self, period=None, timeout=None):
                 return stock_df
 
         monkeypatch.setattr(ve.yf, "Ticker", _Ticker)
@@ -185,7 +185,7 @@ class TestBacktestStockDiagnostics:
         stock_df = _synthetic_stock_ohlcv(n=260)
 
         class _Ticker(_FakeTicker):
-            def history(self, period=None):
+            def history(self, period=None, timeout=None):
                 return stock_df
 
         monkeypatch.setattr(ve.yf, "Ticker", _Ticker)
@@ -201,7 +201,7 @@ class TestBacktestStockDiagnostics:
         stock_df = _synthetic_stock_ohlcv(n=260)
 
         class _Ticker(_FakeTicker):
-            def history(self, period=None):
+            def history(self, period=None, timeout=None):
                 return stock_df
 
         monkeypatch.setattr(ve.yf, "Ticker", _Ticker)
@@ -219,7 +219,7 @@ class TestBacktestStockDiagnostics:
         stock_df = _synthetic_stock_ohlcv(n=260)
 
         class _Ticker(_FakeTicker):
-            def history(self, period=None):
+            def history(self, period=None, timeout=None):
                 return stock_df
 
         monkeypatch.setattr(ve.yf, "Ticker", _Ticker)
@@ -235,7 +235,7 @@ class TestExitDateCapture:
         stock_df = _synthetic_stock_ohlcv(n=260)
 
         class _Ticker(_FakeTicker):
-            def history(self, period=None):
+            def history(self, period=None, timeout=None):
                 return stock_df
 
         monkeypatch.setattr(ve.yf, "Ticker", _Ticker)
@@ -260,7 +260,7 @@ class TestExitDateCapture:
         stock_df.iloc[250, stock_df.columns.get_loc("Close")] = np.nan
 
         class _Ticker(_FakeTicker):
-            def history(self, period=None):
+            def history(self, period=None, timeout=None):
                 return stock_df
 
         monkeypatch.setattr(ve.yf, "Ticker", _Ticker)
@@ -408,7 +408,7 @@ class TestConcurrencySafety:
             def __init__(self, sym, *a, **k):
                 self._sym = sym
 
-            def history(self, period=None):
+            def history(self, period=None, timeout=None):
                 return _history_for(self._sym)
 
         monkeypatch.setattr(ve.yf, "Ticker", lambda sym: _Ticker(sym))
@@ -603,7 +603,7 @@ class TestVPS2Unaffected:
         stock_df.iloc[210, stock_df.columns.get_loc("Close")] = np.nan
 
         class _Ticker(_FakeTicker):
-            def history(self, period=None):
+            def history(self, period=None, timeout=None):
                 return stock_df
 
         monkeypatch.setattr(ve.yf, "Ticker", _Ticker)

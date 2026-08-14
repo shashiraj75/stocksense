@@ -25,7 +25,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -149,6 +149,32 @@ BENCHMARK_ALIGNMENT_MAX_STALE_DAYS = 5
 # require).
 BENCHMARK_FETCH_MAX_ATTEMPTS = 2
 BENCHMARK_FETCH_RETRY_BACKOFF_SECONDS = 2
+
+# Bounded per-request timeout for every yfinance price-history call this
+# module makes. Confirmed production incident (2026-08-14): a medium/us
+# run started 2026-08-13T00:51:35Z, reached 25/42 symbols normally, then
+# stalled with zero progress for 15+ minutes and counting — a prior run
+# reportedly took ~8h5m for the same 42-symbol universe versus 5-6 minutes
+# for the 112-134-symbol Indian universes. None of this module's
+# `yf.Ticker(...).history(...)` calls passed an explicit timeout, so a
+# stalled Yahoo Finance connection could block a worker thread
+# indefinitely — Python threads cannot be forcibly stopped, so an
+# unbounded per-request wait becomes an unbounded whole-run wait once
+# `.history()` itself is used to compute how long "unbounded" would be.
+YFINANCE_REQUEST_TIMEOUT_SECONDS = 30
+
+# Backstop for the residual risk this module cannot close with a per-call
+# timeout alone (e.g. `.info`, used only for the IN legacy fund_score path,
+# does not expose a timeout kwarg to the caller at all). If no symbol in
+# the per-stock ThreadPoolExecutor stage (run_validation, below) completes
+# within this many seconds, every still-pending symbol is treated as a
+# bounded, terminal SYMBOL_VALIDATION_TIMEOUT failure and the run finishes
+# with a partial result — never hanging until the surrounding process is
+# restarted. Generous relative to one request's own timeout above: a
+# healthy batch of `max_workers` concurrent requests can legitimately take
+# a few multiples of a single request's timeout under normal provider
+# latency.
+RUN_STALL_TIMEOUT_SECONDS = 180
 
 # Acquisition-level coverage gate (Finding C, 2026-07-26 hardening): a
 # single valid forward-return window amid hundreds of invalid rows is not
@@ -1461,7 +1487,9 @@ def _backtest_stock(
     # is diagnostic-only and does not change any existing return value or
     # control flow for callers that don't pass `_diag`.
     try:
-        df = yf.Ticker(yf_sym).history(period=HORIZON_PERIOD[horizon])
+        df = yf.Ticker(yf_sym).history(
+            period=HORIZON_PERIOD[horizon], timeout=YFINANCE_REQUEST_TIMEOUT_SECONDS,
+        )
     except Exception as e:
         log.warning(
             "[validation] price fetch failed — symbol=%s yf_symbol=%s market=%s "
@@ -2399,7 +2427,9 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
     evidence: BenchmarkEvidence | None = None
     for attempt in range(BENCHMARK_FETCH_MAX_ATTEMPTS):
         try:
-            bench_df = yf.Ticker(benchmark_ticker).history(period=HORIZON_PERIOD[horizon])
+            bench_df = yf.Ticker(benchmark_ticker).history(
+                period=HORIZON_PERIOD[horizon], timeout=YFINANCE_REQUEST_TIMEOUT_SECONDS,
+            )
         except Exception:
             bench_df = None
             log.exception(
@@ -2501,7 +2531,15 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
         diag_by_symbol: dict[str, dict] = {}
         done = 0
 
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        # Deliberately NOT `with ThreadPoolExecutor(...) as pool:` — that
+        # context manager's __exit__ calls shutdown(wait=True), which
+        # would block on a stalled worker thread exactly like the old
+        # as_completed(futures) loop below did (Python threads cannot be
+        # forcibly stopped). `finally: pool.shutdown(wait=False)` lets
+        # run_validation return with a bounded partial result even when a
+        # per-symbol call never returns — see RUN_STALL_TIMEOUT_SECONDS.
+        pool = ThreadPoolExecutor(max_workers=max_workers)
+        try:
             futures = {}
             for sym in stocks:
                 stats = {"considered": 0, "benchmark_valid": 0}
@@ -2513,68 +2551,106 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
                     universe=universe, _exclusions=excluded_benchmark, _window_stats=stats,
                     _diag=diag,
                 )] = sym
-            for future in as_completed(futures):
-                sym = futures[future]
-                try:
-                    sigs = future.result()
-                    all_signals.extend(sigs)
-                    if sigs:
-                        symbols_with_signals.add(sym)
-                    done += 1
-                    with _status_lock:
-                        _run_status["progress"] = done
-                        _run_status["log"].append(f"[{done}/{n_stocks}] {sym}: {len(sigs)} signals")
-                        if _run_status.get("job") is not None:
-                            _run_status["job"]["processed"] = done
-                            _run_status["job"]["current_symbol"] = sym
-                            _run_status["job"]["updated_at"] = datetime.now(timezone.utc).isoformat()
-                    if progress_callback is not None:
-                        try:
-                            progress_callback(done, n_stocks)
-                        except Exception:
-                            log.warning("[validation] progress_callback raised — ignored, run continues")
-                    if _fence_check is not None:
-                        fenced = False
-                        try:
-                            fenced = bool(_fence_check())
-                        except Exception:
-                            log.warning("[validation] _fence_check raised — treating as fenced-out")
-                            fenced = True
-                        if fenced:
-                            for f in futures:
-                                f.cancel()
-                            log.warning(
-                                "[validation] fencing lost mid-run (done=%d/%d) — aborting before "
-                                "any persistence, no result will be computed further",
-                                done, n_stocks,
+
+            pending = set(futures.keys())
+            while pending:
+                # wait(..., timeout=N) returns as soon as ANY future in
+                # `pending` completes, OR after N seconds with an empty
+                # `done_set` if none did — the latter is the stall signal.
+                # This is NOT a per-symbol timeout (a single slow symbol
+                # doesn't trip it while its siblings keep completing); it
+                # only fires when NOTHING has completed for the whole
+                # window, i.e. the run has genuinely gone silent.
+                done_set, pending = wait(pending, timeout=RUN_STALL_TIMEOUT_SECONDS, return_when=FIRST_COMPLETED)
+
+                if not done_set:
+                    for f in pending:
+                        sym = futures[f]
+                        f.cancel()  # best-effort — a no-op once the worker thread is already running
+                        if diag_by_symbol.get(sym, {}).get("terminal_path") is None:
+                            diag_by_symbol.setdefault(sym, {})["terminal_path"] = "stall_timeout"
+                        done += 1
+                        with _status_lock:
+                            _run_status["progress"] = done
+                            _run_status["log"].append(
+                                f"[{done}/{n_stocks}] {sym}: ERROR SYMBOL_VALIDATION_TIMEOUT"
                             )
-                            raise _FencedOutDuringComputation()
-                except _FencedOutDuringComputation:
-                    raise
-                except Exception:
-                    log.exception(
-                        "[validation] symbol backtest raised — symbol=%s market=%s "
-                        "universe=%s horizon=%s",
-                        sym, market, universe, horizon,
-                    )
-                    # V-FRESH1B — a truly unexpected exception escaping
-                    # _backtest_stock's own outer try/except (which already
-                    # catches everything internal) means this symbol's
-                    # diagnostic was never set — classify it here so every
-                    # requested symbol always has exactly one terminal
-                    # path, preserving the reconciliation invariant.
-                    if diag_by_symbol.get(sym, {}).get("terminal_path") is None:
-                        diag_by_symbol.setdefault(sym, {})["terminal_path"] = "calculation_exception"
-                    done += 1
-                    with _status_lock:
-                        _run_status["progress"] = done
-                        _run_status["log"].append(
-                            f"[{done}/{n_stocks}] {sym}: ERROR SYMBOL_VALIDATION_FAILED"
+                            if _run_status.get("job") is not None:
+                                _run_status["job"]["processed"] = done
+                                _run_status["job"]["current_symbol"] = sym
+                                _run_status["job"]["updated_at"] = datetime.now(timezone.utc).isoformat()
+                        log.error(
+                            "[validation] symbol backtest stalled beyond %ds — treated as a "
+                            "bounded timeout failure, run continues — symbol=%s market=%s "
+                            "universe=%s horizon=%s",
+                            RUN_STALL_TIMEOUT_SECONDS, sym, market, universe, horizon,
                         )
-                        if _run_status.get("job") is not None:
-                            _run_status["job"]["processed"] = done
-                            _run_status["job"]["current_symbol"] = sym
-                            _run_status["job"]["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    break
+
+                for future in done_set:
+                    sym = futures[future]
+                    try:
+                        sigs = future.result()
+                        all_signals.extend(sigs)
+                        if sigs:
+                            symbols_with_signals.add(sym)
+                        done += 1
+                        with _status_lock:
+                            _run_status["progress"] = done
+                            _run_status["log"].append(f"[{done}/{n_stocks}] {sym}: {len(sigs)} signals")
+                            if _run_status.get("job") is not None:
+                                _run_status["job"]["processed"] = done
+                                _run_status["job"]["current_symbol"] = sym
+                                _run_status["job"]["updated_at"] = datetime.now(timezone.utc).isoformat()
+                        if progress_callback is not None:
+                            try:
+                                progress_callback(done, n_stocks)
+                            except Exception:
+                                log.warning("[validation] progress_callback raised — ignored, run continues")
+                        if _fence_check is not None:
+                            fenced = False
+                            try:
+                                fenced = bool(_fence_check())
+                            except Exception:
+                                log.warning("[validation] _fence_check raised — treating as fenced-out")
+                                fenced = True
+                            if fenced:
+                                for f in futures:
+                                    f.cancel()
+                                log.warning(
+                                    "[validation] fencing lost mid-run (done=%d/%d) — aborting before "
+                                    "any persistence, no result will be computed further",
+                                    done, n_stocks,
+                                )
+                                raise _FencedOutDuringComputation()
+                    except _FencedOutDuringComputation:
+                        raise
+                    except Exception:
+                        log.exception(
+                            "[validation] symbol backtest raised — symbol=%s market=%s "
+                            "universe=%s horizon=%s",
+                            sym, market, universe, horizon,
+                        )
+                        # V-FRESH1B — a truly unexpected exception escaping
+                        # _backtest_stock's own outer try/except (which already
+                        # catches everything internal) means this symbol's
+                        # diagnostic was never set — classify it here so every
+                        # requested symbol always has exactly one terminal
+                        # path, preserving the reconciliation invariant.
+                        if diag_by_symbol.get(sym, {}).get("terminal_path") is None:
+                            diag_by_symbol.setdefault(sym, {})["terminal_path"] = "calculation_exception"
+                        done += 1
+                        with _status_lock:
+                            _run_status["progress"] = done
+                            _run_status["log"].append(
+                                f"[{done}/{n_stocks}] {sym}: ERROR SYMBOL_VALIDATION_FAILED"
+                            )
+                            if _run_status.get("job") is not None:
+                                _run_status["job"]["processed"] = done
+                                _run_status["job"]["current_symbol"] = sym
+                                _run_status["job"]["updated_at"] = datetime.now(timezone.utc).isoformat()
+        finally:
+            pool.shutdown(wait=False)
 
         signal_windows_considered = sum(s["considered"] for s in window_stats_by_symbol.values())
         benchmark_valid_signal_windows = sum(s["benchmark_valid"] for s in window_stats_by_symbol.values())

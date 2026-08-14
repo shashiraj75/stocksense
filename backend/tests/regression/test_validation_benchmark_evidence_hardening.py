@@ -301,7 +301,7 @@ class TestPositiveEntryAndExitEnforcement:
             def __init__(self, symbol):
                 pass
 
-            def history(self, period=None):
+            def history(self, period=None, timeout=None):
                 return _synthetic_stock_ohlcv()
 
             @property

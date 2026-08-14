@@ -71,7 +71,7 @@ class _FakeTicker:
         _FakeTicker.calls.append(symbol)
         self.symbol = symbol
 
-    def history(self, period=None):
+    def history(self, period=None, timeout=None):
         return _synthetic_ohlcv()
 
     @property

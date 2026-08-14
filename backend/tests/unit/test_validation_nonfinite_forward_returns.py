@@ -79,7 +79,7 @@ class TestBacktestStockRejectsNonFiniteClosePrices:
         stock_df = _synthetic_stock_ohlcv()
 
         class _Ticker(_FakeTicker):
-            def history(self, period=None):
+            def history(self, period=None, timeout=None):
                 return stock_df
 
         monkeypatch.setattr(ve.yf, "Ticker", _Ticker)
@@ -115,7 +115,7 @@ class TestBacktestStockRejectsNonFiniteClosePrices:
         stock_df, bench_df, target_pos = self._run_with_corrupted_close(monkeypatch, corrupt_value, "entry")
 
         class _Ticker(_FakeTicker):
-            def history(self, period=None):
+            def history(self, period=None, timeout=None):
                 return stock_df
 
         monkeypatch.setattr(ve.yf, "Ticker", _Ticker)
@@ -145,7 +145,7 @@ class TestBacktestStockRejectsNonFiniteClosePrices:
         stock_df.iloc[exit_pos, stock_df.columns.get_loc("Close")] = corrupt_value
 
         class _Ticker(_FakeTicker):
-            def history(self, period=None):
+            def history(self, period=None, timeout=None):
                 return stock_df
 
         monkeypatch.setattr(ve.yf, "Ticker", _Ticker)
@@ -177,7 +177,7 @@ class TestBacktestStockRejectsNonFiniteClosePrices:
             stock_df.iloc[entry_pos + 5, close_col] = float("nan")
 
         class _Ticker(_FakeTicker):
-            def history(self, period=None):
+            def history(self, period=None, timeout=None):
                 return stock_df
 
         monkeypatch.setattr(ve.yf, "Ticker", _Ticker)
@@ -219,7 +219,7 @@ class TestBacktestStockRejectsNonFiniteClosePrices:
         stock_df.iloc[exit_pos, close_col] = 0.0  # exact, literal total loss
 
         class _Ticker(_FakeTicker):
-            def history(self, period=None):
+            def history(self, period=None, timeout=None):
                 return stock_df
 
         monkeypatch.setattr(ve.yf, "Ticker", _Ticker)
@@ -276,7 +276,7 @@ class TestNonfiniteBenchmarkWithFiniteStockReturn:
         monkeypatch.setattr(ve.yf, "Ticker", _FakeTicker)
 
         class _Ticker(_FakeTicker):
-            def history(self, period=None):
+            def history(self, period=None, timeout=None):
                 return stock_df
 
         monkeypatch.setattr(ve.yf, "Ticker", _Ticker)
