@@ -1348,3 +1348,125 @@ def test_valid_heartbeat_extends_expiry_and_blocks_competitor_until_renewed_expi
     ).fetchone()
     assert final_row[0] == "B"
     assert final_row[1] == lease_b["fencing_token"]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# V-SCHED1D-B — list_schedule_attempts() under real PostgreSQL. Proves the
+# same read primitive the new authenticated GET /api/validation/attempts
+# route uses behaves identically to its already-tested SQLite path: filters,
+# schedule-slot LEFT JOIN, combined filters, deterministic (created_at, id)
+# cursor pagination stable under concurrent insert, manual-attempt null
+# slot fields, no internal-field leakage, and — since this primitive is
+# read-only by construction — no write/lock/deadlock of any kind.
+# ─────────────────────────────────────────────────────────────────────────
+
+def _insert_attempt(pg_conn, *, slot_id=None, horizon="medium", universe="nifty100",
+                     attempt_number=1, trigger_type="scheduler", status="completed",
+                     result_run_id=None, failure_category=None, created_at=T0):
+    row = pg_conn.execute(
+        "INSERT INTO validation_schedule_attempts "
+        "(slot_id, horizon, universe, attempt_number, trigger_type, status, "
+        "lease_owner, lease_fencing_token, result_run_id, failure_category, created_at, updated_at) "
+        "VALUES (%s,%s,%s,%s,%s,%s,'seed-owner',1,%s,%s,%s,%s) RETURNING id",
+        (slot_id, horizon, universe, attempt_number, trigger_type, status,
+         result_run_id, failure_category, created_at, created_at),
+    ).fetchone()
+    return row[0]
+
+
+def test_list_schedule_attempts_filters_and_join_real_postgres(pg_conn, pg_database_url):
+    import services.validation_engine as ve
+    ve._USE_POSTGRES = True
+    _reset_ledger_tables(pg_conn)
+
+    slot = ve.get_or_create_schedule_slot(horizon="medium", universe="nifty100",
+                                           scheduled_slot=T0, schedule_version="v1", now=T0)
+    _insert_attempt(pg_conn, slot_id=slot["id"], horizon="medium", universe="nifty100",
+                     trigger_type="scheduler", status="completed", result_run_id=None,
+                     created_at=T0)
+    _insert_attempt(pg_conn, slot_id=None, horizon="short", universe="us",
+                     trigger_type="manual", status="failed", failure_category="RUN_EXCEPTION",
+                     created_at=T0 + timedelta(seconds=1))
+
+    all_rows = ve.list_schedule_attempts(limit=10)
+    assert len(all_rows) == 2
+
+    scheduler_only = ve.list_schedule_attempts(trigger_type="scheduler", limit=10)
+    assert len(scheduler_only) == 1
+    assert scheduler_only[0]["slot_id"] == slot["id"]
+    assert scheduler_only[0]["scheduled_slot"] is not None
+    assert scheduler_only[0]["schedule_version"] == "v1"
+    assert scheduler_only[0]["slot_status"] is not None
+
+    manual_only = ve.list_schedule_attempts(trigger_type="manual", limit=10)
+    assert len(manual_only) == 1
+    assert manual_only[0]["slot_id"] is None
+    assert manual_only[0]["scheduled_slot"] is None
+    assert manual_only[0]["schedule_version"] is None
+    assert manual_only[0]["slot_status"] is None
+
+    combined = ve.list_schedule_attempts(
+        horizon="short", universe="us", trigger_type="manual", status="failed",
+        failure_category="RUN_EXCEPTION", limit=10,
+    )
+    assert len(combined) == 1
+
+    for row in all_rows:
+        assert "lease_owner" not in row
+        assert "lease_fencing_token" not in row
+        assert "failure_summary" not in row
+        for field in ("started_at", "heartbeat_at", "completed_at", "created_at", "updated_at"):
+            if row[field] is not None:
+                assert isinstance(row[field], str), f"{field} must be normalized to an ISO string, got {type(row[field])}"
+
+
+def test_list_schedule_attempts_cursor_pagination_stable_under_concurrent_insert_real_postgres(
+    pg_conn, pg_database_url
+):
+    import services.validation_engine as ve
+    ve._USE_POSTGRES = True
+    _reset_ledger_tables(pg_conn)
+
+    ids = []
+    for i in range(5):
+        ids.append(_insert_attempt(pg_conn, slot_id=None, trigger_type="manual",
+                                    attempt_number=i + 1, created_at=T0 + timedelta(seconds=i)))
+
+    page1 = ve.list_schedule_attempts(limit=3)
+    assert [r["id"] for r in page1] == list(reversed(ids))[:3]
+    last = page1[-1]
+
+    # A brand-new attempt is inserted between page requests — it sorts
+    # AHEAD of everything already paged and must never appear on the next
+    # (strictly older) page, and no already-paged row may be duplicated
+    # or skipped.
+    _insert_attempt(pg_conn, slot_id=None, trigger_type="manual", attempt_number=99,
+                     created_at=T0 + timedelta(seconds=100))
+
+    from datetime import datetime as _dt
+    page2 = ve.list_schedule_attempts(
+        limit=3,
+        cursor_created_at=_dt.fromisoformat(last["created_at"]),
+        cursor_id=last["id"],
+    )
+    assert [r["id"] for r in page2] == list(reversed(ids))[3:]
+
+
+def test_list_schedule_attempts_performs_no_write_real_postgres(pg_conn, pg_database_url):
+    import services.validation_engine as ve
+    ve._USE_POSTGRES = True
+    _reset_ledger_tables(pg_conn)
+
+    _insert_attempt(pg_conn, slot_id=None, trigger_type="manual", created_at=T0)
+    before = pg_conn.execute("SELECT COUNT(*) FROM validation_schedule_attempts").fetchone()[0]
+
+    ve.list_schedule_attempts(limit=10)
+    ve.list_schedule_attempts(horizon="short", limit=10)
+    ve.list_schedule_attempts(status="failed", limit=10)
+
+    after = pg_conn.execute("SELECT COUNT(*) FROM validation_schedule_attempts").fetchone()[0]
+    assert after == before, "list_schedule_attempts must never write — row count changed"
+
+    # Still usable afterward — no lingering lock, no deadlock.
+    lease = ve.acquire_validation_execution_lease(owner="post-read-check", now=T0, lease_duration_seconds=60)
+    assert lease["ok"] is True
