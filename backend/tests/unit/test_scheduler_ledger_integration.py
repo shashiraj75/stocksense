@@ -85,7 +85,8 @@ def _fake_run_validation_factory(monkeypatch, isolated_db, horizon="medium", uni
     `_persist=True` callers (direct/non-ledger tests) still get the old
     immediate-insert behavior."""
     def _fake(horizon=horizon, universe=universe, max_workers=6, trigger_type="internal",
-               _claimed_job=None, progress_callback=None, _persist=True, _fence_check=None):
+               _claimed_job=None, progress_callback=None, _persist=True, _fence_check=None,
+               _heartbeat=None, _lease_duration_seconds=None):
         for done, total in ((5, 10), (10, 10)):
             if progress_callback is not None:
                 progress_callback(done, total)
@@ -415,7 +416,8 @@ class TestCooperativeHeartbeat:
         monkeypatch.setattr(ve, "heartbeat_validation_execution_lease", _tracking_heartbeat)
 
         def _fake(horizon="medium", universe="nifty100", max_workers=6, trigger_type="internal",
-                   _claimed_job=None, progress_callback=None, _persist=True, _fence_check=None):
+                   _claimed_job=None, progress_callback=None, _persist=True, _fence_check=None,
+                   _heartbeat=None, _lease_duration_seconds=None):
             for i in range(1, 21):
                 if progress_callback is not None:
                     progress_callback(i, 20)
@@ -512,7 +514,8 @@ class TestOrphanResultPrevention:
         # report rejection on its very first check, mimicking "B already
         # holds the lease by the time A's next checkpoint runs".
         def _fake(horizon="medium", universe="nifty100", max_workers=6, trigger_type="internal",
-                   _claimed_job=None, progress_callback=None, _persist=True, _fence_check=None):
+                   _claimed_job=None, progress_callback=None, _persist=True, _fence_check=None,
+                   _heartbeat=None, _lease_duration_seconds=None):
             if progress_callback is not None:
                 progress_callback(1, 1)
             if _fence_check is not None and _fence_check():

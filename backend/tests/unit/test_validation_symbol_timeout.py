@@ -448,15 +448,259 @@ class TestProviderStallLedgerIntegrity:
         assert result["ok"] is False
         assert _count_val_runs(isolated_db) == 0, "a stalled run must never persist a val_runs row"
 
+    def test_exact_ledger_states_after_ordinary_provider_stall(self, monkeypatch, isolated_db):
+        """Literal, not ambiguous, terminal-state assertions — the exact
+        attempt status/failure_category/slot/lease/binding values, not the
+        vague phrase 'failed/failed_retryable'."""
+        monkeypatch.setattr(ve, "RUN_STALL_TIMEOUT_SECONDS", 0.2)
+        monkeypatch.setattr(ve, "US_BASKET", ["AAA", "STALLED"])
+
+        def _fake_backtest(sym, horizon, bench_df, market, **kwargs):
+            ws = kwargs.get("_window_stats")
+            if ws is not None:
+                ws["considered"] = 1
+                ws["benchmark_valid"] = 1
+            if sym == "STALLED":
+                threading.Event().wait(0.6)
+            return []
+
+        mock_yf = MagicMock()
+        mock_yf.Ticker.return_value.history.return_value = _valid_benchmark_df()
+        monkeypatch.setattr(ve, "_backtest_stock", _fake_backtest)
+        monkeypatch.setattr(ve, "yf", mock_yf)
+        monkeypatch.setattr(ve.time, "sleep", lambda *a, **k: None)
+
+        now = datetime.now(timezone.utc)
+        admitted = ve.admit_validation_attempt(horizon="short", universe="us", trigger_type="manual",
+                                                owner="stall-test", now=now)
+        assert admitted["ok"] is True
+        result = ve.execute_and_complete_admitted_attempt(
+            admitted["attempt_id"], admitted["owner"], admitted["fencing_token"], "short", "us", "manual",
+        )
+        assert result["ok"] is False
+
         attempt = ve.get_schedule_attempt(admitted["attempt_id"])
-        assert attempt["status"] in ("failed", "failed_retryable"), (
-            f"stalled attempt must end in a retryable-failure state, got: {attempt['status']}"
+        assert attempt["status"] == "failed"
+        assert attempt["failure_category"] == "RUN_EXCEPTION"
+        assert attempt["result_run_id"] is None
+        assert attempt["slot_id"] is None  # manual trigger — no slot to retry
+
+        with sqlite3.connect(isolated_db) as conn:
+            lease_row = conn.execute(
+                "SELECT lease_owner, active_attempt_id FROM validation_execution_leases"
+            ).fetchone()
+        assert lease_row == (None, None), f"lease must be fully released after a stall, got {lease_row}"
+
+
+# ── V-USCAP4 — the lease must survive draining, so a second worker can never ──
+# admit real overlapping provider work while the first worker's provider call
+# is still alive, even after the original lease TTL has elapsed. ─────────────
+
+def _seed_successful_result(monkeypatch, horizon="short", universe="us", owner="seed"):
+    """Real end-to-end seed of a genuine prior successful val_runs row via
+    the actual admitted-validation path — returns its run_id."""
+    monkeypatch.setattr(ve, "US_BASKET", ["SEED1", "SEED2"])
+
+    def _seed_backtest(sym, horizon, bench_df, market, **kwargs):
+        ws = kwargs.get("_window_stats")
+        if ws is not None:
+            ws["considered"] = 1
+            ws["benchmark_valid"] = 1
+        return []
+
+    mock_yf = MagicMock()
+    mock_yf.Ticker.return_value.history.return_value = _valid_benchmark_df()
+    monkeypatch.setattr(ve, "_backtest_stock", _seed_backtest)
+    monkeypatch.setattr(ve, "yf", mock_yf)
+    monkeypatch.setattr(ve.time, "sleep", lambda *a, **k: None)
+
+    now = datetime.now(timezone.utc)
+    admitted = ve.admit_validation_attempt(horizon=horizon, universe=universe, trigger_type="manual",
+                                            owner=owner, now=now)
+    assert admitted["ok"] is True
+    result = ve.execute_and_complete_admitted_attempt(
+        admitted["attempt_id"], admitted["owner"], admitted["fencing_token"], horizon, universe, "manual",
+    )
+    assert result["ok"] is True
+    return result["run_id"]
+
+
+@pytest.mark.unit
+class TestLeaseSurvivesDrain:
+    def test_worker_b_cannot_admit_while_worker_a_drains_past_original_lease_expiry(self, monkeypatch, isolated_db):
+        """The core no-overlap proof. Worker A's ORIGINAL lease is
+        deliberately SHORTER (1s) than its one genuinely-alive provider
+        worker's runtime (2.5s) — the exact condition that matters: does
+        the lease's own `expires_at` (a CAS comparison in acquire_
+        validation_execution_lease, completely independent of whether A
+        ever explicitly releases anything) pass while A's provider work
+        is still alive? Without drain-heartbeating, A never renews during
+        the wait, so by t≈1s a second worker's CAS-based reclaim succeeds
+        even though A's worker keeps running until t≈2.5s — proven unsafe
+        in the V-USCAP3 review. With the correction, A's heartbeat keeps
+        pushing `expires_at` forward throughout the drain, so Worker B's
+        CAS must keep failing for as long as A's provider worker is
+        genuinely alive — checked here specifically in the window AFTER
+        the original 1s would have expired but BEFORE the 2.5s worker
+        finishes."""
+        monkeypatch.setattr(ve, "RUN_STALL_TIMEOUT_SECONDS", 0.1)
+        monkeypatch.setattr(ve, "US_BASKET", ["STUCK"])
+
+        worker_alive = threading.Event()
+        worker_alive.set()
+
+        def _fake_backtest(sym, horizon, bench_df, market, **kwargs):
+            # Deliberately longer (2.5s) than A's 1s original lease —
+            # bounded so the test cannot hang, but long enough to leave a
+            # wide, unambiguous window past the original expiry.
+            threading.Event().wait(2.5)
+            worker_alive.clear()
+            return []
+
+        mock_yf = MagicMock()
+        mock_yf.Ticker.return_value.history.return_value = _valid_benchmark_df()
+        monkeypatch.setattr(ve, "_backtest_stock", _fake_backtest)
+        monkeypatch.setattr(ve, "yf", mock_yf)
+        monkeypatch.setattr(ve.time, "sleep", lambda *a, **k: None)
+
+        now = datetime.now(timezone.utc)
+        lease_a = ve.acquire_validation_execution_lease(owner="A", now=now, lease_duration_seconds=1)
+        assert lease_a["ok"] is True
+        admitted_a = ve.create_manual_attempt(horizon="short", universe="us", owner="A",
+                                               fencing_token=lease_a["fencing_token"], now=now)
+        assert admitted_a["ok"] is True
+        ve.mark_attempt_running(admitted_a["id"], owner="A", fencing_token=lease_a["fencing_token"], now=now)
+
+        # Run the real execution in a background thread — it drives
+        # run_validation's stall/drain loop with a drain interval bounded
+        # by the 1s lease (max(1, min(30, 1//4)) = 1s... actually below 1,
+        # see production code's max(1, ...) floor — a 1s lease still gets
+        # heartbeated well before expiry each cycle in the real formula).
+        exec_thread = threading.Thread(
+            target=lambda: ve.execute_and_complete_admitted_attempt(
+                admitted_a["id"], "A", lease_a["fencing_token"], "short", "us", "manual",
+                lease_duration_seconds=1, heartbeat_every_n_stocks=1,
+            ),
+            daemon=True,
+        )
+        exec_thread.start()
+
+        # t ≈ 1.6s: well past A's ORIGINAL 1s lease expiry, well before
+        # the 2.5s worker finishes. This is the decisive check. Event.wait
+        # (not time.sleep, which this test's own `ve.time.sleep` patch
+        # above silently neuters to a no-op, since `time` is a singleton
+        # module shared with this test file's own `import time`) — a real,
+        # unpatched wait.
+        threading.Event().wait(1.6)
+        assert worker_alive.is_set(), "test bug — worker finished too early; widen the margin"
+
+        now_b = datetime.now(timezone.utc)
+        lease_b = ve.acquire_validation_execution_lease(owner="B", now=now_b, lease_duration_seconds=600)
+        assert lease_b["ok"] is False, (
+            f"UNSAFE: worker B acquired the lease while A's provider worker was still alive: {lease_b}"
         )
 
-        # Public latest must be unaffected (still whatever it was before —
-        # here, nothing at all, proving no partial run became "latest").
-        latest = ve.get_latest_results(horizon="short", universe="us")
-        assert latest["available"] is False
+        exec_thread.join(timeout=3)
+        assert not exec_thread.is_alive(), "execute_and_complete_admitted_attempt never returned"
+        assert not worker_alive.is_set(), "A's worker should have finished by now"
+
+        # NOW that A has fully terminated and completed its failure
+        # transition (releasing the lease), B must be able to acquire normally.
+        now_b2 = datetime.now(timezone.utc)
+        lease_b2 = ve.acquire_validation_execution_lease(owner="B", now=now_b2, lease_duration_seconds=600)
+        assert lease_b2["ok"] is True, f"B should be able to acquire after A fully released: {lease_b2}"
+
+    def test_drain_heartbeats_fire_periodically_below_the_lease_duration(self, monkeypatch, isolated_db):
+        monkeypatch.setattr(ve, "RUN_STALL_TIMEOUT_SECONDS", 0.1)
+        monkeypatch.setattr(ve, "US_BASKET", ["STUCK"])
+
+        def _fake_backtest(sym, horizon, bench_df, market, **kwargs):
+            threading.Event().wait(0.7)
+            return []
+
+        mock_yf = MagicMock()
+        mock_yf.Ticker.return_value.history.return_value = _valid_benchmark_df()
+        monkeypatch.setattr(ve, "_backtest_stock", _fake_backtest)
+        monkeypatch.setattr(ve, "yf", mock_yf)
+        monkeypatch.setattr(ve.time, "sleep", lambda *a, **k: None)
+
+        heartbeat_calls = []
+
+        def _counting_heartbeat():
+            heartbeat_calls.append(time.monotonic())
+            return False  # never fenced
+
+        with pytest.raises(ve._ProviderStallDuringComputation):
+            ve.run_validation(
+                horizon="short", universe="us", max_workers=2, _persist=False,
+                _heartbeat=_counting_heartbeat, _lease_duration_seconds=1,
+            )
+
+        assert len(heartbeat_calls) >= 2, (
+            f"expected multiple drain heartbeats over a ~0.7s drain with a bounded interval, got {len(heartbeat_calls)}"
+        )
+        if len(heartbeat_calls) >= 2:
+            gaps = [b - a for a, b in zip(heartbeat_calls, heartbeat_calls[1:])]
+            assert all(g < 1 for g in gaps), f"a drain heartbeat gap reached/exceeded the 1s lease duration: {gaps}"
+
+    def test_heartbeat_rejection_during_drain_raises_fenced_out_not_provider_stall(self, monkeypatch):
+        monkeypatch.setattr(ve, "RUN_STALL_TIMEOUT_SECONDS", 0.1)
+        monkeypatch.setattr(ve, "US_BASKET", ["STUCK"])
+
+        def _fake_backtest(sym, horizon, bench_df, market, **kwargs):
+            threading.Event().wait(0.5)
+            return []
+
+        mock_yf = MagicMock()
+        mock_yf.Ticker.return_value.history.return_value = _valid_benchmark_df()
+        monkeypatch.setattr(ve, "_backtest_stock", _fake_backtest)
+        monkeypatch.setattr(ve, "yf", mock_yf)
+        monkeypatch.setattr(ve.time, "sleep", lambda *a, **k: None)
+
+        def _rejecting_heartbeat():
+            return True  # fenced out immediately
+
+        with pytest.raises(ve._FencedOutDuringComputation):
+            ve.run_validation(
+                horizon="short", universe="us", max_workers=2, _persist=False,
+                _heartbeat=_rejecting_heartbeat, _lease_duration_seconds=1,
+            )
+
+    def test_public_latest_preserved_with_seeded_prior_result_after_stall(self, monkeypatch, isolated_db):
+        """Strengthens the prior insufficient test — an empty database
+        remaining unavailable proves nothing about preserving an EXISTING
+        result. This seeds a genuine prior successful run first."""
+        seeded_run_id = _seed_successful_result(monkeypatch, horizon="short", universe="us")
+        prior_latest = ve.get_latest_results(horizon="short", universe="us")
+        assert prior_latest["available"] is True
+        assert prior_latest["run_id"] == seeded_run_id
+
+        monkeypatch.setattr(ve, "RUN_STALL_TIMEOUT_SECONDS", 0.2)
+        monkeypatch.setattr(ve, "US_BASKET", ["AAA", "STALLED"])
+
+        def _stall_backtest(sym, horizon, bench_df, market, **kwargs):
+            ws = kwargs.get("_window_stats")
+            if ws is not None:
+                ws["considered"] = 1
+                ws["benchmark_valid"] = 1
+            if sym == "STALLED":
+                threading.Event().wait(0.6)
+            return []
+
+        monkeypatch.setattr(ve, "_backtest_stock", _stall_backtest)
+
+        now2 = datetime.now(timezone.utc)
+        admitted = ve.admit_validation_attempt(horizon="short", universe="us", trigger_type="manual",
+                                                owner="stall", now=now2)
+        assert admitted["ok"] is True
+        result = ve.execute_and_complete_admitted_attempt(
+            admitted["attempt_id"], admitted["owner"], admitted["fencing_token"], "short", "us", "manual",
+        )
+        assert result["ok"] is False
+
+        post_latest = ve.get_latest_results(horizon="short", universe="us")
+        assert post_latest["run_id"] == seeded_run_id, "public latest changed after a stall — must remain the seeded prior result"
+        assert _count_val_runs(isolated_db) == 1, "no new val_runs row may appear after a stall"
 
 
 # ── Truly non-returning worker: subprocess-isolated, externally bounded ───────
