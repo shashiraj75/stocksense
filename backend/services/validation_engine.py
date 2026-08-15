@@ -3761,6 +3761,137 @@ def get_schedule_slot(slot_id: int) -> dict | None:
     )
 
 
+# V-SCHED1D-B columns — deliberately excludes lease_owner/lease_fencing_token/
+# failure_summary (see _ATTEMPT_COLUMNS above, which DOES include them for
+# the internal get_schedule_attempt() single-row reader). This is the
+# public-facing-safe-for-an-authenticated-operator column set only.
+_ATTEMPT_HISTORY_COLUMNS = (
+    "a.id, a.slot_id, a.horizon, a.universe, a.attempt_number, a.trigger_type, a.status, "
+    "a.started_at, a.heartbeat_at, a.completed_at, a.result_run_id, a.failure_category, "
+    "a.created_at, a.updated_at, "
+    "s.scheduled_slot AS scheduled_slot, s.schedule_version AS schedule_version, "
+    "s.status AS slot_status"
+)
+
+
+def list_schedule_attempts(*, horizon: str | None = None, universe: str | None = None,
+                            trigger_type: str | None = None, status: str | None = None,
+                            failure_category: str | None = None, schedule_version: str | None = None,
+                            result_run_id: int | None = None,
+                            since: datetime | None = None, until: datetime | None = None,
+                            cursor_created_at: datetime | None = None, cursor_id: int | None = None,
+                            limit: int = 50) -> list[dict]:
+    """V-SCHED1D-B — read-only, authenticated-operational history over
+    validation_schedule_attempts LEFT JOINed to validation_schedule_slots.
+
+    Never mutates state, never touches validation_execution_leases, never
+    calls any admission/lease/heartbeat/fencing/recovery/completion/
+    execution function. Every WHERE fragment below is a fixed source
+    string containing only hardcoded column names — no caller-supplied
+    value is ever interpolated into the SQL text; every value reaches the
+    database exclusively via a parameter placeholder (%s for Postgres, ?
+    for SQLite), appended to `params_pg`/`params_sq` in the exact same
+    order as the fragments that reference them.
+
+    Ordered by (created_at DESC, id DESC) — id is the deterministic
+    tie-breaker for rows sharing one created_at timestamp, and the same
+    (created_at, id) pair is what the caller encodes into an opaque
+    pagination cursor. `limit` here is the RAW row-fetch count — callers
+    that need "is there a next page" should pass `requested_limit + 1`
+    and slice the result themselves (this primitive does not special-case
+    that; see api/routers/validation.py's new route for the +1/slice
+    convention this is deliberately kept ignorant of).
+
+    A manual attempt (`slot_id IS NULL`) can never match a caller-supplied
+    `schedule_version` filter — the LEFT JOIN naturally yields NULL for
+    `s.schedule_version` on such a row, and SQL's `NULL = <anything>` is
+    never true in either dialect, so no special-casing is needed for that
+    guarantee either."""
+    where_pg: list[str] = ["1=1"]
+    where_sq: list[str] = ["1=1"]
+    params_pg: list = []
+    params_sq: list = []
+
+    def _eq(column: str, value) -> None:
+        if value is None:
+            return
+        where_pg.append(f"{column} = %s")
+        where_sq.append(f"{column} = ?")
+        params_pg.append(value)
+        params_sq.append(value)
+
+    _eq("a.horizon", horizon)
+    _eq("a.universe", universe)
+    _eq("a.trigger_type", trigger_type)
+    _eq("a.status", status)
+    _eq("a.failure_category", failure_category)
+    _eq("s.schedule_version", schedule_version)
+    _eq("a.result_run_id", result_run_id)
+
+    if since is not None:
+        _require_utc(since, param="since")
+        where_pg.append("a.created_at >= %s")
+        where_sq.append("a.created_at >= ?")
+        params_pg.append(since)
+        params_sq.append(_iso(since))
+    if until is not None:
+        _require_utc(until, param="until")
+        where_pg.append("a.created_at <= %s")
+        where_sq.append("a.created_at <= ?")
+        params_pg.append(until)
+        params_sq.append(_iso(until))
+    if cursor_created_at is not None and cursor_id is not None:
+        _require_utc(cursor_created_at, param="cursor_created_at")
+        where_pg.append("(a.created_at < %s OR (a.created_at = %s AND a.id < %s))")
+        where_sq.append("(a.created_at < ? OR (a.created_at = ? AND a.id < ?))")
+        params_pg.extend([cursor_created_at, cursor_created_at, cursor_id])
+        params_sq.extend([_iso(cursor_created_at), _iso(cursor_created_at), cursor_id])
+
+    where_clause_pg = " AND ".join(where_pg)
+    where_clause_sq = " AND ".join(where_sq)
+
+    sql_pg = (
+        f"SELECT {_ATTEMPT_HISTORY_COLUMNS} FROM validation_schedule_attempts a "
+        f"LEFT JOIN validation_schedule_slots s ON s.id = a.slot_id "
+        f"WHERE {where_clause_pg} "
+        f"ORDER BY a.created_at DESC, a.id DESC LIMIT %s"
+    )
+    sql_sq = (
+        f"SELECT {_ATTEMPT_HISTORY_COLUMNS} FROM validation_schedule_attempts a "
+        f"LEFT JOIN validation_schedule_slots s ON s.id = a.slot_id "
+        f"WHERE {where_clause_sq} "
+        f"ORDER BY a.created_at DESC, a.id DESC LIMIT ?"
+    )
+    params_pg.append(limit)
+    params_sq.append(limit)
+
+    if _USE_POSTGRES:
+        conn = _pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_pg, params_pg)
+                rows = _pg_dict_fetchall(cur)
+        finally:
+            conn.close()
+    else:
+        with _get_ledger_sqlite_conn() as conn:
+            rows = [dict(r) for r in conn.execute(sql_sq, params_sq).fetchall()]
+
+    # Normalize every timestamp field to a UTC ISO-8601 string regardless
+    # of dialect — Postgres/psycopg returns native datetime objects for
+    # TIMESTAMPTZ columns, SQLite already stores/returns ISO text. The
+    # response contract (and the pagination cursor, which round-trips
+    # `created_at` as a string) must be uniform across both.
+    _TIMESTAMP_FIELDS = ("started_at", "heartbeat_at", "completed_at", "created_at",
+                         "updated_at", "scheduled_slot")
+    for row in rows:
+        for field in _TIMESTAMP_FIELDS:
+            value = row.get(field)
+            if isinstance(value, datetime):
+                row[field] = _iso(value)
+    return rows
+
+
 def get_schedule_attempt(attempt_id: int) -> dict | None:
     """Read-only — never mutates state."""
     return _fetchone_ledger(

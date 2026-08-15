@@ -1,10 +1,14 @@
 """
 Validation API — exposes walk-forward backtest results to the frontend.
 """
+import base64
+import binascii
 import hmac
+import json
 import logging
 import math
 import os
+from datetime import datetime, timezone
 import numpy as np
 from fastapi import APIRouter, Query, BackgroundTasks, Header, HTTPException
 from fastapi.responses import JSONResponse
@@ -286,3 +290,136 @@ def get_history():
     except Exception as e:
         return _json_response({"available": False, "runs": [], "error": safe_error_message(
             log, "validation.get_history", e, "Validation data is temporarily unavailable.")})
+
+
+# ── V-SCHED1D-B — authenticated scheduler-attempt history ──────────────────
+# Read-only operational visibility into persisted validation_schedule_
+# attempts/slots. Protected by the exact same X-Secret mechanism as POST
+# /run (_require_validation_secret, constant-time hmac.compare_digest) —
+# no second authentication implementation. Never calls admission, lease,
+# heartbeat, fencing, recovery, completion, or run_validation — this route
+# only ever reads services.validation_engine.list_schedule_attempts.
+
+_CURSOR_VERSION = 1
+_ATTEMPT_STATUS_VALUES = ("claimed", "running", "completed", "failed", "abandoned")
+_FAILURE_CATEGORY_VALUES = ("ADMISSION_RACE", "RUN_EXCEPTION", "NO_RESULT_RUN_ID")
+
+
+def _parse_required_utc_query_timestamp(raw: str, *, param: str) -> datetime:
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail=f"{param} must be a valid ISO-8601 timestamp")
+    if dt.tzinfo is None:
+        raise HTTPException(status_code=400, detail=f"{param} must be timezone-aware (UTC)")
+    return dt.astimezone(timezone.utc)
+
+
+def _encode_attempt_cursor(created_at: str, attempt_id: int) -> str:
+    payload = {"v": _CURSOR_VERSION, "created_at": created_at, "id": attempt_id}
+    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+
+
+def _decode_attempt_cursor(raw: str) -> tuple[datetime, int]:
+    """Opaque pagination state only — never a security/authorization
+    token. Any malformed, oversized, or unsupported-version input fails
+    closed with a generic sanitized 400, never a raw parse exception."""
+    if len(raw) > 512:
+        raise HTTPException(status_code=400, detail="Invalid cursor")
+    try:
+        decoded = base64.urlsafe_b64decode(raw.encode())
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid cursor")
+    if len(decoded) > 512:
+        raise HTTPException(status_code=400, detail="Invalid cursor")
+    try:
+        payload = json.loads(decoded)
+    except (ValueError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail="Invalid cursor")
+    if not isinstance(payload, dict) or set(payload.keys()) != {"v", "created_at", "id"}:
+        raise HTTPException(status_code=400, detail="Invalid cursor")
+    if payload.get("v") != _CURSOR_VERSION:
+        raise HTTPException(status_code=400, detail="Invalid cursor")
+    attempt_id = payload.get("id")
+    if not isinstance(attempt_id, int) or isinstance(attempt_id, bool) or attempt_id <= 0:
+        raise HTTPException(status_code=400, detail="Invalid cursor")
+    created_at_raw = payload.get("created_at")
+    if not isinstance(created_at_raw, str):
+        raise HTTPException(status_code=400, detail="Invalid cursor")
+    created_at = _parse_required_utc_query_timestamp(created_at_raw, param="cursor")
+    return created_at, attempt_id
+
+
+@router.get("/attempts")
+def get_attempt_history(
+    x_secret: str | None = Header(None),
+    horizon: Literal["short", "medium", "long"] | None = Query(None),
+    universe: Literal["nifty100", "midcap", "us"] | None = Query(None),
+    trigger_type: Literal["scheduler", "catchup", "manual"] | None = Query(None),
+    status: Literal["claimed", "running", "completed", "failed", "abandoned"] | None = Query(None),
+    failure_category: Literal["ADMISSION_RACE", "RUN_EXCEPTION", "NO_RESULT_RUN_ID"] | None = Query(None),
+    schedule_version: str | None = Query(None, pattern=r"^[A-Za-z0-9._-]{1,32}$"),
+    result_run_id: int | None = Query(None, gt=0),
+    since: str | None = Query(None),
+    until: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    cursor: str | None = Query(None),
+):
+    """Authenticated (X-Secret) operational visibility into persisted
+    validation_schedule_attempts, left-joined to their validation_
+    schedule_slots (scheduled_slot / schedule_version / slot_status —
+    null for a manual attempt, whose slot_id is always null).
+
+    TRUTHFULNESS NOTE (read carefully before interpreting `status`/
+    `failure_category`): both fields reflect ONLY the persisted ledger
+    facts, verbatim — nothing here is inferred or reclassified.
+    - A provider stall is persisted as an ordinary `failure_category =
+      RUN_EXCEPTION` — the ledger has no distinct "provider stall"
+      category, so this endpoint cannot and does not report one.
+    - A fenced-out (stale-owner) attempt currently has NO distinct
+      persisted terminal state at all — it is never transitioned away
+      from whatever status it held when its computation was aborted
+      (per the existing _FencedOutDuringComputation contract, which
+      deliberately never touches a stale owner's own attempt row). Such
+      an attempt may therefore appear to remain `running` indefinitely in
+      this history even though it is not actually executing. This is a
+      known, honestly-disclosed limitation of the current schema, not a
+      bug in this endpoint.
+    - There is no stored `retry_eligible`/`failed_retryable`/
+      `failed_terminal` distinction. This endpoint deliberately does NOT
+      synthesize one — retry eligibility is decided by the scheduler's
+      own internal logic, not derivable from this read alone.
+
+    Never exposes lease_owner, lease_fencing_token, failure_summary (raw
+    text), or anything from validation_execution_leases — this route
+    never queries that table at all.
+    """
+    _require_validation_secret(x_secret)
+
+    since_dt = _parse_required_utc_query_timestamp(since, param="since") if since else None
+    until_dt = _parse_required_utc_query_timestamp(until, param="until") if until else None
+    if since_dt is not None and until_dt is not None and since_dt > until_dt:
+        raise HTTPException(status_code=400, detail="since must not be after until")
+
+    cursor_created_at = cursor_id = None
+    if cursor:
+        cursor_created_at, cursor_id = _decode_attempt_cursor(cursor)
+
+    from services.validation_engine import list_schedule_attempts
+    try:
+        rows = list_schedule_attempts(
+            horizon=horizon, universe=universe, trigger_type=trigger_type, status=status,
+            failure_category=failure_category, schedule_version=schedule_version,
+            result_run_id=result_run_id, since=since_dt, until=until_dt,
+            cursor_created_at=cursor_created_at, cursor_id=cursor_id,
+            limit=limit + 1,
+        )
+    except Exception as e:
+        return _json_response({"available": False, "attempts": [], "next_cursor": None, "error": safe_error_message(
+            log, "validation.get_attempt_history", e, "Validation attempt history is temporarily unavailable.")})
+
+    has_more = len(rows) > limit
+    page = rows[:limit]
+    next_cursor = _encode_attempt_cursor(page[-1]["created_at"], page[-1]["id"]) if has_more and page else None
+
+    return _json_response({"available": True, "attempts": page, "next_cursor": next_cursor})
