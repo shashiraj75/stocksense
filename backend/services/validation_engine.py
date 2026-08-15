@@ -19,13 +19,14 @@ No look-ahead bias — forward return is measured at t + horizon_days.
 """
 
 import logging
+import math
 import os
 import json
 import sqlite3
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -91,6 +92,9 @@ VALIDATION_PUBLIC_FAILURE_MESSAGES = {
     "BENCHMARK_ALIGNMENT_COVERAGE_INSUFFICIENT": (
         "Benchmark evidence coverage across this run was insufficient to publish a result."
     ),
+    "PROVIDER_STALL": (
+        "Validation was interrupted because a data provider stopped responding and will be retried."
+    ),
 }
 
 # benchmark_unavailable_reason's two possible stable public values. The
@@ -150,6 +154,68 @@ BENCHMARK_ALIGNMENT_MAX_STALE_DAYS = 5
 # require).
 BENCHMARK_FETCH_MAX_ATTEMPTS = 2
 BENCHMARK_FETCH_RETRY_BACKOFF_SECONDS = 2
+
+# Best-effort per-request timeout passed to every yfinance price-history
+# call this module makes. Confirmed production incident (2026-08-14): a
+# medium/us run started 2026-08-13T00:51:35Z, reached 25/42 symbols
+# normally, then stalled with zero progress for 15+ minutes and counting —
+# a prior run reportedly took ~8h5m for the same 42-symbol universe versus
+# 5-6 minutes for the 112-134-symbol Indian universes.
+#
+# V-USCAP1/V-USCAP2 correction (2026-08-14): this is NOT a guaranteed
+# whole-`.history()`-call deadline. Traced through the installed yfinance
+# implementation: the main chart-data GET receives this value, but the
+# cookie/crumb sub-requests `_make_request()` issues internally
+# (`_get_cookie_and_crumb()`) are called with no arguments and fall back to
+# yfinance's own hardcoded internal default — NOT this constant — and the
+# main request itself can retry with backoff. One `.history()` call can
+# therefore legitimately take a multiple of this value, not a hard ceiling
+# of it. Treat this as "bounds the primary request, best-effort on the
+# rest" — the RUN_STALL_TIMEOUT_SECONDS inactivity watchdog below is the
+# actual fail-closed backstop, not this constant.
+YFINANCE_REQUEST_TIMEOUT_SECONDS = 30
+
+# INACTIVITY watchdog for the per-stock ThreadPoolExecutor stage
+# (run_validation, below) — not a total-run deadline and not a thread
+# killer. If no symbol completes for this many consecutive seconds, the
+# run is treated as stalled: every not-yet-started future is cancelled,
+# every ALREADY-RUNNING worker is waited for to actually finish (Python
+# cannot forcibly stop a thread — see the honest limitation on the
+# executor-shutdown code below), and only once zero workers remain does
+# run_validation raise a typed _ProviderStallDuringComputation — never a
+# normal return, never a partial published result. A run where one future
+# happens to complete every (RUN_STALL_TIMEOUT_SECONDS - 1) seconds would
+# not trip this watchdog; it detects silence, not total elapsed time.
+RUN_STALL_TIMEOUT_SECONDS = 180
+
+
+def _lease_heartbeat_interval(lease_duration_seconds) -> float:
+    """V-USCAP6 — the SOLE gate for the lease-heartbeat poll-interval
+    safety invariant. Deliberately NOT a bare `assert` (assertions are
+    stripped entirely under `python -O`, which would silently remove this
+    as a production safety boundary) — every branch here is an
+    unconditional runtime check that raises ValueError.
+
+    No floor is applied (unlike the V-USCAP4 drain-only interval, which
+    floored at 0.25s): floor(duration/4) for a very short, deliberately
+    controlled lease (e.g. this module's own 1s test leases) must remain
+    a valid, strictly-below-duration interval, not be pushed up to/past
+    the duration itself by an artificial minimum.
+
+    For the real 600s production lease duration used by every scheduler/
+    catchup/manual caller, this yields exactly 30.0 seconds.
+    """
+    duration = float(lease_duration_seconds)
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError(
+            f"lease duration must be a positive finite value, got {lease_duration_seconds!r}"
+        )
+    interval = min(30.0, duration / 4.0)
+    if not math.isfinite(interval) or interval <= 0 or interval >= duration:
+        raise ValueError(
+            f"unsafe lease heartbeat interval {interval!r} for duration {duration!r}"
+        )
+    return interval
 
 # Acquisition-level coverage gate (Finding C, 2026-07-26 hardening): a
 # single valid forward-return window amid hundreds of invalid rows is not
@@ -1462,7 +1528,9 @@ def _backtest_stock(
     # is diagnostic-only and does not change any existing return value or
     # control flow for callers that don't pass `_diag`.
     try:
-        df = yf.Ticker(yf_sym).history(period=HORIZON_PERIOD[horizon])
+        df = yf.Ticker(yf_sym).history(
+            period=HORIZON_PERIOD[horizon], timeout=YFINANCE_REQUEST_TIMEOUT_SECONDS,
+        )
     except Exception as e:
         log.warning(
             "[validation] price fetch failed — symbol=%s yf_symbol=%s market=%s "
@@ -2266,7 +2334,8 @@ def _compute_metrics(
 
 def run_validation(horizon: str = "medium", universe: str = "nifty100", max_workers: int = 6,
                    trigger_type: str = "internal", _claimed_job: dict | None = None,
-                   progress_callback=None, _persist: bool = True, _fence_check=None) -> dict:
+                   progress_callback=None, _persist: bool = True, _fence_check=None,
+                   _heartbeat=None, _lease_duration_seconds: int | None = None) -> dict:
     """
     Run a full walk-forward validation.
 
@@ -2299,6 +2368,21 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
 
     Stores results in Postgres/SQLite and returns summary metrics, including
     the persisted `val_runs.id` as metrics["run_id"].
+
+    `_heartbeat`, if given (V-USCAP4), is a narrowly-scoped, heartbeat-ONLY
+    callback — `_heartbeat() -> bool` (True means fencing was lost) — called
+    from the main validation thread (never a background timer thread)
+    while DRAINING already-running provider workers after a stall is
+    detected, and nowhere else. It never increments progress and is
+    entirely distinct from `progress_callback`/`_fence_check` above, which
+    only ever fire on genuine per-symbol completion. `_lease_duration_
+    seconds`, if given alongside it, bounds the drain poll interval safely
+    below the caller's actual lease TTL (see RUN_STALL_TIMEOUT_SECONDS's
+    own docstring and the drain loop below for why this exists: without
+    it, a stall's `shutdown(wait=True)` wait would starve the ledger lease
+    of any renewal for as long as the stuck worker takes, letting it
+    expire and allowing a second worker to admit real, overlapping
+    provider work while the first worker's provider call is still alive).
 
     `progress_callback`, if given, is called as `progress_callback(done,
     total)` after each stock's backtest completes (main thread only, same
@@ -2400,7 +2484,9 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
     evidence: BenchmarkEvidence | None = None
     for attempt in range(BENCHMARK_FETCH_MAX_ATTEMPTS):
         try:
-            bench_df = yf.Ticker(benchmark_ticker).history(period=HORIZON_PERIOD[horizon])
+            bench_df = yf.Ticker(benchmark_ticker).history(
+                period=HORIZON_PERIOD[horizon], timeout=YFINANCE_REQUEST_TIMEOUT_SECONDS,
+            )
         except Exception:
             bench_df = None
             log.exception(
@@ -2502,7 +2588,22 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
         diag_by_symbol: dict[str, dict] = {}
         done = 0
 
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        # V-USCAP2 — a context-managed executor: __exit__ calls
+        # shutdown(wait=True), which BLOCKS until every already-started
+        # worker genuinely finishes. This is deliberate, not an oversight:
+        # Python cannot forcibly stop a running thread, so the only two
+        # honest choices on a stall are (a) wait for the real worker to
+        # finish before doing anything else, or (b) abandon it and leak a
+        # live thread forever (the prior design, which shut the pool down
+        # with waiting disabled —
+        # proven in the V-USCAP1 review to survive past the function's own
+        # return and to block the interpreter's own atexit thread-join,
+        # i.e. it does not actually free anything). This function never
+        # returns, and never lets the caller proceed to persistence, while
+        # a provider worker is still active.
+        stalled = False
+        pool = ThreadPoolExecutor(max_workers=max_workers)
+        try:
             futures = {}
             for sym in stocks:
                 stats = {"considered": 0, "benchmark_valid": 0}
@@ -2514,68 +2615,275 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
                     universe=universe, _exclusions=excluded_benchmark, _window_stats=stats,
                     _diag=diag,
                 )] = sym
-            for future in as_completed(futures):
-                sym = futures[future]
+
+            pending = set(futures.keys())
+
+            # V-USCAP6 — a SINGLE, unified wall-clock heartbeat schedule
+            # spans the ENTIRE executor lifecycle (ordinary per-symbol
+            # completion AND stall drain alike), not just the drain phase
+            # V-USCAP4 covered. Rationale (V-USCAP5 independent review,
+            # "Medium 1"): lease renewal was previously tied only to (a)
+            # the caller's own progress_callback/_fence_check, driven by
+            # every heartbeat_every_n_stocks completions, and (b) the
+            # V-USCAP4 drain heartbeat, which only ever started AFTER a
+            # full RUN_STALL_TIMEOUT_SECONDS of silence. A run where
+            # several symbols individually complete — never triggering
+            # the inactivity watchdog — but collectively take longer than
+            # the lease TTL between progress checkpoints could let the
+            # lease expire during perfectly ordinary execution, before
+            # the drain correction is ever reached. This heartbeat is
+            # scheduled purely by time.monotonic(), completely
+            # independent of both the progress counter and the inactivity
+            # clock below — it never increments `done`, never fires
+            # progress_callback, and never resets `last_progress_at`.
+            heartbeat_interval = (
+                _lease_heartbeat_interval(_lease_duration_seconds)
+                if _lease_duration_seconds else None
+            )
+            next_heartbeat_at = None
+            fenced_via_heartbeat = False
+
+            def _fire_heartbeat():
+                nonlocal fenced_via_heartbeat
                 try:
-                    sigs = future.result()
-                    all_signals.extend(sigs)
-                    if sigs:
-                        symbols_with_signals.add(sym)
-                    done += 1
-                    with _status_lock:
-                        _run_status["progress"] = done
-                        _run_status["log"].append(f"[{done}/{n_stocks}] {sym}: {len(sigs)} signals")
-                        if _run_status.get("job") is not None:
-                            _run_status["job"]["processed"] = done
-                            _run_status["job"]["current_symbol"] = sym
-                            _run_status["job"]["updated_at"] = datetime.now(timezone.utc).isoformat()
-                    if progress_callback is not None:
-                        try:
-                            progress_callback(done, n_stocks)
-                        except Exception:
-                            log.warning("[validation] progress_callback raised — ignored, run continues")
-                    if _fence_check is not None:
-                        fenced = False
-                        try:
-                            fenced = bool(_fence_check())
-                        except Exception:
-                            log.warning("[validation] _fence_check raised — treating as fenced-out")
-                            fenced = True
-                        if fenced:
-                            for f in futures:
-                                f.cancel()
-                            log.warning(
-                                "[validation] fencing lost mid-run (done=%d/%d) — aborting before "
-                                "any persistence, no result will be computed further",
-                                done, n_stocks,
-                            )
-                            raise _FencedOutDuringComputation()
-                except _FencedOutDuringComputation:
-                    raise
+                    if bool(_heartbeat()):
+                        fenced_via_heartbeat = True
                 except Exception:
-                    log.exception(
-                        "[validation] symbol backtest raised — symbol=%s market=%s "
-                        "universe=%s horizon=%s",
-                        sym, market, universe, horizon,
-                    )
-                    # V-FRESH1B — a truly unexpected exception escaping
-                    # _backtest_stock's own outer try/except (which already
-                    # catches everything internal) means this symbol's
-                    # diagnostic was never set — classify it here so every
-                    # requested symbol always has exactly one terminal
-                    # path, preserving the reconciliation invariant.
-                    if diag_by_symbol.get(sym, {}).get("terminal_path") is None:
-                        diag_by_symbol.setdefault(sym, {})["terminal_path"] = "calculation_exception"
-                    done += 1
-                    with _status_lock:
-                        _run_status["progress"] = done
-                        _run_status["log"].append(
-                            f"[{done}/{n_stocks}] {sym}: ERROR SYMBOL_VALIDATION_FAILED"
+                    log.warning("[validation] lease heartbeat raised — treating as fenced-out")
+                    fenced_via_heartbeat = True
+
+            def _heartbeat_if_due():
+                # Checked on every wake of the control loop below — even
+                # an iteration where one or more futures just completed —
+                # so a due heartbeat can never be indefinitely postponed
+                # by a trickle of genuine completions (V-USCAP5's Stage 2C
+                # concern: `wait()` returning a non-empty done_set on
+                # almost every call must not starve this schedule).
+                nonlocal next_heartbeat_at
+                if _heartbeat is None or heartbeat_interval is None or fenced_via_heartbeat:
+                    return
+                if time.monotonic() >= next_heartbeat_at:
+                    _fire_heartbeat()
+                    next_heartbeat_at = time.monotonic() + heartbeat_interval
+
+            if _heartbeat is not None and heartbeat_interval is not None:
+                # Immediate heartbeat before any wait — the lease is fresh
+                # from the very first moment provider work begins, not
+                # only after the first interval elapses.
+                _fire_heartbeat()
+                next_heartbeat_at = time.monotonic() + heartbeat_interval
+
+            # INACTIVITY tracking (unchanged in spirit from before this
+            # correction) is entirely separate from the heartbeat schedule
+            # above: it only ever advances on a GENUINE future completion,
+            # never on a heartbeat tick, so a heartbeat can never suppress
+            # or delay real stall detection.
+            last_progress_at = time.monotonic()
+
+            while pending:
+                if fenced_via_heartbeat:
+                    wait_timeout = 0.0
+                else:
+                    deadline = last_progress_at + RUN_STALL_TIMEOUT_SECONDS
+                    if next_heartbeat_at is not None:
+                        deadline = min(deadline, next_heartbeat_at)
+                    # wait(..., timeout=N) returns as soon as ANY future in
+                    # `pending` completes, OR after N seconds with an empty
+                    # `done_set` if none did. Waking no later than the
+                    # next of {heartbeat deadline, inactivity deadline,
+                    # future completion} lets a single loop serve both
+                    # schedules without a second thread.
+                    wait_timeout = max(0.0, deadline - time.monotonic())
+
+                done_set, pending = wait(pending, timeout=wait_timeout, return_when=FIRST_COMPLETED)
+
+                if done_set:
+                    last_progress_at = time.monotonic()
+
+                _heartbeat_if_due()
+
+                stalled_now = (
+                    not done_set and not fenced_via_heartbeat
+                    and time.monotonic() >= last_progress_at + RUN_STALL_TIMEOUT_SECONDS
+                )
+
+                if fenced_via_heartbeat or stalled_now:
+                    if stalled_now:
+                        stalled = True
+                        still_pending_symbols = [futures[f] for f in pending]
+                        log.error(
+                            "[validation] no symbol completed for %ds — treated as a provider "
+                            "stall, draining before failing this run closed — market=%s "
+                            "universe=%s horizon=%s pending_count=%d pending_symbols=%s",
+                            RUN_STALL_TIMEOUT_SECONDS, market, universe, horizon,
+                            len(still_pending_symbols), still_pending_symbols[:10],
                         )
-                        if _run_status.get("job") is not None:
-                            _run_status["job"]["processed"] = done
-                            _run_status["job"]["current_symbol"] = sym
-                            _run_status["job"]["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    else:
+                        log.warning(
+                            "[validation] lease heartbeat rejected mid-run (done=%d/%d) — "
+                            "draining before aborting, no persistence will be attempted — "
+                            "market=%s universe=%s horizon=%s",
+                            done, n_stocks, market, universe, horizon,
+                        )
+
+                    # V-USCAP4/V-USCAP6 — cancel every not-yet-started
+                    # future NOW, eagerly (not deferred to the final
+                    # shutdown() call below): a not-yet-started future
+                    # cancelled here can never turn into a NEW piece of
+                    # real provider work, closing that window as early as
+                    # possible. Then synchronously DRAIN every still-
+                    # unresolved future on the main thread, on the SAME
+                    # heartbeat schedule as ordinary execution above —
+                    # never a blocking shutdown(wait=True) straight away,
+                    # which would starve the lease of renewal for however
+                    # long the already-running worker(s) take to actually
+                    # finish (the defect proven in the V-USCAP3 review).
+                    # Results observed here are discarded entirely: no
+                    # progress increment, no signal collection, no
+                    # metrics/persistence — draining exists ONLY to keep
+                    # the lease alive while workers finish, never to
+                    # salvage a partial result.
+                    for f in pending:
+                        f.cancel()
+                    draining = set(pending)  # not-yet-started ones resolve almost immediately once cancelled above
+                    drain_poll = heartbeat_interval if heartbeat_interval is not None else 30.0
+                    while draining:
+                        done_now, draining = wait(draining, timeout=drain_poll, return_when=FIRST_COMPLETED)
+                        # done_now is deliberately never inspected/processed
+                        # — draining discards outcomes. Checked on EVERY
+                        # iteration, including ones where a future just
+                        # completed — same rule as the main loop above.
+                        _heartbeat_if_due()
+                    log.error(
+                        "[validation] drain complete — every worker has terminated "
+                        "(fenced=%s stalled=%s) — market=%s universe=%s horizon=%s",
+                        fenced_via_heartbeat, stalled, market, universe, horizon,
+                    )
+                    if fenced_via_heartbeat:
+                        # Losing the lease is a DIFFERENT failure than a
+                        # provider stall — the existing fencing contract
+                        # already knows exactly how to handle it (no
+                        # attempt-failed transition, no lease release,
+                        # never touch the new owner's binding), so reuse
+                        # it verbatim rather than inventing a second path.
+                        raise _FencedOutDuringComputation()
+                    # cancel_futures=True below is now a no-op (every
+                    # future has already resolved via the drain loop) —
+                    # kept only so this call remains the single, uniform
+                    # cleanup path for both the normal and stall branches.
+                    break
+
+                for future in done_set:
+                    sym = futures[future]
+                    try:
+                        sigs = future.result()
+                        all_signals.extend(sigs)
+                        if sigs:
+                            symbols_with_signals.add(sym)
+                        done += 1
+                        with _status_lock:
+                            _run_status["progress"] = done
+                            _run_status["log"].append(f"[{done}/{n_stocks}] {sym}: {len(sigs)} signals")
+                            if _run_status.get("job") is not None:
+                                _run_status["job"]["processed"] = done
+                                _run_status["job"]["current_symbol"] = sym
+                                _run_status["job"]["updated_at"] = datetime.now(timezone.utc).isoformat()
+                        if progress_callback is not None:
+                            try:
+                                progress_callback(done, n_stocks)
+                            except Exception:
+                                log.warning("[validation] progress_callback raised — ignored, run continues")
+                        if _fence_check is not None:
+                            fenced = False
+                            try:
+                                fenced = bool(_fence_check())
+                            except Exception:
+                                log.warning("[validation] _fence_check raised — treating as fenced-out")
+                                fenced = True
+                            if fenced:
+                                for f in futures:
+                                    f.cancel()
+                                log.warning(
+                                    "[validation] fencing lost mid-run (done=%d/%d) — aborting before "
+                                    "any persistence, no result will be computed further",
+                                    done, n_stocks,
+                                )
+                                raise _FencedOutDuringComputation()
+                    except _FencedOutDuringComputation:
+                        raise
+                    except Exception:
+                        log.exception(
+                            "[validation] symbol backtest raised — symbol=%s market=%s "
+                            "universe=%s horizon=%s",
+                            sym, market, universe, horizon,
+                        )
+                        # V-FRESH1B — a truly unexpected exception escaping
+                        # _backtest_stock's own outer try/except (which already
+                        # catches everything internal) means this symbol's
+                        # diagnostic was never set — classify it here so every
+                        # requested symbol always has exactly one terminal
+                        # path, preserving the reconciliation invariant.
+                        if diag_by_symbol.get(sym, {}).get("terminal_path") is None:
+                            diag_by_symbol.setdefault(sym, {})["terminal_path"] = "calculation_exception"
+                        done += 1
+                        with _status_lock:
+                            _run_status["progress"] = done
+                            _run_status["log"].append(
+                                f"[{done}/{n_stocks}] {sym}: ERROR SYMBOL_VALIDATION_FAILED"
+                            )
+                            if _run_status.get("job") is not None:
+                                _run_status["job"]["processed"] = done
+                                _run_status["job"]["current_symbol"] = sym
+                                _run_status["job"]["updated_at"] = datetime.now(timezone.utc).isoformat()
+        finally:
+            # wait=True blocks until every worker that actually started
+            # running has genuinely finished — this is the property that
+            # makes it safe to decide, right below, whether to proceed to
+            # persistence: by the time this call returns, zero provider
+            # workers remain active, on both the normal-completion and
+            # stall paths. cancel_futures=True additionally prevents any
+            # not-yet-started future from ever running at all once a
+            # stall has been decided — it does not affect futures already
+            # in progress (those can only be waited for, never cancelled).
+            pool.shutdown(wait=True, cancel_futures=True)
+
+        # By this point every worker has genuinely finished (see the wait
+        # above). Only now is it safe to decide whether to proceed to
+        # persistence — whether this was a normal completion or a stall.
+        if stalled:
+            log.error(
+                "[validation] provider stall confirmed — all workers have terminated, "
+                "failing this run closed with no metrics/persistence — market=%s "
+                "universe=%s horizon=%s",
+                market, universe, horizon,
+            )
+            with _status_lock:
+                _run_status.update({
+                    "running": False,
+                    "log": _run_status["log"] + [
+                        f"❌ Failed: {VALIDATION_PUBLIC_FAILURE_MESSAGES['PROVIDER_STALL']}"
+                    ],
+                })
+                if _run_status.get("job") is not None:
+                    _run_status["job"].update({
+                        "status": "failed",
+                        "failure_code": "PROVIDER_STALL",
+                        "failure_message": VALIDATION_PUBLIC_FAILURE_MESSAGES["PROVIDER_STALL"],
+                        "completed_at": datetime.now(timezone.utc).isoformat(),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    })
+            # No _compute_metrics call, no val_runs/val_signals write —
+            # mirrors the benchmark-coverage-insufficient gate below.
+            # Raised INSIDE this try/except (the outer one starting at
+            # _init_db()) deliberately, so the generic `except Exception:`
+            # handler further down sees failure_code already set and does
+            # not overwrite it with RUN_EXCEPTION.
+            raise _ProviderStallDuringComputation(
+                f"run_validation: provider stall — no symbol completed for "
+                f"{RUN_STALL_TIMEOUT_SECONDS}s (market={market} universe={universe} "
+                f"horizon={horizon}) — every worker has terminated, refusing to persist "
+                f"a truncated result"
+            )
 
         signal_windows_considered = sum(s["considered"] for s in window_stats_by_symbol.values())
         benchmark_valid_signal_windows = sum(s["benchmark_valid"] for s in window_stats_by_symbol.values())
@@ -4571,6 +4879,31 @@ class _FencedOutDuringComputation(Exception):
     a computation known to be stale should not even reach that call."""
 
 
+class _ProviderStallDuringComputation(Exception):
+    """V-USCAP2 — raised by run_validation() when RUN_STALL_TIMEOUT_SECONDS
+    of inactivity is detected in the per-stock ThreadPoolExecutor stage.
+    Only raised AFTER every already-running worker has actually finished
+    (ThreadPoolExecutor.shutdown(wait=True, cancel_futures=True) — never
+    wait=False, which would abandon a live thread Python cannot forcibly
+    stop) — so by the time this propagates, zero provider workers remain
+    active. No metrics are computed and no val_runs/val_signals row is
+    ever written for this computation; it is caught by the same generic
+    `except Exception:` handler execute_and_complete_admitted_attempt
+    already uses for any run_validation failure, so the attempt is marked
+    failed_retryable and the lease released through the existing,
+    unmodified contract — never a special case.
+
+    Honest limitation: this is an INACTIVITY detector, not a hard
+    wall-clock deadline, and it does not kill threads (Python cannot).
+    If the underlying yfinance call never returns at all despite its own
+    request-level timeout, run_validation stays blocked waiting for that
+    worker to finish — it does not abandon it, so no zombie thread is
+    ever created, but the attempt also cannot be force-completed. This is
+    the deliberate fail-closed tradeoff: no partial public result and no
+    released lease are worse outcomes than an attempt that stays running
+    until its underlying HTTP call genuinely resolves one way or another."""
+
+
 def complete_running_attempt_with_computed_result(
     attempt_id: int, owner: str, fencing_token: int, *,
     horizon: str, universe: str, run_at: str, n_stocks: int, n_signals: int,
@@ -4906,7 +5239,15 @@ def execute_and_complete_admitted_attempt(attempt_id: int, owner: str, fencing_t
     try:
         metrics = run_validation(horizon=horizon, universe=universe, max_workers=max_workers,
                                   trigger_type=trigger_type, progress_callback=_on_progress,
-                                  _persist=False, _fence_check=_fence_checkpoint)
+                                  _persist=False, _fence_check=_fence_checkpoint,
+                                  # V-USCAP4 — the SAME heartbeat function
+                                  # progress-driven renewal already uses,
+                                  # exposed via the dedicated drain-only
+                                  # path so a provider stall's shutdown
+                                  # wait can keep this lease alive without
+                                  # ever pretending a symbol completed.
+                                  _heartbeat=_on_progress_fence_check,
+                                  _lease_duration_seconds=lease_duration_seconds)
     except _FencedOutDuringComputation:
         log.warning(
             "[validation] attempt %s lost its lease during execution (fenced out) — "
