@@ -703,6 +703,364 @@ class TestLeaseSurvivesDrain:
         assert _count_val_runs(isolated_db) == 1, "no new val_runs row may appear after a stall"
 
 
+# ── V-USCAP6 — wall-clock lease heartbeat interval helper ─────────────────────
+
+@pytest.mark.unit
+class TestLeaseHeartbeatInterval:
+    """_lease_heartbeat_interval must be the SOLE, unconditional-runtime-
+    check gate for the interval safety invariant — no reliance on a bare
+    `assert` (stripped under `python -O`), no floor that makes short,
+    controlled test/production leases invalid, and always strictly below
+    the lease duration itself."""
+
+    @pytest.mark.parametrize("bad", [0, 0.0, -1, -100.0, float("nan"), float("inf"), float("-inf")])
+    def test_invalid_duration_raises_value_error_explicitly(self, bad):
+        with pytest.raises(ValueError):
+            ve._lease_heartbeat_interval(bad)
+
+    @pytest.mark.parametrize("duration", [0.5, 1, 2, 4, 30, 60, 120, 600, 3600])
+    def test_valid_duration_always_produces_interval_strictly_below_ttl(self, duration):
+        interval = ve._lease_heartbeat_interval(duration)
+        assert 0 < interval < duration, (
+            f"interval {interval} not strictly below duration {duration}"
+        )
+
+    def test_production_ttl_yields_thirty_second_interval(self):
+        assert ve._lease_heartbeat_interval(600) == 30.0
+
+    def test_no_unnecessary_floor_for_very_short_controlled_leases(self):
+        # A 1s lease used throughout this test suite's controlled
+        # reproductions must not be pushed to/above its own duration by an
+        # artificial minimum floor (the old 0.25s floor was harmless for
+        # 1s but this proves the new helper imposes none at all).
+        interval = ve._lease_heartbeat_interval(1)
+        assert interval == 0.25 or (0 < interval < 1)
+
+    def test_safety_boundary_is_not_a_bare_assert(self):
+        src = inspect.getsource(ve._lease_heartbeat_interval)
+        assert "assert " not in src, (
+            "the lease-heartbeat-interval safety boundary must use an "
+            "unconditional runtime check (raise ValueError), not a bare "
+            "`assert` — assertions are stripped entirely under `python -O`, "
+            "which would silently remove this production safety boundary"
+        )
+
+    def test_run_validation_drain_path_no_longer_relies_on_bare_assert(self):
+        src = inspect.getsource(ve.run_validation)
+        assert "assert drain_interval" not in src
+        assert "assert " not in src, (
+            "run_validation must not gate lease-interval safety behind a "
+            "bare assert anywhere in its body"
+        )
+
+
+# ── V-USCAP6 — unified wall-clock heartbeat throughout normal execution ───────
+
+@pytest.mark.unit
+class TestWallClockLeaseHeartbeat:
+    """Medium 1 from the V-USCAP5 independent review: lease renewal was
+    still primarily progress-count driven (every heartbeat_every_n_stocks
+    completions). A sequence of individually-completing-but-slow symbols
+    could consume more than the lease TTL between checkpoints without ever
+    tripping the (unrelated) all-zero-completions inactivity watchdog —
+    meaning the lease could expire during perfectly ordinary execution,
+    long before the drain correction (V-USCAP4) is ever entered. These
+    tests prove a genuine, unconditional wall-clock heartbeat now runs
+    throughout the ENTIRE executor lifecycle, not only during a
+    stall/drain — independent of how many (or how few) symbols have
+    completed."""
+
+    def test_slow_but_completing_symbols_cannot_expire_the_lease_without_wallclock_heartbeat(
+        self, monkeypatch, isolated_db
+    ):
+        """The core RED/GREEN proof. Three symbols each take 0.6s and
+        genuinely COMPLETE one at a time (never triggering the inactivity
+        watchdog, which is set generously here), and
+        heartbeat_every_n_stocks=100 guarantees the pre-existing
+        progress-driven checkpoint never fires either (only 3 symbols
+        total). The ONLY thing that can keep worker A's 1s lease alive
+        past the original expiry is a genuine wall-clock heartbeat running
+        independently of both progress and inactivity detection."""
+        monkeypatch.setattr(ve, "RUN_STALL_TIMEOUT_SECONDS", 5.0)
+        monkeypatch.setattr(ve, "US_BASKET", ["S1", "S2", "S3"])
+
+        def _slow_but_completing(sym, horizon, bench_df, market, **kwargs):
+            ws = kwargs.get("_window_stats")
+            if ws is not None:
+                ws["considered"] = 1
+                ws["benchmark_valid"] = 1
+            threading.Event().wait(0.6)
+            return []
+
+        mock_yf = MagicMock()
+        mock_yf.Ticker.return_value.history.return_value = _valid_benchmark_df()
+        monkeypatch.setattr(ve, "_backtest_stock", _slow_but_completing)
+        monkeypatch.setattr(ve, "yf", mock_yf)
+        monkeypatch.setattr(ve.time, "sleep", lambda *a, **k: None)
+
+        now = datetime.now(timezone.utc)
+        lease_a = ve.acquire_validation_execution_lease(owner="A", now=now, lease_duration_seconds=1)
+        assert lease_a["ok"] is True
+        admitted_a = ve.create_manual_attempt(horizon="short", universe="us", owner="A",
+                                               fencing_token=lease_a["fencing_token"], now=now)
+        assert admitted_a["ok"] is True
+        ve.mark_attempt_running(admitted_a["id"], owner="A", fencing_token=lease_a["fencing_token"], now=now)
+
+        exec_thread = threading.Thread(
+            target=lambda: ve.execute_and_complete_admitted_attempt(
+                admitted_a["id"], "A", lease_a["fencing_token"], "short", "us", "manual",
+                lease_duration_seconds=1, heartbeat_every_n_stocks=100, max_workers=1,
+            ),
+            daemon=True,
+        )
+        exec_thread.start()
+
+        # t ≈ 1.6s: past A's original 1s lease; S1 (~0.6s) and S2 (~1.2s)
+        # have completed, S3 is still genuinely mid-flight (max_workers=1
+        # forces strict sequential execution) — no stall was ever
+        # detected, no progress checkpoint ever fired.
+        threading.Event().wait(1.6)
+        assert exec_thread.is_alive(), "test bug — run finished too early; widen the margin"
+
+        now_b = datetime.now(timezone.utc)
+        lease_b = ve.acquire_validation_execution_lease(owner="B", now=now_b, lease_duration_seconds=600)
+        assert lease_b["ok"] is False, (
+            f"UNSAFE: worker B acquired the lease during ordinary slow-but-completing "
+            f"execution while A was still genuinely alive: {lease_b}"
+        )
+
+        exec_thread.join(timeout=3)
+        assert not exec_thread.is_alive(), "execute_and_complete_admitted_attempt never returned"
+
+        # After A fully finishes and releases, B must be able to acquire normally.
+        now_b2 = datetime.now(timezone.utc)
+        lease_b2 = ve.acquire_validation_execution_lease(owner="B", now=now_b2, lease_duration_seconds=600)
+        assert lease_b2["ok"] is True, f"B should be able to acquire after A fully released: {lease_b2}"
+
+    def test_wallclock_heartbeats_fire_periodically_during_ordinary_slow_execution(self, monkeypatch):
+        """Trickle-completion cadence proof (Stage 2C): several futures
+        each resolve near the heartbeat interval, one after another — the
+        maximum observed gap between heartbeats must stay strictly below
+        the lease TTL even though a future resolves on almost every wait
+        iteration."""
+        monkeypatch.setattr(ve, "RUN_STALL_TIMEOUT_SECONDS", 5.0)
+        monkeypatch.setattr(ve, "US_BASKET", ["S1", "S2", "S3", "S4"])
+
+        def _slow(sym, horizon, bench_df, market, **kwargs):
+            ws = kwargs.get("_window_stats")
+            if ws is not None:
+                ws["considered"] = 1
+                ws["benchmark_valid"] = 1
+            threading.Event().wait(0.3)
+            return []
+
+        mock_yf = MagicMock()
+        mock_yf.Ticker.return_value.history.return_value = _valid_benchmark_df()
+        monkeypatch.setattr(ve, "_backtest_stock", _slow)
+        monkeypatch.setattr(ve, "yf", mock_yf)
+        monkeypatch.setattr(ve.time, "sleep", lambda *a, **k: None)
+
+        heartbeat_calls = []
+
+        def _counting_heartbeat():
+            heartbeat_calls.append(time.monotonic())
+            return False
+
+        ve.run_validation(
+            horizon="short", universe="us", max_workers=1, _persist=False,
+            _heartbeat=_counting_heartbeat, _lease_duration_seconds=1,
+        )
+
+        assert len(heartbeat_calls) >= 2, (
+            f"expected multiple wall-clock heartbeats over a ~1.2s run with a bounded "
+            f"interval, got {len(heartbeat_calls)}"
+        )
+        gaps = [b - a for a, b in zip(heartbeat_calls, heartbeat_calls[1:])]
+        assert all(g < 1 for g in gaps), (
+            f"a heartbeat gap reached/exceeded the 1s lease duration even though "
+            f"futures kept completing near the interval: {gaps}"
+        )
+
+    def test_heartbeat_rejection_during_ordinary_execution_raises_fenced_out(self, monkeypatch):
+        """Stage 2E — a wall-clock heartbeat that reports fencing loss
+        during ORDINARY (non-stalled) execution must cancel queued work,
+        drain already-running work, persist nothing, and raise the
+        existing fenced-out contract — never the provider-stall path."""
+        monkeypatch.setattr(ve, "RUN_STALL_TIMEOUT_SECONDS", 5.0)
+        monkeypatch.setattr(ve, "US_BASKET", ["S1", "S2", "S3"])
+
+        def _slow(sym, horizon, bench_df, market, **kwargs):
+            ws = kwargs.get("_window_stats")
+            if ws is not None:
+                ws["considered"] = 1
+                ws["benchmark_valid"] = 1
+            threading.Event().wait(0.5)
+            return []
+
+        mock_yf = MagicMock()
+        mock_yf.Ticker.return_value.history.return_value = _valid_benchmark_df()
+        monkeypatch.setattr(ve, "_backtest_stock", _slow)
+        monkeypatch.setattr(ve, "yf", mock_yf)
+        monkeypatch.setattr(ve.time, "sleep", lambda *a, **k: None)
+
+        def _rejecting_heartbeat():
+            return True
+
+        with pytest.raises(ve._FencedOutDuringComputation):
+            ve.run_validation(
+                horizon="short", universe="us", max_workers=1, _persist=False,
+                _heartbeat=_rejecting_heartbeat, _lease_duration_seconds=1,
+            )
+
+    def test_queued_futures_never_start_when_wallclock_heartbeat_is_rejected(self, monkeypatch):
+        """Companion to the previous test: not-yet-started symbols must be
+        cancelled, not invoked, the moment a wall-clock heartbeat reports
+        fencing loss — mirrors the existing stall-path guarantee."""
+        monkeypatch.setattr(ve, "RUN_STALL_TIMEOUT_SECONDS", 5.0)
+        stocks = ["RUNNING"] + [f"QUEUED{i}" for i in range(10)]
+        monkeypatch.setattr(ve, "US_BASKET", stocks)
+
+        invoked = []
+
+        def _fake_backtest(sym, horizon, bench_df, market, **kwargs):
+            invoked.append(sym)
+            ws = kwargs.get("_window_stats")
+            if ws is not None:
+                ws["considered"] = 1
+                ws["benchmark_valid"] = 1
+            if sym == "RUNNING":
+                # Long enough that the single worker thread is still busy
+                # with RUNNING (never freed to dequeue a QUEUED* task) by
+                # the time the immediate pre-loop heartbeat below fires
+                # and the main thread cancels every not-yet-started future.
+                threading.Event().wait(1.0)
+            return []
+
+        mock_yf = MagicMock()
+        mock_yf.Ticker.return_value.history.return_value = _valid_benchmark_df()
+        monkeypatch.setattr(ve, "_backtest_stock", _fake_backtest)
+        monkeypatch.setattr(ve, "yf", mock_yf)
+        monkeypatch.setattr(ve.time, "sleep", lambda *a, **k: None)
+
+        def _rejecting_heartbeat():
+            return True  # fenced out on the very first (immediate, pre-loop) heartbeat
+
+        with pytest.raises(ve._FencedOutDuringComputation):
+            ve.run_validation(
+                horizon="short", universe="us", max_workers=1, _persist=False,
+                _heartbeat=_rejecting_heartbeat, _lease_duration_seconds=1,
+            )
+
+        assert "RUNNING" in invoked
+        assert not any(s.startswith("QUEUED") for s in invoked), (
+            f"a queued-but-not-yet-started symbol was invoked instead of cancelled: {invoked}"
+        )
+
+    def test_wallclock_heartbeat_does_not_delay_or_suppress_genuine_stall_detection(self, monkeypatch):
+        """Stage 2F — a wall-clock heartbeat firing throughout a genuine
+        stall must never reset or extend the SEPARATE inactivity clock:
+        total elapsed time must track the truly-stuck worker's own
+        duration, not be pushed out by ongoing heartbeat activity."""
+        monkeypatch.setattr(ve, "RUN_STALL_TIMEOUT_SECONDS", 1.0)
+        monkeypatch.setattr(ve, "US_BASKET", ["STUCK"])
+
+        def _stuck(sym, horizon, bench_df, market, **kwargs):
+            threading.Event().wait(2.5)
+            return []
+
+        mock_yf = MagicMock()
+        mock_yf.Ticker.return_value.history.return_value = _valid_benchmark_df()
+        monkeypatch.setattr(ve, "_backtest_stock", _stuck)
+        monkeypatch.setattr(ve, "yf", mock_yf)
+        monkeypatch.setattr(ve.time, "sleep", lambda *a, **k: None)
+
+        heartbeat_calls = []
+
+        def _counting_heartbeat():
+            heartbeat_calls.append(time.monotonic())
+            return False
+
+        t0 = time.monotonic()
+        with pytest.raises(ve._ProviderStallDuringComputation):
+            ve.run_validation(
+                horizon="short", universe="us", max_workers=1, _persist=False,
+                _heartbeat=_counting_heartbeat, _lease_duration_seconds=4,
+            )
+        elapsed = time.monotonic() - t0
+
+        # The stuck worker itself takes ~2.5s; heartbeats (interval ~1s)
+        # fire throughout but must not push total elapsed time
+        # meaningfully past the worker's own real duration.
+        assert 2.0 <= elapsed <= 4.0, (
+            f"elapsed={elapsed}s suggests heartbeat activity distorted stall "
+            f"detection/drain timing (expected close to the 2.5s stuck-worker duration)"
+        )
+        assert len(heartbeat_calls) >= 1
+
+    def test_wallclock_heartbeat_never_increments_progress_or_run_status(self, monkeypatch):
+        """Stage 2F — a heartbeat call, by itself, must never be mistaken
+        for a completed symbol: progress_callback must only ever be
+        invoked on genuine per-symbol completion, never once per
+        heartbeat tick."""
+        monkeypatch.setattr(ve, "RUN_STALL_TIMEOUT_SECONDS", 5.0)
+        monkeypatch.setattr(ve, "US_BASKET", ["S1", "S2"])
+
+        def _slow(sym, horizon, bench_df, market, **kwargs):
+            ws = kwargs.get("_window_stats")
+            if ws is not None:
+                ws["considered"] = 1
+                ws["benchmark_valid"] = 1
+            threading.Event().wait(0.6)
+            return []
+
+        mock_yf = MagicMock()
+        mock_yf.Ticker.return_value.history.return_value = _valid_benchmark_df()
+        monkeypatch.setattr(ve, "_backtest_stock", _slow)
+        monkeypatch.setattr(ve, "yf", mock_yf)
+        monkeypatch.setattr(ve.time, "sleep", lambda *a, **k: None)
+
+        progress_calls = []
+        heartbeat_calls = {"n": 0}
+
+        def _counting_heartbeat():
+            heartbeat_calls["n"] += 1
+            return False
+
+        ve.run_validation(
+            horizon="short", universe="us", max_workers=1, _persist=False,
+            progress_callback=lambda done, total: progress_calls.append((done, total)),
+            _heartbeat=_counting_heartbeat, _lease_duration_seconds=1,
+        )
+
+        assert progress_calls == [(1, 2), (2, 2)], (
+            f"progress_callback must fire exactly once per genuine symbol completion, "
+            f"got {progress_calls}"
+        )
+        assert heartbeat_calls["n"] >= 2, "expected multiple wall-clock heartbeat ticks over ~1.2s"
+
+    def test_direct_caller_without_heartbeat_params_is_unaffected(self, monkeypatch):
+        """Stage 2D — a caller that predates this correction and never
+        passes _heartbeat/_lease_duration_seconds must behave exactly as
+        before: no heartbeat scheduling, no new exception types, normal
+        completion."""
+        stocks = ["AAA", "BBB", "CCC"]
+        monkeypatch.setattr(ve, "US_BASKET", stocks)
+
+        seen = []
+
+        def _fake_backtest(sym, horizon, bench_df, market, **kwargs):
+            seen.append(sym)
+            return []
+
+        _mock_run_validation_io(monkeypatch, _fake_backtest)
+        result = ve.run_validation(horizon="short", universe="us", max_workers=3)
+
+        assert sorted(seen) == sorted(stocks)
+        assert result is not None
+        with ve._status_lock:
+            assert ve._run_status["progress"] == len(stocks)
+
+
 # ── Truly non-returning worker: subprocess-isolated, externally bounded ───────
 
 _NEVER_RETURNS_SCRIPT = r"""

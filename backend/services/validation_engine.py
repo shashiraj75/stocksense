@@ -19,6 +19,7 @@ No look-ahead bias — forward return is measured at t + horizon_days.
 """
 
 import logging
+import math
 import os
 import json
 import sqlite3
@@ -186,6 +187,35 @@ YFINANCE_REQUEST_TIMEOUT_SECONDS = 30
 # happens to complete every (RUN_STALL_TIMEOUT_SECONDS - 1) seconds would
 # not trip this watchdog; it detects silence, not total elapsed time.
 RUN_STALL_TIMEOUT_SECONDS = 180
+
+
+def _lease_heartbeat_interval(lease_duration_seconds) -> float:
+    """V-USCAP6 — the SOLE gate for the lease-heartbeat poll-interval
+    safety invariant. Deliberately NOT a bare `assert` (assertions are
+    stripped entirely under `python -O`, which would silently remove this
+    as a production safety boundary) — every branch here is an
+    unconditional runtime check that raises ValueError.
+
+    No floor is applied (unlike the V-USCAP4 drain-only interval, which
+    floored at 0.25s): floor(duration/4) for a very short, deliberately
+    controlled lease (e.g. this module's own 1s test leases) must remain
+    a valid, strictly-below-duration interval, not be pushed up to/past
+    the duration itself by an artificial minimum.
+
+    For the real 600s production lease duration used by every scheduler/
+    catchup/manual caller, this yields exactly 30.0 seconds.
+    """
+    duration = float(lease_duration_seconds)
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError(
+            f"lease duration must be a positive finite value, got {lease_duration_seconds!r}"
+        )
+    interval = min(30.0, duration / 4.0)
+    if not math.isfinite(interval) or interval <= 0 or interval >= duration:
+        raise ValueError(
+            f"unsafe lease heartbeat interval {interval!r} for duration {duration!r}"
+        )
+    return interval
 
 # Acquisition-level coverage gate (Finding C, 2026-07-26 hardening): a
 # single valid forward-return window amid hundreds of invalid rows is not
@@ -2587,103 +2617,153 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
                 )] = sym
 
             pending = set(futures.keys())
-            while pending:
-                # wait(..., timeout=N) returns as soon as ANY future in
-                # `pending` completes, OR after N seconds with an empty
-                # `done_set` if none did — the latter is the stall signal.
-                # This is an INACTIVITY detector, not a total-run deadline:
-                # a single slow symbol doesn't trip it while its siblings
-                # keep completing, and a run where something completes
-                # every (RUN_STALL_TIMEOUT_SECONDS - 1) seconds would never
-                # trip it either — see RUN_STALL_TIMEOUT_SECONDS's own
-                # docstring for that honest limitation.
-                done_set, pending = wait(pending, timeout=RUN_STALL_TIMEOUT_SECONDS, return_when=FIRST_COMPLETED)
 
-                if not done_set:
-                    stalled = True
-                    still_pending_symbols = [futures[f] for f in pending]
-                    log.error(
-                        "[validation] no symbol completed for %ds — treated as a provider "
-                        "stall, draining before failing this run closed — market=%s "
-                        "universe=%s horizon=%s pending_count=%d pending_symbols=%s",
-                        RUN_STALL_TIMEOUT_SECONDS, market, universe, horizon,
-                        len(still_pending_symbols), still_pending_symbols[:10],
-                    )
-                    # V-USCAP4 — cancel every not-yet-started future NOW,
-                    # eagerly (not deferred to the final shutdown() call
-                    # below): a not-yet-started future cancelled here can
-                    # never turn into a NEW piece of real provider work,
-                    # closing that window as early as possible.
+            # V-USCAP6 — a SINGLE, unified wall-clock heartbeat schedule
+            # spans the ENTIRE executor lifecycle (ordinary per-symbol
+            # completion AND stall drain alike), not just the drain phase
+            # V-USCAP4 covered. Rationale (V-USCAP5 independent review,
+            # "Medium 1"): lease renewal was previously tied only to (a)
+            # the caller's own progress_callback/_fence_check, driven by
+            # every heartbeat_every_n_stocks completions, and (b) the
+            # V-USCAP4 drain heartbeat, which only ever started AFTER a
+            # full RUN_STALL_TIMEOUT_SECONDS of silence. A run where
+            # several symbols individually complete — never triggering
+            # the inactivity watchdog — but collectively take longer than
+            # the lease TTL between progress checkpoints could let the
+            # lease expire during perfectly ordinary execution, before
+            # the drain correction is ever reached. This heartbeat is
+            # scheduled purely by time.monotonic(), completely
+            # independent of both the progress counter and the inactivity
+            # clock below — it never increments `done`, never fires
+            # progress_callback, and never resets `last_progress_at`.
+            heartbeat_interval = (
+                _lease_heartbeat_interval(_lease_duration_seconds)
+                if _lease_duration_seconds else None
+            )
+            next_heartbeat_at = None
+            fenced_via_heartbeat = False
+
+            def _fire_heartbeat():
+                nonlocal fenced_via_heartbeat
+                try:
+                    if bool(_heartbeat()):
+                        fenced_via_heartbeat = True
+                except Exception:
+                    log.warning("[validation] lease heartbeat raised — treating as fenced-out")
+                    fenced_via_heartbeat = True
+
+            def _heartbeat_if_due():
+                # Checked on every wake of the control loop below — even
+                # an iteration where one or more futures just completed —
+                # so a due heartbeat can never be indefinitely postponed
+                # by a trickle of genuine completions (V-USCAP5's Stage 2C
+                # concern: `wait()` returning a non-empty done_set on
+                # almost every call must not starve this schedule).
+                nonlocal next_heartbeat_at
+                if _heartbeat is None or heartbeat_interval is None or fenced_via_heartbeat:
+                    return
+                if time.monotonic() >= next_heartbeat_at:
+                    _fire_heartbeat()
+                    next_heartbeat_at = time.monotonic() + heartbeat_interval
+
+            if _heartbeat is not None and heartbeat_interval is not None:
+                # Immediate heartbeat before any wait — the lease is fresh
+                # from the very first moment provider work begins, not
+                # only after the first interval elapses.
+                _fire_heartbeat()
+                next_heartbeat_at = time.monotonic() + heartbeat_interval
+
+            # INACTIVITY tracking (unchanged in spirit from before this
+            # correction) is entirely separate from the heartbeat schedule
+            # above: it only ever advances on a GENUINE future completion,
+            # never on a heartbeat tick, so a heartbeat can never suppress
+            # or delay real stall detection.
+            last_progress_at = time.monotonic()
+
+            while pending:
+                if fenced_via_heartbeat:
+                    wait_timeout = 0.0
+                else:
+                    deadline = last_progress_at + RUN_STALL_TIMEOUT_SECONDS
+                    if next_heartbeat_at is not None:
+                        deadline = min(deadline, next_heartbeat_at)
+                    # wait(..., timeout=N) returns as soon as ANY future in
+                    # `pending` completes, OR after N seconds with an empty
+                    # `done_set` if none did. Waking no later than the
+                    # next of {heartbeat deadline, inactivity deadline,
+                    # future completion} lets a single loop serve both
+                    # schedules without a second thread.
+                    wait_timeout = max(0.0, deadline - time.monotonic())
+
+                done_set, pending = wait(pending, timeout=wait_timeout, return_when=FIRST_COMPLETED)
+
+                if done_set:
+                    last_progress_at = time.monotonic()
+
+                _heartbeat_if_due()
+
+                stalled_now = (
+                    not done_set and not fenced_via_heartbeat
+                    and time.monotonic() >= last_progress_at + RUN_STALL_TIMEOUT_SECONDS
+                )
+
+                if fenced_via_heartbeat or stalled_now:
+                    if stalled_now:
+                        stalled = True
+                        still_pending_symbols = [futures[f] for f in pending]
+                        log.error(
+                            "[validation] no symbol completed for %ds — treated as a provider "
+                            "stall, draining before failing this run closed — market=%s "
+                            "universe=%s horizon=%s pending_count=%d pending_symbols=%s",
+                            RUN_STALL_TIMEOUT_SECONDS, market, universe, horizon,
+                            len(still_pending_symbols), still_pending_symbols[:10],
+                        )
+                    else:
+                        log.warning(
+                            "[validation] lease heartbeat rejected mid-run (done=%d/%d) — "
+                            "draining before aborting, no persistence will be attempted — "
+                            "market=%s universe=%s horizon=%s",
+                            done, n_stocks, market, universe, horizon,
+                        )
+
+                    # V-USCAP4/V-USCAP6 — cancel every not-yet-started
+                    # future NOW, eagerly (not deferred to the final
+                    # shutdown() call below): a not-yet-started future
+                    # cancelled here can never turn into a NEW piece of
+                    # real provider work, closing that window as early as
+                    # possible. Then synchronously DRAIN every still-
+                    # unresolved future on the main thread, on the SAME
+                    # heartbeat schedule as ordinary execution above —
+                    # never a blocking shutdown(wait=True) straight away,
+                    # which would starve the lease of renewal for however
+                    # long the already-running worker(s) take to actually
+                    # finish (the defect proven in the V-USCAP3 review).
+                    # Results observed here are discarded entirely: no
+                    # progress increment, no signal collection, no
+                    # metrics/persistence — draining exists ONLY to keep
+                    # the lease alive while workers finish, never to
+                    # salvage a partial result.
                     for f in pending:
                         f.cancel()
-
-                    # The critical correction: do NOT go straight to a
-                    # blocking shutdown(wait=True) here. That would starve
-                    # the ledger lease of any renewal for however long the
-                    # already-running worker(s) take to actually finish —
-                    # long enough for the lease to expire and a second
-                    # worker to admit real, overlapping provider work
-                    # while this run's worker is still alive (the exact
-                    # defect proven in the V-USCAP3 review). Instead,
-                    # synchronously DRAIN every still-unresolved future on
-                    # the main thread, heartbeating the lease at each
-                    # bounded poll interval — never a second background
-                    # heartbeat thread, never a second DB connection from
-                    # another thread. Results observed here are discarded
-                    # entirely: no progress increment, no signal
-                    # collection, no metrics/persistence — draining exists
-                    # ONLY to keep the lease alive while workers finish,
-                    # never to salvage a partial result.
-                    # Float division, not floor division — guarantees
-                    # drain_interval < _lease_duration_seconds strictly
-                    # for ANY positive lease duration (floor division of
-                    # a small integer, e.g. 1 // 4 == 0, previously could
-                    # round the interval UP to equal the lease duration
-                    # via the max(1, ...) floor — exactly the unsafe
-                    # boundary this must never reach). The assertion below
-                    # is the code-level guard against a future
-                    # configuration change silently reintroducing that.
-                    drain_interval = (
-                        max(0.25, min(30.0, _lease_duration_seconds / 4.0))
-                        if _lease_duration_seconds else 30.0
-                    )
-                    if _lease_duration_seconds:
-                        assert drain_interval < _lease_duration_seconds, (
-                            f"drain_interval ({drain_interval}) must stay strictly below "
-                            f"_lease_duration_seconds ({_lease_duration_seconds})"
-                        )
-                    fenced_during_drain = False
                     draining = set(pending)  # not-yet-started ones resolve almost immediately once cancelled above
-                    heartbeat_count = 0
-                    if _heartbeat is not None:
-                        try:
-                            fenced_during_drain = bool(_heartbeat())
-                        except Exception:
-                            log.warning("[validation] heartbeat raised during drain — treating as fenced-out")
-                            fenced_during_drain = True
-                        heartbeat_count += 1
+                    drain_poll = heartbeat_interval if heartbeat_interval is not None else 30.0
                     while draining:
-                        done_now, draining = wait(draining, timeout=drain_interval, return_when=FIRST_COMPLETED)
-                        # done_now is deliberately never inspected/processed —
-                        # see the comment above: draining discards outcomes.
-                        if not done_now and _heartbeat is not None and not fenced_during_drain:
-                            try:
-                                fenced_during_drain = bool(_heartbeat())
-                            except Exception:
-                                log.warning("[validation] heartbeat raised during drain — treating as fenced-out")
-                                fenced_during_drain = True
-                            heartbeat_count += 1
+                        done_now, draining = wait(draining, timeout=drain_poll, return_when=FIRST_COMPLETED)
+                        # done_now is deliberately never inspected/processed
+                        # — draining discards outcomes. Checked on EVERY
+                        # iteration, including ones where a future just
+                        # completed — same rule as the main loop above.
+                        _heartbeat_if_due()
                     log.error(
-                        "[validation] provider stall drain complete — every worker has "
-                        "terminated (heartbeats_sent=%d, fenced_during_drain=%s) — "
-                        "market=%s universe=%s horizon=%s",
-                        heartbeat_count, fenced_during_drain, market, universe, horizon,
+                        "[validation] drain complete — every worker has terminated "
+                        "(fenced=%s stalled=%s) — market=%s universe=%s horizon=%s",
+                        fenced_via_heartbeat, stalled, market, universe, horizon,
                     )
-                    if fenced_during_drain:
-                        # Losing the lease mid-drain is a DIFFERENT failure
-                        # than a provider stall — the existing fencing
-                        # contract already knows exactly how to handle it
-                        # (no attempt-failed transition, no lease release,
+                    if fenced_via_heartbeat:
+                        # Losing the lease is a DIFFERENT failure than a
+                        # provider stall — the existing fencing contract
+                        # already knows exactly how to handle it (no
+                        # attempt-failed transition, no lease release,
                         # never touch the new owner's binding), so reuse
                         # it verbatim rather than inventing a second path.
                         raise _FencedOutDuringComputation()

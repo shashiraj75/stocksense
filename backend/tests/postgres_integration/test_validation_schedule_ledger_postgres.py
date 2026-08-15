@@ -1236,3 +1236,115 @@ def test_no_orphan_short_result_survives_fencing_loss_real_postgres(pg_conn, pg_
     assert completion_a["ok"] is False
     assert _val_runs_count(pg_conn) == 1  # only the pre-existing row
     assert _val_signals_count(pg_conn) == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# V-USCAP6 — positive-renewal evidence under real PostgreSQL. The existing
+# tests above (test_expiry_reclaim_with_stale_attempt_real_postgres,
+# test_fenced_recovery_real_postgres) only proved the NEGATIVE cases —
+# stale-heartbeat rejection and rejected-competitor-after-expiry. Flagged
+# as a Medium gap by the V-USCAP5 independent review: nothing proved, under
+# real Postgres CAS semantics, that a VALID current-owner/token heartbeat
+# actually advances expires_at, nor that a competitor is rejected while
+# that RENEWED lease is still current (as opposed to merely after the
+# ORIGINAL expiry with no renewal in between — the scenario every other
+# test here already covers). This is the exact composed scenario the
+# wall-clock heartbeat added in this correction depends on. Controlled
+# timestamps throughout — no real sleeps.
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_valid_heartbeat_extends_expiry_and_blocks_competitor_until_renewed_expiry_real_postgres(
+    pg_conn, pg_database_url
+):
+    import services.validation_engine as ve
+    ve._USE_POSTGRES = True
+    _reset_ledger_tables(pg_conn)
+
+    # 1. Owner A acquires a short, controlled lease.
+    lease_a = ve.acquire_validation_execution_lease(owner="A", now=T0, lease_duration_seconds=2)
+    assert lease_a["ok"] is True
+    token_a = lease_a["fencing_token"]
+
+    # 2. Record the original expires_at and fencing token.
+    row_before = pg_conn.execute(
+        "SELECT lease_owner, fencing_token, expires_at FROM validation_execution_leases "
+        "WHERE resource_key=%s", (ve.GLOBAL_LEASE_RESOURCE_KEY,),
+    ).fetchone()
+    assert row_before[0] == "A"
+    assert row_before[1] == token_a
+    original_expires_at = row_before[2]
+    assert original_expires_at == T0 + timedelta(seconds=2)
+
+    # 3. Before original expiry, A performs a valid heartbeat using the
+    # exact owner/token — this is what the new wall-clock schedule now
+    # calls throughout ordinary execution, not only during a drain.
+    heartbeat_time = T0 + timedelta(seconds=1)
+    hb = ve.heartbeat_validation_execution_lease(
+        owner="A", fencing_token=token_a, now=heartbeat_time, lease_duration_seconds=2,
+    )
+    assert hb["ok"] is True
+
+    # 4. Confirm expires_at genuinely advanced (not merely unchanged) and
+    # the owner/token binding is untouched by a heartbeat, only the
+    # expiry.
+    row_after_heartbeat = pg_conn.execute(
+        "SELECT lease_owner, fencing_token, expires_at FROM validation_execution_leases "
+        "WHERE resource_key=%s", (ve.GLOBAL_LEASE_RESOURCE_KEY,),
+    ).fetchone()
+    renewed_expires_at = row_after_heartbeat[2]
+    assert renewed_expires_at > original_expires_at, (
+        f"heartbeat did not advance expires_at under real Postgres: "
+        f"before={original_expires_at} after={renewed_expires_at}"
+    )
+    assert renewed_expires_at == heartbeat_time + timedelta(seconds=2)
+    assert row_after_heartbeat[0] == "A", "heartbeat must never change the owner"
+    assert row_after_heartbeat[1] == token_a, "heartbeat must never change the fencing token"
+
+    # 5. After the ORIGINAL expiry but BEFORE the RENEWED expiry, Owner B
+    # attempts acquisition — this is the composed scenario no existing
+    # test covered: the CAS predicate (`expires_at <= now`) must evaluate
+    # against the genuinely-renewed row, not a stale in-memory value.
+    between_original_and_renewed = T0 + timedelta(seconds=2, milliseconds=500)
+    assert original_expires_at < between_original_and_renewed < renewed_expires_at
+    lease_b_too_early = ve.acquire_validation_execution_lease(
+        owner="B", now=between_original_and_renewed, lease_duration_seconds=600,
+    )
+
+    # 6. Confirm B is rejected as already leased.
+    assert lease_b_too_early["ok"] is False
+    assert lease_b_too_early["reason"] == "already_leased"
+
+    # 7. Confirm A remains the owner and its fencing token/binding are
+    # unchanged by B's rejected attempt.
+    row_after_rejected_b = pg_conn.execute(
+        "SELECT lease_owner, fencing_token, expires_at FROM validation_execution_leases "
+        "WHERE resource_key=%s", (ve.GLOBAL_LEASE_RESOURCE_KEY,),
+    ).fetchone()
+    assert row_after_rejected_b[0] == "A"
+    assert row_after_rejected_b[1] == token_a
+    assert row_after_rejected_b[2] == renewed_expires_at
+
+    # 8. After the RENEWED expiry, B may acquire using the normal
+    # expiry/reclaim contract.
+    after_renewed_expiry = renewed_expires_at + timedelta(seconds=1)
+    lease_b = ve.acquire_validation_execution_lease(
+        owner="B", now=after_renewed_expiry, lease_duration_seconds=600,
+    )
+    assert lease_b["ok"] is True
+    assert lease_b["fencing_token"] > token_a
+
+    # 9. A's stale heartbeat (old token) is then rejected.
+    stale_hb = ve.heartbeat_validation_execution_lease(
+        owner="A", fencing_token=token_a, now=after_renewed_expiry, lease_duration_seconds=600,
+    )
+    assert stale_hb["ok"] is False
+
+    # 10. No deadlock or unexpected transaction state — the connection is
+    # still usable for further queries and the row is in a single,
+    # coherent final state (B's, not a mix of A/B fields).
+    final_row = pg_conn.execute(
+        "SELECT lease_owner, fencing_token FROM validation_execution_leases "
+        "WHERE resource_key=%s", (ve.GLOBAL_LEASE_RESOURCE_KEY,),
+    ).fetchone()
+    assert final_row[0] == "B"
+    assert final_row[1] == lease_b["fencing_token"]

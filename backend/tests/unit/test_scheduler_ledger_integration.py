@@ -441,6 +441,73 @@ class TestCooperativeHeartbeat:
         assert len(heartbeat_calls) == 2
         assert all(hb["ok"] for hb in heartbeat_calls)
 
+    def test_execute_and_complete_admitted_attempt_wires_real_heartbeat_and_lease_duration_into_run_validation(
+        self, isolated_db, monkeypatch
+    ):
+        """V-USCAP6 Stage 5 — the wall-clock heartbeat added inside
+        run_validation is worthless if the wrapper wires it up wrong. This
+        captures the ACTUAL kwargs execute_and_complete_admitted_attempt
+        passes to run_validation (not a fake standing in for them) and
+        proves: (a) the real numeric lease_duration_seconds this attempt
+        was admitted with is passed through as _lease_duration_seconds,
+        never a default/placeholder; (b) the passed _heartbeat is a real,
+        callable closure bound to THIS attempt's actual owner/fencing_
+        token — proven by invoking it and observing a genuine CAS-based
+        expires_at advance in the real ledger, not merely asserting
+        callable(_heartbeat)."""
+        captured = {}
+
+        def _recording_run_validation(*args, **kwargs):
+            captured["lease_duration"] = kwargs.get("_lease_duration_seconds")
+            heartbeat = kwargs.get("_heartbeat")
+            captured["heartbeat_is_callable"] = callable(heartbeat)
+
+            with sqlite3.connect(isolated_db) as conn:
+                row_before = conn.execute(
+                    "SELECT expires_at FROM validation_execution_leases "
+                    "WHERE resource_key='validation-global'"
+                ).fetchone()
+
+            captured["heartbeat_fenced"] = heartbeat() if heartbeat is not None else None
+
+            with sqlite3.connect(isolated_db) as conn:
+                row_after = conn.execute(
+                    "SELECT expires_at FROM validation_execution_leases "
+                    "WHERE resource_key='validation-global'"
+                ).fetchone()
+            captured["expires_before"] = row_before[0]
+            captured["expires_after"] = row_after[0]
+
+            return {
+                "horizon": kwargs.get("horizon"), "universe": kwargs.get("universe"),
+                "_persist_payload": {
+                    "run_at": T0.isoformat(), "horizon": kwargs.get("horizon"), "n_stocks": 1,
+                    "n_signals": 0, "summary_json": "{}", "universe": kwargs.get("universe"),
+                    "signal_rows": [],
+                },
+            }
+
+        monkeypatch.setattr(ve, "run_validation", _recording_run_validation)
+
+        result = execute_admitted_validation(
+            horizon="medium", universe="nifty100", trigger_type="scheduler",
+            owner="scheduler-1", scheduled_slot=T0, now=_real_now(),
+            lease_duration_seconds=123, heartbeat_every_n_stocks=10,
+        )
+        assert result["ok"] is True
+        assert captured["lease_duration"] == 123, (
+            "the wrapper must pass THIS attempt's actual lease_duration_seconds, "
+            f"got {captured.get('lease_duration')!r}"
+        )
+        assert captured["heartbeat_is_callable"] is True
+        assert captured["heartbeat_fenced"] is False, (
+            "a fresh, still-valid owner/fencing_token heartbeat must not report fencing loss"
+        )
+        assert captured["expires_after"] > captured["expires_before"], (
+            "the wired _heartbeat callback did not perform a real CAS renewal against "
+            "this attempt's actual owner/fencing_token — expires_at must genuinely advance"
+        )
+
     def test_stalled_worker_eventually_loses_lease_not_renewed_blindly(self, isolated_db):
         """No progress = no heartbeat call at all — proving renewal is
         tied to observable forward progress, not a background timer."""
