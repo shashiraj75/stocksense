@@ -1599,6 +1599,62 @@ def _install_stuck_provider(ve):
     ve._validation_child_worker = _worker_stuck_real_pg
 
 
+def _worker_fast_success_real_pg(result_queue, horizon, universe, max_workers, trigger_type):
+    """V-USACT1-B-CI1 — top-level, spawn-safe worker for a genuinely
+    fast, successful attempt (used by tests that first install a stuck
+    worker for one attempt, then need a real, independent fast-success
+    child for a SECOND, later attempt). Reassigning ve._backtest_stock/
+    ve.US_BASKET directly (the pre-C3 pattern) has no effect once
+    ve._validation_child_worker itself has been replaced by a dedicated
+    top-level worker that configures its own internal state — this
+    worker must instead be explicitly installed as
+    ve._validation_child_worker in its own right before the second
+    attempt runs. Emits genuine progress/result IPC messages via the
+    real run_validation() so the parent-side orchestration and atomic
+    completion path are exercised exactly as in production; no network
+    access, no direct database write, no inherited monkeypatch."""
+    import threading as _t
+    from unittest.mock import MagicMock as _EMagicMock
+    import numpy as _enp
+    import pandas as _epd
+    from datetime import datetime as _edatetime, timezone as _etimezone
+    import services.validation_engine as _ve
+
+    _ve.RUN_STALL_TIMEOUT_SECONDS = 3600
+    _ve.US_BASKET = ["OK1"]
+
+    def _fast_ok(sym, horizon, bench_df, market, **kwargs):
+        ws = kwargs.get("_window_stats")
+        if ws is not None:
+            ws["considered"] = 1
+            ws["benchmark_valid"] = 1
+        return []
+    _ve._backtest_stock = _fast_ok
+
+    def _bench_df():
+        dates = _epd.bdate_range("2019-01-01", periods=300)
+        close = 100.0 * _enp.cumprod(1 + _enp.random.default_rng(1).normal(0.0003, 0.008, 300))
+        return _epd.DataFrame({"Close": close}, index=dates)
+    mock_yf = _EMagicMock()
+    mock_yf.Ticker.return_value.history.return_value = _bench_df()
+    _ve.yf = mock_yf
+
+    try:
+        metrics = _ve.run_validation(horizon=horizon, universe=universe, max_workers=max_workers,
+                                      trigger_type=trigger_type, _persist=False)
+        payload = metrics.get("_persist_payload")
+        now_iso = _edatetime.now(_etimezone.utc).isoformat()
+        if payload is None:
+            result_queue.put({"type": "error", "category": "NO_RESULT_RUN_ID", "message": None,
+                               "completed_at_utc": now_iso})
+            return
+        result_queue.put({"type": "result", "payload": payload, "completed_at_utc": now_iso})
+    except Exception as e:
+        now_iso = _edatetime.now(_etimezone.utc).isoformat()
+        result_queue.put({"type": "error", "category": type(e).__name__, "message": str(e)[:200],
+                           "completed_at_utc": now_iso})
+
+
 def test_run_deadline_exceeded_zero_result_rows_real_postgres(pg_conn, pg_database_url):
     import services.validation_engine as ve
     ve._USE_POSTGRES = True
@@ -1703,14 +1759,15 @@ def test_stale_killed_child_cannot_link_a_result_real_postgres(pg_conn, pg_datab
     )
 
     # B runs a genuinely fast, successful attempt afterward.
-    def _fast_ok(sym, horizon, bench_df, market, **kwargs):
-        ws = kwargs.get("_window_stats")
-        if ws is not None:
-            ws["considered"] = 1
-            ws["benchmark_valid"] = 1
-        return []
-    ve._backtest_stock = _fast_ok
-    ve.US_BASKET = ["OK1"]
+    # V-USACT1-B-CI1 — reassigning ve._backtest_stock/ve.US_BASKET
+    # directly (the pre-C3 pattern) has no effect anymore: A's setup
+    # above already replaced ve._validation_child_worker itself with the
+    # top-level _worker_stuck_real_pg, which configures its own internal
+    # state inside each spawned child regardless of what this test
+    # process's own ve module attributes say. B's attempt must instead
+    # install its own dedicated, genuinely spawn-safe fast-success
+    # top-level worker as ve._validation_child_worker in its own right.
+    ve._validation_child_worker = _worker_fast_success_real_pg
 
     now_b = now + timedelta(seconds=5)
     lease_b = ve.acquire_validation_execution_lease(owner="B", now=now_b, lease_duration_seconds=600)
