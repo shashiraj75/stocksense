@@ -49,7 +49,7 @@ type ViewMode = "stock" | "sector";
 
 export default function HeatmapPage() {
   const [market] = useMarketPreference(["IN", "US"] as const, "IN");
-  const [view, setView] = useState<ViewMode>("stock");
+  const [view, setView] = useState<ViewMode>("sector");
   const router = useRouter();
 
   const { data, isLoading, isFetching, isError, dataUpdatedAt } = useQuery({
@@ -87,7 +87,7 @@ export default function HeatmapPage() {
         <div className="flex items-center gap-3 ml-auto">
           {/* View toggle */}
           <div className="flex items-center gap-0.5 bg-dark-card border border-dark-border rounded-lg p-0.5 text-xs">
-            {([["stock", "By Stock"], ["sector", "By Sector"]] as const).map(([mode, label]) => (
+            {([["sector", "By Sector"], ["stock", "By Stock"]] as const).map(([mode, label]) => (
               <button
                 key={mode}
                 onClick={() => setView(mode)}
