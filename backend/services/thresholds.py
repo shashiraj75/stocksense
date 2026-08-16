@@ -570,6 +570,39 @@ class ValuationIntelligenceThresholds:
     PREDICTION_ENGINE_CONFIDENCE_ADJUSTMENT_CAP_NEGATIVE = 4.0
 
 
+@dataclass(frozen=True)
+class DailyPicksPublicationThresholds:
+    """
+    Conviction-gated Daily Picks publication policy (feature/daily-picks-
+    conviction-gated-publication). Governs ONLY which already-eligible,
+    already-ranked BUY candidates get published to /picks — it never
+    touches scoring, ranking, BUY/HOLD/SELL classification, or hard gates.
+
+    Reuses the existing `confidence` field computed by the Prediction
+    Engine (services/daily_picks.py's per-candidate "confidence", already
+    an authoritative 0-100 scale used for the pre-existing >=25% noise
+    floor and the short-term >80% priority bucket — see
+    _passes_quality_gate / _select_short_term_top_six). This registry
+    labels that reused value "Model Conviction" for publication-gate
+    purposes; it is a model output, not a calibrated win-probability, and
+    must never be presented to users as one.
+
+    Single canonical source for the 85.0 threshold and the 3-per-horizon
+    cap — no other file may hardcode these numbers.
+    """
+
+    # Minimum Model Conviction (0-100 scale) an eligible BUY candidate must
+    # have to be published. Below this, the candidate is evaluated/BUY-
+    # qualified but NOT published — it remains in the shadow
+    # alpha_observations evidence trail (see _build_alpha_observation_row),
+    # just not shown on /picks.
+    MIN_CONVICTION_TO_PUBLISH = 85.0
+
+    # Maximum published picks per (market, horizon) pair. 0-3 is a valid,
+    # expected outcome on a low-conviction day — never backfilled.
+    MAX_PUBLISHED_PER_HORIZON = 3
+
+
 # Singleton instances — import these, not the dataclasses, from call sites.
 DEBT_TO_EQUITY = DebtToEquityThresholds()
 PROFITABILITY = ProfitabilityThresholds()
@@ -582,3 +615,4 @@ FINANCIAL_STRENGTH = FinancialStrengthThresholds()
 BUSINESS_QUALITY = BusinessQualityThresholds()
 GROWTH_INTELLIGENCE = GrowthIntelligenceThresholds()
 VALUATION_INTELLIGENCE = ValuationIntelligenceThresholds()
+DAILY_PICKS_PUBLICATION = DailyPicksPublicationThresholds()

@@ -101,7 +101,16 @@ function freezeDailyPickSnapshot(pick: Pick): FrozenDailyPickSnapshot {
   };
 }
 
-type AlphaEngineMeta = { ic_weights?: Record<string, number>; regime?: string; n_scored?: number; n_buy?: number; meta_model?: boolean };
+// n_conviction_qualified/n_published/conviction_threshold/max_published_per_horizon
+// (feature/daily-picks-conviction-gated-publication) are additive and
+// backward-compatible — n_scored/n_buy keep their pre-existing meaning and
+// a legacy cached payload without these new fields still renders fine
+// (all optional).
+type AlphaEngineMeta = {
+  ic_weights?: Record<string, number>; regime?: string; n_scored?: number; n_buy?: number; meta_model?: boolean;
+  n_conviction_qualified?: number; n_published?: number; conviction_threshold?: number; max_published_per_horizon?: number;
+  conviction_semantic?: string;
+};
 type GlobalContext = { score?: number; levels?: Record<string, number>; changes?: Record<string, number> };
 type DailyPicksResponse = {
   generated_at: string | null;
@@ -216,10 +225,13 @@ const HORIZONS = [
   { key: "long",   label: "Long Term",   sub: "3–6 months"       },
 ] as const;
 
-// High Conviction filter — surfaces only picks at/above this AI confidence
-// threshold, sorted highest-first. 85 matches the top slice users actually
-// see in practice (long-horizon picks routinely reach 85-100%; short/medium
-// rarely do), not an arbitrary round number.
+// High Conviction filter (legacy-cache fallback only — see `publicationPolicy`
+// and the button's own comment below) — surfaces only picks at/above this
+// Model Conviction threshold, sorted highest-first. 85 matches the top slice
+// users actually see in practice (long-horizon picks routinely reach
+// 85-100/100; short/medium rarely do), not an arbitrary round number. Not
+// sourced from the backend registry on purpose — it is only ever shown for a
+// legacy cached payload that predates that registry.
 const HIGH_CONVICTION_THRESHOLD = 85;
 
 const SIGNAL_COLOR: Record<string, string> = {
@@ -278,6 +290,100 @@ export function confidenceGradientClass(confidence: number): string {
 // land on the same tab instead of always resetting to Short Term.
 export function buildPickStockHref(symbol: string, market: "IN" | "US", horizon: string): string {
   return `/stock/${encodeURIComponent(symbol)}?market=${market}&horizon=${horizon}`;
+}
+
+// Conviction-gated publication policy (finding 2, follow-up to commit
+// 5a006498) — exported pure functions so the wording/derivation logic can
+// be unit tested directly against realistic backend payload shapes
+// (valid metadata, legacy/missing metadata, partially-typed metadata)
+// instead of only asserting on static source text.
+export type PublicationPolicy = {
+  maxPublished: number;
+  threshold: number;
+  nPublished: number;
+  nQualified: number;
+  // Required (finding 2, corrective follow-up to 0f2bbed8): derivePublicationPolicy
+  // now fails the whole payload closed unless the backend supplied a
+  // non-empty conviction_semantic string, so a returned PublicationPolicy
+  // always has one.
+  semantic: string;
+};
+
+/**
+ * Derives the active conviction-gated publication policy strictly from
+ * backend `alpha_engine_meta` for one horizon. Returns null — never a
+ * fabricated/default policy — whenever any required field is absent or
+ * not the expected type, which is exactly what a pre-deployment legacy
+ * cached payload (no publication metadata at all) looks like. Callers
+ * must render distinct, truthful copy for the null case rather than
+ * claiming the new policy is active.
+ */
+// Finding 2 (corrective follow-up to 0f2bbed8): `typeof x === "number"` alone
+// lets NaN/Infinity/-Infinity/negative/fractional values through — none of
+// which a well-formed backend payload should ever produce, but a malformed
+// or partially-corrupted cache entry could. Every numeric field must also
+// pass Number.isFinite, and the specific invariants the backend's own
+// registry guarantees (positive integer cap, 0-100 threshold, non-negative
+// integer counts, n_published <= max, n_published <= n_qualified) are
+// checked explicitly — any single violation fails the whole payload closed
+// (returns null, the same "render neutral legacy-compatible copy" outcome
+// as a payload missing the fields entirely). `conviction_semantic` must be
+// a non-empty string — the new backend always supplies one.
+function _isNonNegativeInteger(x: unknown): x is number {
+  return typeof x === "number" && Number.isFinite(x) && Number.isInteger(x) && x >= 0;
+}
+
+export function derivePublicationPolicy(meta: AlphaEngineMeta | null | undefined): PublicationPolicy | null {
+  if (meta == null) return null;
+
+  const { max_published_per_horizon, conviction_threshold, n_published, n_conviction_qualified, conviction_semantic } = meta;
+
+  if (!_isNonNegativeInteger(max_published_per_horizon) || max_published_per_horizon <= 0) return null;
+  if (typeof conviction_threshold !== "number" || !Number.isFinite(conviction_threshold)) return null;
+  if (conviction_threshold < 0 || conviction_threshold > 100) return null;
+  if (!_isNonNegativeInteger(n_published)) return null;
+  if (!_isNonNegativeInteger(n_conviction_qualified)) return null;
+  if (n_published > max_published_per_horizon) return null;
+  if (n_published > n_conviction_qualified) return null;
+  if (typeof conviction_semantic !== "string" || conviction_semantic.length === 0) return null;
+
+  return {
+    maxPublished: max_published_per_horizon,
+    threshold: conviction_threshold,
+    nPublished: n_published,
+    nQualified: n_conviction_qualified,
+    semantic: conviction_semantic,
+  };
+}
+
+/** Header copy for the active horizon — dynamic when policy is active
+ * (never hardcodes 3/85), neutral (no specific-number claim) otherwise. */
+export function formatPublicationPolicyCopy(policy: PublicationPolicy | null): string {
+  return policy
+    ? `Up to ${policy.maxPublished} qualified picks per horizon (Model Conviction ≥ ${policy.threshold}/100)`
+    : "Qualified BUY picks per horizon";
+}
+
+// Finding 1 (corrective follow-up to 0f2bbed8): extracted pure function so
+// production and tests share exactly one implementation — no test-local
+// reimplementation of this logic. `publicationPolicyActive` (NOT the raw
+// `highConvictionOnly` toggle alone) gates whether the filter/sort ever
+// runs: once the backend conviction-gated publication policy is active for
+// a horizon, the list is already <=3 picks, all >=85/100, in the
+// backend's own authoritative rank order — a stale `highConvictionOnly`
+// state (e.g. left on from before a legacy→policy-active transition on the
+// same horizon) must never be allowed to filter or re-sort it. Only a
+// legacy payload (`publicationPolicyActive === false`) ever applies the
+// client-side filter/sort, exactly as before this fix.
+export function computeVisiblePicks(
+  picks: Pick[],
+  highConvictionOnly: boolean,
+  publicationPolicyActive: boolean,
+): Pick[] {
+  if (publicationPolicyActive || !highConvictionOnly) return picks;
+  return [...picks]
+    .filter(p => p.confidence >= HIGH_CONVICTION_THRESHOLD)
+    .sort((a, b) => b.confidence - a.confidence);
 }
 
 function ScoreBar({ label, value, color }: { label: string; value: number; color: string }) {
@@ -481,17 +587,23 @@ function BacktestPanel({ horizon, benchmarkLabel }: { horizon: string; benchmark
           good={data.sharpe_on_buys != null ? data.sharpe_on_buys > 0.5 : undefined} />
       </div>
 
-      {/* Priority 2: Confidence Calibration — score bucket table */}
+      {/* Priority 2: Observed Historical Reliability by Model Conviction band.
+          Renamed from "Signal Strength Calibration" (finding 3, follow-up
+          to commit 5a006498): this table shows what actually happened to a
+          historical sample of past picks in each Model Conviction band —
+          it does NOT convert Model Conviction into a calibrated
+          probability, and is deliberately not described as "calibration"
+          or "calibrated" to avoid that implication. */}
       {data.score_buckets && data.score_buckets.length > 0 && (
         <div>
           <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
-            Signal Strength Calibration — Does higher signal strength = higher accuracy?
+            Observed Historical Reliability by Model Conviction Band
           </p>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-gray-500 border-b border-dark-border">
-                  <th className="text-left py-1.5 pr-3">Signal Strength</th>
+                  <th className="text-left py-1.5 pr-3">Model Conviction</th>
                   <th className="text-right py-1.5 pr-3">Signals</th>
                   <th className="text-right py-1.5 pr-3">Hit Rate</th>
                   <th className="text-right py-1.5">Avg Return</th>
@@ -517,8 +629,9 @@ function BacktestPanel({ horizon, benchmarkLabel }: { horizon: string; benchmark
             </table>
           </div>
           <p className="text-[11px] text-gray-400 mt-1.5">
-            This table shows the real hit rate for each Signal Strength band — not a theoretical score.
-            If 80+ Signal Strength picks hit 72% of the time historically, that's a calibrated signal.
+            These are observed historical outcomes for the displayed sample, by Model Conviction band —
+            not a calibrated probability. Small or overlapping/correlated samples in a band can make its
+            hit rate an unreliable guide to future results; a higher hit rate here is not a guarantee.
           </p>
         </div>
       )}
@@ -823,8 +936,8 @@ export function PickCard({ pick, rank, market, currency, locale, freshness, open
 
         <div className="mb-3">
           <div className="flex justify-between text-xs text-gray-500 mb-1">
-            <span>Signal Strength</span>
-            <span className={clsx("font-medium", confidenceTextColor(pick.confidence))}>{pick.confidence}%</span>
+            <span>Signal Strength (Model Conviction)</span>
+            <span className={clsx("font-medium", confidenceTextColor(pick.confidence))}>{pick.confidence}/100</span>
           </div>
           <div className="h-1.5 bg-dark-border rounded-full overflow-hidden">
             <div className={clsx("h-full rounded-full", confidenceGradientClass(pick.confidence))} style={{ width: `${pick.confidence}%` }} />
@@ -1054,7 +1167,7 @@ export function PickCard({ pick, rank, market, currency, locale, freshness, open
             <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Absolute Signal Scores</p>
             {pick.tech_score != null && <ScoreBar label="Technical" value={pick.tech_score} color="text-blue-400" />}
             {pick.fund_score != null && <ScoreBar label="Fundamental" value={pick.fund_score} color="text-purple-400" />}
-            <ScoreBar label="Signal Strength" value={pick.confidence} color={confidenceTextColor(pick.confidence)} />
+            <ScoreBar label="Model Conviction" value={pick.confidence} color={confidenceTextColor(pick.confidence)} />
           </div>
 
           {pick.quality_factors?.breakdown && Object.keys(pick.quality_factors.breakdown).length > 0 && (
@@ -1182,14 +1295,34 @@ export default function DailyPicksPage() {
 
   const currency = data?.currency ?? marketCfg.currency;
   const picks = data?.picks?.[horizon] ?? [];
+  const alphaForHorizon = data?.alpha_engine?.[horizon];
+  // Conviction-gated publication policy (finding 2, follow-up to commit
+  // 5a006498) — derived via the exported, independently-unit-tested
+  // derivePublicationPolicy(); never hardcode 3/85 here. Null for a legacy
+  // cached payload (pre-deployment, no publication metadata), so callers
+  // render truthful, distinct wording instead of a false "Up to 3 / >=85"
+  // claim over what may actually be a 6-pick legacy list. Computed BEFORE
+  // `visiblePicks` (finding 1, corrective follow-up to 0f2bbed8) — the
+  // stale `highConvictionOnly` toggle state must never be allowed to
+  // filter/reorder a backend-published, already conviction-gated list.
+  const publicationPolicy = derivePublicationPolicy(alphaForHorizon ?? null);
 
-  // High Conviction filter — applied within the currently selected horizon,
-  // not across horizons, so it composes with the existing horizon tabs
-  // rather than replacing them. Sorted by confidence descending so the
-  // strongest signal always leads.
-  const visiblePicks = highConvictionOnly
-    ? [...picks].filter(p => p.confidence >= HIGH_CONVICTION_THRESHOLD).sort((a, b) => b.confidence - a.confidence)
-    : picks;
+  // High Conviction filter — legacy-cache fallback only. `computeVisiblePicks`
+  // (exported, pure) only ever applies the client-side confidence filter/sort
+  // when `publicationPolicy` is null; once the backend policy is active for
+  // this horizon, the toggle button itself is hidden (see its own comment
+  // below), but the STALE `highConvictionOnly` boolean can still be `true`
+  // from before a legacy→active transition (e.g. the same horizon regenerates
+  // mid-session) — `computeVisiblePicks` ignores that stale state whenever
+  // policy is active, so the authoritative backend rank order is always
+  // preserved for an already conviction-gated list, regardless of toggle
+  // history.
+  const visiblePicks = computeVisiblePicks(picks, highConvictionOnly, publicationPolicy !== null);
+  // Derived condition (finding 1) used consistently for both the filter
+  // computation above and the legacy-only empty state below — a stale
+  // `highConvictionOnly=true` can never present as "the legacy filter is
+  // active" once `publicationPolicy` is non-null.
+  const legacyHighConvictionFilterActive = publicationPolicy === null && highConvictionOnly;
 
   // India Daily Picks session-freshness containment (Phase 0). Scoped to IN
   // only — US Daily Picks are untouched by this workstream. Computed once
@@ -1231,7 +1364,6 @@ export default function DailyPicksPage() {
         timeZone: marketCfg.tz, day: "2-digit", month: "short",
         year: "numeric", hour: "2-digit", minute: "2-digit", hour12: true,
       })} ${marketCfg.tzLabel}` : null;
-  const alphaForHorizon = data?.alpha_engine?.[horizon];
 
   return (
     <div className="space-y-6">
@@ -1331,7 +1463,8 @@ export default function DailyPicksPage() {
         </div>
       </div>
       <p className="text-sm text-gray-400">
-        Top 6 AI-selected BUY calls per horizon · {market === "US" ? "base picks generated" : "generated daily"} at {marketCfg.genTime}
+        {formatPublicationPolicyCopy(publicationPolicy)}
+        {" · "}{market === "US" ? "base picks generated" : "generated daily"} at {marketCfg.genTime}
         {market === "US" ? ` · Premarket review ${PREMARKET_REVIEW_SCHEDULE_LABEL.toLowerCase()}, after today's base picks complete` : ""}
         {/* Release 12B coverage truthfulness: real returned count only, never
             a hardcoded number, and never a full-exchange claim. */}
@@ -1444,15 +1577,29 @@ export default function DailyPicksPage() {
             <span className={clsx("ml-1.5 text-xs", horizon === key ? "text-blue-200" : "text-gray-600")}>({sub})</span>
           </button>
         ))}
-        <button onClick={() => setHighConvictionOnly(v => !v)}
-          title={`Show only picks with AI confidence ≥ ${HIGH_CONVICTION_THRESHOLD}%, sorted highest first`}
-          className={clsx("px-4 py-2.5 rounded-xl text-sm font-medium transition-all flex items-center gap-1.5 ml-auto",
-            highConvictionOnly ? "bg-emerald-500 text-white shadow-lg shadow-emerald-500/20"
-              : "bg-dark-card border border-dark-border text-gray-400 hover:text-white")}>
-          <Zap size={14} />
-          High Conviction Only
-          <span className={clsx("text-xs", highConvictionOnly ? "text-emerald-100" : "text-gray-600")}>(≥{HIGH_CONVICTION_THRESHOLD}%)</span>
-        </button>
+        {/* finding 3 (follow-up to commit 5a006498): once the backend
+            conviction-gated publication policy is active for this horizon,
+            every published pick already clears the same >=85/100 Model
+            Conviction bar server-side (n_published <= 3, all >= threshold)
+            — a client-side "High Conviction Only >=85%" toggle on top of
+            that would be redundant at best and, worse, implies an
+            optional/probability-like filter layered on an already-gated
+            list. Hidden (not merely relabeled) whenever `publicationPolicy`
+            is active; retained, working exactly as before, for a legacy
+            cached payload (`publicationPolicy` null) where the underlying
+            list can still contain up to 6 picks not conviction-filtered by
+            the backend. */}
+        {!publicationPolicy && (
+          <button onClick={() => setHighConvictionOnly(v => !v)}
+            title={`Show only picks with Model Conviction ≥ ${HIGH_CONVICTION_THRESHOLD}/100, sorted highest first`}
+            className={clsx("px-4 py-2.5 rounded-xl text-sm font-medium transition-all flex items-center gap-1.5 ml-auto",
+              highConvictionOnly ? "bg-emerald-500 text-white shadow-lg shadow-emerald-500/20"
+                : "bg-dark-card border border-dark-border text-gray-400 hover:text-white")}>
+            <Zap size={14} />
+            High Conviction Only
+            <span className={clsx("text-xs", highConvictionOnly ? "text-emerald-100" : "text-gray-600")}>(≥{HIGH_CONVICTION_THRESHOLD}/100)</span>
+          </button>
+        )}
       </div>
 
       {/* Product Integrity Workstream — Phase GPI-0, true two-branch hold.
@@ -1559,14 +1706,18 @@ export default function DailyPicksPage() {
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
           {visiblePicks.map((pick, i) => <PickCard key={pick.symbol} pick={pick} rank={i + 1} market={market} currency={currency} locale={marketCfg.locale} freshness={freshnessBySymbol?.[pick.symbol]} openTradeCount={openTradeCountMap?.get(openTradeCountKey(market, pick.symbol))} />)}
         </div>
-      ) : highConvictionOnly && picks.length > 0 ? (
+      ) : legacyHighConvictionFilterActive && picks.length > 0 ? (
         // Distinct from the "no BUY signals at all" empty state below — real
         // picks exist for this horizon, just none clear the confidence bar.
+        // Uses the same derived `legacyHighConvictionFilterActive` condition
+        // as `visiblePicks` above (finding 1) — a stale `highConvictionOnly`
+        // can never trigger this legacy-only empty state once
+        // `publicationPolicy` is active.
         <div className="flex flex-col items-center justify-center py-20 text-center">
           <Zap size={40} className="text-gray-600 mb-4" />
-          <h3 className="text-lg font-semibold text-gray-300 mb-2">No picks ≥{HIGH_CONVICTION_THRESHOLD}% confidence right now</h3>
+          <h3 className="text-lg font-semibold text-gray-300 mb-2">No picks ≥{HIGH_CONVICTION_THRESHOLD}/100 Model Conviction right now</h3>
           <p className="text-sm text-gray-500 max-w-sm">
-            {picks.length} {picks.length === 1 ? "pick" : "picks"} available in {HORIZONS.find(h => h.key === horizon)?.label.toLowerCase()}, but none reach {HIGH_CONVICTION_THRESHOLD}% AI confidence today. Try another horizon or turn off the filter.
+            {picks.length} {picks.length === 1 ? "pick" : "picks"} available in {HORIZONS.find(h => h.key === horizon)?.label.toLowerCase()}, but none reach {HIGH_CONVICTION_THRESHOLD}/100 Model Conviction today. Try another horizon or turn off the filter.
           </p>
           <button onClick={() => setHighConvictionOnly(false)}
             className="mt-4 px-4 py-2 rounded-lg text-sm font-medium bg-dark-card border border-dark-border text-gray-300 hover:text-white transition-all">
