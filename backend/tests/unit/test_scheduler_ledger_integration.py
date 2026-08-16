@@ -74,36 +74,30 @@ def _insert_val_run(db_path, horizon="medium", universe="nifty100"):
 
 
 def _fake_run_validation_factory(monkeypatch, isolated_db, horizon="medium", universe="nifty100"):
-    """Replaces run_validation with a deterministic fake mirroring the real
-    _persist=False contract used by the ledger-backed execution path
-    (V-SCHED1C1-C1 correction): computation only, no val_runs/val_signals
-    write of its own — it returns a `_persist_payload` for the caller to
-    hand to complete_running_attempt_with_computed_result(), which performs
-    the actual (real, isolated-db) insert. Also honors `_fence_check` at
-    each simulated checkpoint, exactly like the real run_validation loop,
-    so heartbeat-loss tests can exercise the same abort path. Legacy
-    `_persist=True` callers (direct/non-ledger tests) still get the old
-    immediate-insert behavior."""
-    def _fake(horizon=horizon, universe=universe, max_workers=6, trigger_type="internal",
-               _claimed_job=None, progress_callback=None, _persist=True, _fence_check=None,
-               _heartbeat=None, _lease_duration_seconds=None):
-        for done, total in ((5, 10), (10, 10)):
-            if progress_callback is not None:
-                progress_callback(done, total)
-            if _fence_check is not None and _fence_check():
-                raise ve._FencedOutDuringComputation()
-        if not _persist:
-            return {
-                "horizon": horizon, "universe": universe,
-                "_persist_payload": {
-                    "run_at": T0.isoformat(), "horizon": horizon, "n_stocks": 1,
-                    "n_signals": 0, "summary_json": "{}", "universe": universe,
-                    "signal_rows": [],
-                },
-            }
-        run_id = _insert_val_run(isolated_db, horizon=horizon, universe=universe)
-        return {"run_id": run_id, "horizon": horizon, "universe": universe}
-    monkeypatch.setattr(ve, "run_validation", _fake)
+    """V-USACT1-B-C3 — replaces the private parent-side orchestration
+    boundary _run_validation_in_subprocess (not run_validation itself,
+    which execute_and_complete_admitted_attempt/execute_admitted_
+    validation no longer call directly at all — see _run_validation_in_
+    subprocess) with a deterministic, synchronous, IN-PROCESS fake. No
+    child process, no fork, no spawn, no network — ordinary Python-level
+    monkeypatching of a private function, matching its real return
+    contract (`{"_persist_payload": {...}}`) exactly. If a real
+    heartbeat_fn is wired through by the caller, it is genuinely invoked
+    once (mirroring the real function's own per-iteration heartbeat
+    check) so heartbeat/fencing-loss tests still exercise the real CAS
+    primitive underneath, never a stand-in."""
+    def _fake(*, horizon=horizon, universe=universe, max_workers=None, trigger_type=None,
+               heartbeat_fn=None, lease_duration_seconds=None, max_run_duration_seconds=None):
+        if heartbeat_fn is not None and heartbeat_fn():
+            raise ve._FencedOutDuringComputation()
+        return {
+            "_persist_payload": {
+                "run_at": T0.isoformat(), "horizon": horizon, "n_stocks": 1,
+                "n_signals": 0, "summary_json": "{}", "universe": universe,
+                "signal_rows": [],
+            },
+        }
+    monkeypatch.setattr(ve, "_run_validation_in_subprocess", _fake)
     return _fake
 
 
@@ -204,9 +198,12 @@ class TestSlotAndCompletionLifecycle:
         assert get_validation_execution_lease()["active_attempt_id"] is None
 
     def test_retryable_failure_returns_slot_to_due(self, isolated_db, monkeypatch):
+        # V-USACT1-B — execute_and_complete_admitted_attempt no longer
+        # calls run_validation directly; patch the killable-subprocess
+        # boundary it actually calls instead.
         def _failing(**kwargs):
             raise RuntimeError("simulated provider failure")
-        monkeypatch.setattr(ve, "run_validation", _failing)
+        monkeypatch.setattr(ve, "_run_validation_in_subprocess", _failing)
         slot = get_or_create_schedule_slot(horizon="medium", universe="nifty100",
                                             scheduled_slot=T0, schedule_version="v1", now=T0)
         result = execute_admitted_validation(horizon="medium", universe="nifty100", trigger_type="scheduler",
@@ -405,8 +402,21 @@ class TestManualTwoPhaseAdmission:
 
 class TestCooperativeHeartbeat:
     def test_heartbeat_extends_lease_expiry_as_progress_is_made(self, isolated_db, monkeypatch):
-        heartbeat_calls = []
+        """V-USACT1-B — heartbeat renewal is no longer progress-count
+        driven at all (execute_and_complete_admitted_attempt no longer
+        calls run_validation in-process; run_validation's own
+        progress_callback/_heartbeat/_lease_duration_seconds kwargs are
+        never populated by this wrapper anymore — see
+        _run_validation_in_subprocess). Renewal is now purely wall-clock,
+        applied at the _run_validation_in_subprocess boundary. This test
+        is adapted accordingly: it patches that boundary (not
+        run_validation) and proves a real heartbeat call genuinely
+        advances expires_at in the ledger — heartbeat_every_n_stocks is
+        still accepted for backward compatibility but no longer changes
+        cadence, so it is passed through unchanged without asserting a
+        specific call count tied to it."""
         real_heartbeat = ve.heartbeat_validation_execution_lease
+        heartbeat_calls = []
 
         def _tracking_heartbeat(*args, **kwargs):
             result = real_heartbeat(*args, **kwargs)
@@ -415,52 +425,57 @@ class TestCooperativeHeartbeat:
 
         monkeypatch.setattr(ve, "heartbeat_validation_execution_lease", _tracking_heartbeat)
 
-        def _fake(horizon="medium", universe="nifty100", max_workers=6, trigger_type="internal",
-                   _claimed_job=None, progress_callback=None, _persist=True, _fence_check=None,
-                   _heartbeat=None, _lease_duration_seconds=None):
-            for i in range(1, 21):
-                if progress_callback is not None:
-                    progress_callback(i, 20)
-                if _fence_check is not None and _fence_check():
-                    raise ve._FencedOutDuringComputation()
+        real_subprocess_runner = ve._run_validation_in_subprocess
+
+        def _fake_subprocess_runner(*, horizon, universe, max_workers, trigger_type,
+                                     heartbeat_fn=None, lease_duration_seconds=None,
+                                     max_run_duration_seconds=None):
+            # Simulate two real wall-clock heartbeat ticks (what the real
+            # loop in _run_validation_in_subprocess would do over a run
+            # long enough to cross two intervals) using the ACTUAL
+            # heartbeat_fn the wrapper wired up — never a fake stand-in.
+            if heartbeat_fn is not None:
+                assert heartbeat_fn() is False
+                assert heartbeat_fn() is False
             return {
-                "horizon": horizon, "universe": universe,
                 "_persist_payload": {
                     "run_at": T0.isoformat(), "horizon": horizon, "n_stocks": 1,
                     "n_signals": 0, "summary_json": "{}", "universe": universe,
                     "signal_rows": [],
                 },
             }
-        monkeypatch.setattr(ve, "run_validation", _fake)
+
+        monkeypatch.setattr(ve, "_run_validation_in_subprocess", _fake_subprocess_runner)
 
         result = execute_admitted_validation(horizon="medium", universe="nifty100", trigger_type="scheduler",
                                               owner="scheduler-1", scheduled_slot=T0, now=_real_now(),
                                               heartbeat_every_n_stocks=10)
         assert result["ok"] is True
-        # heartbeat_every_n_stocks=10 over 20 stocks -> triggers at 10 and 20
         assert len(heartbeat_calls) == 2
         assert all(hb["ok"] for hb in heartbeat_calls)
 
     def test_execute_and_complete_admitted_attempt_wires_real_heartbeat_and_lease_duration_into_run_validation(
         self, isolated_db, monkeypatch
     ):
-        """V-USCAP6 Stage 5 — the wall-clock heartbeat added inside
-        run_validation is worthless if the wrapper wires it up wrong. This
-        captures the ACTUAL kwargs execute_and_complete_admitted_attempt
-        passes to run_validation (not a fake standing in for them) and
-        proves: (a) the real numeric lease_duration_seconds this attempt
-        was admitted with is passed through as _lease_duration_seconds,
-        never a default/placeholder; (b) the passed _heartbeat is a real,
-        callable closure bound to THIS attempt's actual owner/fencing_
-        token — proven by invoking it and observing a genuine CAS-based
-        expires_at advance in the real ledger, not merely asserting
-        callable(_heartbeat)."""
+        """V-USACT1-B — the wall-clock heartbeat is worthless if the
+        wrapper wires it up wrong. execute_and_complete_admitted_attempt
+        no longer calls run_validation directly at all (it goes through
+        the killable _run_validation_in_subprocess boundary instead — see
+        V-USACT1-B) — this test is adapted to capture the ACTUAL kwargs
+        passed to THAT boundary and proves: (a) the real numeric
+        lease_duration_seconds this attempt was admitted with is passed
+        through, never a default/placeholder; (b) the passed heartbeat_fn
+        is a real, callable closure bound to THIS attempt's actual owner/
+        fencing_token — proven by invoking it and observing a genuine
+        CAS-based expires_at advance in the real ledger, not merely
+        asserting callable(heartbeat_fn)."""
         captured = {}
 
-        def _recording_run_validation(*args, **kwargs):
-            captured["lease_duration"] = kwargs.get("_lease_duration_seconds")
-            heartbeat = kwargs.get("_heartbeat")
-            captured["heartbeat_is_callable"] = callable(heartbeat)
+        def _recording_subprocess_runner(*, horizon, universe, max_workers, trigger_type,
+                                           heartbeat_fn=None, lease_duration_seconds=None,
+                                           max_run_duration_seconds=None):
+            captured["lease_duration"] = lease_duration_seconds
+            captured["heartbeat_is_callable"] = callable(heartbeat_fn)
 
             with sqlite3.connect(isolated_db) as conn:
                 row_before = conn.execute(
@@ -468,7 +483,7 @@ class TestCooperativeHeartbeat:
                     "WHERE resource_key='validation-global'"
                 ).fetchone()
 
-            captured["heartbeat_fenced"] = heartbeat() if heartbeat is not None else None
+            captured["heartbeat_fenced"] = heartbeat_fn() if heartbeat_fn is not None else None
 
             with sqlite3.connect(isolated_db) as conn:
                 row_after = conn.execute(
@@ -479,15 +494,14 @@ class TestCooperativeHeartbeat:
             captured["expires_after"] = row_after[0]
 
             return {
-                "horizon": kwargs.get("horizon"), "universe": kwargs.get("universe"),
                 "_persist_payload": {
-                    "run_at": T0.isoformat(), "horizon": kwargs.get("horizon"), "n_stocks": 1,
-                    "n_signals": 0, "summary_json": "{}", "universe": kwargs.get("universe"),
+                    "run_at": T0.isoformat(), "horizon": horizon, "n_stocks": 1,
+                    "n_signals": 0, "summary_json": "{}", "universe": universe,
                     "signal_rows": [],
                 },
             }
 
-        monkeypatch.setattr(ve, "run_validation", _recording_run_validation)
+        monkeypatch.setattr(ve, "_run_validation_in_subprocess", _recording_subprocess_runner)
 
         result = execute_admitted_validation(
             horizon="medium", universe="nifty100", trigger_type="scheduler",
@@ -504,7 +518,7 @@ class TestCooperativeHeartbeat:
             "a fresh, still-valid owner/fencing_token heartbeat must not report fencing loss"
         )
         assert captured["expires_after"] > captured["expires_before"], (
-            "the wired _heartbeat callback did not perform a real CAS renewal against "
+            "the wired heartbeat_fn callback did not perform a real CAS renewal against "
             "this attempt's actual owner/fencing_token — expires_at must genuinely advance"
         )
 
@@ -580,18 +594,11 @@ class TestOrphanResultPrevention:
         # real expiry. Simulate that directly: force A's heartbeat to
         # report rejection on its very first check, mimicking "B already
         # holds the lease by the time A's next checkpoint runs".
-        def _fake(horizon="medium", universe="nifty100", max_workers=6, trigger_type="internal",
-                   _claimed_job=None, progress_callback=None, _persist=True, _fence_check=None,
-                   _heartbeat=None, _lease_duration_seconds=None):
-            if progress_callback is not None:
-                progress_callback(1, 1)
-            if _fence_check is not None and _fence_check():
-                raise ve._FencedOutDuringComputation()
-            # unreachable if fencing is honored — proves the pre-correction
-            # code path (which ignored the fence_check's abort signal and
-            # persisted anyway) is exactly what this test guards against
-            return {"_persist_payload": _payload_with_signal("medium", "nifty100")}
-        monkeypatch.setattr(ve, "run_validation", _fake)
+        # _fake_run_validation_factory's fake genuinely calls the REAL
+        # heartbeat_fn once and raises _FencedOutDuringComputation if it
+        # reports rejection — never a stand-in for the fencing check
+        # itself (that logic is unchanged, real production code).
+        _fake_run_validation_factory(monkeypatch, isolated_db, horizon="medium", universe="nifty100")
 
         def _rejecting_heartbeat(*args, **kwargs):
             return {"ok": False, "reason": "fenced_out"}

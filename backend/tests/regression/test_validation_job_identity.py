@@ -404,7 +404,7 @@ class TestStatusApiSurfacesIdentity:
 
     def test_run_endpoint_message_reflects_requested_universe(self, client, monkeypatch):
         # Prevent a real run: the background task must be a no-op.
-        monkeypatch.setattr(ve, "run_validation", lambda **kw: {})
+        monkeypatch.setattr(ve, "_run_validation_in_subprocess", lambda **kw: {"_persist_payload": None})
         # V-SEC1: /run is now X-Secret-protected — see
         # tests/regression/test_validation_run_endpoint_auth.py for the
         # dedicated auth test matrix; this call just needs a valid header
@@ -449,7 +449,7 @@ class TestStatusApiSurfacesIdentity:
         from api.main import app
         import api.routers.validation as validation_router
         monkeypatch.setattr(validation_router, "_VALIDATION_RUN_SECRET", "test-secret")
-        monkeypatch.setattr(ve, "run_validation", lambda **kw: {})
+        monkeypatch.setattr(ve, "_run_validation_in_subprocess", lambda **kw: {"_persist_payload": None})
 
         job_ids = []
         for i, db_name in enumerate(("job_id_uniqueness_a.db", "job_id_uniqueness_b.db")):

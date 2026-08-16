@@ -302,7 +302,7 @@ def get_history():
 
 _CURSOR_VERSION = 1
 _ATTEMPT_STATUS_VALUES = ("claimed", "running", "completed", "failed", "abandoned")
-_FAILURE_CATEGORY_VALUES = ("ADMISSION_RACE", "RUN_EXCEPTION", "NO_RESULT_RUN_ID")
+_FAILURE_CATEGORY_VALUES = ("ADMISSION_RACE", "RUN_EXCEPTION", "NO_RESULT_RUN_ID", "RUN_DEADLINE_EXCEEDED")
 
 
 def _parse_required_utc_query_timestamp(raw: str, *, param: str) -> datetime:
@@ -357,7 +357,9 @@ def get_attempt_history(
     universe: Literal["nifty100", "midcap", "us"] | None = Query(None),
     trigger_type: Literal["scheduler", "catchup", "manual"] | None = Query(None),
     status: Literal["claimed", "running", "completed", "failed", "abandoned"] | None = Query(None),
-    failure_category: Literal["ADMISSION_RACE", "RUN_EXCEPTION", "NO_RESULT_RUN_ID"] | None = Query(None),
+    failure_category: Literal[
+        "ADMISSION_RACE", "RUN_EXCEPTION", "NO_RESULT_RUN_ID", "RUN_DEADLINE_EXCEEDED"
+    ] | None = Query(None),
     schedule_version: str | None = Query(None, pattern=r"^[A-Za-z0-9._-]{1,32}$"),
     result_run_id: int | None = Query(None, gt=0),
     since: str | None = Query(None),
