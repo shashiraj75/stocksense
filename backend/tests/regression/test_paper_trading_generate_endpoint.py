@@ -132,8 +132,9 @@ class _FakeConn:
             existing_id = shared["outbox_by_key"].get((trade_id, schema_v, calc_v, rules_v))
             return (existing_id,) if existing_id is not None else None
 
-        if "WITH claimable AS" in sql:
-            max_attempts, outbox_id, user_id, lease_seconds, claimant = params
+        if "UPDATE paper_trade_postmortem_outbox o" in sql and "GENERATING" in sql:
+            max_attempts, outbox_id, user_id = params["max_attempts"], params["outbox_id"], params["user_id"]
+            lease_seconds, claimant = params["lease_seconds"], params["claimant"]
             row = shared["outbox_rows"].get(outbox_id)
             if row is None or row["user_id"] != user_id:
                 return None
@@ -179,7 +180,7 @@ class _FakeConn:
 
         if stripped.startswith("INSERT INTO paper_trade_postmortem_report"):
             (paper_trade_id, user_id, market, trading_date, tz, schema_v, calc_v, rules_v, bundle_v,
-             ev_hash, status, structured, ev_items, claims, manifest, gaps, warnings) = params
+             ev_hash, status, structured, ev_items, claims, manifest, gaps, warnings, supersedes_id) = params
             key = (paper_trade_id, schema_v, calc_v, rules_v)
             for row in shared["report_rows"].values():
                 if (row[1], row[6], row[7], row[8]) == key:
@@ -188,7 +189,8 @@ class _FakeConn:
             shared["next_report_id"] += 1
             row = (new_id, paper_trade_id, user_id, market, trading_date, tz, schema_v, calc_v, rules_v,
                    bundle_v, ev_hash, status, _json.loads(structured), _json.loads(ev_items),
-                   _json.loads(claims), _json.loads(manifest), _json.loads(gaps), _json.loads(warnings))
+                   _json.loads(claims), _json.loads(manifest), _json.loads(gaps), _json.loads(warnings),
+                   dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc), supersedes_id)
             shared["report_rows"][new_id] = row
             return row
 
@@ -298,3 +300,133 @@ class TestGenerateEndpoint:
         assert body["generation_status"] == "GENERATION_IN_PROGRESS"
         assert body["generated"] is False
         assert len(shared["report_rows"]) == 0
+
+
+@pytest.mark.regression
+class TestPricePathEnhancementWiring:
+    """Trade Postmortem Sprint 3A, Stage H2 — proves the endpoint calls
+    (or correctly does NOT call) _attempt_price_path_enhancement,
+    without re-exercising that function's own internals (already
+    covered by tests/unit/test_price_path_generation.py and
+    tests/postgres_integration/test_price_path_generation.py)."""
+
+    def test_flag_off_by_default_never_calls_enhancement(self, client, monkeypatch):
+        import api.routers.paper_trading as ptr
+        spy_called = []
+        monkeypatch.setattr(ptr, "_attempt_price_path_enhancement", lambda **kw: (spy_called.append(kw), (None, ptr.PRICE_PATH_NOT_YET_AVAILABLE))[1])
+        shared = _new_shared([{"trade_id": 1}])
+        resp, _ = _generate(client, 1, shared)
+        assert resp.status_code == 200
+        assert spy_called == []
+
+    def test_flag_on_generated_path_calls_enhancement_after_connection_released(self, client, monkeypatch):
+        import api.routers.paper_trading as ptr
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+        spy_called = []
+
+        def _spy(**kw):
+            spy_called.append(kw)
+            return None, ptr.PRICE_PATH_NOT_YET_AVAILABLE
+
+        monkeypatch.setattr(ptr, "_attempt_price_path_enhancement", _spy)
+        shared = _new_shared([{"trade_id": 1}])
+        resp, _ = _generate(client, 1, shared)
+        assert resp.status_code == 200
+        assert len(spy_called) == 1
+        assert spy_called[0]["trade_id"] == 1
+        assert spy_called[0]["user_id"] == "user-aaa"
+
+    def test_flag_on_already_complete_path_also_calls_enhancement(self, client, monkeypatch):
+        import api.routers.paper_trading as ptr
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+        spy_called = []
+        monkeypatch.setattr(
+            ptr, "_attempt_price_path_enhancement",
+            lambda **kw: (spy_called.append(kw), (None, ptr.PRICE_PATH_NOT_YET_AVAILABLE))[1],
+        )
+        shared = _new_shared([{"trade_id": 1}])
+        _generate(client, 1, shared)  # first call: GENERATED
+        spy_called.clear()
+        resp, _ = _generate(client, 1, shared)  # second call: ALREADY_COMPLETE (base Sprint 2 status)
+        assert resp.status_code == 200
+        assert resp.json()["base_generation_status"] == "ALREADY_COMPLETE"
+        assert len(spy_called) == 1
+
+    def test_flag_on_in_progress_never_calls_enhancement(self, client, monkeypatch):
+        import api.routers.paper_trading as ptr
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+        spy_called = []
+        monkeypatch.setattr(
+            ptr, "_attempt_price_path_enhancement",
+            lambda **kw: (spy_called.append(kw), (None, ptr.PRICE_PATH_NOT_YET_AVAILABLE))[1],
+        )
+        shared = _new_shared([{"trade_id": 1}])
+        shared["outbox_by_key"][(1, "1.0.0", "1.1.0", "2.0.0")] = 1
+        shared["outbox_rows"][1] = {
+            "id": 1, "paper_trade_id": 1, "user_id": "user-aaa",
+            "requested_report_schema_version": "1.0.0", "requested_calculation_version": "1.1.0",
+            "requested_rules_version": "2.0.0", "status": "GENERATING", "attempt_count": 1,
+            "source_request_id": None, "claimed_by": "other-worker-token",
+            "next_attempt_at": None,
+            "lease_expires_at": dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=60),
+        }
+        shared["next_outbox_id"] = 2
+        resp, _ = _generate(client, 1, shared)
+        assert resp.json()["generation_status"] == "GENERATION_IN_PROGRESS"
+        assert spy_called == []
+
+    def test_enhancement_generated_becomes_effective_report(self, client, monkeypatch):
+        """Programme Director finding #1/#9 — a freshly-generated
+        price-path report becomes the EFFECTIVE report: generated=True
+        and generation_status="GENERATED", never silently reporting
+        generated=False merely because the Sprint 2 report existed."""
+        import api.routers.paper_trading as ptr
+        from services.postmortem.report_store import PersistedReport
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+
+        def _fake_enhanced(**kw):
+            enhanced = PersistedReport(
+                id=999, paper_trade_id=kw["trade_id"], user_id=kw["user_id"], market="US",
+                report_trading_date=dt.date(2026, 6, 2), market_timezone="America/New_York",
+                report_schema_version="1.1.0", calculation_version="enhanced-calc-version",
+                attribution_rules_version="2.0.0", evidence_bundle_version="1.0.0",
+                evidence_hash="deadbeef", status="LIMITED_EVIDENCE", structured_report={},
+                evidence_items=[], claims=[], source_manifest={}, evidence_gaps=[], warnings=[],
+                supersedes_report_id=1,
+            )
+            return enhanced, ptr.PRICE_PATH_GENERATED
+
+        monkeypatch.setattr(ptr, "_attempt_price_path_enhancement", _fake_enhanced)
+        shared = _new_shared([{"trade_id": 1}])
+        resp, _ = _generate(client, 1, shared)
+        body = resp.json()
+        assert body["report_schema_version"] == "1.1.0"
+        assert body["calculation_version"] == "enhanced-calc-version"
+        assert body["generation_status"] == "GENERATED"
+        assert body["generated"] is True
+        assert body["price_path_generation_status"] == "PRICE_PATH_GENERATED"
+        assert body["effective_report_version"] == "1.1.0"
+
+    def test_enhancement_failure_never_represented_as_already_complete(self, client, monkeypatch):
+        """Programme Director finding #10 — a failed price-path attempt
+        must not be silently represented as ALREADY_COMPLETE."""
+        import api.routers.paper_trading as ptr
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+        monkeypatch.setattr(ptr, "_attempt_price_path_enhancement", lambda **kw: (None, ptr.PRICE_PATH_FAILED_RETRYABLE))
+        shared = _new_shared([{"trade_id": 1}])
+        resp, _ = _generate(client, 1, shared)
+        body = resp.json()
+        assert body["price_path_generation_status"] == "PRICE_PATH_FAILED_RETRYABLE"
+        # The effective (base Sprint 2) report is still returned honestly —
+        # never conflated with a successful price-path outcome.
+        assert body["report_schema_version"] == "1.0.0"
+
+    def test_enhancement_none_leaves_response_unchanged(self, client, monkeypatch):
+        import api.routers.paper_trading as ptr
+        monkeypatch.setenv("TRADE_POSTMORTEM_PRICE_PATH_ENABLED", "1")
+        monkeypatch.setattr(ptr, "_attempt_price_path_enhancement", lambda **kw: (None, ptr.PRICE_PATH_NOT_YET_AVAILABLE))
+        shared = _new_shared([{"trade_id": 1}])
+        resp, _ = _generate(client, 1, shared)
+        body = resp.json()
+        assert body["report_schema_version"] == "1.0.0"
+        assert body["generation_status"] == "GENERATED"

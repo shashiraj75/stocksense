@@ -171,6 +171,7 @@ _EXIT_SNAPSHOT_COLUMNS = (
     "exit_price", "exit_quantity", "closed_at",
     "final_stop_loss", "final_target_price", "trailing_stop_level", "time_exit_rule", "market_close_rule",
     "management_mode", "levels_modified_after_entry",
+    "level_history_contract_version", "final_stop_modified_after_entry", "final_target_modified_after_entry",
     "source_request_id", "trigger_observation_timestamp", "trigger_observation_price",
     "trigger_timing_verification", "source_metadata",
 )
@@ -187,6 +188,8 @@ def _exit_snapshot_values(snapshot: ExitSnapshot) -> tuple:
         snapshot.final_stop_loss, snapshot.final_target_price, snapshot.trailing_stop_level,
         snapshot.time_exit_rule, snapshot.market_close_rule,
         snapshot.management_mode, snapshot.levels_modified_after_entry,
+        snapshot.level_history_contract_version, snapshot.final_stop_modified_after_entry,
+        snapshot.final_target_modified_after_entry,
         snapshot.source_request_id, snapshot.trigger_observation_timestamp,
         snapshot.trigger_observation_price, snapshot.trigger_timing_verification,
         _json.dumps(snapshot.source_metadata) if snapshot.source_metadata is not None else None,
@@ -260,6 +263,10 @@ def close_paper_trade(
     closed_at: datetime | None = None,
     source_request_id: str | None = None,
     exit_metadata: dict | None = None,
+    request_current_report_outbox: bool = False,
+    current_report_schema_version: str | None = None,
+    current_calculation_version: str | None = None,
+    current_rules_version: str | None = None,
 ) -> CloseResult:
     """The one authoritative close path. `conn` is an already-acquired
     connection from the caller's own pool (this module has no pool of its
@@ -290,14 +297,18 @@ def close_paper_trade(
     with conn.transaction():
         row = conn.execute(
             """SELECT user_id, symbol, quantity, entry_price, status, market,
-                      stop_loss, target_price, trade_management_mode
+                      stop_loss, target_price, trade_management_mode,
+                      levels_modified_after_entry, level_history_contract_version,
+                      stop_modified_after_entry, target_modified_after_entry
                FROM paper_trades WHERE id = %s FOR UPDATE""",
             (trade_id,),
         ).fetchone()
         if row is None:
             raise TradeNotFoundError(trade_id)
 
-        owner, symbol, qty, entry_price, status, market, stop_loss, target_price, mgmt_mode = row
+        (owner, symbol, qty, entry_price, status, market, stop_loss, target_price, mgmt_mode,
+         levels_modified_after_entry, level_history_contract_version,
+         stop_modified_after_entry, target_modified_after_entry) = row
 
         if owner != user_id:
             raise TradeNotOwnedError(trade_id)
@@ -366,6 +377,10 @@ def close_paper_trade(
             final_stop_loss=stop_loss,
             final_target_price=target_price,
             management_mode=mgmt_mode,
+            levels_modified_after_entry=levels_modified_after_entry,
+            level_history_contract_version=level_history_contract_version,
+            final_stop_modified_after_entry=stop_modified_after_entry,
+            final_target_modified_after_entry=target_modified_after_entry,
             source_request_id=source_request_id,
             source_metadata=exit_metadata,
         )
@@ -377,6 +392,24 @@ def close_paper_trade(
         )
         if outbox_created:
             log.info("[postmortem_outbox_created] trade_id=%s outbox_id=%s", trade_id, outbox_id)
+
+        # Wave B, Stage J4F — atomic close-to-current-outbox creation.
+        # The caller (paper_trading.py) explicitly opts in and supplies
+        # the exact current (1.2.0) version identity; this module never
+        # reads a feature flag or environment variable itself, matching
+        # the governing prompt's "no env-var reads inside the DB helper"
+        # requirement. Inserted in the SAME transaction as the legacy
+        # 1.0.0 outbox row above, so a crash between the two can never
+        # happen — both durably exist or neither does.
+        if request_current_report_outbox:
+            from services.postmortem.current_report_generation import insert_current_outbox_record
+            insert_current_outbox_record(
+                conn, trade_id=trade_id, user_id=user_id,
+                schema_version=current_report_schema_version,
+                calculation_version=current_calculation_version,
+                rules_version=current_rules_version,
+                source_request_id=source_request_id,
+            )
 
     log.info("[trade_close_completed] trade_id=%s outbox_id=%s", trade_id, outbox_id)
     return CloseResult(

@@ -217,11 +217,17 @@ class TestDataLimitationsIsPurelyAdditive:
         """DP-026 added data_limitations; the later benchmark-evidence-
         integrity fix additively disclosed signals_excluded_benchmark
         (a real, caller-supplied exclusion count — see _compute_metrics'
-        own docstring) — both are pure disclosure, nothing else in the
-        summary changes."""
+        own docstring); V-VAL1 additively disclosed the evaluated-BUY-
+        cohort fields (buy_signal_count/evaluated_buy_count/buy_hits/
+        buy_return_count — see get_per_stock_results' own docstring for
+        the same cohort contract at the per-stock level) so the frontend's
+        Wilson interval has an exact, non-reconstructed n/hits to read
+        instead of inferring them from a rounded percentage. All of these
+        are pure disclosure — no existing key's value or type changed."""
         metrics = _compute_metrics(_synthetic_signals(), benchmark_return_pct=1.0, horizon="medium")
         assert set(metrics.keys()) - self.EXPECTED_PRE_EXISTING_KEYS == {
             "data_limitations", "signals_excluded_benchmark",
+            "buy_signal_count", "evaluated_buy_count", "buy_hits", "buy_return_count",
         }
 
     def test_factor_ic_values_unaffected(self):
@@ -257,7 +263,7 @@ class _FakeTicker:
     def __init__(self, symbol):
         self.symbol = symbol
 
-    def history(self, period=None):
+    def history(self, period=None, timeout=None):
         return _valid_bench_df()
 
     @property

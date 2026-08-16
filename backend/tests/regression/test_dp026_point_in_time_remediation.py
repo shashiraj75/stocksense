@@ -58,7 +58,7 @@ class _FakeTicker:
     def __init__(self, symbol):
         self.symbol = symbol
 
-    def history(self, period=None):
+    def history(self, period=None, timeout=None):
         return _synthetic_ohlcv()
 
     @property

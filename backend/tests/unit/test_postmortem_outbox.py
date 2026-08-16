@@ -39,8 +39,9 @@ class _FakeConn:
 
     def execute(self, sql, params):
         stripped = sql.strip()
-        if "claimable AS" in sql and "GENERATING" in sql:
-            max_attempts, outbox_id, user_id, lease_seconds, claimant = params
+        if "UPDATE paper_trade_postmortem_outbox o" in sql and "GENERATING" in sql:
+            max_attempts, lease_seconds = params["max_attempts"], params["lease_seconds"]
+            claimant, outbox_id, user_id = params["claimant"], params["outbox_id"], params["user_id"]
             now = _now()
             with self.lock:
                 row = self.rows.get(outbox_id)

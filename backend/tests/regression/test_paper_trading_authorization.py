@@ -54,12 +54,24 @@ class _RecordingConn:
         self.calls = []
         self._fetchone_results = list(fetchone_results or [])
         self._fetchall_results = list(fetchall_results or [])
+        self._pending_reservation_insert = False
 
     def execute(self, sql, params=None):
         self.calls.append((sql, params))
+        # Owner-authorized hardening — idempotency_key is now REQUIRED, so
+        # every Buy now also issues the reservation
+        # "INSERT INTO paper_trade_idempotency_key ... RETURNING id" before
+        # the statements this fake was built to simulate. Answered
+        # synthetically here (never consumes `_fetchone_results`).
+        self._pending_reservation_insert = (
+            "INSERT INTO paper_trade_idempotency_key" in sql and "RETURNING id" in sql
+        )
         return self
 
     def fetchone(self):
+        if self._pending_reservation_insert:
+            self._pending_reservation_insert = False
+            return (777001,)
         return self._fetchone_results.pop(0) if self._fetchone_results else None
 
     @contextmanager
@@ -90,7 +102,11 @@ def _fake_conn(fetchone_results=None, fetchall_results=None):
 
 PAPER_TRADING_ROUTES = [
     ("get", "/api/paper-trading/portfolio", None),
-    ("post", "/api/paper-trading/buy", {"symbol": "AAPL", "market": "US", "quantity": 1, "price": 100.0}),
+    # Owner-authorized hardening — idempotency_key is now REQUIRED by
+    # POST /buy; included here so these authorization-focused tests (401/
+    # 403/cross-user checks) aren't incidentally affected by the separate
+    # 422 a missing key would now also produce.
+    ("post", "/api/paper-trading/buy", {"symbol": "AAPL", "market": "US", "quantity": 1, "price": 100.0, "idempotency_key": "authz-test-key-fixed"}),
     ("post", "/api/paper-trading/sell/1", {"price": 100.0}),
     ("patch", "/api/paper-trading/trade/1", {"stop_loss": 90.0}),
     ("patch", "/api/paper-trading/trades/1/management-mode", {"trade_management_mode": "auto"}),
@@ -153,6 +169,7 @@ class TestPaperTradingAuth:
             body = {
                 "symbol": "AAPL", "market": "US", "quantity": 1, "price": 100.0,
                 "user_id": "user-victim", "email": "victim@example.com",
+                "idempotency_key": "authz-attacker-key",
             }
             resp = client.post("/api/paper-trading/buy", json=body, headers=_auth("user-attacker"))
         # Pydantic ignores the unknown extra fields; request proceeds authorized as user-attacker.
@@ -192,15 +209,39 @@ class TestPaperTradingAuth:
         assert "not found" in resp.json()["detail"].lower()
 
     def test_edit_cross_user_blocked(self, client):
+        # Wave A closure correction — edit_trade's lookup is now scoped by
+        # BOTH id AND user_id in the SAME query ("WHERE id = %s AND
+        # user_id = %s"), so a real database returns NO row for another
+        # user's trade — indistinguishable from a nonexistent trade_id,
+        # matching the same privacy-safe pattern as test_sell_cross_user_
+        # blocked above. The queued fetchone result of None simulates
+        # exactly that real-database behavior.
         with patch.object(
             __import__("api.routers.paper_trading", fromlist=["_conn"]),
             "_conn",
-            lambda: _fake_conn(fetchone_results=[("user-victim", "OPEN", 100.0, 1, "US")]),
+            lambda: _fake_conn(fetchone_results=[None]),
         ):
             resp = client.patch(
                 "/api/paper-trading/trade/1", json={"stop_loss": 90.0}, headers=_auth("user-attacker")
             )
-        assert resp.status_code == 403
+        assert resp.status_code == 404
+        assert "not found" in resp.json()["detail"].lower()
+
+    def test_edit_nonexistent_trade_returns_identical_result_to_cross_user(self, client):
+        """The frozen Wave A contract requires a nonexistent trade and a
+        cross-user trade to be indistinguishable — same status, same
+        stable body — so this asserts the identical shape as the
+        cross-user case above, not merely "some 404"."""
+        with patch.object(
+            __import__("api.routers.paper_trading", fromlist=["_conn"]),
+            "_conn",
+            lambda: _fake_conn(fetchone_results=[None]),
+        ):
+            resp = client.patch(
+                "/api/paper-trading/trade/999999", json={"stop_loss": 90.0}, headers=_auth("user-attacker")
+            )
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Trade not found"
 
     def test_reset_scopes_only_to_authenticated_user(self, client):
         recorded = {}

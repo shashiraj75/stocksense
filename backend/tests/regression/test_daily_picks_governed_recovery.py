@@ -27,18 +27,43 @@ def test_recovery_not_triggered_when_already_fresh():
 
 
 def test_recovery_not_triggered_when_in_memory_generating_flag_set():
+    """Follow-up correction (2026-08-10): an already_running response is
+    only useful to a caller that needs to MONITOR the active run (e.g. the
+    India watchdog) if it carries the exact durable job_id — never a
+    fabricated one. The in-memory-flag detection path now looks up the
+    durable active job and attaches its real job_id."""
     import services.daily_picks as dp
     with patch.dict(os.environ, {"USE_POSTGRES": "1"}), \
          patch.object(dp, "picks_generated_today", return_value=False), \
-         patch.dict(dp._generating, {"US": True}):
+         patch.dict(dp._generating, {"US": True}), \
+         patch("services.postgres_store.get_active_daily_picks_job",
+               return_value={"job_id": "already-running-job-in-memory-path"}):
         result = dp.attempt_governed_recovery("US", reason="skipped_no_base")
-    assert result == {"triggered": False, "reason": "already_running"}
+    assert result == {"triggered": False, "reason": "already_running",
+                       "job_id": "already-running-job-in-memory-path"}
+
+
+def test_recovery_reports_state_inconsistency_when_in_memory_flag_has_no_durable_job():
+    """Follow-up correction (2026-08-10): if the in-memory flag claims a
+    job is running but no durable active job can be found, that is a
+    genuine state inconsistency — reported honestly via the existing
+    precheck_failed classification, never a fabricated job_id."""
+    import services.daily_picks as dp
+    with patch.dict(os.environ, {"USE_POSTGRES": "1"}), \
+         patch.object(dp, "picks_generated_today", return_value=False), \
+         patch.dict(dp._generating, {"US": True}), \
+         patch("services.postgres_store.get_active_daily_picks_job", return_value=None):
+        result = dp.attempt_governed_recovery("US", reason="skipped_no_base")
+    assert result == {"triggered": False, "reason": "precheck_failed"}
+    assert "job_id" not in result
 
 
 def test_recovery_not_triggered_when_a_durable_active_job_exists():
     """Even if the in-memory flag is clear (e.g. a different process
     instance holds it, or this process just restarted), the durable
-    daily_picks_jobs check must independently prevent overlap."""
+    daily_picks_jobs check must independently prevent overlap. Follow-up
+    correction (2026-08-10): this path's already_running response now also
+    carries the durable job's exact job_id."""
     import services.daily_picks as dp
     with patch.object(dp, "picks_generated_today", return_value=False), \
          patch.dict(dp._generating, {"US": False}), \
@@ -47,7 +72,7 @@ def test_recovery_not_triggered_when_a_durable_active_job_exists():
                return_value={"job_id": "already-running-job"}), \
          patch("services.postgres_store.count_daily_picks_job_attempts_since"):
         result = dp.attempt_governed_recovery("US", reason="skipped_stale_base")
-    assert result == {"triggered": False, "reason": "already_running"}
+    assert result == {"triggered": False, "reason": "already_running", "job_id": "already-running-job"}
 
 
 def test_recovery_not_triggered_when_max_daily_attempts_reached():

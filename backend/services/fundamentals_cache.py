@@ -233,6 +233,26 @@ def get_sector(symbol: str, market: str = "IN") -> tuple[str | None, str | None]
         return (None, None)
 
 
+def get_company_name(symbol: str, market: str = "IN") -> str | None:
+    """Read-only, exact-symbol company-name lookup from the nightly-
+    refreshed fundamentals cache — used for pure DISPLAY identity (e.g.
+    the Trade Postmortem report header), never as trading/governed
+    evidence. Mirrors get_sector's fail-safe contract exactly: never
+    raises, returns None (not an empty string) when the symbol isn't in
+    the cache yet or the lookup itself fails for any reason, so a
+    display-metadata miss can never make an unrelated read path
+    unavailable."""
+    try:
+        with _conn() as conn:
+            row = conn.execute(
+                "SELECT company_name FROM stock_fundamentals_cache WHERE symbol = %s AND market = %s",
+                [symbol.upper(), market],
+            ).fetchone()
+            return row[0] if row and row[0] else None
+    except Exception:
+        return None
+
+
 def get_sectors_batch(symbols: list[str], market: str = "IN") -> dict[str, dict[str, str | None]]:
     """
     Batch counterpart to get_sector() — one query for N symbols instead of N

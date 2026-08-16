@@ -4,7 +4,80 @@
 
 **Use this document for current state.** Historical sprint reports, Epic closures, SSDS documents, and audit reports remain authoritative evidence for their own completed scope, but they do not automatically describe the current production operating state.
 
-**As of:** 2026-07-26 — maintained as a live operational register
+**As of:** 2026-08-07 — maintained as a live operational register
+
+## Major Feature Lifecycle Summary (2026-08-07 reconciliation)
+
+Code-grounded snapshot from the post-Jul-11 documentation reconciliation
+(PR #37). Full evidence and per-commit mapping:
+[Documentation-Current-State-Reconciliation-Ledger-2026-08.md](Documentation-Current-State-Reconciliation-Ledger-2026-08.md).
+Production *runtime* toggle state (vs. code default) is asserted only where
+a specific closure doc says so; otherwise "not independently verifiable
+from this repository checkout" per that ledger's own caveat.
+
+| Subsystem | Classification |
+|---|---|
+| Prediction Engine (confidence, target-price floors) | LIVE BACKEND / OPERATIONAL |
+| Daily Picks (India + US, incl. premarket finalizer) | LIVE USER-FACING / LIVE BACKEND OPERATIONAL |
+| Multibagger (weekly-refresh architecture) | LIVE USER-FACING |
+| Paper Trading | LIVE USER-FACING |
+| Trade Postmortem | LIVE USER-FACING — RELEASE COMPLETE (see below) |
+| Portfolio | LIVE USER-FACING |
+| Watchlist | LIVE USER-FACING |
+| Alerts | LIVE USER-FACING |
+| Validation Engine | LIVE BACKEND / OPERATIONAL |
+| Learning Alpha Engine | FEATURE-FLAGGED OFF (contained, `LEARNING_ALPHA_PRODUCTION_ENABLED`) |
+| RCI | FEATURE-FLAGGED OFF (`RCI_LIVE_STOCK_ANALYSIS_ENABLED`, unchanged since baseline) |
+| SEC EDGAR (live provider, `sec_edgar_adapter.py`) | LIVE BACKEND / OPERATIONAL — feeds live US confidence scoring via `us_financial_strength_adapter.py` → `prediction_engine.py` |
+| SEC PIT store (DP-033 persisted point-in-time facts, `sec_pit_store.py`) | LIVE BACKEND / OPERATIONAL for Validation Engine replay only — its sole production consumer is `validation_engine.py`'s acquisition-free replay path; does NOT feed live prediction/confidence scoring (not imported by `prediction_engine.py` or `daily_picks.py`) — corrected 2026-08-07 after this doc previously conflated it with the live SEC EDGAR row above |
+| NSE Instrument Master | FOUNDATION / UNINTEGRATED |
+| Market Leadership | FEATURE-FLAGGED OFF / DEPLOYED DORMANT |
+| Intelligence Engine / Universe Builder | SHADOW / EXPERIMENTAL (`INTELLIGENCE_ENGINE_SHADOW_ENABLED`) |
+| Postgres Schema Init | LIVE BACKEND / OPERATIONAL (fail-closed) |
+| Caching / Egress Containment | LIVE BACKEND / OPERATIONAL |
+
+---
+
+## Trade Postmortem (Wave C + Explainability)
+
+**Status:** RELEASE COMPLETE — merged, deployed, and activated in Production.
+
+- PR #35 (Wave C base: current-report read API, per-trade frontend,
+  observability) — merged and dark-deployed.
+- PR #36 (Explainability/UX overhaul: three-layer report, factor-specific
+  price-path assessment, `Company Name (SYMBOL)` identity, evidence-coverage
+  matrix) — merged at `5170692f27b1742406a21d67fca8a74d62490c1f`.
+- Two independent flag pairs — this is not one backend-only flag paired with
+  one frontend-only flag; each side has both a backend and a frontend twin
+  (`backend/api/routers/paper_trading.py`,
+  `frontend/src/utils/featureFlags.ts`):
+  - `TRADE_POSTMORTEM_PRICE_PATH_ENABLED` (backend) /
+    `NEXT_PUBLIC_TRADE_POSTMORTEM_PRICE_PATH_ENABLED` (frontend) gates the
+    per-trade `/postmortem/[tradeId]` route this release (PR #35/#36) is
+    about — **reported enabled in Production** per the
+    [Explainability Production Closure](../Releases/Trade-Postmortem-Explainability-Production-Closure.md)'s
+    own validation evidence.
+  - `TRADE_POSTMORTEM_DAILY_ENABLED` (backend) /
+    `NEXT_PUBLIC_TRADE_POSTMORTEM_DAILY_ENABLED` (frontend) gates a
+    separate, older Sprint 1 daily-batch surface — **its Production runtime
+    state was not independently verified during this reconciliation**; do
+    not assume it matches the price-path pair's state.
+- Production validation: 48-hour backend-only stability observation passed;
+  natural production lifecycle verified on a real trade; frontend
+  activation, authenticated Production smoke test, and the
+  Company Name (SYMBOL) identity gate all passed; temporary Preview-only
+  frontend flag and temporary Preview CORS authorization removed after QA;
+  final 60-minute Production observation passed with zero rollback
+  threshold crossed.
+- Full closure evidence:
+  [Trade Postmortem Explainability — Production Closure](../Releases/Trade-Postmortem-Explainability-Production-Closure.md).
+
+**FUTURE POSTMORTEM EVIDENCE COMPLETION WORK** (not a release-stability
+issue — the release above is complete and stable): the evidence *coverage*
+matrix identifies factors where underlying evidence capture is still
+partial. This is tracked separately in the
+[Evidence Completion Roadmap](./Trade-Postmortem-Evidence-Completion-Roadmap.md)
+and does not block or qualify the RELEASE COMPLETE status above.
 
 ---
 
@@ -406,6 +479,18 @@ Original gate criteria, reviewed individually rather than declared passed as a b
 - Read-only authenticated verification confirmed HTTP `200` and the approved aggregate-only response shape: operational counts, cache-age summary, thread count, and RCI observability counters only.
 - Verification confirmed no raw cache identifiers, in-flight identifiers, symbol/market/horizon identifiers, background-log content, or exception text are exposed.
 - Verification did not change Release 12B validation, RCI activation, Daily Picks scheduler state, configuration, or deployment state.
+
+## Daily Picks Scheduler & End-to-End Completion Reliability Hardening (2026-08-10)
+
+**Status:** Implemented on feature branch `feature/daily-picks-scheduler-completion-reliability` — pending owner review before PR/merge/deployment. Completes the GO recommendation from a prior read-only forensic review of the Daily Picks trigger/completion path. GitHub Actions remains the sole scheduler — no new external scheduler was introduced, and no schema/migration change was made.
+
+- **Defect closed:** the India and US-base GitHub Actions workflows previously reported success purely from an HTTP 2xx on the trigger POST to `/api/picks/generate`. A 202 `accepted` (or a 200 `already_fresh`) response only means the request was received — it never proved generation actually finished or that fresh picks were durably published. A `daily_picks_jobs` row can still fail, stall, or be interrupted by a Railway restart after the POST succeeds.
+- **India + US base workflows** (`daily_picks_in.yml`, `daily_picks_us.yml`) now poll `/api/picks/status?market=<M>` after the trigger, bound to the exact `job_id` the trigger response returned, using a new shared helper (`scripts/ci/poll_daily_picks_completion.sh`) so the completion-verification logic exists in exactly one place. Workflow success now requires BOTH the bound job reaching `completed` status AND `has_today`/`last_successful_generated_at` evidence of durable publication — a job that merely reports `completed` with no publication evidence is reported as a failure, not a success.
+- **New India recovery watchdog** (`daily_picks_in_watchdog.yml`, cron `37 22 * * 0-4`, two hours after the primary India cron) is the India-side analog of the US Premarket Finalizer's existing accidental recovery path. It checks today's India freshness first (no-ops if already fresh), and if not fresh, calls a new `POST /api/picks/recover` endpoint — a thin, generic HTTP wrapper over the existing, unmodified `services.daily_picks.attempt_governed_recovery()` (the same governed, bounded, atomically-reserved recovery function the US premarket finalizer has called internally since the 2026-07-22 incident). The watchdog then polls `/api/picks/status` itself to verify the recovery's actual outcome — it never treats "recovery POST accepted" as "recovery succeeded."
+- **API contract addition:** `POST /api/picks/recover?market=<IN|US>&reason=<text>`, secret-protected identically to `/generate` and `/premarket-finalize`. Added only because a GitHub Actions job has no way to call the in-process `attempt_governed_recovery()` function directly; it introduces no new recovery semantics of its own.
+- **No schema/migration change.** All new/reused fields (`job_id`, `job_status`, `phase`, `processed`, `total`, `last_runner_heartbeat_at`, `last_progress_at`, `has_today`, `last_successful_generated_at`, `derived_job_health`) already existed on `/api/picks/status` before this change.
+- **Startup catch-up** (`DAILY_PICKS_STARTUP_CATCHUP_ENABLED`) remains unchanged and still defaults OFF in code; this work did not enable it anywhere and did not change its timing. **Correction (follow-up, 2026-08-10):** a prior version of this note incorrectly implied the India catch-up threshold (`_catchup_picks("IN", _IST, 2, 60)` in `backend/api/main.py` — trigger_hour=2, i.e. 2:00 AM IST local) sits safely *after* the primary India cron (2:07 AM IST). It does not — 2:00 AM IST is actually **~7 minutes *before*** the primary cron's 2:07 AM IST trigger, a narrow overlap window. This is existing, already-safe behavior, not a new gap introduced by this change: if catch-up were ever enabled and its check ran inside that ~7-minute window, it would race the primary cron only at the request level — the atomic `try_reserve_daily_picks_job_with_lease()` reservation (the same one `/generate`, `/recover`, and every other trigger path use, under the `idx_daily_picks_jobs_one_active_per_market` partial unique index) still guarantees only one of the two can win the job row; the loser gets a clean `already_running` no-op, never a competing job. No catch-up timing change was made and none is needed to preserve this guarantee — flagged here only so this document accurately describes the real timing relationship instead of a safely-after one that doesn't exist. US catch-up (trigger_hour=3, i.e. 3:00 AM ET) remains safely after the US base cron (06:00 UTC = 1-2 AM ET depending on DST) with no such overlap. All five possible triggers of a Daily Picks job (primary GitHub cron, the India watchdog, US finalizer recovery, startup catch-up, and the manual `/generate` endpoint) reserve through the same `daily_picks_jobs` table under the same `idx_daily_picks_jobs_one_active_per_market` partial unique index — they cannot create competing jobs for the same market, regardless of how closely their trigger windows overlap.
+- Provider/runtime hardening (timeouts, per-symbol isolation, retries, fallback) is explicitly out of scope for this change and was not touched.
 
 ## Operational Safety Rules
 

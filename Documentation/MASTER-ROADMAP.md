@@ -71,6 +71,18 @@ Nine intelligence domains are named here, each described accurately as it exists
 
 ## Section 4 — Current Status
 
+> This section tracks the Epic-numbered engine architecture (Business
+> Quality, Financial Strength, Growth, Valuation, Recommendation
+> Consolidation/RCI) specifically. Product-surface work outside that
+> numbering — Trade Postmortem (RELEASE COMPLETE, live user-facing),
+> Market Leadership (deployed, all flags off — DEPLOYED DORMANT), Daily
+> Picks reliability hardening, Multibagger's weekly-refresh architecture,
+> and memory/egress containment — is tracked in
+> [`Operations/Current-Release-Status.md`](Engineering-Handbook/Operations/Current-Release-Status.md)
+> and the
+> [post-Jul-11 reconciliation ledger](Engineering-Handbook/Operations/Documentation-Current-State-Reconciliation-Ledger-2026-08.md),
+> not duplicated here.
+
 **Completed:**
 - Epic 001 — Business Quality Intelligence, both markets, closed.
 - Epic 002 — Financial Strength Intelligence, US (non-FINANCIAL, non-REAL_ESTATE) market, closed — see [EPIC-002 Closure](Engineering-Handbook/EPICS/EPIC-002-Financial-Strength-Intelligence-Closure.md).
@@ -129,6 +141,7 @@ These are not aspirational — each was tested under real pressure during Epic 0
 | **Architecture Studies** | `Engineering-Handbook/Architecture/` | Audits, design studies, and validation reports that inform a future SSDS but are not specifications themselves — e.g. the India Fundamentals Data Validation Study, the Financial Strength Intelligence Design Study. |
 | **Validation Reports** | Also under `Architecture/` (not a separate folder today) | Live-data validation passes — production-readiness checks, re-validations — kept alongside design studies since both are evidence-gathering artifacts, distinct from binding specifications. |
 | **Glossary** | `Engineering-Handbook/Glossary/` | The canonical name for every engine, score, and feature. No document anywhere should invent an alternative name for a concept already named here. |
+| **BCDR** (Business Continuity & Disaster Recovery) | `Engineering-Handbook/Business-Continuity-Disaster-Recovery/` | Platform recovery posture across GitHub, Vercel, Railway, Supabase, and GoDaddy — architecture, a step-by-step recovery runbook, a full evidence matrix, and testing/revalidation governance. First formal baseline established 2026-08-09; evidence-backed, not yet owner-closed. |
 | **This document** | `Documentation/MASTER-ROADMAP.md` | The single executive entry point — read this first, then follow its links into the categories above as needed. Distinct from `Engineering-Handbook/ROADMAP.md`, which is an older, sprint-numbered engineering backlog predating the Epic structure (see note below). |
 
 **Note on the pre-existing `Engineering-Handbook/ROADMAP.md`:** that document is a detailed, sprint-level plan written before the Epic structure existed. Some of its items were later delivered in a different shape through Epic 001 (e.g., its "wire Altman Z-Score into a reject signal" and "fraud-risk heuristic" items are now satisfied by the Business Quality Engine's hard gate and Beneish M-Score input). It has not been rewritten or reconciled as part of this roadmap — it remains a useful historical backlog for items not yet absorbed into an Epic (notably its Phase 3 Portfolio Intelligence and Phase 4 Explainability items), but this Master Roadmap, not that document, is the current source of truth for what's next.

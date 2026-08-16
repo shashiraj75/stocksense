@@ -1,0 +1,566 @@
+{
+  "stage": "WAVE_A",
+  "description": "Machine-readable requirement-to-test manifest for Wave A (Stage J4C semantic contract + Stage J4D durable write invariant), separate from the frozen J4B.3 manifest.",
+  "requirements": [
+    {
+      "id": "J4C-01", "title": "Raw observation vs governed conclusion separation",
+      "protected_function": "services.postmortem.governed_price_path_conclusions",
+      "expected_behavior": "A numerical crossing observation (J4B) is never by itself treated as a governed touch conclusion; classify_governed_level_touch only returns SUPPORTED_TOUCH when the level history is GOVERNED_UNMODIFIED.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e38_crossing_plus_governed_unmodified_is_supported",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e36_crossing_plus_unknown_history_falls_back"
+      ]
+    },
+    {
+      "id": "J4C-02", "title": "Level-history status matrix",
+      "protected_function": "services.postmortem.level_history_eligibility.classify_level_history_status",
+      "expected_behavior": "NULL/legacy-FALSE/governed-FALSE/TRUE/invalid-combination/unsupported-version are classified into the five distinct statuses per Gate 1C.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestLevelHistoryStatusMatrix::test_a1_historical_null_is_unknown_or_legacy",
+        "tests/unit/test_j4c_semantic_contract.py::TestLevelHistoryStatusMatrix::test_a2_legacy_untrusted_false_is_unknown_or_legacy",
+        "tests/unit/test_j4c_semantic_contract.py::TestLevelHistoryStatusMatrix::test_a3_governed_version_false_is_governed_unmodified",
+        "tests/unit/test_j4c_semantic_contract.py::TestLevelHistoryStatusMatrix::test_a4_true_is_modified_after_entry_governed",
+        "tests/unit/test_j4c_semantic_contract.py::TestLevelHistoryStatusMatrix::test_a5_invalid_state_combination_is_contradictory",
+        "tests/unit/test_j4c_semantic_contract.py::TestLevelHistoryStatusMatrix::test_a7_unsupported_invariant_version_fails_closed"
+      ]
+    },
+    {
+      "id": "J4C-03", "title": "Per-level independence",
+      "protected_function": "services.postmortem.governed_price_path_conclusions.classify_governed_order",
+      "expected_behavior": "Target and stop level-history status are evaluated independently; an order conclusion requires BOTH levels GOVERNED_UNMODIFIED, not the aggregate flag.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_ordered_pattern_falls_back_when_either_level_not_governed_unmodified"
+      ]
+    },
+    {
+      "id": "J4C-04", "title": "Endpoint evidence matrix",
+      "protected_function": "services.postmortem.level_history_eligibility.classify_endpoint_evidence",
+      "expected_behavior": "Entry/exit snapshot presence and value combinations (missing/null/value/identical/different/malformed/non-finite) are classified per Gate 1E, never conflated with a governed-history claim.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestEndpointEvidenceMatrix::test_b8_missing_entry_snapshot",
+        "tests/unit/test_j4c_semantic_contract.py::TestEndpointEvidenceMatrix::test_b11_null_null",
+        "tests/unit/test_j4c_semantic_contract.py::TestEndpointEvidenceMatrix::test_b14_identical_value_value",
+        "tests/unit/test_j4c_semantic_contract.py::TestEndpointEvidenceMatrix::test_b16_malformed_value",
+        "tests/unit/test_j4c_semantic_contract.py::TestEndpointEvidenceMatrix::test_identical_endpoints_do_not_prove_unchanged_throughout"
+      ]
+    },
+    {
+      "id": "J4C-05", "title": "Price-basis eligibility",
+      "protected_function": "services.postmortem.level_history_eligibility.classify_price_basis_eligibility",
+      "expected_behavior": "UNADJUSTED is COMPATIBLE; SPLIT_ADJUSTED/TOTAL_RETURN_ADJUSTED are INCOMPATIBLE; UNKNOWN_ADJUSTMENT is UNKNOWN; anything else is CORRUPT_OR_CONTRADICTORY; None is EVIDENCE_UNAVAILABLE.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestPriceBasisEligibility::test_c18_compatible_basis",
+        "tests/unit/test_j4c_semantic_contract.py::TestPriceBasisEligibility::test_c19_incompatible_adjusted_basis",
+        "tests/unit/test_j4c_semantic_contract.py::TestPriceBasisEligibility::test_c22_corrupt_basis_evidence"
+      ]
+    },
+    {
+      "id": "J4C-06", "title": "Governed touch conclusion",
+      "protected_function": "services.postmortem.governed_price_path_conclusions.classify_governed_level_touch",
+      "expected_behavior": "No value/no crossing/supported/incompatible-basis/no-bars/insufficient-evidence are the only reachable statuses per Gate 1H.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e_no_value_supplied",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e_no_compatible_crossing_governed_unmodified_is_definitive",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e37_crossing_plus_modified_without_temporal_proof_falls_back",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e41_contradictory_history_falls_back",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e43_incompatible_basis_prevents_any_crossing_conclusion",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e_no_bars"
+      ]
+    },
+    {
+      "id": "J4C-07", "title": "Governed order conclusion",
+      "protected_function": "services.postmortem.governed_price_path_conclusions.classify_governed_order",
+      "expected_behavior": "Neither/target-only/stop-only/target-before-stop/stop-before-target/same-bar-unknown/unavailable are the only reachable statuses per Gate 1I.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_neither_observed",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_target_only_observed",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_stop_only_observed",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_target_safely_before_stop_when_both_governed_unmodified",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_stop_safely_before_target_when_both_governed_unmodified"
+      ]
+    },
+    {
+      "id": "J4C-08", "title": "Same-bar ambiguity",
+      "protected_function": "services.postmortem.governed_price_path_conclusions.classify_governed_order",
+      "expected_behavior": "Both values safely observed on the same bar never produces an inferred order -- SAME_BAR_ORDER_UNKNOWN always.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": ["tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f39_same_bar_order_remains_unknown"]
+    },
+    {
+      "id": "J4C-09", "title": "Partial-boundary limits",
+      "protected_function": "services.postmortem.governed_price_path_conclusions.classify_governed_order",
+      "expected_behavior": "Partial-boundary-only evidence never produces a definitive order conclusion.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": ["tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f40_partial_boundary_never_produces_definitive_order"]
+    },
+    {
+      "id": "J4C-10", "title": "Exact canonical fallback",
+      "protected_function": "services.postmortem.governed_price_path_conclusions.CANONICAL_FALLBACK",
+      "expected_behavior": "Every fallback conclusion uses the exact sentence 'Insufficient evidence to determine this factor reliably.', enforced by dataclass construction, never paraphrased.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestNoFabrication::test_canonical_fallback_exact_text",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_fallback_conclusion_must_use_exact_canonical_sentence"
+      ]
+    },
+    {
+      "id": "J4C-11", "title": "No-fabrication",
+      "protected_function": "services.postmortem.level_history_eligibility.is_no_level_configured_throughout_eligible",
+      "expected_behavior": "No prohibited-claim source strings; endpoint equality alone and legacy null/null never make throughout-trade absence eligible; only a governed-unmodified level with null/null endpoints does.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestNoFabrication::test_no_prohibited_claim_strings_in_module_source",
+        "tests/unit/test_j4c_semantic_contract.py::TestNoFabrication::test_no_claim_of_configured_throughout_from_endpoint_equality_alone",
+        "tests/unit/test_j4c_semantic_contract.py::TestNoFabrication::test_no_claim_of_absent_throughout_for_legacy_null_null",
+        "tests/unit/test_j4c_semantic_contract.py::TestNoFabrication::test_future_governed_null_null_may_become_eligible"
+      ]
+    },
+    {
+      "id": "J4C-12", "title": "Old/new model transition boundary (non-wiring)",
+      "protected_function": "services.postmortem.price_path_calculator.detect_touches",
+      "expected_behavior": "detect_touches/classify_touch_order (pre-J4C model) remain byte-for-byte unchanged by this Wave; the new J4C modules have no report/claim/API/frontend caller.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": ["tests/unit/test_price_path_observed_crossing.py::TestJ4BCompatibilityAssertions::test_generation_and_claims_and_router_do_not_import_j4b_symbols"]
+    },
+    {
+      "id": "J4D-01", "title": "Invariant version identity",
+      "protected_function": "services.postgres_store (paper_trades.level_history_contract_version + trigger)",
+      "expected_behavior": "Version is immutable once set on a row; NULL never silently upgrades via an ordinary edit; an unsupported version fails closed.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": [
+        "tests/postgres_integration/test_level_history_invariant_real_pg.py::TestDatabaseEnforcement::test_version_immutable_once_set",
+        "tests/postgres_integration/test_level_history_invariant_real_pg.py::TestDatabaseEnforcement::test_unsupported_invariant_version_rejected_on_insert",
+        "tests/postgres_integration/test_level_history_invariant_real_pg.py::TestDatabaseEnforcement::test_legacy_row_cannot_silently_acquire_a_version_via_edit"
+      ]
+    },
+    {
+      "id": "J4D-02", "title": "New-trade initialization",
+      "protected_function": "api.routers.paper_trading.buy_trade",
+      "expected_behavior": "A new governed trade explicitly initializes version='1', both per-level flags FALSE, aggregate FALSE -- never NULL.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": ["tests/postgres_integration/test_level_history_invariant_real_pg.py::TestNewTradeInitialization::test_new_governed_trade_initializes_quadruple"]
+    },
+    {
+      "id": "J4D-03", "title": "Legacy preservation",
+      "protected_function": "services.postgres_store (paper_trades legacy rows)",
+      "expected_behavior": "A legacy row (version NULL) is never backfilled; a directly observed legacy edit may set a per-level flag TRUE without inventing a version.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": [
+        "tests/postgres_integration/test_level_history_invariant_real_pg.py::TestNewTradeInitialization::test_legacy_fixture_remains_all_null",
+        "tests/postgres_integration/test_level_history_invariant_real_pg.py::TestDatabaseEnforcement::test_legacy_row_stop_edit_may_set_true_without_version"
+      ]
+    },
+    {
+      "id": "J4D-04", "title": "Per-level monotonicity",
+      "protected_function": "services.postgres_store.enforce_paper_trade_level_history_invariant",
+      "expected_behavior": "stop_modified_after_entry/target_modified_after_entry TRUE can never revert to FALSE or NULL.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": [
+        "tests/postgres_integration/test_level_history_invariant_real_pg.py::TestDatabaseEnforcement::test_stop_true_cannot_revert",
+        "tests/postgres_integration/test_level_history_invariant_real_pg.py::TestDatabaseEnforcement::test_target_true_cannot_revert",
+        "tests/regression/test_paper_trading_provenance.py::TestPaperTradingProvenance::test_levels_modified_after_entry_never_reverts_to_false"
+      ]
+    },
+    {
+      "id": "J4D-05", "title": "Aggregate/per-level consistency",
+      "protected_function": "services.postgres_store.enforce_paper_trade_level_history_invariant",
+      "expected_behavior": "levels_modified_after_entry must be TRUE whenever either per-level flag is TRUE; a per-level TRUE without the matching aggregate is rejected.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": ["tests/postgres_integration/test_level_history_invariant_real_pg.py::TestDatabaseEnforcement::test_per_level_flag_true_without_aggregate_true_rejected"]
+    },
+    {
+      "id": "J4D-06", "title": "No-op edit behavior",
+      "protected_function": "api.routers.paper_trading.edit_trade",
+      "expected_behavior": "A no-op edit (resubmitted-identical or omitted-field-preserved value) leaves every per-level and aggregate flag untouched -- never writes FALSE.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/regression/test_paper_trading_provenance.py::TestPaperTradingProvenance::test_levels_modified_after_entry_not_set_on_noop_edit",
+        "tests/regression/test_paper_trading_provenance.py::TestPaperTradingProvenance::test_levels_modified_after_entry_not_set_on_entry_price_only_correction",
+        "tests/regression/test_paper_trading_provenance.py::TestPaperTradingProvenance::test_no_code_path_ever_writes_levels_modified_after_entry_false"
+      ]
+    },
+    {
+      "id": "J4D-07", "title": "Add/change/clear behavior",
+      "protected_function": "api.routers.paper_trading.edit_trade",
+      "expected_behavior": "A genuine stop/target add, change, or explicit clear sets the matching per-level flag and aggregate TRUE, independently for stop vs target.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/regression/test_paper_trading_provenance.py::TestPaperTradingProvenance::test_levels_modified_after_entry_set_when_stop_loss_genuinely_changes",
+        "tests/regression/test_paper_trading_provenance.py::TestPaperTradingProvenance::test_levels_modified_after_entry_set_when_target_price_genuinely_changes",
+        "tests/regression/test_paper_trading_provenance.py::TestPaperTradingProvenance::test_explicit_null_stop_loss_still_clears_it_and_counts_as_a_genuine_change",
+        "tests/regression/test_paper_trading_provenance.py::TestPaperTradingProvenance::test_entry_price_only_request_with_omitted_levels_preserves_stored_stop_loss_and_target"
+      ]
+    },
+    {
+      "id": "J4D-08", "title": "Database enforcement (bypass resistance)",
+      "protected_function": "services.postgres_store.enforce_paper_trade_level_history_invariant",
+      "expected_behavior": "A governed value change without the matching per-level flag TRUE in the same statement is rejected by the trigger regardless of caller; an unrelated update is never misclassified as a level modification.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": [
+        "tests/postgres_integration/test_level_history_invariant_real_pg.py::TestDatabaseEnforcement::test_governed_stop_change_without_matching_flag_rejected",
+        "tests/postgres_integration/test_level_history_invariant_real_pg.py::TestDatabaseEnforcement::test_governed_target_change_without_matching_flag_rejected",
+        "tests/postgres_integration/test_level_history_invariant_real_pg.py::TestDatabaseEnforcement::test_correctly_shaped_governed_change_succeeds",
+        "tests/postgres_integration/test_level_history_invariant_real_pg.py::TestDatabaseEnforcement::test_unrelated_update_never_misclassified_as_level_modification"
+      ]
+    },
+    {
+      "id": "J4D-09", "title": "Concurrency",
+      "protected_function": "api.routers.paper_trading.edit_trade",
+      "expected_behavior": "Concurrent stop-only and target-only edits, and concurrent identical edits, cannot lose a positive TRUE evidence write -- proven only via real PostgreSQL row locking, never a mocked connection.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": [
+        "tests/postgres_integration/test_level_history_invariant_real_pg.py::TestConcurrency::test_concurrent_stop_and_target_edits_via_endpoint_preserve_both_true",
+        "tests/postgres_integration/test_level_history_invariant_real_pg.py::TestConcurrency::test_concurrent_identical_stop_edits_cannot_lose_true"
+      ]
+    },
+    {
+      "id": "J4D-10", "title": "Authorization",
+      "protected_function": "api.routers.paper_trading.edit_trade",
+      "expected_behavior": "A cross-user edit is rejected (403) without mutating any governed field; a nonexistent trade is rejected (404) indistinguishably in shape from the cross-user case.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": [
+        "tests/postgres_integration/test_level_history_invariant_real_pg.py::TestAuthorization::test_cross_user_stop_edit_rejected",
+        "tests/postgres_integration/test_level_history_invariant_real_pg.py::TestAuthorization::test_nonexistent_trade_edit_indistinguishable_from_cross_user"
+      ]
+    },
+    {
+      "id": "J4D-11", "title": "Entry/exit snapshots",
+      "protected_function": "services.postmortem.close_service.close_paper_trade",
+      "expected_behavior": "The exit snapshot's level_history_contract_version/final_stop_modified_after_entry/final_target_modified_after_entry/levels_modified_after_entry are populated from the governed paper_trades row read under the same row lock as the close UPDATE -- fixing the prior gap where levels_modified_after_entry was always NULL.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": ["tests/postgres_integration/test_level_history_invariant_real_pg.py::TestSnapshotsCloseAndReset::test_buy_then_close_populates_exit_snapshot_governed_fields"]
+    },
+    {
+      "id": "J4D-12", "title": "Reset",
+      "protected_function": "api.routers.paper_trading (POST /reset)",
+      "expected_behavior": "Reset removes only the requesting user's governed trade rows; another user's governed trade is untouched.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": ["tests/postgres_integration/test_level_history_invariant_real_pg.py::TestSnapshotsCloseAndReset::test_reset_removes_governed_trade_and_snapshot_for_owner_only"]
+    },
+    {
+      "id": "J4D-13", "title": "Schema idempotency",
+      "protected_function": "services.postgres_store.init_db",
+      "expected_behavior": "Re-running the full schema script (including the new columns, CHECK constraint, and trigger) against an already-migrated database is a no-op, never an error.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": ["tests/postgres_integration/test_level_history_invariant_real_pg.py::TestSchemaIdempotency::test_schema_initialization_idempotent"]
+    },
+    {
+      "id": "WA-C01", "title": "Entry-snapshot governed fields",
+      "protected_function": "services.postmortem.entry_snapshot.build_entry_snapshot / api.routers.paper_trading._insert_entry_snapshot",
+      "expected_behavior": "A new governed buy stores level_history_contract_version='1' and all three initial per-level/aggregate flags FALSE in paper_trade_entry_snapshot; a legacy snapshot stays NULL for all four; the table remains immutable-by-UPDATE; schema re-init is idempotent; no existing row is backfilled.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": [
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestEntrySnapshotGovernedFields::test_new_governed_buy_stores_four_governed_entry_fields",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestEntrySnapshotGovernedFields::test_legacy_entry_snapshot_remains_null_for_new_fields",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestEntrySnapshotGovernedFields::test_entry_snapshot_cannot_be_updated",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestEntrySnapshotGovernedFields::test_schema_reinitialization_idempotent_after_entry_snapshot_columns",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestEntrySnapshotGovernedFields::test_no_existing_row_backfilled"
+      ]
+    },
+    {
+      "id": "WA-C02", "title": "Snapshot schema-version coexistence",
+      "protected_function": "services.postmortem.entry_snapshot.SNAPSHOT_SCHEMA_VERSION / services.postmortem.exit_snapshot.EXIT_SNAPSHOT_SCHEMA_VERSION",
+      "expected_behavior": "Every new entry/exit snapshot stamps 1.1.0; a pre-existing 1.0.0 row remains readable and untouched alongside a new 1.1.0 row for a different trade.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": [
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestSnapshotVersionCoexistence::test_new_entry_and_exit_snapshots_stamp_1_1_0",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestSnapshotVersionCoexistence::test_1_0_0_and_1_1_0_snapshots_coexist"
+      ]
+    },
+    {
+      "id": "WA-C03", "title": "Explicit transaction boundary",
+      "protected_function": "api.routers.paper_trading.edit_trade",
+      "expected_behavior": "edit_trade wraps its full read-modify-write in an explicit conn.transaction(), so the FOR UPDATE row lock is actually held under the autocommit=True pool -- proven indirectly by the deterministic concurrency and rollback tests below (a transaction-less implementation could not pass either).",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": [
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExplicitTransactionAndConcurrency::test_wa_c04_deterministic_concurrent_stop_and_target_preserved",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExplicitTransactionAndConcurrency::test_wa_c05_rollback_on_cash_adjustment_failure_preserves_trade_and_cash"
+      ]
+    },
+    {
+      "id": "WA-C04", "title": "Deterministic concurrent stop+target preservation",
+      "protected_function": "api.routers.paper_trading.edit_trade",
+      "expected_behavior": "A row lock explicitly held open on a separate real connection forces genuine overlap between two concurrent editors; both survive, final stop_loss/target_price equal the submitted values, both per-level flags and the aggregate are TRUE. Concurrent identical edits remain idempotent.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": [
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExplicitTransactionAndConcurrency::test_wa_c04_deterministic_concurrent_stop_and_target_preserved",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExplicitTransactionAndConcurrency::test_wa_c04_concurrent_identical_edits_remain_idempotent"
+      ]
+    },
+    {
+      "id": "WA-C05", "title": "Transaction rollback",
+      "protected_function": "api.routers.paper_trading.edit_trade",
+      "expected_behavior": "A genuine PostgreSQL error on the entry-price cash-adjustment statement (the last statement in the transaction) rolls back the earlier stop/target UPDATE in the same transaction -- both trade state and portfolio cash are preserved exactly as before the request.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": ["tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExplicitTransactionAndConcurrency::test_wa_c05_rollback_on_cash_adjustment_failure_preserves_trade_and_cash"]
+    },
+    {
+      "id": "WA-C06", "title": "Exact governed tuple consistency",
+      "protected_function": "services.postgres_store (chk_paper_trades_governed_level_history_tuple)",
+      "expected_behavior": "For a governed version '1' row, stop_modified_after_entry/target_modified_after_entry/levels_modified_after_entry must all be NOT NULL and the aggregate must equal exactly the logical OR of the two per-level flags -- not merely 'per-level TRUE implies aggregate TRUE'.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": [
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_insert_false_false_true_rejected",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_update_removing_aggregate_while_per_level_true_rejected"
+      ]
+    },
+    {
+      "id": "WA-C07", "title": "INSERT enforcement of the exact governed tuple",
+      "protected_function": "services.postgres_store (chk_paper_trades_governed_level_history_tuple, chk_paper_trades_level_history_contract_version)",
+      "expected_behavior": "Every invalid governed tuple (FALSE/FALSE/TRUE, FALSE/FALSE/NULL, TRUE/FALSE/FALSE, FALSE/TRUE/FALSE, NULL/FALSE/FALSE, FALSE/NULL/FALSE, partial NULL, unsupported version) is rejected on INSERT.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": [
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_insert_false_false_true_rejected",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_insert_false_false_null_rejected",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_insert_true_false_false_rejected",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_insert_false_true_false_rejected",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_insert_null_false_false_rejected",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_insert_false_null_false_rejected",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_insert_partial_null_rejected",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_insert_unsupported_version_rejected"
+      ]
+    },
+    {
+      "id": "WA-C08", "title": "UPDATE enforcement of the exact governed tuple",
+      "protected_function": "services.postgres_store.enforce_paper_trade_level_history_invariant / chk_paper_trades_governed_level_history_tuple",
+      "expected_behavior": "An UPDATE that would produce an invalid governed tuple (aggregate TRUE with both per-level FALSE, aggregate reset to FALSE while a per-level flag is TRUE, mutating a supported version) is rejected.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": [
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_update_to_false_false_true_rejected",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_update_removing_aggregate_while_per_level_true_rejected",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestExactGovernedTupleMatrix::test_update_mutating_supported_version_rejected"
+      ]
+    },
+    {
+      "id": "WA-C09", "title": "Cross-user/nonexistent indistinguishability",
+      "protected_function": "api.routers.paper_trading.edit_trade",
+      "expected_behavior": "Owner+existing succeeds; owner+nonexistent and other-user+existing return the IDENTICAL stable 404 result; market/status differences never create an existence oracle; a rejected edit mutates nothing.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": [
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestPrivacySafeAuthorizationMatrix::test_owner_existing_trade_succeeds",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestPrivacySafeAuthorizationMatrix::test_owner_nonexistent_trade_returns_stable_not_found",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestPrivacySafeAuthorizationMatrix::test_other_user_existing_trade_returns_identical_result",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestPrivacySafeAuthorizationMatrix::test_market_and_status_differences_do_not_create_existence_oracle",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestPrivacySafeAuthorizationMatrix::test_rejected_edit_does_not_mutate_trade_snapshot_or_portfolio",
+        "tests/postgres_integration/test_level_history_invariant_real_pg.py::TestAuthorization::test_cross_user_stop_edit_rejected"
+      ]
+    },
+    {
+      "id": "WA-C10", "title": "Endpoint-aware touch eligibility",
+      "protected_function": "services.postmortem.governed_price_path_conclusions.classify_governed_level_touch",
+      "expected_behavior": "Missing/malformed endpoint evidence always falls back; governed-unmodified with null/null endpoints falls back (no level configured throughout); SUPPORTED_TOUCH requires identical non-null endpoints consistent with the observed crossing value.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e38_crossing_plus_governed_unmodified_is_supported",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e_governed_unmodified_but_endpoints_null_null_falls_back",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_f1_missing_entry_snapshot_falls_back",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_f2_missing_exit_snapshot_falls_back",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_f3_both_snapshots_missing_falls_back",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_f4_malformed_endpoint_value_falls_back"
+      ]
+    },
+    {
+      "id": "WA-C11", "title": "Endpoint-aware order eligibility",
+      "protected_function": "services.postmortem.governed_price_path_conclusions.classify_governed_order",
+      "expected_behavior": "An ordered conclusion requires BOTH levels to independently pass endpoint-aware eligibility; contradictory evidence for either level forces ORDER_UNAVAILABLE even when both levels are GOVERNED_UNMODIFIED and a safe order pattern exists.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_target_safely_before_stop_when_both_governed_unmodified",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_stop_safely_before_target_when_both_governed_unmodified",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_ordered_pattern_falls_back_when_endpoint_evidence_contradicts"
+      ]
+    },
+    {
+      "id": "WA-C12", "title": "Governed contradiction handling",
+      "protected_function": "services.postmortem.governed_price_path_conclusions._endpoint_consistency_status",
+      "expected_behavior": "A GOVERNED_UNMODIFIED level whose endpoints show a difference (differing values, null-to-value, value-to-null) is CONTRADICTORY_ENDPOINT_EVIDENCE, distinct from the generic INSUFFICIENT_EVIDENCE fallback.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_f5_governed_false_differing_endpoints_is_contradiction",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_f6_governed_false_null_to_value_is_contradiction",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_f7_governed_false_value_to_null_is_contradiction",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_f8_identical_endpoints_inconsistent_with_observed_value_is_contradiction"
+      ]
+    },
+    {
+      "id": "WA-C13", "title": "Exact-type/hostile-subclass hardening",
+      "protected_function": "services.postmortem.level_history_eligibility / services.postmortem.governed_price_path_conclusions",
+      "expected_behavior": "str/int/float subclasses, bools in numeric positions, and whitespace-only strings are all rejected via exact type() checks rather than isinstance, across classify_level_history_status, classify_endpoint_evidence, classify_price_basis_eligibility, and the two conclusion dataclasses.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_str_subclass_invariant_version_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_whitespace_only_invariant_version_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_int_subclass_endpoint_value_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_float_subclass_endpoint_value_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_bool_endpoint_value_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_str_subclass_price_basis_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_whitespace_only_price_basis_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_governed_order_invalid_status_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_governed_order_empty_detail_rejected"
+      ]
+    },
+    {
+      "id": "WA-C14", "title": "Legacy snapshot and row preservation",
+      "protected_function": "services.postmortem.entry_snapshot / services.postgres_store",
+      "expected_behavior": "A legacy entry snapshot and its linked legacy paper_trades row are never backfilled by re-running schema init; a 1.0.0-versioned snapshot remains readable unchanged alongside new 1.1.0 rows.",
+      "expected_reason_code": null, "test_level": "postgres",
+      "nodes": [
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestEntrySnapshotGovernedFields::test_legacy_entry_snapshot_remains_null_for_new_fields",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestEntrySnapshotGovernedFields::test_no_existing_row_backfilled",
+        "tests/postgres_integration/test_wave_a_closure_correction_real_pg.py::TestSnapshotVersionCoexistence::test_1_0_0_and_1_1_0_snapshots_coexist",
+        "tests/postgres_integration/test_level_history_invariant_real_pg.py::TestNewTradeInitialization::test_legacy_fixture_remains_all_null"
+      ]
+    },
+    {
+      "id": "WA-C15", "title": "Canonical level-kind validation",
+      "protected_function": "services.postmortem.governed_price_path_conclusions._validate_level_kind / GovernedLevelTouchConclusion",
+      "expected_behavior": "level_kind must be an exact str, non-whitespace, member of {TARGET_VALUE, STOP_VALUE} only -- validated at both classify_governed_level_touch entry and direct GovernedLevelTouchConclusion construction. A garbage value is rejected, never stored verbatim.",
+      "expected_reason_code": "INVALID_LEVEL_KIND", "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_invalid_level_kind_rejected_on_direct_construction",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_empty_level_kind_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_whitespace_only_level_kind_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_str_subclass_level_kind_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_classify_governed_level_touch_rejects_invalid_level_kind"
+      ]
+    },
+    {
+      "id": "WA-C16", "title": "Exact governed classifier input types",
+      "protected_function": "services.postmortem.governed_price_path_conclusions.classify_governed_level_touch / classify_governed_order",
+      "expected_behavior": "bars_available must be an exact bool (a hostile int subclass rejected); observation must be exactly NumericalLevelCrossingObservation; summary must be exactly ObservedNumericalCrossingSummary; level_history_status/price_basis_status must be exact str members of their canonical sets -- all via type() is, not isinstance.",
+      "expected_reason_code": "INVALID_GOVERNED_INPUT", "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_bars_available_integer_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_bars_available_hostile_subclass_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_observation_subclass_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_summary_subclass_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_invalid_history_status_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_history_status_str_subclass_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_invalid_price_basis_status_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_price_basis_status_str_subclass_rejected"
+      ]
+    },
+    {
+      "id": "WA-C17", "title": "Target-only full eligibility",
+      "protected_function": "services.postmortem.governed_price_path_conclusions.classify_governed_order",
+      "expected_behavior": "TARGET_ONLY_OBSERVED requires the target side SUPPORTED and the stop side a definitive negative (no value supplied, or no crossing under GOVERNED_UNMODIFIED history); unknown/legacy history, missing entry/exit snapshot, or endpoint contradiction on the stop side all force ORDER_UNAVAILABLE.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_target_only_observed",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f15_target_only_but_stop_history_unknown_with_a_value_is_unavailable",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f17_target_only_but_stop_entry_snapshot_missing_is_unavailable",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f18_target_only_but_stop_exit_snapshot_missing_is_unavailable",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f19_target_only_but_stop_endpoint_contradiction_is_unavailable"
+      ]
+    },
+    {
+      "id": "WA-C18", "title": "Stop-only full eligibility",
+      "protected_function": "services.postmortem.governed_price_path_conclusions.classify_governed_order",
+      "expected_behavior": "STOP_ONLY_OBSERVED requires the exact symmetric rule to WA-C17 for the stop/target sides reversed.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_stop_only_observed",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f19b_stop_only_but_target_history_unknown_with_a_value_is_unavailable",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_stop_only_but_target_history_unknown_with_missing_snapshot_is_unavailable",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_stop_only_but_target_exit_snapshot_missing_is_unavailable",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_stop_only_but_target_endpoint_contradiction_is_unavailable"
+      ]
+    },
+    {
+      "id": "WA-C19", "title": "Same-bar full eligibility",
+      "protected_function": "services.postmortem.governed_price_path_conclusions.classify_governed_order",
+      "expected_behavior": "SAME_BAR_ORDER_UNKNOWN requires BOTH per-level governed touch conclusions SUPPORTED; either side's history-unknown, missing endpoint, or endpoint contradiction forces ORDER_UNAVAILABLE.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f39_same_bar_order_remains_unknown",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f39b_same_bar_but_one_side_history_unknown_is_unavailable",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f39c_same_bar_but_one_side_endpoint_missing_is_unavailable",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f39d_same_bar_but_one_side_endpoint_contradictory_is_unavailable"
+      ]
+    },
+    {
+      "id": "WA-C20", "title": "Neither-observed full eligibility",
+      "protected_function": "services.postmortem.governed_price_path_conclusions.classify_governed_order",
+      "expected_behavior": "A definitive NEITHER_OBSERVED requires complete, noncontradictory evidence (a definitive negative) for both sides; missing/legacy/contradictory/malformed evidence for either side must not be converted into a confident neither conclusion.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_neither_observed",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f26_neither_observed_but_incomplete_evidence_is_unavailable"
+      ]
+    },
+    {
+      "id": "WA-C21", "title": "Shared touch/order eligibility path",
+      "protected_function": "services.postmortem.governed_price_path_conclusions.classify_governed_order (calls classify_governed_level_touch per side)",
+      "expected_behavior": "classify_governed_order derives each side's eligibility via classify_governed_level_touch itself -- the exact same function used standalone -- never a second, independently-implemented eligibility path. Ordered and same-bar patterns require both per-level touches SUPPORTED; single-sided/neither-observed patterns are decided via _side_is_trustworthy/_side_is_definitive_negative, which (per WA-C25) consume only the resulting conclusion, never raw level-history/endpoint/basis inputs a second time.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_target_safely_before_stop_when_both_governed_unmodified",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_stop_safely_before_target_when_both_governed_unmodified",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_ordered_pattern_falls_back_when_either_level_not_governed_unmodified",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_ordered_pattern_falls_back_when_endpoint_evidence_contradicts",
+        "tests/unit/test_j4c_semantic_contract.py::TestFinalHeadAssuranceAnchor::test_shared_eligibility_path_produces_consistent_touch_and_order_results",
+        "tests/unit/test_j4c_semantic_contract.py::TestSingleSourcePerLevelEligibility::test_order_classification_performs_no_post_classification_reinterpretation"
+      ]
+    },
+    {
+      "id": "WA-C22", "title": "Invalid-status rejection",
+      "protected_function": "services.postmortem.governed_price_path_conclusions.GovernedLevelTouchConclusion / GovernedOrderConclusion",
+      "expected_behavior": "An invalid or subclassed status/detail combination raises GovernedConclusionContractError with a stable reason code -- never silently converted into a normal fallback conclusion; a positive status may not use the canonical fallback sentence as its detail.",
+      "expected_reason_code": "INVALID_GOVERNED_INPUT", "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_governed_order_invalid_status_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_governed_order_empty_detail_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestContractHardeningExactTypes::test_g_invalid_status_detail_construction_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_invalid_construction_bad_status_rejected",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_fallback_conclusion_must_use_exact_canonical_sentence"
+      ]
+    },
+    {
+      "id": "WA-C23", "title": "Final-HEAD non-PostgreSQL assurance",
+      "protected_function": "services.postmortem.governed_price_path_conclusions (module-level, single-source eligibility closure-correction pass)",
+      "expected_behavior": "The corrected governed-order eligibility design remains fully unwired (no report/claim/API/frontend caller) and internally consistent (the order classifier's per-level result agrees with the standalone touch classifier for identical inputs, and never reinterprets raw level-history after the two per-level conclusions are built) at the final single-source-eligibility closure-correction HEAD.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestFinalHeadAssuranceAnchor::test_governed_order_still_unwired_at_final_head",
+        "tests/unit/test_j4c_semantic_contract.py::TestFinalHeadAssuranceAnchor::test_shared_eligibility_path_produces_consistent_touch_and_order_results",
+        "tests/unit/test_j4c_semantic_contract.py::TestNoFabrication::test_no_prohibited_claim_strings_in_module_source",
+        "tests/unit/test_j4c_semantic_contract.py::TestSingleSourcePerLevelEligibility::test_definitive_negative_helper_accepts_only_one_conclusion_argument"
+      ]
+    },
+    {
+      "id": "WA-C24", "title": "No-crossing requires governed-unmodified history",
+      "protected_function": "services.postmortem.governed_price_path_conclusions.classify_governed_level_touch",
+      "expected_behavior": "GOVERNED_TOUCH_NO_COMPATIBLE_CROSSING (a definitive governed negative) is returned only when level_history_status is exactly LEVEL_HISTORY_STATUS_GOVERNED_UNMODIFIED. No-crossing under unknown/legacy, modified-after-entry, or contradictory history returns GOVERNED_TOUCH_INSUFFICIENT_EVIDENCE with the exact canonical fallback sentence instead. NO_VALUE_SUPPLIED remains independent of history status under all three families.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e_no_compatible_crossing_governed_unmodified_is_definitive",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e_no_compatible_crossing_unknown_legacy_is_insufficient",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e_no_compatible_crossing_modified_after_entry_is_insufficient",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e_no_compatible_crossing_contradictory_history_is_insufficient",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedTouchConclusions::test_e_no_value_supplied_independent_of_history_governed",
+        "tests/unit/test_j4c_semantic_contract.py::TestSingleSourcePerLevelEligibility::test_no_compatible_crossing_never_returned_for_non_governed_history"
+      ]
+    },
+    {
+      "id": "WA-C25", "title": "Order uses conclusion-only eligibility",
+      "protected_function": "services.postmortem.governed_price_path_conclusions._side_is_definitive_negative / _side_is_trustworthy",
+      "expected_behavior": "The definitive-negative/trustworthy helpers accept exactly one parameter (the GovernedLevelTouchConclusion itself) -- no raw level_history_status, endpoint value, snapshot flag, price-basis status, bars-available flag, or observation is consulted after the per-level conclusion is constructed. Target-only, stop-only, and neither-observed order conclusions are decided solely from the resulting conclusion status.",
+      "expected_reason_code": null, "test_level": "unit",
+      "nodes": [
+        "tests/unit/test_j4c_semantic_contract.py::TestSingleSourcePerLevelEligibility::test_definitive_negative_helper_accepts_only_one_conclusion_argument",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f6_target_only_with_stop_governed_unmodified_no_crossing",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f8_target_only_but_stop_modified_history_no_crossing_is_unavailable",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f9_stop_only_with_target_modified_history_no_crossing_is_unavailable",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f_neither_observed",
+        "tests/unit/test_j4c_semantic_contract.py::TestGovernedOrderConclusions::test_f26_neither_observed_but_incomplete_evidence_is_unavailable"
+      ]
+    }
+  ]
+}

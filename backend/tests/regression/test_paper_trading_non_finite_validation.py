@@ -94,7 +94,7 @@ class TestNonFiniteBuyRequestRejected:
         def _fake_conn():
             yield conn
 
-        body_raw = f'{{"symbol": "AAPL", "market": "US", "quantity": 1, "price": {bad_price}}}'
+        body_raw = f'{{"symbol": "AAPL", "market": "US", "quantity": 1, "price": {bad_price}, "idempotency_key": "nonfinite-test-key"}}'
         with patch.object(
             __import__("api.routers.paper_trading", fromlist=["_conn"]), "_conn", _fake_conn
         ), patch("api.routers.paper_trading._is_market_open", return_value=True):
@@ -110,7 +110,7 @@ class TestNonFiniteBuyRequestRejected:
         assert conn.calls == []
 
     def test_non_finite_stop_loss_rejected(self, client):
-        body_raw = '{"symbol": "AAPL", "market": "US", "quantity": 1, "price": 100.0, "stop_loss": Infinity}'
+        body_raw = '{"symbol": "AAPL", "market": "US", "quantity": 1, "price": 100.0, "stop_loss": Infinity, "idempotency_key": "nonfinite-test-key"}'
         resp = client.post(
             "/api/paper-trading/buy", content=body_raw,
             headers={**_auth(), "Content-Type": "application/json"},
@@ -142,7 +142,7 @@ class TestValidationErrorResponseIsAlwaysStableJson:
 
     @pytest.mark.parametrize("bad_value", ["NaN", "Infinity", "-Infinity"])
     def test_response_is_valid_reparseable_json_never_500(self, client, bad_value):
-        body_raw = f'{{"symbol": "AAPL", "market": "US", "quantity": 1, "price": {bad_value}}}'
+        body_raw = f'{{"symbol": "AAPL", "market": "US", "quantity": 1, "price": {bad_value}, "idempotency_key": "nonfinite-test-key"}}'
         resp = client.post(
             "/api/paper-trading/buy", content=body_raw,
             headers={**_auth(), "Content-Type": "application/json"},
@@ -166,7 +166,7 @@ class TestValidationErrorResponseIsAlwaysStableJson:
         for non-finite floats, nothing else."""
         resp = client.post(
             "/api/paper-trading/buy",
-            json={"symbol": "AAPL", "market": "NOT_A_MARKET", "quantity": 1, "price": 100.0},
+            json={"symbol": "AAPL", "market": "NOT_A_MARKET", "quantity": 1, "price": 100.0, "idempotency_key": "nonfinite-test-key"},
             headers=_auth(),
         )
         assert resp.status_code == 422

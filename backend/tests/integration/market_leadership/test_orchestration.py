@@ -50,7 +50,7 @@ def mocked_market(monkeypatch):
         def __init__(self, ticker):
             self.ticker = ticker
 
-        def history(self, period=None):
+        def history(self, period=None, timeout=None):
             return benchmark
 
     monkeypatch.setattr(orch.yf, "Ticker", _FakeTicker)

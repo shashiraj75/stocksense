@@ -19,15 +19,18 @@ No look-ahead bias — forward return is measured at t + horizon_days.
 """
 
 import logging
+import math
+import multiprocessing
 import os
 import json
+import queue as _queue_module
 import sqlite3
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -35,6 +38,7 @@ import yfinance as yf
 
 from services.safe_errors import safe_error_message
 from services.technical_indicators import compute_indicators
+from services import market_calendar
 from services import sec_edgar_adapter
 from services import sec_pit_store
 
@@ -90,6 +94,10 @@ VALIDATION_PUBLIC_FAILURE_MESSAGES = {
     "BENCHMARK_ALIGNMENT_COVERAGE_INSUFFICIENT": (
         "Benchmark evidence coverage across this run was insufficient to publish a result."
     ),
+    "PROVIDER_STALL": (
+        "Validation was interrupted because a data provider stopped responding and will be retried."
+    ),
+    "RUN_DEADLINE_EXCEEDED": "Validation exceeded the maximum permitted execution time.",
 }
 
 # benchmark_unavailable_reason's two possible stable public values. The
@@ -149,6 +157,128 @@ BENCHMARK_ALIGNMENT_MAX_STALE_DAYS = 5
 # require).
 BENCHMARK_FETCH_MAX_ATTEMPTS = 2
 BENCHMARK_FETCH_RETRY_BACKOFF_SECONDS = 2
+
+# Best-effort per-request timeout passed to every yfinance price-history
+# call this module makes. Confirmed production incident (2026-08-14): a
+# medium/us run started 2026-08-13T00:51:35Z, reached 25/42 symbols
+# normally, then stalled with zero progress for 15+ minutes and counting —
+# a prior run reportedly took ~8h5m for the same 42-symbol universe versus
+# 5-6 minutes for the 112-134-symbol Indian universes.
+#
+# V-USCAP1/V-USCAP2 correction (2026-08-14): this is NOT a guaranteed
+# whole-`.history()`-call deadline. Traced through the installed yfinance
+# implementation: the main chart-data GET receives this value, but the
+# cookie/crumb sub-requests `_make_request()` issues internally
+# (`_get_cookie_and_crumb()`) are called with no arguments and fall back to
+# yfinance's own hardcoded internal default — NOT this constant — and the
+# main request itself can retry with backoff. One `.history()` call can
+# therefore legitimately take a multiple of this value, not a hard ceiling
+# of it. Treat this as "bounds the primary request, best-effort on the
+# rest" — the RUN_STALL_TIMEOUT_SECONDS inactivity watchdog below is the
+# actual fail-closed backstop, not this constant.
+YFINANCE_REQUEST_TIMEOUT_SECONDS = 30
+
+# INACTIVITY watchdog for the per-stock ThreadPoolExecutor stage
+# (run_validation, below) — not a total-run deadline and not a thread
+# killer. If no symbol completes for this many consecutive seconds, the
+# run is treated as stalled: every not-yet-started future is cancelled,
+# every ALREADY-RUNNING worker is waited for to actually finish (Python
+# cannot forcibly stop a thread — see the honest limitation on the
+# executor-shutdown code below), and only once zero workers remain does
+# run_validation raise a typed _ProviderStallDuringComputation — never a
+# normal return, never a partial published result. A run where one future
+# happens to complete every (RUN_STALL_TIMEOUT_SECONDS - 1) seconds would
+# not trip this watchdog; it detects silence, not total elapsed time.
+RUN_STALL_TIMEOUT_SECONDS = 180
+
+# V-USACT1-B — the HARD wall-clock ceiling on one validation attempt's
+# real total execution time, enforced by the PARENT process killing the
+# CHILD process (see _run_validation_in_subprocess below) — genuinely
+# unlike RUN_STALL_TIMEOUT_SECONDS above (an inactivity detector that can
+# only wait, never force-stop, an uncooperative provider thread), this
+# bound is enforced by SIGTERM/SIGKILL against an OS process, which
+# terminates every thread inside it unconditionally regardless of what
+# any individual provider call is doing. Applies uniformly to every
+# execute_and_complete_admitted_attempt caller — scheduler, catch-up, and
+# the authenticated manual endpoint alike — never bypassed for any one
+# horizon/universe. 5400s = 90 minutes: comfortably above every observed
+# India short/medium/long runtime (single-digit minutes) and a deliberate
+# hard stop well short of the historically-observed ~8h US stalls this
+# constant exists specifically to bound.
+MAX_RUN_DURATION_SECONDS = 5400
+
+# Escalating child-process shutdown: SIGTERM, wait up to this many
+# seconds, SIGKILL if still alive, wait up to this many seconds again.
+# Every wait here is timeout-bounded — this function never blocks
+# indefinitely on a child that refuses to exit.
+CHILD_KILL_GRACE_SECONDS = 10
+
+
+
+# "spawn" is the production-safety-critical choice: a spawned child is a
+# genuinely fresh interpreter that imports only what this module needs —
+# it CANNOT inherit the parent's live DB connections, open threads, or
+# locks (unlike "fork", which duplicates the entire parent process
+# memory image, connections and all, at the exact instant of the fork —
+# precisely the "no database connection is inherited unsafely" failure
+# mode this design must avoid).
+#
+# V-USACT1-B-C3 — there is deliberately no module-level start-method
+# name here at all (see the inline multiprocessing.get_context("spawn")
+# call in _run_validation_in_subprocess) — nothing exists for any test,
+# config, or runtime input to monkeypatch or override to "fork". Tests
+# that need deterministic child behavior monkeypatch
+# _validation_child_worker itself (a top-level, picklable test-double
+# target resolved fresh in the PARENT process) and still run under this
+# same real "spawn" — they never use "fork" and never rely on the child
+# inheriting any monkeypatch, closure, global, mock, list, lock, or
+# thread from the parent test process.
+
+
+def _validate_max_run_duration_seconds(value) -> None:
+    """V-USACT1-B — the sole gate for the total-runtime-deadline safety
+    invariant, mirroring _lease_heartbeat_interval's unconditional-
+    runtime-check convention (no bare `assert`). Fails closed at call
+    time — never silently clamps a zero/negative/non-finite/unreasonably
+    large value to something "safe"."""
+    duration = float(value)
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError(
+            f"max_run_duration_seconds must be a positive finite value, got {value!r}"
+        )
+    if duration > 86400:
+        raise ValueError(
+            f"max_run_duration_seconds must not exceed 86400 (24h), got {value!r}"
+        )
+
+
+def _lease_heartbeat_interval(lease_duration_seconds) -> float:
+    """V-USCAP6 — the SOLE gate for the lease-heartbeat poll-interval
+    safety invariant. Deliberately NOT a bare `assert` (assertions are
+    stripped entirely under `python -O`, which would silently remove this
+    as a production safety boundary) — every branch here is an
+    unconditional runtime check that raises ValueError.
+
+    No floor is applied (unlike the V-USCAP4 drain-only interval, which
+    floored at 0.25s): floor(duration/4) for a very short, deliberately
+    controlled lease (e.g. this module's own 1s test leases) must remain
+    a valid, strictly-below-duration interval, not be pushed up to/past
+    the duration itself by an artificial minimum.
+
+    For the real 600s production lease duration used by every scheduler/
+    catchup/manual caller, this yields exactly 30.0 seconds.
+    """
+    duration = float(lease_duration_seconds)
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError(
+            f"lease duration must be a positive finite value, got {lease_duration_seconds!r}"
+        )
+    interval = min(30.0, duration / 4.0)
+    if not math.isfinite(interval) or interval <= 0 or interval >= duration:
+        raise ValueError(
+            f"unsafe lease heartbeat interval {interval!r} for duration {duration!r}"
+        )
+    return interval
 
 # Acquisition-level coverage gate (Finding C, 2026-07-26 hardening): a
 # single valid forward-return window amid hundreds of invalid rows is not
@@ -648,6 +778,113 @@ CREATE INDEX IF NOT EXISTS idx_val_signals_score ON val_signals(composite_score)
 -- default, so our own access is unaffected. Idempotent.
 ALTER TABLE val_runs    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE val_signals ENABLE ROW LEVEL SECURITY;
+
+-- V-SCHED1B — durable validation scheduling ledger foundation (inert; not
+-- called by any production code path yet, see run_validation()'s module
+-- docstring and _validation_schedule_loop in api/main.py, both unchanged
+-- by this phase). Three deliberately separate entities — see the V-SCHED1A2
+-- forensic report for why a single-table model was rejected: a canonical
+-- scheduled slot cannot itself represent multiple auditable retry attempts,
+-- and neither can represent the pre-existing system-wide one-run-at-a-time
+-- rule, which spans every horizon/universe/manual trigger, not one slot.
+
+CREATE TABLE IF NOT EXISTS validation_schedule_slots (
+    id               BIGSERIAL PRIMARY KEY,
+    horizon          TEXT NOT NULL,
+    universe         TEXT NOT NULL,
+    scheduled_slot   TIMESTAMPTZ NOT NULL,
+    schedule_version TEXT NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'due'
+                     CHECK (status IN ('due','running','completed','failed','skipped','abandoned')),
+    -- The attempt currently entitled to transition this slot. Set the
+    -- moment an attempt is created (in the SAME transaction as the slot's
+    -- due->running move) and cleared the moment that attempt reaches any
+    -- terminal state. A second, older attempt for this slot (e.g. one
+    -- whose lease was reclaimed) can never mutate the slot once this no
+    -- longer points at it — ownership is checked explicitly, not inferred
+    -- from slot status alone, since multiple historical attempts can
+    -- exist for one slot across retries.
+    active_attempt_id BIGINT,
+    created_at       TIMESTAMPTZ NOT NULL,
+    updated_at       TIMESTAMPTZ NOT NULL,
+    UNIQUE (horizon, universe, scheduled_slot, schedule_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_vss_status ON validation_schedule_slots(status);
+CREATE INDEX IF NOT EXISTS idx_vss_lookup ON validation_schedule_slots(horizon, universe, scheduled_slot);
+
+CREATE TABLE IF NOT EXISTS validation_schedule_attempts (
+    id                  BIGSERIAL PRIMARY KEY,
+    slot_id             BIGINT REFERENCES validation_schedule_slots(id),
+    -- Durable target identity, stored on the attempt itself (not just
+    -- reachable via slot_id) so a manual attempt (slot_id NULL) still has
+    -- an auditable, queryable horizon/universe, and so a scheduled/
+    -- catchup attempt's target can be verified to match its slot's target
+    -- without a join at write time. For scheduled/catchup attempts this
+    -- is copied from the slot at creation and never diverges from it —
+    -- enforced in the same transaction that creates the attempt.
+    horizon             TEXT NOT NULL,
+    universe            TEXT NOT NULL,
+    attempt_number      INTEGER NOT NULL,
+    trigger_type        TEXT NOT NULL CHECK (trigger_type IN ('scheduler','catchup','manual')),
+    status              TEXT NOT NULL DEFAULT 'claimed'
+                        CHECK (status IN ('claimed','running','completed','failed','abandoned')),
+    -- Populated only once this attempt validly reaches 'running' under a
+    -- currently-held lease — an audit trail of who actually executed it,
+    -- independent of lease_fencing_token's role in gating writes.
+    lease_owner         TEXT,
+    lease_fencing_token BIGINT,
+    started_at          TIMESTAMPTZ,
+    heartbeat_at        TIMESTAMPTZ,
+    completed_at        TIMESTAMPTZ,
+    result_run_id       BIGINT REFERENCES val_runs(id),
+    failure_category    TEXT,
+    failure_summary     TEXT,
+    created_at          TIMESTAMPTZ NOT NULL,
+    updated_at          TIMESTAMPTZ NOT NULL,
+    UNIQUE (slot_id, attempt_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_vsa_slot   ON validation_schedule_attempts(slot_id);
+CREATE INDEX IF NOT EXISTS idx_vsa_horiz  ON validation_schedule_attempts(horizon, universe);
+CREATE INDEX IF NOT EXISTS idx_vsa_trig   ON validation_schedule_attempts(trigger_type);
+CREATE INDEX IF NOT EXISTS idx_vsa_status ON validation_schedule_attempts(status);
+-- One val_runs row may belong to at most one attempt; multiple NULLs
+-- (uncompleted attempts) remain allowed under a standard unique index
+-- in both dialects. Named so complete_attempt_with_result can map a
+-- violation on THIS specific constraint (and no other) to the
+-- explicit 'result_already_linked' conflict.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vsa_result_unique ON validation_schedule_attempts(result_run_id);
+
+CREATE TABLE IF NOT EXISTS validation_execution_leases (
+    resource_key   TEXT PRIMARY KEY,
+    lease_owner    TEXT,
+    fencing_token  BIGINT NOT NULL DEFAULT 0,
+    acquired_at    TIMESTAMPTZ,
+    heartbeat_at   TIMESTAMPTZ,
+    expires_at     TIMESTAMPTZ,
+    -- The single attempt currently globally admitted under this lease.
+    -- NULL means the lease owns no active validation attempt and a new
+    -- one may be admitted. Deliberately NOT reset to NULL by lease
+    -- reclaim (acquire_validation_execution_lease) — a reclaim after
+    -- expiry must surface a stale admitted attempt to the new owner
+    -- (recovery_required in its return value) rather than silently
+    -- losing that identity; only recover_stale_active_attempt() or a
+    -- normal terminal transition may clear it. No FK to
+    -- validation_schedule_attempts(id) — application-enforced only,
+    -- since this column is set exclusively by create_schedule_attempt/
+    -- create_manual_attempt to their own newly-inserted row's id.
+    active_attempt_id BIGINT,
+    updated_at     TIMESTAMPTZ NOT NULL
+);
+
+INSERT INTO validation_execution_leases (resource_key, fencing_token, updated_at)
+VALUES ('validation-global', 0, now())
+ON CONFLICT (resource_key) DO NOTHING;
+
+ALTER TABLE validation_schedule_slots    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE validation_schedule_attempts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE validation_execution_leases  ENABLE ROW LEVEL SECURITY;
 """
 
 # Synced with official NSE Nifty 100 index (June 2026) + popular large-caps
@@ -823,6 +1060,30 @@ def _get_sqlite_conn() -> sqlite3.Connection:
     return conn
 
 
+def _get_ledger_sqlite_conn() -> sqlite3.Connection:
+    """V-SCHED1B ledger-only connection helper. SQLite does not enforce
+    declared FOREIGN KEY constraints unless `PRAGMA foreign_keys = ON` is
+    issued per-connection (it is OFF by default) — enabling it here,
+    scoped to the ledger's own connections only, rather than on the
+    shared `_get_sqlite_conn()` used by every pre-existing val_runs/
+    val_signals code path in this module, deliberately avoids widening
+    this correction's blast radius to unrelated, already-established
+    behavior outside V-SCHED1B's authorized file allowlist.
+
+    `isolation_level=None` puts the driver in true autocommit mode so
+    ledger compound operations can issue an explicit `BEGIN IMMEDIATE`
+    (acquiring SQLite's write lock up front, before any read used to
+    decide what to write) and an explicit COMMIT/ROLLBACK spanning
+    multiple statements — the implicit, deferred-lock transaction the
+    sqlite3 module would otherwise open automatically is not strong
+    enough for the atomic, lock-then-decide compound transitions this
+    module needs."""
+    conn = sqlite3.connect(_DB_PATH, timeout=30, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
 _db_initialised = False
 
 def _init_db():
@@ -885,6 +1146,69 @@ def _init_db():
                     "UPDATE val_runs SET universe = "
                     "COALESCE(json_extract(summary, '$.universe'), 'nifty100') "
                     "WHERE universe = 'nifty100'"
+                )
+                # V-SCHED1B — SQLite mirror of the Postgres ledger schema above.
+                c.executescript("""
+                CREATE TABLE IF NOT EXISTS validation_schedule_slots (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    horizon          TEXT NOT NULL,
+                    universe         TEXT NOT NULL,
+                    scheduled_slot   TEXT NOT NULL,
+                    schedule_version TEXT NOT NULL,
+                    status           TEXT NOT NULL DEFAULT 'due'
+                                     CHECK (status IN ('due','running','completed','failed','skipped','abandoned')),
+                    active_attempt_id INTEGER,
+                    created_at       TEXT NOT NULL,
+                    updated_at       TEXT NOT NULL,
+                    UNIQUE (horizon, universe, scheduled_slot, schedule_version)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_vss_status ON validation_schedule_slots(status);
+                CREATE INDEX IF NOT EXISTS idx_vss_lookup ON validation_schedule_slots(horizon, universe, scheduled_slot);
+
+                CREATE TABLE IF NOT EXISTS validation_schedule_attempts (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    slot_id             INTEGER REFERENCES validation_schedule_slots(id),
+                    horizon             TEXT NOT NULL,
+                    universe            TEXT NOT NULL,
+                    attempt_number      INTEGER NOT NULL,
+                    trigger_type        TEXT NOT NULL CHECK (trigger_type IN ('scheduler','catchup','manual')),
+                    status              TEXT NOT NULL DEFAULT 'claimed'
+                                        CHECK (status IN ('claimed','running','completed','failed','abandoned')),
+                    lease_owner         TEXT,
+                    lease_fencing_token INTEGER,
+                    started_at          TEXT,
+                    heartbeat_at        TEXT,
+                    completed_at        TEXT,
+                    result_run_id       INTEGER REFERENCES val_runs(id),
+                    failure_category    TEXT,
+                    failure_summary     TEXT,
+                    created_at          TEXT NOT NULL,
+                    updated_at          TEXT NOT NULL,
+                    UNIQUE (slot_id, attempt_number)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_vsa_slot   ON validation_schedule_attempts(slot_id);
+                CREATE INDEX IF NOT EXISTS idx_vsa_horiz  ON validation_schedule_attempts(horizon, universe);
+                CREATE INDEX IF NOT EXISTS idx_vsa_trig   ON validation_schedule_attempts(trigger_type);
+                CREATE INDEX IF NOT EXISTS idx_vsa_status ON validation_schedule_attempts(status);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_vsa_result_unique ON validation_schedule_attempts(result_run_id);
+
+                CREATE TABLE IF NOT EXISTS validation_execution_leases (
+                    resource_key   TEXT PRIMARY KEY,
+                    lease_owner    TEXT,
+                    fencing_token  INTEGER NOT NULL DEFAULT 0,
+                    acquired_at    TEXT,
+                    heartbeat_at   TEXT,
+                    expires_at     TEXT,
+                    active_attempt_id INTEGER,
+                    updated_at     TEXT NOT NULL
+                );
+                """)
+                c.execute(
+                    "INSERT OR IGNORE INTO validation_execution_leases "
+                    "(resource_key, fencing_token, updated_at) VALUES (?, 0, ?)",
+                    ("validation-global", datetime.now(timezone.utc).isoformat()),
                 )
         _db_initialised = True
 
@@ -1185,6 +1509,7 @@ def _backtest_stock(
     universe: str | None = None,
     _exclusions: list | None = None,
     _window_stats: dict | None = None,
+    _diag: dict | None = None,
 ) -> list[dict]:
     """
     Walk-forward backtest for one stock over HORIZON_PERIOD[horizon].
@@ -1220,6 +1545,20 @@ def _backtest_stock(
     counter across threads, for a clearer and more portable long-term
     count contract than a single shared append-only list.
 
+    `_diag` (V-FRESH1B) — an optional dict, following the exact same
+    per-call/per-worker-owned pattern as `_window_stats` (never a single
+    dict shared/mutated across threads — the caller creates one fresh
+    dict per symbol before submitting to the pool, and only that
+    symbol's own worker thread ever writes to it). Populated with
+    exactly one terminal-path classification —
+    "fetch_exception" | "empty_data" | "insufficient_data" |
+    "calculation_exception" | "processed" — plus, only when the fetched
+    dataframe was non-empty, the symbol's own actual first/last input-bar
+    dates (`input_first_date`/`input_last_date`, `YYYY-MM-DD` strings).
+    This is diagnostic evidence only — it answers "what happened to this
+    symbol's data" for future coverage/freshness disclosure, and must
+    never be interpreted as a data-through or freshness claim by itself.
+
     Returns list of signal dicts, empty list on error, insufficient data, or
     an entirely benchmark-unavailable date range (all logged with full
     symbol/market/universe/horizon context so a caller reviewing effective
@@ -1230,6 +1569,10 @@ def _backtest_stock(
     window_stats = _window_stats if _window_stats is not None else {}
     window_stats.setdefault("considered", 0)
     window_stats.setdefault("benchmark_valid", 0)
+    if _diag is not None:
+        _diag.setdefault("terminal_path", None)
+        _diag.setdefault("input_first_date", None)
+        _diag.setdefault("input_last_date", None)
     yf_sym = _resolve_yahoo_symbol(symbol, market)
     fwd_days  = HORIZON_DAYS[horizon]
     step      = HORIZON_STEP[horizon]
@@ -1238,15 +1581,50 @@ def _backtest_stock(
     # Need ≥200 rows for EMA-200 to be meaningful; start signal loop from row 200
     MIN_WARMUP = 200
 
+    # V-FRESH1B — the fetch call gets its own narrow try/except so a
+    # provider-level failure (fetch_exception) is distinguishable from an
+    # empty-but-successful response (empty_data) and from a downstream
+    # calculation failure (calculation_exception, caught by the existing
+    # outer try/except further below). Previously all three collapsed
+    # into the same silent `[]` return with no durable distinction (see
+    # V-FRESH1A2's forensic finding on run 221/long-US) — this restructure
+    # is diagnostic-only and does not change any existing return value or
+    # control flow for callers that don't pass `_diag`.
     try:
-        df = yf.Ticker(yf_sym).history(period=HORIZON_PERIOD[horizon])
+        df = yf.Ticker(yf_sym).history(
+            period=HORIZON_PERIOD[horizon], timeout=YFINANCE_REQUEST_TIMEOUT_SECONDS,
+        )
+    except Exception as e:
+        log.warning(
+            "[validation] price fetch failed — symbol=%s yf_symbol=%s market=%s "
+            "universe=%s horizon=%s error=%s",
+            symbol, yf_sym, market, universe, horizon, e,
+        )
+        if _diag is not None:
+            _diag["terminal_path"] = "fetch_exception"
+        return []
+
+    if df.empty:
+        if _diag is not None:
+            _diag["terminal_path"] = "empty_data"
+        return []
+
+    if _diag is not None:
+        _diag["input_first_date"] = str(df.index[0])[:10]
+        _diag["input_last_date"] = str(df.index[-1])[:10]
+
+    try:
         if len(df) < MIN_WARMUP + fwd_days:
             log.info(
                 "[validation] insufficient history — symbol=%s yf_symbol=%s market=%s "
                 "universe=%s horizon=%s rows=%d needed=%d",
                 symbol, yf_sym, market, universe, horizon, len(df), MIN_WARMUP + fwd_days,
             )
+            if _diag is not None:
+                _diag["terminal_path"] = "insufficient_data"
             return []
+        if _diag is not None:
+            _diag["terminal_path"] = "processed"
         # Do NOT call compute_indicators on full df — that causes look-ahead bias.
         # Raw OHLCV df is kept clean; indicators are computed per window inside loop.
 
@@ -1341,10 +1719,48 @@ def _backtest_stock(
             try:
                 window_stats["considered"] += 1
                 entry = float(df["Close"].iloc[i])
-                exit_ = float(df["Close"].iloc[i + fwd_days])
-                if entry == 0:
+                # V-PS2 — a NaN Close (a genuine market-data gap) at the
+                # ENTRY date means there was never an observable, tradeable
+                # price to enter this hypothetical position at — the whole
+                # window cannot produce a signal (this row also feeds
+                # _score_at()'s technical sub-scores below, so an invalid
+                # entry poisons the prediction itself, not just its
+                # outcome). Only entry==0 (division-by-zero) is rejected
+                # here too — a genuine 0 EXIT price is a valid total loss,
+                # handled below, never rejected.
+                if not np.isfinite(entry) or entry == 0:
                     continue
-                fwd_ret = (exit_ - entry) / entry * 100
+
+                # V-PS2A — exit-price validity is handled separately from
+                # entry: the model's prediction (composite score/predicted
+                # label, computed below from data up to and including the
+                # ENTRY date only) already exists independent of whether
+                # the FUTURE exit price ever became observable. A missing/
+                # non-finite exit means the OUTCOME cannot be measured —
+                # not that the prediction never happened. `fwd_ret=None`
+                # represents this honestly; the signal is still recorded
+                # (see get_per_stock_results()'s evaluated/return cohort
+                # contract, which already treats a None fwd_return_pct as
+                # "not yet evaluated", never as a fabricated loss).
+                exit_ = float(df["Close"].iloc[i + fwd_days])
+                if np.isfinite(exit_):
+                    fwd_ret = (exit_ - entry) / entry * 100
+                    # Defense against any other unexpected arithmetic
+                    # result (e.g. an extreme-magnitude entry) — a
+                    # non-finite fwd_ret must never reach persistence.
+                    if not np.isfinite(fwd_ret):
+                        fwd_ret = None
+                else:
+                    fwd_ret = None
+
+                # V-FRESH1B — the actual exit bar's own date, read directly
+                # from the dataframe index at the same position already
+                # used to compute exit_/fwd_ret above (df.index[i +
+                # fwd_days]) — never reconstructed via calendar arithmetic.
+                # Only set when the outcome is genuinely evaluated
+                # (fwd_ret is not None); an unresolved outcome must not
+                # fabricate an exit date.
+                exit_date = str(df.index[i + fwd_days])[:10] if fwd_ret is not None else None
 
                 # Benchmark forward return over same window (for alpha
                 # calculation) — genuine evidence required at BOTH the
@@ -1420,21 +1836,45 @@ def _backtest_stock(
                 #   BUY is correct  if stock outperforms the benchmark by > 0 over fwd window
                 #   SELL is correct if stock underperforms the benchmark by > 0 over fwd window
                 #   HOLD is correct if stock is within ±threshold% of the benchmark return
-                alpha = fwd_ret - benchmark_fwd_ret
-                if predicted == "BUY":
-                    correct = alpha > 0
-                elif predicted == "SELL":
-                    correct = alpha < 0
+                #
+                # V-PS2A — an unmeasurable outcome (fwd_ret is None, exit
+                # price never became available) must never be classified
+                # at all: `alpha = None - benchmark_fwd_ret` would raise,
+                # and even a defensive `alpha = NaN` would previously have
+                # been silently classified `correct=False` by `NaN > 0`
+                # (Python's NaN-comparison semantics) — a fabricated miss.
+                # correct/alpha/actual_direction all stay honestly None
+                # for this signal; it is still recorded (see below) with
+                # its prediction intact, just without a graded outcome.
+                if fwd_ret is not None:
+                    alpha = fwd_ret - benchmark_fwd_ret
+                    if not np.isfinite(alpha):
+                        alpha = None
                 else:
-                    correct = abs(alpha) <= threshold * 100
+                    alpha = None
 
-                # Keep absolute direction for context (used in avg return calcs)
-                actual_dir = "UP" if fwd_ret >= threshold * 100 else ("DOWN" if fwd_ret <= -threshold * 100 else "FLAT")
+                if alpha is not None:
+                    if predicted == "BUY":
+                        correct_val = int(alpha > 0)
+                    elif predicted == "SELL":
+                        correct_val = int(alpha < 0)
+                    else:
+                        correct_val = int(abs(alpha) <= threshold * 100)
+                    # Keep absolute direction for context (used in avg return calcs)
+                    actual_dir = "UP" if fwd_ret >= threshold * 100 else ("DOWN" if fwd_ret <= -threshold * 100 else "FLAT")
+                else:
+                    correct_val = None
+                    actual_dir = None
 
                 signals.append({
                     "symbol":          symbol,
                     "horizon":         horizon,
                     "signal_date":     str(df.index[i])[:10],
+                    # V-FRESH1B — in-memory only, not persisted to
+                    # val_signals' fixed columns (same pattern as
+                    # "confidence" below) — aggregated by run_validation()
+                    # into evaluated_exit_date_min/max.
+                    "exit_date":       exit_date,
                     "composite_score": composite,
                     "tech_score":      sc["tech"],
                     "rs_score":        sc["rs"],
@@ -1445,15 +1885,22 @@ def _backtest_stock(
                     # not persisted to val_signals' fixed columns, in-memory
                     # only, used solely for the confidence_buckets report below.
                     "confidence":      _confidence_from_composite(composite, predicted),
-                    "fwd_return_pct":  round(fwd_ret, 3),
+                    # V-PS2A — None when the exit price never became
+                    # observable (see the exit-validity block above); the
+                    # existing evaluated/return cohort contract in
+                    # _compute_metrics()/get_per_stock_results() already
+                    # treats a None fwd_return_pct as "not yet evaluated",
+                    # never as a fabricated loss.
+                    "fwd_return_pct":  round(fwd_ret, 3) if fwd_ret is not None else None,
                     # Persisted column/JSON key name (val_signals.nifty_fwd_ret_pct) —
                     # kept unchanged to avoid a schema migration; the underlying
                     # value is the run's benchmark forward return regardless of
-                    # market (Nifty 50 for IN, S&P 500 for US).
+                    # market (Nifty 50 for IN, S&P 500 for US). Always finite
+                    # here — benchmark_ok/finiteness was already gated above.
                     "nifty_fwd_ret_pct": round(benchmark_fwd_ret, 3),
-                    "alpha_pct":       round(alpha, 3),
+                    "alpha_pct":       round(alpha, 3) if alpha is not None else None,
                     "actual_direction": actual_dir,
-                    "correct":         int(correct),
+                    "correct":         correct_val,
                     # DP-026 remediation — additive-only, same non-persisted
                     # pattern as "confidence" above (not a val_signals fixed
                     # column; used solely for _compute_metrics()'s coverage
@@ -1481,16 +1928,89 @@ def _backtest_stock(
             "universe=%s horizon=%s error=%s",
             symbol, yf_sym, market, universe, horizon, e,
         )
+        if _diag is not None:
+            _diag["terminal_path"] = "calculation_exception"
         return []
+
+
+def _build_validation_evidence(
+    n_stocks: int,
+    diag_by_symbol: dict,
+    window_stats_by_symbol: dict,
+    symbols_with_signals: set,
+    all_signals: list,
+) -> dict:
+    """V-FRESH1B — assembles factual, durable validation-evidence
+    diagnostics purely from data already computed during this run.
+    Stored additively inside the existing immutable summary JSON (no
+    schema change — see run_validation's persistence block and
+    get_latest_results()'s read-time freshness derivation). Every
+    count/date here is directly derived from per-symbol diagnostics
+    (`_backtest_stock`'s `_diag`/`_window_stats` outputs) and persisted
+    signal dicts — nothing is invented, nothing is backfilled, nothing
+    is calendar-derived. `symbols_with_signals` is factual (how many
+    symbols produced ≥1 signal) — deliberately never described as
+    "coverage" or "eligibility" anywhere this value is surfaced (see
+    V-FRESH1A2's corrected forensic finding).
+    """
+    terminal_counts = {
+        "fetch_exception": 0, "empty_data": 0, "insufficient_data": 0,
+        "calculation_exception": 0, "processed": 0,
+    }
+    input_last_dates: list[str] = []
+    symbols_processed = 0  # actually entered the per-window loop (>=1 window considered)
+    for sym, diag in diag_by_symbol.items():
+        tp = diag.get("terminal_path")
+        if tp in terminal_counts:
+            terminal_counts[tp] += 1
+        if diag.get("input_last_date") is not None:
+            input_last_dates.append(diag["input_last_date"])
+        stats = window_stats_by_symbol.get(sym)
+        if stats and stats.get("considered", 0) > 0:
+            symbols_processed += 1
+
+    signal_dates = [s["signal_date"] for s in all_signals if s.get("signal_date")]
+    exit_dates = [s["exit_date"] for s in all_signals if s.get("exit_date")]
+    evaluated_symbols = {s["symbol"] for s in all_signals if s.get("exit_date")}
+
+    return {
+        "symbols_requested": n_stocks,
+        "symbols_fetch_attempted": len(diag_by_symbol),
+        "symbols_with_input_data": len(input_last_dates),
+        "symbols_with_sufficient_data": terminal_counts["processed"],
+        "symbols_processed": symbols_processed,
+        "symbols_with_signals": len(symbols_with_signals),
+        "symbols_with_evaluated_outcomes": len(evaluated_symbols),
+        "fetch_exception_count": terminal_counts["fetch_exception"],
+        "empty_data_count": terminal_counts["empty_data"],
+        "insufficient_data_count": terminal_counts["insufficient_data"],
+        "calculation_exception_count": terminal_counts["calculation_exception"],
+        "input_latest_bar_date_min": min(input_last_dates) if input_last_dates else None,
+        "input_latest_bar_date_max": max(input_last_dates) if input_last_dates else None,
+        "signal_date_min": min(signal_dates) if signal_dates else None,
+        "signal_date_max": max(signal_dates) if signal_dates else None,
+        "evaluated_exit_date_min": min(exit_dates) if exit_dates else None,
+        "evaluated_exit_date_max": max(exit_dates) if exit_dates else None,
+    }
 
 
 # ── Aggregate metrics ─────────────────────────────────────────────────────────
 
 def _max_consec_wrong(buys: list[dict]) -> int:
+    # V-PS2B — `correct` is tri-state (True/False/None; a retained V-PS2A
+    # unevaluated signal is None). Raw truthiness (`if not s["correct"]`)
+    # treated None as a wrong result — an unknown outcome is neither a
+    # hit nor a miss, so it must reset the streak without incrementing
+    # it. Deliberately NOT pre-filtered: filtering None out would bridge
+    # two genuine streaks across an evidentiary gap that never actually
+    # happened consecutively.
     ordered = sorted(buys, key=lambda s: s.get("signal_date", ""))
     best = cur = 0
     for s in ordered:
-        if not s["correct"]:
+        c = s["correct"]
+        if c is None:
+            cur = 0
+        elif not c:
             cur += 1
             best = max(best, cur)
         else:
@@ -1499,10 +2019,14 @@ def _max_consec_wrong(buys: list[dict]) -> int:
 
 
 def _max_consec_right(buys: list[dict]) -> int:
+    # V-PS2B — same tri-state contract as _max_consec_wrong() above.
     ordered = sorted(buys, key=lambda s: s.get("signal_date", ""))
     best = cur = 0
     for s in ordered:
-        if s["correct"]:
+        c = s["correct"]
+        if c is None:
+            cur = 0
+        elif c:
             cur += 1
             best = max(best, cur)
         else:
@@ -1510,14 +2034,65 @@ def _max_consec_right(buys: list[dict]) -> int:
     return best
 
 
-def _max_drawdown(rets: list[float]) -> float | None:
-    """Peak-to-trough drawdown on a hypothetical equal-weight BUY portfolio."""
-    if not rets:
+def _max_drawdown(buys: list[dict]) -> float | None:
+    """Peak-to-trough drawdown of the equal-weight SIGNAL-DATE return curve.
+
+    NOT a capital-allocated portfolio backtest — see the label this value
+    is displayed under ("Max drawdown of the equal-weight signal-date
+    return curve"). It makes no capital-allocation, transaction-cost, or
+    execution-timing assumption; signals on the same date can represent
+    genuinely concurrent/overlapping positions, which this metric does
+    not attempt to model.
+
+    Contract (order-invariant by construction, not just by sorting):
+      1. Group BUY signals with a non-null fwd_return_pct by signal_date.
+      2. Each date's return is the equal-weight mean of that date's
+         signal returns — this is what removes intra-date ordering as a
+         variable at all, rather than relying on a stable sort of
+         individual signals (whose original order reflects
+         ThreadPoolExecutor completion order in run_validation(), not
+         anything meaningful).
+      3. Sort the resulting (one row per date) series chronologically.
+      4. Compound that deterministic date-level series into an equity
+         curve and compute peak-to-trough drawdown on it.
+
+    Return-domain contract (fail closed): for a long-equity percentage
+    return, -100% (total loss) is the valid floor — a return below -100%,
+    or a non-finite/non-numeric value, is impossible for a long equity
+    position and means the upstream evidence is malformed, not that a
+    real drawdown event occurred. Any such value invalidates the WHOLE
+    metric (returns None) rather than being clamped, replaced, or
+    silently dropped while the remaining rows compute an apparently-valid
+    number — a partial result over a corrupted cohort is indistinguishable
+    from a genuine one and would misrepresent the metric's integrity.
+    Genuinely missing (None) returns are excluded from the cohort before
+    this validation runs, per the existing evaluated-cohort contract —
+    that is an intentional exclusion, not a malformed value.
+    """
+    import math
+    from collections import defaultdict
+
+    by_date: dict[str, list[float]] = defaultdict(list)
+    for s in buys:
+        r = s.get("fwd_return_pct")
+        if r is None:
+            continue
+        if not isinstance(r, (int, float)) or not math.isfinite(r) or r < -100:
+            return None
+        by_date[s.get("signal_date", "")].append(r)
+
+    if not by_date:
         return None
+
+    date_returns = [
+        (date, sum(rets) / len(rets))
+        for date, rets in sorted(by_date.items(), key=lambda kv: kv[0])
+    ]
+
     equity = 100.0
     peak = equity
     max_dd = 0.0
-    for r in rets:
+    for _date, r in date_returns:
         equity *= (1 + r / 100)
         if equity > peak:
             peak = equity
@@ -1647,12 +2222,28 @@ def _compute_metrics(
     fwd_days = HORIZON_DAYS.get(horizon, 5)
 
     def _hit_rate(subset):
-        if not subset: return None
-        return round(sum(s["correct"] for s in subset) / len(subset) * 100, 1)
+        evaluated = [s for s in subset if s.get("correct") is not None]
+        if not evaluated: return None
+        return round(sum(s["correct"] for s in evaluated) / len(evaluated) * 100, 1)
+
+    # V-VAL1 aggregate evaluated-BUY-cohort contract (additive, does not
+    # remove/rename any existing field). `correct`/`fwd_return_pct` are
+    # never None on an in-memory signal dict as of this writing —
+    # run_validation()'s per-window loop only appends a signal once both
+    # are fully computed (see _backtest_stock) — but this filters
+    # defensively on `is not None` rather than assuming that invariant,
+    # so evaluated_buy_count/buy_return_count would genuinely diverge from
+    # buy_signal_count if that ever changed, instead of silently
+    # miscounting. buy_hits is a real integer count, never reconstructed
+    # from a rounded percentage.
+    evaluated_buys      = [s for s in buys if s.get("correct") is not None]
+    buy_hits_count      = sum(1 for s in evaluated_buys if s["correct"])
+    buy_return_signals  = [s for s in buys if s.get("fwd_return_pct") is not None]
 
     def _avg_ret(subset):
-        if not subset: return None
-        return round(np.mean([s["fwd_return_pct"] for s in subset]), 2)
+        vals = [s["fwd_return_pct"] for s in subset if s.get("fwd_return_pct") is not None]
+        if not vals: return None
+        return round(float(np.mean(vals)), 2)
 
     def _sharpe(rets, rf=0.0):
         arr = np.array(rets)
@@ -1720,7 +2311,7 @@ def _compute_metrics(
     # benchmark would misleadingly imply the model produced flat signals
     # rather than no signals at all. outperformance requires BOTH sides to
     # be genuinely available.
-    buy_rets   = [s["fwd_return_pct"] for s in buys]
+    buy_rets   = [s["fwd_return_pct"] for s in buy_return_signals]
     buy_alphas = [s["alpha_pct"] for s in buys if s.get("alpha_pct") is not None]
     model_avg  = _avg_ret(buys)
     outperformance = (
@@ -1737,8 +2328,24 @@ def _compute_metrics(
         "buy_signals":      len(buys),
         "sell_signals":     len(sells),
         "hold_signals":     len(holds),
-        # Benchmark-relative hit rate (primary metric — stock must beat Nifty to be "correct")
-        "buy_hit_rate_pct":           _hit_rate(buys),
+        # V-VAL1 additive cohort fields — buy_signals above (legacy name,
+        # kept unchanged) and buy_signal_count are the identical value
+        # under a clearer name; evaluated_buy_count/buy_hits/
+        # buy_return_count are new. NOTE: buy_signals/sell_signals/
+        # hold_signals are PREDICTED-class counts (what the model called),
+        # not an actual/ground-truth class distribution — see the
+        # frontend's Overall Accuracy sub-text for why these must never be
+        # read as a majority-class accuracy baseline.
+        "buy_signal_count":    len(buys),
+        "evaluated_buy_count": len(evaluated_buys),
+        "buy_hits":            buy_hits_count,
+        "buy_return_count":    len(buy_return_signals),
+        # Benchmark-relative hit rate (primary metric — stock must beat Nifty
+        # to be "correct"). Now explicitly buy_hits/evaluated_buy_count
+        # rather than _hit_rate(buys) — identical value today (evaluated_buy_
+        # count == len(buys) under the current invariant) but honestly
+        # derived from the evaluated cohort rather than the raw BUY count.
+        "buy_hit_rate_pct":           round(buy_hits_count / len(evaluated_buys) * 100, 1) if evaluated_buys else None,
         "sell_hit_rate_pct":          _hit_rate(sells),
         "overall_accuracy_pct":       _hit_rate(signals),
         # Return metrics
@@ -1758,7 +2365,7 @@ def _compute_metrics(
         # Streak / drawdown analysis on BUY signals ordered by signal_date
         "max_consecutive_wrong":  _max_consec_wrong(buys),
         "max_consecutive_right":  _max_consec_right(buys),
-        "max_drawdown_pct":       _max_drawdown(buy_rets),
+        "max_drawdown_pct":       _max_drawdown(buys),
         "score_buckets":          buckets,
         "confidence_buckets":     confidence_buckets,
         "sell_confidence_buckets": sell_confidence_buckets,
@@ -1789,9 +2396,28 @@ def _compute_metrics(
 # ── Main runner ───────────────────────────────────────────────────────────────
 
 def run_validation(horizon: str = "medium", universe: str = "nifty100", max_workers: int = 6,
-                   trigger_type: str = "internal", _claimed_job: dict | None = None) -> dict:
+                   trigger_type: str = "internal", _claimed_job: dict | None = None,
+                   progress_callback=None, _persist: bool = True, _fence_check=None,
+                   _heartbeat=None, _lease_duration_seconds: int | None = None) -> dict:
     """
     Run a full walk-forward validation.
+
+    `_persist` and `_fence_check` are internal, underscore-prefixed
+    parameters used ONLY by the V-SCHED1C1 ledger-backed execution path
+    (execute_and_complete_admitted_attempt) — every direct/legacy caller
+    keeps the exact prior behavior (_persist=True, no fence checking).
+    When `_persist=False`, this function performs every computation step
+    identically but does NOT insert into val_runs/val_signals; instead
+    metrics["_persist_payload"] carries everything the caller needs to
+    hand to the atomic fenced primitive complete_running_attempt_with_
+    computed_result(), and metrics["run_id"] is left unset (persistence,
+    and therefore the run_id, only exist after that atomic commit
+    succeeds). `_fence_check`, if given, is called at the same cooperative
+    checkpoint as `progress_callback` (after each stock's backtest
+    completes); if it returns a truthy "fenced" signal, the remaining
+    futures are cancelled and _FencedOutDuringComputation is raised
+    immediately — no persistence of any kind is attempted for a
+    computation known to be stale.
 
     universe options (case-sensitive, exact match — no other value accepted):
       "nifty100"  — Nifty 100 large-cap India (default, ~125 stocks)
@@ -1803,7 +2429,30 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
     _require_known_universe. There is no fallback to NIFTY_100 and no
     default market.
 
-    Stores results in Postgres/SQLite and returns summary metrics.
+    Stores results in Postgres/SQLite and returns summary metrics, including
+    the persisted `val_runs.id` as metrics["run_id"].
+
+    `_heartbeat`, if given (V-USCAP4), is a narrowly-scoped, heartbeat-ONLY
+    callback — `_heartbeat() -> bool` (True means fencing was lost) — called
+    from the main validation thread (never a background timer thread)
+    while DRAINING already-running provider workers after a stall is
+    detected, and nowhere else. It never increments progress and is
+    entirely distinct from `progress_callback`/`_fence_check` above, which
+    only ever fire on genuine per-symbol completion. `_lease_duration_
+    seconds`, if given alongside it, bounds the drain poll interval safely
+    below the caller's actual lease TTL (see RUN_STALL_TIMEOUT_SECONDS's
+    own docstring and the drain loop below for why this exists: without
+    it, a stall's `shutdown(wait=True)` wait would starve the ledger lease
+    of any renewal for as long as the stuck worker takes, letting it
+    expire and allowing a second worker to admit real, overlapping
+    provider work while the first worker's provider call is still alive).
+
+    `progress_callback`, if given, is called as `progress_callback(done,
+    total)` after each stock's backtest completes (main thread only, same
+    point _run_status["progress"] is updated) — V-SCHED1C1 uses this for
+    ledger-lease heartbeat renewal tied to genuine forward progress, never
+    a blind timer. Optional and backward compatible; existing direct
+    callers that don't pass it are unaffected.
     """
     _require_known_universe(universe)
 
@@ -1898,7 +2547,9 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
     evidence: BenchmarkEvidence | None = None
     for attempt in range(BENCHMARK_FETCH_MAX_ATTEMPTS):
         try:
-            bench_df = yf.Ticker(benchmark_ticker).history(period=HORIZON_PERIOD[horizon])
+            bench_df = yf.Ticker(benchmark_ticker).history(
+                period=HORIZON_PERIOD[horizon], timeout=YFINANCE_REQUEST_TIMEOUT_SECONDS,
+            )
         except Exception:
             bench_df = None
             log.exception(
@@ -1993,48 +2644,323 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
         # a clearer, more portable long-term count contract than
         # `excluded_benchmark` above.
         window_stats_by_symbol: dict[str, dict] = {}
+        # V-FRESH1B — each stock gets its own fresh diagnostic dict, exactly
+        # mirroring window_stats_by_symbol's per-worker-owned pattern above
+        # (never a single dict shared/mutated across threads). Aggregated
+        # by the main thread only after every future has resolved.
+        diag_by_symbol: dict[str, dict] = {}
         done = 0
 
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        # V-USCAP2 — a context-managed executor: __exit__ calls
+        # shutdown(wait=True), which BLOCKS until every already-started
+        # worker genuinely finishes. This is deliberate, not an oversight:
+        # Python cannot forcibly stop a running thread, so the only two
+        # honest choices on a stall are (a) wait for the real worker to
+        # finish before doing anything else, or (b) abandon it and leak a
+        # live thread forever (the prior design, which shut the pool down
+        # with waiting disabled —
+        # proven in the V-USCAP1 review to survive past the function's own
+        # return and to block the interpreter's own atexit thread-join,
+        # i.e. it does not actually free anything). This function never
+        # returns, and never lets the caller proceed to persistence, while
+        # a provider worker is still active.
+        stalled = False
+        pool = ThreadPoolExecutor(max_workers=max_workers)
+        try:
             futures = {}
             for sym in stocks:
                 stats = {"considered": 0, "benchmark_valid": 0}
                 window_stats_by_symbol[sym] = stats
+                diag = {"terminal_path": None, "input_first_date": None, "input_last_date": None}
+                diag_by_symbol[sym] = diag
                 futures[pool.submit(
                     _backtest_stock, sym, horizon, bench_df, market,
                     universe=universe, _exclusions=excluded_benchmark, _window_stats=stats,
+                    _diag=diag,
                 )] = sym
-            for future in as_completed(futures):
-                sym = futures[future]
+
+            pending = set(futures.keys())
+
+            # V-USCAP6 — a SINGLE, unified wall-clock heartbeat schedule
+            # spans the ENTIRE executor lifecycle (ordinary per-symbol
+            # completion AND stall drain alike), not just the drain phase
+            # V-USCAP4 covered. Rationale (V-USCAP5 independent review,
+            # "Medium 1"): lease renewal was previously tied only to (a)
+            # the caller's own progress_callback/_fence_check, driven by
+            # every heartbeat_every_n_stocks completions, and (b) the
+            # V-USCAP4 drain heartbeat, which only ever started AFTER a
+            # full RUN_STALL_TIMEOUT_SECONDS of silence. A run where
+            # several symbols individually complete — never triggering
+            # the inactivity watchdog — but collectively take longer than
+            # the lease TTL between progress checkpoints could let the
+            # lease expire during perfectly ordinary execution, before
+            # the drain correction is ever reached. This heartbeat is
+            # scheduled purely by time.monotonic(), completely
+            # independent of both the progress counter and the inactivity
+            # clock below — it never increments `done`, never fires
+            # progress_callback, and never resets `last_progress_at`.
+            heartbeat_interval = (
+                _lease_heartbeat_interval(_lease_duration_seconds)
+                if _lease_duration_seconds else None
+            )
+            next_heartbeat_at = None
+            fenced_via_heartbeat = False
+
+            def _fire_heartbeat():
+                nonlocal fenced_via_heartbeat
                 try:
-                    sigs = future.result()
-                    all_signals.extend(sigs)
-                    if sigs:
-                        symbols_with_signals.add(sym)
-                    done += 1
-                    with _status_lock:
-                        _run_status["progress"] = done
-                        _run_status["log"].append(f"[{done}/{n_stocks}] {sym}: {len(sigs)} signals")
-                        if _run_status.get("job") is not None:
-                            _run_status["job"]["processed"] = done
-                            _run_status["job"]["current_symbol"] = sym
-                            _run_status["job"]["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    if bool(_heartbeat()):
+                        fenced_via_heartbeat = True
                 except Exception:
-                    log.exception(
-                        "[validation] symbol backtest raised — symbol=%s market=%s "
-                        "universe=%s horizon=%s",
-                        sym, market, universe, horizon,
-                    )
-                    done += 1
-                    with _status_lock:
-                        _run_status["progress"] = done
-                        _run_status["log"].append(
-                            f"[{done}/{n_stocks}] {sym}: ERROR SYMBOL_VALIDATION_FAILED"
+                    log.warning("[validation] lease heartbeat raised — treating as fenced-out")
+                    fenced_via_heartbeat = True
+
+            def _heartbeat_if_due():
+                # Checked on every wake of the control loop below — even
+                # an iteration where one or more futures just completed —
+                # so a due heartbeat can never be indefinitely postponed
+                # by a trickle of genuine completions (V-USCAP5's Stage 2C
+                # concern: `wait()` returning a non-empty done_set on
+                # almost every call must not starve this schedule).
+                nonlocal next_heartbeat_at
+                if _heartbeat is None or heartbeat_interval is None or fenced_via_heartbeat:
+                    return
+                if time.monotonic() >= next_heartbeat_at:
+                    _fire_heartbeat()
+                    next_heartbeat_at = time.monotonic() + heartbeat_interval
+
+            if _heartbeat is not None and heartbeat_interval is not None:
+                # Immediate heartbeat before any wait — the lease is fresh
+                # from the very first moment provider work begins, not
+                # only after the first interval elapses.
+                _fire_heartbeat()
+                next_heartbeat_at = time.monotonic() + heartbeat_interval
+
+            # INACTIVITY tracking (unchanged in spirit from before this
+            # correction) is entirely separate from the heartbeat schedule
+            # above: it only ever advances on a GENUINE future completion,
+            # never on a heartbeat tick, so a heartbeat can never suppress
+            # or delay real stall detection.
+            last_progress_at = time.monotonic()
+
+            while pending:
+                if fenced_via_heartbeat:
+                    wait_timeout = 0.0
+                else:
+                    deadline = last_progress_at + RUN_STALL_TIMEOUT_SECONDS
+                    if next_heartbeat_at is not None:
+                        deadline = min(deadline, next_heartbeat_at)
+                    # wait(..., timeout=N) returns as soon as ANY future in
+                    # `pending` completes, OR after N seconds with an empty
+                    # `done_set` if none did. Waking no later than the
+                    # next of {heartbeat deadline, inactivity deadline,
+                    # future completion} lets a single loop serve both
+                    # schedules without a second thread.
+                    wait_timeout = max(0.0, deadline - time.monotonic())
+
+                done_set, pending = wait(pending, timeout=wait_timeout, return_when=FIRST_COMPLETED)
+
+                if done_set:
+                    last_progress_at = time.monotonic()
+
+                _heartbeat_if_due()
+
+                stalled_now = (
+                    not done_set and not fenced_via_heartbeat
+                    and time.monotonic() >= last_progress_at + RUN_STALL_TIMEOUT_SECONDS
+                )
+
+                if fenced_via_heartbeat or stalled_now:
+                    if stalled_now:
+                        stalled = True
+                        still_pending_symbols = [futures[f] for f in pending]
+                        log.error(
+                            "[validation] no symbol completed for %ds — treated as a provider "
+                            "stall, draining before failing this run closed — market=%s "
+                            "universe=%s horizon=%s pending_count=%d pending_symbols=%s",
+                            RUN_STALL_TIMEOUT_SECONDS, market, universe, horizon,
+                            len(still_pending_symbols), still_pending_symbols[:10],
                         )
-                        if _run_status.get("job") is not None:
-                            _run_status["job"]["processed"] = done
-                            _run_status["job"]["current_symbol"] = sym
-                            _run_status["job"]["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    else:
+                        log.warning(
+                            "[validation] lease heartbeat rejected mid-run (done=%d/%d) — "
+                            "draining before aborting, no persistence will be attempted — "
+                            "market=%s universe=%s horizon=%s",
+                            done, n_stocks, market, universe, horizon,
+                        )
+
+                    # V-USCAP4/V-USCAP6 — cancel every not-yet-started
+                    # future NOW, eagerly (not deferred to the final
+                    # shutdown() call below): a not-yet-started future
+                    # cancelled here can never turn into a NEW piece of
+                    # real provider work, closing that window as early as
+                    # possible. Then synchronously DRAIN every still-
+                    # unresolved future on the main thread, on the SAME
+                    # heartbeat schedule as ordinary execution above —
+                    # never a blocking shutdown(wait=True) straight away,
+                    # which would starve the lease of renewal for however
+                    # long the already-running worker(s) take to actually
+                    # finish (the defect proven in the V-USCAP3 review).
+                    # Results observed here are discarded entirely: no
+                    # progress increment, no signal collection, no
+                    # metrics/persistence — draining exists ONLY to keep
+                    # the lease alive while workers finish, never to
+                    # salvage a partial result.
+                    for f in pending:
+                        f.cancel()
+                    draining = set(pending)  # not-yet-started ones resolve almost immediately once cancelled above
+                    drain_poll = heartbeat_interval if heartbeat_interval is not None else 30.0
+                    while draining:
+                        done_now, draining = wait(draining, timeout=drain_poll, return_when=FIRST_COMPLETED)
+                        # done_now is deliberately never inspected/processed
+                        # — draining discards outcomes. Checked on EVERY
+                        # iteration, including ones where a future just
+                        # completed — same rule as the main loop above.
+                        _heartbeat_if_due()
+                    log.error(
+                        "[validation] drain complete — every worker has terminated "
+                        "(fenced=%s stalled=%s) — market=%s universe=%s horizon=%s",
+                        fenced_via_heartbeat, stalled, market, universe, horizon,
+                    )
+                    if fenced_via_heartbeat:
+                        # Losing the lease is a DIFFERENT failure than a
+                        # provider stall — the existing fencing contract
+                        # already knows exactly how to handle it (no
+                        # attempt-failed transition, no lease release,
+                        # never touch the new owner's binding), so reuse
+                        # it verbatim rather than inventing a second path.
+                        raise _FencedOutDuringComputation()
+                    # cancel_futures=True below is now a no-op (every
+                    # future has already resolved via the drain loop) —
+                    # kept only so this call remains the single, uniform
+                    # cleanup path for both the normal and stall branches.
+                    break
+
+                for future in done_set:
+                    sym = futures[future]
+                    try:
+                        sigs = future.result()
+                        all_signals.extend(sigs)
+                        if sigs:
+                            symbols_with_signals.add(sym)
+                        done += 1
+                        with _status_lock:
+                            _run_status["progress"] = done
+                            _run_status["log"].append(f"[{done}/{n_stocks}] {sym}: {len(sigs)} signals")
+                            if _run_status.get("job") is not None:
+                                _run_status["job"]["processed"] = done
+                                _run_status["job"]["current_symbol"] = sym
+                                _run_status["job"]["updated_at"] = datetime.now(timezone.utc).isoformat()
+                        if progress_callback is not None:
+                            try:
+                                progress_callback(done, n_stocks)
+                            except Exception:
+                                log.warning("[validation] progress_callback raised — ignored, run continues")
+                        if _fence_check is not None:
+                            fenced = False
+                            try:
+                                fenced = bool(_fence_check())
+                            except Exception:
+                                log.warning("[validation] _fence_check raised — treating as fenced-out")
+                                fenced = True
+                            if fenced:
+                                for f in futures:
+                                    f.cancel()
+                                log.warning(
+                                    "[validation] fencing lost mid-run (done=%d/%d) — aborting before "
+                                    "any persistence, no result will be computed further",
+                                    done, n_stocks,
+                                )
+                                raise _FencedOutDuringComputation()
+                    except _FencedOutDuringComputation:
+                        raise
+                    except Exception:
+                        log.exception(
+                            "[validation] symbol backtest raised — symbol=%s market=%s "
+                            "universe=%s horizon=%s",
+                            sym, market, universe, horizon,
+                        )
+                        # V-FRESH1B — a truly unexpected exception escaping
+                        # _backtest_stock's own outer try/except (which already
+                        # catches everything internal) means this symbol's
+                        # diagnostic was never set — classify it here so every
+                        # requested symbol always has exactly one terminal
+                        # path, preserving the reconciliation invariant.
+                        if diag_by_symbol.get(sym, {}).get("terminal_path") is None:
+                            diag_by_symbol.setdefault(sym, {})["terminal_path"] = "calculation_exception"
+                        done += 1
+                        with _status_lock:
+                            _run_status["progress"] = done
+                            _run_status["log"].append(
+                                f"[{done}/{n_stocks}] {sym}: ERROR SYMBOL_VALIDATION_FAILED"
+                            )
+                            if _run_status.get("job") is not None:
+                                _run_status["job"]["processed"] = done
+                                _run_status["job"]["current_symbol"] = sym
+                                _run_status["job"]["updated_at"] = datetime.now(timezone.utc).isoformat()
+                        if progress_callback is not None:
+                            # V-USACT1-B-C1 — a per-symbol EXCEPTION is still
+                            # genuine forward progress for inactivity-
+                            # detection purposes (a resolved future, not a
+                            # hang) — call the same callback here too, so a
+                            # caller using this signal as the authoritative
+                            # inactivity clock (see _run_validation_in_
+                            # subprocess's parent-side detector) sees a
+                            # consistent definition of "progress" regardless
+                            # of whether a symbol succeeded or raised.
+                            try:
+                                progress_callback(done, n_stocks)
+                            except Exception:
+                                log.warning("[validation] progress_callback raised — ignored, run continues")
+        finally:
+            # wait=True blocks until every worker that actually started
+            # running has genuinely finished — this is the property that
+            # makes it safe to decide, right below, whether to proceed to
+            # persistence: by the time this call returns, zero provider
+            # workers remain active, on both the normal-completion and
+            # stall paths. cancel_futures=True additionally prevents any
+            # not-yet-started future from ever running at all once a
+            # stall has been decided — it does not affect futures already
+            # in progress (those can only be waited for, never cancelled).
+            pool.shutdown(wait=True, cancel_futures=True)
+
+        # By this point every worker has genuinely finished (see the wait
+        # above). Only now is it safe to decide whether to proceed to
+        # persistence — whether this was a normal completion or a stall.
+        if stalled:
+            log.error(
+                "[validation] provider stall confirmed — all workers have terminated, "
+                "failing this run closed with no metrics/persistence — market=%s "
+                "universe=%s horizon=%s",
+                market, universe, horizon,
+            )
+            with _status_lock:
+                _run_status.update({
+                    "running": False,
+                    "log": _run_status["log"] + [
+                        f"❌ Failed: {VALIDATION_PUBLIC_FAILURE_MESSAGES['PROVIDER_STALL']}"
+                    ],
+                })
+                if _run_status.get("job") is not None:
+                    _run_status["job"].update({
+                        "status": "failed",
+                        "failure_code": "PROVIDER_STALL",
+                        "failure_message": VALIDATION_PUBLIC_FAILURE_MESSAGES["PROVIDER_STALL"],
+                        "completed_at": datetime.now(timezone.utc).isoformat(),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    })
+            # No _compute_metrics call, no val_runs/val_signals write —
+            # mirrors the benchmark-coverage-insufficient gate below.
+            # Raised INSIDE this try/except (the outer one starting at
+            # _init_db()) deliberately, so the generic `except Exception:`
+            # handler further down sees failure_code already set and does
+            # not overwrite it with RUN_EXCEPTION.
+            raise _ProviderStallDuringComputation(
+                f"run_validation: provider stall — no symbol completed for "
+                f"{RUN_STALL_TIMEOUT_SECONDS}s (market={market} universe={universe} "
+                f"horizon={horizon}) — every worker has terminated, refusing to persist "
+                f"a truncated result"
+            )
 
         signal_windows_considered = sum(s["considered"] for s in window_stats_by_symbol.values())
         benchmark_valid_signal_windows = sum(s["benchmark_valid"] for s in window_stats_by_symbol.values())
@@ -2123,6 +3049,9 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
         # (both live inside the JSON/JSONB summary column).
         metrics["n_stocks_requested"]     = n_stocks
         metrics["n_stocks_with_signals"]  = len(symbols_with_signals)
+        metrics["validation_evidence"] = _build_validation_evidence(
+            n_stocks, diag_by_symbol, window_stats_by_symbol, symbols_with_signals, all_signals,
+        )
         metrics["run_at"] = datetime.now(timezone.utc).isoformat()
         # benchmark_data_available/benchmark_unavailable_reason are always
         # True/None on this path now — an unavailable/invalid benchmark
@@ -2166,6 +3095,32 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
             for s in all_signals
         ]
 
+        if not _persist:
+            # V-SCHED1C1 ledger-backed path — computation only. No val_runs/
+            # val_signals row is written here; the caller must hand this
+            # payload to complete_running_attempt_with_computed_result(),
+            # which performs the insert atomically with its own fencing
+            # re-check. Nothing about this branch touches the database.
+            metrics["_persist_payload"] = {
+                "run_at": metrics["run_at"],
+                "horizon": horizon,
+                "n_stocks": n_stocks,
+                "n_signals": len(all_signals),
+                "summary_json": json.dumps(clean_metrics),
+                "universe": universe,
+                "signal_rows": signal_rows,
+            }
+            with _status_lock:
+                _run_status.update({"running": False, "log": _run_status["log"] + ["✅ Validation complete"]})
+                if _run_status.get("job") is not None:
+                    _run_status["job"].update({
+                        "status": "completed",
+                        "completed_at": job_snapshot["completed_at"],
+                        "processed": done,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    })
+            return metrics
+
         with _db_lock:
             if _USE_POSTGRES:
                 conn = _pg_conn()
@@ -2206,6 +3161,8 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         [(run_id,) + r for r in signal_rows]
                     )
+
+        metrics["run_id"] = run_id
 
         with _status_lock:
             _run_status.update({"running": False, "log": _run_status["log"] + ["✅ Validation complete"]})
@@ -2285,25 +3242,116 @@ def _fetchall(sql_pg: str, sql_sq: str, params=()):
         return conn.execute(sql_sq, params).fetchall()
 
 
+def _short_universe_auto_scheduled(universe: str | None) -> bool:
+    """Whether VALIDATION_AUTO_SHORT_UNIVERSES currently enables automatic
+    short-horizon scheduling for `universe`. Re-read from the environment
+    on every call (never cached at import time) — mirrors the api.main
+    automatic-short scheduler's own bounded, fail-closed re-read, so
+    freshness classification and the scheduler's own admission gate can
+    never silently drift apart. Calls
+    services.market_calendar.parse_auto_short_universes — the single
+    shared parser implementation (see api.main._parse_auto_short_
+    universes, which is the same function object, not a copy) — via
+    module attribute access (`market_calendar.parse_auto_short_
+    universes`, not a bound name import) so the shared implementation can
+    still be substituted/observed by a caller for testing."""
+    if not universe:
+        return False
+    enabled = market_calendar.parse_auto_short_universes(os.getenv("VALIDATION_AUTO_SHORT_UNIVERSES"))
+    return universe in enabled
+
+
+def _compute_freshness(data: dict) -> dict:
+    """V-FRESH1B — Option A (durable metadata-and-disclosure foundation,
+    NOT a complete freshness classifier). Derived at READ time from
+    already-persisted data, never stored — the policy may evolve
+    independently of rows already written.
+
+    Deliberately never returns "fresh", "stale", "schedule-consistent",
+    "schedule-missed", "within_expected_cadence" or
+    "past_expected_cadence" — all of those require a trusted exchange-
+    calendar and a completion-SLO/grace-period contract, neither of
+    which exists yet (V-FRESH1A/V-FRESH1A2 forensic findings). Every
+    branch here resolves to "unknown" with one specific, honest reason:
+      - short horizon, universe NOT currently auto-scheduled (per
+        VALIDATION_AUTO_SHORT_UNIVERSES — see
+        _short_universe_auto_scheduled): "schedule_not_defined",
+        regardless of evidence presence. This remains the correct,
+        honest answer for a universe that has never had an automatic
+        schedule at all (today: short/us).
+      - short horizon, universe IS currently auto-scheduled (V-SCHED1C2D
+        — today: short/nifty100, short/midcap): the schedule genuinely
+        exists, but a trusted exchange-calendar-aware freshness judgment
+        and a completion-SLO/grace-period contract still do not exist —
+        so this shares medium/long's own honest
+        "calendar_or_completion_slo_unavailable" reason below, NEVER a
+        new "scheduled"/"fresh"/"current" label. Schedule enablement and
+        actual data freshness are deliberately kept as separate
+        concepts — enabling the schedule changes the REASON a run's
+        freshness can't be judged yet, never the "unknown" status.
+      - medium/long, no `validation_evidence` (every row persisted
+        before V-FRESH1B): "legacy_run_without_evidence_metadata".
+      - medium/long, `validation_evidence` present (future runs only):
+        "calendar_or_completion_slo_unavailable" — the factual dates/
+        counters exist, but nothing here can yet judge them against a
+        trusted calendar or a completion-SLO.
+
+    `available: true` with `freshness.status: "unknown"` is valid and
+    expected — availability and freshness are independent dimensions.
+    """
+    run_horizon = data.get("horizon")
+    universe = data.get("universe")
+    evidence = data.get("validation_evidence")
+
+    if run_horizon == "short":
+        reason = (
+            "calendar_or_completion_slo_unavailable"
+            if _short_universe_auto_scheduled(universe)
+            else "schedule_not_defined"
+        )
+    elif evidence is None:
+        reason = "legacy_run_without_evidence_metadata"
+    else:
+        reason = "calendar_or_completion_slo_unavailable"
+
+    return {
+        "status": "unknown",
+        "reason": reason,
+        "validation_completed_at": data.get("run_at"),
+        "input_data_recency": "unknown",
+        "outcome_evidence_recency": "unknown",
+    }
+
+
 def get_latest_results(horizon: str | None = None, universe: str = "nifty100") -> dict:
-    """Return the most recent validation summary (or per-horizon breakdown) for a given universe."""
+    """Return the most recent validation summary (or per-horizon breakdown) for a given universe.
+
+    V-SNAP1B — additionally returns the canonical database `run_id`
+    (the selected val_runs.id), authoritative over any value that may
+    happen to already exist inside the stored summary JSON (set last,
+    below, so it can never be overridden by JSON content). Eligibility
+    (`summary IS NOT NULL`) matches resolve_eligible_run_id()'s own
+    predicate exactly — see that function's docstring for why this is
+    the correct, proven eligibility definition and not an invented one.
+    """
     try:
         _init_db()
         if horizon:
             row = _fetchone(
-                "SELECT summary FROM val_runs WHERE horizon=%s AND universe=%s ORDER BY id DESC LIMIT 1",
-                "SELECT summary FROM val_runs WHERE horizon=? AND universe=? ORDER BY id DESC LIMIT 1",
+                "SELECT id, summary FROM val_runs WHERE horizon=%s AND universe=%s AND summary IS NOT NULL ORDER BY id DESC LIMIT 1",
+                "SELECT id, summary FROM val_runs WHERE horizon=? AND universe=? AND summary IS NOT NULL ORDER BY id DESC LIMIT 1",
                 (horizon, universe)
             )
         else:
             row = _fetchone(
-                "SELECT summary FROM val_runs WHERE universe=%s ORDER BY id DESC LIMIT 1",
-                "SELECT summary FROM val_runs WHERE universe=? ORDER BY id DESC LIMIT 1",
+                "SELECT id, summary FROM val_runs WHERE universe=%s AND summary IS NOT NULL ORDER BY id DESC LIMIT 1",
+                "SELECT id, summary FROM val_runs WHERE universe=? AND summary IS NOT NULL ORDER BY id DESC LIMIT 1",
                 (universe,)
             )
         if not row:
             return {"available": False, "message": "No validation run found. Run /api/validation/run first."}
-        summary = row[0] if _USE_POSTGRES else row["summary"]
+        db_run_id = row[0] if _USE_POSTGRES else row["id"]
+        summary = row[1] if _USE_POSTGRES else row["summary"]
         data = summary if isinstance(summary, dict) else json.loads(summary)
         # Defense-in-depth for rows persisted before public diagnostic
         # sanitization existed — never rewrites the stored row (`data` is a
@@ -2324,6 +3372,13 @@ def get_latest_results(horizon: str | None = None, universe: str = "nifty100") -
                 "reason": "persisted before the benchmark evidence contract existed",
                 "methodology_version": None,
             }
+        # V-SNAP1B — set LAST, after spreading nothing yet: this is the
+        # authoritative database identity, always wins over any run_id
+        # the stored JSON might already happen to contain.
+        data["run_id"] = db_run_id
+        # V-FRESH1B — additive, read-time-derived honest disclosure (never
+        # stored — policy may evolve independently of persisted rows).
+        data["freshness"] = _compute_freshness(data)
         return {"available": True, **data}
     except Exception as e:
         return {"available": False, "error": safe_error_message(
@@ -2383,59 +3438,180 @@ def get_track_record_summary(market: str, horizon: str) -> list[dict]:
     return out
 
 
+def resolve_eligible_run_id(run_id: int | None, horizon: str, universe: str) -> int | None:
+    """V-SNAP1B — resolve and validate the run to use for a request,
+    using the SAME eligibility definition as get_latest_results()'s own
+    WHERE clause: `summary IS NOT NULL`.
+
+    This is the proven eligibility rule (not an invented one): every
+    val_runs row is inserted exactly once, atomically, by
+    run_validation()'s single INSERT — with `summary` already fully
+    computed in the SAME statement (see that function's persistence
+    block). There is no "running"/"failed"/partial row state
+    representable in this schema at all; a row either does not exist
+    yet, or already has a non-null summary. `summary IS NOT NULL` is
+    therefore always true today, but is enforced explicitly (not
+    assumed) for the same defensive reason V-VAL1/V-PS2 filter on
+    `correct IS NOT NULL`/finite-return checks elsewhere in this file.
+
+    If `run_id` is given, it must additionally belong to the requested
+    horizon+universe and be eligible, or None is returned — the caller
+    must fail closed (never silently substitute the latest run). If
+    `run_id` is None, resolves the latest eligible run for
+    horizon+universe, or None if none exists. All queries are
+    parameterized and bounded (`LIMIT 1` / an exact primary-key lookup).
+    """
+    _init_db()
+    if run_id is not None:
+        row = _fetchone(
+            "SELECT id FROM val_runs WHERE id=%s AND horizon=%s AND universe=%s AND summary IS NOT NULL",
+            "SELECT id FROM val_runs WHERE id=? AND horizon=? AND universe=? AND summary IS NOT NULL",
+            (run_id, horizon, universe)
+        )
+        return run_id if row else None
+    row = _fetchone(
+        "SELECT id FROM val_runs WHERE horizon=%s AND universe=%s AND summary IS NOT NULL ORDER BY id DESC LIMIT 1",
+        "SELECT id FROM val_runs WHERE horizon=? AND universe=? AND summary IS NOT NULL ORDER BY id DESC LIMIT 1",
+        (horizon, universe)
+    )
+    if not row:
+        return None
+    return row[0] if _USE_POSTGRES else row["id"]
+
+
 def get_per_stock_results(run_id: int | None = None, horizon: str = "medium", universe: str = "nifty100") -> list[dict]:
-    """Return per-stock hit rate and average return for the latest (or given) run in a universe."""
+    """Return per-stock BUY hit rate and average return for the latest (or given) run in a universe.
+
+    Cohort contract (V-VAL1):
+      buy_signal_count   — every persisted BUY row for the symbol.
+      evaluated_buy_count — BUY rows with a non-null `correct` outcome.
+      buy_hits           — evaluated BUY rows classified correct.
+      hit_rate_pct        = buy_hits / evaluated_buy_count * 100, or None
+                             if evaluated_buy_count is 0 (never a fabricated 0%).
+      buy_return_count    — BUY rows with a non-null `fwd_return_pct`.
+      buy_avg_return_pct  — mean fwd_return_pct over buy_return_count, or
+                             None if buy_return_count is 0.
+
+    As of this writing, run_validation()'s per-signal loop only ever
+    appends a signal (and therefore only ever persists a val_signals row)
+    once `correct` and `fwd_return_pct` are both fully computed — a window
+    whose evidence is unavailable is skipped via `continue` before
+    appending, never persisted with a null outcome. So
+    evaluated_buy_count == buy_signal_count and buy_return_count ==
+    buy_signal_count hold for every row this codebase currently writes.
+    That is an application invariant, not a schema guarantee (`correct`
+    and `fwd_return_pct` are nullable columns) — the query below filters
+    on `IS NOT NULL` explicitly rather than assuming the invariant, so a
+    future violation (a manual insert, a new write path) would show up
+    as evaluated_buy_count/buy_return_count genuinely differing from
+    buy_signal_count, not as a silently wrong percentage.
+    """
     try:
         _init_db()
         if run_id is None:
-            row = _fetchone(
-                "SELECT id FROM val_runs WHERE horizon=%s AND universe=%s ORDER BY id DESC LIMIT 1",
-                "SELECT id FROM val_runs WHERE horizon=? AND universe=? ORDER BY id DESC LIMIT 1",
-                (horizon, universe)
-            )
-            if not row:
+            # V-SNAP1C — reuse resolve_eligible_run_id() rather than a
+            # separate ad hoc "latest run" query, so this internal
+            # fallback path (used directly by get_single_stock_accuracy,
+            # which has no run_id to pin against) applies the SAME proven
+            # `summary IS NOT NULL` eligibility definition as
+            # get_latest_results()/the /results/stocks router path —
+            # closing a dormant inconsistency the V-SNAP1B independent
+            # review flagged (unreachable today per that function's own
+            # docstring, since every row is written with `summary`
+            # already populated, but no longer merely assumed here).
+            # Passing run_id=None here resolves latest-eligible, exactly
+            # mirroring this branch's prior behavior and error contract
+            # (empty list when no eligible run exists) — not a second,
+            # ambiguous resolution of an already-given run_id.
+            run_id = resolve_eligible_run_id(None, horizon, universe)
+            if run_id is None:
                 return []
-            run_id = row[0] if _USE_POSTGRES else row["id"]
 
+        # V-PS2 — a historical NaN/Infinity fwd_return_pct (root-caused
+        # against production runs 227/228, see the V-PS1/V-PS2 phases)
+        # poisons AVG() for that whole symbol and crashes JSON
+        # serialization for the whole endpoint. The `clean` CTE nulls out
+        # any non-finite fwd_return_pct BEFORE it reaches any aggregate —
+        # `x = x` excludes NaN (false for NaN in both dialects; SQLite
+        # returns NULL rather than 0 for it, which is equally not-true
+        # inside a CASE WHEN, proven in
+        # test_sqlite_actually_stores_and_compares_nan_as_expected), and
+        # the bound +/-Infinity parameters (not string literals, so they
+        # bind identically in both dialects) exclude both infinities. A
+        # row nulled out here is treated exactly like a genuinely missing
+        # fwd_return_pct by every existing downstream `IS NOT NULL`
+        # check — no formula below this point changes.
+        _POS_INF, _NEG_INF = float("inf"), float("-inf")
         rows = _fetchall(
-            """SELECT symbol,
+            """WITH clean AS (
+                   SELECT symbol, predicted, correct,
+                          CASE WHEN fwd_return_pct = fwd_return_pct
+                                AND fwd_return_pct < %s AND fwd_return_pct > %s
+                               THEN fwd_return_pct END AS fwd_return_pct
+                   FROM val_signals
+                   WHERE run_id=%s AND horizon=%s
+               )
+               SELECT symbol,
                       COUNT(*) AS total,
-                      SUM(correct) AS correct,
                       AVG(fwd_return_pct) AS avg_ret,
-                      AVG(CASE WHEN predicted='BUY' THEN fwd_return_pct END) AS buy_ret,
-                      COUNT(CASE WHEN predicted='BUY' THEN 1 END) AS buy_count
-               FROM val_signals
-               WHERE run_id=%s AND horizon=%s
+                      COUNT(CASE WHEN predicted='BUY' THEN 1 END) AS buy_signal_count,
+                      COUNT(CASE WHEN predicted='BUY' AND correct IS NOT NULL AND fwd_return_pct IS NOT NULL THEN 1 END) AS evaluated_buy_count,
+                      SUM(CASE WHEN predicted='BUY' AND correct IS NOT NULL AND fwd_return_pct IS NOT NULL THEN correct END) AS buy_hits,
+                      COUNT(CASE WHEN predicted='BUY' AND fwd_return_pct IS NOT NULL THEN 1 END) AS buy_return_count,
+                      AVG(CASE WHEN predicted='BUY' AND fwd_return_pct IS NOT NULL THEN fwd_return_pct END) AS buy_avg_ret
+               FROM clean
                GROUP BY symbol
-               ORDER BY buy_ret DESC NULLS LAST""",
-            """SELECT symbol,
+               ORDER BY buy_avg_ret DESC NULLS LAST, symbol ASC""",
+            """WITH clean AS (
+                   SELECT symbol, predicted, correct,
+                          CASE WHEN fwd_return_pct = fwd_return_pct
+                                AND fwd_return_pct < ? AND fwd_return_pct > ?
+                               THEN fwd_return_pct END AS fwd_return_pct
+                   FROM val_signals
+                   WHERE run_id=? AND horizon=?
+               )
+               SELECT symbol,
                       COUNT(*) AS total,
-                      SUM(correct) AS correct,
                       AVG(fwd_return_pct) AS avg_ret,
-                      AVG(CASE WHEN predicted='BUY' THEN fwd_return_pct END) AS buy_ret,
-                      COUNT(CASE WHEN predicted='BUY' THEN 1 END) AS buy_count
-               FROM val_signals
-               WHERE run_id=? AND horizon=?
+                      COUNT(CASE WHEN predicted='BUY' THEN 1 END) AS buy_signal_count,
+                      COUNT(CASE WHEN predicted='BUY' AND correct IS NOT NULL AND fwd_return_pct IS NOT NULL THEN 1 END) AS evaluated_buy_count,
+                      SUM(CASE WHEN predicted='BUY' AND correct IS NOT NULL AND fwd_return_pct IS NOT NULL THEN correct END) AS buy_hits,
+                      COUNT(CASE WHEN predicted='BUY' AND fwd_return_pct IS NOT NULL THEN 1 END) AS buy_return_count,
+                      AVG(CASE WHEN predicted='BUY' AND fwd_return_pct IS NOT NULL THEN fwd_return_pct END) AS buy_avg_ret
+               FROM clean
                GROUP BY symbol
-               ORDER BY buy_ret DESC NULLS LAST""",
-            (run_id, horizon)
+               ORDER BY buy_avg_ret DESC NULLS LAST, symbol ASC""",
+            (_POS_INF, _NEG_INF, run_id, horizon)
         )
 
         def _v(r, key, idx):
             return r[idx] if _USE_POSTGRES else r[key]
 
-        return [
-            {
-                "symbol":            _v(r, "symbol", 0),
-                "total_signals":     _v(r, "total", 1),
-                "correct":           _v(r, "correct", 2),
-                "hit_rate_pct":      round(_v(r, "correct", 2) / _v(r, "total", 1) * 100, 1) if _v(r, "total", 1) else 0,
-                "avg_fwd_return_pct": round(_v(r, "avg_ret", 3), 2) if _v(r, "avg_ret", 3) is not None else None,
-                "buy_avg_return_pct": round(_v(r, "buy_ret", 4), 2) if _v(r, "buy_ret", 4) is not None else None,
-                "buy_signal_count":  _v(r, "buy_count", 5),
-            }
-            for r in rows
-        ]
+        results = []
+        for r in rows:
+            evaluated_buy_count = _v(r, "evaluated_buy_count", 4)
+            buy_hits = _v(r, "buy_hits", 5)
+            buy_return_count = _v(r, "buy_return_count", 6)
+            buy_avg_ret = _v(r, "buy_avg_ret", 7)
+            results.append({
+                "symbol":             _v(r, "symbol", 0),
+                "total_signals":      _v(r, "total", 1),
+                "avg_fwd_return_pct": round(_v(r, "avg_ret", 2), 2) if _v(r, "avg_ret", 2) is not None else None,
+                "buy_signal_count":   _v(r, "buy_signal_count", 3),
+                "evaluated_buy_count": evaluated_buy_count,
+                "buy_hits":           buy_hits,
+                # Legacy compatibility alias — this endpoint is a public API
+                # surface (get_per_stock_results is called directly by
+                # /api/validation/results/stocks and /results/stock/{symbol};
+                # an external caller may exist beyond this repo's own
+                # frontend, which no longer reads this key). Same value as
+                # buy_hits under its pre-V-VAL1 name; do not remove.
+                "correct":            buy_hits,
+                "hit_rate_pct":       round(buy_hits / evaluated_buy_count * 100, 1) if evaluated_buy_count else None,
+                "buy_return_count":   buy_return_count,
+                "buy_avg_return_pct": round(buy_avg_ret, 2) if buy_avg_ret is not None else None,
+            })
+        return results
     except Exception:
         return []
 
@@ -2530,3 +3706,2386 @@ def get_all_run_summaries() -> list[dict]:
         return results
     except Exception:
         return []
+
+
+
+
+# ── V-SCHED1B — durable validation scheduling ledger (inert foundation) ───────
+# Not called by _validation_schedule_loop, _catchup_validation, or
+# run_validation() in this phase — see V-SCHED1C for integration.
+#
+# CORRECTION (post-second-independent-review): the global lease now owns a
+# durable `active_attempt_id` binding. NO scheduled or manual attempt may
+# be created without FIRST holding the global lease, verified atomically
+# inside the SAME transaction that creates the attempt — closing the gap
+# where two different slots could each independently reach 'running'
+# before either caller ever contended for the global lease. At most one
+# claimed/running attempt can exist system-wide at any time: the lease
+# row's active_attempt_id is the single source of truth for that
+# invariant, set in the same transaction as attempt creation and cleared
+# in the same transaction as every terminal attempt transition.
+#
+# A process that crashes after admission (attempt created, lease bound)
+# but before completion leaves the lease's active_attempt_id pointing at
+# a now-stale attempt. Lease reclaim (acquire_validation_execution_lease)
+# deliberately does NOT clear this on its own — it surfaces it via
+# `recovery_required`/`stale_active_attempt_id` in its return value, and
+# the new owner must explicitly call recover_stale_active_attempt() before
+# any new attempt can be admitted. This makes the recovery an explicit,
+# auditable step rather than a silent side effect of reclaiming the lease.
+#
+# Three deliberately separate entities (see V-SCHED1A2's forensic report
+# for why a single-table model was rejected):
+#   - validation_schedule_slots    — canonical scheduled obligation.
+#   - validation_schedule_attempts — auditable execution attempt, bound
+#     (scheduler/catchup) or unbound (manual, slot_id NULL, horizon/
+#     universe durably recorded on the attempt itself).
+#   - validation_execution_leases  — single global singleton, now with a
+#     durable active-attempt binding enforcing true global admission.
+#
+# Lock ordering (PostgreSQL) — every multi-row ledger transaction acquires
+# row locks in this SAME order, with no exception:
+#     1. validation_execution_leases (the single 'validation-global' row)
+#     2. validation_schedule_attempts, if an existing attempt is involved
+#     3. validation_schedule_slots, if the attempt is bound to a slot
+#     4. val_runs, only for complete_attempt_with_result, after 1-3
+# create_schedule_attempt/create_manual_attempt lock lease then slot (no
+# attempt row exists yet to lock). recover_stale_active_attempt and
+# _compound_transition both lock lease then attempt then slot. This single
+# consistent order is what prevents an AB-BA deadlock between any two
+# concurrent ledger operations — see the second independent review's
+# finding that an earlier revision had _compound_transition locking
+# attempt-then-lease while recover_stale_active_attempt locked
+# lease-then-attempt, a reversal capable of a real PostgreSQL deadlock in
+# the "stale worker wakes up while a new owner is recovering it" scenario.
+
+GLOBAL_LEASE_RESOURCE_KEY = "validation-global"
+
+VALID_SLOT_STATUSES = {"due", "running", "completed", "failed", "skipped", "abandoned"}
+VALID_ATTEMPT_STATUSES = {"claimed", "running", "completed", "failed", "abandoned"}
+VALID_TRIGGER_TYPES = {"scheduler", "catchup", "manual"}
+VALID_HORIZONS = {"short", "medium", "long"}
+
+
+def _require_utc(dt: datetime, *, param: str = "now") -> datetime:
+    """Fail-closed timestamp contract: every timestamp accepted by this
+    module must be timezone-aware and UTC. A naive datetime is ambiguous
+    and is never silently assumed to be UTC."""
+    if dt.tzinfo is None:
+        raise ValueError(f"{param} must be timezone-aware (UTC) — naive datetimes are rejected, never assumed")
+    return dt.astimezone(timezone.utc)
+
+
+def _iso(dt: datetime) -> str:
+    return _require_utc(dt).isoformat()
+
+
+def _require_valid_horizon(horizon: str) -> None:
+    if horizon not in VALID_HORIZONS:
+        raise ValueError(f"horizon must be one of {sorted(VALID_HORIZONS)}, got {horizon!r}")
+
+
+def _ledger_row_to_dict(row) -> dict | None:
+    if row is None:
+        return None
+    return dict(row)
+
+
+def _pg_dict_fetchone(cur) -> dict | None:
+    row = cur.fetchone()
+    if row is None:
+        return None
+    cols = [d.name for d in cur.description]
+    return dict(zip(cols, row))
+
+
+def _pg_dict_fetchall(cur) -> list[dict]:
+    rows = cur.fetchall()
+    cols = [d.name for d in cur.description]
+    return [dict(zip(cols, r)) for r in rows]
+
+
+def _fetchone_ledger(sql_pg: str, sql_sq: str, params=()) -> dict | None:
+    """Read-only helper — never mutates state."""
+    if _USE_POSTGRES:
+        conn = _pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_pg, params)
+                return _pg_dict_fetchone(cur)
+        finally:
+            conn.close()
+    with _get_ledger_sqlite_conn() as conn:
+        row = conn.execute(sql_sq, params).fetchone()
+        return _ledger_row_to_dict(row)
+
+
+_SLOT_COLUMNS = "id, horizon, universe, scheduled_slot, schedule_version, status, active_attempt_id, created_at, updated_at"
+_ATTEMPT_COLUMNS = (
+    "id, slot_id, horizon, universe, attempt_number, trigger_type, status, lease_owner, "
+    "lease_fencing_token, started_at, heartbeat_at, completed_at, result_run_id, "
+    "failure_category, failure_summary, created_at, updated_at"
+)
+_LEASE_COLUMNS = "resource_key, lease_owner, fencing_token, acquired_at, heartbeat_at, expires_at, active_attempt_id, updated_at"
+
+
+def get_schedule_slot(slot_id: int) -> dict | None:
+    """Read-only — never mutates state."""
+    return _fetchone_ledger(
+        f"SELECT {_SLOT_COLUMNS} FROM validation_schedule_slots WHERE id=%s",
+        f"SELECT {_SLOT_COLUMNS} FROM validation_schedule_slots WHERE id=?",
+        (slot_id,),
+    )
+
+
+# V-SCHED1D-B columns — deliberately excludes lease_owner/lease_fencing_token/
+# failure_summary (see _ATTEMPT_COLUMNS above, which DOES include them for
+# the internal get_schedule_attempt() single-row reader). This is the
+# public-facing-safe-for-an-authenticated-operator column set only.
+_ATTEMPT_HISTORY_COLUMNS = (
+    "a.id, a.slot_id, a.horizon, a.universe, a.attempt_number, a.trigger_type, a.status, "
+    "a.started_at, a.heartbeat_at, a.completed_at, a.result_run_id, a.failure_category, "
+    "a.created_at, a.updated_at, "
+    "s.scheduled_slot AS scheduled_slot, s.schedule_version AS schedule_version, "
+    "s.status AS slot_status"
+)
+
+
+def list_schedule_attempts(*, horizon: str | None = None, universe: str | None = None,
+                            trigger_type: str | None = None, status: str | None = None,
+                            failure_category: str | None = None, schedule_version: str | None = None,
+                            result_run_id: int | None = None,
+                            since: datetime | None = None, until: datetime | None = None,
+                            cursor_created_at: datetime | None = None, cursor_id: int | None = None,
+                            limit: int = 50) -> list[dict]:
+    """V-SCHED1D-B — read-only, authenticated-operational history over
+    validation_schedule_attempts LEFT JOINed to validation_schedule_slots.
+
+    Never mutates state, never touches validation_execution_leases, never
+    calls any admission/lease/heartbeat/fencing/recovery/completion/
+    execution function. Every WHERE fragment below is a fixed source
+    string containing only hardcoded column names — no caller-supplied
+    value is ever interpolated into the SQL text; every value reaches the
+    database exclusively via a parameter placeholder (%s for Postgres, ?
+    for SQLite), appended to `params_pg`/`params_sq` in the exact same
+    order as the fragments that reference them.
+
+    Ordered by (created_at DESC, id DESC) — id is the deterministic
+    tie-breaker for rows sharing one created_at timestamp, and the same
+    (created_at, id) pair is what the caller encodes into an opaque
+    pagination cursor. `limit` here is the RAW row-fetch count — callers
+    that need "is there a next page" should pass `requested_limit + 1`
+    and slice the result themselves (this primitive does not special-case
+    that; see api/routers/validation.py's new route for the +1/slice
+    convention this is deliberately kept ignorant of).
+
+    A manual attempt (`slot_id IS NULL`) can never match a caller-supplied
+    `schedule_version` filter — the LEFT JOIN naturally yields NULL for
+    `s.schedule_version` on such a row, and SQL's `NULL = <anything>` is
+    never true in either dialect, so no special-casing is needed for that
+    guarantee either."""
+    where_pg: list[str] = ["1=1"]
+    where_sq: list[str] = ["1=1"]
+    params_pg: list = []
+    params_sq: list = []
+
+    def _eq(column: str, value) -> None:
+        if value is None:
+            return
+        where_pg.append(f"{column} = %s")
+        where_sq.append(f"{column} = ?")
+        params_pg.append(value)
+        params_sq.append(value)
+
+    _eq("a.horizon", horizon)
+    _eq("a.universe", universe)
+    _eq("a.trigger_type", trigger_type)
+    _eq("a.status", status)
+    _eq("a.failure_category", failure_category)
+    _eq("s.schedule_version", schedule_version)
+    _eq("a.result_run_id", result_run_id)
+
+    if since is not None:
+        _require_utc(since, param="since")
+        where_pg.append("a.created_at >= %s")
+        where_sq.append("a.created_at >= ?")
+        params_pg.append(since)
+        params_sq.append(_iso(since))
+    if until is not None:
+        _require_utc(until, param="until")
+        where_pg.append("a.created_at <= %s")
+        where_sq.append("a.created_at <= ?")
+        params_pg.append(until)
+        params_sq.append(_iso(until))
+    if cursor_created_at is not None and cursor_id is not None:
+        _require_utc(cursor_created_at, param="cursor_created_at")
+        where_pg.append("(a.created_at < %s OR (a.created_at = %s AND a.id < %s))")
+        where_sq.append("(a.created_at < ? OR (a.created_at = ? AND a.id < ?))")
+        params_pg.extend([cursor_created_at, cursor_created_at, cursor_id])
+        params_sq.extend([_iso(cursor_created_at), _iso(cursor_created_at), cursor_id])
+
+    where_clause_pg = " AND ".join(where_pg)
+    where_clause_sq = " AND ".join(where_sq)
+
+    sql_pg = (
+        f"SELECT {_ATTEMPT_HISTORY_COLUMNS} FROM validation_schedule_attempts a "
+        f"LEFT JOIN validation_schedule_slots s ON s.id = a.slot_id "
+        f"WHERE {where_clause_pg} "
+        f"ORDER BY a.created_at DESC, a.id DESC LIMIT %s"
+    )
+    sql_sq = (
+        f"SELECT {_ATTEMPT_HISTORY_COLUMNS} FROM validation_schedule_attempts a "
+        f"LEFT JOIN validation_schedule_slots s ON s.id = a.slot_id "
+        f"WHERE {where_clause_sq} "
+        f"ORDER BY a.created_at DESC, a.id DESC LIMIT ?"
+    )
+    params_pg.append(limit)
+    params_sq.append(limit)
+
+    if _USE_POSTGRES:
+        conn = _pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_pg, params_pg)
+                rows = _pg_dict_fetchall(cur)
+        finally:
+            conn.close()
+    else:
+        with _get_ledger_sqlite_conn() as conn:
+            rows = [dict(r) for r in conn.execute(sql_sq, params_sq).fetchall()]
+
+    # Normalize every timestamp field to a UTC ISO-8601 string regardless
+    # of dialect — Postgres/psycopg returns native datetime objects for
+    # TIMESTAMPTZ columns, SQLite already stores/returns ISO text. The
+    # response contract (and the pagination cursor, which round-trips
+    # `created_at` as a string) must be uniform across both.
+    _TIMESTAMP_FIELDS = ("started_at", "heartbeat_at", "completed_at", "created_at",
+                         "updated_at", "scheduled_slot")
+    for row in rows:
+        for field in _TIMESTAMP_FIELDS:
+            value = row.get(field)
+            if isinstance(value, datetime):
+                row[field] = _iso(value)
+    return rows
+
+
+def get_schedule_attempt(attempt_id: int) -> dict | None:
+    """Read-only — never mutates state."""
+    return _fetchone_ledger(
+        f"SELECT {_ATTEMPT_COLUMNS} FROM validation_schedule_attempts WHERE id=%s",
+        f"SELECT {_ATTEMPT_COLUMNS} FROM validation_schedule_attempts WHERE id=?",
+        (attempt_id,),
+    )
+
+
+def has_established_schedule_baseline(horizon: str, universe: str, schedule_version: str = "v1") -> bool:
+    """Read-only — never mutates state. True iff at least one schedule
+    slot has EVER been created for this (horizon, universe,
+    schedule_version) — regardless of which specific scheduled_slot
+    instant. Deliberately NOT scoped to "today's" slot: this answers
+    "has the ledger ever established a baseline for this identity", not
+    "is there a slot for right now". Used by the startup catch-up
+    bootstrap guard (V-SCHED1C1-ROLLOUT1) to distinguish a genuinely
+    missed run (a baseline exists, but today's slot is due) from the
+    very first deployment ever (no baseline exists yet at all) — the
+    catch-up path must never treat "never run before" as "missed a run"."""
+    row = _fetchone_ledger(
+        "SELECT 1 FROM validation_schedule_slots "
+        "WHERE horizon=%s AND universe=%s AND schedule_version=%s LIMIT 1",
+        "SELECT 1 FROM validation_schedule_slots "
+        "WHERE horizon=? AND universe=? AND schedule_version=? LIMIT 1",
+        (horizon, universe, schedule_version),
+    )
+    return row is not None
+
+
+def get_validation_execution_lease() -> dict | None:
+    """Read-only — never mutates state."""
+    return _fetchone_ledger(
+        f"SELECT {_LEASE_COLUMNS} FROM validation_execution_leases WHERE resource_key=%s",
+        f"SELECT {_LEASE_COLUMNS} FROM validation_execution_leases WHERE resource_key=?",
+        (GLOBAL_LEASE_RESOURCE_KEY,),
+    )
+
+
+# ── Canonical scheduled slot — idempotent create (no lease involvement:
+# creating the durable slot ROW is not "activating" it — see
+# create_schedule_attempt for the lease-gated activation step) ──────────────
+
+def get_or_create_schedule_slot(horizon: str, universe: str, scheduled_slot: datetime,
+                                 schedule_version: str, now: datetime) -> dict:
+    _require_utc(now, param="now")
+    _require_valid_horizon(horizon)
+    _require_known_universe(universe)
+    slot_iso = _iso(scheduled_slot)
+    now_iso = _iso(now)
+    with _db_lock:
+        if _USE_POSTGRES:
+            conn = _pg_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO validation_schedule_slots "
+                        "(horizon, universe, scheduled_slot, schedule_version, status, created_at, updated_at) "
+                        "VALUES (%s,%s,%s,%s,'due',%s,%s) "
+                        "ON CONFLICT (horizon, universe, scheduled_slot, schedule_version) DO NOTHING "
+                        f"RETURNING {_SLOT_COLUMNS}",
+                        (horizon, universe, scheduled_slot, schedule_version, now, now),
+                    )
+                    row = _pg_dict_fetchone(cur)
+                    if row is None:
+                        cur.execute(
+                            f"SELECT {_SLOT_COLUMNS} FROM validation_schedule_slots "
+                            "WHERE horizon=%s AND universe=%s AND scheduled_slot=%s AND schedule_version=%s",
+                            (horizon, universe, scheduled_slot, schedule_version),
+                        )
+                        row = _pg_dict_fetchone(cur)
+                    return row
+            finally:
+                conn.close()
+        else:
+            with _get_ledger_sqlite_conn() as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO validation_schedule_slots "
+                    "(horizon, universe, scheduled_slot, schedule_version, status, created_at, updated_at) "
+                    "VALUES (?,?,?,?,'due',?,?)",
+                    (horizon, universe, slot_iso, schedule_version, now_iso, now_iso),
+                )
+                row = conn.execute(
+                    f"SELECT {_SLOT_COLUMNS} FROM validation_schedule_slots "
+                    "WHERE horizon=? AND universe=? AND scheduled_slot=? AND schedule_version=?",
+                    (horizon, universe, slot_iso, schedule_version),
+                ).fetchone()
+                return _ledger_row_to_dict(row)
+
+
+# ── Global execution lease — now the single source of truth for whether
+# ANY attempt may be admitted system-wide ─────────────────────────────────────
+
+def acquire_validation_execution_lease(owner: str, now: datetime, lease_duration_seconds: int) -> dict:
+    """Atomic CAS acquisition of the single global 'validation-global'
+    lease row. Succeeds only if currently unheld (lease_owner IS NULL) or
+    expires_at <= now (INCLUSIVE boundary). Every successful acquisition
+    strictly increments fencing_token in the same statement.
+
+    Deliberately does NOT touch active_attempt_id on reclaim — if the
+    lease being reclaimed still has one bound (the previous holder
+    crashed/was killed after admitting an attempt but before it reached a
+    terminal state), that identity is preserved and surfaced back to the
+    caller via `recovery_required`/`stale_active_attempt_id` rather than
+    silently discarded. The caller MUST call recover_stale_active_attempt()
+    before create_schedule_attempt/create_manual_attempt will admit
+    anything new — both refuse to proceed while active_attempt_id is
+    still bound."""
+    _require_utc(now, param="now")
+    now_iso = _iso(now)
+    expires_at = now + timedelta(seconds=lease_duration_seconds)
+    expires_iso = _iso(expires_at)
+    with _db_lock:
+        if _USE_POSTGRES:
+            conn = _pg_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE validation_execution_leases "
+                        "SET lease_owner=%s, fencing_token=fencing_token+1, "
+                        "acquired_at=%s, heartbeat_at=%s, expires_at=%s, updated_at=%s "
+                        "WHERE resource_key=%s AND (lease_owner IS NULL OR expires_at <= %s) "
+                        "RETURNING fencing_token, active_attempt_id",
+                        (owner, now, now, expires_at, now, GLOBAL_LEASE_RESOURCE_KEY, now),
+                    )
+                    row = cur.fetchone()
+                    if row is None:
+                        return {"ok": False, "reason": "already_leased"}
+                    token, stale_id = row[0], row[1]
+                    return {
+                        "ok": True, "fencing_token": token, "owner": owner, "expires_at": expires_iso,
+                        "recovery_required": stale_id is not None, "stale_active_attempt_id": stale_id,
+                    }
+            finally:
+                conn.close()
+        else:
+            with _get_ledger_sqlite_conn() as conn:
+                cur = conn.execute(
+                    "UPDATE validation_execution_leases "
+                    "SET lease_owner=?, fencing_token=fencing_token+1, "
+                    "acquired_at=?, heartbeat_at=?, expires_at=?, updated_at=? "
+                    "WHERE resource_key=? AND (lease_owner IS NULL OR expires_at <= ?)",
+                    (owner, now_iso, now_iso, expires_iso, now_iso, GLOBAL_LEASE_RESOURCE_KEY, now_iso),
+                )
+                if cur.rowcount == 0:
+                    return {"ok": False, "reason": "already_leased"}
+                row = conn.execute(
+                    "SELECT fencing_token, active_attempt_id FROM validation_execution_leases WHERE resource_key=?",
+                    (GLOBAL_LEASE_RESOURCE_KEY,),
+                ).fetchone()
+                stale_id = row["active_attempt_id"]
+                return {
+                    "ok": True, "fencing_token": row["fencing_token"], "owner": owner, "expires_at": expires_iso,
+                    "recovery_required": stale_id is not None, "stale_active_attempt_id": stale_id,
+                }
+
+
+def heartbeat_validation_execution_lease(owner: str, fencing_token: int, now: datetime,
+                                          lease_duration_seconds: int) -> dict:
+    """Renews only if owner+fencing_token still exactly match the current
+    row. Deterministic PRIMITIVE only — V-SCHED1B runs no production
+    heartbeat loop."""
+    _require_utc(now, param="now")
+    now_iso = _iso(now)
+    expires_at = now + timedelta(seconds=lease_duration_seconds)
+    expires_iso = _iso(expires_at)
+    with _db_lock:
+        if _USE_POSTGRES:
+            conn = _pg_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE validation_execution_leases "
+                        "SET heartbeat_at=%s, expires_at=%s, updated_at=%s "
+                        "WHERE resource_key=%s AND lease_owner=%s AND fencing_token=%s "
+                        "RETURNING fencing_token",
+                        (now, expires_at, now, GLOBAL_LEASE_RESOURCE_KEY, owner, fencing_token),
+                    )
+                    row = cur.fetchone()
+                    if row is None:
+                        return {"ok": False, "reason": "not_owner_or_stale_token"}
+                    return {"ok": True, "fencing_token": row[0], "expires_at": expires_iso}
+            finally:
+                conn.close()
+        else:
+            with _get_ledger_sqlite_conn() as conn:
+                cur = conn.execute(
+                    "UPDATE validation_execution_leases "
+                    "SET heartbeat_at=?, expires_at=?, updated_at=? "
+                    "WHERE resource_key=? AND lease_owner=? AND fencing_token=?",
+                    (now_iso, expires_iso, now_iso, GLOBAL_LEASE_RESOURCE_KEY, owner, fencing_token),
+                )
+                if cur.rowcount == 0:
+                    return {"ok": False, "reason": "not_owner_or_stale_token"}
+                return {"ok": True, "fencing_token": fencing_token, "expires_at": expires_iso}
+
+
+def release_validation_execution_lease(owner: str, fencing_token: int, now: datetime) -> dict:
+    """Requires the CURRENT owner+fencing_token. Rejects — explicitly,
+    with reason 'active_attempt_bound' — while active_attempt_id is
+    non-null, so a lease can never be released out from under an attempt
+    still believed to be admitted (that would silently orphan it; the
+    caller must complete/fail/abandon the attempt, or call
+    recover_stale_active_attempt, first). fencing_token is never reset by
+    release — it stays monotonically increasing for the row's whole
+    history, only ever bumped again by the next successful acquisition."""
+    _require_utc(now, param="now")
+    now_iso = _iso(now)
+    with _db_lock:
+        if _USE_POSTGRES:
+            conn = _pg_conn()
+            try:
+                with conn.transaction():
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT lease_owner, fencing_token, active_attempt_id "
+                            "FROM validation_execution_leases WHERE resource_key=%s FOR UPDATE",
+                            (GLOBAL_LEASE_RESOURCE_KEY,),
+                        )
+                        row = _pg_dict_fetchone(cur)
+                        if row is None or row["lease_owner"] != owner or row["fencing_token"] != fencing_token:
+                            return {"ok": False, "reason": "not_owner_or_stale_token"}
+                        if row["active_attempt_id"] is not None:
+                            return {"ok": False, "reason": "active_attempt_bound"}
+                        cur.execute(
+                            "UPDATE validation_execution_leases "
+                            "SET lease_owner=NULL, expires_at=NULL, updated_at=%s WHERE resource_key=%s",
+                            (now, GLOBAL_LEASE_RESOURCE_KEY),
+                        )
+                        return {"ok": True}
+            finally:
+                conn.close()
+        else:
+            conn = _get_ledger_sqlite_conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT lease_owner, fencing_token, active_attempt_id "
+                    "FROM validation_execution_leases WHERE resource_key=?",
+                    (GLOBAL_LEASE_RESOURCE_KEY,),
+                ).fetchone()
+                if row is None or row["lease_owner"] != owner or row["fencing_token"] != fencing_token:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "not_owner_or_stale_token"}
+                if row["active_attempt_id"] is not None:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "active_attempt_bound"}
+                conn.execute(
+                    "UPDATE validation_execution_leases SET lease_owner=NULL, expires_at=NULL, updated_at=? "
+                    "WHERE resource_key=?",
+                    (now_iso, GLOBAL_LEASE_RESOURCE_KEY),
+                )
+                conn.execute("COMMIT")
+                return {"ok": True}
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            finally:
+                conn.close()
+
+
+def recover_stale_active_attempt(owner: str, fencing_token: int, now: datetime, *,
+                                  recovery_category: str = "STALE_LEASE_RECOVERY",
+                                  recovery_summary: str | None = None) -> dict:
+    """Explicit, fenced recovery for an attempt left admitted by a worker
+    that crashed/died before reaching a terminal state. The caller MUST
+    be the CURRENT lease holder (post-reclaim via acquire_validation_
+    execution_lease, whose `recovery_required`/`stale_active_attempt_id`
+    fields point here). ONE transaction:
+      1. lock the lease row, verify owner+fencing_token match current and
+         the lease is unexpired at `now`;
+      2. verify active_attempt_id is actually set (else conflict —
+         nothing to recover);
+      3. lock the stale attempt row, verify it is still claimed/running
+         (a benign race: something else may have already resolved it —
+         treated as a conflict, never silently re-resolved);
+      4. mark it 'abandoned' with the given sanitized category/summary —
+         its historical lease_owner/lease_fencing_token (the ORIGINAL
+         claimer) are preserved, never overwritten with the new owner's
+         identity, so the audit trail stays accurate;
+      5. if it was bound to a slot, return that slot to 'due' and clear
+         its active_attempt_id (only if still pointing at this attempt);
+      6. clear the lease's active_attempt_id so new admission can proceed;
+      7. commit."""
+    _require_utc(now, param="now")
+    now_iso = _iso(now)
+    with _db_lock:
+        if _USE_POSTGRES:
+            conn = _pg_conn()
+            try:
+                with conn.transaction():
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT lease_owner, fencing_token, active_attempt_id "
+                            "FROM validation_execution_leases WHERE resource_key=%s FOR UPDATE",
+                            (GLOBAL_LEASE_RESOURCE_KEY,),
+                        )
+                        lease = _pg_dict_fetchone(cur)
+                        if lease is None or lease["lease_owner"] != owner or lease["fencing_token"] != fencing_token:
+                            return {"ok": False, "reason": "not_owner_or_stale_token"}
+                        cur.execute(
+                            "SELECT expires_at FROM validation_execution_leases WHERE resource_key=%s",
+                            (GLOBAL_LEASE_RESOURCE_KEY,),
+                        )
+                        expires_row = cur.fetchone()
+                        if expires_row is None or expires_row[0] is None or expires_row[0] <= now:
+                            return {"ok": False, "reason": "not_owner_or_expired_lease"}
+                        stale_attempt_id = lease["active_attempt_id"]
+                        if stale_attempt_id is None:
+                            return {"ok": False, "reason": "no_stale_attempt"}
+
+                        cur.execute(
+                            "SELECT id, slot_id, status FROM validation_schedule_attempts WHERE id=%s FOR UPDATE",
+                            (stale_attempt_id,),
+                        )
+                        attempt = _pg_dict_fetchone(cur)
+                        if attempt is None or attempt["status"] not in ("claimed", "running"):
+                            return {"ok": False, "reason": "attempt_not_recoverable"}
+
+                        cur.execute(
+                            "UPDATE validation_schedule_attempts "
+                            "SET status='abandoned', completed_at=%s, failure_category=%s, "
+                            "failure_summary=%s, updated_at=%s WHERE id=%s",
+                            (now, recovery_category, recovery_summary, now, stale_attempt_id),
+                        )
+                        slot_id = attempt["slot_id"]
+                        if slot_id is not None:
+                            cur.execute(
+                                "UPDATE validation_schedule_slots "
+                                "SET status='due', active_attempt_id=NULL, updated_at=%s "
+                                "WHERE id=%s AND active_attempt_id=%s",
+                                (now, slot_id, stale_attempt_id),
+                            )
+                        cur.execute(
+                            "UPDATE validation_execution_leases "
+                            "SET active_attempt_id=NULL, updated_at=%s "
+                            "WHERE resource_key=%s AND lease_owner=%s AND fencing_token=%s",
+                            (now, GLOBAL_LEASE_RESOURCE_KEY, owner, fencing_token),
+                        )
+                        return {"ok": True, "recovered_attempt_id": stale_attempt_id, "slot_id": slot_id}
+            finally:
+                conn.close()
+        else:
+            conn = _get_ledger_sqlite_conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                lease = conn.execute(
+                    "SELECT lease_owner, fencing_token, active_attempt_id, expires_at "
+                    "FROM validation_execution_leases WHERE resource_key=?",
+                    (GLOBAL_LEASE_RESOURCE_KEY,),
+                ).fetchone()
+                if lease is None or lease["lease_owner"] != owner or lease["fencing_token"] != fencing_token:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "not_owner_or_stale_token"}
+                if lease["expires_at"] is None or lease["expires_at"] <= now_iso:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "not_owner_or_expired_lease"}
+                stale_attempt_id = lease["active_attempt_id"]
+                if stale_attempt_id is None:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "no_stale_attempt"}
+
+                attempt = conn.execute(
+                    "SELECT id, slot_id, status FROM validation_schedule_attempts WHERE id=?",
+                    (stale_attempt_id,),
+                ).fetchone()
+                if attempt is None or attempt["status"] not in ("claimed", "running"):
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "attempt_not_recoverable"}
+
+                conn.execute(
+                    "UPDATE validation_schedule_attempts "
+                    "SET status='abandoned', completed_at=?, failure_category=?, failure_summary=?, updated_at=? "
+                    "WHERE id=?",
+                    (now_iso, recovery_category, recovery_summary, now_iso, stale_attempt_id),
+                )
+                slot_id = attempt["slot_id"]
+                if slot_id is not None:
+                    conn.execute(
+                        "UPDATE validation_schedule_slots "
+                        "SET status='due', active_attempt_id=NULL, updated_at=? "
+                        "WHERE id=? AND active_attempt_id=?",
+                        (now_iso, slot_id, stale_attempt_id),
+                    )
+                conn.execute(
+                    "UPDATE validation_execution_leases "
+                    "SET active_attempt_id=NULL, updated_at=? "
+                    "WHERE resource_key=? AND lease_owner=? AND fencing_token=?",
+                    (now_iso, GLOBAL_LEASE_RESOURCE_KEY, owner, fencing_token),
+                )
+                conn.execute("COMMIT")
+                return {"ok": True, "recovered_attempt_id": stale_attempt_id, "slot_id": slot_id}
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            finally:
+                conn.close()
+
+
+# ── Attempt creation — now requires and verifies global-lease admission
+# BEFORE any attempt row exists, atomically with slot activation ──────────────
+
+def create_schedule_attempt(slot_id: int, trigger_type: str, owner: str, fencing_token: int, now: datetime) -> dict:
+    """Requires the caller to already hold the global lease. ONE
+    transaction on ONE connection:
+      1. lock the lease row, verify owner+fencing_token match the CURRENT
+         lease and it is unexpired at `now`;
+      2. verify the lease's active_attempt_id IS NULL — a second attempt
+         (scheduled OR manual) can never be admitted while one is already
+         bound, closing the gap where two different slots could each
+         reach 'running' before either caller held the lease;
+      3. lock the slot row, verify it is 'due' with no active attempt;
+      4. allocate the next attempt_number (slot lock makes this race-free
+         for this slot; the lease check above makes it globally
+         impossible for a second slot to reach this point concurrently
+         while admitted);
+      5. insert the attempt as 'claimed', horizon/universe copied from
+         the slot, lease_owner/lease_fencing_token recorded on it;
+      6. move the slot to 'running', set its active_attempt_id;
+      7. set the lease's active_attempt_id to the new attempt;
+      8. commit — or roll back everything on any failure."""
+    if trigger_type not in ("scheduler", "catchup"):
+        raise ValueError(f"create_schedule_attempt: trigger_type must be 'scheduler' or 'catchup', got {trigger_type!r}")
+    _require_utc(now, param="now")
+    now_iso = _iso(now)
+
+    with _db_lock:
+        if _USE_POSTGRES:
+            conn = _pg_conn()
+            try:
+                with conn.transaction():
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT lease_owner, fencing_token, expires_at, active_attempt_id "
+                            "FROM validation_execution_leases WHERE resource_key=%s FOR UPDATE",
+                            (GLOBAL_LEASE_RESOURCE_KEY,),
+                        )
+                        lease = _pg_dict_fetchone(cur)
+                        if (lease is None or lease["lease_owner"] != owner or lease["fencing_token"] != fencing_token
+                                or lease["expires_at"] is None or lease["expires_at"] <= now):
+                            return {"ok": False, "reason": "not_owner_or_expired_lease"}
+                        if lease["active_attempt_id"] is not None:
+                            return {"ok": False, "reason": "active_attempt_already_bound"}
+
+                        cur.execute(
+                            "SELECT id, horizon, universe, status, active_attempt_id "
+                            "FROM validation_schedule_slots WHERE id=%s FOR UPDATE",
+                            (slot_id,),
+                        )
+                        slot = _pg_dict_fetchone(cur)
+                        if slot is None:
+                            return {"ok": False, "reason": "slot_not_found"}
+                        if slot["status"] != "due" or slot["active_attempt_id"] is not None:
+                            return {"ok": False, "reason": "slot_not_claimable"}
+
+                        cur.execute(
+                            "SELECT COALESCE(MAX(attempt_number), 0) + 1 "
+                            "FROM validation_schedule_attempts WHERE slot_id=%s",
+                            (slot_id,),
+                        )
+                        next_number = cur.fetchone()[0]
+
+                        cur.execute(
+                            "INSERT INTO validation_schedule_attempts "
+                            "(slot_id, horizon, universe, attempt_number, trigger_type, status, "
+                            "lease_owner, lease_fencing_token, created_at, updated_at) "
+                            "VALUES (%s,%s,%s,%s,%s,'claimed',%s,%s,%s,%s) "
+                            f"RETURNING {_ATTEMPT_COLUMNS}",
+                            (slot_id, slot["horizon"], slot["universe"], next_number, trigger_type,
+                             owner, fencing_token, now, now),
+                        )
+                        attempt = _pg_dict_fetchone(cur)
+
+                        cur.execute(
+                            "UPDATE validation_schedule_slots "
+                            "SET status='running', active_attempt_id=%s, updated_at=%s WHERE id=%s",
+                            (attempt["id"], now, slot_id),
+                        )
+                        cur.execute(
+                            "UPDATE validation_execution_leases "
+                            "SET active_attempt_id=%s, updated_at=%s WHERE resource_key=%s",
+                            (attempt["id"], now, GLOBAL_LEASE_RESOURCE_KEY),
+                        )
+                        attempt["ok"] = True
+                        return attempt
+            finally:
+                conn.close()
+        else:
+            conn = _get_ledger_sqlite_conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                lease = conn.execute(
+                    "SELECT lease_owner, fencing_token, expires_at, active_attempt_id "
+                    "FROM validation_execution_leases WHERE resource_key=?",
+                    (GLOBAL_LEASE_RESOURCE_KEY,),
+                ).fetchone()
+                if (lease is None or lease["lease_owner"] != owner or lease["fencing_token"] != fencing_token
+                        or lease["expires_at"] is None or lease["expires_at"] <= now_iso):
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "not_owner_or_expired_lease"}
+                if lease["active_attempt_id"] is not None:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "active_attempt_already_bound"}
+
+                slot = conn.execute(
+                    "SELECT id, horizon, universe, status, active_attempt_id "
+                    "FROM validation_schedule_slots WHERE id=?",
+                    (slot_id,),
+                ).fetchone()
+                if slot is None:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "slot_not_found"}
+                if slot["status"] != "due" or slot["active_attempt_id"] is not None:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "slot_not_claimable"}
+
+                next_number = conn.execute(
+                    "SELECT COALESCE(MAX(attempt_number), 0) + 1 FROM validation_schedule_attempts WHERE slot_id=?",
+                    (slot_id,),
+                ).fetchone()[0]
+
+                cur = conn.execute(
+                    "INSERT INTO validation_schedule_attempts "
+                    "(slot_id, horizon, universe, attempt_number, trigger_type, status, "
+                    "lease_owner, lease_fencing_token, created_at, updated_at) "
+                    "VALUES (?,?,?,?,?,'claimed',?,?,?,?)",
+                    (slot_id, slot["horizon"], slot["universe"], next_number, trigger_type,
+                     owner, fencing_token, now_iso, now_iso),
+                )
+                attempt_id = cur.lastrowid
+
+                conn.execute(
+                    "UPDATE validation_schedule_slots "
+                    "SET status='running', active_attempt_id=?, updated_at=? WHERE id=?",
+                    (attempt_id, now_iso, slot_id),
+                )
+                conn.execute(
+                    "UPDATE validation_execution_leases SET active_attempt_id=?, updated_at=? WHERE resource_key=?",
+                    (attempt_id, now_iso, GLOBAL_LEASE_RESOURCE_KEY),
+                )
+                row = conn.execute(
+                    f"SELECT {_ATTEMPT_COLUMNS} FROM validation_schedule_attempts WHERE id=?", (attempt_id,)
+                ).fetchone()
+                conn.execute("COMMIT")
+                result = _ledger_row_to_dict(row)
+                result["ok"] = True
+                return result
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            finally:
+                conn.close()
+
+
+def create_manual_attempt(horizon: str, universe: str, owner: str, fencing_token: int, now: datetime) -> dict:
+    """Requires the caller to already hold the global lease — identical
+    admission gate to create_schedule_attempt, but never touches any
+    slot (slot_id is always NULL). No caller-supplied idempotency key is
+    accepted: a future integration's key must be server-derived from the
+    X-Secret-authenticated caller, never accepted verbatim from a
+    client/browser."""
+    _require_utc(now, param="now")
+    _require_valid_horizon(horizon)
+    _require_known_universe(universe)
+    now_iso = _iso(now)
+    with _db_lock:
+        if _USE_POSTGRES:
+            conn = _pg_conn()
+            try:
+                with conn.transaction():
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT lease_owner, fencing_token, expires_at, active_attempt_id "
+                            "FROM validation_execution_leases WHERE resource_key=%s FOR UPDATE",
+                            (GLOBAL_LEASE_RESOURCE_KEY,),
+                        )
+                        lease = _pg_dict_fetchone(cur)
+                        if (lease is None or lease["lease_owner"] != owner or lease["fencing_token"] != fencing_token
+                                or lease["expires_at"] is None or lease["expires_at"] <= now):
+                            return {"ok": False, "reason": "not_owner_or_expired_lease"}
+                        if lease["active_attempt_id"] is not None:
+                            return {"ok": False, "reason": "active_attempt_already_bound"}
+
+                        cur.execute(
+                            "INSERT INTO validation_schedule_attempts "
+                            "(slot_id, horizon, universe, attempt_number, trigger_type, status, "
+                            "lease_owner, lease_fencing_token, created_at, updated_at) "
+                            "VALUES (NULL,%s,%s,1,'manual','claimed',%s,%s,%s,%s) "
+                            f"RETURNING {_ATTEMPT_COLUMNS}",
+                            (horizon, universe, owner, fencing_token, now, now),
+                        )
+                        attempt = _pg_dict_fetchone(cur)
+                        cur.execute(
+                            "UPDATE validation_execution_leases "
+                            "SET active_attempt_id=%s, updated_at=%s WHERE resource_key=%s",
+                            (attempt["id"], now, GLOBAL_LEASE_RESOURCE_KEY),
+                        )
+                        attempt["ok"] = True
+                        return attempt
+            finally:
+                conn.close()
+        else:
+            conn = _get_ledger_sqlite_conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                lease = conn.execute(
+                    "SELECT lease_owner, fencing_token, expires_at, active_attempt_id "
+                    "FROM validation_execution_leases WHERE resource_key=?",
+                    (GLOBAL_LEASE_RESOURCE_KEY,),
+                ).fetchone()
+                if (lease is None or lease["lease_owner"] != owner or lease["fencing_token"] != fencing_token
+                        or lease["expires_at"] is None or lease["expires_at"] <= now_iso):
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "not_owner_or_expired_lease"}
+                if lease["active_attempt_id"] is not None:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "active_attempt_already_bound"}
+
+                cur = conn.execute(
+                    "INSERT INTO validation_schedule_attempts "
+                    "(slot_id, horizon, universe, attempt_number, trigger_type, status, "
+                    "lease_owner, lease_fencing_token, created_at, updated_at) "
+                    "VALUES (NULL,?,?,1,'manual','claimed',?,?,?,?)",
+                    (horizon, universe, owner, fencing_token, now_iso, now_iso),
+                )
+                attempt_id = cur.lastrowid
+                conn.execute(
+                    "UPDATE validation_execution_leases SET active_attempt_id=?, updated_at=? WHERE resource_key=?",
+                    (attempt_id, now_iso, GLOBAL_LEASE_RESOURCE_KEY),
+                )
+                row = conn.execute(
+                    f"SELECT {_ATTEMPT_COLUMNS} FROM validation_schedule_attempts WHERE id=?", (attempt_id,)
+                ).fetchone()
+                conn.execute("COMMIT")
+                result = _ledger_row_to_dict(row)
+                result["ok"] = True
+                return result
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            finally:
+                conn.close()
+
+
+# ── Compound attempt+slot(+lease) transitions — ONE transaction per operation ─
+
+def _compound_transition(attempt_id: int, owner: str, fencing_token: int, now: datetime, *,
+                          from_statuses: tuple[str, ...], to_status: str,
+                          new_slot_status_if_bound: str | None, clear_active_attempt: bool,
+                          clear_lease_binding: bool,
+                          attempt_extra_set_pg: str = "", attempt_extra_set_sq: str = "",
+                          attempt_extra_params_pg: tuple = (), attempt_extra_params_sq: tuple = ()) -> dict:
+    """Shared core for every attempt(+slot)(+lease) mutation. ONE
+    transaction on ONE connection, acquiring locks in the SAME global
+    order every ledger operation uses (see the module-level "Lock
+    ordering" note above `GLOBAL_LEASE_RESOURCE_KEY`):
+    lease -> attempt -> slot -> result (as applicable). Locking the lease
+    FIRST here — not the attempt, as an earlier revision did — is what
+    closes the AB-BA deadlock the second independent review found between
+    this function and recover_stale_active_attempt (which always locked
+    lease-then-attempt); both now agree on the same order, so no two
+    ledger transactions can ever hold locks in opposite sequence.
+      1. lock the lease row CURRENTLY held by (owner, fencing_token),
+         unexpired at `now`, and verify its active_attempt_id equals THIS
+         attempt;
+      2. lock and read the attempt row, verify its status is one of
+         `from_statuses`;
+      3. if bound to a slot, lock that slot and verify
+         slot.active_attempt_id == attempt_id;
+      4. update the attempt;
+      5. if bound and `new_slot_status_if_bound` given, update the slot
+         in the SAME transaction;
+      6. if `clear_lease_binding`, clear the lease's active_attempt_id
+         (guarded — only if it still equals this attempt_id) in the SAME
+         transaction, freeing the lease for the next admission;
+      7. commit — or roll back the WHOLE operation on any failure."""
+    _require_utc(now, param="now")
+    now_iso = _iso(now)
+    placeholders_sq = ",".join(["?"] * len(from_statuses))
+    placeholders_pg = ",".join(["%s"] * len(from_statuses))
+
+    with _db_lock:
+        if _USE_POSTGRES:
+            conn = _pg_conn()
+            try:
+                with conn.transaction():
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT active_attempt_id FROM validation_execution_leases "
+                            "WHERE resource_key=%s AND lease_owner=%s AND fencing_token=%s AND expires_at > %s "
+                            "FOR UPDATE",
+                            (GLOBAL_LEASE_RESOURCE_KEY, owner, fencing_token, now),
+                        )
+                        lease = _pg_dict_fetchone(cur)
+                        if lease is None or lease["active_attempt_id"] != attempt_id:
+                            return {"ok": False, "reason": "not_owner_or_expired_lease"}
+
+                        cur.execute(
+                            "SELECT id, slot_id, status FROM validation_schedule_attempts WHERE id=%s FOR UPDATE",
+                            (attempt_id,),
+                        )
+                        attempt = _pg_dict_fetchone(cur)
+                        if attempt is None:
+                            return {"ok": False, "reason": "attempt_not_found"}
+                        if attempt["status"] not in from_statuses:
+                            return {"ok": False, "reason": "illegal_transition"}
+
+                        slot_id = attempt["slot_id"]
+                        if slot_id is not None:
+                            cur.execute(
+                                "SELECT id, active_attempt_id FROM validation_schedule_slots WHERE id=%s FOR UPDATE",
+                                (slot_id,),
+                            )
+                            slot = _pg_dict_fetchone(cur)
+                            if slot is None or slot["active_attempt_id"] != attempt_id:
+                                return {"ok": False, "reason": "not_active_attempt_for_slot"}
+
+                        cur.execute(
+                            f"UPDATE validation_schedule_attempts "
+                            f"SET status=%s, updated_at=%s{attempt_extra_set_pg} WHERE id=%s",
+                            (to_status, now, *attempt_extra_params_pg, attempt_id),
+                        )
+
+                        if slot_id is not None and new_slot_status_if_bound is not None:
+                            new_active = None if clear_active_attempt else attempt_id
+                            cur.execute(
+                                "UPDATE validation_schedule_slots "
+                                "SET status=%s, active_attempt_id=%s, updated_at=%s WHERE id=%s",
+                                (new_slot_status_if_bound, new_active, now, slot_id),
+                            )
+                        elif slot_id is not None and clear_active_attempt:
+                            cur.execute(
+                                "UPDATE validation_schedule_slots SET active_attempt_id=NULL, updated_at=%s WHERE id=%s",
+                                (now, slot_id),
+                            )
+
+                        if clear_lease_binding:
+                            cur.execute(
+                                "UPDATE validation_execution_leases "
+                                "SET active_attempt_id=NULL, updated_at=%s "
+                                "WHERE resource_key=%s AND active_attempt_id=%s",
+                                (now, GLOBAL_LEASE_RESOURCE_KEY, attempt_id),
+                            )
+
+                        return {"ok": True, "id": attempt_id, "slot_id": slot_id}
+            finally:
+                conn.close()
+        else:
+            conn = _get_ledger_sqlite_conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                # Same lease -> attempt -> slot order as the PostgreSQL branch
+                # above, for consistency — SQLite's BEGIN IMMEDIATE already
+                # takes a whole-database write lock, so statement order here
+                # cannot itself deadlock, but keeping one documented order
+                # everywhere avoids this file ever becoming a second source
+                # of truth that silently drifts from the PostgreSQL path.
+                lease = conn.execute(
+                    "SELECT active_attempt_id FROM validation_execution_leases "
+                    "WHERE resource_key=? AND lease_owner=? AND fencing_token=? AND expires_at > ?",
+                    (GLOBAL_LEASE_RESOURCE_KEY, owner, fencing_token, now_iso),
+                ).fetchone()
+                if lease is None or lease["active_attempt_id"] != attempt_id:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "not_owner_or_expired_lease"}
+
+                attempt = conn.execute(
+                    "SELECT id, slot_id, status FROM validation_schedule_attempts WHERE id=?", (attempt_id,)
+                ).fetchone()
+                if attempt is None:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "attempt_not_found"}
+                if attempt["status"] not in from_statuses:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "illegal_transition"}
+
+                slot_id = attempt["slot_id"]
+                if slot_id is not None:
+                    slot = conn.execute(
+                        "SELECT id, active_attempt_id FROM validation_schedule_slots WHERE id=?", (slot_id,)
+                    ).fetchone()
+                    if slot is None or slot["active_attempt_id"] != attempt_id:
+                        conn.execute("ROLLBACK")
+                        return {"ok": False, "reason": "not_active_attempt_for_slot"}
+
+                conn.execute(
+                    f"UPDATE validation_schedule_attempts SET status=?, updated_at=?{attempt_extra_set_sq} WHERE id=?",
+                    (to_status, now_iso, *attempt_extra_params_sq, attempt_id),
+                )
+
+                if slot_id is not None and new_slot_status_if_bound is not None:
+                    new_active = None if clear_active_attempt else attempt_id
+                    conn.execute(
+                        "UPDATE validation_schedule_slots SET status=?, active_attempt_id=?, updated_at=? WHERE id=?",
+                        (new_slot_status_if_bound, new_active, now_iso, slot_id),
+                    )
+                elif slot_id is not None and clear_active_attempt:
+                    conn.execute(
+                        "UPDATE validation_schedule_slots SET active_attempt_id=NULL, updated_at=? WHERE id=?",
+                        (now_iso, slot_id),
+                    )
+
+                if clear_lease_binding:
+                    conn.execute(
+                        "UPDATE validation_execution_leases SET active_attempt_id=NULL, updated_at=? "
+                        "WHERE resource_key=? AND active_attempt_id=?",
+                        (now_iso, GLOBAL_LEASE_RESOURCE_KEY, attempt_id),
+                    )
+
+                conn.execute("COMMIT")
+                return {"ok": True, "id": attempt_id, "slot_id": slot_id}
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            finally:
+                conn.close()
+
+
+def mark_attempt_running(attempt_id: int, owner: str, fencing_token: int, now: datetime) -> dict:
+    """claimed -> running. Lease stays bound to this attempt (not
+    cleared) — it is still the one globally admitted attempt."""
+    return _compound_transition(
+        attempt_id, owner, fencing_token, now,
+        from_statuses=("claimed",), to_status="running",
+        new_slot_status_if_bound=None, clear_active_attempt=False, clear_lease_binding=False,
+        attempt_extra_set_pg=", started_at=COALESCE(started_at,%s), heartbeat_at=%s",
+        attempt_extra_set_sq=", started_at=COALESCE(started_at,?), heartbeat_at=?",
+        attempt_extra_params_pg=(now, now), attempt_extra_params_sq=(_iso(now), _iso(now)),
+    )
+
+
+def mark_attempt_failed_retryable(attempt_id: int, owner: str, fencing_token: int, now: datetime, *,
+                                   failure_category: str | None = None, failure_summary: str | None = None) -> dict:
+    """claimed/running -> failed; bound slot returns to 'due'; lease
+    binding is cleared, freeing global admission for the next attempt."""
+    return _compound_transition(
+        attempt_id, owner, fencing_token, now,
+        from_statuses=("claimed", "running"), to_status="failed",
+        new_slot_status_if_bound="due", clear_active_attempt=True, clear_lease_binding=True,
+        attempt_extra_set_pg=", completed_at=%s, failure_category=%s, failure_summary=%s",
+        attempt_extra_set_sq=", completed_at=?, failure_category=?, failure_summary=?",
+        attempt_extra_params_pg=(now, failure_category, failure_summary),
+        attempt_extra_params_sq=(_iso(now), failure_category, failure_summary),
+    )
+
+
+def mark_attempt_failed_terminal(attempt_id: int, owner: str, fencing_token: int, now: datetime, *,
+                                  failure_category: str | None = None, failure_summary: str | None = None) -> dict:
+    """claimed/running -> failed; bound slot moves to 'failed' (terminal,
+    non-retryable); lease binding cleared."""
+    return _compound_transition(
+        attempt_id, owner, fencing_token, now,
+        from_statuses=("claimed", "running"), to_status="failed",
+        new_slot_status_if_bound="failed", clear_active_attempt=True, clear_lease_binding=True,
+        attempt_extra_set_pg=", completed_at=%s, failure_category=%s, failure_summary=%s",
+        attempt_extra_set_sq=", completed_at=?, failure_category=?, failure_summary=?",
+        attempt_extra_params_pg=(now, failure_category, failure_summary),
+        attempt_extra_params_sq=(_iso(now), failure_category, failure_summary),
+    )
+
+
+def mark_attempt_abandoned_retry(attempt_id: int, owner: str, fencing_token: int, now: datetime, *,
+                                  failure_category: str | None = None, failure_summary: str | None = None) -> dict:
+    """claimed/running -> abandoned; bound slot returns to 'due'; lease
+    binding cleared."""
+    return _compound_transition(
+        attempt_id, owner, fencing_token, now,
+        from_statuses=("claimed", "running"), to_status="abandoned",
+        new_slot_status_if_bound="due", clear_active_attempt=True, clear_lease_binding=True,
+        attempt_extra_set_pg=", completed_at=%s, failure_category=%s, failure_summary=%s",
+        attempt_extra_set_sq=", completed_at=?, failure_category=?, failure_summary=?",
+        attempt_extra_params_pg=(now, failure_category, failure_summary),
+        attempt_extra_params_sq=(_iso(now), failure_category, failure_summary),
+    )
+
+
+def mark_attempt_abandoned_terminal(attempt_id: int, owner: str, fencing_token: int, now: datetime, *,
+                                     failure_category: str | None = None, failure_summary: str | None = None) -> dict:
+    """claimed/running -> abandoned; bound slot moves to 'abandoned'
+    (terminal); lease binding cleared."""
+    return _compound_transition(
+        attempt_id, owner, fencing_token, now,
+        from_statuses=("claimed", "running"), to_status="abandoned",
+        new_slot_status_if_bound="abandoned", clear_active_attempt=True, clear_lease_binding=True,
+        attempt_extra_set_pg=", completed_at=%s, failure_category=%s, failure_summary=%s",
+        attempt_extra_set_sq=", completed_at=?, failure_category=?, failure_summary=?",
+        attempt_extra_params_pg=(now, failure_category, failure_summary),
+        attempt_extra_params_sq=(_iso(now), failure_category, failure_summary),
+    )
+
+
+def complete_attempt_with_result(attempt_id: int, owner: str, fencing_token: int,
+                                  result_run_id: int, now: datetime) -> dict:
+    """running -> completed, attaching result_run_id; bound slot moves to
+    'completed'; lease binding cleared. Deliberately NOT built on the
+    shared _compound_transition core — completion has one more resource
+    to lock (val_runs) and one more invariant to enforce (one-to-one
+    result linkage) than any other transition, so it gets its own
+    self-contained transaction following the SAME documented lock order:
+    lease -> attempt -> slot -> result.
+      1. lock+verify the lease (current owner/token, unexpired,
+         active_attempt_id == this attempt);
+      2. lock+verify the attempt (status == 'running');
+      3. if bound to a slot, lock+verify it (active_attempt_id ==
+         this attempt);
+      4. lock the val_runs row and verify it exists and its
+         horizon/universe match this attempt's own — applies identically
+         to manual and scheduled attempts;
+      5. verify no OTHER attempt already has this result_run_id — safe to
+         check with a plain read here (not a second FOR UPDATE) because
+         step 4's lock on the val_runs row already serializes every other
+         completion attempting to claim that same result: a concurrent
+         completion for the same result_run_id would itself be blocked at
+         step 4 until this transaction commits or rolls back;
+      6. perform the atomic completion (attempt+slot+lease) in the same
+         transaction;
+      7. commit.
+    The named UNIQUE INDEX (idx_vsa_result_unique) remains as
+    database-level defense in depth — if it fires anyway (e.g. a future
+    code path bypasses this function), the violation is caught, the
+    transaction is confirmed rolled back, and it maps ONLY to
+    'result_already_linked'; any other integrity error propagates
+    unchanged as a distinct internal failure, never mislabeled."""
+    _require_utc(now, param="now")
+    now_iso = _iso(now)
+
+    with _db_lock:
+        if _USE_POSTGRES:
+            conn = _pg_conn()
+            try:
+                import psycopg.errors
+
+                # `with conn.transaction():` only ROLLBACKs when an exception
+                # escapes the block — catching the UniqueViolation and simply
+                # `return`ing would exit the block normally after the
+                # transaction was already poisoned by the failed UPDATE at
+                # the PostgreSQL protocol level, relying on ambiguous
+                # commit-on-aborted-transaction semantics. Instead, this
+                # sentinel is raised to force the block to exit via its
+                # exception path (a guaranteed, explicit ROLLBACK) and is
+                # caught OUTSIDE the transaction block, after rollback has
+                # already completed.
+                class _ResultAlreadyLinked(Exception):
+                    pass
+
+                try:
+                    with conn.transaction():
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                "SELECT active_attempt_id FROM validation_execution_leases "
+                                "WHERE resource_key=%s AND lease_owner=%s AND fencing_token=%s AND expires_at > %s "
+                                "FOR UPDATE",
+                                (GLOBAL_LEASE_RESOURCE_KEY, owner, fencing_token, now),
+                            )
+                            lease = _pg_dict_fetchone(cur)
+                            if lease is None or lease["active_attempt_id"] != attempt_id:
+                                return {"ok": False, "reason": "not_owner_or_expired_lease"}
+
+                            cur.execute(
+                                "SELECT id, slot_id, horizon, universe, status "
+                                "FROM validation_schedule_attempts WHERE id=%s FOR UPDATE",
+                                (attempt_id,),
+                            )
+                            attempt = _pg_dict_fetchone(cur)
+                            if attempt is None:
+                                return {"ok": False, "reason": "attempt_not_found"}
+                            if attempt["status"] != "running":
+                                return {"ok": False, "reason": "illegal_transition"}
+
+                            slot_id = attempt["slot_id"]
+                            if slot_id is not None:
+                                cur.execute(
+                                    "SELECT id, active_attempt_id FROM validation_schedule_slots WHERE id=%s FOR UPDATE",
+                                    (slot_id,),
+                                )
+                                slot = _pg_dict_fetchone(cur)
+                                if slot is None or slot["active_attempt_id"] != attempt_id:
+                                    return {"ok": False, "reason": "not_active_attempt_for_slot"}
+
+                            cur.execute(
+                                "SELECT horizon, universe FROM val_runs WHERE id=%s FOR UPDATE",
+                                (result_run_id,),
+                            )
+                            run_row = _pg_dict_fetchone(cur)
+                            if run_row is None:
+                                return {"ok": False, "reason": "result_run_id_not_found"}
+                            if run_row["horizon"] != attempt["horizon"] or run_row["universe"] != attempt["universe"]:
+                                return {"ok": False, "reason": "result_identity_mismatch"}
+
+                            cur.execute(
+                                "SELECT id FROM validation_schedule_attempts WHERE result_run_id=%s",
+                                (result_run_id,),
+                            )
+                            existing = cur.fetchone()
+                            if existing is not None and existing[0] != attempt_id:
+                                return {"ok": False, "reason": "result_already_linked"}
+
+                            try:
+                                cur.execute(
+                                    "UPDATE validation_schedule_attempts "
+                                    "SET status='completed', completed_at=%s, result_run_id=%s, updated_at=%s "
+                                    "WHERE id=%s",
+                                    (now, result_run_id, now, attempt_id),
+                                )
+                            except psycopg.errors.UniqueViolation as e:
+                                if "idx_vsa_result_unique" in str(e):
+                                    raise _ResultAlreadyLinked() from e
+                                raise
+
+                            if slot_id is not None:
+                                cur.execute(
+                                    "UPDATE validation_schedule_slots "
+                                    "SET status='completed', active_attempt_id=NULL, updated_at=%s WHERE id=%s",
+                                    (now, slot_id),
+                                )
+                            cur.execute(
+                                "UPDATE validation_execution_leases "
+                                "SET active_attempt_id=NULL, updated_at=%s "
+                                "WHERE resource_key=%s AND active_attempt_id=%s",
+                                (now, GLOBAL_LEASE_RESOURCE_KEY, attempt_id),
+                            )
+                            return {"ok": True, "id": attempt_id, "slot_id": slot_id}
+                except _ResultAlreadyLinked:
+                    return {"ok": False, "reason": "result_already_linked"}
+            finally:
+                conn.close()
+        else:
+            conn = _get_ledger_sqlite_conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                lease = conn.execute(
+                    "SELECT active_attempt_id FROM validation_execution_leases "
+                    "WHERE resource_key=? AND lease_owner=? AND fencing_token=? AND expires_at > ?",
+                    (GLOBAL_LEASE_RESOURCE_KEY, owner, fencing_token, now_iso),
+                ).fetchone()
+                if lease is None or lease["active_attempt_id"] != attempt_id:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "not_owner_or_expired_lease"}
+
+                attempt = conn.execute(
+                    "SELECT id, slot_id, horizon, universe, status "
+                    "FROM validation_schedule_attempts WHERE id=?", (attempt_id,)
+                ).fetchone()
+                if attempt is None:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "attempt_not_found"}
+                if attempt["status"] != "running":
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "illegal_transition"}
+
+                slot_id = attempt["slot_id"]
+                if slot_id is not None:
+                    slot = conn.execute(
+                        "SELECT id, active_attempt_id FROM validation_schedule_slots WHERE id=?", (slot_id,)
+                    ).fetchone()
+                    if slot is None or slot["active_attempt_id"] != attempt_id:
+                        conn.execute("ROLLBACK")
+                        return {"ok": False, "reason": "not_active_attempt_for_slot"}
+
+                run_row = conn.execute(
+                    "SELECT horizon, universe FROM val_runs WHERE id=?", (result_run_id,)
+                ).fetchone()
+                if run_row is None:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "result_run_id_not_found"}
+                if run_row["horizon"] != attempt["horizon"] or run_row["universe"] != attempt["universe"]:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "result_identity_mismatch"}
+
+                existing = conn.execute(
+                    "SELECT id FROM validation_schedule_attempts WHERE result_run_id=?", (result_run_id,)
+                ).fetchone()
+                if existing is not None and existing["id"] != attempt_id:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "result_already_linked"}
+
+                try:
+                    conn.execute(
+                        "UPDATE validation_schedule_attempts "
+                        "SET status='completed', completed_at=?, result_run_id=?, updated_at=? WHERE id=?",
+                        (now_iso, result_run_id, now_iso, attempt_id),
+                    )
+                except sqlite3.IntegrityError as e:
+                    if "idx_vsa_result_unique" in str(e) or "UNIQUE constraint failed: validation_schedule_attempts.result_run_id" in str(e):
+                        conn.execute("ROLLBACK")
+                        return {"ok": False, "reason": "result_already_linked"}
+                    raise  # unexpected integrity error — let the outer handler roll back once and propagate it distinctly
+
+                if slot_id is not None:
+                    conn.execute(
+                        "UPDATE validation_schedule_slots "
+                        "SET status='completed', active_attempt_id=NULL, updated_at=? WHERE id=?",
+                        (now_iso, slot_id),
+                    )
+                conn.execute(
+                    "UPDATE validation_execution_leases "
+                    "SET active_attempt_id=NULL, updated_at=? WHERE resource_key=? AND active_attempt_id=?",
+                    (now_iso, GLOBAL_LEASE_RESOURCE_KEY, attempt_id),
+                )
+                conn.execute("COMMIT")
+                return {"ok": True, "id": attempt_id, "slot_id": slot_id}
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            finally:
+                conn.close()
+
+
+class _FencedOutDuringComputation(Exception):
+    """Raised internally by run_validation() when its optional _fence_check
+    callback reports the caller's lease/fencing token has been superseded
+    mid-run. Stops the stock-backtest loop as soon as safely possible and
+    guarantees no val_runs/val_signals persistence is ever attempted for
+    this computation — persistence only happens via the atomic fenced
+    primitive below, which independently re-verifies fencing anyway, but
+    a computation known to be stale should not even reach that call."""
+
+
+class _ProviderStallDuringComputation(Exception):
+    """V-USCAP2 — raised by run_validation() when RUN_STALL_TIMEOUT_SECONDS
+    of inactivity is detected in the per-stock ThreadPoolExecutor stage.
+    Only raised AFTER every already-running worker has actually finished
+    (ThreadPoolExecutor.shutdown(wait=True, cancel_futures=True) — never
+    wait=False, which would abandon a live thread Python cannot forcibly
+    stop) — so by the time this propagates, zero provider workers remain
+    active. No metrics are computed and no val_runs/val_signals row is
+    ever written for this computation; it is caught by the same generic
+    `except Exception:` handler execute_and_complete_admitted_attempt
+    already uses for any run_validation failure, so the attempt is marked
+    failed_retryable and the lease released through the existing,
+    unmodified contract — never a special case.
+
+    Honest limitation: this is an INACTIVITY detector, not a hard
+    wall-clock deadline, and it does not kill threads (Python cannot).
+    If the underlying yfinance call never returns at all despite its own
+    request-level timeout, run_validation() ITSELF stays blocked waiting
+    for that worker to finish — it does not abandon it, so no zombie
+    thread is ever created within this function's own scope. As of
+    V-USACT1-B, this is no longer the end of the story for the caller:
+    execute_and_complete_admitted_attempt() runs the ENTIRE call to
+    run_validation() inside a child OS process it can genuinely kill on
+    MAX_RUN_DURATION_SECONDS, precisely because this function's own
+    inactivity detector cannot bound a truly hung, never-returning
+    provider call by itself — see _run_validation_in_subprocess."""
+
+
+class _RunDeadlineExceeded(Exception):
+    """V-USACT1-B — raised by _run_validation_in_subprocess() when
+    MAX_RUN_DURATION_SECONDS (or a caller-supplied override) elapses
+    before the child process reports a result. By the time this is
+    raised, the child process has already been terminated (SIGTERM, then
+    SIGKILL if still alive after CHILD_KILL_GRACE_SECONDS) and joined —
+    zero provider workers of any kind remain alive anywhere. No val_runs/
+    val_signals row is ever written for this computation; caught by the
+    same generic pattern _ProviderStallDuringComputation and
+    _FencedOutDuringComputation already use — a distinct, explicit
+    failure_category (RUN_DEADLINE_EXCEEDED) rather than being folded
+    into the generic RUN_EXCEPTION bucket, so an operator can distinguish
+    "the provider was slow beyond the accepted operational window" from
+    an ordinary code-level exception."""
+
+
+class _ChildProcessFailure(Exception):
+    """V-USACT1-B — raised by _run_validation_in_subprocess() when the
+    child process exits without ever reporting a result/error message
+    (a crash, an unpicklable exception escaping the child's own try/
+    except, or the process being killed externally), or sends a
+    malformed/unrecognized IPC message. Fails closed exactly like any
+    other run_validation() failure — falls through to the existing
+    generic `except Exception:` handler in execute_and_complete_
+    admitted_attempt, which marks the attempt failed_retryable with
+    failure_category=RUN_EXCEPTION and releases the lease through the
+    existing, unmodified contract. Never re-raises or logs the child's
+    raw exception object itself — only a bounded, sanitized string."""
+
+
+def complete_running_attempt_with_computed_result(
+    attempt_id: int, owner: str, fencing_token: int, *,
+    horizon: str, universe: str, run_at: str, n_stocks: int, n_signals: int,
+    summary_json: str, signal_rows: list, now: datetime,
+) -> dict:
+    """V-SCHED1C1 correction — the ONE atomic fenced primitive that turns a
+    computed-but-not-yet-persisted validation result into a durable,
+    linked, completed attempt. Unlike the legacy run_validation() persist
+    path (kept only for direct/legacy callers — see _persist=False below),
+    this function performs the val_runs/val_signals INSERT itself, inside
+    the SAME transaction as the fencing check and the attempt/slot/lease
+    transition, following the documented lock order lease -> attempt ->
+    slot -> result:
+      1-5. lock+verify the lease (owner, token, unexpired, active_attempt_id
+           == this attempt);
+      6-8. lock+verify the attempt (status == 'running') and, if bound,
+           its slot (active_attempt_id == this attempt);
+      9-10. insert the val_runs row and its val_signals rows;
+      11-15. link result_run_id, complete the attempt, complete the slot,
+             clear slot/lease active-attempt bindings;
+      16. commit once.
+    Any failure at any step rolls back the WHOLE transaction — the
+    val_runs/val_signals rows never survive a fencing/ownership failure,
+    so a stale/fenced-out worker can never create an orphan result row or
+    become the publicly-selected latest result."""
+    _require_utc(now, param="now")
+    now_iso = _iso(now)
+
+    with _db_lock:
+        if _USE_POSTGRES:
+            conn = _pg_conn()
+            try:
+                with conn.transaction():
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT active_attempt_id FROM validation_execution_leases "
+                            "WHERE resource_key=%s AND lease_owner=%s AND fencing_token=%s AND expires_at > %s "
+                            "FOR UPDATE",
+                            (GLOBAL_LEASE_RESOURCE_KEY, owner, fencing_token, now),
+                        )
+                        lease = _pg_dict_fetchone(cur)
+                        if lease is None or lease["active_attempt_id"] != attempt_id:
+                            return {"ok": False, "reason": "not_owner_or_expired_lease"}
+
+                        cur.execute(
+                            "SELECT id, slot_id, horizon, universe, status "
+                            "FROM validation_schedule_attempts WHERE id=%s FOR UPDATE",
+                            (attempt_id,),
+                        )
+                        attempt = _pg_dict_fetchone(cur)
+                        if attempt is None:
+                            return {"ok": False, "reason": "attempt_not_found"}
+                        if attempt["status"] != "running":
+                            return {"ok": False, "reason": "illegal_transition"}
+                        if attempt["horizon"] != horizon or attempt["universe"] != universe:
+                            return {"ok": False, "reason": "result_identity_mismatch"}
+
+                        slot_id = attempt["slot_id"]
+                        if slot_id is not None:
+                            cur.execute(
+                                "SELECT id, active_attempt_id FROM validation_schedule_slots WHERE id=%s FOR UPDATE",
+                                (slot_id,),
+                            )
+                            slot = _pg_dict_fetchone(cur)
+                            if slot is None or slot["active_attempt_id"] != attempt_id:
+                                return {"ok": False, "reason": "not_active_attempt_for_slot"}
+
+                        cur.execute(
+                            "INSERT INTO val_runs (run_at, horizon, n_stocks, n_signals, summary, universe) "
+                            "VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
+                            (run_at, horizon, n_stocks, n_signals, summary_json, universe),
+                        )
+                        result_run_id = cur.fetchone()[0]
+                        if signal_rows:
+                            cur.executemany(
+                                """INSERT INTO val_signals
+                                   (run_id, symbol, horizon, signal_date, composite_score,
+                                    tech_score, rs_score, obv_score, mfi_score,
+                                    predicted, fwd_return_pct, nifty_fwd_ret_pct, alpha_pct,
+                                    actual_direction, correct)
+                                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                                [(result_run_id,) + r for r in signal_rows]
+                            )
+
+                        cur.execute(
+                            "UPDATE validation_schedule_attempts "
+                            "SET status='completed', completed_at=%s, result_run_id=%s, updated_at=%s "
+                            "WHERE id=%s",
+                            (now, result_run_id, now, attempt_id),
+                        )
+                        if slot_id is not None:
+                            cur.execute(
+                                "UPDATE validation_schedule_slots "
+                                "SET status='completed', active_attempt_id=NULL, updated_at=%s WHERE id=%s",
+                                (now, slot_id),
+                            )
+                        cur.execute(
+                            "UPDATE validation_execution_leases "
+                            "SET active_attempt_id=NULL, updated_at=%s "
+                            "WHERE resource_key=%s AND active_attempt_id=%s",
+                            (now, GLOBAL_LEASE_RESOURCE_KEY, attempt_id),
+                        )
+                        return {"ok": True, "id": attempt_id, "slot_id": slot_id, "run_id": result_run_id}
+            finally:
+                conn.close()
+        else:
+            conn = _get_ledger_sqlite_conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                lease = conn.execute(
+                    "SELECT active_attempt_id FROM validation_execution_leases "
+                    "WHERE resource_key=? AND lease_owner=? AND fencing_token=? AND expires_at > ?",
+                    (GLOBAL_LEASE_RESOURCE_KEY, owner, fencing_token, now_iso),
+                ).fetchone()
+                if lease is None or lease["active_attempt_id"] != attempt_id:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "not_owner_or_expired_lease"}
+
+                attempt = conn.execute(
+                    "SELECT id, slot_id, horizon, universe, status "
+                    "FROM validation_schedule_attempts WHERE id=?", (attempt_id,)
+                ).fetchone()
+                if attempt is None:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "attempt_not_found"}
+                if attempt["status"] != "running":
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "illegal_transition"}
+                if attempt["horizon"] != horizon or attempt["universe"] != universe:
+                    conn.execute("ROLLBACK")
+                    return {"ok": False, "reason": "result_identity_mismatch"}
+
+                slot_id = attempt["slot_id"]
+                if slot_id is not None:
+                    slot = conn.execute(
+                        "SELECT id, active_attempt_id FROM validation_schedule_slots WHERE id=?", (slot_id,)
+                    ).fetchone()
+                    if slot is None or slot["active_attempt_id"] != attempt_id:
+                        conn.execute("ROLLBACK")
+                        return {"ok": False, "reason": "not_active_attempt_for_slot"}
+
+                cur = conn.execute(
+                    "INSERT INTO val_runs (run_at, horizon, n_stocks, n_signals, summary, universe) VALUES (?,?,?,?,?,?)",
+                    (run_at, horizon, n_stocks, n_signals, summary_json, universe),
+                )
+                result_run_id = cur.lastrowid
+                if signal_rows:
+                    conn.executemany(
+                        """INSERT INTO val_signals
+                           (run_id, symbol, horizon, signal_date, composite_score,
+                            tech_score, rs_score, obv_score, mfi_score,
+                            predicted, fwd_return_pct, nifty_fwd_ret_pct, alpha_pct,
+                            actual_direction, correct)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        [(result_run_id,) + r for r in signal_rows]
+                    )
+
+                conn.execute(
+                    "UPDATE validation_schedule_attempts "
+                    "SET status='completed', completed_at=?, result_run_id=?, updated_at=? WHERE id=?",
+                    (now_iso, result_run_id, now_iso, attempt_id),
+                )
+                if slot_id is not None:
+                    conn.execute(
+                        "UPDATE validation_schedule_slots "
+                        "SET status='completed', active_attempt_id=NULL, updated_at=? WHERE id=?",
+                        (now_iso, slot_id),
+                    )
+                conn.execute(
+                    "UPDATE validation_execution_leases "
+                    "SET active_attempt_id=NULL, updated_at=? WHERE resource_key=? AND active_attempt_id=?",
+                    (now_iso, GLOBAL_LEASE_RESOURCE_KEY, attempt_id),
+                )
+                conn.execute("COMMIT")
+                return {"ok": True, "id": attempt_id, "slot_id": slot_id, "run_id": result_run_id}
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            finally:
+                conn.close()
+
+
+# ── V-SCHED1C1 — shared execution-admission orchestration ─────────────────────
+# The single internal path used by the scheduler, catch-up, and the
+# authenticated manual trigger to run validation through the V-SCHED1B
+# durable ledger. No caller maintains separate admission logic — main.py's
+# scheduler/catch-up and api/routers/validation.py's /run route both call
+# these functions rather than run_validation() directly.
+#
+# Split into two phases so the manual HTTP route can synchronously attempt
+# admission (fast: lease + attempt creation + running transition) before
+# ever reporting acceptance to the caller, then hand off only the
+# potentially long-running actual validation execution to a background
+# task — never the reverse.
+
+def admit_validation_attempt(horizon: str, universe: str, trigger_type: str, owner: str, *,
+                              slot_id: int | None = None, scheduled_slot: datetime | None = None,
+                              schedule_version: str = "v1", now: datetime | None = None,
+                              lease_duration_seconds: int = 600) -> dict:
+    """Phase 1 — fast and synchronous. Never executes the actual validation
+    run. In order:
+      1. acquire the global execution lease for `owner`;
+      2. if the lease was reclaimed from a stale prior holder
+         (recovery_required), recover it via the fenced V-SCHED1B primitive
+         before proceeding — fail closed (release and reject) if recovery
+         itself fails;
+      3. for trigger_type in (scheduler, catchup): resolve/create the
+         canonical scheduled slot (unless slot_id already given) and create
+         a scheduled attempt bound to it; for trigger_type manual: create an
+         unbound (slot_id=NULL) manual attempt;
+      4. mark the attempt running.
+    Returns {"ok": True, "attempt_id", "fencing_token", "owner"} or
+    {"ok": False, "reason": <code>} — a caller must never report acceptance
+    on a False result."""
+    if trigger_type not in ("scheduler", "catchup", "manual"):
+        raise ValueError(f"admit_validation_attempt: trigger_type must be scheduler/catchup/manual, got {trigger_type!r}")
+    if now is None:
+        now = datetime.now(timezone.utc)
+    now = _require_utc(now, param="now")
+
+    lease = acquire_validation_execution_lease(owner=owner, now=now, lease_duration_seconds=lease_duration_seconds)
+    if not lease.get("ok"):
+        return {"ok": False, "reason": lease.get("reason", "already_leased")}
+
+    fencing_token = lease["fencing_token"]
+
+    if lease.get("recovery_required"):
+        recovery = recover_stale_active_attempt(owner=owner, fencing_token=fencing_token, now=now)
+        if not recovery.get("ok"):
+            # Fail closed — do not admit a new attempt while a stale
+            # binding could not be cleanly resolved. Release what we hold
+            # (nothing is bound to this owner yet) so a future caller can retry.
+            release_validation_execution_lease(owner=owner, fencing_token=fencing_token, now=now)
+            return {"ok": False, "reason": f"recovery_failed:{recovery.get('reason', 'unknown')}"}
+
+    if trigger_type in ("scheduler", "catchup"):
+        if slot_id is None:
+            if scheduled_slot is None:
+                release_validation_execution_lease(owner=owner, fencing_token=fencing_token, now=now)
+                return {"ok": False, "reason": "missing_scheduled_slot"}
+            slot = get_or_create_schedule_slot(
+                horizon=horizon, universe=universe, scheduled_slot=scheduled_slot,
+                schedule_version=schedule_version, now=now,
+            )
+            slot_id = slot["id"]
+        attempt = create_schedule_attempt(
+            slot_id=slot_id, trigger_type=trigger_type, owner=owner,
+            fencing_token=fencing_token, now=now,
+        )
+    else:
+        attempt = create_manual_attempt(horizon=horizon, universe=universe, owner=owner,
+                                         fencing_token=fencing_token, now=now)
+
+    if not attempt.get("ok"):
+        release_validation_execution_lease(owner=owner, fencing_token=fencing_token, now=now)
+        return {"ok": False, "reason": attempt.get("reason", "attempt_creation_failed")}
+
+    attempt_id = attempt["id"]
+    running = mark_attempt_running(attempt_id, owner=owner, fencing_token=fencing_token, now=now)
+    if not running.get("ok"):
+        # Should be unreachable (we just created this attempt under this
+        # exact lease), but fail closed rather than silently proceeding —
+        # abandon the attempt so it can't be left stuck claimed.
+        mark_attempt_abandoned_terminal(attempt_id, owner=owner, fencing_token=fencing_token, now=now,
+                                         failure_category="ADMISSION_RACE",
+                                         failure_summary="mark_attempt_running failed immediately after creation")
+        return {"ok": False, "reason": "mark_running_failed"}
+
+    return {"ok": True, "attempt_id": attempt_id, "fencing_token": fencing_token, "owner": owner}
+
+
+# ── V-USACT1-B — killable process-boundary containment ────────────────────
+#
+# WHY a thread-only deadline is not an acceptable correction: Python
+# cannot forcibly stop a running thread. The existing per-stock
+# ThreadPoolExecutor stall/drain path (RUN_STALL_TIMEOUT_SECONDS, V-USCAP2/
+# V-USCAP4/V-USCAP6) is provably safe against CORRUPTION — it never
+# returns, releases the lease, or persists anything while a provider
+# worker thread might still be alive — but that same safety property is
+# exactly why it cannot provide a wall-clock GUARANTEE: if a provider
+# call never returns at all, the drain loop's own `wait()` calls simply
+# never complete either, and adding a "MAX_RUN_DURATION_SECONDS" check
+# inside that same thread-based loop would force an impossible choice
+# between (a) giving up and abandoning a live, uncooperative thread
+# forever (the exact V-USCAP1 defect this whole engagement started by
+# fixing), or (b) still waiting for it regardless, in which case the
+# "deadline" was never real. Killing an OS PROCESS, by contrast,
+# terminates every thread inside it unconditionally at the OS level —
+# this is genuinely the only mechanism available that can enforce a hard
+# ceiling regardless of what the provider call is doing.
+
+_PROGRESS_QUEUE_MAXSIZE = 200  # bounded but generous — see _validation_child_worker
+
+
+def _validation_child_worker(result_queue, horizon: str, universe: str,
+                              max_workers: int, trigger_type: str) -> None:
+    """Runs ENTIRELY inside a child OS process (spawned via
+    multiprocessing's "spawn" context in production — never "fork" — so
+    the child never inherits the parent's live DB connections, threads,
+    or locks; it starts as a fresh interpreter that only imports what
+    this module needs). `_persist=False` is hardcoded here, not a
+    parameter this function exposes to any caller — there is
+    structurally no way for this child to ever write to val_runs/
+    val_signals. It also never receives a lease owner, fencing token, or
+    any other credential capable of calling complete_running_attempt_
+    with_computed_result — even a fully successful child can only ever
+    report a computed payload back to the PARENT via this bounded queue.
+
+    V-USACT1-B-C1 — progress relay: `progress_callback` is wired to push
+    a small, bounded, non-blocking "progress" message on every genuine
+    per-symbol resolution (success or exception alike — both are
+    forward progress, never a hang). `put_nowait` + drop-on-Full means a
+    slow-draining parent can never make this child block — coalescing/
+    dropping intermediate progress under backpressure is an explicitly
+    accepted tradeoff, never a correctness concern (only the terminal
+    result/error message matters for persistence). The terminal message
+    always carries `completed_at_utc` — a wall-clock timestamp used only
+    for reporting/persistence/logging, never for the deadline-eligibility
+    decision itself. Eligibility is determined exclusively by the PARENT,
+    exclusively via its own time.monotonic(): the instant the parent
+    dequeues this terminal message it compares that receipt time against
+    its own monotonic deadline (see _run_validation_in_subprocess) —
+    monotonic clocks are never comparable across two separate OS
+    processes, so nothing timestamp-based from the child is ever trusted
+    for that decision.
+
+    Every exit path puts exactly one terminal message (`result` or
+    `error`) — the entire terminal IPC contract — as a plain dict of
+    already-JSON-safe values, never a raw exception object, provider
+    response body, secret, or connection string."""
+    def _progress_relay(done, total):
+        try:
+            result_queue.put_nowait({
+                "type": "progress", "done": done, "total": total,
+            })
+        except _queue_module.Full:
+            pass  # coalesce/drop under backpressure — never block the child
+
+    try:
+        metrics = run_validation(
+            horizon=horizon, universe=universe, max_workers=max_workers,
+            trigger_type=trigger_type, _persist=False,
+            progress_callback=_progress_relay,
+        )
+        completed_at_utc = datetime.now(timezone.utc).isoformat()
+        payload = metrics.get("_persist_payload")
+        if payload is None:
+            result_queue.put({
+                "type": "error", "category": "NO_RESULT_RUN_ID",
+                "message": (str(metrics.get("error"))[:200] if metrics.get("error") else None),
+                "completed_at_utc": completed_at_utc,
+            })
+            return
+        result_queue.put({"type": "result", "payload": payload, "completed_at_utc": completed_at_utc})
+    except Exception as e:
+        # Never forward the raw exception object — it may not even be
+        # picklable (e.g. some provider-library exception types embed
+        # live connection objects), and could contain a raw provider
+        # response body. Only a bounded, already-sanitized public string.
+        result_queue.put({
+            "type": "error",
+            "category": type(e).__name__,
+            "message": safe_error_message(
+                log, "validation.child_worker", e, "Validation computation failed."
+            )[:200],
+            "completed_at_utc": datetime.now(timezone.utc).isoformat(),
+        })
+
+
+def _terminate_child_process(process) -> bool:
+    """Escalating, fully timeout-bounded IMMEDIATE shutdown: SIGTERM, wait
+    up to CHILD_KILL_GRACE_SECONDS, SIGKILL if still alive, wait up to
+    CHILD_KILL_GRACE_SECONDS again. Used by the fencing/inactivity/
+    deadline paths, which already know the run must be killed NOW — never
+    waits for a spontaneous exit first (see _reap_after_terminal_message
+    for the separate success-path sequence, which does). Never blocks
+    indefinitely on a child that refuses to exit — by the time this
+    returns, the child is either confirmed dead or SIGKILL has been sent
+    (which the OS cannot ignore, unlike SIGTERM). This function's ONLY job
+    is killing and reaping the child — it never reads the result queue
+    and never extends how long a computation is allowed to have taken.
+    Returns True iff the child is provably dead by the time this returns."""
+    if not process.is_alive():
+        return True
+    process.terminate()
+    process.join(timeout=CHILD_KILL_GRACE_SECONDS)
+    if process.is_alive():
+        process.kill()
+        process.join(timeout=CHILD_KILL_GRACE_SECONDS)
+    return not process.is_alive()
+
+
+def _reap_after_terminal_message(process):
+    """V-USACT1-B-C2 — called on EVERY terminal path where the child has
+    already put a `result`/`error` message on the queue, including
+    apparent success. A terminal IPC message alone is never proof the
+    child has actually exited, let alone exited cleanly — this function
+    is the sole source of that proof.
+
+    Sequence: bounded NORMAL join first (the ordinary case — the child
+    simply returns and the interpreter tears down right after its last
+    queue.put()); only if that's not enough does it escalate exactly like
+    _terminate_child_process (SIGTERM → bounded join → SIGKILL → bounded
+    join). Never blocks indefinitely.
+
+    Returns (proven_dead: bool, clean_exit: bool, exitcode: int | None).
+    `clean_exit` is True only if the child was already dead, or exited on
+    its own within the first bounded join, WITH exitcode 0 — any
+    escalation (terminate/kill) or any non-zero exitcode disqualifies the
+    exit as "clean", per the accepted contract: a successful result is
+    persistable only after an on-time terminal message AND a clean child
+    exit; a child requiring forced termination after claiming success, or
+    that exited abnormally, produces no persisted result even though it
+    reported one."""
+    if not process.is_alive():
+        return True, process.exitcode == 0, process.exitcode
+    process.join(timeout=CHILD_KILL_GRACE_SECONDS)
+    if not process.is_alive():
+        return True, process.exitcode == 0, process.exitcode
+    # Did not exit spontaneously within the normal join grace — escalate.
+    # Any escalation past this point permanently disqualifies "clean".
+    process.terminate()
+    process.join(timeout=CHILD_KILL_GRACE_SECONDS)
+    if process.is_alive():
+        process.kill()
+        process.join(timeout=CHILD_KILL_GRACE_SECONDS)
+    return (not process.is_alive()), False, process.exitcode
+
+
+def _handle_child_message(msg) -> dict:
+    """Translates one validated terminal IPC message into the same shape
+    execute_and_complete_admitted_attempt already expects from a direct
+    run_validation() call — `{"_persist_payload": ...}`. Any structurally
+    unrecognized message fails closed via _ChildProcessFailure, exactly
+    like a child crash."""
+    if not isinstance(msg, dict) or "type" not in msg:
+        raise _ChildProcessFailure("validation child process sent a malformed IPC message")
+    if msg["type"] == "result":
+        payload = msg.get("payload")
+        if not isinstance(payload, dict):
+            raise _ChildProcessFailure("validation child process sent a malformed result payload")
+        return {"_persist_payload": payload}
+    if msg["type"] == "error":
+        if msg.get("category") == "NO_RESULT_RUN_ID":
+            return {"_persist_payload": None, "error": msg.get("message")}
+        raise _ChildProcessFailure(msg.get("message") or "validation child process reported an error")
+    raise _ChildProcessFailure("validation child process sent an unrecognized IPC message type")
+
+
+_UNIVERSE_SIZE = {"nifty100": None, "midcap": None, "us": None}  # populated lazily below
+
+
+def _universe_total_symbols(universe: str) -> int:
+    mapping = {"nifty100": "NIFTY_100", "midcap": "NSE_MIDCAP", "us": "US_BASKET"}
+    name = mapping.get(universe)
+    if name is None:
+        return 0
+    return len(globals().get(name, []))
+
+
+def _seed_run_status(*, horizon: str, universe: str, trigger_type: str, now_iso: str) -> None:
+    """V-USACT1-B-C1 — the parent seeds the SAME authoritative _run_status
+    a direct in-process run_validation() call used to populate itself,
+    before the child (which mutates only its own, invisible copy) even
+    starts. Total is computed here from the same public universe
+    constants run_validation() itself uses — accurate immediately, not
+    only after the first progress message."""
+    with _status_lock:
+        _run_status.clear()
+        _run_status.update({
+            "running": True,
+            "progress": 0,
+            "total": _universe_total_symbols(universe),
+            "started_at": now_iso,
+            "log": [f"Starting {horizon} validation on {universe}…"],
+            "job": {
+                "horizon": horizon, "universe": universe, "trigger_type": trigger_type,
+                "status": "running", "processed": 0, "total": _universe_total_symbols(universe),
+                "current_symbol": None, "started_at": now_iso, "updated_at": now_iso,
+                "completed_at": None, "failure_code": None, "failure_message": None,
+            },
+        })
+
+
+def _apply_progress_to_run_status(msg: dict) -> None:
+    done = msg.get("done")
+    total = msg.get("total")
+    if not isinstance(done, int):
+        return
+    with _status_lock:
+        _run_status["progress"] = done
+        if isinstance(total, int) and total > 0:
+            _run_status["total"] = total
+        _run_status["log"].append(f"[{done}/{_run_status.get('total', total)}] progress")
+        if _run_status.get("job") is not None:
+            _run_status["job"]["processed"] = done
+            if isinstance(total, int) and total > 0:
+                _run_status["job"]["total"] = total
+            _run_status["job"]["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def _finalize_run_status(*, ok: bool, failure_code: str | None) -> None:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with _status_lock:
+        _run_status["running"] = False
+        if ok:
+            _run_status["log"] = _run_status.get("log", []) + ["✅ Validation complete"]
+            if _run_status.get("job") is not None:
+                _run_status["job"].update({"status": "completed", "completed_at": now_iso, "updated_at": now_iso})
+        else:
+            public_message = VALIDATION_PUBLIC_FAILURE_MESSAGES.get(
+                failure_code, VALIDATION_PUBLIC_FAILURE_MESSAGES["RUN_EXCEPTION"]
+            ) if failure_code else VALIDATION_PUBLIC_FAILURE_MESSAGES["RUN_EXCEPTION"]
+            _run_status["log"] = _run_status.get("log", []) + [f"❌ Failed: {public_message}"]
+            if _run_status.get("job") is not None:
+                _run_status["job"].update({
+                    "status": "failed", "completed_at": now_iso, "updated_at": now_iso,
+                    "failure_code": failure_code, "failure_message": public_message,
+                })
+
+
+def _finalize_run_status_for_handled_result(handled: dict) -> None:
+    """A `result`/`error` message that passed the deadline-acceptance
+    check still isn't necessarily an overall SUCCESS — `_handle_child_
+    message` returns `{"_persist_payload": None, ...}` for the child's
+    own NO_RESULT_RUN_ID case without raising. This classifies the final
+    public status honestly from the actual outcome, never assuming
+    success just because no exception was raised."""
+    if handled.get("_persist_payload") is not None:
+        _finalize_run_status(ok=True, failure_code=None)
+    else:
+        _finalize_run_status(ok=False, failure_code=None)
+
+
+def _run_validation_in_subprocess(*, horizon: str, universe: str, max_workers: int,
+                                   trigger_type: str, heartbeat_fn=None,
+                                   lease_duration_seconds: int | None = None,
+                                   max_run_duration_seconds: int = MAX_RUN_DURATION_SECONDS,
+                                   update_run_status: bool = True) -> dict:
+    """The parent-side containment boundary. The parent retains 100% of
+    lease/heartbeat/fencing/inactivity/deadline authority throughout:
+    `heartbeat_fn` (when given) is invoked purely on the parent's own
+    time.monotonic() schedule — never driven by anything the child
+    reports — and only the PARENT ever calls (via its own caller,
+    execute_and_complete_admitted_attempt) the atomic completion
+    primitive. The child is never given a lease owner or fencing token.
+
+    V-USACT1-B-C1 — THREE independent, parent-side, time.monotonic()-based
+    deadlines are tracked every iteration, in this precedence order:
+      1. heartbeat/fencing (unchanged precedence — a fencing loss must
+         never be misreported as a stall or a deadline timeout);
+      2. inactivity — `last_progress_monotonic` advances ONLY on a
+         genuine "progress" IPC message (never on a heartbeat tick, and
+         never on mere elapsed time) — if RUN_STALL_TIMEOUT_SECONDS
+         passes with zero genuine progress, the child is killed
+         IMMEDIATELY, independent of and typically far sooner than the
+         90-minute total deadline;
+      3. the hard total-runtime deadline.
+    This is authoritative and independent of whatever inactivity
+    detection the child's OWN run_validation() call might also perform
+    internally (defense in depth) — the parent no longer relies on the
+    child ever detecting or reporting its own stall.
+
+    V-USACT1-B-C2 — deadline eligibility is decided EXCLUSIVELY by the
+    PARENT's own time.monotonic() clock, never by any wall-clock UTC
+    timestamp (adjustable by NTP/manual changes) and never by a monotonic
+    timestamp the CHILD claims (monotonic clocks are not comparable
+    across separate OS processes — a child-supplied monotonic value would
+    be meaningless here, not merely imprecise). The instant the parent
+    dequeues a terminal (`result`/`error`) message, it stamps
+    `terminal_received_at_monotonic = time.monotonic()` and accepts the
+    result only if that is on-or-before `deadline_at_monotonic`. A result
+    the child genuinely computed in time but which the parent only
+    observes after the deadline is REJECTED anyway — a deliberate,
+    accepted false-negative (see module docstring above): rejecting a
+    late-observed-but-actually-on-time result is safe; accepting a
+    late-computed result never is. The child's own `completed_at_utc`
+    field is carried through only for logs/persistence/API display — it
+    is never read for the accept/reject decision. The termination-grace
+    window exists ONLY to kill and reap the child; it never extends
+    accepted computation time — any message drained during or after it is
+    definitionally past the deadline (see the hard-deadline branch below)
+    and is always rejected outright, regardless of its own claimed
+    timestamp.
+    """
+    _validate_max_run_duration_seconds(max_run_duration_seconds)
+    heartbeat_interval = (
+        _lease_heartbeat_interval(lease_duration_seconds) if lease_duration_seconds else None
+    )
+
+    # V-USACT1-B-C3 — the start method is an inline literal, not a
+    # module-level name: there is nothing here for any test, config, or
+    # runtime input to monkeypatch or override. Process isolation is
+    # unconditionally "spawn". Tests that need deterministic child
+    # behavior monkeypatch _validation_child_worker itself (a top-level,
+    # picklable test-double target resolved fresh in the PARENT right
+    # here) — never the start method.
+    ctx = multiprocessing.get_context("spawn")
+    result_queue = ctx.Queue(maxsize=_PROGRESS_QUEUE_MAXSIZE)
+    process = ctx.Process(
+        target=_validation_child_worker,
+        args=(result_queue, horizon, universe, max_workers, trigger_type),
+        daemon=True,
+    )
+
+    start_monotonic = time.monotonic()
+    start_utc = datetime.now(timezone.utc)
+    deadline_at_monotonic = start_monotonic + max_run_duration_seconds
+    last_progress_monotonic = start_monotonic
+    next_heartbeat_at = start_monotonic
+
+    # V-USACT1-B-C1 — the child is started BEFORE _run_status is seeded.
+    # This ordering is irrelevant to production "spawn" (which never
+    # inherits parent memory at all), but is kept as the correct,
+    # unconditional ordering regardless of context.
+    process.start()
+    if update_run_status:
+        _seed_run_status(horizon=horizon, universe=universe, trigger_type=trigger_type,
+                          now_iso=start_utc.isoformat())
+    try:
+        while True:
+            now = time.monotonic()
+
+            # 1. Heartbeat/fencing — checked first every iteration, so a
+            # fencing loss is never misreported as inactivity or a
+            # deadline timeout even if more than one becomes true at once.
+            if heartbeat_fn is not None and heartbeat_interval is not None and now >= next_heartbeat_at:
+                try:
+                    fenced = bool(heartbeat_fn())
+                except Exception:
+                    log.warning("[validation] subprocess heartbeat raised — treating as fenced-out")
+                    fenced = True
+                if fenced:
+                    _terminate_child_process(process)
+                    raise _FencedOutDuringComputation()
+                next_heartbeat_at = time.monotonic() + heartbeat_interval
+                # Heartbeats NEVER count as progress — last_progress_monotonic
+                # is deliberately untouched here.
+
+            now = time.monotonic()
+
+            # 2. Parent-side, authoritative inactivity detection — fires
+            # well before the total deadline whenever nothing has
+            # genuinely progressed for RUN_STALL_TIMEOUT_SECONDS,
+            # independent of whatever the child's own internal detector
+            # is doing.
+            inactivity_deadline = last_progress_monotonic + RUN_STALL_TIMEOUT_SECONDS
+            if now >= inactivity_deadline:
+                _terminate_child_process(process)
+                if update_run_status:
+                    _finalize_run_status(ok=False, failure_code="PROVIDER_STALL")
+                raise _ProviderStallDuringComputation(
+                    f"run_validation: parent detected no genuine progress for "
+                    f"{RUN_STALL_TIMEOUT_SECONDS}s (universe={universe} horizon={horizon}) — "
+                    f"child process terminated, no result persisted"
+                )
+
+            # 3. Hard total-runtime deadline. We only reach this branch
+            # when the PARENT's own monotonic clock has already measured
+            # now >= deadline_at_monotonic — so ANY message pulled here
+            # (or arriving later, during the kill/reap grace window) is,
+            # by construction, being observed past the deadline. Per
+            # V-USACT1-B-C2, eligibility is receipt time, not claimed
+            # completion time — every message drained in this branch is
+            # unconditionally rejected, regardless of what it claims.
+            if now >= deadline_at_monotonic:
+                _terminate_child_process(process)
+                try:
+                    result_queue.get_nowait()
+                except _queue_module.Empty:
+                    pass
+                if update_run_status:
+                    _finalize_run_status(ok=False, failure_code="RUN_DEADLINE_EXCEEDED")
+                raise _RunDeadlineExceeded(
+                    f"run_validation: exceeded max_run_duration_seconds={max_run_duration_seconds} "
+                    f"(universe={universe} horizon={horizon}) — child process terminated, "
+                    f"no result persisted"
+                )
+
+            poll_timeout = max(0.05, min(
+                heartbeat_interval if heartbeat_interval is not None else 1.0,
+                inactivity_deadline - now,
+                deadline_at_monotonic - now,
+                1.0,
+            ))
+            try:
+                msg = result_queue.get(timeout=poll_timeout)
+            except _queue_module.Empty:
+                if not process.is_alive():
+                    # The child exited without ever reporting anything —
+                    # a crash, an unpicklable exception escaping its own
+                    # try/except, or an external kill. Never assume
+                    # success from silence.
+                    if update_run_status:
+                        _finalize_run_status(ok=False, failure_code="RUN_EXCEPTION")
+                    raise _ChildProcessFailure(
+                        f"validation child process exited without reporting a result "
+                        f"(exitcode={process.exitcode}) — universe={universe} horizon={horizon}"
+                    )
+                continue
+
+            if msg.get("type") == "progress":
+                last_progress_monotonic = time.monotonic()
+                if update_run_status:
+                    _apply_progress_to_run_status(msg)
+                continue
+
+            # V-USACT1-B-C2 — a terminal (result/error) message. Stamp the
+            # PARENT's own receipt time on the monotonic clock FIRST,
+            # immediately on dequeue — this, not anything the child
+            # claims, is the sole eligibility evidence (see docstring).
+            terminal_received_at_monotonic = time.monotonic()
+            if terminal_received_at_monotonic > deadline_at_monotonic:
+                # Received too late — reject unconditionally, even if the
+                # child's own message claims it finished in time. Still
+                # kill/reap immediately; nothing here is trusted further.
+                _terminate_child_process(process)
+                if update_run_status:
+                    _finalize_run_status(ok=False, failure_code="RUN_DEADLINE_EXCEEDED")
+                raise _RunDeadlineExceeded(
+                    f"run_validation: terminal message received after "
+                    f"max_run_duration_seconds={max_run_duration_seconds} "
+                    f"(universe={universe} horizon={horizon}) — result rejected, "
+                    f"no result persisted"
+                )
+
+            # On time. Before trusting/persisting anything, PROVE the
+            # child has actually exited, and classify whether that exit
+            # was clean (no forced termination needed, exitcode 0) — a
+            # terminal message is never sufficient proof on its own.
+            proven_dead, clean_exit, exitcode = _reap_after_terminal_message(process)
+            try:
+                if not proven_dead:
+                    # Exhausted every bounded escalation step and the
+                    # child is STILL alive — fail closed. This should be
+                    # unreachable in practice (SIGKILL cannot be ignored
+                    # by a live process on any platform this runs on),
+                    # but never assume death without proof.
+                    raise _ChildProcessFailure(
+                        f"validation child process could not be proven dead after "
+                        f"reporting a terminal message (exitcode={exitcode}) — "
+                        f"universe={universe} horizon={horizon}"
+                    )
+                if msg.get("type") == "result" and not clean_exit:
+                    # The child claimed success but required forced
+                    # termination, or exited with a non-zero code, after
+                    # putting its result on the queue — per the accepted
+                    # contract, that disqualifies the result even though
+                    # it was received on time and looks well-formed.
+                    raise _ChildProcessFailure(
+                        f"validation child process required forced termination or exited "
+                        f"abnormally (exitcode={exitcode}) after reporting success — "
+                        f"result rejected, no result persisted (universe={universe} "
+                        f"horizon={horizon})"
+                    )
+                handled = _handle_child_message(msg)
+            except _ChildProcessFailure:
+                if update_run_status:
+                    _finalize_run_status(ok=False, failure_code="RUN_EXCEPTION")
+                raise
+            if update_run_status:
+                _finalize_run_status_for_handled_result(handled)
+            return handled
+    except _FencedOutDuringComputation:
+        if update_run_status:
+            _finalize_run_status(ok=False, failure_code=None)
+        raise
+    except (_RunDeadlineExceeded, _ProviderStallDuringComputation, _ChildProcessFailure):
+        raise
+    except Exception:
+        if update_run_status:
+            _finalize_run_status(ok=False, failure_code="RUN_EXCEPTION")
+        raise
+    finally:
+        try:
+            result_queue.close()
+            result_queue.join_thread()
+        except Exception:
+            pass
+
+
+def execute_and_complete_admitted_attempt(attempt_id: int, owner: str, fencing_token: int,
+                                           horizon: str, universe: str, trigger_type: str, *,
+                                           lease_duration_seconds: int = 600,
+                                           heartbeat_every_n_stocks: int = 10,
+                                           max_workers: int = 6,
+                                           max_run_duration_seconds: int = MAX_RUN_DURATION_SECONDS) -> dict:
+    """Phase 2 — runs the actual validation for an attempt already admitted
+    by admit_validation_attempt(), then atomically completes/fails it.
+
+    V-USACT1-B correction: the ENTIRE computation now runs inside a killable
+    child OS process (see _run_validation_in_subprocess) — never in-process
+    on a thread this function could only wait for, not kill. Lease renewal
+    is now a purely wall-clock heartbeat driven by THIS function's own
+    time.monotonic() schedule (via _lease_heartbeat_interval), no longer
+    tied to child-reported progress — `heartbeat_every_n_stocks` is
+    accepted for backward compatibility but no longer changes the renewal
+    cadence, which is fully described by lease_duration_seconds alone. The
+    moment a heartbeat is rejected (fencing_token superseded), the parent
+    kills the child immediately and raises _FencedOutDuringComputation —
+    computation does not run to completion under a known-stale token, and
+    the child never gets a chance to report anything after that point.
+    Final persistence — the val_runs/val_signals insert itself — happens
+    only inside complete_running_attempt_with_computed_result(), one atomic
+    transaction that independently re-verifies owner/token/expiry/
+    active_attempt_id before writing anything, so even a fencing loss in
+    the narrow window after the last heartbeat and before this call is
+    still caught: the atomic primitive's own fencing check runs
+    immediately before its own insert, in the same transaction, and rolls
+    back the insert if it fails. No val_runs/val_signals row can ever
+    survive under a stale/superseded identity.
+
+    On MAX_RUN_DURATION_SECONDS, the child is terminated (SIGTERM, then
+    SIGKILL if still alive after CHILD_KILL_GRACE_SECONDS) and the attempt
+    is marked TERMINAL (mark_attempt_failed_terminal, not the retryable
+    transition) with failure_category=RUN_DEADLINE_EXCEEDED — a distinct
+    category from the generic RUN_EXCEPTION bucket. V-USACT1-B-C1: this is
+    deliberately non-retryable — the retryable transition returns a
+    scheduled slot to 'due', which a LATER scheduler tick or catch-up
+    evaluation could re-admit and consume another full 90-minute window
+    against; the terminal transition moves the slot straight to 'failed'
+    (a terminal slot status), which neither the scheduler nor catch-up
+    will ever re-admit. A manual attempt (slot_id=NULL) is unaffected
+    either way — it was never slot-bound, and the NEXT manual/scheduled
+    attempt is gated solely by the global lease, which this same call
+    already releases below regardless of which transition was used."""
+
+    def _heartbeat_fn():
+        hb = heartbeat_validation_execution_lease(
+            owner=owner, fencing_token=fencing_token, now=datetime.now(timezone.utc),
+            lease_duration_seconds=lease_duration_seconds,
+        )
+        return not hb.get("ok")
+
+    def _release_if_still_ours(now: datetime) -> None:
+        # Best-effort: after a terminal attempt transition, the lease's
+        # active_attempt_id is already cleared, so this owner's lease now
+        # holds nothing — release it so the NEXT admission (by this same
+        # owner reused across universes, or any other) is never blocked
+        # behind a lease no attempt actually needs anymore. A failure here
+        # (already reclaimed by someone else) is expected and harmless —
+        # there is nothing left for this owner to release in that case.
+        release_validation_execution_lease(owner=owner, fencing_token=fencing_token, now=now)
+
+    try:
+        metrics = _run_validation_in_subprocess(
+            horizon=horizon, universe=universe, max_workers=max_workers,
+            trigger_type=trigger_type, heartbeat_fn=_heartbeat_fn,
+            lease_duration_seconds=lease_duration_seconds,
+            max_run_duration_seconds=max_run_duration_seconds,
+        )
+    except _FencedOutDuringComputation:
+        log.warning(
+            "[validation] attempt %s lost its lease during execution (fenced out) — "
+            "child process terminated before any persistence was attempted", attempt_id,
+        )
+        # Do NOT mark the attempt failed, release the lease, or clear any
+        # binding here — this owner's token is already superseded; the new
+        # owner holds the lease and must not have its state touched by the
+        # stale worker in any way.
+        return {"ok": False, "reason": "fenced_out_during_execution"}
+    except _RunDeadlineExceeded:
+        log.error(
+            "[validation] attempt %s exceeded max_run_duration_seconds=%s — "
+            "child process terminated, no result persisted",
+            attempt_id, max_run_duration_seconds,
+        )
+        fail_now = datetime.now(timezone.utc)
+        mark_attempt_failed_terminal(attempt_id, owner=owner, fencing_token=fencing_token, now=fail_now,
+                                      failure_category="RUN_DEADLINE_EXCEEDED")
+        _release_if_still_ours(fail_now)
+        return {"ok": False, "reason": "run_deadline_exceeded"}
+    except Exception:
+        log.exception("[validation] execute_and_complete_admitted_attempt: run_validation raised")
+        fail_now = datetime.now(timezone.utc)
+        mark_attempt_failed_retryable(attempt_id, owner=owner, fencing_token=fencing_token, now=fail_now,
+                                       failure_category="RUN_EXCEPTION")
+        _release_if_still_ours(fail_now)
+        return {"ok": False, "reason": "run_exception"}
+
+    complete_now = datetime.now(timezone.utc)
+
+    payload = metrics.get("_persist_payload")
+    if payload is None:
+        # run_validation's own internal in-memory claim rejected it
+        # (metrics.get("error") set) or some other path produced no
+        # computed payload — nothing to persist; fail the attempt so its
+        # slot (if any) returns to due for a future retry.
+        mark_attempt_failed_retryable(attempt_id, owner=owner, fencing_token=fencing_token, now=complete_now,
+                                       failure_category="NO_RESULT_RUN_ID",
+                                       failure_summary=str(metrics.get("error"))[:200] if metrics.get("error") else None)
+        _release_if_still_ours(complete_now)
+        return {"ok": False, "reason": "no_result_run_id"}
+
+    completion = complete_running_attempt_with_computed_result(
+        attempt_id, owner=owner, fencing_token=fencing_token,
+        horizon=payload["horizon"], universe=payload["universe"], run_at=payload["run_at"],
+        n_stocks=payload["n_stocks"], n_signals=payload["n_signals"],
+        summary_json=payload["summary_json"], signal_rows=payload["signal_rows"],
+        now=complete_now,
+    )
+    if not completion.get("ok"):
+        # The atomic primitive rolled back the ENTIRE transaction on any
+        # ownership/fencing/attempt/slot failure — no val_runs/val_signals
+        # row was left behind (unlike the pre-correction path, there is no
+        # "orphaned_run_id" possible here: either everything committed
+        # together, or nothing did).
+        return {"ok": False, "reason": completion.get("reason", "completion_failed")}
+
+    result_run_id = completion["run_id"]
+    metrics["run_id"] = result_run_id
+    _release_if_still_ours(complete_now)
+    return {"ok": True, "attempt_id": attempt_id, "run_id": result_run_id, "metrics": metrics}
+
+
+def execute_admitted_validation(horizon: str, universe: str, trigger_type: str, owner: str, *,
+                                 slot_id: int | None = None, scheduled_slot: datetime | None = None,
+                                 schedule_version: str = "v1", now: datetime | None = None,
+                                 lease_duration_seconds: int = 600, heartbeat_every_n_stocks: int = 10,
+                                 max_workers: int = 6,
+                                 max_run_duration_seconds: int = MAX_RUN_DURATION_SECONDS) -> dict:
+    """Convenience wrapper combining both phases for callers that don't
+    need the synchronous-admission/background-execution split (the
+    scheduler and catch-up — both already run entirely inside a background
+    executor thread from the moment they're invoked).
+
+    V-USACT1-B — max_run_duration_seconds is applied uniformly here for
+    every caller (scheduler, catch-up); the authenticated manual /run
+    route goes through execute_and_complete_admitted_attempt directly and
+    inherits the same default. No caller may opt out of the ceiling."""
+    admitted = admit_validation_attempt(
+        horizon=horizon, universe=universe, trigger_type=trigger_type, owner=owner,
+        slot_id=slot_id, scheduled_slot=scheduled_slot, schedule_version=schedule_version,
+        now=now, lease_duration_seconds=lease_duration_seconds,
+    )
+    if not admitted.get("ok"):
+        return admitted
+    return execute_and_complete_admitted_attempt(
+        admitted["attempt_id"], admitted["owner"], admitted["fencing_token"],
+        horizon, universe, trigger_type,
+        lease_duration_seconds=lease_duration_seconds,
+        heartbeat_every_n_stocks=heartbeat_every_n_stocks, max_workers=max_workers,
+        max_run_duration_seconds=max_run_duration_seconds,
+    )

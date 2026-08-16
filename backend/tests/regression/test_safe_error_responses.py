@@ -212,12 +212,18 @@ def test_validation_stock_results_failure_is_distinguishable_from_zero_signals()
 
 
 def test_validation_stock_results_genuine_empty_is_available_true():
+    """V-SNAP1B note: the router now resolves/validates a run_id via
+    resolve_eligible_run_id() before calling get_per_stock_results() —
+    a genuinely eligible run (patched here) with zero per-stock rows
+    must still be available:true, not fabricated as unavailable."""
     from api.main import app
     client = TestClient(app)
-    with patch("services.validation_engine.get_per_stock_results", return_value=[]):
+    with patch("services.validation_engine.resolve_eligible_run_id", return_value=1), \
+         patch("services.validation_engine.get_per_stock_results", return_value=[]):
         resp = client.get("/api/validation/results/stocks", params={"horizon": "medium", "universe": "nifty100"})
     body = resp.json()
     assert body["available"] is True
+    assert body["run_id"] == 1
     assert body["stocks"] == []
     assert "error" not in body
 

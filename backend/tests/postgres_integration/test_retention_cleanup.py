@@ -159,7 +159,7 @@ class TestRetentionCleanupAgainstRealPostgres:
         t.start()
         resp = client.post(
             "/api/paper-trading/buy",
-            json={"symbol": "AAPL", "market": "US", "quantity": 1, "price": 101.0},
+            json={"symbol": "AAPL", "market": "US", "quantity": 1, "price": 101.0, "idempotency_key": "cleanup-concurrent-key"},
             headers=make_auth_header(unique_user_id),
         )
         elapsed = time.monotonic() - start

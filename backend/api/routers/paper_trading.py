@@ -5,10 +5,10 @@ import logging
 import threading
 import time as _time
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field, field_validator, model_validator
-from typing import Literal
+from datetime import date, datetime, timezone, timedelta
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_serializer, model_validator
+from typing import Any, Literal
 from services.auth import get_current_user_id
 from services.market_hours import is_market_open as _is_market_open
 from services.paper_trade_math import compute_realized_pnl_abs, compute_realized_pnl_pct
@@ -26,6 +26,7 @@ from services.postmortem.entry_snapshot import (
     classify_evidence_completeness,
 )
 from services.postmortem.evidence_attribution import ATTRIBUTION_RULES_VERSION, build_evidence_attribution
+from services.postmortem import evidence_attribution
 from services.postmortem.daily_report import DailyTradePostmortem, build_daily_report
 from services.market_hours import IST, ET
 from services.postmortem.close_service import (
@@ -40,10 +41,18 @@ from services.postmortem.close_service import (
 )
 from services.postmortem.close_service import _EXIT_SNAPSHOT_COLUMNS as _EXIT_SNAPSHOT_DB_COLUMNS
 from services.postmortem.close_service import _insert_outbox_record
-from services.postmortem.exit_snapshot import CloseExitMechanism, ExitSnapshot
+from services.postmortem.exit_snapshot import CloseExitMechanism, ExitSnapshot, TriggerTimingVerification
+from services.postmortem.evidence import (
+    ConfidenceBand, EvidenceClass, EvidenceVerificationLevel, FreshnessStatus, SourceType,
+    validate_postmortem_claim_semantics,
+)
 from services.postmortem import generation_service
 from services.postmortem import outbox as outbox_ops
 from services.postmortem import report_store
+from services.postmortem import price_path_generation
+from services.postmortem.current_report_generation import current_target_identity
+from services.postmortem import price_path_eligibility
+from services.postmortem import price_path_evidence_decision
 from services.postmortem.idempotency import (
     OPERATION_TYPE_PAPER_BUY,
     OPERATION_TYPE_PAPER_SELL,
@@ -57,6 +66,7 @@ from services.postmortem.idempotency import (
     validate_idempotency_key_format,
 )
 from services.postmortem import idempotency_metrics as _metrics
+from services.postmortem import current_report_metrics as _cr_metrics
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -74,6 +84,14 @@ SELL_RESPONSE_SCHEMA_VERSION = "1.0.0"
 
 STARTING_CASH_IN = 1_000_000.0  # ₹10,00,000 virtual cash
 STARTING_CASH_US = 100_000.0    # $100,000 virtual cash — separate ledger, not a currency conversion of the above
+
+# Trade Postmortem Sprint 3A, Stage J4D — the one durable level-history
+# contract version this codebase currently issues to new trades. Kept in
+# sync with services.postmortem.level_history_eligibility.
+# LEVEL_HISTORY_CONTRACT_VERSION_1 by a dedicated regression test rather
+# than an import, so this writer module has no dependency on the J4C
+# semantic layer.
+_LEVEL_HISTORY_CONTRACT_VERSION = "1"
 
 _CASH_COL = {"IN": "cash", "US": "cash_usd"}
 _STARTING = {"IN": STARTING_CASH_IN, "US": STARTING_CASH_US}
@@ -637,23 +655,31 @@ class BuyRequest(BaseModel):
     evidence_source: Literal["MANUAL", "SCREENER", "DAILY_PICK", "RESEARCH"] = "MANUAL"
     entry_evidence: EntryEvidenceRequest | None = None
 
-    # Migration-verification hardening gate, Part 7 — Buy idempotency.
-    # Optional for backward compatibility: an old client that omits this
-    # entirely gets exactly today's behavior (no dedup guarantee at all,
-    # same as before this field existed) — see paper_buy's
-    # `idempotency_enforced` flag in its own response. A client that DOES
-    # supply one gets the full durable, exactly-once guarantee described in
-    # services/postmortem/idempotency.py.
-    idempotency_key: str | None = None
+    # Owner-authorized hardening (post-incident, TCS double-Buy) — the
+    # optional idempotency_key design below is INTENTIONALLY NOT what ships
+    # anymore. It silently fell back to "no dedup guarantee at all" for any
+    # request that omitted the key — exactly the gap a remounted
+    # PaperTradeModal (Cancel/X unmount racing an in-flight Buy) exploited
+    # to place two live TCS positions. The field is now REQUIRED: a Buy
+    # request that omits it is rejected by FastAPI/Pydantic at the request
+    # boundary (422, before this handler function even runs — no trade row
+    # is ever created and no cash is ever debited for such a request), not
+    # silently processed without a durable exactly-once guarantee. The
+    # sole production caller (frontend/src/components/PaperTradeModal.tsx
+    # via placePaperBuy) already always sends one and needed no change.
+    # Internal/backend-test callers that used to omit it must now supply an
+    # explicit key too — see the updated test fixtures across
+    # backend/tests/{integration,postgres_integration,regression,unit} for
+    # the corresponding per-call key generation.
+    idempotency_key: str
 
     @field_validator("idempotency_key")
     @classmethod
     def _validate_idempotency_key(cls, v):
-        if v is not None:
-            try:
-                validate_idempotency_key_format(v)
-            except ValueError as e:
-                raise ValueError(str(e))
+        try:
+            validate_idempotency_key_format(v)
+        except ValueError as e:
+            raise ValueError(str(e))
         return v
 
 
@@ -780,7 +806,9 @@ _ENTRY_SNAPSHOT_COLUMNS = (
     "confidence_score, technical_signal, technical_rsi, technical_macd_diff, "
     "fundamental_score, sentiment_score, sentiment_label, "
     "market_regime_trend, market_regime_score_adj, market_regime_reason, "
-    "recommendation_reasoning, model_version, verification_levels"
+    "recommendation_reasoning, model_version, verification_levels, "
+    "level_history_contract_version, initial_stop_modified_after_entry, "
+    "initial_target_modified_after_entry, initial_levels_modified_after_entry"
 )
 
 
@@ -798,7 +826,10 @@ def _parse_entry_evidence_timestamp(value: str | None):
     return ts
 
 
-def _build_snapshot_for_buy(*, trade_id: int, user_id: str, symbol: str, market: str, req: "BuyRequest") -> EntrySnapshot:
+def _build_snapshot_for_buy(
+    *, trade_id: int, user_id: str, symbol: str, market: str, req: "BuyRequest",
+    level_history_contract_version: str | None = None,
+) -> EntrySnapshot:
     """Builds the immutable entry snapshot for a newly created trade from
     the Buy request — pure construction, no I/O (see
     services/postmortem/entry_snapshot.py for the calculation logic this
@@ -844,7 +875,10 @@ def _build_snapshot_for_buy(*, trade_id: int, user_id: str, symbol: str, market:
     if not isinstance(trade_id, int) or trade_id <= 0:
         raise ValueError(f"invalid trade_id for entry snapshot: {trade_id!r}")
 
-    return build_entry_snapshot(paper_trade_id=trade_id, user_id=user_id, symbol=symbol, market=market, ctx=ctx)
+    return build_entry_snapshot(
+        paper_trade_id=trade_id, user_id=user_id, symbol=symbol, market=market, ctx=ctx,
+        level_history_contract_version=level_history_contract_version,
+    )
 
 
 def _json_field(value):
@@ -872,7 +906,8 @@ def _fetch_entry_snapshot(conn, trade_id: int) -> EntrySnapshot | None:
      confidence, tech_signal, tech_rsi, tech_macd,
      fund_score, sent_score, sent_label,
      regime_trend, regime_adj, regime_reason,
-     reasoning, model_version, verification_levels) = row
+     reasoning, model_version, verification_levels,
+     level_history_contract_version, initial_stop_modified, initial_target_modified, initial_levels_modified) = row
     return EntrySnapshot(
         paper_trade_id=ptid, user_id=uid, symbol=sym, market=mkt,
         snapshot_schema_version=schema_version, evidence_source=evidence_source,
@@ -891,31 +926,43 @@ def _fetch_entry_snapshot(conn, trade_id: int) -> EntrySnapshot | None:
         market_regime_trend=regime_trend, market_regime_score_adj=regime_adj, market_regime_reason=regime_reason,
         recommendation_reasoning=_json_field(reasoning), model_version=model_version,
         verification_levels=_json_field(verification_levels) or {},
+        level_history_contract_version=level_history_contract_version,
+        initial_stop_modified_after_entry=initial_stop_modified,
+        initial_target_modified_after_entry=initial_target_modified,
+        initial_levels_modified_after_entry=initial_levels_modified,
     )
 
 
 def _insert_entry_snapshot(conn, snapshot: EntrySnapshot) -> None:
+    values = (
+        snapshot.paper_trade_id, snapshot.user_id, snapshot.symbol, snapshot.market,
+        snapshot.snapshot_schema_version, snapshot.evidence_source,
+        snapshot.daily_pick_run_id, snapshot.daily_pick_rank, snapshot.recommendation_signal,
+        snapshot.recommendation_generated_at, snapshot.recommendation_reference_price,
+        snapshot.recommendation_entry_low, snapshot.recommendation_entry_high,
+        snapshot.simulated_execution_price, snapshot.execution_slippage_pct, snapshot.execution_range_position,
+        snapshot.recommended_stop_loss, snapshot.recommended_target_price,
+        snapshot.user_selected_stop_loss, snapshot.user_selected_target_price,
+        snapshot.user_overrode_recommendation, snapshot.reward_to_risk_ratio,
+        snapshot.confidence_score, snapshot.technical_signal, snapshot.technical_rsi, snapshot.technical_macd_diff,
+        snapshot.fundamental_score, snapshot.sentiment_score, snapshot.sentiment_label,
+        snapshot.market_regime_trend, snapshot.market_regime_score_adj, snapshot.market_regime_reason,
+        json.dumps(snapshot.recommendation_reasoning) if snapshot.recommendation_reasoning is not None else None,
+        snapshot.model_version,
+        json.dumps(snapshot.verification_levels),
+        snapshot.level_history_contract_version,
+        snapshot.initial_stop_modified_after_entry,
+        snapshot.initial_target_modified_after_entry,
+        snapshot.initial_levels_modified_after_entry,
+    )
+    # Stage J4D-closure hardening: derive the placeholder count from the
+    # bound-value tuple itself rather than hand-counting `%s` characters —
+    # exactly the class of bug the exit-snapshot INSERT was already
+    # hardened against (see close_service.py's _exit_snapshot_values).
+    placeholders = ", ".join(["%s"] * len(values))
     conn.execute(
-        f"""INSERT INTO paper_trade_entry_snapshot ({_ENTRY_SNAPSHOT_COLUMNS})
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-        (
-            snapshot.paper_trade_id, snapshot.user_id, snapshot.symbol, snapshot.market,
-            snapshot.snapshot_schema_version, snapshot.evidence_source,
-            snapshot.daily_pick_run_id, snapshot.daily_pick_rank, snapshot.recommendation_signal,
-            snapshot.recommendation_generated_at, snapshot.recommendation_reference_price,
-            snapshot.recommendation_entry_low, snapshot.recommendation_entry_high,
-            snapshot.simulated_execution_price, snapshot.execution_slippage_pct, snapshot.execution_range_position,
-            snapshot.recommended_stop_loss, snapshot.recommended_target_price,
-            snapshot.user_selected_stop_loss, snapshot.user_selected_target_price,
-            snapshot.user_overrode_recommendation, snapshot.reward_to_risk_ratio,
-            snapshot.confidence_score, snapshot.technical_signal, snapshot.technical_rsi, snapshot.technical_macd_diff,
-            snapshot.fundamental_score, snapshot.sentiment_score, snapshot.sentiment_label,
-            snapshot.market_regime_trend, snapshot.market_regime_score_adj, snapshot.market_regime_reason,
-            json.dumps(snapshot.recommendation_reasoning) if snapshot.recommendation_reasoning is not None else None,
-            snapshot.model_version,
-            json.dumps(snapshot.verification_levels),
-        )
+        f"INSERT INTO paper_trade_entry_snapshot ({_ENTRY_SNAPSHOT_COLUMNS}) VALUES ({placeholders})",
+        values,
     )
 
 
@@ -1080,6 +1127,473 @@ def _attempt_best_effort_generation(*, user_id: str, trade_id: int, outbox_id: i
             _claim_and_run_generation(conn, user_id=user_id, trade_id=trade_id, outbox_id=outbox_id)
     except Exception:
         log.warning("[postmortem_generation] best-effort generation attempt failed: %s", "unexpected_error")
+
+
+def _attempt_current_report_generation(*, user_id: str, trade_id: int) -> None:
+    """Wave B, Stage J4F — best-effort invocation of the ONE shared
+    current (1.2.0) governed-report orchestrator
+    (current_report_generation.process_current_report), used identically
+    here (close-time), from the explicit POST recovery endpoint (see
+    _build_generate_response), and by the background outbox worker.
+    Never allowed to turn a successful sell or a /generate call into an
+    HTTP error — matches _attempt_best_effort_generation's own contract."""
+    from services.postmortem.current_report_generation import process_current_report
+
+    try:
+        with _conn() as conn:
+            row = conn.execute("SELECT market FROM paper_trades WHERE id = %s", (trade_id,)).fetchone()
+        if row is None:
+            return
+        market = row[0]
+        tz = _REPORT_TIMEZONE.get(market)
+        if tz is None:
+            return
+        market_timezone_name = "Asia/Kolkata" if market == "IN" else "America/New_York"
+        process_current_report(
+            _conn, trade_id=trade_id, user_id=user_id,
+            market_tzinfo=tz, market_timezone_name=market_timezone_name,
+        )
+    except Exception:
+        log.warning("[current_report_generation] best-effort generation attempt failed: %s", "unexpected_error")
+
+
+# Trade Postmortem Sprint 3A, Stage H2 durable-lifecycle correction —
+# the price-path attempt is now a genuine leased outbox lifecycle, not
+# an unleased best-effort helper. Stable status vocabulary this
+# function returns as the second element of its (report, status) tuple:
+PRICE_PATH_GENERATED = "PRICE_PATH_GENERATED"
+PRICE_PATH_ALREADY_COMPLETE = "PRICE_PATH_ALREADY_COMPLETE"
+PRICE_PATH_GENERATION_IN_PROGRESS = "PRICE_PATH_GENERATION_IN_PROGRESS"
+PRICE_PATH_FAILED_RETRYABLE = "PRICE_PATH_FAILED_RETRYABLE"
+PRICE_PATH_FAILED_TERMINAL = "PRICE_PATH_FAILED_TERMINAL"
+PRICE_PATH_NOT_YET_AVAILABLE = "PRICE_PATH_NOT_YET_AVAILABLE"  # no prior Sprint 2 report to enhance yet
+
+
+def _price_path_target_identity() -> tuple[str, str, str]:
+    """The Sprint 3A target report identity, computable BEFORE
+    acquisition (never after) — CURRENT_PRICE_PATH_SOURCE_IDENTITY is a
+    static, immutable value for the lifetime of one deployment, so the
+    calculation_version suffix it produces is exactly the one any
+    successful acquisition under this deployment will also embed into
+    its evidence's own source_version field. This is what lets the
+    outbox row's requested_calculation_version be fixed at claim time,
+    matching Sprint 2's own static-identity convention exactly.
+
+    Stage J3 — reads from price_path_identity.CURRENT_PRICE_PATH_SOURCE_
+    IDENTITY, the SAME object load_generation_context's defaults now
+    reference, rather than a separately-imported SOURCE_VERSION alias —
+    one authoritative identity, not two things that happen to agree."""
+    from services.postmortem.price_path_identity import CURRENT_PRICE_PATH_SOURCE_IDENTITY
+    return (
+        CURRENT_PRICE_PATH_SOURCE_IDENTITY.report_schema_version,
+        price_path_generation.price_path_calculation_suffix(CURRENT_PRICE_PATH_SOURCE_IDENTITY.source_version),
+        ATTRIBUTION_RULES_VERSION,
+    )
+
+
+def _insert_price_path_outbox_record(conn, *, trade_id: int, user_id: str, source_request_id: str | None = None) -> tuple[int, bool]:
+    """Same idempotent-insert pattern as close_service._insert_outbox_
+    record, against the SAME paper_trade_postmortem_outbox table and the
+    SAME (paper_trade_id, requested_report_schema_version,
+    requested_calculation_version, requested_rules_version) unique
+    index — that index already supports more than one row per trade
+    whenever the version triple differs, so the Sprint 3A price-path
+    identity gets its own row without any schema change. The Sprint 2
+    outbox row (and report) are never touched by this function."""
+    schema_v, calc_v, rules_v = _price_path_target_identity()
+    row = conn.execute(
+        """INSERT INTO paper_trade_postmortem_outbox
+               (paper_trade_id, user_id, requested_report_schema_version,
+                requested_calculation_version, requested_rules_version, source_request_id)
+           VALUES (%s, %s, %s, %s, %s, %s)
+           ON CONFLICT (paper_trade_id, requested_report_schema_version,
+                        requested_calculation_version, requested_rules_version)
+           DO NOTHING
+           RETURNING id""",
+        (trade_id, user_id, schema_v, calc_v, rules_v, source_request_id),
+    ).fetchone()
+    if row is not None:
+        return row[0], True
+    existing = conn.execute(
+        """SELECT id FROM paper_trade_postmortem_outbox
+           WHERE paper_trade_id = %s AND requested_report_schema_version = %s
+             AND requested_calculation_version = %s AND requested_rules_version = %s""",
+        (trade_id, schema_v, calc_v, rules_v),
+    ).fetchone()
+    return existing[0], False
+
+
+_PRICE_PATH_ERROR_CODE = "PRICE_PATH_GENERATION_ERROR"
+
+
+def _attempt_price_path_enhancement(
+    *, user_id: str, trade_id: int,
+    fetch_bars_fn=None, fetch_splits_fn=None, fetch_dividends_fn=None,
+) -> tuple[object | None, str]:
+    """Trade Postmortem Sprint 3A, Stage H2 durable-lifecycle correction.
+
+    Returns (report_or_None, status) where status is one of the
+    PRICE_PATH_* constants above. Uses its OWN versioned outbox row
+    (see _insert_price_path_outbox_record) claimed through the exact
+    same lease-safe outbox_ops.claim_next_attempt/mark_terminal/
+    mark_retryable_failure machinery Sprint 2's own generation already
+    relies on — atomic claim, claimant-token stale-worker protection,
+    retry backoff, and an attempt limit all come from that shared,
+    already-tested module, not reimplemented here.
+
+    Phase boundaries (Stage H1's five-phase design) are preserved
+    exactly: Phase 1/2 (read + claim) and Phase 5/6 (short writes) each
+    get their OWN `with _conn():` block; provider acquisition runs
+    entirely between them, with no database connection in scope at all.
+    fetch_bars_fn/fetch_splits_fn/fetch_dividends_fn default to the real
+    network-calling functions when not supplied (production behavior) —
+    tests inject fakes instead of monkeypatching module internals.
+
+    A genuinely unexpected exception is still never allowed to reach the
+    caller (matching _attempt_best_effort_generation's own contract) —
+    it is classified PRICE_PATH_FAILED_RETRYABLE where a claim was held,
+    logged with only its class name (never raw exception text), and the
+    lease is marked retryable so a later attempt can reclaim it rather
+    than the row sitting stuck."""
+    from services.postmortem.price_path_acquisition import (
+        PriceProviderAcquisitionError, fetch_dividend_events, fetch_raw_daily_bars, fetch_split_events,
+    )
+    fetch_bars_fn = fetch_bars_fn or fetch_raw_daily_bars
+    fetch_splits_fn = fetch_splits_fn or fetch_split_events
+    fetch_dividends_fn = fetch_dividends_fn or fetch_dividend_events
+
+    outbox_id = None
+    claimant = None
+    try:
+        with _conn() as conn:
+            row = conn.execute(
+                f"SELECT {_POSTMORTEM_ROW_COLUMNS} FROM paper_trades WHERE id = %s", (trade_id,)
+            ).fetchone()
+            if row is None:
+                return None, PRICE_PATH_NOT_YET_AVAILABLE
+            record, owner = _row_to_closed_trade_record(row)
+            if owner != user_id or record.status != "CLOSED":
+                return None, PRICE_PATH_NOT_YET_AVAILABLE
+
+            prior_report = report_store.get_current_report(
+                conn, paper_trade_id=trade_id, user_id=user_id,
+                report_schema_version=generation_service.REPORT_SCHEMA_VERSION,
+                calculation_version=CALCULATION_VERSION, attribution_rules_version=ATTRIBUTION_RULES_VERSION,
+            )
+            if prior_report is None:
+                return None, PRICE_PATH_NOT_YET_AVAILABLE  # Sprint 2 generation hasn't settled yet
+
+            # Trade Postmortem Sprint 3A, Stage J — one authoritative
+            # eligibility decision BEFORE any provider call, any replay
+            # lookup, or any outbox row is even created. A permanently
+            # invalid trade (incoherent timeline, corrupt price,
+            # unsupported market) never gets an outbox row at all — the
+            # simplest, safest way to guarantee it is never repeatedly
+            # retried (Stage J8 item 5's own explicit requirement).
+            #
+            # Stage J2 correction: entry/exit snapshot presence is now
+            # determined by loading the ACTUAL snapshot rows (the same
+            # _fetch_entry_snapshot/_fetch_exit_snapshot helpers
+            # _run_claimed_generation already uses) and validating their
+            # own paper_trade_id/user_id/market against this trade's own
+            # record — never inferred from the Sprint 2 report's own
+            # status, which conflates "was context available at THAT
+            # generation attempt" with "does context exist right now."
+            # A snapshot row that exists but belongs to the wrong trade,
+            # user or market is treated as effectively absent (present-
+            # but-invalid), never used.
+            entry_snapshot = _fetch_entry_snapshot(conn, trade_id)
+            entry_snapshot_valid = (
+                entry_snapshot is not None
+                and entry_snapshot.paper_trade_id == trade_id
+                and entry_snapshot.user_id == user_id
+                and entry_snapshot.market == record.market
+            )
+            exit_snapshot = _fetch_exit_snapshot(conn, trade_id)
+            exit_snapshot_valid = (
+                exit_snapshot is not None
+                and exit_snapshot.paper_trade_id == trade_id
+                and exit_snapshot.user_id == user_id
+                and exit_snapshot.market == record.market
+            )
+            eligibility = price_path_eligibility.evaluate_eligibility(
+                market=record.market, entry_price=record.entry_price, exit_price=record.exit_price,
+                opened_at=record.opened_at, closed_at=record.closed_at,
+                entry_snapshot_present=entry_snapshot_valid,
+                exit_snapshot_present=exit_snapshot_valid,
+                symbol=record.symbol,
+                # PRESENT_INVALID (row exists but failed ownership/market
+                # validation) vs MISSING (no row at all) — Stage J2's own
+                # required distinction.
+                entry_snapshot_invalid=(entry_snapshot is not None and not entry_snapshot_valid),
+                exit_snapshot_invalid=(exit_snapshot is not None and not exit_snapshot_valid),
+            )
+            if not eligibility.acquisition_allowed:
+                return None, PRICE_PATH_NOT_YET_AVAILABLE
+
+            tz = _REPORT_TIMEZONE.get(record.market)
+            if tz is None:
+                return None, PRICE_PATH_NOT_YET_AVAILABLE
+            market_timezone_name = "Asia/Kolkata" if record.market == "IN" else "America/New_York"
+
+            schema_v, calc_v, rules_v = _price_path_target_identity()
+            existing_pp_report = report_store.get_current_report(
+                conn, paper_trade_id=trade_id, user_id=user_id,
+                report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+            )
+            if existing_pp_report is not None:
+                # Idempotent: identical target identity already settled —
+                # never re-claim, never call the provider again.
+                return existing_pp_report, PRICE_PATH_ALREADY_COMPLETE
+
+            outbox_id, _created = _insert_price_path_outbox_record(conn, trade_id=trade_id, user_id=user_id)
+            claimant = outbox_ops.new_claimant_token()
+            claimed = outbox_ops.claim_next_attempt(conn, outbox_id=outbox_id, user_id=user_id, claimant=claimant)
+            if claimed is None:
+                # Another valid, non-expired lease currently owns this
+                # row — never run a concurrent duplicate attempt.
+                return None, PRICE_PATH_GENERATION_IN_PROGRESS
+            if claimed.status == "FAILED_TERMINAL":
+                return None, PRICE_PATH_FAILED_TERMINAL
+            if claimed.status != "GENERATING":
+                return None, PRICE_PATH_NOT_YET_AVAILABLE
+
+            ctx = price_path_generation.load_generation_context(
+                conn, trade_id=trade_id, user_id=user_id, symbol=record.symbol, market=record.market,
+                market_timezone_name=market_timezone_name, entry_timestamp=record.opened_at,
+                entry_price=record.entry_price, exit_price=record.exit_price,
+                applicable_stop=record.stop_loss, applicable_target=record.target_price,
+                exit_timestamp=record.closed_at,
+                # Sprint 3A's own documented finding (price_path_calculator.
+                # CURRENT_LEVEL_HISTORY_FINDING) is LEVEL_HISTORY_ENDPOINTS_ONLY
+                # — this codebase cannot honestly claim full level history for
+                # any real trade yet.
+                level_history_complete=False, prior_report=prior_report,
+            )
+
+        # Stage J1B-Fail-Closed-Hardening — acquisition provenance (WHERE
+        # the evidence came from) is decided ONCE, here, and never
+        # revised by anything discovered about evidence QUALITY
+        # afterward. This decision, not the bare `is None` check, GOVERNS
+        # what happens next (the `is None` check remains only as the
+        # mechanical Python condition needed to actually skip the
+        # provider call).
+        acquisition_decision = price_path_evidence_decision.classify_replay_or_acquisition(
+            compatible_evidence_found=ctx.compatible_evidence is not None,
+            evidence_id=ctx.compatible_evidence.id if ctx.compatible_evidence is not None else None,
+        )
+        evidence = ctx.compatible_evidence
+        if acquisition_decision.acquisition_status == price_path_evidence_decision.COMPATIBLE_REPLAY:
+            # 2B — evidence replay: zero provider calls, the persisted
+            # evidence (same row, same hash) is used directly.
+            if evidence is None:
+                # Stage 2 — a contradictory internal state (COMPATIBLE_
+                # REPLAY decided, yet no evidence object present) must
+                # never crash the request via a bare assert, which
+                # optimized (`python -O`) execution would silently skip
+                # entirely. Fails closed exactly like a provider
+                # exception: no evidence, no report, sanitized retryable
+                # outcome, no internal detail exposed.
+                with _conn() as conn:
+                    outbox_ops.mark_retryable_failure(
+                        conn, outbox_id=outbox_id,
+                        error_code=price_path_evidence_decision.INTERNAL_INTEGRITY_VIOLATION,
+                        error_summary="CompatibleReplayMissingEvidence", claimed_by=claimant,
+                    )
+                log.warning("[price_path_internal_integrity_violation] trade_id=%s reason=replay_without_evidence", trade_id)
+                return None, PRICE_PATH_FAILED_RETRYABLE
+
+            # Stage J Final Semantic Reconciliation Stage 2 / Stage J3A —
+            # a manifest hash nobody checks is not a production integrity
+            # control, and a manifest that is only internally
+            # self-consistent can still describe the WRONG trade (same
+            # paper_trade_id/user_id — the SQL lookup's own scope — but
+            # corrupted/substituted market, symbol, or window). Before
+            # this replay's evidence is trusted for classification at
+            # all, it must pass validate_replay_compatibility: every
+            # internal manifest check validate_manifest_compatibility
+            # already performs, PLUS agreement with the CURRENT persisted
+            # trade's own symbol/market/timezone/timestamps/window —
+            # never the current stock universe, never an inferred
+            # rename. A legacy row persisted before Stage J-F3 added
+            # these manifest fields correctly fails this — never silently
+            # treated as compatible merely because the older four-part
+            # version identity still matches. Fails exactly like the
+            # missing-evidence case above: no provider call, no
+            # calculator, no new evidence, no report, the ORIGINAL row
+            # untouched.
+            from services.postmortem.price_path_acquisition import validate_replay_compatibility
+
+            manifest_decision = validate_replay_compatibility(
+                evidence, expected_trade_id=trade_id, expected_user_id=user_id,
+                expected_symbol=record.symbol, expected_market=record.market,
+                expected_market_timezone=market_timezone_name,
+                expected_entry_timestamp=record.opened_at, expected_exit_timestamp=record.closed_at,
+                expected_requested_window_start=record.opened_at.astimezone(tz).date(),
+                expected_requested_window_end=record.closed_at.astimezone(tz).date(),
+            )
+            if not manifest_decision.compatible:
+                with _conn() as conn:
+                    outbox_ops.mark_retryable_failure(
+                        conn, outbox_id=outbox_id,
+                        error_code=manifest_decision.reason_code,
+                        error_summary="ManifestCompatibilityViolation", claimed_by=claimant,
+                    )
+                log.warning(
+                    "[price_path_manifest_integrity_violation] trade_id=%s reason=%s",
+                    trade_id, manifest_decision.reason_code,
+                )
+                return None, PRICE_PATH_FAILED_RETRYABLE
+
+            quality_decision = price_path_evidence_decision.classify_acquired_evidence(
+                data_completeness=evidence.data_completeness,
+            )
+        else:
+            # Provider acquisition — deliberately outside any
+            # `with _conn():` block; a provider timeout or transient
+            # failure here is a classified, durable retryable failure,
+            # never a swallowed None.
+            try:
+                bundle = price_path_generation.acquire_evidence_outside_transaction(
+                    ctx, market_tzinfo=tz, fetch_bars_fn=fetch_bars_fn,
+                    fetch_splits_fn=fetch_splits_fn, fetch_dividends_fn=fetch_dividends_fn,
+                )
+            except PriceProviderAcquisitionError as exc:
+                # Stage 1 — the policy's OWN immediate_outbox_outcome
+                # field, never an ambiguous two-boolean combination the
+                # live path had to independently resolve, determines the
+                # settlement.
+                policy = price_path_evidence_decision.get_provider_failure_policy(error_code=exc.code)
+                with _conn() as conn:
+                    if policy.immediate_outbox_outcome == price_path_evidence_decision.IMMEDIATE_FAILED_TERMINAL:
+                        outbox_ops.mark_terminal_failure(
+                            conn, outbox_id=outbox_id, error_code=policy.sanitized_error_code,
+                            error_summary=type(exc).__name__, claimed_by=claimant,
+                        )
+                        result_status = PRICE_PATH_FAILED_TERMINAL
+                    else:
+                        outbox_ops.mark_retryable_failure(
+                            conn, outbox_id=outbox_id, error_code=policy.sanitized_error_code,
+                            error_summary=type(exc).__name__, claimed_by=claimant,
+                        )
+                        result_status = PRICE_PATH_FAILED_RETRYABLE
+                log.warning(
+                    "[price_path_provider_failure] trade_id=%s evidence_status=%s",
+                    trade_id, policy.evidence_status,
+                )
+                return None, result_status
+
+            # Stage J3, Stage 5 — validate the FRESHLY BUILT bundle's own
+            # manifest before it is ever classified or persisted, exactly
+            # as a replayed row's manifest is validated before reuse.
+            # Under correct production code this should always pass (the
+            # same finalize_source_manifest call produces both); a
+            # failure here means a genuine internal bug in acquisition
+            # itself, not a data-quality condition classify_acquired_
+            # evidence is meant to describe — treated the same as any
+            # other fail-closed integrity violation: no persistence, no
+            # calculator, sanitized reason code.
+            from services.postmortem.price_path_acquisition import validate_manifest_compatibility as _validate_fresh_manifest
+            fresh_manifest_decision = _validate_fresh_manifest(bundle)
+            if not fresh_manifest_decision.compatible:
+                with _conn() as conn:
+                    outbox_ops.mark_retryable_failure(
+                        conn, outbox_id=outbox_id, error_code=fresh_manifest_decision.reason_code,
+                        error_summary="FreshManifestCompatibilityViolation", claimed_by=claimant,
+                    )
+                log.warning(
+                    "[price_path_fresh_manifest_integrity_violation] trade_id=%s reason=%s",
+                    trade_id, fresh_manifest_decision.reason_code,
+                )
+                return None, PRICE_PATH_FAILED_RETRYABLE
+
+            # Stage 3 — CLASSIFY the freshly acquired bundle BEFORE any
+            # persistence decision, never after. fresh_persistence_permitted
+            # governs whether the bundle becomes an immutable evidence
+            # row at all (SOURCE_INVALID/unsupported-enum bundles are
+            # never persisted — Stage 3's own explicit requirement).
+            quality_decision = price_path_evidence_decision.classify_acquired_evidence(
+                data_completeness=bundle.data_completeness,
+            )
+            if quality_decision.fresh_persistence_permitted:
+                with _conn() as conn:
+                    evidence, _created = price_path_generation.persist_price_path_evidence(conn, bundle)
+            else:
+                evidence = bundle  # unpersisted — still carries source_version/data_completeness for the report
+
+        # Stage 3 (conservative invalid-bundle policy) — SOURCE_INVALID
+        # and UNSUPPORTED_EVIDENCE_COMPLETENESS must NEVER produce ANY
+        # report (complete or limited), unlike SOURCE_UNAVAILABLE's
+        # honest zero-bar manifest, which may. Applies identically
+        # whether this evidence came from a fresh acquisition (a bundle
+        # that failed validation) or a replay of already-persisted
+        # evidence whose own stored data_completeness now reclassifies
+        # this way (e.g. corrupted/legacy data) — the report-suppression
+        # rule protects report integrity regardless of provenance.
+        if quality_decision.evidence_status in (
+            price_path_evidence_decision.SOURCE_INVALID,
+            price_path_evidence_decision.UNSUPPORTED_EVIDENCE_COMPLETENESS,
+        ):
+            with _conn() as conn:
+                outbox_ops.mark_retryable_failure(
+                    conn, outbox_id=outbox_id, error_code=quality_decision.evidence_status,
+                    error_summary="InvalidOrUnsupportedEvidence", claimed_by=claimant,
+                )
+            return None, PRICE_PATH_FAILED_RETRYABLE
+
+        # Stage 4 — calculation_status is now AUTHORITATIVE over whether
+        # the actual MFE/MAE/touch calculator ever runs, not merely a
+        # field computed and ignored.
+        evidence_id = evidence.id if hasattr(evidence, "id") else None
+        if quality_decision.calculation_status == price_path_evidence_decision.CALCULATION_ELIGIBLE:
+            payload = price_path_generation.build_price_path_report_payload(
+                evidence, entry_price=ctx.entry_price, exit_price=ctx.exit_price,
+                applicable_stop=ctx.applicable_stop, applicable_target=ctx.applicable_target,
+                level_history_complete=ctx.level_history_complete, trade_id=trade_id,
+            )
+        else:
+            payload = price_path_generation.build_unavailable_report_payload(
+                evidence_id=evidence_id, quality_decision=quality_decision, trade_id=trade_id,
+            )
+
+        with _conn() as conn:
+            with conn.transaction():
+                enhanced, _created = price_path_generation.persist_price_path_report(
+                    conn, prior_report=prior_report, payload=payload, trade_id=trade_id, user_id=user_id,
+                    market=record.market, report_trading_date=prior_report.report_trading_date,
+                    market_timezone=market_timezone_name, source_version=evidence.source_version,
+                    outbox_id=outbox_id, claimed_by=claimant,
+                    # Stage J3 — the trade-context ceiling computed by J1A
+                    # BEFORE acquisition (missing/invalid entry-exit
+                    # snapshot, missing exit price) must actually be
+                    # consulted when the report settles, never merely used
+                    # to gate whether acquisition ran.
+                    trade_context_ceiling=eligibility.report_completeness_ceiling,
+                    trade_context_decision=eligibility,
+                    # Stage 7 — acquisition provenance and evidence
+                    # quality are persisted as two separate, never-merged
+                    # decisions.
+                    acquisition_decision=acquisition_decision, quality_decision=quality_decision,
+                )
+        return enhanced, PRICE_PATH_GENERATED
+    except generation_service.StaleLeaseError:
+        # A fresher claimant already reclaimed this row while this
+        # attempt was computing — this attempt's own report INSERT (if
+        # any occurred inside the `with conn.transaction():` above)
+        # rolled back with it. Never treat this as success.
+        return None, PRICE_PATH_GENERATION_IN_PROGRESS
+    except Exception as exc:
+        log.warning("[postmortem_price_path_generation] enhancement attempt failed: %s", type(exc).__name__)
+        if outbox_id is not None and claimant is not None:
+            try:
+                with _conn() as conn:
+                    outbox_ops.mark_retryable_failure(
+                        conn, outbox_id=outbox_id, error_code=_PRICE_PATH_ERROR_CODE,
+                        error_summary=type(exc).__name__, claimed_by=claimant,
+                    )
+            except Exception:
+                pass  # best-effort — the claim will still expire and become reclaimable
+        return None, PRICE_PATH_FAILED_RETRYABLE
 
 
 @dataclass
@@ -1431,47 +1945,48 @@ def paper_buy(request: Request, req: BuyRequest, user_id: str = Depends(get_curr
     cost = req.price * req.quantity
     _ensure_portfolio(user_id)  # make sure the row exists before the conditional debit below
 
-    # Migration-verification hardening gate, Part 7 — Buy idempotency.
-    # `idempotency_enforced` is False for any request that omits the key
-    # (full backward compatibility: identical behavior to before this
-    # field existed). The fingerprint covers only the financially material
-    # fields (see idempotency.compute_request_fingerprint) — never
-    # symbol/quantity/timestamp matching alone, so two genuine purchases of
-    # the same stock and quantity with two different keys remain
-    # independently valid.
-    idempotency_enforced = req.idempotency_key is not None
-    fingerprint = None
-    if idempotency_enforced:
-        fingerprint = compute_request_fingerprint(
-            market=req.market, symbol=req.symbol, quantity=req.quantity, price=req.price,
-            stop_loss=req.stop_loss, target_price=req.target_price,
-            trade_management_mode=req.trade_management_mode, evidence_source=req.evidence_source,
-            entry_evidence_schema_version=SNAPSHOT_SCHEMA_VERSION,
-        )
+    # Owner-authorized hardening (post-incident) — idempotency_key is now a
+    # REQUIRED field on BuyRequest (see its definition above), so this is
+    # unconditionally enforced for every request that reaches this point at
+    # all; a request that omitted the key never got this far (422 at the
+    # Pydantic boundary, before `_ensure_portfolio`/any DB write above).
+    # `idempotency_enforced` is kept (always True now) purely so the
+    # response shape (`PlacePaperBuyResponse.idempotency_enforced`) stays
+    # stable for any client/test still reading that field. The fingerprint
+    # covers only the financially material fields (see
+    # idempotency.compute_request_fingerprint) — never symbol/quantity/
+    # timestamp matching alone, so two genuine purchases of the same stock
+    # and quantity with two DIFFERENT keys remain independently valid (no
+    # (user_id, symbol) uniqueness was introduced anywhere).
+    idempotency_enforced = True
+    fingerprint = compute_request_fingerprint(
+        market=req.market, symbol=req.symbol, quantity=req.quantity, price=req.price,
+        stop_loss=req.stop_loss, target_price=req.target_price,
+        trade_management_mode=req.trade_management_mode, evidence_source=req.evidence_source,
+        entry_evidence_schema_version=SNAPSHOT_SCHEMA_VERSION,
+    )
 
     with _conn() as conn:
-        reservation = None
-        if idempotency_enforced:
-            reservation = _resolve_idempotency_reservation(conn, user_id, req.idempotency_key, fingerprint)
-            if reservation.action == IdempotencyAction.REPLAY_COMPLETED.value:
-                return reservation.response_body
-            if reservation.action == IdempotencyAction.CONFLICT_FINGERPRINT_MISMATCH.value:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "error_code": "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST",
-                        "message": "This idempotency_key was already used for a Buy request with different terms. Use a new key for a genuinely new Buy decision.",
-                    },
-                )
-            if reservation.action == IdempotencyAction.STILL_IN_PROGRESS.value:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "error_code": "BUY_ALREADY_IN_PROGRESS",
-                        "message": "A Buy request with this idempotency_key is still being processed. Retry shortly with the same key.",
-                    },
-                )
-            # else PROCEED_FRESH or PROCEED_RECLAIMED — reservation.row_id is set, continue below.
+        reservation = _resolve_idempotency_reservation(conn, user_id, req.idempotency_key, fingerprint)
+        if reservation.action == IdempotencyAction.REPLAY_COMPLETED.value:
+            return reservation.response_body
+        if reservation.action == IdempotencyAction.CONFLICT_FINGERPRINT_MISMATCH.value:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error_code": "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST",
+                    "message": "This idempotency_key was already used for a Buy request with different terms. Use a new key for a genuinely new Buy decision.",
+                },
+            )
+        if reservation.action == IdempotencyAction.STILL_IN_PROGRESS.value:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error_code": "BUY_ALREADY_IN_PROGRESS",
+                    "message": "A Buy request with this idempotency_key is still being processed. Retry shortly with the same key.",
+                },
+            )
+        # else PROCEED_FRESH or PROCEED_RECLAIMED — reservation.row_id is set, continue below.
 
         _buy_transaction_started_at = _time.monotonic()
         try:
@@ -1535,6 +2050,14 @@ def paper_buy(request: Request, req: BuyRequest, user_id: str = Depends(get_curr
                     execution_slippage_pct = round((req.price - ref_price) / ref_price * 100, 4)
                 signal_override = None
 
+                # Trade Postmortem Sprint 3A, Stage J4D — every NEW trade is
+                # created under the current durable level-history contract
+                # version, with both per-level flags and the aggregate
+                # explicitly FALSE (never NULL) from the moment of creation.
+                # This one INSERT is the ONLY place a governed trade's
+                # invariant identity is ever established; the trg_paper_
+                # trades_level_history_invariant trigger then enforces it
+                # for the rest of that row's lifetime.
                 row = conn.execute(
                     """INSERT INTO paper_trades
                        (session_id, user_id, symbol, market, quantity, entry_price, signal, horizon,
@@ -1543,9 +2066,12 @@ def paper_buy(request: Request, req: BuyRequest, user_id: str = Depends(get_curr
                         recommendation_generated_at, recommendation_reference_price,
                         recommendation_entry_low, recommendation_entry_high,
                         recommendation_original_stop_loss, recommendation_original_target,
-                        model_version, execution_slippage_pct, signal_override)
+                        model_version, execution_slippage_pct, signal_override,
+                        level_history_contract_version, stop_modified_after_entry,
+                        target_modified_after_entry, levels_modified_after_entry)
                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                               %s, %s, %s, %s)
                        RETURNING id""",
                     (user_id, user_id, req.symbol.upper(), req.market, req.quantity,
                      req.price, req.signal, req.horizon, req.stop_loss, req.target_price, req.trade_management_mode,
@@ -1553,13 +2079,15 @@ def paper_buy(request: Request, req: BuyRequest, user_id: str = Depends(get_curr
                      req.recommendation_generated_at, req.recommendation_reference_price,
                      req.recommendation_entry_low, req.recommendation_entry_high,
                      req.recommendation_original_stop_loss, req.recommendation_original_target,
-                     req.model_version, execution_slippage_pct, signal_override)
+                     req.model_version, execution_slippage_pct, signal_override,
+                     _LEVEL_HISTORY_CONTRACT_VERSION, False, False, False)
                 ).fetchone()
                 trade_id = row[0]
 
                 snapshot = _build_snapshot_for_buy(
                     trade_id=trade_id, user_id=user_id, symbol=req.symbol.upper(),
                     market=req.market, req=req,
+                    level_history_contract_version=_LEVEL_HISTORY_CONTRACT_VERSION,
                 )
                 try:
                     _insert_entry_snapshot(conn, snapshot)
@@ -1711,6 +2239,23 @@ def paper_sell(trade_id: int, req: SellRequest, user_id: str = Depends(get_curre
                 detail=f"{trade_market_probe[0]} market is closed — orders are paused until it reopens",
             )
 
+        # Wave B, Stage J4F — atomic close-to-current-outbox creation.
+        # Computed BEFORE the transaction (pure, no I/O) so the exact
+        # version identity is available to pass explicitly into
+        # close_paper_trade — the DB helper itself never reads a feature
+        # flag or env var. Gated behind the SAME existing flag as the
+        # rest of this wave's generation wiring (no new flag activation).
+        _request_current_outbox = _trade_postmortem_price_path_enabled()
+        _current_schema_v = _current_calc_v = _current_rules_v = None
+        if _request_current_outbox:
+            from services.postmortem.current_report_generation import current_target_identity
+            from services.postmortem.deterministic import CALCULATION_VERSION as _base_calc_v
+            from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION as _num_rules_v
+            from services.postmortem.price_path_generation import SOURCE_VERSION as _src_v
+            _current_schema_v, _current_calc_v, _current_rules_v = current_target_identity(
+                base_calculation_version=_base_calc_v, numerical_rules_version=_num_rules_v, source_version=_src_v,
+            )
+
         try:
             with conn.transaction():
                 result = close_paper_trade(
@@ -1730,6 +2275,10 @@ def paper_sell(trade_id: int, req: SellRequest, user_id: str = Depends(get_curre
                     source_request_id=(
                         _metrics.hash_key_prefix(req.idempotency_key) if close_idempotency_enforced else None
                     ),
+                    request_current_report_outbox=_request_current_outbox,
+                    current_report_schema_version=_current_schema_v,
+                    current_calculation_version=_current_calc_v,
+                    current_rules_version=_current_rules_v,
                 )
                 cash_col = _CASH_COL[result.market]
                 conn.execute(
@@ -1799,74 +2348,146 @@ def paper_sell(trade_id: int, req: SellRequest, user_id: str = Depends(get_curre
     # is never allowed to turn this endpoint's response into an error.
     _attempt_best_effort_generation(user_id=user_id, trade_id=trade_id, outbox_id=result.outbox_id)
 
+    # Trade Postmortem Sprint 3A, Stage H2A — additive, best-effort
+    # price-path enhancement on top of whatever the Sprint 2 attempt
+    # above just settled. Off by default (see
+    # _trade_postmortem_price_path_enabled) since this is the first
+    # point in this codepath capable of a real external network call;
+    # like the Sprint 2 attempt above, failure here can never turn a
+    # successful sell into an HTTP error.
+    if _trade_postmortem_price_path_enabled():
+        # Defensive unpack: _attempt_price_path_enhancement's real
+        # contract always returns a (report_or_None, status) tuple, but
+        # this call site's ORIGINAL contract (predating Wave B) was
+        # fire-and-ignore-the-return-value — existing regression tests
+        # legitimately monkeypatch this function down to a bare stub
+        # returning None. Never assume the 2-tuple shape at this call
+        # site; a non-tuple result simply means "no price_path_status
+        # to gate the Wave B addition on."
+        _enhancement_result = _attempt_price_path_enhancement(user_id=user_id, trade_id=trade_id)
+        if isinstance(_enhancement_result, tuple) and len(_enhancement_result) == 2:
+            _enhanced_report, _price_path_status = _enhancement_result
+        else:
+            _enhanced_report, _price_path_status = None, None
+
+        # Wave B, Stage J4F — close-time best-effort current (1.2.0)
+        # governed report generation via the shared orchestrator (the
+        # SAME process_current_report the explicit POST recovery
+        # endpoint and the background worker also call). Gated behind
+        # the same existing flag as the price-path enhancement above —
+        # no new flag activation this wave. Only attempted when the
+        # price-path enhancement above actually settled into a real
+        # evidence-bearing outcome this cycle (GENERATED/ALREADY_
+        # COMPLETE) — never on IN_PROGRESS/FAILED_RETRYABLE/
+        # FAILED_TERMINAL/NOT_YET_AVAILABLE, which would otherwise cause
+        # a SECOND, redundant provider acquisition attempt for the exact
+        # same trade in the exact same request (a real regression this
+        # guard prevents — confirmed against price-path Wave A's own
+        # frozen provider-call-count regression tests). Never allowed to
+        # turn a successful sell into an HTTP error.
+        if _price_path_status in (PRICE_PATH_GENERATED, PRICE_PATH_ALREADY_COMPLETE):
+            _attempt_current_report_generation(user_id=user_id, trade_id=trade_id)
+
     return response
+
+
+# Wave A closure correction — the SAME stable, privacy-safe "trade not
+# found" response used for both a genuinely nonexistent trade and a
+# cross-user trade, matching the existing close path's own pattern (see
+# close_service.py's TradeNotFoundError handling): identical status
+# code and identical body in both cases, so a caller can never use this
+# endpoint as an existence oracle for another user's trade.
+def _edit_trade_not_found() -> HTTPException:
+    return HTTPException(status_code=404, detail="Trade not found")
 
 
 @router.patch("/trade/{trade_id}")
 def edit_trade(trade_id: int, req: EditRequest, user_id: str = Depends(get_current_user_id)):
+    # Wave A closure correction — this pool's connections are
+    # autocommit=True (see _get_pool()), under which every individual
+    # `conn.execute(...)` call commits and releases its locks
+    # immediately by itself; a bare `with _conn() as conn:` block does
+    # NOT keep a `SELECT ... FOR UPDATE` row lock held across the later
+    # statements in this function. An explicit `with conn.transaction():`
+    # is required for the lock to actually serialize concurrent editors
+    # of the same trade — without it, two concurrent PATCH requests can
+    # each read the pre-edit row, each believe their own change is the
+    # only one, and race exactly as before this Wave's FOR UPDATE was
+    # added (the lock was real but scoped to a single already-committed
+    # statement, not to this function's overall read-modify-write).
     with _conn() as conn:
-        trade = conn.execute(
-            "SELECT user_id, status, entry_price, quantity, market, stop_loss, target_price "
-            "FROM paper_trades WHERE id = %s",
-            (trade_id,)
-        ).fetchone()
-        if trade is None:
-            raise HTTPException(status_code=404, detail="Trade not found")
-        if trade[0] != user_id:
-            raise HTTPException(status_code=403, detail="Not your trade")
-        if trade[1] != "OPEN":
-            raise HTTPException(status_code=400, detail="Cannot edit a closed trade")
+        with conn.transaction():
+            # Wave A closure correction — scoped by BOTH trade_id AND
+            # user_id in the SAME lookup (rather than a separate
+            # ownership check after an unscoped SELECT), so a
+            # nonexistent trade and another user's trade are
+            # indistinguishable from this query's own result shape
+            # onward: both simply return no row, never proceeding to
+            # branch on a fetched-but-mismatched owner.
+            trade = conn.execute(
+                "SELECT status, entry_price, quantity, market, stop_loss, target_price "
+                "FROM paper_trades WHERE id = %s AND user_id = %s FOR UPDATE",
+                (trade_id, user_id)
+            ).fetchone()
+            if trade is None:
+                raise _edit_trade_not_found()
+            if trade[0] != "OPEN":
+                raise HTTPException(status_code=400, detail="Cannot edit a closed trade")
 
-        old_entry, qty, trade_market, old_stop_loss, old_target_price = trade[2], trade[3], trade[4], trade[5], trade[6]
-        if trade_market not in _CASH_COL:
-            raise HTTPException(status_code=500, detail=f"Trade has an unrecognized market '{trade_market}' — cannot determine which cash ledger to adjust")
-        cash_col = _CASH_COL[trade_market]
+            old_entry, qty, trade_market, old_stop_loss, old_target_price = trade[1], trade[2], trade[3], trade[4], trade[5]
+            if trade_market not in _CASH_COL:
+                raise HTTPException(status_code=500, detail=f"Trade has an unrecognized market '{trade_market}' — cannot determine which cash ledger to adjust")
+            cash_col = _CASH_COL[trade_market]
 
-        # Learning Alpha Engine remediation, Phase 1 (corrected per review):
-        #
-        # Partial-PATCH semantics: EditRequest.stop_loss/target_price both
-        # default to None, so a request body that OMITS a field is
-        # indistinguishable from one that explicitly submits null — UNLESS
-        # we check model_fields_set (which JSON keys the client actually
-        # sent), not just the resolved attribute value. An entry_price-only
-        # request (stop_loss/target_price omitted) must preserve the
-        # currently stored levels, not wipe them to NULL; an explicit
-        # `{"stop_loss": null, ...}` still clears that level, matching this
-        # endpoint's pre-existing behavior for a client that does that on
-        # purpose.
-        new_stop_loss = req.stop_loss if "stop_loss" in req.model_fields_set else old_stop_loss
-        new_target_price = req.target_price if "target_price" in req.model_fields_set else old_target_price
+            # Learning Alpha Engine remediation, Phase 1 (corrected per review):
+            #
+            # Partial-PATCH semantics: EditRequest.stop_loss/target_price both
+            # default to None, so a request body that OMITS a field is
+            # indistinguishable from one that explicitly submits null — UNLESS
+            # we check model_fields_set (which JSON keys the client actually
+            # sent), not just the resolved attribute value. An entry_price-only
+            # request (stop_loss/target_price omitted) must preserve the
+            # currently stored levels, not wipe them to NULL; an explicit
+            # `{"stop_loss": null, ...}` still clears that level, matching this
+            # endpoint's pre-existing behavior for a client that does that on
+            # purpose.
+            new_stop_loss = req.stop_loss if "stop_loss" in req.model_fields_set else old_stop_loss
+            new_target_price = req.target_price if "target_price" in req.model_fields_set else old_target_price
 
-        # levels_modified_after_entry is set TRUE only when stop_loss or
-        # target_price GENUINELY changes from its previously stored value —
-        # an entry_price-only correction (omitted or resubmitted-identical)
-        # or a no-op edit must not set it. Once TRUE it must never revert:
-        # the "unchanged" branch below simply never touches the column
-        # again (rather than writing FALSE), so a prior TRUE always
-        # survives a later no-op edit.
-        levels_changed = (new_stop_loss != old_stop_loss) or (new_target_price != old_target_price)
-        if levels_changed:
+            # Stage J4D — stop and target are evaluated INDEPENDENTLY (the
+            # aggregate levels_modified_after_entry alone could never tell
+            # which level actually changed). Each CASE below leaves the
+            # existing column value — TRUE, FALSE, or a legacy NULL —
+            # completely untouched when that specific level is unchanged, and
+            # sets it to TRUE (never anything else) when it genuinely
+            # changed. This single UPDATE statement is what the trg_paper_
+            # trades_level_history_invariant trigger requires: a governed
+            # row's stop_loss/target_price change must be accompanied by the
+            # matching per-level flag becoming TRUE in the SAME statement.
+            # Scoped by user_id again (defense in depth — the FOR UPDATE
+            # lock already guarantees this row is the one this user owns).
+            stop_changed = new_stop_loss != old_stop_loss
+            target_changed = new_target_price != old_target_price
             conn.execute(
                 "UPDATE paper_trades SET stop_loss = %s, target_price = %s, "
-                "levels_modified_after_entry = TRUE WHERE id = %s",
-                (new_stop_loss, new_target_price, trade_id)
-            )
-        else:
-            conn.execute(
-                "UPDATE paper_trades SET stop_loss = %s, target_price = %s WHERE id = %s",
-                (new_stop_loss, new_target_price, trade_id)
+                "stop_modified_after_entry = CASE WHEN %s THEN TRUE ELSE stop_modified_after_entry END, "
+                "target_modified_after_entry = CASE WHEN %s THEN TRUE ELSE target_modified_after_entry END, "
+                "levels_modified_after_entry = CASE WHEN %s THEN TRUE ELSE levels_modified_after_entry END "
+                "WHERE id = %s AND user_id = %s",
+                (new_stop_loss, new_target_price, stop_changed, target_changed, stop_changed or target_changed,
+                 trade_id, user_id)
             )
 
-        if req.entry_price and req.entry_price > 0 and req.entry_price != old_entry:
-            cash_delta = (old_entry - req.entry_price) * qty
-            conn.execute(
-                "UPDATE paper_trades SET entry_price = %s WHERE id = %s",
-                (req.entry_price, trade_id)
-            )
-            conn.execute(
-                f"UPDATE paper_portfolio SET {cash_col} = {cash_col} + %s, updated_at = now() WHERE user_id = %s",
-                (cash_delta, user_id)
-            )
+            if req.entry_price and req.entry_price > 0 and req.entry_price != old_entry:
+                cash_delta = (old_entry - req.entry_price) * qty
+                conn.execute(
+                    "UPDATE paper_trades SET entry_price = %s WHERE id = %s AND user_id = %s",
+                    (req.entry_price, trade_id, user_id)
+                )
+                conn.execute(
+                    f"UPDATE paper_portfolio SET {cash_col} = {cash_col} + %s, updated_at = now() WHERE user_id = %s",
+                    (cash_delta, user_id)
+                )
 
     return {"message": "Trade updated", "trade_id": trade_id}
 
@@ -1978,6 +2599,12 @@ def reset_portfolio(user_id: str = Depends(get_current_user_id), market: Literal
                 # immutable-by-UPDATE during normal lifecycle, but not
                 # absolutely immutable — an authorized reset may delete
                 # it, exactly like the entry snapshot already does.
+                # Trade Postmortem Sprint 3A — same orphan-prevention
+                # discipline for price-path evidence, which also carries
+                # its own user_id column and no FOREIGN KEY back to
+                # paper_trades. Deleted alongside the other durability
+                # tables, before paper_trades.
+                conn.execute("DELETE FROM paper_trade_price_path_evidence WHERE user_id = %s", (user_id,))
                 conn.execute("DELETE FROM paper_trade_postmortem_report WHERE user_id = %s", (user_id,))
                 conn.execute("DELETE FROM paper_trade_postmortem_outbox WHERE user_id = %s", (user_id,))
                 conn.execute("DELETE FROM paper_trade_exit_snapshot WHERE user_id = %s", (user_id,))
@@ -2028,6 +2655,13 @@ def reset_portfolio(user_id: str = Depends(get_current_user_id), market: Literal
             )
             conn.execute(
                 "DELETE FROM paper_trade_entry_snapshot WHERE user_id = %s AND market = %s",
+                (user_id, market)
+            )
+            # Trade Postmortem Sprint 3A — price-path evidence carries its
+            # own market column, scoped the same way as the other
+            # durability tables above.
+            conn.execute(
+                "DELETE FROM paper_trade_price_path_evidence WHERE user_id = %s AND market = %s",
                 (user_id, market)
             )
             conn.execute("DELETE FROM paper_trades WHERE user_id = %s AND market = %s", (user_id, market))
@@ -2103,6 +2737,22 @@ _TRADE_POSTMORTEM_DAILY_ENV_VAR = "TRADE_POSTMORTEM_DAILY_ENABLED"
 
 def _trade_postmortem_daily_enabled() -> bool:
     raw = os.getenv(_TRADE_POSTMORTEM_DAILY_ENV_VAR, "0").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+# Trade Postmortem Sprint 3A — separate, dedicated, off-by-default flag
+# for price-path enhancement specifically. Unlike the existing Sprint
+# 1/2 report generation above (pure computation from already-stored
+# data, no external calls), _attempt_price_path_enhancement makes a
+# REAL yfinance network call by default — a materially different risk
+# profile that must not silently start firing on production sell/
+# generate traffic just because this branch merged. Same accepted-value
+# convention as _trade_postmortem_daily_enabled.
+_TRADE_POSTMORTEM_PRICE_PATH_ENV_VAR = "TRADE_POSTMORTEM_PRICE_PATH_ENABLED"
+
+
+def _trade_postmortem_price_path_enabled() -> bool:
+    raw = os.getenv(_TRADE_POSTMORTEM_PRICE_PATH_ENV_VAR, "0").strip().lower()
     return raw in ("1", "true", "yes", "on")
 
 
@@ -2536,15 +3186,565 @@ def get_trade_postmortem(trade_id: int, user_id: str = Depends(get_current_user_
     )
 
 
+# ============================= Wave C — current (1.2.0) governed report read API ============================= #
+# Gate 'WC-K — Backend Read Contract'. Deliberately a NEW, distinct route
+# from GET /postmortem/{trade_id} above (Sprint 1 basic deterministic
+# analytics, a materially different response shape) — repurposing that
+# route would silently break existing clients depending on its shape.
+# This endpoint is side-effect-free: it reads persisted trade/report/
+# outbox state only, NEVER calls process_current_report, NEVER acquires
+# provider evidence, NEVER claims or settles an outbox row, NEVER writes
+# anything. See test_current_report_read_api.py's own
+# "no side effects" assertions for the enforced proof.
+
+CURRENT_REPORT_STATUS_READY = "READY"
+CURRENT_REPORT_STATUS_PROCESSING = "PROCESSING"
+CURRENT_REPORT_STATUS_NOT_ELIGIBLE = "NOT_ELIGIBLE"
+CURRENT_REPORT_STATUS_NOT_AVAILABLE = "NOT_AVAILABLE"
+CURRENT_REPORT_STATUS_TERMINAL_FAILURE = "TERMINAL_FAILURE"
+CURRENT_REPORT_STATUS_INTEGRITY_CONTRADICTION = "INTEGRITY_CONTRADICTION"
+CURRENT_REPORT_STATUS_FEATURE_DISABLED = "FEATURE_DISABLED"
+
+# WC-K-11 — a header set on FastAPI's injected `Response` parameter does
+# NOT survive a raised HTTPException (FastAPI builds an independent
+# response for the exception), so every HTTPException this route raises
+# must carry this policy explicitly via headers=_NO_STORE_HEADERS.
+_NO_STORE_HEADERS = {"Cache-Control": "private, no-store"}
+
+
+CurrentReportAvailability = Literal[
+    "READY", "PROCESSING", "NOT_ELIGIBLE", "NOT_AVAILABLE",
+    "TERMINAL_FAILURE", "INTEGRITY_CONTRADICTION", "FEATURE_DISABLED",
+]
+CurrentReportStatus = Literal["COMPLETE", "LIMITED_EVIDENCE"]
+
+
+# A fully self-referencing recursive alias (via the `type` statement,
+# Python 3.12+) is not usable here — CI runs Python 3.11 (a SyntaxError
+# on `type X = ...`), and a plain `Union[..., list["X"], dict[str,
+# "X"]]` string-forward-ref alias triggers infinite recursion in this
+# pydantic version's schema generation (reproduced directly). `Any` for
+# the nested cases is the safe, universally-compatible choice; the
+# field itself is still typed as JSONValue at the top level to document
+# intent (a JSON-safe scalar, or a JSON-safe list/dict of otherwise-
+# unconstrained JSON-safe content).
+JSONValue = str | int | float | bool | None | list[Any] | dict[str, Any]
+
+
+class PostmortemClaimModel(BaseModel):
+    """Typed model for services.postmortem.evidence.PostmortemClaim, the
+    SINGLE uniform claim shape used by every claim producer in the
+    system (Sprint 1's evidence_attribution.py, exit_evidence.py,
+    price_path_generation.py's governed_price_path_claims.py all import
+    and construct THIS SAME dataclass — verified by direct source read;
+    there is no separate claim shape to union against). All fields are
+    required because PostmortemClaim itself has no optional dataclass
+    fields except limitations (default []).
+
+    extra="forbid": every current 1.2.0 producer constructs the exact
+    shared PostmortemClaim dataclass shape (verified above) — an
+    unexpected extra field means either a real defect or an
+    undocumented schema change, and must fail closed rather than be
+    silently dropped.
+
+    evidence_class/confidence_band use the authoritative
+    services.postmortem.evidence Enums directly (both (str, Enum), so
+    external JSON serialization is an unchanged plain string) rather
+    than a duplicated Literal — a value added to those enums is
+    automatically accepted here with no separate update."""
+
+    model_config = {"extra": "forbid"}
+
+    claim_id: str
+    report_section: str
+    factor: str
+    claim_text: str
+    evidence_class: EvidenceClass
+    confidence_band: ConfidenceBand
+    supporting_evidence_ids: list[str]
+    opposing_evidence_ids: list[str]
+    missing_evidence: list[str]
+    contradiction_flags: list[str]
+    rule_id: str
+    rule_version: str
+    limitations: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _enforce_claim_semantics(self):
+        # Reuses the SAME authoritative rule check
+        # PostmortemClaim.__post_init__ itself uses — never a second,
+        # independently drifting implementation.
+        try:
+            validate_postmortem_claim_semantics(
+                claim_id=self.claim_id, claim_text=self.claim_text,
+                evidence_class=self.evidence_class.value, confidence_band=self.confidence_band.value,
+                supporting_evidence_ids=self.supporting_evidence_ids,
+                opposing_evidence_ids=self.opposing_evidence_ids,
+                rule_id=self.rule_id, rule_version=self.rule_version,
+            )
+        except ValueError as exc:
+            raise ValueError(f"claim semantic rule violated: {type(exc).__name__}") from None
+        return self
+
+
+class EvidenceItemModel(BaseModel):
+    """Typed model for services.postmortem.evidence.EvidenceItem, the
+    SINGLE uniform evidence-item shape used across the system (same
+    verification as PostmortemClaimModel above). `value` is typed
+    JSONValue because the dataclass itself declares it `object` — the
+    field is genuinely open-ended by the original author's own design
+    (an evidence item's observed value can be a price, a count, a
+    string signal name, a nested dict, etc.).
+
+    extra="forbid" for the same reason as PostmortemClaimModel.
+    source_type/verification_level/freshness_status use the
+    authoritative services.postmortem.evidence Enums directly."""
+
+    model_config = {"extra": "forbid"}
+
+    evidence_id: str
+    category: str
+    name: str
+    value: JSONValue
+    units: str | None
+    observation_timestamp: datetime | None
+    source: str
+    source_type: SourceType
+    verification_level: EvidenceVerificationLevel
+    freshness_status: FreshnessStatus
+    limitations: list[str] = Field(default_factory=list)
+
+
+class ReportSourceManifest(BaseModel):
+    """Typed model for paper_trade_postmortem_report.source_manifest —
+    the REPORT row's own smaller manifest (built by
+    generation_service.py and extended by price_path_generation.py),
+    NOT the larger linked price-path-EVIDENCE provider manifest built
+    by price_path_acquisition.py (source_id, provider_library_version,
+    etc. — a separate, linked, immutable record; exposing it through
+    this response is tracked as NONBLOCKING BACKLOG, see
+    Trade-Postmortem-Wave-C-WC-K-14-Provenance-Inventory.md).
+
+    has_entry_snapshot/has_exit_snapshot/exit_evidence_rules_version/
+    phase1_calculation_version/attribution_rules_version are required
+    on every Sprint-2-or-later report (generation_service.py always
+    sets all five). exit_snapshot_schema_version and
+    exit_trigger_timing_verification are null whenever no exit
+    snapshot exists. price_path_calculation_version is
+    HISTORICAL-OPTIONAL — absent on any report that predates or never
+    received a price-path enhancement; it must never be synthesized as
+    an explicit `null` when the persisted JSON genuinely omits the key
+    (see the wrap serializer below).
+
+    `extra="allow"` preserves any additional JSON-safe keys a future
+    persisted report might carry, for forward compatibility, without
+    requiring this model to enumerate every possible future field."""
+
+    model_config = {"extra": "allow"}
+
+    has_entry_snapshot: bool
+    has_exit_snapshot: bool
+    exit_snapshot_schema_version: str | None = None
+    # Uses TriggerTimingVerification directly (str, Enum) rather than a
+    # duplicated Literal, so this field can never silently drift from
+    # services.postmortem.exit_snapshot's own governed vocabulary — a
+    # value added there is automatically accepted here with no
+    # separate update, and (str, Enum) serializes identically to a
+    # plain string, so the external JSON contract is unchanged.
+    exit_trigger_timing_verification: TriggerTimingVerification | None = None
+    exit_evidence_rules_version: str
+    phase1_calculation_version: str
+    attribution_rules_version: str
+    price_path_calculation_version: str | None = None
+    # Both unconditionally set by current_report_generation.
+    # build_current_report_payload for every 1.2.0 report (verified by
+    # direct source read) — required, unlike price_path_calculation_version.
+    price_path_rules_version: str
+    governed_rules_version: str
+
+    @model_validator(mode="after")
+    def _enforce_exit_snapshot_and_price_path_consistency(self):
+        # generation_service.py's own builder guarantees: exit_snapshot_
+        # schema_version and exit_trigger_timing_verification are BOTH
+        # None exactly when has_exit_snapshot is False, and BOTH set to
+        # a real value when it is True. A row violating this shape is
+        # malformed, not a legitimate historical variant.
+        if not self.has_exit_snapshot:
+            if self.exit_snapshot_schema_version is not None or self.exit_trigger_timing_verification is not None:
+                raise ValueError(
+                    "has_exit_snapshot=False requires exit_snapshot_schema_version and "
+                    "exit_trigger_timing_verification to both be null"
+                )
+        else:
+            if not self.exit_snapshot_schema_version:
+                raise ValueError("has_exit_snapshot=True requires a non-empty exit_snapshot_schema_version")
+            if self.exit_trigger_timing_verification is None:
+                raise ValueError("has_exit_snapshot=True requires a governed exit_trigger_timing_verification value")
+        # price_path_calculation_version is historical-optional — the
+        # only two legitimate states production ever persists are
+        # "key absent" (no price-path enhancement) or "a real non-empty
+        # version string" (enhanced). An EXPLICIT null is not a state
+        # production establishes evidence for, so it is treated as
+        # malformed rather than silently legitimized as a third state.
+        if "price_path_calculation_version" in self.model_fields_set and self.price_path_calculation_version is None:
+            raise ValueError(
+                "price_path_calculation_version must either be entirely absent (historical, "
+                "non-enhanced) or a non-null version string — an explicit null is not a "
+                "recognized persisted state"
+            )
+        return self
+
+    @model_serializer(mode="wrap")
+    def _serialize_preserving_historical_absence(self, handler):
+        """price_path_calculation_version is historical-optional. A
+        report whose persisted JSON genuinely omits this key must
+        serialize WITHOUT the key (not as an explicit `null`) — Pydantic
+        would otherwise always emit it because it is a declared field
+        with a None default. Uses model_fields_set (populated only by
+        values actually present in the input, never by defaults) to
+        distinguish 'absent from persisted JSON' from 'explicitly
+        persisted as null', preserving the latter where it legitimately
+        occurs."""
+        data = handler(self)
+        if "price_path_calculation_version" not in self.model_fields_set:
+            data.pop("price_path_calculation_version", None)
+        return data
+
+_READY_ONLY_FIELDS = (
+    "report_schema_version", "calculation_version", "attribution_rules_version",
+    "evidence_bundle_version", "market", "report_trading_date", "market_timezone",
+    "status", "generated_at", "structured_report", "claims", "evidence_items",
+    "evidence_gaps", "warnings", "source_manifest", "supersedes_report_id",
+    # Stock-identity DISPLAY metadata (added for report readability) —
+    # not governed evidence, not part of the persisted report identity,
+    # but still gated behind the same READY-only invariant as everything
+    # else above: a non-READY envelope must never leak symbol/company
+    # identity for a trade the caller hasn't been shown a report for yet.
+    "symbol", "company_name",
+)
+
+
+class VersionAndProvenance(BaseModel):
+    """Typed model for the current 1.2.0 governed provenance subtree
+    current_report_generation.build_current_report_payload
+    unconditionally sets at structured_report["price_path"]
+    ["version_and_provenance"] for EVERY current report (verified by
+    direct source read — never absent for a real 1.2.0 report,
+    regardless of COMPLETE/LIMITED_EVIDENCE/no-bars-fallback status).
+    entry_snapshot_schema_version/exit_snapshot_schema_version/
+    level_history_contract_version are legitimately null when the
+    corresponding snapshot doesn't exist — every other field is always
+    a real string. extra="forbid": this is a frozen 1.2.0 shape with no
+    known legitimate variant, so an unexpected field is a real defect."""
+
+    model_config = {"extra": "forbid"}
+
+    report_schema_version: str
+    calculation_version: str
+    numerical_rules_version: str
+    governed_semantic_rules_version: str
+    governed_claim_rules_version: str
+    entry_snapshot_schema_version: str | None
+    exit_snapshot_schema_version: str | None
+    level_history_contract_version: str | None
+    source_version: str
+
+
+class PricePathSection(BaseModel):
+    """Typed wrapper for structured_report["price_path"] — only
+    version_and_provenance is modeled explicitly; every other key
+    (raw_evidence, level_history, order, etc.) is genuinely open-ended
+    persisted content this pass does not model, preserved via
+    extra="allow" for forward compatibility."""
+
+    model_config = {"extra": "allow"}
+
+    version_and_provenance: VersionAndProvenance
+
+
+class StructuredReportModel(BaseModel):
+    """Typed wrapper for the top-level structured_report — only the
+    "price_path" key is modeled explicitly (the current 1.2.0 governed
+    subtree); "postmortem"/"attribution" and any other top-level
+    section are genuinely open-ended base-report content this pass does
+    not model, preserved via extra="allow". price_path itself is
+    required: every current 1.2.0 report has it (see PricePathSection's
+    own docstring)."""
+
+    model_config = {"extra": "allow"}
+
+    price_path: PricePathSection
+
+
+class CurrentReportReadResponse(BaseModel):
+    trade_id: int
+    availability: CurrentReportAvailability
+    report_schema_version: str | None = None
+    calculation_version: str | None = None
+    attribution_rules_version: str | None = None
+    evidence_bundle_version: str | None = None
+    market: str | None = None
+    report_trading_date: date | None = None
+    market_timezone: str | None = None
+    status: CurrentReportStatus | None = None
+    generated_at: datetime | None = None
+    # Stock-identity DISPLAY metadata — additive, nullable, backward
+    # compatible. NOT governed evidence, NOT part of the persisted report
+    # identity, NOT used in any claim/calculation, and does not affect
+    # report_schema_version (still 1.2.0). `symbol` is sourced from the
+    # already-authoritative owned paper_trades row this endpoint already
+    # reads for ownership. `company_name` is a best-effort, read-only,
+    # fail-safe lookup (services.fundamentals_cache.get_company_name) —
+    # None when unavailable, never a guess, never a live quote fetch.
+    symbol: str | None = None
+    company_name: str | None = None
+    structured_report: StructuredReportModel | None = None
+    # Root cause of the earlier real-PostgreSQL CI failure (run
+    # 30768906338) found and fixed: current_report_generation.
+    # build_current_report_payload was merging GovernedPricePathPayload's
+    # raw EvidenceItem/PostmortemClaim dataclass INSTANCES directly
+    # alongside already-dict base entries, and report_store.persist_report's
+    # json.dumps(..., default=str) silently stringified the dataclass
+    # instances into opaque repr strings instead of governed JSON objects
+    # — a heterogeneous persisted array these typed models correctly
+    # rejected. Fixed at the source (canonicalized via dataclasses.asdict
+    # in build_current_report_payload, plus a narrow non-permissive
+    # encoder in report_store as defense-in-depth) and proven with a
+    # real-PostgreSQL shape-only regression test
+    # (test_real_price_path_report_persists_claims_and_evidence_as_json_
+    # objects, test_governed_no_bars_fallback_report_persists_claims_
+    # as_json_objects) before re-enabling this typing.
+    claims: list[PostmortemClaimModel] | None = None
+    evidence_items: list[EvidenceItemModel] | None = None
+    evidence_gaps: list[str] | None = None
+    warnings: list[str] | None = None
+    source_manifest: ReportSourceManifest | None = None
+    supersedes_report_id: int | None = None
+
+    @model_validator(mode="after")
+    def _enforce_ready_non_ready_invariants(self):
+        # WC-K — a non-READY response must never carry report contents:
+        # PROCESSING/TERMINAL_FAILURE/etc. leaking a stale or unrelated
+        # report body would be a fabrication and a privacy defect.
+        if self.availability != "READY":
+            leaked = [f for f in _READY_ONLY_FIELDS if getattr(self, f) is not None]
+            if leaked:
+                raise ValueError(
+                    f"non-READY response (availability={self.availability!r}) must not carry report "
+                    f"fields, but found: {leaked}"
+                )
+            return self
+        # READY requires a valid, complete persisted report identity —
+        # never a partially-populated response.
+        missing = [
+            f for f in (
+                "report_schema_version", "calculation_version", "attribution_rules_version",
+                "evidence_bundle_version", "market", "report_trading_date", "market_timezone",
+                "status", "generated_at", "structured_report", "claims", "evidence_items",
+                "source_manifest",
+            )
+            if getattr(self, f) is None
+        ]
+        if missing:
+            raise ValueError(f"READY response is missing required report field(s): {missing}")
+        return self
+
+
+def _build_current_report_ready_response(
+    report, *, trade_id: int, symbol: str | None = None, market: str | None = None,
+) -> "CurrentReportReadResponse | None":
+    """WC-K — fail-closed conversion boundary between a persisted
+    PersistedReport row and the typed READY response. Maps ONLY
+    persisted values — never imports a current code constant to fill a
+    missing one. Returns None for an EXPECTED failure mode only —
+    pydantic.ValidationError, raised when the persisted row cannot
+    satisfy CurrentReportReadResponse's own READY invariants (e.g. a
+    malformed/incomplete legacy or corrupted row) — never a broad
+    `except Exception`. An unrelated programming defect (AttributeError
+    from an unexpected report shape, a database error, etc.) is NOT
+    swallowed here and propagates normally, so it surfaces as a real
+    bug rather than being silently converted into a plausible-looking
+    INTEGRITY_CONTRADICTION. The caller converts a None result into the
+    sanitized INTEGRITY_CONTRADICTION response — this function itself
+    never constructs that fallback, so it cannot accidentally leak
+    partial report data through a half-built object.
+
+    `symbol`/`market` come from the already-authoritative owned
+    paper_trades row the caller already read for ownership — NOT
+    persisted on `report` itself. `company_name` is a best-effort,
+    read-only, fail-safe DISPLAY lookup
+    (services.fundamentals_cache.get_company_name) — never causal
+    evidence, never able to make this READY response unavailable; a
+    lookup miss simply leaves company_name=None."""
+    try:
+        # Report-wide referential integrity: every claim's supporting/
+        # opposing evidence_id must resolve to a real evidence_items
+        # entry. Reuses generation_service's own merged-evidence
+        # integrity check (the SAME one Sprint 1/2 generation already
+        # runs) rather than a second, independently drifting copy —
+        # never repairs or removes a dangling reference, only detects it.
+        generation_service.validate_merged_evidence_integrity(report.evidence_items, report.claims)
+        company_name = None
+        if symbol:
+            try:
+                from services import fundamentals_cache
+                company_name = fundamentals_cache.get_company_name(symbol, market=report.market or market or "IN")
+            except Exception:
+                # Display-only lookup — a failure here must never affect
+                # READY availability of the governed report itself.
+                company_name = None
+        return CurrentReportReadResponse(
+            trade_id=trade_id, availability=CURRENT_REPORT_STATUS_READY,
+            report_schema_version=report.report_schema_version,
+            calculation_version=report.calculation_version,
+            attribution_rules_version=report.attribution_rules_version,
+            evidence_bundle_version=report.evidence_bundle_version,
+            market=report.market,
+            report_trading_date=report.report_trading_date,
+            market_timezone=report.market_timezone,
+            status=report.status,
+            generated_at=report.generated_at,
+            symbol=symbol,
+            company_name=company_name,
+            structured_report=report.structured_report,
+            claims=report.claims,
+            evidence_items=report.evidence_items,
+            evidence_gaps=report.evidence_gaps,
+            warnings=report.warnings,
+            source_manifest=report.source_manifest,
+            supersedes_report_id=report.supersedes_report_id,
+        )
+    except ValidationError as exc:
+        # Privacy-safe operational metadata ONLY — never the raw
+        # exception body (which pydantic embeds the invalid VALUES
+        # into), never claims/evidence/structured_report/source_manifest,
+        # never a user identifier. report.id/report_schema_version are
+        # safe internal identifiers for an operator to look up the row.
+        log.warning(
+            "[current_report_read] persisted report failed READY validation "
+            "(trade_id=%s, report_id=%s, report_schema_version=%s, error_count=%d)",
+            trade_id, getattr(report, "id", None), getattr(report, "report_schema_version", None),
+            exc.error_count(),
+        )
+        return None
+    except evidence_attribution.ReportIntegrityError:
+        # Same privacy-safe policy as above — never the raw exception
+        # message (which embeds the specific claim_id/evidence_id).
+        log.warning(
+            "[current_report_read] persisted report failed evidence referential integrity "
+            "(trade_id=%s, report_id=%s, report_schema_version=%s)",
+            trade_id, getattr(report, "id", None), getattr(report, "report_schema_version", None),
+        )
+        return None
+
+
+@router.get("/{trade_id}/current-report", response_model=CurrentReportReadResponse)
+def get_current_governed_report(trade_id: int, response: Response, user_id: str = Depends(get_current_user_id)):
+    """WC-K-01/02/03/04/05/06/07/08/09/10 — the canonical, side-effect-
+    free read for the current (1.2.0) governed Postmortem report.
+
+    Never generates, regenerates, claims, or settles anything — reads
+    ONLY the persisted `paper_trades`, `paper_trade_postmortem_report`,
+    and `paper_trade_postmortem_outbox` rows for this exact trade_id/
+    user_id/current-version-identity, in one connection, then returns.
+
+    Ownership uses the SAME indistinguishable-404 convention as
+    GET /postmortem/{trade_id} above — a trade belonging to another
+    user is never distinguishable from a nonexistent trade_id.
+
+    WC-K-11: authenticated per-user data — never safe for a shared
+    cache to store or replay across users. A header set on the injected
+    `Response` does NOT survive a raised HTTPException (FastAPI builds
+    an independent response for it), so every raise below carries the
+    same policy explicitly via `headers=_NO_STORE_HEADERS` — otherwise
+    only the normal (non-exception) return path would be protected."""
+    response.headers["Cache-Control"] = "private, no-store"
+    with _conn() as conn:
+        trade_row = conn.execute(
+            "SELECT user_id, status, market, symbol FROM paper_trades WHERE id = %s", (trade_id,),
+        ).fetchone()
+        if trade_row is None or trade_row[0] != user_id:
+            raise HTTPException(status_code=404, detail="Trade not found", headers=_NO_STORE_HEADERS)
+        trade_owner, trade_status, trade_market, trade_symbol = trade_row
+
+        # WC-K-15: capability is evaluated only AFTER ownership is
+        # established, so a disabled-feature response can never be used
+        # to probe for the existence of another user's trade — a
+        # nonexistent/other-user trade is still the identical 404 above,
+        # regardless of the flag. While disabled, no report contents,
+        # outbox state or generation/recovery path is ever reached.
+        if not _trade_postmortem_price_path_enabled():
+            _cr_metrics.safe_record_availability(CURRENT_REPORT_STATUS_FEATURE_DISABLED)
+            return CurrentReportReadResponse(trade_id=trade_id, availability=CURRENT_REPORT_STATUS_FEATURE_DISABLED)
+
+        if trade_status != "CLOSED":
+            _cr_metrics.safe_record_availability(CURRENT_REPORT_STATUS_NOT_ELIGIBLE)
+            return CurrentReportReadResponse(trade_id=trade_id, availability=CURRENT_REPORT_STATUS_NOT_ELIGIBLE)
+
+        from services.postmortem.deterministic import CALCULATION_VERSION as _base_calc_v
+        from services.postmortem.price_path_generation import PRICE_PATH_CALC_RULES_VERSION as _num_rules_v
+        from services.postmortem.price_path_generation import SOURCE_VERSION as _src_v
+        schema_v, calc_v, rules_v = current_target_identity(
+            base_calculation_version=_base_calc_v, numerical_rules_version=_num_rules_v, source_version=_src_v,
+        )
+
+        report = report_store.get_current_report(
+            conn, paper_trade_id=trade_id, user_id=user_id,
+            report_schema_version=schema_v, calculation_version=calc_v, attribution_rules_version=rules_v,
+        )
+        if report is not None:
+            ready_response = _build_current_report_ready_response(
+                report, trade_id=trade_id, symbol=trade_symbol, market=trade_market,
+            )
+            if ready_response is None:
+                _cr_metrics.safe_record_availability(CURRENT_REPORT_STATUS_INTEGRITY_CONTRADICTION)
+                return CurrentReportReadResponse(
+                    trade_id=trade_id, availability=CURRENT_REPORT_STATUS_INTEGRITY_CONTRADICTION,
+                )
+            _cr_metrics.safe_record_availability(CURRENT_REPORT_STATUS_READY)
+            return ready_response
+
+        # No report exists yet — check the current-version outbox row
+        # (if one exists) to distinguish PROCESSING / TERMINAL_FAILURE /
+        # INTEGRITY_CONTRADICTION from genuinely NOT_AVAILABLE (never
+        # requested at all). This is a pure read of the outbox row's own
+        # status column — never a claim, never a settlement.
+        outbox_row = conn.execute(
+            """SELECT status FROM paper_trade_postmortem_outbox
+               WHERE paper_trade_id = %s AND user_id = %s AND requested_report_schema_version = %s
+                 AND requested_calculation_version = %s AND requested_rules_version = %s""",
+            (trade_id, user_id, schema_v, calc_v, rules_v),
+        ).fetchone()
+
+        if outbox_row is None:
+            _cr_metrics.safe_record_availability(CURRENT_REPORT_STATUS_NOT_AVAILABLE)
+            return CurrentReportReadResponse(trade_id=trade_id, availability=CURRENT_REPORT_STATUS_NOT_AVAILABLE)
+
+        outbox_status = outbox_row[0]
+        if outbox_status in ("PENDING", "GENERATING", "FAILED_RETRYABLE"):
+            _cr_metrics.safe_record_availability(CURRENT_REPORT_STATUS_PROCESSING)
+            return CurrentReportReadResponse(trade_id=trade_id, availability=CURRENT_REPORT_STATUS_PROCESSING)
+        if outbox_status == "FAILED_TERMINAL":
+            _cr_metrics.safe_record_availability(CURRENT_REPORT_STATUS_TERMINAL_FAILURE)
+            return CurrentReportReadResponse(trade_id=trade_id, availability=CURRENT_REPORT_STATUS_TERMINAL_FAILURE)
+        # outbox_status in ("COMPLETE", "LIMITED_EVIDENCE") but no report
+        # row exists — the exact integrity-contradiction condition
+        # current_report_generation.process_current_report itself
+        # detects and refuses to silently regenerate under.
+        _cr_metrics.safe_record_availability(CURRENT_REPORT_STATUS_INTEGRITY_CONTRADICTION)
+        return CurrentReportReadResponse(trade_id=trade_id, availability=CURRENT_REPORT_STATUS_INTEGRITY_CONTRADICTION)
 
 
 class GenerateReportResponse(BaseModel):
     trade_id: int
-    # GENERATED (this call produced a new/first report row) |
-    # ALREADY_COMPLETE (a persisted report for the current version triple
-    # already existed — returned idempotently, nothing generated) |
-    # IN_PROGRESS (another valid, non-expired lease currently owns this
-    # trade's outbox row — no concurrent duplicate generation was
+    # GENERATED (the EFFECTIVE report — the most authoritative one
+    # available after this call, which may be the newly-created
+    # price-path report even when the underlying Sprint 2 report already
+    # existed — see Stage H2 durable-lifecycle correction) |
+    # ALREADY_COMPLETE (the effective report already existed — returned
+    # idempotently, nothing generated this call) |
+    # IN_PROGRESS (another valid, non-expired lease currently owns the
+    # relevant outbox row — no concurrent duplicate generation was
     # attempted; retry later).
     generation_status: str
     status: str | None = None
@@ -2553,6 +3753,71 @@ class GenerateReportResponse(BaseModel):
     attribution_rules_version: str | None = None
     generated: bool
     evidence_gap_count: int | None = None
+    # Additive Sprint 3A fields — existing clients reading only the
+    # fields above remain fully compatible; these expose the granular
+    # base-vs-price-path breakdown for clients that want it.
+    base_generation_status: str | None = None
+    price_path_generation_status: str | None = None
+    effective_report_version: str | None = None
+
+
+def _build_generate_response(*, trade_id: int, user_id: str, generation_status: str, report, generated: bool) -> "GenerateReportResponse":
+    """Trade Postmortem Sprint 3A, Stage H2 durable-lifecycle correction
+    — shared response builder for every /generate return site.
+
+    When the price-path flag is enabled, attempts enhancement via its
+    OWN leased outbox lifecycle (see _attempt_price_path_enhancement)
+    and, when it PRODUCES a report this call (PRICE_PATH_GENERATED or
+    PRICE_PATH_ALREADY_COMPLETE), that report becomes the EFFECTIVE
+    report — `generation_status`/`generated`/`report_schema_version`/etc
+    describe IT, never silently describing the Sprint 2 report while
+    returning Sprint 3A fields (Programme Director finding #9), and a
+    freshly-generated price-path report is never reported with
+    generated=False merely because the underlying Sprint 2 report
+    already existed (finding #1/requirement 1). `base_generation_status`
+    preserves the original Sprint 2-level classification unconditionally."""
+    effective = report
+    effective_generation_status = generation_status
+    effective_generated = generated
+    price_path_status = None
+
+    if _trade_postmortem_price_path_enabled():
+        enhanced, price_path_status = _attempt_price_path_enhancement(user_id=user_id, trade_id=trade_id)
+        if enhanced is not None:
+            effective = enhanced
+            effective_generated = price_path_status == PRICE_PATH_GENERATED
+            effective_generation_status = (
+                "GENERATED" if price_path_status == PRICE_PATH_GENERATED else "ALREADY_COMPLETE"
+            )
+        # A None result (IN_PROGRESS / FAILED_RETRYABLE / FAILED_TERMINAL /
+        # NOT_YET_AVAILABLE) never overwrites `effective` — the caller's
+        # own Sprint 2 report/status stands, with price_path_status
+        # exposed separately so a failed attempt is never silently
+        # represented as the Sprint 2 report being ALREADY_COMPLETE for
+        # the price-path dimension too (finding #10).
+
+        # Wave B, Stage J4F — best-effort current (1.2.0) governed report
+        # generation via the shared orchestrator. Additive only: does not
+        # change this endpoint's existing response shape/fields (no new
+        # GET exposure this wave) — it exists so the explicit POST
+        # recovery path reaches the SAME orchestrator close-time
+        # best-effort generation and the background worker will also use.
+        # Only attempted when the price-path enhancement above actually
+        # settled into a real evidence-bearing outcome this cycle — see
+        # the matching guard/comment at the /sell call site for why
+        # (avoids a redundant second provider acquisition attempt).
+        if price_path_status in (PRICE_PATH_GENERATED, PRICE_PATH_ALREADY_COMPLETE):
+            _attempt_current_report_generation(user_id=user_id, trade_id=trade_id)
+
+    return GenerateReportResponse(
+        trade_id=trade_id, generation_status=effective_generation_status, status=effective.status,
+        report_schema_version=effective.report_schema_version,
+        calculation_version=effective.calculation_version,
+        attribution_rules_version=effective.attribution_rules_version,
+        generated=effective_generated, evidence_gap_count=len(effective.evidence_gaps),
+        base_generation_status=generation_status, price_path_generation_status=price_path_status,
+        effective_report_version=effective.report_schema_version,
+    )
 
 
 @router.post("/postmortem/{trade_id}/generate", response_model=GenerateReportResponse)
@@ -2628,76 +3893,80 @@ def generate_trade_postmortem_endpoint(trade_id: int, user_id: str = Depends(get
             calculation_version=CALCULATION_VERSION, attribution_rules_version=ATTRIBUTION_RULES_VERSION,
         )
         if existing_report is not None:
-            return GenerateReportResponse(
-                trade_id=trade_id, generation_status="ALREADY_COMPLETE", status=existing_report.status,
-                report_schema_version=existing_report.report_schema_version,
-                calculation_version=existing_report.calculation_version,
-                attribution_rules_version=existing_report.attribution_rules_version,
-                generated=False, evidence_gap_count=len(existing_report.evidence_gaps),
+            # settled = (generation_status, report, generated) — the
+            # price-path enhancement call happens AFTER this `with
+            # _conn():` block exits below; nothing in this branch
+            # returns directly.
+            settled = ("ALREADY_COMPLETE", existing_report, False)
+        else:
+            report, status_tag = _claim_and_run_generation(
+                conn, user_id=user_id, trade_id=trade_id, outbox_id=outbox_id
             )
 
-        report, status_tag = _claim_and_run_generation(
-            conn, user_id=user_id, trade_id=trade_id, outbox_id=outbox_id
-        )
+            if status_tag == "GENERATED":
+                settled = ("GENERATED", report, True)
 
-        if status_tag == "GENERATED":
-            return GenerateReportResponse(
-                trade_id=trade_id, generation_status="GENERATED", status=report.status,
-                report_schema_version=report.report_schema_version,
-                calculation_version=report.calculation_version,
-                attribution_rules_version=report.attribution_rules_version,
-                generated=True, evidence_gap_count=len(report.evidence_gaps),
-            )
-
-        if status_tag == "TERMINAL_NO_REPORT":
-            # Attempt limit exceeded (MAX_ATTEMPTS_BEFORE_TERMINAL) — a
-            # stable, honest terminal failure, never an infinite retry
-            # loop and never a fabricated report.
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "error_code": "GENERATION_ATTEMPTS_EXHAUSTED",
-                    "message": "report generation failed repeatedly for this trade and will not be retried automatically",
-                },
-            )
-
-        if status_tag == "NOTHING_TO_DO":
-            # Benign race: the row settled COMPLETE/LIMITED_EVIDENCE
-            # between our existing_report check above and the claim
-            # attempt (e.g. a concurrent best-effort generation from a
-            # /sell call finished in between). Re-check once — the
-            # report/outbox consistency invariant (Stage 3/8) guarantees
-            # it must exist now if the outbox truly settled terminal.
-            settled_report = report_store.get_current_report(
-                conn, paper_trade_id=trade_id, user_id=user_id,
-                report_schema_version=generation_service.REPORT_SCHEMA_VERSION,
-                calculation_version=CALCULATION_VERSION, attribution_rules_version=ATTRIBUTION_RULES_VERSION,
-            )
-            if settled_report is not None:
-                return GenerateReportResponse(
-                    trade_id=trade_id, generation_status="ALREADY_COMPLETE", status=settled_report.status,
-                    report_schema_version=settled_report.report_schema_version,
-                    calculation_version=settled_report.calculation_version,
-                    attribution_rules_version=settled_report.attribution_rules_version,
-                    generated=False, evidence_gap_count=len(settled_report.evidence_gaps),
+            elif status_tag == "TERMINAL_NO_REPORT":
+                # Attempt limit exceeded (MAX_ATTEMPTS_BEFORE_TERMINAL) —
+                # a stable, honest terminal failure, never an infinite
+                # retry loop and never a fabricated report.
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "error_code": "GENERATION_ATTEMPTS_EXHAUSTED",
+                        "message": "report generation failed repeatedly for this trade and will not be retried automatically",
+                    },
                 )
-            # Genuinely unexpected: outbox says terminal-complete but no
-            # report row exists for these versions — the exact
-            # report/outbox contradiction Stage 3/8 requires never
-            # silently accepting. Surfaced as a 500 with a stable error
-            # code rather than papered over with an IN_PROGRESS response.
-            log.warning("[postmortem_generation_terminal_failure] trade_id=%s outbox_id=%s error_code=%s",
-                        trade_id, outbox_id, "REPORT_OUTBOX_INCONSISTENCY")
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "error_code": "REPORT_OUTBOX_INCONSISTENCY",
-                    "message": "outbox settled without a corresponding persisted report",
-                },
-            )
 
-        # status_tag == "IN_PROGRESS" — another valid, non-expired lease
-        # currently owns this row; never run concurrent duplicate work.
-        return GenerateReportResponse(
-            trade_id=trade_id, generation_status=REPORT_GENERATION_IN_PROGRESS, generated=False,
-        )
+            elif status_tag == "NOTHING_TO_DO":
+                # Benign race: the row settled COMPLETE/LIMITED_EVIDENCE
+                # between our existing_report check above and the claim
+                # attempt (e.g. a concurrent best-effort generation from
+                # a /sell call finished in between). Re-check once — the
+                # report/outbox consistency invariant (Stage 3/8)
+                # guarantees it must exist now if the outbox truly
+                # settled terminal.
+                settled_report = report_store.get_current_report(
+                    conn, paper_trade_id=trade_id, user_id=user_id,
+                    report_schema_version=generation_service.REPORT_SCHEMA_VERSION,
+                    calculation_version=CALCULATION_VERSION, attribution_rules_version=ATTRIBUTION_RULES_VERSION,
+                )
+                if settled_report is None:
+                    # Genuinely unexpected: outbox says terminal-complete
+                    # but no report row exists for these versions — the
+                    # exact report/outbox contradiction Stage 3/8
+                    # requires never silently accepting. Surfaced as a
+                    # 500 with a stable error code rather than papered
+                    # over with an IN_PROGRESS response.
+                    log.warning("[postmortem_generation_terminal_failure] trade_id=%s outbox_id=%s error_code=%s",
+                                trade_id, outbox_id, "REPORT_OUTBOX_INCONSISTENCY")
+                    raise HTTPException(
+                        status_code=500,
+                        detail={
+                            "error_code": "REPORT_OUTBOX_INCONSISTENCY",
+                            "message": "outbox settled without a corresponding persisted report",
+                        },
+                    )
+                settled = ("ALREADY_COMPLETE", settled_report, False)
+
+            else:
+                # status_tag == "IN_PROGRESS" — another valid, non-
+                # expired lease currently owns this row; never run
+                # concurrent duplicate work, and never attempt price-
+                # path enhancement against a report that doesn't exist
+                # yet.
+                return GenerateReportResponse(
+                    trade_id=trade_id, generation_status=REPORT_GENERATION_IN_PROGRESS, generated=False,
+                )
+
+    # Trade Postmortem Sprint 3A, Stage H2B — price-path enhancement, if
+    # enabled, runs here: AFTER the `with _conn():` block above has
+    # released its connection, exactly matching the sell path's own
+    # post-commit discipline. `settled` is always bound by this point
+    # (every path that reaches here assigned it above; the only path
+    # that doesn't is the IN_PROGRESS early return).
+    generation_status, report, generated = settled
+    return _build_generate_response(
+        trade_id=trade_id, user_id=user_id, generation_status=generation_status,
+        report=report, generated=generated,
+    )

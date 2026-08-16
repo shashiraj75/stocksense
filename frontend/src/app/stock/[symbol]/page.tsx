@@ -2279,6 +2279,15 @@ export default function StockPage() {
           suggestedStopLoss={(prediction as any).trade_levels?.stop_loss ?? null}
           suggestedTargetPrice={(prediction as any).trade_levels?.take_profit ?? null}
           onClose={() => setShowPaperModal(false)}
+          // Trade Postmortem Evidence Completion, Phase A1 — a Stock Detail
+          // recommendation Buy. No entryEvidenceOverride is passed: the
+          // modal builds evidence itself from its own internally-fetched
+          // Prediction for whatever horizon is actually selected inside the
+          // modal at Buy time (its horizon selector can diverge from this
+          // page's own `horizon` state once opened), which is what
+          // guarantees the evidence always matches the final selected
+          // horizon and never a stale one.
+          evidenceSource="RESEARCH"
         />
       )}
     </div>

@@ -536,7 +536,7 @@ class TestBacktestStockDefenseInDepth:
             def __init__(self, symbol):
                 pass
 
-            def history(self, period=None):
+            def history(self, period=None, timeout=None):
                 return _synthetic_stock_ohlcv()
 
             @property
@@ -571,7 +571,7 @@ class TestBacktestStockDefenseInDepth:
             def __init__(self, symbol):
                 pass
 
-            def history(self, period=None):
+            def history(self, period=None, timeout=None):
                 return _synthetic_stock_ohlcv()
 
             @property
@@ -610,7 +610,7 @@ class TestBacktestStockDefenseInDepth:
             def __init__(self, symbol):
                 pass
 
-            def history(self, period=None):
+            def history(self, period=None, timeout=None):
                 return _synthetic_stock_ohlcv()
 
             @property
@@ -696,7 +696,7 @@ class TestZeroVersusMissingSemantics:
 class TestLegacyBenchmarkEvidenceLabelling:
     def test_row_without_benchmark_evidence_key_is_labelled_legacy_unknown(self, monkeypatch):
         legacy_summary = {"buy_hit_rate_pct": 61.0, "universe": "us", "horizon": "short"}
-        fake_row = {"summary": json.dumps(legacy_summary)}
+        fake_row = {"id": 1, "summary": json.dumps(legacy_summary)}
         monkeypatch.setattr(ve, "_init_db", lambda: None)
         monkeypatch.setattr(ve, "_USE_POSTGRES", False)
         monkeypatch.setattr(ve, "_fetchone", lambda sql_pg, sql_sq, params=(): fake_row)
@@ -715,7 +715,7 @@ class TestLegacyBenchmarkEvidenceLabelling:
             "methodology_version": ve.BENCHMARK_EVIDENCE_VERSION,
         }
         legacy_summary = {"benchmark_evidence": real_evidence}
-        fake_row = {"summary": json.dumps(legacy_summary)}
+        fake_row = {"id": 1, "summary": json.dumps(legacy_summary)}
         monkeypatch.setattr(ve, "_init_db", lambda: None)
         monkeypatch.setattr(ve, "_USE_POSTGRES", False)
         monkeypatch.setattr(ve, "_fetchone", lambda sql_pg, sql_sq, params=(): fake_row)
@@ -732,7 +732,7 @@ class TestLegacyBenchmarkEvidenceLabelling:
             return _NoWriteConn()
 
         legacy_summary = {"buy_hit_rate_pct": 61.0}
-        fake_row = {"summary": json.dumps(legacy_summary)}
+        fake_row = {"id": 1, "summary": json.dumps(legacy_summary)}
         monkeypatch.setattr(ve, "_init_db", lambda: None)
         monkeypatch.setattr(ve, "_USE_POSTGRES", False)
         monkeypatch.setattr(ve, "_fetchone", lambda sql_pg, sql_sq, params=(): fake_row)

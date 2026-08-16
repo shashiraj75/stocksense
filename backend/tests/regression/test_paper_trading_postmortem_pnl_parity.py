@@ -117,7 +117,7 @@ class TestPaperSellPnlParity:
             # RETURNING clause and never calls fetchone()).
             recorder = _RecordingConn(fetchone_results=[
                 ("US",),
-                ("user-aaa", "AAPL", qty, ep, "OPEN", "US", 90.0, 130.0, "manual"),
+                ("user-aaa", "AAPL", qty, ep, "OPEN", "US", 90.0, 130.0, "manual", None, None, None, None),
                 (1,),
                 (1,),
             ])

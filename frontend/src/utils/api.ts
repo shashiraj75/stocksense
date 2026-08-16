@@ -770,8 +770,10 @@ export const placePaperBuy = (data: {
   evidence_source?: EvidenceSource;
   entry_evidence?: EntryEvidencePayload | null;
   // Migration-verification hardening gate, Part 7 — client-generated,
-  // reused verbatim for every retry of the SAME logical Buy decision (see
-  // PaperTradeModal's useRef-based generation). Omit entirely for the
+  // reused verbatim for every retry of the SAME logical Buy decision. See
+  // frontend/src/utils/idempotencyKey.ts for generation and
+  // PaperTradeModal's useRef-based `idempotencyKeyRef` for the
+  // per-logical-decision reuse/regeneration policy. Omit entirely for the
   // pre-idempotency backward-compatible path (no exactly-once guarantee).
   idempotency_key?: string;
 }): Promise<PlacePaperBuyResponse> =>
@@ -849,11 +851,11 @@ export interface EvidenceItem {
   evidence_id: string;
   category: string;
   name: string;
-  value: unknown;
+  value: JSONValue;
   units: string | null;
   observation_timestamp: string | null;
   source: string;
-  source_type: "SERVER_STORED" | "SERVER_DERIVED" | "CLIENT_REPORTED" | "APPROVED_EXTERNAL_SOURCE" | "UNAVAILABLE";
+  source_type: "SERVER_STORED" | "SERVER_DERIVED" | "CLIENT_REPORTED" | "APPROVED_EXTERNAL_SOURCE" | "EXTERNAL_UNOFFICIAL_DAILY" | "UNAVAILABLE";
   verification_level: "MECHANICALLY_VERIFIED" | "DIRECTLY_OBSERVED" | "CLIENT_REPORTED" | "UNVERIFIED" | "UNAVAILABLE";
   freshness_status: "POINT_IN_TIME_VALID" | "STALE" | "NOT_APPLICABLE" | "UNKNOWN";
   limitations: string[];
@@ -976,6 +978,128 @@ export const fetchDailyPostmortem = (date: string, market: Market | "ALL" = "ALL
   api.get<DailyPostmortemReport>("/api/paper-trading/postmortem/daily", {
     params: { date, market },
   }).then((r) => r.data);
+
+// ============================================================================
+// Trade Postmortem Engine, Wave C — GET /api/paper-trading/{tradeId}/
+// current-report's response shape (backend/api/routers/paper_trading.py's
+// CurrentReportReadResponse). This is the CANONICAL read route for the
+// governed 1.2.0 report identity — distinct from PostmortemResponse above
+// (the legacy GET /postmortem/{trade_id} route, still supported, unrelated
+// response shape). Never conflate the two: this type only ever describes
+// a current-report payload.
+// ============================================================================
+
+export type CurrentReportAvailability =
+  | "READY" | "PROCESSING" | "NOT_ELIGIBLE" | "NOT_AVAILABLE"
+  | "TERMINAL_FAILURE" | "INTEGRITY_CONTRADICTION" | "FEATURE_DISABLED";
+
+export type CurrentReportStatus = "COMPLETE" | "LIMITED_EVIDENCE";
+
+// The frozen 1.2.0 governed provenance subtree — mirrors
+// VersionAndProvenance exactly (paper_trading.py, extra="forbid"). Never
+// widen this to Record<string, unknown>: every field here is a governed,
+// backend-validated value, not free-form JSON.
+export interface VersionAndProvenance {
+  report_schema_version: string;
+  calculation_version: string;
+  numerical_rules_version: string;
+  governed_semantic_rules_version: string;
+  governed_claim_rules_version: string;
+  entry_snapshot_schema_version: string | null;
+  exit_snapshot_schema_version: string | null;
+  level_history_contract_version: string | null;
+  source_version: string;
+}
+
+// Bounded JSON type for genuinely open-ended, forward-compatible nested
+// sections only (PricePathSection's own non-version_and_provenance keys,
+// StructuredReportModel's non-price_path top-level sections) — never used
+// for a field the backend types exactly.
+export type JSONValue = string | number | boolean | null | JSONValue[] | { [key: string]: JSONValue };
+
+// Intersection, not an interface with an index signature: an index
+// signature would force version_and_provenance's own type to widen to
+// JSONValue too (TypeScript requires every declared property satisfy the
+// signature), which is exactly the precision this contract must not lose.
+// The intersection keeps version_and_provenance's exact type while still
+// allowing arbitrary additional open-ended keys (raw_evidence,
+// level_history, mfe/mae/touch fields, etc.) to be read defensively.
+export type PricePathSection = { version_and_provenance: VersionAndProvenance } & Record<string, JSONValue>;
+
+export type StructuredReportModel = { price_path: PricePathSection } & Record<string, JSONValue>;
+
+// Mirrors services.postmortem.exit_snapshot.TriggerTimingVerification
+// exactly (backend/api/routers/paper_trading.py's ReportSourceManifest
+// uses this Enum directly, not a plain string) — kept as its own governed
+// vocabulary here rather than widened to `string`, so an unrecognized
+// value fails a type check at the call site instead of silently
+// round-tripping unchecked.
+export type TriggerTimingVerification =
+  | "NOT_APPLICABLE" | "CLIENT_REPORTED_UNVERIFIED" | "SERVER_VERIFIED";
+
+// Mirrors ReportSourceManifest exactly (extra="allow" on the backend, so
+// this stays open-ended beyond the always-present governed fields).
+export interface ReportSourceManifest {
+  has_entry_snapshot: boolean;
+  has_exit_snapshot: boolean;
+  exit_snapshot_schema_version: string | null;
+  exit_trigger_timing_verification: TriggerTimingVerification | null;
+  exit_evidence_rules_version: string;
+  phase1_calculation_version: string;
+  attribution_rules_version: string;
+  // Historical-optional — genuinely absent (not present as a key at all)
+  // on any report that predates or never received price-path enhancement.
+  // Never assume this key exists; check with `"price_path_calculation_version" in sourceManifest`.
+  price_path_calculation_version?: string;
+  price_path_rules_version: string;
+  governed_rules_version: string;
+  [otherOpenEndedKey: string]: JSONValue | undefined;
+}
+
+// A non-READY response never carries any report-identity/content field
+// (all null) — CurrentReportReadResponse enforces this server-side; the
+// frontend must render purely off `availability`, never off a stray
+// leftover field from a previous READY fetch.
+export interface CurrentReportReadResponse {
+  trade_id: number;
+  availability: CurrentReportAvailability;
+  report_schema_version: string | null;
+  calculation_version: string | null;
+  attribution_rules_version: string | null;
+  evidence_bundle_version: string | null;
+  market: string | null;
+  // Market-local calendar date (YYYY-MM-DD), not UTC.
+  report_trading_date: string | null;
+  market_timezone: string | null;
+  status: CurrentReportStatus | null;
+  generated_at: string | null;
+  // Stock-identity DISPLAY metadata (PR #36 targeted correction) —
+  // additive, optional/nullable for backward compatibility with an older
+  // response that doesn't carry these fields at all. NOT governed
+  // evidence, NOT part of the persisted report identity. `symbol` comes
+  // from the owned paper_trades row; `company_name` is a best-effort,
+  // read-only lookup that may legitimately be null.
+  symbol?: string | null;
+  company_name?: string | null;
+  structured_report: StructuredReportModel | null;
+  claims: PostmortemClaim[] | null;
+  evidence_items: EvidenceItem[] | null;
+  evidence_gaps: string[] | null;
+  warnings: string[] | null;
+  source_manifest: ReportSourceManifest | null;
+  supersedes_report_id: number | null;
+}
+
+// Read-only — this function must never be used to trigger generation; the
+// canonical GET route is a pure read (no acquisition/claim/recovery side
+// effects, verified by Wave C, WC-K Gate 2's real-PostgreSQL proof). Report
+// generation is a separate, explicit POST endpoint this client does not
+// call from the read page. `signal` is threaded through from TanStack
+// Query's queryFn context so the in-flight HTTP request is actually
+// aborted (not just its response ignored) on unmount, navigation, or a
+// trade-ID change — not merely a courtesy parameter.
+export const fetchCurrentPostmortemReport = (tradeId: number, signal?: AbortSignal) =>
+  api.get<CurrentReportReadResponse>(`/api/paper-trading/${tradeId}/current-report`, { signal }).then((r) => r.data);
 
 export const acceptTerms = (
   userId: string, email: string,

@@ -2,7 +2,7 @@
 
 StockSense360 Senior Programmer End-to-End Implementation Standard
 Standard: SES-006
-Version: 1.0
+Version: 1.1
 
 Fill this out as the final evidence report for any implementation delivered under [SES-006](../SES/SES-006-End-to-End-Implementation-and-Release-Standard.md). Every section states real evidence (a command output, a test count, a shown diff) — not an assertion. If a section doesn't apply to this change, say so explicitly with a one-line reason rather than omitting it.
 
@@ -151,6 +151,19 @@ Fill this out as the final evidence report for any implementation delivered unde
 - [ ] Post-deployment verification completed or blocked
 - [ ] Natural-run verification completed, pending, or not applicable
 - [ ] Final evidence report completed
+
+## 25A. Multidisciplinary and Efficiency Declarations
+
+These must not be claimed blindly — state real evidence per SES-006 §3A / §19A. Any non-zero value blocks a READY classification.
+
+```
+MULTIDISCIPLINARY MATERIAL RISKS UNADDRESSED: 0
+UNJUSTIFIED REPEATED WORK: 0
+SPECULATIVE SCOPE EXPANSIONS: 0
+UNVERIFIED FINANCIAL/MODEL CLAIMS: 0
+POINT-IN-TIME / LOOK-AHEAD VIOLATIONS INTRODUCED: 0
+PROVENANCE GAPS INTRODUCED: 0
+```
 
 ## 26. Final Status
 

@@ -1,0 +1,110 @@
+{
+  "stage": "J4B.3",
+  "description": "Machine-readable requirement-to-test manifest for the Stage J4B.3 internal observed-crossing contract closure. Each requirement ID appears exactly once; one ID may reference multiple pytest nodes.",
+  "requirements": [
+    {
+      "id": "I-01",
+      "title": "Exact context-derived attribution",
+      "protected_function": "services.postmortem.price_path_calculator.NumericalLevelCrossingObservation._validate_group",
+      "expected_behavior": "A group's stored session_attribution must equal the exact attribution derived from the immutable context's window/policy fields plus the attached bar's session_date, via the single shared _classify_session_attribution_fields helper -- not merely belong to a broad allowed category.",
+      "expected_reason_code": "INCONSISTENT_CROSSING_OBSERVATION",
+      "nodes": [
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI01ContextDerivedAttribution::test_a01_interior_bar_labelled_entry_included_full_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI01ContextDerivedAttribution::test_a02_interior_bar_labelled_exit_included_full_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI01ContextDerivedAttribution::test_a03_entry_bar_labelled_interior_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI01ContextDerivedAttribution::test_a04_entry_bar_labelled_exit_included_full_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI01ContextDerivedAttribution::test_a05_exit_bar_labelled_interior_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI01ContextDerivedAttribution::test_a06_exit_bar_labelled_entry_included_full_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI01ContextDerivedAttribution::test_a07_same_day_partial_bar_labelled_same_day_included_full_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI01ContextDerivedAttribution::test_a08_same_day_full_bar_labelled_same_day_partial_unknown_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI01ContextDerivedAttribution::test_a09_out_of_window_attached_bar_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI01ContextDerivedAttribution::test_helper_field_based_matches_bundle_based_classifier"
+      ]
+    },
+    {
+      "id": "I-02",
+      "title": "Five-field group identity",
+      "protected_function": "services.postmortem.price_path_calculator.NumericalLevelCrossingObservation.__post_init__",
+      "expected_behavior": "When first-observed is already safely-attributable or already partial-boundary, the corresponding group must match ALL five fields (session, bar, evidence_id, crossing_type, session_attribution), not four.",
+      "expected_reason_code": "INCONSISTENT_CROSSING_OBSERVATION",
+      "nodes": [
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI02FiveFieldIdentity::test_b10_first_observed_safe_identity_with_differing_attribution_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI02FiveFieldIdentity::test_b11_first_observed_partial_identity_with_differing_attribution_rejected"
+      ]
+    },
+    {
+      "id": "I-03",
+      "title": "Evidence-ID factory totality",
+      "protected_function": "services.postmortem.price_path_calculator._crossing_evidence_id",
+      "expected_behavior": "The evidence-ID generator independently validates paper_trade_id (exact positive int), session_date (exact datetime.date), and level_kind (exact recognized string) before formatting -- never a bare f-string relying on caller discipline.",
+      "expected_reason_code": "INVALID_CROSSING_EVIDENCE_ID",
+      "nodes": [
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI03EvidenceIdFactoryTotality::test_c12_bool_paper_trade_id_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI03EvidenceIdFactoryTotality::test_c13_zero_paper_trade_id_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI03EvidenceIdFactoryTotality::test_c14_negative_paper_trade_id_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI03EvidenceIdFactoryTotality::test_c15_int_subclass_paper_trade_id_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI03EvidenceIdFactoryTotality::test_c16_none_session_date_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI03EvidenceIdFactoryTotality::test_c17_datetime_session_date_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI03EvidenceIdFactoryTotality::test_c18_date_subclass_session_date_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI03EvidenceIdFactoryTotality::test_c19_string_session_date_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI03EvidenceIdFactoryTotality::test_c20_invalid_level_kind_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI03EvidenceIdFactoryTotality::test_c21_string_subclass_level_kind_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI03EvidenceIdFactoryTotality::test_c22_unhashable_level_kind_rejected_without_raw_typeerror",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI03EvidenceIdFactoryTotality::test_c23_invalid_values_not_reproduced_in_error_text",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI03EvidenceIdFactoryTotality::test_valid_id_still_generated_unchanged"
+      ]
+    },
+    {
+      "id": "I-04",
+      "title": "Exact observation-context types",
+      "protected_function": "services.postmortem.price_path_calculator.NumericalCrossingObservationContext.__post_init__",
+      "expected_behavior": "paper_trade_id/symbol and every identity string field (evidence_bundle_version, source_id, source_version, bar_interval, price_adjustment_basis, market_timezone) and both hash fields require exact built-in types (no subclasses) and non-whitespace content, matching the discipline already used for market/policies/dates.",
+      "expected_reason_code": "INVALID_OBSERVATION_CONTEXT",
+      "nodes": [
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI04ExactContextTypes::test_d24_int_subclass_paper_trade_id_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI04ExactContextTypes::test_d25_string_subclass_symbol_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI04ExactContextTypes::test_d26_empty_symbol_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI04ExactContextTypes::test_d27_whitespace_only_symbol_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI04ExactContextTypes::test_d28_every_identity_string_field_rejects_empty",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI04ExactContextTypes::test_d29_every_identity_string_field_rejects_whitespace_only",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI04ExactContextTypes::test_d30_every_identity_string_field_rejects_string_subclass",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI04ExactContextTypes::test_d31_both_hash_fields_reject_string_subclass",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI04ExactContextTypes::test_d32_requested_window_datetime_values_remain_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI04ExactContextTypes::test_d33_requested_window_date_subclass_remains_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI04ExactContextTypes::test_d34_policy_string_subclass_remains_rejected",
+        "tests/unit/test_price_path_observed_crossing_final_contract.py::TestI04ExactContextTypes::test_valid_context_still_constructs"
+      ]
+    },
+    {
+      "id": "I-05",
+      "title": "Executable requirement-to-test traceability",
+      "protected_function": "backend.tests.unit.test_stage_j_traceability_validator (governance module, not production code)",
+      "expected_behavior": "The traceability tooling separately proves (a) static node existence/collection from a pytest --collect-only run, and (b) runtime pass status from a JUnit XML run -- never conflating one for the other, and never claiming --collect-only alone proves a test passed.",
+      "expected_reason_code": null,
+      "nodes": [
+        "tests/unit/test_stage_j_traceability_validator.py::TestJ4B3TraceabilityHelper::test_parse_collect_only_output_extracts_node_ids",
+        "tests/unit/test_stage_j_traceability_validator.py::TestJ4B3TraceabilityHelper::test_static_validation_detects_missing_node",
+        "tests/unit/test_stage_j_traceability_validator.py::TestJ4B3TraceabilityHelper::test_static_validation_accepts_parametrized_prefix_match",
+        "tests/unit/test_stage_j_traceability_validator.py::TestJ4B3TraceabilityHelper::test_parse_junit_xml_extracts_outcomes",
+        "tests/unit/test_stage_j_traceability_validator.py::TestJ4B3TraceabilityHelper::test_runtime_validation_detects_failed_node",
+        "tests/unit/test_stage_j_traceability_validator.py::TestJ4B3TraceabilityHelper::test_runtime_validation_detects_skipped_node",
+        "tests/unit/test_stage_j_traceability_validator.py::TestJ4B3TraceabilityHelper::test_manifest_ids_appear_exactly_once",
+        "tests/unit/test_stage_j_traceability_validator.py::TestJ4B3TraceabilityHelper::test_manifest_is_valid_json_with_required_keys"
+      ]
+    },
+    {
+      "id": "I-06",
+      "title": "Existing test-intent drift correction",
+      "protected_function": "backend.tests.unit.test_price_path_observed_crossing (test governance, not production code)",
+      "expected_behavior": "Every test in test_price_path_observed_crossing.py whose name/docstring claims to prove boundary-policy validation must genuinely reach that validation branch (via a real, forged-via-dataclasses.replace PricePathEvidenceBundle), not merely the J4B.2 bundle/bar isinstance type-check gate.",
+      "expected_reason_code": null,
+      "nodes": [
+        "tests/unit/test_price_path_observed_crossing.py::TestSessionAttributionAlgorithm::test_unknown_entry_boundary_policy_fails_closed",
+        "tests/unit/test_price_path_observed_crossing.py::TestSessionAttributionAlgorithm::test_unknown_exit_boundary_policy_fails_closed",
+        "tests/unit/test_price_path_observed_crossing.py::TestSessionAttributionAlgorithm::test_unknown_same_day_boundary_policy_combination_fails_closed",
+        "tests/unit/test_price_path_observed_crossing.py::TestCrossingDetectionMatrix::test_25_unknown_entry_boundary_policy_fails_closed",
+        "tests/unit/test_price_path_observed_crossing.py::TestCrossingDetectionMatrix::test_26_unknown_exit_boundary_policy_fails_closed"
+      ]
+    }
+  ]
+}

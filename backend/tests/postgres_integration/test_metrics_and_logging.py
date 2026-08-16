@@ -63,7 +63,7 @@ class TestMetricsFireDuringRealBuyFlows:
         ensure_portfolio(pg_conn, unique_user_id)
         client.post(
             "/api/paper-trading/buy",
-            json={"symbol": "AAPL", "market": "US", "quantity": 1, "price": 101.0},
+            json={"symbol": "AAPL", "market": "US", "quantity": 1, "price": 101.0, "idempotency_key": "metrics-duration-key"},
             headers=make_auth_header(unique_user_id),
         )
         durations = metrics.get_snapshot()["durations"]
@@ -97,6 +97,7 @@ class TestSensitiveDataNeverLogged:
                 "/api/paper-trading/buy",
                 json={
                     "symbol": "AAPL", "market": "US", "quantity": 1, "price": 101.0,
+                    "idempotency_key": "metrics-reasoning-key",
                     "entry_evidence": {"recommendation_reasoning": [
                         {"indicator": "RSI", "signal": "BUY", "reason": "a distinctive unlikely-to-collide phrase XYZQ123"}
                     ]},

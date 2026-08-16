@@ -9,6 +9,7 @@ disposable PostgreSQL instance. Goes through the actual HTTP router
 from unittest.mock import patch
 
 import psycopg
+import uuid
 import pytest
 
 from tests.postgres_integration.conftest import ensure_portfolio, get_portfolio_cash, make_auth_header
@@ -17,7 +18,12 @@ pytestmark = pytest.mark.postgres_integration
 
 
 def _buy(client, user_id, **overrides):
-    body = {"symbol": "AAPL", "market": "US", "quantity": 1, "price": 101.0}
+    # Owner-authorized hardening — idempotency_key is now REQUIRED by
+    # POST /buy. Each call gets its own fresh key by default (distinct
+    # UUID per call) since these represent independently legitimate Buy
+    # attempts; a test needing retry/reuse passes idempotency_key=
+    # explicitly via **overrides, which takes precedence.
+    body = {"symbol": "AAPL", "market": "US", "quantity": 1, "price": 101.0, "idempotency_key": f"ptbuy-test-{uuid.uuid4()}"}
     body.update(overrides)
     return client.post("/api/paper-trading/buy", json=body, headers=make_auth_header(user_id))
 
@@ -67,7 +73,7 @@ class TestSnapshotInsertFailureRollsBack:
         with patch("api.routers.paper_trading._build_snapshot_for_buy") as mock_build:
             from services.postmortem.entry_snapshot import EntrySnapshot
 
-            def _broken_snapshot(*, trade_id, user_id, symbol, market, req):
+            def _broken_snapshot(*, trade_id, user_id, symbol, market, req, level_history_contract_version=None):
                 return EntrySnapshot(
                     paper_trade_id=trade_id, user_id=user_id, symbol=symbol, market=market,
                     snapshot_schema_version="1.0.0", evidence_source="MANUAL",
@@ -84,6 +90,9 @@ class TestSnapshotInsertFailureRollsBack:
                     sentiment_label=None, market_regime_trend=None, market_regime_score_adj=None,
                     market_regime_reason=None, recommendation_reasoning=None, model_version=None,
                     verification_levels={},
+                    level_history_contract_version=level_history_contract_version,
+                    initial_stop_modified_after_entry=None, initial_target_modified_after_entry=None,
+                    initial_levels_modified_after_entry=None,
                 )
             mock_build.side_effect = _broken_snapshot
 
@@ -112,6 +121,8 @@ class TestSnapshotInsertFailureRollsBack:
                 fundamental_score=None, sentiment_score=None, sentiment_label=None, market_regime_trend=None,
                 market_regime_score_adj=None, market_regime_reason=None, recommendation_reasoning=None,
                 model_version=None, verification_levels={},
+                level_history_contract_version=None, initial_stop_modified_after_entry=None,
+                initial_target_modified_after_entry=None, initial_levels_modified_after_entry=None,
             )
             with pytest.raises(psycopg.errors.NotNullViolation):
                 _buy(client, unique_user_id, idempotency_key=key)
