@@ -20,8 +20,10 @@ No look-ahead bias — forward return is measured at t + horizon_days.
 
 import logging
 import math
+import multiprocessing
 import os
 import json
+import queue as _queue_module
 import sqlite3
 import threading
 import time
@@ -95,6 +97,7 @@ VALIDATION_PUBLIC_FAILURE_MESSAGES = {
     "PROVIDER_STALL": (
         "Validation was interrupted because a data provider stopped responding and will be retried."
     ),
+    "RUN_DEADLINE_EXCEEDED": "Validation exceeded the maximum permitted execution time.",
 }
 
 # benchmark_unavailable_reason's two possible stable public values. The
@@ -187,6 +190,66 @@ YFINANCE_REQUEST_TIMEOUT_SECONDS = 30
 # happens to complete every (RUN_STALL_TIMEOUT_SECONDS - 1) seconds would
 # not trip this watchdog; it detects silence, not total elapsed time.
 RUN_STALL_TIMEOUT_SECONDS = 180
+
+# V-USACT1-B — the HARD wall-clock ceiling on one validation attempt's
+# real total execution time, enforced by the PARENT process killing the
+# CHILD process (see _run_validation_in_subprocess below) — genuinely
+# unlike RUN_STALL_TIMEOUT_SECONDS above (an inactivity detector that can
+# only wait, never force-stop, an uncooperative provider thread), this
+# bound is enforced by SIGTERM/SIGKILL against an OS process, which
+# terminates every thread inside it unconditionally regardless of what
+# any individual provider call is doing. Applies uniformly to every
+# execute_and_complete_admitted_attempt caller — scheduler, catch-up, and
+# the authenticated manual endpoint alike — never bypassed for any one
+# horizon/universe. 5400s = 90 minutes: comfortably above every observed
+# India short/medium/long runtime (single-digit minutes) and a deliberate
+# hard stop well short of the historically-observed ~8h US stalls this
+# constant exists specifically to bound.
+MAX_RUN_DURATION_SECONDS = 5400
+
+# Escalating child-process shutdown: SIGTERM, wait up to this many
+# seconds, SIGKILL if still alive, wait up to this many seconds again.
+# Every wait here is timeout-bounded — this function never blocks
+# indefinitely on a child that refuses to exit.
+CHILD_KILL_GRACE_SECONDS = 10
+
+
+
+# "spawn" is the production-safety-critical choice: a spawned child is a
+# genuinely fresh interpreter that imports only what this module needs —
+# it CANNOT inherit the parent's live DB connections, open threads, or
+# locks (unlike "fork", which duplicates the entire parent process
+# memory image, connections and all, at the exact instant of the fork —
+# precisely the "no database connection is inherited unsafely" failure
+# mode this design must avoid).
+#
+# V-USACT1-B-C3 — there is deliberately no module-level start-method
+# name here at all (see the inline multiprocessing.get_context("spawn")
+# call in _run_validation_in_subprocess) — nothing exists for any test,
+# config, or runtime input to monkeypatch or override to "fork". Tests
+# that need deterministic child behavior monkeypatch
+# _validation_child_worker itself (a top-level, picklable test-double
+# target resolved fresh in the PARENT process) and still run under this
+# same real "spawn" — they never use "fork" and never rely on the child
+# inheriting any monkeypatch, closure, global, mock, list, lock, or
+# thread from the parent test process.
+
+
+def _validate_max_run_duration_seconds(value) -> None:
+    """V-USACT1-B — the sole gate for the total-runtime-deadline safety
+    invariant, mirroring _lease_heartbeat_interval's unconditional-
+    runtime-check convention (no bare `assert`). Fails closed at call
+    time — never silently clamps a zero/negative/non-finite/unreasonably
+    large value to something "safe"."""
+    duration = float(value)
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError(
+            f"max_run_duration_seconds must be a positive finite value, got {value!r}"
+        )
+    if duration > 86400:
+        raise ValueError(
+            f"max_run_duration_seconds must not exceed 86400 (24h), got {value!r}"
+        )
 
 
 def _lease_heartbeat_interval(lease_duration_seconds) -> float:
@@ -2835,6 +2898,20 @@ def run_validation(horizon: str = "medium", universe: str = "nifty100", max_work
                                 _run_status["job"]["processed"] = done
                                 _run_status["job"]["current_symbol"] = sym
                                 _run_status["job"]["updated_at"] = datetime.now(timezone.utc).isoformat()
+                        if progress_callback is not None:
+                            # V-USACT1-B-C1 — a per-symbol EXCEPTION is still
+                            # genuine forward progress for inactivity-
+                            # detection purposes (a resolved future, not a
+                            # hang) — call the same callback here too, so a
+                            # caller using this signal as the authoritative
+                            # inactivity clock (see _run_validation_in_
+                            # subprocess's parent-side detector) sees a
+                            # consistent definition of "progress" regardless
+                            # of whether a symbol succeeded or raised.
+                            try:
+                                progress_callback(done, n_stocks)
+                            except Exception:
+                                log.warning("[validation] progress_callback raised — ignored, run continues")
         finally:
             # wait=True blocks until every worker that actually started
             # running has genuinely finished — this is the property that
@@ -5027,12 +5104,45 @@ class _ProviderStallDuringComputation(Exception):
     Honest limitation: this is an INACTIVITY detector, not a hard
     wall-clock deadline, and it does not kill threads (Python cannot).
     If the underlying yfinance call never returns at all despite its own
-    request-level timeout, run_validation stays blocked waiting for that
-    worker to finish — it does not abandon it, so no zombie thread is
-    ever created, but the attempt also cannot be force-completed. This is
-    the deliberate fail-closed tradeoff: no partial public result and no
-    released lease are worse outcomes than an attempt that stays running
-    until its underlying HTTP call genuinely resolves one way or another."""
+    request-level timeout, run_validation() ITSELF stays blocked waiting
+    for that worker to finish — it does not abandon it, so no zombie
+    thread is ever created within this function's own scope. As of
+    V-USACT1-B, this is no longer the end of the story for the caller:
+    execute_and_complete_admitted_attempt() runs the ENTIRE call to
+    run_validation() inside a child OS process it can genuinely kill on
+    MAX_RUN_DURATION_SECONDS, precisely because this function's own
+    inactivity detector cannot bound a truly hung, never-returning
+    provider call by itself — see _run_validation_in_subprocess."""
+
+
+class _RunDeadlineExceeded(Exception):
+    """V-USACT1-B — raised by _run_validation_in_subprocess() when
+    MAX_RUN_DURATION_SECONDS (or a caller-supplied override) elapses
+    before the child process reports a result. By the time this is
+    raised, the child process has already been terminated (SIGTERM, then
+    SIGKILL if still alive after CHILD_KILL_GRACE_SECONDS) and joined —
+    zero provider workers of any kind remain alive anywhere. No val_runs/
+    val_signals row is ever written for this computation; caught by the
+    same generic pattern _ProviderStallDuringComputation and
+    _FencedOutDuringComputation already use — a distinct, explicit
+    failure_category (RUN_DEADLINE_EXCEEDED) rather than being folded
+    into the generic RUN_EXCEPTION bucket, so an operator can distinguish
+    "the provider was slow beyond the accepted operational window" from
+    an ordinary code-level exception."""
+
+
+class _ChildProcessFailure(Exception):
+    """V-USACT1-B — raised by _run_validation_in_subprocess() when the
+    child process exits without ever reporting a result/error message
+    (a crash, an unpicklable exception escaping the child's own try/
+    except, or the process being killed externally), or sends a
+    malformed/unrecognized IPC message. Fails closed exactly like any
+    other run_validation() failure — falls through to the existing
+    generic `except Exception:` handler in execute_and_complete_
+    admitted_attempt, which marks the attempt failed_retryable with
+    failure_category=RUN_EXCEPTION and releases the lease through the
+    existing, unmodified contract. Never re-raises or logs the child's
+    raw exception object itself — only a bounded, sanitized string."""
 
 
 def complete_running_attempt_with_computed_result(
@@ -5306,48 +5416,568 @@ def admit_validation_attempt(horizon: str, universe: str, trigger_type: str, own
     return {"ok": True, "attempt_id": attempt_id, "fencing_token": fencing_token, "owner": owner}
 
 
+# ── V-USACT1-B — killable process-boundary containment ────────────────────
+#
+# WHY a thread-only deadline is not an acceptable correction: Python
+# cannot forcibly stop a running thread. The existing per-stock
+# ThreadPoolExecutor stall/drain path (RUN_STALL_TIMEOUT_SECONDS, V-USCAP2/
+# V-USCAP4/V-USCAP6) is provably safe against CORRUPTION — it never
+# returns, releases the lease, or persists anything while a provider
+# worker thread might still be alive — but that same safety property is
+# exactly why it cannot provide a wall-clock GUARANTEE: if a provider
+# call never returns at all, the drain loop's own `wait()` calls simply
+# never complete either, and adding a "MAX_RUN_DURATION_SECONDS" check
+# inside that same thread-based loop would force an impossible choice
+# between (a) giving up and abandoning a live, uncooperative thread
+# forever (the exact V-USCAP1 defect this whole engagement started by
+# fixing), or (b) still waiting for it regardless, in which case the
+# "deadline" was never real. Killing an OS PROCESS, by contrast,
+# terminates every thread inside it unconditionally at the OS level —
+# this is genuinely the only mechanism available that can enforce a hard
+# ceiling regardless of what the provider call is doing.
+
+_PROGRESS_QUEUE_MAXSIZE = 200  # bounded but generous — see _validation_child_worker
+
+
+def _validation_child_worker(result_queue, horizon: str, universe: str,
+                              max_workers: int, trigger_type: str) -> None:
+    """Runs ENTIRELY inside a child OS process (spawned via
+    multiprocessing's "spawn" context in production — never "fork" — so
+    the child never inherits the parent's live DB connections, threads,
+    or locks; it starts as a fresh interpreter that only imports what
+    this module needs). `_persist=False` is hardcoded here, not a
+    parameter this function exposes to any caller — there is
+    structurally no way for this child to ever write to val_runs/
+    val_signals. It also never receives a lease owner, fencing token, or
+    any other credential capable of calling complete_running_attempt_
+    with_computed_result — even a fully successful child can only ever
+    report a computed payload back to the PARENT via this bounded queue.
+
+    V-USACT1-B-C1 — progress relay: `progress_callback` is wired to push
+    a small, bounded, non-blocking "progress" message on every genuine
+    per-symbol resolution (success or exception alike — both are
+    forward progress, never a hang). `put_nowait` + drop-on-Full means a
+    slow-draining parent can never make this child block — coalescing/
+    dropping intermediate progress under backpressure is an explicitly
+    accepted tradeoff, never a correctness concern (only the terminal
+    result/error message matters for persistence). The terminal message
+    always carries `completed_at_utc` — a wall-clock timestamp used only
+    for reporting/persistence/logging, never for the deadline-eligibility
+    decision itself. Eligibility is determined exclusively by the PARENT,
+    exclusively via its own time.monotonic(): the instant the parent
+    dequeues this terminal message it compares that receipt time against
+    its own monotonic deadline (see _run_validation_in_subprocess) —
+    monotonic clocks are never comparable across two separate OS
+    processes, so nothing timestamp-based from the child is ever trusted
+    for that decision.
+
+    Every exit path puts exactly one terminal message (`result` or
+    `error`) — the entire terminal IPC contract — as a plain dict of
+    already-JSON-safe values, never a raw exception object, provider
+    response body, secret, or connection string."""
+    def _progress_relay(done, total):
+        try:
+            result_queue.put_nowait({
+                "type": "progress", "done": done, "total": total,
+            })
+        except _queue_module.Full:
+            pass  # coalesce/drop under backpressure — never block the child
+
+    try:
+        metrics = run_validation(
+            horizon=horizon, universe=universe, max_workers=max_workers,
+            trigger_type=trigger_type, _persist=False,
+            progress_callback=_progress_relay,
+        )
+        completed_at_utc = datetime.now(timezone.utc).isoformat()
+        payload = metrics.get("_persist_payload")
+        if payload is None:
+            result_queue.put({
+                "type": "error", "category": "NO_RESULT_RUN_ID",
+                "message": (str(metrics.get("error"))[:200] if metrics.get("error") else None),
+                "completed_at_utc": completed_at_utc,
+            })
+            return
+        result_queue.put({"type": "result", "payload": payload, "completed_at_utc": completed_at_utc})
+    except Exception as e:
+        # Never forward the raw exception object — it may not even be
+        # picklable (e.g. some provider-library exception types embed
+        # live connection objects), and could contain a raw provider
+        # response body. Only a bounded, already-sanitized public string.
+        result_queue.put({
+            "type": "error",
+            "category": type(e).__name__,
+            "message": safe_error_message(
+                log, "validation.child_worker", e, "Validation computation failed."
+            )[:200],
+            "completed_at_utc": datetime.now(timezone.utc).isoformat(),
+        })
+
+
+def _terminate_child_process(process) -> bool:
+    """Escalating, fully timeout-bounded IMMEDIATE shutdown: SIGTERM, wait
+    up to CHILD_KILL_GRACE_SECONDS, SIGKILL if still alive, wait up to
+    CHILD_KILL_GRACE_SECONDS again. Used by the fencing/inactivity/
+    deadline paths, which already know the run must be killed NOW — never
+    waits for a spontaneous exit first (see _reap_after_terminal_message
+    for the separate success-path sequence, which does). Never blocks
+    indefinitely on a child that refuses to exit — by the time this
+    returns, the child is either confirmed dead or SIGKILL has been sent
+    (which the OS cannot ignore, unlike SIGTERM). This function's ONLY job
+    is killing and reaping the child — it never reads the result queue
+    and never extends how long a computation is allowed to have taken.
+    Returns True iff the child is provably dead by the time this returns."""
+    if not process.is_alive():
+        return True
+    process.terminate()
+    process.join(timeout=CHILD_KILL_GRACE_SECONDS)
+    if process.is_alive():
+        process.kill()
+        process.join(timeout=CHILD_KILL_GRACE_SECONDS)
+    return not process.is_alive()
+
+
+def _reap_after_terminal_message(process):
+    """V-USACT1-B-C2 — called on EVERY terminal path where the child has
+    already put a `result`/`error` message on the queue, including
+    apparent success. A terminal IPC message alone is never proof the
+    child has actually exited, let alone exited cleanly — this function
+    is the sole source of that proof.
+
+    Sequence: bounded NORMAL join first (the ordinary case — the child
+    simply returns and the interpreter tears down right after its last
+    queue.put()); only if that's not enough does it escalate exactly like
+    _terminate_child_process (SIGTERM → bounded join → SIGKILL → bounded
+    join). Never blocks indefinitely.
+
+    Returns (proven_dead: bool, clean_exit: bool, exitcode: int | None).
+    `clean_exit` is True only if the child was already dead, or exited on
+    its own within the first bounded join, WITH exitcode 0 — any
+    escalation (terminate/kill) or any non-zero exitcode disqualifies the
+    exit as "clean", per the accepted contract: a successful result is
+    persistable only after an on-time terminal message AND a clean child
+    exit; a child requiring forced termination after claiming success, or
+    that exited abnormally, produces no persisted result even though it
+    reported one."""
+    if not process.is_alive():
+        return True, process.exitcode == 0, process.exitcode
+    process.join(timeout=CHILD_KILL_GRACE_SECONDS)
+    if not process.is_alive():
+        return True, process.exitcode == 0, process.exitcode
+    # Did not exit spontaneously within the normal join grace — escalate.
+    # Any escalation past this point permanently disqualifies "clean".
+    process.terminate()
+    process.join(timeout=CHILD_KILL_GRACE_SECONDS)
+    if process.is_alive():
+        process.kill()
+        process.join(timeout=CHILD_KILL_GRACE_SECONDS)
+    return (not process.is_alive()), False, process.exitcode
+
+
+def _handle_child_message(msg) -> dict:
+    """Translates one validated terminal IPC message into the same shape
+    execute_and_complete_admitted_attempt already expects from a direct
+    run_validation() call — `{"_persist_payload": ...}`. Any structurally
+    unrecognized message fails closed via _ChildProcessFailure, exactly
+    like a child crash."""
+    if not isinstance(msg, dict) or "type" not in msg:
+        raise _ChildProcessFailure("validation child process sent a malformed IPC message")
+    if msg["type"] == "result":
+        payload = msg.get("payload")
+        if not isinstance(payload, dict):
+            raise _ChildProcessFailure("validation child process sent a malformed result payload")
+        return {"_persist_payload": payload}
+    if msg["type"] == "error":
+        if msg.get("category") == "NO_RESULT_RUN_ID":
+            return {"_persist_payload": None, "error": msg.get("message")}
+        raise _ChildProcessFailure(msg.get("message") or "validation child process reported an error")
+    raise _ChildProcessFailure("validation child process sent an unrecognized IPC message type")
+
+
+_UNIVERSE_SIZE = {"nifty100": None, "midcap": None, "us": None}  # populated lazily below
+
+
+def _universe_total_symbols(universe: str) -> int:
+    mapping = {"nifty100": "NIFTY_100", "midcap": "NSE_MIDCAP", "us": "US_BASKET"}
+    name = mapping.get(universe)
+    if name is None:
+        return 0
+    return len(globals().get(name, []))
+
+
+def _seed_run_status(*, horizon: str, universe: str, trigger_type: str, now_iso: str) -> None:
+    """V-USACT1-B-C1 — the parent seeds the SAME authoritative _run_status
+    a direct in-process run_validation() call used to populate itself,
+    before the child (which mutates only its own, invisible copy) even
+    starts. Total is computed here from the same public universe
+    constants run_validation() itself uses — accurate immediately, not
+    only after the first progress message."""
+    with _status_lock:
+        _run_status.clear()
+        _run_status.update({
+            "running": True,
+            "progress": 0,
+            "total": _universe_total_symbols(universe),
+            "started_at": now_iso,
+            "log": [f"Starting {horizon} validation on {universe}…"],
+            "job": {
+                "horizon": horizon, "universe": universe, "trigger_type": trigger_type,
+                "status": "running", "processed": 0, "total": _universe_total_symbols(universe),
+                "current_symbol": None, "started_at": now_iso, "updated_at": now_iso,
+                "completed_at": None, "failure_code": None, "failure_message": None,
+            },
+        })
+
+
+def _apply_progress_to_run_status(msg: dict) -> None:
+    done = msg.get("done")
+    total = msg.get("total")
+    if not isinstance(done, int):
+        return
+    with _status_lock:
+        _run_status["progress"] = done
+        if isinstance(total, int) and total > 0:
+            _run_status["total"] = total
+        _run_status["log"].append(f"[{done}/{_run_status.get('total', total)}] progress")
+        if _run_status.get("job") is not None:
+            _run_status["job"]["processed"] = done
+            if isinstance(total, int) and total > 0:
+                _run_status["job"]["total"] = total
+            _run_status["job"]["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def _finalize_run_status(*, ok: bool, failure_code: str | None) -> None:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with _status_lock:
+        _run_status["running"] = False
+        if ok:
+            _run_status["log"] = _run_status.get("log", []) + ["✅ Validation complete"]
+            if _run_status.get("job") is not None:
+                _run_status["job"].update({"status": "completed", "completed_at": now_iso, "updated_at": now_iso})
+        else:
+            public_message = VALIDATION_PUBLIC_FAILURE_MESSAGES.get(
+                failure_code, VALIDATION_PUBLIC_FAILURE_MESSAGES["RUN_EXCEPTION"]
+            ) if failure_code else VALIDATION_PUBLIC_FAILURE_MESSAGES["RUN_EXCEPTION"]
+            _run_status["log"] = _run_status.get("log", []) + [f"❌ Failed: {public_message}"]
+            if _run_status.get("job") is not None:
+                _run_status["job"].update({
+                    "status": "failed", "completed_at": now_iso, "updated_at": now_iso,
+                    "failure_code": failure_code, "failure_message": public_message,
+                })
+
+
+def _finalize_run_status_for_handled_result(handled: dict) -> None:
+    """A `result`/`error` message that passed the deadline-acceptance
+    check still isn't necessarily an overall SUCCESS — `_handle_child_
+    message` returns `{"_persist_payload": None, ...}` for the child's
+    own NO_RESULT_RUN_ID case without raising. This classifies the final
+    public status honestly from the actual outcome, never assuming
+    success just because no exception was raised."""
+    if handled.get("_persist_payload") is not None:
+        _finalize_run_status(ok=True, failure_code=None)
+    else:
+        _finalize_run_status(ok=False, failure_code=None)
+
+
+def _run_validation_in_subprocess(*, horizon: str, universe: str, max_workers: int,
+                                   trigger_type: str, heartbeat_fn=None,
+                                   lease_duration_seconds: int | None = None,
+                                   max_run_duration_seconds: int = MAX_RUN_DURATION_SECONDS,
+                                   update_run_status: bool = True) -> dict:
+    """The parent-side containment boundary. The parent retains 100% of
+    lease/heartbeat/fencing/inactivity/deadline authority throughout:
+    `heartbeat_fn` (when given) is invoked purely on the parent's own
+    time.monotonic() schedule — never driven by anything the child
+    reports — and only the PARENT ever calls (via its own caller,
+    execute_and_complete_admitted_attempt) the atomic completion
+    primitive. The child is never given a lease owner or fencing token.
+
+    V-USACT1-B-C1 — THREE independent, parent-side, time.monotonic()-based
+    deadlines are tracked every iteration, in this precedence order:
+      1. heartbeat/fencing (unchanged precedence — a fencing loss must
+         never be misreported as a stall or a deadline timeout);
+      2. inactivity — `last_progress_monotonic` advances ONLY on a
+         genuine "progress" IPC message (never on a heartbeat tick, and
+         never on mere elapsed time) — if RUN_STALL_TIMEOUT_SECONDS
+         passes with zero genuine progress, the child is killed
+         IMMEDIATELY, independent of and typically far sooner than the
+         90-minute total deadline;
+      3. the hard total-runtime deadline.
+    This is authoritative and independent of whatever inactivity
+    detection the child's OWN run_validation() call might also perform
+    internally (defense in depth) — the parent no longer relies on the
+    child ever detecting or reporting its own stall.
+
+    V-USACT1-B-C2 — deadline eligibility is decided EXCLUSIVELY by the
+    PARENT's own time.monotonic() clock, never by any wall-clock UTC
+    timestamp (adjustable by NTP/manual changes) and never by a monotonic
+    timestamp the CHILD claims (monotonic clocks are not comparable
+    across separate OS processes — a child-supplied monotonic value would
+    be meaningless here, not merely imprecise). The instant the parent
+    dequeues a terminal (`result`/`error`) message, it stamps
+    `terminal_received_at_monotonic = time.monotonic()` and accepts the
+    result only if that is on-or-before `deadline_at_monotonic`. A result
+    the child genuinely computed in time but which the parent only
+    observes after the deadline is REJECTED anyway — a deliberate,
+    accepted false-negative (see module docstring above): rejecting a
+    late-observed-but-actually-on-time result is safe; accepting a
+    late-computed result never is. The child's own `completed_at_utc`
+    field is carried through only for logs/persistence/API display — it
+    is never read for the accept/reject decision. The termination-grace
+    window exists ONLY to kill and reap the child; it never extends
+    accepted computation time — any message drained during or after it is
+    definitionally past the deadline (see the hard-deadline branch below)
+    and is always rejected outright, regardless of its own claimed
+    timestamp.
+    """
+    _validate_max_run_duration_seconds(max_run_duration_seconds)
+    heartbeat_interval = (
+        _lease_heartbeat_interval(lease_duration_seconds) if lease_duration_seconds else None
+    )
+
+    # V-USACT1-B-C3 — the start method is an inline literal, not a
+    # module-level name: there is nothing here for any test, config, or
+    # runtime input to monkeypatch or override. Process isolation is
+    # unconditionally "spawn". Tests that need deterministic child
+    # behavior monkeypatch _validation_child_worker itself (a top-level,
+    # picklable test-double target resolved fresh in the PARENT right
+    # here) — never the start method.
+    ctx = multiprocessing.get_context("spawn")
+    result_queue = ctx.Queue(maxsize=_PROGRESS_QUEUE_MAXSIZE)
+    process = ctx.Process(
+        target=_validation_child_worker,
+        args=(result_queue, horizon, universe, max_workers, trigger_type),
+        daemon=True,
+    )
+
+    start_monotonic = time.monotonic()
+    start_utc = datetime.now(timezone.utc)
+    deadline_at_monotonic = start_monotonic + max_run_duration_seconds
+    last_progress_monotonic = start_monotonic
+    next_heartbeat_at = start_monotonic
+
+    # V-USACT1-B-C1 — the child is started BEFORE _run_status is seeded.
+    # This ordering is irrelevant to production "spawn" (which never
+    # inherits parent memory at all), but is kept as the correct,
+    # unconditional ordering regardless of context.
+    process.start()
+    if update_run_status:
+        _seed_run_status(horizon=horizon, universe=universe, trigger_type=trigger_type,
+                          now_iso=start_utc.isoformat())
+    try:
+        while True:
+            now = time.monotonic()
+
+            # 1. Heartbeat/fencing — checked first every iteration, so a
+            # fencing loss is never misreported as inactivity or a
+            # deadline timeout even if more than one becomes true at once.
+            if heartbeat_fn is not None and heartbeat_interval is not None and now >= next_heartbeat_at:
+                try:
+                    fenced = bool(heartbeat_fn())
+                except Exception:
+                    log.warning("[validation] subprocess heartbeat raised — treating as fenced-out")
+                    fenced = True
+                if fenced:
+                    _terminate_child_process(process)
+                    raise _FencedOutDuringComputation()
+                next_heartbeat_at = time.monotonic() + heartbeat_interval
+                # Heartbeats NEVER count as progress — last_progress_monotonic
+                # is deliberately untouched here.
+
+            now = time.monotonic()
+
+            # 2. Parent-side, authoritative inactivity detection — fires
+            # well before the total deadline whenever nothing has
+            # genuinely progressed for RUN_STALL_TIMEOUT_SECONDS,
+            # independent of whatever the child's own internal detector
+            # is doing.
+            inactivity_deadline = last_progress_monotonic + RUN_STALL_TIMEOUT_SECONDS
+            if now >= inactivity_deadline:
+                _terminate_child_process(process)
+                if update_run_status:
+                    _finalize_run_status(ok=False, failure_code="PROVIDER_STALL")
+                raise _ProviderStallDuringComputation(
+                    f"run_validation: parent detected no genuine progress for "
+                    f"{RUN_STALL_TIMEOUT_SECONDS}s (universe={universe} horizon={horizon}) — "
+                    f"child process terminated, no result persisted"
+                )
+
+            # 3. Hard total-runtime deadline. We only reach this branch
+            # when the PARENT's own monotonic clock has already measured
+            # now >= deadline_at_monotonic — so ANY message pulled here
+            # (or arriving later, during the kill/reap grace window) is,
+            # by construction, being observed past the deadline. Per
+            # V-USACT1-B-C2, eligibility is receipt time, not claimed
+            # completion time — every message drained in this branch is
+            # unconditionally rejected, regardless of what it claims.
+            if now >= deadline_at_monotonic:
+                _terminate_child_process(process)
+                try:
+                    result_queue.get_nowait()
+                except _queue_module.Empty:
+                    pass
+                if update_run_status:
+                    _finalize_run_status(ok=False, failure_code="RUN_DEADLINE_EXCEEDED")
+                raise _RunDeadlineExceeded(
+                    f"run_validation: exceeded max_run_duration_seconds={max_run_duration_seconds} "
+                    f"(universe={universe} horizon={horizon}) — child process terminated, "
+                    f"no result persisted"
+                )
+
+            poll_timeout = max(0.05, min(
+                heartbeat_interval if heartbeat_interval is not None else 1.0,
+                inactivity_deadline - now,
+                deadline_at_monotonic - now,
+                1.0,
+            ))
+            try:
+                msg = result_queue.get(timeout=poll_timeout)
+            except _queue_module.Empty:
+                if not process.is_alive():
+                    # The child exited without ever reporting anything —
+                    # a crash, an unpicklable exception escaping its own
+                    # try/except, or an external kill. Never assume
+                    # success from silence.
+                    if update_run_status:
+                        _finalize_run_status(ok=False, failure_code="RUN_EXCEPTION")
+                    raise _ChildProcessFailure(
+                        f"validation child process exited without reporting a result "
+                        f"(exitcode={process.exitcode}) — universe={universe} horizon={horizon}"
+                    )
+                continue
+
+            if msg.get("type") == "progress":
+                last_progress_monotonic = time.monotonic()
+                if update_run_status:
+                    _apply_progress_to_run_status(msg)
+                continue
+
+            # V-USACT1-B-C2 — a terminal (result/error) message. Stamp the
+            # PARENT's own receipt time on the monotonic clock FIRST,
+            # immediately on dequeue — this, not anything the child
+            # claims, is the sole eligibility evidence (see docstring).
+            terminal_received_at_monotonic = time.monotonic()
+            if terminal_received_at_monotonic > deadline_at_monotonic:
+                # Received too late — reject unconditionally, even if the
+                # child's own message claims it finished in time. Still
+                # kill/reap immediately; nothing here is trusted further.
+                _terminate_child_process(process)
+                if update_run_status:
+                    _finalize_run_status(ok=False, failure_code="RUN_DEADLINE_EXCEEDED")
+                raise _RunDeadlineExceeded(
+                    f"run_validation: terminal message received after "
+                    f"max_run_duration_seconds={max_run_duration_seconds} "
+                    f"(universe={universe} horizon={horizon}) — result rejected, "
+                    f"no result persisted"
+                )
+
+            # On time. Before trusting/persisting anything, PROVE the
+            # child has actually exited, and classify whether that exit
+            # was clean (no forced termination needed, exitcode 0) — a
+            # terminal message is never sufficient proof on its own.
+            proven_dead, clean_exit, exitcode = _reap_after_terminal_message(process)
+            try:
+                if not proven_dead:
+                    # Exhausted every bounded escalation step and the
+                    # child is STILL alive — fail closed. This should be
+                    # unreachable in practice (SIGKILL cannot be ignored
+                    # by a live process on any platform this runs on),
+                    # but never assume death without proof.
+                    raise _ChildProcessFailure(
+                        f"validation child process could not be proven dead after "
+                        f"reporting a terminal message (exitcode={exitcode}) — "
+                        f"universe={universe} horizon={horizon}"
+                    )
+                if msg.get("type") == "result" and not clean_exit:
+                    # The child claimed success but required forced
+                    # termination, or exited with a non-zero code, after
+                    # putting its result on the queue — per the accepted
+                    # contract, that disqualifies the result even though
+                    # it was received on time and looks well-formed.
+                    raise _ChildProcessFailure(
+                        f"validation child process required forced termination or exited "
+                        f"abnormally (exitcode={exitcode}) after reporting success — "
+                        f"result rejected, no result persisted (universe={universe} "
+                        f"horizon={horizon})"
+                    )
+                handled = _handle_child_message(msg)
+            except _ChildProcessFailure:
+                if update_run_status:
+                    _finalize_run_status(ok=False, failure_code="RUN_EXCEPTION")
+                raise
+            if update_run_status:
+                _finalize_run_status_for_handled_result(handled)
+            return handled
+    except _FencedOutDuringComputation:
+        if update_run_status:
+            _finalize_run_status(ok=False, failure_code=None)
+        raise
+    except (_RunDeadlineExceeded, _ProviderStallDuringComputation, _ChildProcessFailure):
+        raise
+    except Exception:
+        if update_run_status:
+            _finalize_run_status(ok=False, failure_code="RUN_EXCEPTION")
+        raise
+    finally:
+        try:
+            result_queue.close()
+            result_queue.join_thread()
+        except Exception:
+            pass
+
+
 def execute_and_complete_admitted_attempt(attempt_id: int, owner: str, fencing_token: int,
                                            horizon: str, universe: str, trigger_type: str, *,
                                            lease_duration_seconds: int = 600,
                                            heartbeat_every_n_stocks: int = 10,
-                                           max_workers: int = 6) -> dict:
+                                           max_workers: int = 6,
+                                           max_run_duration_seconds: int = MAX_RUN_DURATION_SECONDS) -> dict:
     """Phase 2 — runs the actual validation for an attempt already admitted
     by admit_validation_attempt(), then atomically completes/fails it.
 
-    V-SCHED1C1-C1 correction: run_validation() is called with _persist=False
-    — it computes but never writes val_runs/val_signals. Heartbeat renewal
-    is tied to observable forward progress (every `heartbeat_every_n_stocks`
-    completed stocks, via run_validation's progress_callback/_fence_check
-    checkpoint) — never an unconditionally-renewing blind timer. The moment
-    a heartbeat is rejected (fencing_token superseded), the NEXT checkpoint
-    inside run_validation() cancels remaining work and raises
-    _FencedOutDuringComputation — execution does not run to completion under
-    a known-stale token. Final persistence — the val_runs/val_signals insert
-    itself — happens only inside complete_running_attempt_with_computed_
-    result(), one atomic transaction that independently re-verifies owner/
-    token/expiry/active_attempt_id before writing anything. So even a
-    fencing loss that occurs after the last heartbeat (a window this
-    cooperative checkpoint cannot close) is still caught: the atomic
-    primitive's own fencing check runs immediately before its own insert,
-    in the same transaction, and rolls back the insert if it fails. No
-    val_runs/val_signals row can ever survive under a stale/superseded
-    identity."""
-    fenced_out = {"value": False}
+    V-USACT1-B correction: the ENTIRE computation now runs inside a killable
+    child OS process (see _run_validation_in_subprocess) — never in-process
+    on a thread this function could only wait for, not kill. Lease renewal
+    is now a purely wall-clock heartbeat driven by THIS function's own
+    time.monotonic() schedule (via _lease_heartbeat_interval), no longer
+    tied to child-reported progress — `heartbeat_every_n_stocks` is
+    accepted for backward compatibility but no longer changes the renewal
+    cadence, which is fully described by lease_duration_seconds alone. The
+    moment a heartbeat is rejected (fencing_token superseded), the parent
+    kills the child immediately and raises _FencedOutDuringComputation —
+    computation does not run to completion under a known-stale token, and
+    the child never gets a chance to report anything after that point.
+    Final persistence — the val_runs/val_signals insert itself — happens
+    only inside complete_running_attempt_with_computed_result(), one atomic
+    transaction that independently re-verifies owner/token/expiry/
+    active_attempt_id before writing anything, so even a fencing loss in
+    the narrow window after the last heartbeat and before this call is
+    still caught: the atomic primitive's own fencing check runs
+    immediately before its own insert, in the same transaction, and rolls
+    back the insert if it fails. No val_runs/val_signals row can ever
+    survive under a stale/superseded identity.
 
-    def _on_progress_fence_check():
+    On MAX_RUN_DURATION_SECONDS, the child is terminated (SIGTERM, then
+    SIGKILL if still alive after CHILD_KILL_GRACE_SECONDS) and the attempt
+    is marked TERMINAL (mark_attempt_failed_terminal, not the retryable
+    transition) with failure_category=RUN_DEADLINE_EXCEEDED — a distinct
+    category from the generic RUN_EXCEPTION bucket. V-USACT1-B-C1: this is
+    deliberately non-retryable — the retryable transition returns a
+    scheduled slot to 'due', which a LATER scheduler tick or catch-up
+    evaluation could re-admit and consume another full 90-minute window
+    against; the terminal transition moves the slot straight to 'failed'
+    (a terminal slot status), which neither the scheduler nor catch-up
+    will ever re-admit. A manual attempt (slot_id=NULL) is unaffected
+    either way — it was never slot-bound, and the NEXT manual/scheduled
+    attempt is gated solely by the global lease, which this same call
+    already releases below regardless of which transition was used."""
+
+    def _heartbeat_fn():
         hb = heartbeat_validation_execution_lease(
             owner=owner, fencing_token=fencing_token, now=datetime.now(timezone.utc),
             lease_duration_seconds=lease_duration_seconds,
         )
-        if not hb.get("ok"):
-            fenced_out["value"] = True
-            return True
-        return False
-
-    def _on_progress(done, total):
-        if done % heartbeat_every_n_stocks != 0 and done != total:
-            return
-        _on_progress_fence_check()
+        return not hb.get("ok")
 
     def _release_if_still_ours(now: datetime) -> None:
         # Best-effort: after a terminal attempt transition, the lease's
@@ -5359,36 +5989,34 @@ def execute_and_complete_admitted_attempt(attempt_id: int, owner: str, fencing_t
         # there is nothing left for this owner to release in that case.
         release_validation_execution_lease(owner=owner, fencing_token=fencing_token, now=now)
 
-    def _fence_checkpoint():
-        # Same predicate the heartbeat itself uses (bool(fenced_out) after
-        # _on_progress runs) — run_validation() calls this right after
-        # progress_callback at every cooperative checkpoint, so a fencing
-        # loss detected on heartbeat N is acted on at checkpoint N, not
-        # silently carried to the end of the run.
-        return fenced_out["value"]
-
     try:
-        metrics = run_validation(horizon=horizon, universe=universe, max_workers=max_workers,
-                                  trigger_type=trigger_type, progress_callback=_on_progress,
-                                  _persist=False, _fence_check=_fence_checkpoint,
-                                  # V-USCAP4 — the SAME heartbeat function
-                                  # progress-driven renewal already uses,
-                                  # exposed via the dedicated drain-only
-                                  # path so a provider stall's shutdown
-                                  # wait can keep this lease alive without
-                                  # ever pretending a symbol completed.
-                                  _heartbeat=_on_progress_fence_check,
-                                  _lease_duration_seconds=lease_duration_seconds)
+        metrics = _run_validation_in_subprocess(
+            horizon=horizon, universe=universe, max_workers=max_workers,
+            trigger_type=trigger_type, heartbeat_fn=_heartbeat_fn,
+            lease_duration_seconds=lease_duration_seconds,
+            max_run_duration_seconds=max_run_duration_seconds,
+        )
     except _FencedOutDuringComputation:
         log.warning(
             "[validation] attempt %s lost its lease during execution (fenced out) — "
-            "computation aborted before any persistence was attempted", attempt_id,
+            "child process terminated before any persistence was attempted", attempt_id,
         )
         # Do NOT mark the attempt failed, release the lease, or clear any
         # binding here — this owner's token is already superseded; the new
         # owner holds the lease and must not have its state touched by the
         # stale worker in any way.
         return {"ok": False, "reason": "fenced_out_during_execution"}
+    except _RunDeadlineExceeded:
+        log.error(
+            "[validation] attempt %s exceeded max_run_duration_seconds=%s — "
+            "child process terminated, no result persisted",
+            attempt_id, max_run_duration_seconds,
+        )
+        fail_now = datetime.now(timezone.utc)
+        mark_attempt_failed_terminal(attempt_id, owner=owner, fencing_token=fencing_token, now=fail_now,
+                                      failure_category="RUN_DEADLINE_EXCEEDED")
+        _release_if_still_ours(fail_now)
+        return {"ok": False, "reason": "run_deadline_exceeded"}
     except Exception:
         log.exception("[validation] execute_and_complete_admitted_attempt: run_validation raised")
         fail_now = datetime.now(timezone.utc)
@@ -5398,19 +6026,6 @@ def execute_and_complete_admitted_attempt(attempt_id: int, owner: str, fencing_t
         return {"ok": False, "reason": "run_exception"}
 
     complete_now = datetime.now(timezone.utc)
-
-    if fenced_out["value"]:
-        # Computation finished naturally between the last checkpoint and
-        # the fenced flag being observed here (a narrow window — the
-        # checkpoint runs after every heartbeat_every_n_stocks stocks, so
-        # this covers the tail after the final checkpoint). No persistence
-        # has happened yet (_persist=False), so nothing to roll back — just
-        # decline to call the atomic primitive at all.
-        log.warning(
-            "[validation] attempt %s lost its lease during execution (fenced out, "
-            "detected after final checkpoint) — no result will be persisted", attempt_id,
-        )
-        return {"ok": False, "reason": "fenced_out_during_execution"}
 
     payload = metrics.get("_persist_payload")
     if payload is None:
@@ -5449,11 +6064,17 @@ def execute_admitted_validation(horizon: str, universe: str, trigger_type: str, 
                                  slot_id: int | None = None, scheduled_slot: datetime | None = None,
                                  schedule_version: str = "v1", now: datetime | None = None,
                                  lease_duration_seconds: int = 600, heartbeat_every_n_stocks: int = 10,
-                                 max_workers: int = 6) -> dict:
+                                 max_workers: int = 6,
+                                 max_run_duration_seconds: int = MAX_RUN_DURATION_SECONDS) -> dict:
     """Convenience wrapper combining both phases for callers that don't
     need the synchronous-admission/background-execution split (the
     scheduler and catch-up — both already run entirely inside a background
-    executor thread from the moment they're invoked)."""
+    executor thread from the moment they're invoked).
+
+    V-USACT1-B — max_run_duration_seconds is applied uniformly here for
+    every caller (scheduler, catch-up); the authenticated manual /run
+    route goes through execute_and_complete_admitted_attempt directly and
+    inherits the same default. No caller may opt out of the ceiling."""
     admitted = admit_validation_attempt(
         horizon=horizon, universe=universe, trigger_type=trigger_type, owner=owner,
         slot_id=slot_id, scheduled_slot=scheduled_slot, schedule_version=schedule_version,
@@ -5466,4 +6087,5 @@ def execute_admitted_validation(horizon: str, universe: str, trigger_type: str, 
         horizon, universe, trigger_type,
         lease_duration_seconds=lease_duration_seconds,
         heartbeat_every_n_stocks=heartbeat_every_n_stocks, max_workers=max_workers,
+        max_run_duration_seconds=max_run_duration_seconds,
     )

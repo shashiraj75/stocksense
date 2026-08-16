@@ -28,6 +28,7 @@ real validation, or writes production data.
 """
 
 import asyncio
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -72,22 +73,27 @@ def client():
 
 @pytest.fixture
 def mock_run_validation(monkeypatch):
-    """Replaces the real backtest with a no-op that never touches a
-    provider, never runs real signal computation, and never writes to a
-    database — used to prove call/no-call behavior, not to exercise
-    run_validation() itself (that's covered elsewhere)."""
+    """V-USACT1-B-C3 — replaces the private parent-side orchestration
+    boundary _run_validation_in_subprocess (not run_validation, which the
+    manual endpoint's background task no longer calls directly at all —
+    see execute_and_complete_admitted_attempt/_run_validation_in_
+    subprocess) with a synchronous, IN-PROCESS fake. No child process, no
+    fork, no spawn, no Manager() proxy needed at all — an ordinary Python
+    list mutated by `_fake` is directly observable by this test, since
+    there is no process boundary in the way anymore."""
     calls = []
 
-    def _fake(**kwargs):
-        calls.append(kwargs)
-        return {"fake": True}
+    def _fake(*, horizon, universe, max_workers=None, trigger_type=None,
+               heartbeat_fn=None, lease_duration_seconds=None, max_run_duration_seconds=None):
+        calls.append({"horizon": horizon, "universe": universe,
+                       "max_workers": max_workers, "trigger_type": trigger_type})
+        return {"_persist_payload": {
+            "run_at": "2026-08-16T00:00:00+00:00", "horizon": horizon,
+            "n_stocks": 1, "n_signals": 0, "summary_json": "{}", "universe": universe,
+            "signal_rows": [],
+        }}
 
-    monkeypatch.setattr(validation_router, "run_validation", _fake, raising=False)
-    # trigger_validation imports run_validation as a local name inside the
-    # function body (`from services.validation_engine import run_validation, ...`),
-    # so patch it at the source module too — whichever the implementation
-    # resolves to, this fixture must intercept it.
-    monkeypatch.setattr(ve, "run_validation", _fake)
+    monkeypatch.setattr(ve, "_run_validation_in_subprocess", _fake)
     return calls
 
 
@@ -229,6 +235,15 @@ class TestRejectedCallsConsumeNoResources:
             headers={"X-Secret": TEST_SECRET},
         )
         assert resp.status_code == 200
+        # The background task (FastAPI BackgroundTasks) may still complete
+        # asynchronously relative to the HTTP response depending on the
+        # test client's execution model — poll with a bounded deadline
+        # rather than asserting immediately to avoid a spurious failure
+        # from pure scheduling latency (no process boundary is involved
+        # anymore at all — this fake runs fully in-process).
+        deadline = time.monotonic() + 10
+        while len(mock_run_validation) < 1 and time.monotonic() < deadline:
+            time.sleep(0.05)
         assert len(mock_run_validation) == 1
         assert mock_run_validation[0]["horizon"] == "short"
         assert mock_run_validation[0]["universe"] == "us"

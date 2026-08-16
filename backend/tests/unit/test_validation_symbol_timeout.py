@@ -117,6 +117,82 @@ def _stub_sec_edgar_as_of(monkeypatch):
     )
 
 
+def _real_run_validation_worker(result_queue, horizon, universe, max_workers, trigger_type):
+    """V-USACT1-B-C3 — top-level, spawn-safe test double for
+    _validation_child_worker used by the handful of tests in this file
+    that must exercise the REAL run_validation() (and therefore its own
+    internal RUN_STALL_TIMEOUT_SECONDS drain-stall path) inside a
+    genuinely spawned child. Configures its OWN freshly imported copy of
+    services.validation_engine using environment variables set by the
+    PARENT (env vars, unlike monkeypatches, are genuinely inherited by a
+    spawned child) — never relies on inheriting any parent monkeypatch."""
+    import os as _eos
+    import threading as _ethreading
+    from datetime import datetime as _edatetime, timezone as _etimezone
+    from unittest.mock import MagicMock as _EMagicMock
+    import numpy as _enp
+    import pandas as _epd
+    import services.validation_engine as _ve
+
+    _ve.RUN_STALL_TIMEOUT_SECONDS = float(_eos.environ.get("V_SYMTIMEOUT_STALL_TIMEOUT", "3600"))
+
+    basket_raw = _eos.environ.get("V_SYMTIMEOUT_BASKET", "S1")
+    symbols = basket_raw.split(",")
+    _ve.US_BASKET = symbols
+    _ve.NIFTY_100 = symbols
+    _ve.NSE_MIDCAP = symbols
+
+    stall_symbol = _eos.environ.get("V_SYMTIMEOUT_STALL_SYMBOL", "")
+    stall_seconds = float(_eos.environ.get("V_SYMTIMEOUT_STALL_SECONDS", "0"))
+    uniform_seconds = float(_eos.environ.get("V_SYMTIMEOUT_UNIFORM_SECONDS", "0"))
+
+    def _fake_backtest(sym, horizon, bench_df, market, **kwargs):
+        ws = kwargs.get("_window_stats")
+        if ws is not None:
+            ws["considered"] = 1
+            ws["benchmark_valid"] = 1
+        if uniform_seconds > 0:
+            _ethreading.Event().wait(uniform_seconds)
+        elif sym == stall_symbol and stall_seconds > 0:
+            _ethreading.Event().wait(stall_seconds)
+        return []
+    _ve._backtest_stock = _fake_backtest
+
+    def _bench_df():
+        dates = _epd.bdate_range("2019-01-01", periods=300)
+        close = 100.0 * _enp.cumprod(1 + _enp.random.default_rng(1).normal(0.0003, 0.008, 300))
+        return _epd.DataFrame({"Close": close}, index=dates)
+    mock_yf = _EMagicMock()
+    mock_yf.Ticker.return_value.history.return_value = _bench_df()
+    _ve.yf = mock_yf
+    _ve.time.sleep = lambda *a, **k: None
+
+    try:
+        metrics = _ve.run_validation(horizon=horizon, universe=universe, max_workers=max_workers,
+                                      trigger_type=trigger_type, _persist=False)
+        payload = metrics.get("_persist_payload")
+        now_iso = _edatetime.now(_etimezone.utc).isoformat()
+        if payload is None:
+            result_queue.put({"type": "error", "category": "NO_RESULT_RUN_ID", "message": None,
+                               "completed_at_utc": now_iso})
+            return
+        result_queue.put({"type": "result", "payload": payload, "completed_at_utc": now_iso})
+    except Exception as e:
+        now_iso = _edatetime.now(_etimezone.utc).isoformat()
+        result_queue.put({"type": "error", "category": type(e).__name__, "message": str(e)[:200],
+                           "completed_at_utc": now_iso})
+
+
+def _use_real_subprocess_worker(monkeypatch, *, basket, stall_symbol="", stall_seconds=0,
+                                 uniform_seconds=0, stall_timeout=3600):
+    monkeypatch.setattr(ve, "_validation_child_worker", _real_run_validation_worker)
+    monkeypatch.setenv("V_SYMTIMEOUT_BASKET", ",".join(basket))
+    monkeypatch.setenv("V_SYMTIMEOUT_STALL_SYMBOL", stall_symbol)
+    monkeypatch.setenv("V_SYMTIMEOUT_STALL_SECONDS", str(stall_seconds))
+    monkeypatch.setenv("V_SYMTIMEOUT_UNIFORM_SECONDS", str(uniform_seconds))
+    monkeypatch.setenv("V_SYMTIMEOUT_STALL_TIMEOUT", str(stall_timeout))
+
+
 @pytest.fixture
 def isolated_db(tmp_path, monkeypatch):
     """A real, isolated SQLite database (not the _NoWriteConn stub) — for
@@ -407,32 +483,15 @@ class TestProviderStallLedgerIntegrity:
         _backtest_stock are faked) to prove the existing, unmodified
         failed_retryable/lease-release contract correctly absorbs the new
         typed stall exception, and that zero rows are ever written."""
-        monkeypatch.setattr(ve, "RUN_STALL_TIMEOUT_SECONDS", 0.2)
-        stocks = ["AAA", "STALLED"]
-        monkeypatch.setattr(ve, "US_BASKET", stocks)
-
-        def _fake_backtest(sym, horizon, bench_df, market, **kwargs):
-            if sym == "STALLED":
-                threading.Event().wait(0.6)
-            return []
-
-        def _wrapped_backtest(*args, **kwargs):
-            window_stats = kwargs.get("_window_stats")
-            if window_stats is not None:
-                window_stats["considered"] = window_stats.get("considered", 0) + 1
-                window_stats["benchmark_valid"] = window_stats.get("benchmark_valid", 0) + 1
-            return _fake_backtest(*args, **kwargs)
-
-        # Deliberately NOT _mock_run_validation_io here — that stubs
-        # _get_sqlite_conn/_init_db to no-ops, which would make the
-        # "zero val_runs rows" assertion below vacuous. Only yfinance and
-        # _backtest_stock are faked; isolated_db provides a REAL sqlite
-        # database so persistence (or its absence) is genuinely proven.
-        mock_yf = MagicMock()
-        mock_yf.Ticker.return_value.history.return_value = _valid_benchmark_df()
-        monkeypatch.setattr(ve, "_backtest_stock", _wrapped_backtest)
-        monkeypatch.setattr(ve, "yf", mock_yf)
-        monkeypatch.setattr(ve.time, "sleep", lambda *a, **k: None)
+        # V-USACT1-B-C3 — stall_timeout is passed to the CHILD only (via
+        # env var), deliberately leaving the PARENT's own RUN_STALL_
+        # TIMEOUT_SECONDS at its generous default so the PARENT's own
+        # authoritative inactivity clock (see _run_validation_in_
+        # subprocess) doesn't fire first and mask what this test is
+        # actually proving: run_validation's OWN internal drain-stall
+        # path, executing for real inside a genuinely spawned child.
+        _use_real_subprocess_worker(monkeypatch, basket=["AAA", "STALLED"],
+                                     stall_symbol="STALLED", stall_seconds=0.6, stall_timeout=0.2)
 
         now = datetime.now(timezone.utc)
         admitted = ve.admit_validation_attempt(
@@ -452,23 +511,8 @@ class TestProviderStallLedgerIntegrity:
         """Literal, not ambiguous, terminal-state assertions — the exact
         attempt status/failure_category/slot/lease/binding values, not the
         vague phrase 'failed/failed_retryable'."""
-        monkeypatch.setattr(ve, "RUN_STALL_TIMEOUT_SECONDS", 0.2)
-        monkeypatch.setattr(ve, "US_BASKET", ["AAA", "STALLED"])
-
-        def _fake_backtest(sym, horizon, bench_df, market, **kwargs):
-            ws = kwargs.get("_window_stats")
-            if ws is not None:
-                ws["considered"] = 1
-                ws["benchmark_valid"] = 1
-            if sym == "STALLED":
-                threading.Event().wait(0.6)
-            return []
-
-        mock_yf = MagicMock()
-        mock_yf.Ticker.return_value.history.return_value = _valid_benchmark_df()
-        monkeypatch.setattr(ve, "_backtest_stock", _fake_backtest)
-        monkeypatch.setattr(ve, "yf", mock_yf)
-        monkeypatch.setattr(ve.time, "sleep", lambda *a, **k: None)
+        _use_real_subprocess_worker(monkeypatch, basket=["AAA", "STALLED"],
+                                     stall_symbol="STALLED", stall_seconds=0.6, stall_timeout=0.2)
 
         now = datetime.now(timezone.utc)
         admitted = ve.admit_validation_attempt(horizon="short", universe="us", trigger_type="manual",
@@ -499,20 +543,7 @@ class TestProviderStallLedgerIntegrity:
 def _seed_successful_result(monkeypatch, horizon="short", universe="us", owner="seed"):
     """Real end-to-end seed of a genuine prior successful val_runs row via
     the actual admitted-validation path — returns its run_id."""
-    monkeypatch.setattr(ve, "US_BASKET", ["SEED1", "SEED2"])
-
-    def _seed_backtest(sym, horizon, bench_df, market, **kwargs):
-        ws = kwargs.get("_window_stats")
-        if ws is not None:
-            ws["considered"] = 1
-            ws["benchmark_valid"] = 1
-        return []
-
-    mock_yf = MagicMock()
-    mock_yf.Ticker.return_value.history.return_value = _valid_benchmark_df()
-    monkeypatch.setattr(ve, "_backtest_stock", _seed_backtest)
-    monkeypatch.setattr(ve, "yf", mock_yf)
-    monkeypatch.setattr(ve.time, "sleep", lambda *a, **k: None)
+    _use_real_subprocess_worker(monkeypatch, basket=["SEED1", "SEED2"])
 
     now = datetime.now(timezone.utc)
     admitted = ve.admit_validation_attempt(horizon=horizon, universe=universe, trigger_type="manual",
@@ -543,25 +574,21 @@ class TestLeaseSurvivesDrain:
         genuinely alive — checked here specifically in the window AFTER
         the original 1s would have expired but BEFORE the 2.5s worker
         finishes."""
-        monkeypatch.setattr(ve, "RUN_STALL_TIMEOUT_SECONDS", 0.1)
-        monkeypatch.setattr(ve, "US_BASKET", ["STUCK"])
-
-        worker_alive = threading.Event()
-        worker_alive.set()
-
-        def _fake_backtest(sym, horizon, bench_df, market, **kwargs):
-            # Deliberately longer (2.5s) than A's 1s original lease —
-            # bounded so the test cannot hang, but long enough to leave a
-            # wide, unambiguous window past the original expiry.
-            threading.Event().wait(2.5)
-            worker_alive.clear()
-            return []
-
-        mock_yf = MagicMock()
-        mock_yf.Ticker.return_value.history.return_value = _valid_benchmark_df()
-        monkeypatch.setattr(ve, "_backtest_stock", _fake_backtest)
-        monkeypatch.setattr(ve, "yf", mock_yf)
-        monkeypatch.setattr(ve.time, "sleep", lambda *a, **k: None)
+        # V-USACT1-B-C3 — the PARENT's own RUN_STALL_TIMEOUT_SECONDS is
+        # left at its generous default (this call sets the CHILD's
+        # internal drain-stall value, via env var, to a value that never
+        # fires either — 2.5s of genuine work is well under it) so the
+        # PARENT's own authoritative inactivity clock never kills the
+        # child before this test's own lease/heartbeat timing plays out.
+        # The provider worker runs inside a genuine CHILD PROCESS —
+        # `threading.Event` cannot observe cross-process state under real
+        # spawn (a fresh interpreter, no inherited memory at all), so this
+        # test uses no in-process liveness signal at all; the actual
+        # safety property under test — B cannot acquire while A's worker
+        # is genuinely still alive, but can once A has fully released —
+        # is proven directly and unambiguously by the lease-acquisition
+        # assertions below.
+        _use_real_subprocess_worker(monkeypatch, basket=["STUCK"], uniform_seconds=2.5, stall_timeout=3600)
 
         now = datetime.now(timezone.utc)
         lease_a = ve.acquire_validation_execution_lease(owner="A", now=now, lease_duration_seconds=1)
@@ -592,7 +619,6 @@ class TestLeaseSurvivesDrain:
         # module shared with this test file's own `import time`) — a real,
         # unpatched wait.
         threading.Event().wait(1.6)
-        assert worker_alive.is_set(), "test bug — worker finished too early; widen the margin"
 
         now_b = datetime.now(timezone.utc)
         lease_b = ve.acquire_validation_execution_lease(owner="B", now=now_b, lease_duration_seconds=600)
@@ -600,9 +626,8 @@ class TestLeaseSurvivesDrain:
             f"UNSAFE: worker B acquired the lease while A's provider worker was still alive: {lease_b}"
         )
 
-        exec_thread.join(timeout=3)
+        exec_thread.join(timeout=5)
         assert not exec_thread.is_alive(), "execute_and_complete_admitted_attempt never returned"
-        assert not worker_alive.is_set(), "A's worker should have finished by now"
 
         # NOW that A has fully terminated and completed its failure
         # transition (releasing the lease), B must be able to acquire normally.
@@ -611,6 +636,16 @@ class TestLeaseSurvivesDrain:
         assert lease_b2["ok"] is True, f"B should be able to acquire after A fully released: {lease_b2}"
 
     def test_drain_heartbeats_fire_periodically_below_the_lease_duration(self, monkeypatch, isolated_db):
+        # V-USACT1-B-C1 note: unlike the sibling test above, this test
+        # calls ve.run_validation() directly, in-process — it never goes
+        # through _run_validation_in_subprocess / execute_and_complete_
+        # admitted_attempt, so the NEW parent-side authoritative
+        # inactivity detector (which lives in _run_validation_in_
+        # subprocess) never applies here. RUN_STALL_TIMEOUT_SECONDS below
+        # still refers to run_validation's own original in-process
+        # drain-stall detection, unchanged by V-USACT1-B-C1 — kept small
+        # so the ~0.7s drain genuinely trips it, proving _ProviderStall
+        # DuringComputation still fires from inside run_validation itself.
         monkeypatch.setattr(ve, "RUN_STALL_TIMEOUT_SECONDS", 0.1)
         monkeypatch.setattr(ve, "US_BASKET", ["STUCK"])
 
@@ -644,6 +679,11 @@ class TestLeaseSurvivesDrain:
             assert all(g < 1 for g in gaps), f"a drain heartbeat gap reached/exceeded the 1s lease duration: {gaps}"
 
     def test_heartbeat_rejection_during_drain_raises_fenced_out_not_provider_stall(self, monkeypatch):
+        # V-USACT1-B-C1 note: this test also calls ve.run_validation()
+        # directly, in-process — see the comment on the sibling test
+        # above. RUN_STALL_TIMEOUT_SECONDS here is run_validation's own
+        # original in-process drain-stall constant, unrelated to the new
+        # parent-side subprocess inactivity detector.
         monkeypatch.setattr(ve, "RUN_STALL_TIMEOUT_SECONDS", 0.1)
         monkeypatch.setattr(ve, "US_BASKET", ["STUCK"])
 
@@ -675,19 +715,8 @@ class TestLeaseSurvivesDrain:
         assert prior_latest["available"] is True
         assert prior_latest["run_id"] == seeded_run_id
 
-        monkeypatch.setattr(ve, "RUN_STALL_TIMEOUT_SECONDS", 0.2)
-        monkeypatch.setattr(ve, "US_BASKET", ["AAA", "STALLED"])
-
-        def _stall_backtest(sym, horizon, bench_df, market, **kwargs):
-            ws = kwargs.get("_window_stats")
-            if ws is not None:
-                ws["considered"] = 1
-                ws["benchmark_valid"] = 1
-            if sym == "STALLED":
-                threading.Event().wait(0.6)
-            return []
-
-        monkeypatch.setattr(ve, "_backtest_stock", _stall_backtest)
+        _use_real_subprocess_worker(monkeypatch, basket=["AAA", "STALLED"],
+                                     stall_symbol="STALLED", stall_seconds=0.6, stall_timeout=0.2)
 
         now2 = datetime.now(timezone.utc)
         admitted = ve.admit_validation_attempt(horizon="short", universe="us", trigger_type="manual",
@@ -781,22 +810,13 @@ class TestWallClockLeaseHeartbeat:
         total). The ONLY thing that can keep worker A's 1s lease alive
         past the original expiry is a genuine wall-clock heartbeat running
         independently of both progress and inactivity detection."""
+        # V-USACT1-B-C3 — RUN_STALL_TIMEOUT_SECONDS here applies to the
+        # PARENT's own authoritative inactivity clock (see
+        # _run_validation_in_subprocess) — 5.0s is generous relative to
+        # the ~0.6s per-symbol progress cadence, so it never fires falsely.
         monkeypatch.setattr(ve, "RUN_STALL_TIMEOUT_SECONDS", 5.0)
-        monkeypatch.setattr(ve, "US_BASKET", ["S1", "S2", "S3"])
-
-        def _slow_but_completing(sym, horizon, bench_df, market, **kwargs):
-            ws = kwargs.get("_window_stats")
-            if ws is not None:
-                ws["considered"] = 1
-                ws["benchmark_valid"] = 1
-            threading.Event().wait(0.6)
-            return []
-
-        mock_yf = MagicMock()
-        mock_yf.Ticker.return_value.history.return_value = _valid_benchmark_df()
-        monkeypatch.setattr(ve, "_backtest_stock", _slow_but_completing)
-        monkeypatch.setattr(ve, "yf", mock_yf)
-        monkeypatch.setattr(ve.time, "sleep", lambda *a, **k: None)
+        _use_real_subprocess_worker(monkeypatch, basket=["S1", "S2", "S3"],
+                                     uniform_seconds=0.6, stall_timeout=5.0)
 
         now = datetime.now(timezone.utc)
         lease_a = ve.acquire_validation_execution_lease(owner="A", now=now, lease_duration_seconds=1)

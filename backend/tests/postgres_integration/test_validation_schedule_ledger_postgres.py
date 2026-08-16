@@ -1470,3 +1470,448 @@ def test_list_schedule_attempts_performs_no_write_real_postgres(pg_conn, pg_data
     # Still usable afterward — no lingering lock, no deadlock.
     lease = ve.acquire_validation_execution_lease(owner="post-read-check", now=T0, lease_duration_seconds=60)
     assert lease["ok"] is True
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# V-USACT1-B — killable process-boundary deadline, real PostgreSQL evidence.
+# execute_and_complete_admitted_attempt() now runs validation inside a
+# genuinely killable child OS process (see _run_validation_in_subprocess)
+# and enforces a hard wall-clock MAX_RUN_DURATION_SECONDS deadline. These
+# tests prove the same lifecycle already proven under SQLite
+# (test_validation_run_deadline.py) holds under real PostgreSQL CAS/
+# transactional semantics: zero result rows on deadline, coherent
+# terminal attempt/slot/lease state, immediate re-admission, a stale
+# killed child cannot link a result, and the new RUN_DEADLINE_EXCEEDED
+# category is queryable through list_schedule_attempts.
+#
+# V-USACT1-B-C3 — no fork anywhere: every real child here runs under
+# genuine production "spawn" via a top-level, self-contained worker
+# (_worker_stuck_real_pg / _worker_near_boundary_real_pg) that configures
+# its OWN freshly-spawned copy of services.validation_engine internally,
+# never relying on inheriting this file's module-level attribute
+# mutations into a forked child.
+# ─────────────────────────────────────────────────────────────────────────
+
+def _stuck_backtest_real_pg(sym, horizon, bench_df, market, **kwargs):
+    import threading
+    threading.Event().wait()  # genuinely never returns
+
+
+def _worker_stuck_real_pg(result_queue, horizon, universe, max_workers, trigger_type):
+    """V-USACT1-B-C3 — top-level, spawn-safe worker replacing the old
+    fork-dependent approach: configures its OWN freshly-spawned copy of
+    services.validation_engine internally (never relies on inheriting
+    any monkeypatch/attribute mutation from the parent test process) and
+    calls the REAL run_validation() with a genuinely non-cooperative
+    per-symbol worker."""
+    import threading as _t
+    from unittest.mock import MagicMock as _EMagicMock
+    import numpy as _enp
+    import pandas as _epd
+    from datetime import datetime as _edatetime, timezone as _etimezone
+    import services.validation_engine as _ve
+
+    _ve.RUN_STALL_TIMEOUT_SECONDS = 3600
+    _ve.US_BASKET = ["STUCK"]
+
+    def _stuck(sym, horizon, bench_df, market, **kwargs):
+        _t.Event().wait()  # genuinely never returns
+    _ve._backtest_stock = _stuck
+
+    def _bench_df():
+        dates = _epd.bdate_range("2019-01-01", periods=300)
+        close = 100.0 * _enp.cumprod(1 + _enp.random.default_rng(1).normal(0.0003, 0.008, 300))
+        return _epd.DataFrame({"Close": close}, index=dates)
+    mock_yf = _EMagicMock()
+    mock_yf.Ticker.return_value.history.return_value = _bench_df()
+    _ve.yf = mock_yf
+
+    try:
+        metrics = _ve.run_validation(horizon=horizon, universe=universe, max_workers=max_workers,
+                                      trigger_type=trigger_type, _persist=False)
+        payload = metrics.get("_persist_payload")
+        now_iso = _edatetime.now(_etimezone.utc).isoformat()
+        if payload is None:
+            result_queue.put({"type": "error", "category": "NO_RESULT_RUN_ID", "message": None,
+                               "completed_at_utc": now_iso})
+            return
+        result_queue.put({"type": "result", "payload": payload, "completed_at_utc": now_iso})
+    except Exception as e:
+        now_iso = _edatetime.now(_etimezone.utc).isoformat()
+        result_queue.put({"type": "error", "category": type(e).__name__, "message": str(e)[:200],
+                           "completed_at_utc": now_iso})
+
+
+def _worker_near_boundary_real_pg(result_queue, horizon, universe, max_workers, trigger_type):
+    """V-USACT1-B-C3 — top-level, spawn-safe worker for the deadline-
+    versus-success race test: configures its own freshly-spawned copy of
+    services.validation_engine internally and calls the REAL
+    run_validation() with a worker duration set close to the test's own
+    configured deadline."""
+    import threading as _t
+    from unittest.mock import MagicMock as _EMagicMock
+    import numpy as _enp
+    import pandas as _epd
+    from datetime import datetime as _edatetime, timezone as _etimezone
+    import services.validation_engine as _ve
+
+    _ve.RUN_STALL_TIMEOUT_SECONDS = 3600
+    _ve.US_BASKET = ["S1"]
+
+    def _near_boundary(sym, horizon, bench_df, market, **kwargs):
+        ws = kwargs.get("_window_stats")
+        if ws is not None:
+            ws["considered"] = 1
+            ws["benchmark_valid"] = 1
+        _t.Event().wait(0.5)
+        return []
+    _ve._backtest_stock = _near_boundary
+
+    def _bench_df():
+        dates = _epd.bdate_range("2019-01-01", periods=300)
+        close = 100.0 * _enp.cumprod(1 + _enp.random.default_rng(1).normal(0.0003, 0.008, 300))
+        return _epd.DataFrame({"Close": close}, index=dates)
+    mock_yf = _EMagicMock()
+    mock_yf.Ticker.return_value.history.return_value = _bench_df()
+    _ve.yf = mock_yf
+
+    try:
+        metrics = _ve.run_validation(horizon=horizon, universe=universe, max_workers=max_workers,
+                                      trigger_type=trigger_type, _persist=False)
+        payload = metrics.get("_persist_payload")
+        now_iso = _edatetime.now(_etimezone.utc).isoformat()
+        if payload is None:
+            result_queue.put({"type": "error", "category": "NO_RESULT_RUN_ID", "message": None,
+                               "completed_at_utc": now_iso})
+            return
+        result_queue.put({"type": "result", "payload": payload, "completed_at_utc": now_iso})
+    except Exception as e:
+        now_iso = _edatetime.now(_etimezone.utc).isoformat()
+        result_queue.put({"type": "error", "category": type(e).__name__, "message": str(e)[:200],
+                           "completed_at_utc": now_iso})
+
+
+def _install_stuck_provider(ve):
+    # V-USACT1-B-C3 — no fork anywhere: the real per-attempt child now
+    # runs _worker_stuck_real_pg under genuine "spawn", which configures
+    # its own copy of ve internally rather than relying on inheriting
+    # this attribute mutation into a forked child.
+    ve._validation_child_worker = _worker_stuck_real_pg
+
+
+def test_run_deadline_exceeded_zero_result_rows_real_postgres(pg_conn, pg_database_url):
+    import services.validation_engine as ve
+    ve._USE_POSTGRES = True
+    _reset_ledger_tables(pg_conn)
+    _install_stuck_provider(ve)
+
+    now = T0
+    lease = ve.acquire_validation_execution_lease(owner="A", now=now, lease_duration_seconds=600)
+    assert lease["ok"] is True
+    admitted = ve.create_manual_attempt(horizon="short", universe="us", owner="A",
+                                         fencing_token=lease["fencing_token"], now=now)
+    assert admitted["ok"] is True
+    ve.mark_attempt_running(admitted["id"], owner="A", fencing_token=lease["fencing_token"], now=now)
+
+    result = ve.execute_and_complete_admitted_attempt(
+        admitted["id"], "A", lease["fencing_token"], "short", "us", "manual",
+        lease_duration_seconds=600, max_run_duration_seconds=2,
+    )
+    assert result["ok"] is False
+    assert result["reason"] == "run_deadline_exceeded"
+    assert _val_runs_count(pg_conn) == 0
+    assert _val_signals_count(pg_conn) == 0
+
+
+def test_run_deadline_exceeded_coherent_terminal_state_real_postgres(pg_conn, pg_database_url):
+    import services.validation_engine as ve
+    ve._USE_POSTGRES = True
+    _reset_ledger_tables(pg_conn)
+    _install_stuck_provider(ve)
+
+    now = T0
+    lease = ve.acquire_validation_execution_lease(owner="A", now=now, lease_duration_seconds=600)
+    admitted = ve.create_manual_attempt(horizon="short", universe="us", owner="A",
+                                         fencing_token=lease["fencing_token"], now=now)
+    ve.mark_attempt_running(admitted["id"], owner="A", fencing_token=lease["fencing_token"], now=now)
+
+    ve.execute_and_complete_admitted_attempt(
+        admitted["id"], "A", lease["fencing_token"], "short", "us", "manual",
+        lease_duration_seconds=600, max_run_duration_seconds=2,
+    )
+
+    row = pg_conn.execute(
+        "SELECT status, failure_category, result_run_id FROM validation_schedule_attempts WHERE id=%s",
+        (admitted["id"],),
+    ).fetchone()
+    assert row[0] == "failed"
+    assert row[1] == "RUN_DEADLINE_EXCEEDED"
+    assert row[2] is None
+
+    lease_row = pg_conn.execute(
+        "SELECT lease_owner, active_attempt_id FROM validation_execution_leases WHERE resource_key=%s",
+        (ve.GLOBAL_LEASE_RESOURCE_KEY,),
+    ).fetchone()
+    assert lease_row == (None, None)
+
+
+def test_new_attempt_admissible_immediately_after_deadline_real_postgres(pg_conn, pg_database_url):
+    import services.validation_engine as ve
+    ve._USE_POSTGRES = True
+    _reset_ledger_tables(pg_conn)
+    _install_stuck_provider(ve)
+
+    now = T0
+    lease_a = ve.acquire_validation_execution_lease(owner="A", now=now, lease_duration_seconds=600)
+    admitted_a = ve.create_manual_attempt(horizon="short", universe="us", owner="A",
+                                           fencing_token=lease_a["fencing_token"], now=now)
+    ve.mark_attempt_running(admitted_a["id"], owner="A", fencing_token=lease_a["fencing_token"], now=now)
+    result = ve.execute_and_complete_admitted_attempt(
+        admitted_a["id"], "A", lease_a["fencing_token"], "short", "us", "manual",
+        lease_duration_seconds=600, max_run_duration_seconds=2,
+    )
+    assert result["ok"] is False
+
+    now_b = now + timedelta(seconds=5)
+    lease_b = ve.acquire_validation_execution_lease(owner="B", now=now_b, lease_duration_seconds=600)
+    assert lease_b["ok"] is True, f"B could not acquire immediately after A's deadline failure: {lease_b}"
+    admitted_b = ve.create_manual_attempt(horizon="short", universe="us", owner="B",
+                                           fencing_token=lease_b["fencing_token"], now=now_b)
+    assert admitted_b["ok"] is True
+
+
+def test_stale_killed_child_cannot_link_a_result_real_postgres(pg_conn, pg_database_url):
+    """After A is killed for exceeding the deadline, no code path in A's
+    process tree ever held a lease credential capable of calling
+    complete_running_attempt_with_computed_result — proven here by
+    confirming B's subsequent, entirely separate successful completion is
+    the only val_runs row that exists, and it is correctly linked to B's
+    own attempt, never A's."""
+    import services.validation_engine as ve
+    ve._USE_POSTGRES = True
+    _reset_ledger_tables(pg_conn)
+    _install_stuck_provider(ve)
+
+    now = T0
+    lease_a = ve.acquire_validation_execution_lease(owner="A", now=now, lease_duration_seconds=600)
+    admitted_a = ve.create_manual_attempt(horizon="short", universe="us", owner="A",
+                                           fencing_token=lease_a["fencing_token"], now=now)
+    ve.mark_attempt_running(admitted_a["id"], owner="A", fencing_token=lease_a["fencing_token"], now=now)
+    ve.execute_and_complete_admitted_attempt(
+        admitted_a["id"], "A", lease_a["fencing_token"], "short", "us", "manual",
+        lease_duration_seconds=600, max_run_duration_seconds=2,
+    )
+
+    # B runs a genuinely fast, successful attempt afterward.
+    def _fast_ok(sym, horizon, bench_df, market, **kwargs):
+        ws = kwargs.get("_window_stats")
+        if ws is not None:
+            ws["considered"] = 1
+            ws["benchmark_valid"] = 1
+        return []
+    ve._backtest_stock = _fast_ok
+    ve.US_BASKET = ["OK1"]
+
+    now_b = now + timedelta(seconds=5)
+    lease_b = ve.acquire_validation_execution_lease(owner="B", now=now_b, lease_duration_seconds=600)
+    assert lease_b["ok"] is True
+    admitted_b = ve.create_manual_attempt(horizon="short", universe="us", owner="B",
+                                           fencing_token=lease_b["fencing_token"], now=now_b)
+    ve.mark_attempt_running(admitted_b["id"], owner="B", fencing_token=lease_b["fencing_token"], now=now_b)
+    result_b = ve.execute_and_complete_admitted_attempt(
+        admitted_b["id"], "B", lease_b["fencing_token"], "short", "us", "manual",
+        lease_duration_seconds=600, max_run_duration_seconds=30,
+    )
+    assert result_b["ok"] is True
+
+    assert _val_runs_count(pg_conn) == 1
+    row = pg_conn.execute(
+        "SELECT result_run_id FROM validation_schedule_attempts WHERE id=%s", (admitted_b["id"],),
+    ).fetchone()
+    assert row[0] == result_b["run_id"]
+    row_a = pg_conn.execute(
+        "SELECT result_run_id FROM validation_schedule_attempts WHERE id=%s", (admitted_a["id"],),
+    ).fetchone()
+    assert row_a[0] is None
+
+
+def test_run_deadline_exceeded_attempt_history_filter_real_postgres(pg_conn, pg_database_url):
+    import services.validation_engine as ve
+    ve._USE_POSTGRES = True
+    _reset_ledger_tables(pg_conn)
+    _install_stuck_provider(ve)
+
+    now = T0
+    lease = ve.acquire_validation_execution_lease(owner="A", now=now, lease_duration_seconds=600)
+    admitted = ve.create_manual_attempt(horizon="short", universe="us", owner="A",
+                                         fencing_token=lease["fencing_token"], now=now)
+    ve.mark_attempt_running(admitted["id"], owner="A", fencing_token=lease["fencing_token"], now=now)
+    ve.execute_and_complete_admitted_attempt(
+        admitted["id"], "A", lease["fencing_token"], "short", "us", "manual",
+        lease_duration_seconds=600, max_run_duration_seconds=2,
+    )
+
+    rows = ve.list_schedule_attempts(failure_category="RUN_DEADLINE_EXCEEDED", limit=10)
+    assert len(rows) == 1
+    assert rows[0]["id"] == admitted["id"]
+    assert "lease_owner" not in rows[0]
+    assert "lease_fencing_token" not in rows[0]
+    assert "failure_summary" not in rows[0]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# V-USACT1-B-C1 Blocker 3/7 — terminal (non-retryable) deadline failure and
+# deadline-versus-completion race, under real PostgreSQL. Uses controlled
+# timestamps/durations and bounded joins — no arbitrary sleeps for
+# synchronization.
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_deadline_failed_slot_is_terminal_and_cannot_be_readmitted_real_postgres(pg_conn, pg_database_url):
+    import services.validation_engine as ve
+    ve._USE_POSTGRES = True
+    _reset_ledger_tables(pg_conn)
+    _install_stuck_provider(ve)
+
+    now = T0
+    slot = ve.get_or_create_schedule_slot(horizon="short", universe="us", scheduled_slot=now,
+                                           schedule_version="v1", now=now)
+    lease = ve.acquire_validation_execution_lease(owner="sched-1", now=now, lease_duration_seconds=600)
+    assert lease["ok"] is True
+    attempt = ve.create_schedule_attempt(slot_id=slot["id"], trigger_type="scheduler",
+                                          owner="sched-1", fencing_token=lease["fencing_token"], now=now)
+    assert attempt["ok"] is True
+    ve.mark_attempt_running(attempt["id"], owner="sched-1", fencing_token=lease["fencing_token"], now=now)
+
+    result = ve.execute_and_complete_admitted_attempt(
+        attempt["id"], "sched-1", lease["fencing_token"], "short", "us", "scheduler",
+        lease_duration_seconds=600, max_run_duration_seconds=2,
+    )
+    assert result["ok"] is False
+    assert result["reason"] == "run_deadline_exceeded"
+
+    slot_row = pg_conn.execute(
+        "SELECT status, active_attempt_id FROM validation_schedule_slots WHERE id=%s", (slot["id"],),
+    ).fetchone()
+    assert slot_row[0] == "failed", "slot must be TERMINAL, never 'due', after a deadline timeout"
+    assert slot_row[1] is None
+
+    # A later scheduler tick re-resolving the SAME canonical slot and
+    # attempting to admit against it must be refused by the real
+    # primitive under real Postgres.
+    later = now + timedelta(minutes=5)
+    same_slot = ve.get_or_create_schedule_slot(horizon="short", universe="us", scheduled_slot=now,
+                                                 schedule_version="v1", now=later)
+    assert same_slot["id"] == slot["id"]
+    lease2 = ve.acquire_validation_execution_lease(owner="sched-2", now=later, lease_duration_seconds=600)
+    assert lease2["ok"] is True
+    retry = ve.create_schedule_attempt(slot_id=same_slot["id"], trigger_type="scheduler",
+                                        owner="sched-2", fencing_token=lease2["fencing_token"], now=later)
+    assert retry["ok"] is False, f"a terminal deadline-failed slot must refuse re-admission: {retry}"
+
+    # The NEXT genuinely new canonical session (a different scheduled_slot)
+    # remains fully eligible.
+    tomorrow = now + timedelta(days=1)
+    slot_tomorrow = ve.get_or_create_schedule_slot(horizon="short", universe="us", scheduled_slot=tomorrow,
+                                                     schedule_version="v1", now=tomorrow)
+    assert slot_tomorrow["id"] != slot["id"]
+    lease3 = ve.acquire_validation_execution_lease(owner="sched-3", now=tomorrow, lease_duration_seconds=600)
+    assert lease3["ok"] is True
+    new_attempt = ve.create_schedule_attempt(slot_id=slot_tomorrow["id"], trigger_type="scheduler",
+                                              owner="sched-3", fencing_token=lease3["fencing_token"], now=tomorrow)
+    assert new_attempt["ok"] is True
+
+
+def test_deadline_versus_successful_completion_race_exactly_one_outcome_no_deadlock_real_postgres(
+    pg_conn, pg_database_url
+):
+    """A worker whose duration is deliberately set very close to the
+    configured deadline — proving, under real Postgres transactional
+    semantics (not SQLite), that whichever side of the race it lands on,
+    exactly one coherent outcome results: either a genuine result linked
+    to exactly one val_runs row, or a clean rejection with zero orphan
+    val_runs/val_signals rows and a coherent terminal attempt/slot/lease
+    state — and that the connection remains fully usable afterward (no
+    DeadlockDetected, no lingering lock)."""
+    import services.validation_engine as ve
+    ve._USE_POSTGRES = True
+    _reset_ledger_tables(pg_conn)
+
+    from unittest.mock import MagicMock
+    import numpy as np
+    import pandas as pd
+    import threading as _threading
+
+    def _bench_df():
+        dates = pd.bdate_range("2019-01-01", periods=300)
+        close = 100.0 * np.cumprod(1 + np.random.default_rng(1).normal(0.0003, 0.008, 300))
+        return pd.DataFrame({"Close": close}, index=dates)
+
+    # V-USACT1-B-C3 — no fork: the real child runs
+    # _worker_near_boundary_real_pg under genuine "spawn", which
+    # configures its own freshly-imported copy of ve internally.
+    ve._validation_child_worker = _worker_near_boundary_real_pg
+
+    now = T0
+    lease = ve.acquire_validation_execution_lease(owner="A", now=now, lease_duration_seconds=600)
+    assert lease["ok"] is True
+    admitted = ve.create_manual_attempt(horizon="short", universe="us", owner="A",
+                                         fencing_token=lease["fencing_token"], now=now)
+    assert admitted["ok"] is True
+    ve.mark_attempt_running(admitted["id"], owner="A", fencing_token=lease["fencing_token"], now=now)
+
+    # V-USACT1-B-C2, Correction 4 — explicit, bounded-join execution with
+    # an explicit failure on psycopg.errors.DeadlockDetected, matching
+    # the pattern already established for the other concurrency tests in
+    # this file, rather than relying on an uncaught exception to
+    # eventually surface as a generic pytest error.
+    outcome = {}
+
+    def _run():
+        try:
+            outcome["result"] = ve.execute_and_complete_admitted_attempt(
+                admitted["id"], "A", lease["fencing_token"], "short", "us", "manual",
+                lease_duration_seconds=600, max_run_duration_seconds=0.5,
+            )
+        except Exception as e:
+            outcome["error"] = e
+
+    t = _threading.Thread(target=_run)
+    t.start()
+    t.join(timeout=30)
+    assert not t.is_alive(), "execute_and_complete_admitted_attempt hung — possible undetected lock contention"
+
+    if "error" in outcome:
+        err = outcome["error"]
+        if isinstance(err, psycopg.errors.DeadlockDetected):
+            pytest.fail(f"deadline-vs-success race hit a real PostgreSQL deadlock: {err!r}")
+        raise err
+    result = outcome["result"]
+
+    if result["ok"]:
+        assert _val_runs_count(pg_conn) == 1
+        row = pg_conn.execute(
+            "SELECT result_run_id, status FROM validation_schedule_attempts WHERE id=%s", (admitted["id"],),
+        ).fetchone()
+        assert row[0] == result["run_id"]
+        assert row[1] == "completed"
+    else:
+        assert result["reason"] == "run_deadline_exceeded"
+        assert _val_runs_count(pg_conn) == 0
+        assert _val_signals_count(pg_conn) == 0
+        row = pg_conn.execute(
+            "SELECT result_run_id, status, failure_category FROM validation_schedule_attempts WHERE id=%s",
+            (admitted["id"],),
+        ).fetchone()
+        assert row[0] is None
+        assert row[1] == "failed"
+        assert row[2] == "RUN_DEADLINE_EXCEEDED"
+
+    # No DeadlockDetected, no lingering lock — the connection is still
+    # fully usable for further real queries/transactions immediately
+    # afterward.
+    lease_check = ve.acquire_validation_execution_lease(
+        owner="post-race-check", now=now + timedelta(seconds=5), lease_duration_seconds=60,
+    )
+    assert lease_check["ok"] is True
+    still_usable = pg_conn.execute("SELECT 1").fetchone()
+    assert still_usable[0] == 1
