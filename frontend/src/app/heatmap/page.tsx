@@ -185,7 +185,7 @@ export default function HeatmapPage() {
               <div className="text-sm font-bold leading-tight">{sector.sector}</div>
               <div className="text-lg mt-1 font-bold tabular-nums">
                 {sector.avg_change !== null
-                  ? `${sector.avg_change >= 0 ? "+" : ""}${sector.avg_change}%${fmtPoints(sector.avg_change_points)}`
+                  ? `${sector.avg_change >= 0 ? "+" : ""}${sector.avg_change}%`
                   : "—"}
               </div>
               {sector.loaded < sector.total && (
@@ -213,7 +213,7 @@ export default function HeatmapPage() {
                   sector.avg_change === null ? "text-gray-500"
                   : sector.avg_change >= 0 ? "text-green-400" : "text-red-400")}>
                   {sector.avg_change !== null
-                    ? `${sector.avg_change >= 0 ? "+" : ""}${sector.avg_change}%${fmtPoints(sector.avg_change_points)}`
+                    ? `${sector.avg_change >= 0 ? "+" : ""}${sector.avg_change}%`
                     : "—"}
                 </span>
               </div>
