@@ -1,7 +1,13 @@
 """
 Daily Picks Service
-Screens Nifty 100 stocks, runs prediction engine on each,
-returns top 6 BUY signals per horizon (short/medium/long).
+Screens Nifty 100 stocks, runs prediction engine on each, and PUBLISHES up to
+3 conviction-gated BUY signals per horizon (short/medium/long) — see
+_apply_conviction_publication_gate and services/thresholds.py's
+DAILY_PICKS_PUBLICATION registry. Internally still selects/evaluates up to 6
+eligible BUY candidates per horizon (unchanged ranking/selection); only
+those with Model Conviction ("confidence") >= 85.0 are published, capped at
+3, in the existing ranking order (0-3 published picks per horizon is a
+valid, expected outcome — never backfilled).
 Results cached to picks_cache.json so the endpoint is instant after generation.
 
 Learning Alpha Engine integration:
@@ -15,6 +21,7 @@ Learning Alpha Engine integration:
 
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -28,6 +35,7 @@ import yfinance as yf
 
 from services.prediction_engine import PredictionEngine
 from services.alpha_engine import alpha_observations as _alpha_obs
+from services.thresholds import DAILY_PICKS_PUBLICATION as _DP_PUBLICATION
 
 log = logging.getLogger(__name__)
 
@@ -1253,6 +1261,63 @@ def _select_short_term_top_six(candidates: list[dict]) -> list[dict]:
     return (high_conf + rest)[:6]
 
 
+def _apply_conviction_publication_gate(ranked_candidates: list[dict]) -> tuple[list[dict], dict]:
+    """
+    Conviction-gated Daily Picks publication policy
+    (feature/daily-picks-conviction-gated-publication).
+
+    `ranked_candidates` is the existing, already-selected/already-ordered
+    per-horizon slate (e.g. `top_buy` — already eligibility/BUY/quality-
+    gated and already in this horizon's deterministic ranking order). This
+    function does NOT re-rank, re-score, or re-gate eligibility; it only
+    decides, in that existing order, which of those candidates are
+    published:
+
+      1. fail closed — a candidate whose `confidence` (reused, relabeled
+         "Model Conviction") is missing, non-numeric, non-finite (NaN/
+         +-Infinity), or outside the valid 0-100 scale is EXCLUDED, never
+         published, regardless of any other field;
+      2. retain only candidates with Model Conviction >=
+         DAILY_PICKS_PUBLICATION.MIN_CONVICTION_TO_PUBLISH (85.0);
+      3. preserve the existing ranking order (no re-sorting);
+      4. publish at most DAILY_PICKS_PUBLICATION.MAX_PUBLISHED_PER_HORIZON
+         (3) of the retained candidates.
+
+    The threshold is never lowered and gates are never relaxed to fill
+    slots — 0, 1, 2, or 3 published picks are all legitimate outcomes.
+
+    Returns (published, meta) where `meta` carries truthful, additive
+    publication diagnostics (n_conviction_qualified, n_published,
+    conviction_threshold, max_published_per_horizon) for the caller to
+    fold into this horizon's alpha_engine_meta without touching the
+    pre-existing n_scored/n_buy semantics.
+    """
+    threshold = _DP_PUBLICATION.MIN_CONVICTION_TO_PUBLISH
+    max_published = _DP_PUBLICATION.MAX_PUBLISHED_PER_HORIZON
+
+    qualified: list[dict] = []
+    for cand in ranked_candidates:
+        conviction = cand.get("confidence")
+        if isinstance(conviction, bool) or not isinstance(conviction, (int, float)):
+            continue  # missing / non-numeric — fail closed
+        if not math.isfinite(conviction):
+            continue  # NaN / +-Infinity — fail closed
+        if conviction < 0 or conviction > 100:
+            continue  # out of the valid 0-100 scale — fail closed
+        if conviction < threshold:
+            continue
+        qualified.append(cand)
+
+    published = qualified[:max_published]
+    meta = {
+        "n_conviction_qualified": len(qualified),
+        "n_published": len(published),
+        "conviction_threshold": threshold,
+        "max_published_per_horizon": max_published,
+    }
+    return published, meta
+
+
 def _compute_portfolio_allocation(
     alphas: list[float],
     returns_matrix,
@@ -1763,6 +1828,21 @@ def _generate_picks_inner(
             # on average — the explicit reason this stratification exists.
             top_buy = _select_with_tier_quota(all_buy_deduped, _MEDIUM_LONG_TIER_QUOTA_6)
 
+        # Conviction-gated publication policy
+        # (feature/daily-picks-conviction-gated-publication): `top_buy` above
+        # is the FULL existing selection (up to 6, already eligibility/BUY/
+        # quality-gated and already in this horizon's deterministic ranking
+        # order) and is kept as-is below for portfolio allocation and the
+        # alpha_observations evidence trail — positions 4-6 are never
+        # deleted, only not published. `published_buy` is the subset of
+        # `top_buy`, in the same order, that also clears the Model
+        # Conviction publication gate (see _apply_conviction_publication_gate
+        # docstring): >= DAILY_PICKS_PUBLICATION.MIN_CONVICTION_TO_PUBLISH
+        # (85.0), capped at DAILY_PICKS_PUBLICATION.MAX_PUBLISHED_PER_HORIZON
+        # (3). This never changes ranking, scoring, or BUY/HOLD/SELL —
+        # publication only.
+        published_buy, _publication_meta = _apply_conviction_publication_gate(top_buy)
+
         # Phase 6 — Portfolio optimisation. DP-025 foundation: the actual
         # weighting/cash math now lives in the module-level, I/O-free
         # _compute_portfolio_allocation so a pipeline replay can call it
@@ -1770,26 +1850,36 @@ def _generate_picks_inner(
         # DP-021: _compute_portfolio_allocation is now the single allocation
         # authority for every non-empty slate size (previously a single
         # qualifying pick bypassed it with a separate 50% hard-code here).
-        if top_buy:
-            alphas = [r.get("ranking_alpha", 0) for r in top_buy]
-            symbols = [r["symbol"] for r in top_buy]
+        # Conviction-gated publication: allocation is computed over
+        # `published_buy` (what /picks actually shows), not the full
+        # up-to-6 `top_buy` — weights for candidates that didn't clear the
+        # conviction gate would otherwise be meaningless to a reader who
+        # never sees those rows. This is an allocation-of-what's-published
+        # change only; it does not touch the ranking/alpha/selection logic
+        # above (DPD-005's hard-cap contract, optimizer.optimize(), etc.).
+        if published_buy:
+            alphas = [r.get("ranking_alpha", 0) for r in published_buy]
+            symbols = [r["symbol"] for r in published_buy]
             # A returns matrix is only useful (and only fetched) when there
             # are 2+ names to compute a covariance across — a lone pick's
             # allocation doesn't depend on it.
-            ret_matrix = _fetch_returns_matrix(symbols, market) if len(top_buy) > 1 else None
+            ret_matrix = _fetch_returns_matrix(symbols, market) if len(published_buy) > 1 else None
             port_weights, cash_pct = _compute_portfolio_allocation(alphas, ret_matrix, regime_label)
-            for pick, w in zip(top_buy, port_weights):
+            for pick, w in zip(published_buy, port_weights):
                 pick["portfolio_weight"] = w
             _portfolio_cash_pct[horizon] = cash_pct
 
         # Final-pick selection metadata for the alpha_observations snapshot
         # below, kept OUT of the `top_buy`/`universe` dicts themselves —
         # those dicts are serialized as-is into the published payload
-        # (`picks[horizon] = top_buy`), so adding new keys to them would
-        # change the published Daily Picks JSON. portfolio_weight is already
-        # set directly on `pick` above (pre-existing behavior, already part
-        # of today's payload) — only pick_rank/is_daily_pick are net-new for
-        # this phase, and they stay in this side dict instead.
+        # (`picks[horizon] = published_buy`), so adding new keys to them
+        # would change the published Daily Picks JSON. portfolio_weight is
+        # already set directly on `pick` above (pre-existing behavior,
+        # already part of today's payload) — only pick_rank/is_daily_pick
+        # are net-new for this phase, and they stay in this side dict
+        # instead. pick_rank is over the FULL `top_buy` (up to 6, including
+        # any unpublished candidates) so the evidence trail keeps every
+        # candidate's rank, not just the published ones'.
         _pick_meta_by_symbol = {
             _pick["symbol"]: {"pick_rank": _rank, "portfolio_weight": _pick.get("portfolio_weight")}
             for _rank, _pick in enumerate(top_buy, start=1)
@@ -1801,9 +1891,17 @@ def _generate_picks_inner(
         # published Daily Picks JSON — strip them from the copies assigned
         # to `picks[horizon]` only; `universe` (used for the snapshot below)
         # keeps the original dicts untouched.
+        #
+        # Conviction-gated publication: `picks[horizon]` (what /picks
+        # actually returns) is now `published_buy` — the Model-Conviction-
+        # gated, <=3 subset of `top_buy` — not the full up-to-6 selection.
+        # `top_buy` (all positions, including any unpublished 4th-6th) still
+        # feeds portfolio allocation above and the alpha_observations
+        # evidence trail below, so no candidate evidence is deleted, only
+        # not published.
         picks[horizon] = [
             {k: v for k, v in pick.items() if k not in _ALPHA_OBS_ONLY_KEYS}
-            for pick in top_buy
+            for pick in published_buy
         ]
 
         # ── Phase 2A: shadow-only canonical alpha_observations snapshot ──
@@ -1843,22 +1941,35 @@ def _generate_picks_inner(
         alpha_engine_meta[horizon] = {
             "ic_weights":  ic_weights,
             "regime":      regime_label,
+            # n_scored/n_buy keep their pre-existing meaning (unchanged):
+            # total scored candidates and total BUY-signal candidates in
+            # this horizon's cross-sectional universe. n_published (below)
+            # is new and intentionally distinct — do not conflate them.
             "n_scored":    len(universe),
             "n_buy":       sum(1 for r in universe if r.get("signal") == "BUY"),
             # True only when the meta-model actually determined ranking for
             # at least one published pick — not merely that a shadow value
             # was computed. See "meta_alpha_used_for_ranking" per-item.
-            "meta_model":  any(r.get("meta_alpha_used_for_ranking") for r in top_buy),
+            "meta_model":  any(r.get("meta_alpha_used_for_ranking") for r in published_buy),
             # Learning Alpha Engine remediation, Phase 1 — observability.
             "production_alpha_source": production_alpha_source(),
             "shadow_meta_model_available": any(r.get("meta_alpha") is not None for r in top_buy),
             "containment_reason": containment_reason(),
             "learning_dataset_version": LEARNING_DATASET_VERSION,
+            # Conviction-gated publication policy metadata (additive,
+            # backward-compatible) — see _apply_conviction_publication_gate.
+            # "confidence" is reused, unchanged, and here explicitly
+            # relabeled: it is Model Conviction (a model output on a 0-100
+            # scale), never a calibrated win probability or "% chance".
+            "conviction_semantic": "Model Conviction (0-100 scale, not a calibrated win probability)",
+            **_publication_meta,
         }
         log.info(
             f"[picks] [{market}] {horizon}: {len(universe)} scored, "
             f"{alpha_engine_meta[horizon]['n_buy']} BUY, "
-            f"{len(top_buy)} picks | "
+            f"{_publication_meta['n_conviction_qualified']} conviction-qualified (>= "
+            f"{_publication_meta['conviction_threshold']}), "
+            f"{len(published_buy)} published | "
             f"meta_model={'on' if alpha_engine_meta[horizon]['meta_model'] else 'off (IC alpha)'} | "
             f"alpha_source={alpha_engine_meta[horizon]['production_alpha_source']}"
         )

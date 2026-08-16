@@ -33,3 +33,29 @@ describe("Daily Picks investor-facing wording (Phase 1 disclosure)", () => {
     expect(pageSource).toContain("Scenario Target");
   });
 });
+
+// feature/daily-picks-conviction-gated-publication — conviction-gated
+// publication policy wording. Same source-text-assertion approach as above
+// (the page isn't practically mountable in isolation here).
+describe("Daily Picks conviction-gated publication wording", () => {
+  it("no longer claims a fixed six picks per horizon", () => {
+    expect(pageSource).not.toContain("Top 6");
+  });
+
+  it("truthfully states up to 3 qualified picks per horizon", () => {
+    expect(pageSource).toContain("Up to 3 qualified picks per horizon");
+  });
+
+  it("references Model Conviction alongside Signal Strength", () => {
+    expect(pageSource).toContain("Model Conviction");
+  });
+
+  it("displays the score out of 100, not as a bare percentage label", () => {
+    expect(pageSource).toContain("{pick.confidence}/100");
+  });
+
+  it("does not describe Model Conviction as a probability or % chance", () => {
+    expect(pageSource).not.toMatch(/\d+%\s*chance/i);
+    expect(pageSource).not.toMatch(/conviction[^.]*probability of (a )?win/i);
+  });
+});

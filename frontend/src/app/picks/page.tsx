@@ -101,7 +101,15 @@ function freezeDailyPickSnapshot(pick: Pick): FrozenDailyPickSnapshot {
   };
 }
 
-type AlphaEngineMeta = { ic_weights?: Record<string, number>; regime?: string; n_scored?: number; n_buy?: number; meta_model?: boolean };
+// n_conviction_qualified/n_published/conviction_threshold/max_published_per_horizon
+// (feature/daily-picks-conviction-gated-publication) are additive and
+// backward-compatible — n_scored/n_buy keep their pre-existing meaning and
+// a legacy cached payload without these new fields still renders fine
+// (all optional).
+type AlphaEngineMeta = {
+  ic_weights?: Record<string, number>; regime?: string; n_scored?: number; n_buy?: number; meta_model?: boolean;
+  n_conviction_qualified?: number; n_published?: number; conviction_threshold?: number; max_published_per_horizon?: number;
+};
 type GlobalContext = { score?: number; levels?: Record<string, number>; changes?: Record<string, number> };
 type DailyPicksResponse = {
   generated_at: string | null;
@@ -823,8 +831,8 @@ export function PickCard({ pick, rank, market, currency, locale, freshness, open
 
         <div className="mb-3">
           <div className="flex justify-between text-xs text-gray-500 mb-1">
-            <span>Signal Strength</span>
-            <span className={clsx("font-medium", confidenceTextColor(pick.confidence))}>{pick.confidence}%</span>
+            <span>Signal Strength (Model Conviction)</span>
+            <span className={clsx("font-medium", confidenceTextColor(pick.confidence))}>{pick.confidence}/100</span>
           </div>
           <div className="h-1.5 bg-dark-border rounded-full overflow-hidden">
             <div className={clsx("h-full rounded-full", confidenceGradientClass(pick.confidence))} style={{ width: `${pick.confidence}%` }} />
@@ -1331,7 +1339,7 @@ export default function DailyPicksPage() {
         </div>
       </div>
       <p className="text-sm text-gray-400">
-        Top 6 AI-selected BUY calls per horizon · {market === "US" ? "base picks generated" : "generated daily"} at {marketCfg.genTime}
+        Up to 3 qualified picks per horizon (Model Conviction ≥ 85/100) · {market === "US" ? "base picks generated" : "generated daily"} at {marketCfg.genTime}
         {market === "US" ? ` · Premarket review ${PREMARKET_REVIEW_SCHEDULE_LABEL.toLowerCase()}, after today's base picks complete` : ""}
         {/* Release 12B coverage truthfulness: real returned count only, never
             a hardcoded number, and never a full-exchange claim. */}
