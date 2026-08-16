@@ -85,13 +85,13 @@ US_SECTORS = {
 }
 
 
-def _bulk_changes(symbols: list[str], suffix: str) -> dict[str, float | None]:
+def _bulk_changes(symbols: list[str], suffix: str) -> dict[str, dict[str, float] | None]:
     """
-    Fetch % change for all symbols in one yf.download() call — far more reliable
-    than per-stock fast_info requests from cloud IPs.
+    Fetch % change and point change for all symbols in one yf.download() call —
+    far more reliable than per-stock fast_info requests from cloud IPs.
     """
     tickers = [s + suffix for s in symbols]
-    changes: dict[str, float | None] = {s: None for s in symbols}
+    changes: dict[str, dict[str, float] | None] = {s: None for s in symbols}
     try:
         # period="5d" ensures we always have ≥2 rows of settled trading data.
         # period="2d" breaks when today's row is all-NaN (market just closed,
@@ -118,7 +118,10 @@ def _bulk_changes(symbols: list[str], suffix: str) -> dict[str, float | None]:
             # float NaN, not None, so "is not None" alone lets it through and
             # produces a NaN change_pct that then poisons the sector average.
             if pd.notna(prev) and pd.notna(today) and float(prev) > 0:
-                changes[sym] = round((float(today) - float(prev)) / float(prev) * 100, 2)
+                changes[sym] = {
+                    "change_pct": round((float(today) - float(prev)) / float(prev) * 100, 2),
+                    "change": round(float(today) - float(prev), 2),
+                }
     except Exception as e:
         err = str(e).lower()
         if "crumb" in err or "401" in err or "unauthorized" in err:
@@ -131,13 +134,13 @@ def _bulk_changes(symbols: list[str], suffix: str) -> dict[str, float | None]:
     return changes
 
 
-def _nse_sector_changes() -> dict[str, dict[str, float | None]]:
+def _nse_sector_changes() -> dict[str, dict[str, dict[str, float] | None]]:
     """
-    Fetch per-stock change% for India using NSE sector index APIs.
-    Returns {sector: {symbol: change_pct}}.
+    Fetch per-stock change% and point change for India using NSE sector index APIs.
+    Returns {sector: {symbol: {"change_pct": ..., "change": ...}}}.
     Each sector index is one HTTP call — far faster than bulk yfinance download.
     """
-    results: dict[str, dict[str, float | None]] = {}
+    results: dict[str, dict[str, dict[str, float] | None]] = {}
     for sector in INDIA_SECTORS:
         nse_changes = nse_client.get_sector_changes(sector)
         if nse_changes:
@@ -147,34 +150,41 @@ def _nse_sector_changes() -> dict[str, dict[str, float | None]]:
     return results
 
 
-def _build_sector_output(sectors: dict, all_changes: dict[str, dict[str, float | None]]) -> list[dict]:
+def _build_sector_output(sectors: dict, all_changes: dict[str, dict[str, dict[str, float] | None]]) -> list[dict]:
     MAX_STOCKS = 15
     output = []
     for sector, stocks in sectors.items():
         sector_changes = all_changes.get(sector, {})
         stock_data = []
-        changes = []
+        pcts = []
+        points = []
         for sym in stocks:
             chg = sector_changes.get(sym)
+            pct = chg.get("change_pct") if chg else None
+            pt  = chg.get("change") if chg else None
             # NaN is not None, so guard against it explicitly here too — a
             # NaN change_pct must never reach the JSON response (it's not
             # valid JSON) or the sector average (it would poison the whole
             # sector's avg_change to NaN, as happened with US "Fintech"/"LC").
-            if chg is not None and chg == chg:
-                stock_data.append({"symbol": sym, "change_pct": chg})
-                changes.append(chg)
+            if pct is not None and pct == pct:
+                stock_data.append({"symbol": sym, "change_pct": pct, "change": pt})
+                pcts.append(pct)
+                if pt is not None and pt == pt:
+                    points.append(pt)
             else:
-                stock_data.append({"symbol": sym, "change_pct": None})
-        sector_avg = round(sum(changes) / len(changes), 2) if changes else None
+                stock_data.append({"symbol": sym, "change_pct": None, "change": None})
+        sector_avg = round(sum(pcts) / len(pcts), 2) if pcts else None
+        sector_avg_points = round(sum(points) / len(points), 2) if points else None
         stock_data.sort(key=lambda s: abs(s["change_pct"]) if s["change_pct"] is not None else 0, reverse=True)
         stock_data = stock_data[:MAX_STOCKS]
         stock_data.sort(key=lambda s: s["change_pct"] if s["change_pct"] is not None else -999, reverse=True)
         output.append({
-            "sector":     sector,
-            "avg_change": sector_avg,
-            "stocks":     stock_data,
-            "loaded":     len(changes),
-            "total":      len(stocks),
+            "sector":            sector,
+            "avg_change":        sector_avg,
+            "avg_change_points": sector_avg_points,
+            "stocks":            stock_data,
+            "loaded":            len(pcts),
+            "total":             len(stocks),
         })
     return sorted(output, key=lambda x: x["avg_change"] or 0, reverse=True)
 
