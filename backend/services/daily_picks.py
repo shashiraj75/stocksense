@@ -401,13 +401,16 @@ def _build_summary(result: dict, horizon: str, currency: str = "₹") -> str:
         if parts:
             global_note = " " + "; ".join(parts) + "."
 
-    # Confidence tone
+    # Confidence tone — labeled "Model Conviction X/100" (not "% AI
+    # confidence"), consistent with the conviction-gated publication
+    # policy's terminology; the underlying `confidence` value/scale is
+    # unchanged, only this summary sentence's wording.
     if confidence >= 70:
-        conf_tone = f"with high conviction ({confidence}% AI confidence)"
+        conf_tone = f"with high conviction (Model Conviction {confidence}/100)"
     elif confidence >= 50:
-        conf_tone = f"with moderate confidence ({confidence}% AI confidence)"
+        conf_tone = f"with moderate confidence (Model Conviction {confidence}/100)"
     else:
-        conf_tone = f"as a speculative opportunity ({confidence}% AI confidence)"
+        conf_tone = f"as a speculative opportunity (Model Conviction {confidence}/100)"
 
     # Quality factor highlights
     quality_note = ""
@@ -1832,15 +1835,21 @@ def _generate_picks_inner(
         # (feature/daily-picks-conviction-gated-publication): `top_buy` above
         # is the FULL existing selection (up to 6, already eligibility/BUY/
         # quality-gated and already in this horizon's deterministic ranking
-        # order) and is kept as-is below for portfolio allocation and the
-        # alpha_observations evidence trail — positions 4-6 are never
-        # deleted, only not published. `published_buy` is the subset of
-        # `top_buy`, in the same order, that also clears the Model
-        # Conviction publication gate (see _apply_conviction_publication_gate
-        # docstring): >= DAILY_PICKS_PUBLICATION.MIN_CONVICTION_TO_PUBLISH
-        # (85.0), capped at DAILY_PICKS_PUBLICATION.MAX_PUBLISHED_PER_HORIZON
-        # (3). This never changes ranking, scoring, or BUY/HOLD/SELL —
-        # publication only.
+        # order). It still feeds the `universe`-based alpha_observations
+        # evidence trail below (every scored candidate gets a row,
+        # regardless of `top_buy`/`published_buy` membership) — positions
+        # 4-6 are never deleted, only not published. `published_buy` is the
+        # subset of `top_buy`, in the same order, that also clears the
+        # Model Conviction publication gate (see
+        # _apply_conviction_publication_gate docstring): >=
+        # DAILY_PICKS_PUBLICATION.MIN_CONVICTION_TO_PUBLISH (85.0), capped
+        # at DAILY_PICKS_PUBLICATION.MAX_PUBLISHED_PER_HORIZON (3). This
+        # never changes ranking, scoring, or BUY/HOLD/SELL — publication
+        # only. `published_buy` (NOT `top_buy`) is what feeds portfolio
+        # allocation, `picks[horizon]`, `_pick_meta_by_symbol`
+        # (is_daily_pick/pick_rank/portfolio_weight), and Phase 7's
+        # `log_prediction(is_daily_pick=True)` below — the published cohort
+        # is identical across all four.
         published_buy, _publication_meta = _apply_conviction_publication_gate(top_buy)
 
         # Phase 6 — Portfolio optimisation. DP-025 foundation: the actual
@@ -1870,19 +1879,33 @@ def _generate_picks_inner(
             _portfolio_cash_pct[horizon] = cash_pct
 
         # Final-pick selection metadata for the alpha_observations snapshot
-        # below, kept OUT of the `top_buy`/`universe` dicts themselves —
-        # those dicts are serialized as-is into the published payload
-        # (`picks[horizon] = published_buy`), so adding new keys to them
-        # would change the published Daily Picks JSON. portfolio_weight is
-        # already set directly on `pick` above (pre-existing behavior,
+        # below, kept OUT of the `top_buy`/`universe`/`published_buy` dicts
+        # themselves — those dicts are serialized as-is into the published
+        # payload (`picks[horizon] = published_buy`), so adding new keys to
+        # them would change the published Daily Picks JSON. portfolio_weight
+        # is already set directly on `pick` above (pre-existing behavior,
         # already part of today's payload) — only pick_rank/is_daily_pick
         # are net-new for this phase, and they stay in this side dict
-        # instead. pick_rank is over the FULL `top_buy` (up to 6, including
-        # any unpublished candidates) so the evidence trail keeps every
-        # candidate's rank, not just the published ones'.
+        # instead.
+        #
+        # Conviction-gated publication correction (finding 1, follow-up to
+        # 5a006498): this MUST be built from `published_buy`, not the full
+        # up-to-6 `top_buy`. `_build_alpha_observation_row` below reads this
+        # dict to decide `is_daily_pick`/`pick_rank`/`portfolio_weight` for
+        # every scored candidate in `universe` — building it from `top_buy`
+        # would wrongly mark a conviction-gate-excluded or 3-cap-excluded
+        # Top-6 candidate as `is_daily_pick=True` with a real rank/weight,
+        # even though it is absent from `picks[horizon]` and Phase 7 (below)
+        # only logs `published_buy` as `is_daily_pick=True`. A Top-6
+        # candidate NOT in `published_buy` still gets its own row in
+        # `alpha_observations` (built from the full `universe` below) — it
+        # simply has no entry here, so `_build_alpha_observation_row` falls
+        # back to its own is_daily_pick=False/pick_rank=None/
+        # portfolio_weight=None default, matching the actual published
+        # payload exactly.
         _pick_meta_by_symbol = {
             _pick["symbol"]: {"pick_rank": _rank, "portfolio_weight": _pick.get("portfolio_weight")}
-            for _rank, _pick in enumerate(top_buy, start=1)
+            for _rank, _pick in enumerate(published_buy, start=1)
         }
 
         # Published-payload safety: `sentiment_available`/`quality_available`

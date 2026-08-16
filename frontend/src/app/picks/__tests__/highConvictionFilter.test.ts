@@ -59,8 +59,17 @@ describe("High Conviction filter — wiring", () => {
 
   it("a distinct empty state exists for 'picks exist but none clear the bar', separate from the 'no BUY signals at all' state", () => {
     expect(pageSource).toContain("highConvictionOnly && picks.length > 0 ?");
-    expect(pageSource).toContain("No picks ≥{HIGH_CONVICTION_THRESHOLD}% confidence right now");
+    expect(pageSource).toContain("No picks ≥{HIGH_CONVICTION_THRESHOLD}/100 Model Conviction right now");
     expect(pageSource).toContain("Show all {picks.length} picks");
+  });
+
+  // finding 3 (follow-up to commit 5a006498): once the backend
+  // conviction-gated publication policy is active for a horizon, every
+  // published pick already clears the identical >=85/100 Model Conviction
+  // bar server-side — the client-side toggle above must not remain an
+  // active, unconditional second gate at the same threshold.
+  it("the toggle is gated off (not unconditionally rendered) once the backend publication policy is active", () => {
+    expect(pageSource).toMatch(/\{!publicationPolicy\s*&&\s*\(\s*\n\s*<button onClick=\{\(\) => setHighConvictionOnly/);
   });
 });
 
