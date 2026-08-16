@@ -12,8 +12,8 @@ import { UnsupportedMarketNotice } from "@/components/UnsupportedMarketNotice";
 type Stock  = { symbol: string; change_pct: number | null; change: number | null };
 type Sector = { sector: string; avg_change: number | null; avg_change_points: number | null; stocks: Stock[]; loaded: number; total: number };
 
-function fmtPoints(pts: number | null): string {
-  if (pts === null) return "";
+function fmtPoints(pts: number | null | undefined): string {
+  if (pts === null || pts === undefined) return "";
   return ` (${pts >= 0 ? "+" : ""}${pts})`;
 }
 
