@@ -1321,6 +1321,36 @@ def _apply_conviction_publication_gate(ranked_candidates: list[dict]) -> tuple[l
     return published, meta
 
 
+def _build_published_pick_meta(published_buy: list[dict]) -> dict[str, dict]:
+    """
+    Conviction-gated publication correction (finding 1, follow-up to
+    5a006498; extracted as its own testable function per finding 3,
+    follow-up to 0f2bbed8).
+
+    Builds the `symbol -> {pick_rank, portfolio_weight}` side dict that
+    `_build_alpha_observation_row` reads to decide `is_daily_pick` (via
+    `bool(pick_meta)`), `pick_rank`, and `portfolio_weight` for EVERY
+    scored candidate in a horizon's `universe`.
+
+    MUST be called with `published_buy` — the conviction-gated, <=3-item,
+    already-published subset — never the full up-to-6 `top_buy` selection.
+    Calling it with `top_buy` would wrongly mark a conviction-gate-excluded
+    or 3-cap-excluded Top-6 candidate as `is_daily_pick=True` with a real
+    rank/weight in the alpha_observations evidence trail, even though that
+    candidate is absent from the actual `/picks` payload and from Phase 7's
+    `log_prediction(is_daily_pick=True)` calls (which only ever iterate the
+    published cohort). A candidate not present in `published_buy` simply
+    gets no entry in the returned dict, so `_build_alpha_observation_row`
+    falls back to its own `is_daily_pick=False`/`pick_rank=None`/
+    `portfolio_weight=None` default for it — exactly matching what was
+    actually published.
+    """
+    return {
+        pick["symbol"]: {"pick_rank": rank, "portfolio_weight": pick.get("portfolio_weight")}
+        for rank, pick in enumerate(published_buy, start=1)
+    }
+
+
 def _compute_portfolio_allocation(
     alphas: list[float],
     returns_matrix,
@@ -1886,27 +1916,11 @@ def _generate_picks_inner(
         # is already set directly on `pick` above (pre-existing behavior,
         # already part of today's payload) — only pick_rank/is_daily_pick
         # are net-new for this phase, and they stay in this side dict
-        # instead.
-        #
-        # Conviction-gated publication correction (finding 1, follow-up to
-        # 5a006498): this MUST be built from `published_buy`, not the full
-        # up-to-6 `top_buy`. `_build_alpha_observation_row` below reads this
-        # dict to decide `is_daily_pick`/`pick_rank`/`portfolio_weight` for
-        # every scored candidate in `universe` — building it from `top_buy`
-        # would wrongly mark a conviction-gate-excluded or 3-cap-excluded
-        # Top-6 candidate as `is_daily_pick=True` with a real rank/weight,
-        # even though it is absent from `picks[horizon]` and Phase 7 (below)
-        # only logs `published_buy` as `is_daily_pick=True`. A Top-6
-        # candidate NOT in `published_buy` still gets its own row in
-        # `alpha_observations` (built from the full `universe` below) — it
-        # simply has no entry here, so `_build_alpha_observation_row` falls
-        # back to its own is_daily_pick=False/pick_rank=None/
-        # portfolio_weight=None default, matching the actual published
-        # payload exactly.
-        _pick_meta_by_symbol = {
-            _pick["symbol"]: {"pick_rank": _rank, "portfolio_weight": _pick.get("portfolio_weight")}
-            for _rank, _pick in enumerate(published_buy, start=1)
-        }
+        # instead. Built by `_build_published_pick_meta` (module-level, pure
+        # — see its own docstring for why this MUST be `published_buy`, not
+        # `top_buy`) so the exact same production logic is directly callable
+        # from tests instead of being reimplemented there.
+        _pick_meta_by_symbol = _build_published_pick_meta(published_buy)
 
         # Published-payload safety: `sentiment_available`/`quality_available`
         # (Phase 2A additions to _predict_stock's return dict, needed below

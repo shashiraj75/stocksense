@@ -302,7 +302,11 @@ export type PublicationPolicy = {
   threshold: number;
   nPublished: number;
   nQualified: number;
-  semantic?: string;
+  // Required (finding 2, corrective follow-up to 0f2bbed8): derivePublicationPolicy
+  // now fails the whole payload closed unless the backend supplied a
+  // non-empty conviction_semantic string, so a returned PublicationPolicy
+  // always has one.
+  semantic: string;
 };
 
 /**
@@ -314,20 +318,41 @@ export type PublicationPolicy = {
  * must render distinct, truthful copy for the null case rather than
  * claiming the new policy is active.
  */
+// Finding 2 (corrective follow-up to 0f2bbed8): `typeof x === "number"` alone
+// lets NaN/Infinity/-Infinity/negative/fractional values through — none of
+// which a well-formed backend payload should ever produce, but a malformed
+// or partially-corrupted cache entry could. Every numeric field must also
+// pass Number.isFinite, and the specific invariants the backend's own
+// registry guarantees (positive integer cap, 0-100 threshold, non-negative
+// integer counts, n_published <= max, n_published <= n_qualified) are
+// checked explicitly — any single violation fails the whole payload closed
+// (returns null, the same "render neutral legacy-compatible copy" outcome
+// as a payload missing the fields entirely). `conviction_semantic` must be
+// a non-empty string — the new backend always supplies one.
+function _isNonNegativeInteger(x: unknown): x is number {
+  return typeof x === "number" && Number.isFinite(x) && Number.isInteger(x) && x >= 0;
+}
+
 export function derivePublicationPolicy(meta: AlphaEngineMeta | null | undefined): PublicationPolicy | null {
-  if (
-    meta == null
-    || typeof meta.max_published_per_horizon !== "number"
-    || typeof meta.conviction_threshold !== "number"
-    || typeof meta.n_published !== "number"
-    || typeof meta.n_conviction_qualified !== "number"
-  ) return null;
+  if (meta == null) return null;
+
+  const { max_published_per_horizon, conviction_threshold, n_published, n_conviction_qualified, conviction_semantic } = meta;
+
+  if (!_isNonNegativeInteger(max_published_per_horizon) || max_published_per_horizon <= 0) return null;
+  if (typeof conviction_threshold !== "number" || !Number.isFinite(conviction_threshold)) return null;
+  if (conviction_threshold < 0 || conviction_threshold > 100) return null;
+  if (!_isNonNegativeInteger(n_published)) return null;
+  if (!_isNonNegativeInteger(n_conviction_qualified)) return null;
+  if (n_published > max_published_per_horizon) return null;
+  if (n_published > n_conviction_qualified) return null;
+  if (typeof conviction_semantic !== "string" || conviction_semantic.length === 0) return null;
+
   return {
-    maxPublished: meta.max_published_per_horizon,
-    threshold: meta.conviction_threshold,
-    nPublished: meta.n_published,
-    nQualified: meta.n_conviction_qualified,
-    semantic: typeof meta.conviction_semantic === "string" ? meta.conviction_semantic : undefined,
+    maxPublished: max_published_per_horizon,
+    threshold: conviction_threshold,
+    nPublished: n_published,
+    nQualified: n_conviction_qualified,
+    semantic: conviction_semantic,
   };
 }
 
@@ -337,6 +362,28 @@ export function formatPublicationPolicyCopy(policy: PublicationPolicy | null): s
   return policy
     ? `Up to ${policy.maxPublished} qualified picks per horizon (Model Conviction ≥ ${policy.threshold}/100)`
     : "Qualified BUY picks per horizon";
+}
+
+// Finding 1 (corrective follow-up to 0f2bbed8): extracted pure function so
+// production and tests share exactly one implementation — no test-local
+// reimplementation of this logic. `publicationPolicyActive` (NOT the raw
+// `highConvictionOnly` toggle alone) gates whether the filter/sort ever
+// runs: once the backend conviction-gated publication policy is active for
+// a horizon, the list is already <=3 picks, all >=85/100, in the
+// backend's own authoritative rank order — a stale `highConvictionOnly`
+// state (e.g. left on from before a legacy→policy-active transition on the
+// same horizon) must never be allowed to filter or re-sort it. Only a
+// legacy payload (`publicationPolicyActive === false`) ever applies the
+// client-side filter/sort, exactly as before this fix.
+export function computeVisiblePicks(
+  picks: Pick[],
+  highConvictionOnly: boolean,
+  publicationPolicyActive: boolean,
+): Pick[] {
+  if (publicationPolicyActive || !highConvictionOnly) return picks;
+  return [...picks]
+    .filter(p => p.confidence >= HIGH_CONVICTION_THRESHOLD)
+    .sort((a, b) => b.confidence - a.confidence);
 }
 
 function ScoreBar({ label, value, color }: { label: string; value: number; color: string }) {
@@ -1248,14 +1295,34 @@ export default function DailyPicksPage() {
 
   const currency = data?.currency ?? marketCfg.currency;
   const picks = data?.picks?.[horizon] ?? [];
+  const alphaForHorizon = data?.alpha_engine?.[horizon];
+  // Conviction-gated publication policy (finding 2, follow-up to commit
+  // 5a006498) — derived via the exported, independently-unit-tested
+  // derivePublicationPolicy(); never hardcode 3/85 here. Null for a legacy
+  // cached payload (pre-deployment, no publication metadata), so callers
+  // render truthful, distinct wording instead of a false "Up to 3 / >=85"
+  // claim over what may actually be a 6-pick legacy list. Computed BEFORE
+  // `visiblePicks` (finding 1, corrective follow-up to 0f2bbed8) — the
+  // stale `highConvictionOnly` toggle state must never be allowed to
+  // filter/reorder a backend-published, already conviction-gated list.
+  const publicationPolicy = derivePublicationPolicy(alphaForHorizon ?? null);
 
-  // High Conviction filter — applied within the currently selected horizon,
-  // not across horizons, so it composes with the existing horizon tabs
-  // rather than replacing them. Sorted by confidence descending so the
-  // strongest signal always leads.
-  const visiblePicks = highConvictionOnly
-    ? [...picks].filter(p => p.confidence >= HIGH_CONVICTION_THRESHOLD).sort((a, b) => b.confidence - a.confidence)
-    : picks;
+  // High Conviction filter — legacy-cache fallback only. `computeVisiblePicks`
+  // (exported, pure) only ever applies the client-side confidence filter/sort
+  // when `publicationPolicy` is null; once the backend policy is active for
+  // this horizon, the toggle button itself is hidden (see its own comment
+  // below), but the STALE `highConvictionOnly` boolean can still be `true`
+  // from before a legacy→active transition (e.g. the same horizon regenerates
+  // mid-session) — `computeVisiblePicks` ignores that stale state whenever
+  // policy is active, so the authoritative backend rank order is always
+  // preserved for an already conviction-gated list, regardless of toggle
+  // history.
+  const visiblePicks = computeVisiblePicks(picks, highConvictionOnly, publicationPolicy !== null);
+  // Derived condition (finding 1) used consistently for both the filter
+  // computation above and the legacy-only empty state below — a stale
+  // `highConvictionOnly=true` can never present as "the legacy filter is
+  // active" once `publicationPolicy` is non-null.
+  const legacyHighConvictionFilterActive = publicationPolicy === null && highConvictionOnly;
 
   // India Daily Picks session-freshness containment (Phase 0). Scoped to IN
   // only — US Daily Picks are untouched by this workstream. Computed once
@@ -1297,14 +1364,6 @@ export default function DailyPicksPage() {
         timeZone: marketCfg.tz, day: "2-digit", month: "short",
         year: "numeric", hour: "2-digit", minute: "2-digit", hour12: true,
       })} ${marketCfg.tzLabel}` : null;
-  const alphaForHorizon = data?.alpha_engine?.[horizon];
-  // Conviction-gated publication policy (finding 2, follow-up to commit
-  // 5a006498) — derived via the exported, independently-unit-tested
-  // derivePublicationPolicy(); never hardcode 3/85 here. Null for a legacy
-  // cached payload (pre-deployment, no publication metadata), so callers
-  // render truthful, distinct wording instead of a false "Up to 3 / >=85"
-  // claim over what may actually be a 6-pick legacy list.
-  const publicationPolicy = derivePublicationPolicy(alphaForHorizon ?? null);
 
   return (
     <div className="space-y-6">
@@ -1647,9 +1706,13 @@ export default function DailyPicksPage() {
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
           {visiblePicks.map((pick, i) => <PickCard key={pick.symbol} pick={pick} rank={i + 1} market={market} currency={currency} locale={marketCfg.locale} freshness={freshnessBySymbol?.[pick.symbol]} openTradeCount={openTradeCountMap?.get(openTradeCountKey(market, pick.symbol))} />)}
         </div>
-      ) : highConvictionOnly && picks.length > 0 ? (
+      ) : legacyHighConvictionFilterActive && picks.length > 0 ? (
         // Distinct from the "no BUY signals at all" empty state below — real
         // picks exist for this horizon, just none clear the confidence bar.
+        // Uses the same derived `legacyHighConvictionFilterActive` condition
+        // as `visiblePicks` above (finding 1) — a stale `highConvictionOnly`
+        // can never trigger this legacy-only empty state once
+        // `publicationPolicy` is active.
         <div className="flex flex-col items-center justify-center py-20 text-center">
           <Zap size={40} className="text-gray-600 mb-4" />
           <h3 className="text-lg font-semibold text-gray-300 mb-2">No picks ≥{HIGH_CONVICTION_THRESHOLD}/100 Model Conviction right now</h3>

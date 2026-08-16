@@ -85,6 +85,18 @@ describe("Daily Picks conviction-gated publication wording (static)", () => {
   });
 });
 
+const VALID_SEMANTIC = "Model Conviction (0-100 scale, not a calibrated win probability)";
+
+function validMeta(overrides: Record<string, unknown> = {}) {
+  return {
+    n_scored: 400, n_buy: 12,
+    n_conviction_qualified: 5, n_published: 3,
+    conviction_threshold: 85, max_published_per_horizon: 3,
+    conviction_semantic: VALID_SEMANTIC,
+    ...overrides,
+  };
+}
+
 describe("derivePublicationPolicy — actual behavior against realistic payload shapes", () => {
   it("returns null for a legacy payload with no alpha_engine_meta at all", () => {
     expect(derivePublicationPolicy(undefined)).toBeNull();
@@ -97,11 +109,7 @@ describe("derivePublicationPolicy — actual behavior against realistic payload 
   });
 
   it("returns null when publication fields are present but wrongly typed (defensive parsing)", () => {
-    const malformed = {
-      n_scored: 400, n_buy: 12,
-      n_conviction_qualified: "5", // wrong type — string, not number
-      n_published: 3, conviction_threshold: 85, max_published_per_horizon: 3,
-    } as unknown;
+    const malformed = validMeta({ n_conviction_qualified: "5" }) as unknown; // wrong type — string, not number
     expect(derivePublicationPolicy(malformed as never)).toBeNull();
   });
 
@@ -111,40 +119,106 @@ describe("derivePublicationPolicy — actual behavior against realistic payload 
   });
 
   it("returns the derived policy for a valid, fully-typed publication payload", () => {
-    const valid = {
-      n_scored: 400, n_buy: 12,
-      n_conviction_qualified: 5, n_published: 3,
-      conviction_threshold: 85, max_published_per_horizon: 3,
-      conviction_semantic: "Model Conviction (0-100 scale, not a calibrated win probability)",
-    };
-    expect(derivePublicationPolicy(valid)).toEqual({
+    expect(derivePublicationPolicy(validMeta())).toEqual({
       maxPublished: 3, threshold: 85, nPublished: 3, nQualified: 5,
-      semantic: "Model Conviction (0-100 scale, not a calibrated win probability)",
+      semantic: VALID_SEMANTIC,
     });
   });
 
   it("derives correctly for a zero-published horizon (legitimate outcome, not an error)", () => {
-    const zero = {
-      n_scored: 400, n_buy: 12,
-      n_conviction_qualified: 0, n_published: 0,
-      conviction_threshold: 85, max_published_per_horizon: 3,
-    };
-    const policy = derivePublicationPolicy(zero);
+    const policy = derivePublicationPolicy(validMeta({ n_conviction_qualified: 0, n_published: 0 }));
     expect(policy?.nPublished).toBe(0);
     expect(policy?.maxPublished).toBe(3);
+  });
+
+  // Finding 2 (corrective follow-up to 0f2bbed8): typeof === "number" alone
+  // let NaN/Infinity/negative/fractional values through. Every case below
+  // must now fail closed (return null).
+  it("returns null when conviction_threshold is NaN", () => {
+    expect(derivePublicationPolicy(validMeta({ conviction_threshold: NaN }))).toBeNull();
+  });
+
+  it("returns null when conviction_threshold is +Infinity", () => {
+    expect(derivePublicationPolicy(validMeta({ conviction_threshold: Infinity }))).toBeNull();
+  });
+
+  it("returns null when conviction_threshold is -Infinity", () => {
+    expect(derivePublicationPolicy(validMeta({ conviction_threshold: -Infinity }))).toBeNull();
+  });
+
+  it("returns null when conviction_threshold is below 0", () => {
+    expect(derivePublicationPolicy(validMeta({ conviction_threshold: -1 }))).toBeNull();
+  });
+
+  it("returns null when conviction_threshold is above 100", () => {
+    expect(derivePublicationPolicy(validMeta({ conviction_threshold: 100.01 }))).toBeNull();
+  });
+
+  it("accepts conviction_threshold at the 0 and 100 boundaries", () => {
+    expect(derivePublicationPolicy(validMeta({ conviction_threshold: 0 }))?.threshold).toBe(0);
+    expect(derivePublicationPolicy(validMeta({ conviction_threshold: 100 }))?.threshold).toBe(100);
+  });
+
+  it("returns null when max_published_per_horizon is zero", () => {
+    expect(derivePublicationPolicy(validMeta({ max_published_per_horizon: 0, n_published: 0 }))).toBeNull();
+  });
+
+  it("returns null when max_published_per_horizon is negative", () => {
+    expect(derivePublicationPolicy(validMeta({ max_published_per_horizon: -3 }))).toBeNull();
+  });
+
+  it("returns null when max_published_per_horizon is fractional", () => {
+    expect(derivePublicationPolicy(validMeta({ max_published_per_horizon: 3.5 }))).toBeNull();
+  });
+
+  it("returns null when n_published is negative", () => {
+    expect(derivePublicationPolicy(validMeta({ n_published: -1 }))).toBeNull();
+  });
+
+  it("returns null when n_published is fractional", () => {
+    expect(derivePublicationPolicy(validMeta({ n_published: 1.5 }))).toBeNull();
+  });
+
+  it("returns null when n_conviction_qualified is negative", () => {
+    expect(derivePublicationPolicy(validMeta({ n_conviction_qualified: -1, n_published: 0 }))).toBeNull();
+  });
+
+  it("returns null when n_conviction_qualified is fractional", () => {
+    expect(derivePublicationPolicy(validMeta({ n_conviction_qualified: 2.5 }))).toBeNull();
+  });
+
+  it("returns null when n_published exceeds max_published_per_horizon", () => {
+    expect(derivePublicationPolicy(validMeta({ n_published: 4, n_conviction_qualified: 5, max_published_per_horizon: 3 }))).toBeNull();
+  });
+
+  it("returns null when n_published exceeds n_conviction_qualified", () => {
+    expect(derivePublicationPolicy(validMeta({ n_published: 3, n_conviction_qualified: 2 }))).toBeNull();
+  });
+
+  it("returns null when conviction_semantic is missing", () => {
+    const { conviction_semantic, ...rest } = validMeta();
+    expect(derivePublicationPolicy(rest)).toBeNull();
+  });
+
+  it("returns null when conviction_semantic is an empty string", () => {
+    expect(derivePublicationPolicy(validMeta({ conviction_semantic: "" }))).toBeNull();
+  });
+
+  it("returns null when conviction_semantic is not a string", () => {
+    expect(derivePublicationPolicy(validMeta({ conviction_semantic: 42 }))).toBeNull();
   });
 });
 
 describe("formatPublicationPolicyCopy — dynamic wording sourced from backend values", () => {
   it("renders the backend's own threshold/max, not a hardcoded 3/85", () => {
-    const policy = { maxPublished: 3, threshold: 85, nPublished: 2, nQualified: 4 };
+    const policy = { maxPublished: 3, threshold: 85, nPublished: 2, nQualified: 4, semantic: VALID_SEMANTIC };
     expect(formatPublicationPolicyCopy(policy)).toBe(
       "Up to 3 qualified picks per horizon (Model Conviction ≥ 85/100)"
     );
   });
 
   it("reflects a different backend-configured threshold/cap without a frontend code change", () => {
-    const policy = { maxPublished: 5, threshold: 90, nPublished: 1, nQualified: 1 };
+    const policy = { maxPublished: 5, threshold: 90, nPublished: 1, nQualified: 1, semantic: VALID_SEMANTIC };
     expect(formatPublicationPolicyCopy(policy)).toBe(
       "Up to 5 qualified picks per horizon (Model Conviction ≥ 90/100)"
     );
