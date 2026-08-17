@@ -231,3 +231,34 @@ describe("formatPublicationPolicyCopy — dynamic wording sourced from backend v
     expect(copy).toBe("Qualified BUY picks per horizon");
   });
 });
+
+// DP-035 (2026-08-17): a fresh re-query of the walk-forward backtest table
+// (val_signals) found the win-rate correlation at the 85 threshold is not
+// currently reproducible for any horizon (it tracks a different, simplified
+// proxy score, not the actual `confidence` field this gate reads — see
+// services/thresholds.py's DailyPicksPublicationThresholds docstring for
+// the full evidence). The page must render the backend's own truthful
+// caveat rather than silently implying a validated quality guarantee.
+describe("Daily Picks conviction calibration-status caveat (DP-035)", () => {
+  it("renders the backend-supplied semantic caveat text when the policy is active", () => {
+    expect(pageSource).toContain("publicationPolicy.semantic");
+  });
+
+  it("only renders the caveat when a real (non-null) publication policy is active", () => {
+    expect(pageSource).toMatch(/\{publicationPolicy\s*&&\s*\(/);
+  });
+
+  it("backend conviction_semantic string is honest about unconfirmed calibration", () => {
+    // Cross-checked against the backend source directly (not duplicated
+    // logic) — the same repo, single source of truth for the caveat text.
+    const backendSource = readFileSync(
+      path.resolve(process.cwd(), "../backend/services/daily_picks.py"),
+      "utf-8",
+    );
+    expect(backendSource).toContain("not yet confirmed");
+    const start = backendSource.indexOf('"conviction_semantic": (');
+    const end = backendSource.indexOf(")", start) + 1;
+    const semanticLiteral = backendSource.slice(start, end);
+    expect(semanticLiteral).not.toMatch(/%\s*chance/i);
+  });
+});

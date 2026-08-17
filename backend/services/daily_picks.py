@@ -1998,7 +1998,20 @@ def _generate_picks_inner(
             # "confidence" is reused, unchanged, and here explicitly
             # relabeled: it is Model Conviction (a model output on a 0-100
             # scale), never a calibrated win probability or "% chance".
-            "conviction_semantic": "Model Conviction (0-100 scale, not a calibrated win probability)",
+            #
+            # DP-035 (2026-08-17): a fresh re-query of the walk-forward
+            # backtest table (`val_signals`) found it tracks a different,
+            # simplified proxy score than this field, and cannot currently
+            # confirm a win-rate lift at this threshold for ANY horizon —
+            # see thresholds.py's DAILY_PICKS_PUBLICATION docstring for the
+            # full evidence. Stated honestly here rather than implying a
+            # validated win-rate claim; the threshold/gate itself is
+            # unchanged (no evidence supports a different number).
+            "conviction_semantic": (
+                "Model Conviction (0-100 scale, not a calibrated win probability). "
+                "Win-rate correlation at this threshold is not yet confirmed by a "
+                "matching backtest — monitor and revisit."
+            ),
             **_publication_meta,
         }
         log.info(
