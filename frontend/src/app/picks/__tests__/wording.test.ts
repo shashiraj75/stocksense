@@ -262,3 +262,65 @@ describe("Daily Picks conviction calibration-status caveat (DP-035)", () => {
     expect(semanticLiteral).not.toMatch(/%\s*chance/i);
   });
 });
+
+// DP-036 (2026-08-18): a real, full-population walk-forward backtest
+// (backend/scripts/conviction_gate_backtest.py, run against the ACTUAL gate
+// field `alpha_observations.signal_confidence`, 13,988 rows across both
+// markets) found short horizon specifically shows no meaningful win-rate
+// lift at the >=85 threshold (India 51.5% -> 52.4%, US 60.7% -> 60.8% with
+// a lower average return in the >=85 bucket). This is a definitive,
+// adequately-sampled finding — stronger than DP-035's generic "unconfirmed"
+// caveat, which still correctly describes medium/long (insufficient
+// resolved data for either). The backend's conviction_semantic text must
+// therefore branch by horizon: short horizon gets a "tested, no lift
+// found" statement, medium/long keep DP-035's "not yet confirmed" wording.
+// This page component renders whichever string the backend sends per
+// horizon — no per-horizon branching lives in the frontend.
+describe("Daily Picks short-horizon conviction backtest caveat (DP-036)", () => {
+  const backendSource = readFileSync(
+    path.resolve(process.cwd(), "../backend/services/daily_picks.py"),
+    "utf-8",
+  );
+
+  it("backend branches conviction_semantic on horizon === 'short'", () => {
+    expect(backendSource).toContain('if horizon == "short"');
+  });
+
+  it("short-horizon caveat states the finding was actually tested, with the real sample size", () => {
+    const start = backendSource.indexOf('"conviction_semantic": (');
+    const shortEnd = backendSource.indexOf(') if horizon == "short"', start);
+    const shortLiteral = backendSource.slice(start, shortEnd);
+    expect(shortLiteral).toContain("13,988");
+    expect(shortLiteral).toContain("tested against realized outcomes");
+    expect(shortLiteral.toLowerCase()).toContain("no meaningful");
+  });
+
+  it("medium/long caveat keeps DP-035's 'not yet confirmed' wording and is textually distinct from short's", () => {
+    const start = backendSource.indexOf('"conviction_semantic": (');
+    const shortEnd = backendSource.indexOf(') if horizon == "short"', start);
+    const elseStart = backendSource.indexOf("else (", shortEnd);
+    const firstClose = backendSource.indexOf(")", elseStart);
+    const elseEnd = backendSource.indexOf(")", firstClose + 1) + 1;
+    const elseLiteral = backendSource.slice(elseStart, elseEnd);
+    expect(elseLiteral).toContain("not yet confirmed");
+    expect(elseLiteral).not.toContain("13,988");
+    expect(elseLiteral).not.toContain("tested against realized outcomes");
+  });
+
+  it("neither branch overclaims a percent-chance or probability figure", () => {
+    const start = backendSource.indexOf('"conviction_semantic": (');
+    const end = backendSource.indexOf(",\n            **_publication_meta", start);
+    const fullExpr = backendSource.slice(start, end);
+    expect(fullExpr).not.toMatch(/%\s*chance/i);
+    expect(fullExpr).not.toMatch(/probability of/i);
+  });
+
+  it("the page renders the backend policy's semantic field unconditionally per-horizon (no hardcoded frontend caveat literal)", () => {
+    expect(pageSource).toContain("publicationPolicy.semantic");
+    // The page must not hardcode DP-036's caveat text itself — it should
+    // always render whatever string the backend supplies, so a JSX text
+    // node reading the literal short-horizon sentence would indicate the
+    // frontend duplicated the backend's copy instead of sourcing it.
+    expect(pageSource).not.toContain("tested against realized outcomes");
+  });
+});

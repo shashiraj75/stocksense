@@ -2007,7 +2007,37 @@ def _generate_picks_inner(
             # full evidence. Stated honestly here rather than implying a
             # validated win-rate claim; the threshold/gate itself is
             # unchanged (no evidence supports a different number).
+            #
+            # DP-036 (2026-08-18): a real, full-population walk-forward
+            # backtest (backend/scripts/conviction_gate_backtest.py, run
+            # against the ACTUAL gate field `alpha_observations.signal_
+            # confidence` — not val_signals.composite_score — 13,988 rows
+            # across both markets) is now resolvable for SHORT horizon
+            # specifically (medium is still thin; long has ~zero resolved
+            # data until ~2026-10-13). Result: India <85 win rate 51.5% vs
+            # >=85 win rate 52.4%; US <85 win rate 60.7% vs >=85 win rate
+            # 60.8% (and the >=85 bucket's average realized return is
+            # actually LOWER than <85's in the US). This is a definitive,
+            # adequately-sampled negative finding for short horizon — not
+            # "unconfirmed, not enough data yet" like medium/long — so
+            # short horizon gets its own, stronger, distinguishable caveat
+            # below. See DP-036 in the Daily-Picks Implementation Register
+            # for the full evidence table. The 85.0 threshold and 3-per-
+            # horizon cap are UNCHANGED for every horizon, including short:
+            # `confidence` was already a load-bearing, authoritative field
+            # before this gate existed (DP-034's quality-floor-at-25 and
+            # short-horizon >80-priority-bucket precedent), so this is a
+            # caveat-honesty fix, not a gate-removal — see DP-036's
+            # decision-rationale section for why removing the gate was
+            # considered and deliberately not done in this pass.
             "conviction_semantic": (
+                "Model Conviction (0-100 scale, not a calibrated win probability). "
+                "This threshold has been tested against realized outcomes for "
+                "short-horizon picks (13,988 samples) and shows no meaningful "
+                "win-rate improvement over lower-conviction picks — publication "
+                "filtering for this horizon is currently based on other quality "
+                "gates, not a proven conviction advantage."
+            ) if horizon == "short" else (
                 "Model Conviction (0-100 scale, not a calibrated win probability). "
                 "Win-rate correlation at this threshold is not yet confirmed by a "
                 "matching backtest — monitor and revisit."
