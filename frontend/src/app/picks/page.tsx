@@ -1475,6 +1475,17 @@ export default function DailyPicksPage() {
       <p className="text-[11px] text-gray-500">
         Coverage is a screened liquid-quality universe, not all {market === "IN" ? "NSE" : "US"}-listed stocks.
       </p>
+      {/* DP-035: surface the backend's own truthful conviction_semantic caveat
+          (not a hardcoded frontend claim) whenever the conviction-gated
+          policy is active — a fresh evidence re-check found the win-rate
+          correlation at this threshold is not yet confirmed by a matching
+          backtest for any horizon, so this stays honest rather than implying
+          a validated quality guarantee. Absent entirely for a legacy/
+          pre-policy payload (publicationPolicy === null), same as the rest
+          of this dynamic copy. */}
+      {publicationPolicy && (
+        <p className="text-[11px] text-gray-500">{publicationPolicy.semantic}</p>
+      )}
       </div>
 
       {/* Market regime + alpha engine */}

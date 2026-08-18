@@ -602,6 +602,36 @@ class DailyPicksPublicationThresholds:
     # expected outcome on a low-conviction day — never backfilled.
     MAX_PUBLISHED_PER_HORIZON = 3
 
+    # DP-035 evidence-integrity finding (2026-08-17). A fresh re-query of
+    # the walk-forward backtest table `val_signals` (re-run against the
+    # same doxdexwjeonzigfewfva Supabase project a prior calibration study
+    # used) found that `val_signals.composite_score` — the only score
+    # column that table has — is NOT the same field as this gate's
+    # `confidence` ("Model Conviction"). `val_signals.composite_score` is
+    # computed by `validation_engine.py`'s `_score_at`, a simplified
+    # technical/fundamental walk-forward proxy that tops out at ~82 across
+    # all three horizons (measured max: short 81.0, medium 81.3, long
+    # 82.1) — it structurally can never reach 85, unlike the production
+    # `confidence` field (which reaches 100, per live published picks).
+    # Consequence: NO threshold-vs-win-rate claim at >=85 is currently
+    # reproducible from `val_signals` for ANY horizon, including medium —
+    # a prior calibration study's cited "medium horizon validated at
+    # >=85" figure could not be reproduced against this table on a fresh
+    # re-query (0 rows exist at composite_score>=85 for any horizon).
+    # Even the closest accessible decile (composite_score 77-82) shows no
+    # meaningful win-rate lift for short (50.7%) or long (52.4%) horizon
+    # versus their overall baselines.
+    #
+    # This does NOT change the gate's behavior or its 85.0/3 values (no
+    # evidence supports a different number, and the gate's original
+    # justification — `confidence` being an already load-bearing,
+    # authoritative field pre-existing this policy — is untouched). It
+    # means the win-rate-lift CLAIM is currently unconfirmed for every
+    # horizon pending a corrected calibration methodology that measures
+    # the actual `confidence` field (not this proxy) against forward
+    # outcomes. Tracked as "monitor and revisit," not a numeric change.
+    CONVICTION_WIN_RATE_CALIBRATION_VALIDATED = False
+
 
 # Singleton instances — import these, not the dataclasses, from call sites.
 DEBT_TO_EQUITY = DebtToEquityThresholds()
