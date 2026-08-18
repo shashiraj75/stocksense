@@ -632,6 +632,52 @@ class DailyPicksPublicationThresholds:
     # outcomes. Tracked as "monitor and revisit," not a numeric change.
     CONVICTION_WIN_RATE_CALIBRATION_VALIDATED = False
 
+    # DP-036 real backtest finding (2026-08-18). `backend/scripts/
+    # conviction_gate_backtest.py` (added by this same workstream) was run
+    # for real, read-only, against the ACTUAL gate field —
+    # `alpha_observations.signal_confidence` — not `val_signals.
+    # composite_score` (DP-035's proxy) and not `confidence_model`/
+    # `_confidence_engine` (a separate, unrelated heuristic). Full
+    # population, both markets, SHORT horizon (the only horizon with
+    # enough resolved forward-return data to test yet — medium is thin,
+    # long has ~zero resolved data until ~2026-10-13 given the horizon's
+    # 60-trading-day + 90-calendar-day minimum wait and the gate's own
+    # data only going back to 2026-07-17): 13,988 rows.
+    #
+    #   Market | <85 win rate | >=85 win rate
+    #   -------|--------------|---------------
+    #   India  |    51.5%     |     52.4%
+    #   US     |    60.7%     |     60.8%  (and >=85's average realized
+    #                                       return is LOWER than <85's)
+    #
+    # This is a definitive, adequately-sampled result, not a thin-sample
+    # "unconfirmed" gap like DP-035's finding or medium/long's current
+    # state: for SHORT horizon specifically, >=85 conviction shows NO
+    # meaningful win-rate lift over anything below it, on the correct
+    # field, full population. Medium and long horizon are NOT covered by
+    # this finding (insufficient resolved data) and keep DP-035's
+    # "unconfirmed, not enough data yet" treatment unchanged.
+    #
+    # Decision (see DP-036 in the Daily-Picks Implementation Register for
+    # the full rationale): this does NOT change MIN_CONVICTION_TO_PUBLISH,
+    # MAX_PUBLISHED_PER_HORIZON, ranking, or scoring for any horizon,
+    # including short. `confidence` was already a load-bearing,
+    # authoritative field before this publication gate existed — DP-034
+    # documents `_passes_quality_gate` hard-flooring it at 25 and
+    # `_select_short_term_top_six` already treating >80 as a short-horizon
+    # priority bucket, both independent of any win-rate claim — so the
+    # gate may still be doing useful publication-quality filtering for
+    # reasons this win-rate metric does not measure. Removing the gate for
+    # short horizon (bigger behavior change, more picks could newly
+    # qualify) was considered and NOT implemented in this pass because
+    # that safety case is not established; it is documented as an explicit
+    # follow-up decision for a human to make, not silently done here. The
+    # fix in this pass is confined to `daily_picks.py`'s per-horizon
+    # `conviction_semantic` caveat text becoming a definitive "tested, no
+    # lift found" statement for short horizon, distinguishable from medium/
+    # long's "not yet confirmed" language.
+    SHORT_HORIZON_CONVICTION_WIN_RATE_LIFT_CONFIRMED = False
+
 
 # Singleton instances — import these, not the dataclasses, from call sites.
 DEBT_TO_EQUITY = DebtToEquityThresholds()
