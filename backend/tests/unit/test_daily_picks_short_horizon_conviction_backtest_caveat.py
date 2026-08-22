@@ -69,15 +69,24 @@ def test_conviction_semantic_branches_on_horizon_for_short():
 
 
 def test_short_horizon_caveat_is_definitive_tested_language():
-    """Short horizon's caveat must state the finding was actually tested
-    (13,988 samples) and found no meaningful lift — not the softer
-    'unconfirmed, not enough data yet' phrasing that still applies to
-    medium/long."""
+    """Short horizon's caveat must state the finding was actually tested and
+    found no meaningful lift — not the softer 'unconfirmed, not enough data
+    yet' phrasing that still applies to medium/long.
+
+    DP-037 (2026-08-22): this test previously required the literal "13,988"
+    in the user-facing string. That figure was a MISLABELLED FETCHED row
+    count pooling the short and medium horizons — it was never a resolved
+    short-horizon sample size. The assertion is now INVERTED: the copy must
+    NOT cite it. The finding's direction is unchanged; only the denominator
+    claim was wrong."""
     src = inspect.getsource(daily_picks)
     start = src.index('"conviction_semantic": (')
     short_end = src.index(') if horizon == "short"', start)
     short_literal = src[start:short_end]
-    assert "13,988" in short_literal
+    assert "13,988" not in short_literal, (
+        "user-facing conviction copy must not cite the mislabelled 13,988 "
+        "figure (a pooled short+medium FETCHED count) — see DP-037"
+    )
     assert "no meaningful" in short_literal.lower() or "no meaningful win-rate" in short_literal
     assert "tested against realized outcomes" in short_literal
 

@@ -265,8 +265,8 @@ describe("Daily Picks conviction calibration-status caveat (DP-035)", () => {
 
 // DP-036 (2026-08-18): a real, full-population walk-forward backtest
 // (backend/scripts/conviction_gate_backtest.py, run against the ACTUAL gate
-// field `alpha_observations.signal_confidence`, 13,988 rows across both
-// markets) found short horizon specifically shows no meaningful win-rate
+// field `alpha_observations.signal_confidence`) found short horizon
+// specifically shows no meaningful win-rate
 // lift at the >=85 threshold (India 51.5% -> 52.4%, US 60.7% -> 60.8% with
 // a lower average return in the >=85 bucket). This is a definitive,
 // adequately-sampled finding — stronger than DP-035's generic "unconfirmed"
@@ -286,11 +286,16 @@ describe("Daily Picks short-horizon conviction backtest caveat (DP-036)", () => 
     expect(backendSource).toContain('if horizon == "short"');
   });
 
-  it("short-horizon caveat states the finding was actually tested, with the real sample size", () => {
+  // DP-037 (2026-08-22): this assertion previously required the literal
+  // "13,988" in the backend's user-facing string. That number was a
+  // MISLABELLED FETCHED row count pooling the short and medium horizons —
+  // never a resolved short-horizon sample size — so it has been removed from
+  // the copy and the assertion is now inverted.
+  it("short-horizon caveat states the finding was tested, without citing the mislabelled sample size", () => {
     const start = backendSource.indexOf('"conviction_semantic": (');
     const shortEnd = backendSource.indexOf(') if horizon == "short"', start);
     const shortLiteral = backendSource.slice(start, shortEnd);
-    expect(shortLiteral).toContain("13,988");
+    expect(shortLiteral).not.toContain("13,988");
     expect(shortLiteral).toContain("tested against realized outcomes");
     expect(shortLiteral.toLowerCase()).toContain("no meaningful");
   });

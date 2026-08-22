@@ -1480,7 +1480,7 @@ export default function DailyPicksPage() {
           policy is active. DP-035 found the win-rate correlation at this
           threshold is not yet confirmed by a matching backtest for medium/long
           horizon (thin sample). DP-036 ran a real, full-population backtest
-          (13,988 rows) against the correct gate field for SHORT horizon
+          against the correct gate field for SHORT horizon
           specifically and found a definitive negative result — no meaningful
           win-rate lift — so the backend now returns a stronger, distinguishable
           "tested, no lift found" string for short horizon only; medium/long keep

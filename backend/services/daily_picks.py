@@ -2011,8 +2011,8 @@ def _generate_picks_inner(
             # DP-036 (2026-08-18): a real, full-population walk-forward
             # backtest (backend/scripts/conviction_gate_backtest.py, run
             # against the ACTUAL gate field `alpha_observations.signal_
-            # confidence` — not val_signals.composite_score — 13,988 rows
-            # across both markets) is now resolvable for SHORT horizon
+            # confidence` — not val_signals.composite_score) is now
+            # resolvable for SHORT horizon
             # specifically (medium is still thin; long has ~zero resolved
             # data until ~2026-10-13). Result: India <85 win rate 51.5% vs
             # >=85 win rate 52.4%; US <85 win rate 60.7% vs >=85 win rate
@@ -2033,7 +2033,8 @@ def _generate_picks_inner(
             "conviction_semantic": (
                 "Model Conviction (0-100 scale, not a calibrated win probability). "
                 "This threshold has been tested against realized outcomes for "
-                "short-horizon picks (13,988 samples) and shows no meaningful "
+                "short-horizon picks across the full candidate population and "
+                "shows no meaningful "
                 "win-rate improvement over lower-conviction picks — publication "
                 "filtering for this horizon is currently based on other quality "
                 "gates, not a proven conviction advantage."
