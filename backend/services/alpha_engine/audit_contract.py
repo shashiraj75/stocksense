@@ -41,7 +41,11 @@ defined once, here, so that "BUY" always means the same thing.
                       all of P3 conflates the gate with the BUY call itself.
   P6 PUBLISHED        P1 where is_daily_pick is true (what users actually saw).
   P7 UNPUBLISHED_BUY  P2 where is_daily_pick is false — the counterfactual
-                      for P6, matched on the same run_id/market/horizon.
+                      for P6. THE MATCH IS MANDATORY AND EXACT: a PUBLISHED
+                      row may only ever be compared against UNPUBLISHED_BUY
+                      rows carrying the SAME run_id, market and horizon, and
+                      only within a SINGLE publication-policy era. See
+                      section 6.
   P8 BUY_RANK_QUANTILE  P2 partitioned by WITHIN-RUN percentile of
                       ranking_alpha. Percentiles are computed inside a single
                       run because raw scores are not comparable across runs.
@@ -51,19 +55,53 @@ defined once, here, so that "BUY" always means the same thing.
 --------------------------------------------------------------------------
 Every conclusion the audit emits carries exactly one of these labels.
 
-  PROVEN            Pre-registered comparison; effect size with a
-                    date-blocked 95% interval excluding zero; survives Holm
-                    correction across its family; adequate independent
-                    clusters (>= MIN_CLUSTERS_FOR_INFERENCE); naive and
-                    dependence-aware methods AGREE; robust to
-                    symbol-jackknife sign flips.
-  PRELIMINARY       Directionally suggestive but fails at least one PROVEN
-                    requirement — typically cluster adequacy or
-                    naive/dependence-aware agreement. May be described as a
+  PROVEN            Pre-registered comparison meeting EVERY one of these,
+                    with no exception and no manual promotion:
+                      (a) the comparison is identifiable at all (see
+                          NOT_IDENTIFIABLE below),
+                      (b) adequate independent clusters on BOTH clustering
+                          dimensions (session date AND symbol),
+                      (c) a date-blocked 95% interval excluding zero,
+                      (d) a two-way (date x symbol) cluster permutation
+                          p-value below alpha,
+                      (e) survives Holm correction across the COMPLETE
+                          pre-registered family of the whole audit run,
+                      (f) naive and dependence-aware methods AGREE,
+                      (g) SYMBOL-JACKKNIFE SIGN STABILITY — the estimate does
+                          not flip sign when any single symbol is deleted.
+                    (g) is a HARD precondition evaluated BEFORE classification
+                    and passed into the classifier, never checked afterwards
+                    as a footnote. A sign-unstable result can never be PROVEN.
+  PRELIMINARY       GENUINELY DIRECTIONALLY SUGGESTIVE evidence: the
+                    comparison IS identifiable, the effect is estimable, the
+                    dependence-aware point estimate is consistent in sign with
+                    the naive one and the jackknife is sign-stable — but at
+                    least one PROVEN requirement is unmet (typically Holm
+                    survival or interval width). May be described as a
                     candidate signal. May NOT be described as an edge.
-  NOT_PROVEN        Tested; the data does not support the claim. Explicitly
-                    NOT the same as "no effect exists" — always accompanied
-                    by the minimum detectable effect.
+                    PRELIMINARY IS NOT A DUMPING GROUND. "Inference was not
+                    available" is NOT preliminary evidence — that is
+                    NOT_IDENTIFIABLE. The superseded report's central error
+                    was treating an un-analysable comparison as a suggestive
+                    one.
+  NOT_IDENTIFIABLE  The comparison cannot be estimated from this data at all,
+                    so NOTHING — not even a direction — may be claimed. Use
+                    when any of:
+                      * too few independent clusters on either dimension,
+                      * either comparison group is empty (or empty after
+                        run-matching / policy-era restriction),
+                      * the policy era is immature: it exists but has too few
+                        runs, or too few RESOLVED rows, to estimate anything.
+                    A NOT_IDENTIFIABLE cell must NEVER be silently downgraded
+                    into PRELIMINARY or reported as NOT_PROVEN — those both
+                    imply a test was run. None was.
+  NOT_PROVEN        Tested; a real, adequately-powered test was performed and
+                    the data does not support the claim. Explicitly NOT the
+                    same as "no effect exists" — ALWAYS accompanied by a
+                    CLUSTER-ADJUSTED minimum detectable effect (a plain
+                    independence MDE overstates this sample's power by the
+                    design effect and may never be reported as if it were
+                    cluster-aware).
   UNSUPPORTED       Asserted by an earlier report with no computation behind
                     it at all (e.g. "the edge lives entirely in the binary
                     BUY call", "negative momentum rules out trend chasing").
@@ -110,18 +148,101 @@ neither measure may be described as net or as investor P&L.
     causal or headline claim,
   * no significance claim below the cluster-adequacy floor,
   * no write of any kind to any production table — the audit is read-only,
-  * no generated data file written inside the repository.
+  * no generated data file written inside the repository,
+  * no pooling of publication-policy eras in ANY published/unpublished
+    comparison (section 6),
+  * no promotion of a claim level by hand — the classifier's output is the
+    only claim level the audit or its documentation may state.
+
+--------------------------------------------------------------------------
+6. PUBLICATION-POLICY ERAS
+--------------------------------------------------------------------------
+The publication policy changed DURING the observation window, and the two
+changes did NOT land on the same date. Collapsing them into one boundary —
+or pooling rows across them — compares populations produced by different
+selection rules and is forbidden.
+
+The boundaries below were VERIFIED against live production data, per market,
+by observing the first session date from which every subsequent run complies
+(see the audit's data-integrity check `publication_gate_and_cap_by_era`).
+They are OBSERVED-COMPLIANCE boundaries derived from the rows themselves,
+not deployment timestamps read from a changelog:
+
+  ERA_LEGACY        No effective conviction gate: runs published BUY rows
+                    with signal_confidence far below 85, up to 6 per run.
+  ERA_GATE_ONLY     Every published row has signal_confidence >= 85, but the
+                    publication cap is still 6 per run.
+  ERA_GATE_PLUS_CAP Gate >= 85 AND at most 3 published rows per run.
+
+Per-market first session date of each era (verified 2026-08-22 against the
+live table; US and INDIA differ and must not be merged):
+
+  US  : legacy through 2026-08-07 | gate_only from 2026-08-10
+        | gate_plus_cap from 2026-08-17
+  IN  : legacy through 2026-08-12 | gate_only from 2026-08-13
+        | gate_plus_cap from 2026-08-17
+
+A comparison restricted to an era with too few runs or too few RESOLVED rows
+is NOT_IDENTIFIABLE — never NOT_PROVEN and never PRELIMINARY.
 """
 
 from __future__ import annotations
 
+import datetime as _dt
 from dataclasses import dataclass
 
 # Bumped whenever a change alters the numbers this audit produces, so a
 # stored bundle can always be traced to the logic that generated it.
-CALCULATION_VERSION = "conviction-audit-1.0.0"
+CALCULATION_VERSION = "conviction-audit-2.0.0"
 
 MIN_CONVICTION_TO_PUBLISH = 85.0
+
+# Publication cap in force during ERA_GATE_PLUS_CAP.
+MAX_PUBLISHED_PER_RUN = 3
+
+# --- Publication-policy eras (section 6) ----------------------------------
+ERA_LEGACY = "legacy"
+ERA_GATE_ONLY = "gate_only"
+ERA_GATE_PLUS_CAP = "gate_plus_cap"
+
+POLICY_ERAS = (ERA_LEGACY, ERA_GATE_ONLY, ERA_GATE_PLUS_CAP)
+
+# First run_session_date of each non-legacy era, PER MARKET. Verified against
+# live production rows on 2026-08-22 — the gate and the cap became effective
+# on DIFFERENT dates, and the gate date differs between the two markets.
+# Anything earlier than the gate_only date is ERA_LEGACY.
+POLICY_ERA_BOUNDARIES = {
+    "US": {ERA_GATE_ONLY: _dt.date(2026, 8, 10),
+           ERA_GATE_PLUS_CAP: _dt.date(2026, 8, 17)},
+    "IN": {ERA_GATE_ONLY: _dt.date(2026, 8, 13),
+           ERA_GATE_PLUS_CAP: _dt.date(2026, 8, 17)},
+}
+
+# An era must contribute at least this many distinct runs AND this many
+# resolved rows in BOTH comparison groups before any estimate is attempted.
+# Below either floor the comparison is NOT_IDENTIFIABLE.
+MIN_RUNS_PER_ERA_FOR_ESTIMATE = 8
+MIN_RESOLVED_PER_GROUP_FOR_ESTIMATE = 30
+
+
+def policy_era(market: str, session_date) -> str:
+    """
+    The publication-policy era a run belongs to, from its market and
+    run_session_date. Pure and total: every date maps to exactly one era.
+    """
+    bounds = POLICY_ERA_BOUNDARIES.get(market)
+    if bounds is None:
+        raise ValueError(f"no policy-era boundaries configured for market={market!r}")
+    day = session_date
+    if isinstance(day, _dt.datetime):
+        day = day.date()
+    elif not isinstance(day, _dt.date):
+        day = _dt.date.fromisoformat(str(day))
+    if day >= bounds[ERA_GATE_PLUS_CAP]:
+        return ERA_GATE_PLUS_CAP
+    if day >= bounds[ERA_GATE_ONLY]:
+        return ERA_GATE_ONLY
+    return ERA_LEGACY
 
 RESEARCH_PRIOR_CLOSE = "RESEARCH_PRIOR_CLOSE"
 EXECUTABLE_NEXT_OPEN = "EXECUTABLE_NEXT_OPEN"
@@ -144,12 +265,18 @@ RETURN_MEASURES = {
 # Claim levels — see section 3 above.
 PROVEN = "PROVEN"
 PRELIMINARY = "PRELIMINARY"
+NOT_IDENTIFIABLE = "NOT_IDENTIFIABLE"
 NOT_PROVEN = "NOT_PROVEN"
 UNSUPPORTED = "UNSUPPORTED"
 NOT_REPRODUCIBLE = "NOT_REPRODUCIBLE"
 FALSE = "FALSE"
 
-CLAIM_LEVELS = (PROVEN, PRELIMINARY, NOT_PROVEN, UNSUPPORTED, NOT_REPRODUCIBLE, FALSE)
+CLAIM_LEVELS = (PROVEN, PRELIMINARY, NOT_IDENTIFIABLE, NOT_PROVEN,
+                UNSUPPORTED, NOT_REPRODUCIBLE, FALSE)
+
+# Levels that may be described to a user as evidence of anything at all.
+# NOT_IDENTIFIABLE is deliberately absent: it means no test was run.
+EVIDENTIAL_LEVELS = (PROVEN, PRELIMINARY)
 
 # Population identifiers — see section 2 above.
 P_ALL_ELIGIBLE = "ALL_ELIGIBLE"

@@ -87,8 +87,8 @@ def test_session_offset_projects_forward_and_caller_enforces_completeness():
 
     # The caller is what refuses an unelapsed window.
     _, reason, detail = cgb.resolve_executable_return(
-        "AAPL", "US", _dt.datetime(2026, 7, 20, 6, 0, tzinfo=UTC), "long",
-        today=_dt.date(2026, 8, 1))
+        _obs_row("AAPL", _dt.datetime(2026, 7, 20, 6, 0, tzinfo=UTC)), "US", "long",
+        _EMPTY_SNAPSHOT, today=_dt.date(2026, 8, 1))
     assert reason == "horizon_window_not_yet_complete"
     assert detail["exit_session_date"] > "2026-08-01"
 
@@ -96,6 +96,21 @@ def test_session_offset_projects_forward_and_caller_enforces_completeness():
 def test_unknown_market_raises_rather_than_guessing():
     with pytest.raises(audit_calendar.UnknownMarketError):
         audit_calendar.next_tradable_open("XX", _dt.datetime(2026, 7, 20, tzinfo=UTC))
+
+
+# Helpers for the row/snapshot-based return measures. The measures now read a
+# frozen price panel instead of calling a provider per observation, so a test
+# that only exercises calendar/window logic supplies an EMPTY snapshot: the
+# window guard must fire before any price is ever looked up.
+from services.alpha_engine import audit_prices as _ap
+
+_EMPTY_SNAPSHOT = _ap.PriceSnapshot().freeze()
+
+
+def _obs_row(symbol, generated_at, reference_session_date=_dt.date(2026, 7, 20)):
+    return {"symbol": symbol, "run_generated_at": generated_at,
+            "reference_session_date": reference_session_date,
+            "reference_price": 100.0}
 
 
 # ── Return-measure labelling ───────────────────────────────────────────────
@@ -116,7 +131,8 @@ def test_executable_measure_never_uses_a_pre_generation_price():
     timestamp — never a price that existed before the pick did."""
     run_at = _dt.datetime(2026, 7, 20, 6, 0, tzinfo=UTC)
     _, reason, detail = cgb.resolve_executable_return(
-        "AAPL", "US", run_at, "short", today=_dt.date(2026, 7, 21))
+        _obs_row("AAPL", run_at), "US", "short", _EMPTY_SNAPSHOT,
+        today=_dt.date(2026, 7, 21))
     # Window is incomplete on that `today`, but the entry must still be sane.
     assert reason == "horizon_window_not_yet_complete"
     assert _dt.datetime.fromisoformat(detail["entry_session_open_utc"]) > run_at
@@ -124,13 +140,14 @@ def test_executable_measure_never_uses_a_pre_generation_price():
 
 def test_executable_measure_excludes_partial_window_rather_than_truncating():
     _, reason, _ = cgb.resolve_executable_return(
-        "AAPL", "US", _dt.datetime(2026, 7, 20, 6, 0, tzinfo=UTC), "long",
-        today=_dt.date(2026, 7, 25))
+        _obs_row("AAPL", _dt.datetime(2026, 7, 20, 6, 0, tzinfo=UTC)), "US", "long",
+        _EMPTY_SNAPSHOT, today=_dt.date(2026, 7, 25))
     assert reason == "horizon_window_not_yet_complete"
 
 
 def test_executable_measure_excludes_missing_generation_timestamp():
-    ret, reason, _ = cgb.resolve_executable_return("AAPL", "US", None, "short")
+    ret, reason, _ = cgb.resolve_executable_return(
+        _obs_row("AAPL", None), "US", "short", _EMPTY_SNAPSHOT)
     assert ret is None and reason == "missing_run_generated_at"
 
 
@@ -262,6 +279,11 @@ def test_method_disagreement_caps_the_claim_below_proven():
     res.block_p_value = 0.001         # blocked says signal
     res = audit_stats.reconcile_methods(res)
     assert res.methods_agree is False
+    # Disagreement caps below PROVEN. With a significant two-way permutation
+    # p-value and a sign-stable jackknife the cap lands on PRELIMINARY.
+    res.identifiability = audit_stats.IDENTIFIABLE
+    res.permutation_p_two_way = 0.001
+    res.jackknife = {"sign_stable": True}
     assert cgb.classify_claim(res) == audit_contract.PRELIMINARY
 
 
@@ -319,7 +341,8 @@ def test_audit_bundle_refuses_to_write_inside_the_repository():
     import pathlib
     repo_root = pathlib.Path(cgb.__file__).resolve().parents[2]
     with pytest.raises(ValueError) as exc:
-        cgb.write_audit_bundle(repo_root / "audit_out", [], seed=1)
+        cgb.write_audit_bundle(repo_root / "audit_out", [], manifest={},
+                               integrity={}, reconstruction={}, holm={})
     assert "inside the repository" in str(exc.value)
 
 

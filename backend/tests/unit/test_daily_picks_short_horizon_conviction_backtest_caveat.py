@@ -31,6 +31,7 @@ enough data yet" caveat, which still correctly describes medium/long
 3. Neither string overclaims a calibrated win probability or "% chance".
 """
 import inspect
+import re
 
 from services import daily_picks
 from services.thresholds import (
@@ -68,27 +69,78 @@ def test_conviction_semantic_branches_on_horizon_for_short():
     assert 'if horizon == "short"' in block or 'if horizon == "short"' in src[start:start + 4000]
 
 
-def test_short_horizon_caveat_is_definitive_tested_language():
-    """Short horizon's caveat must state the finding was actually tested and
-    found no meaningful lift — not the softer 'unconfirmed, not enough data
-    yet' phrasing that still applies to medium/long.
+def test_short_horizon_caveat_may_not_claim_completed_full_population_evidence():
+    """Short horizon's caveat must report the prior finding's DIRECTION while
+    stating that its denominator and return methodology are under re-audit.
 
-    DP-037 (2026-08-22): this test previously required the literal "13,988"
-    in the user-facing string. That figure was a MISLABELLED FETCHED row
-    count pooling the short and medium horizons — it was never a resolved
-    short-horizon sample size. The assertion is now INVERTED: the copy must
-    NOT cite it. The finding's direction is unchanged; only the denominator
-    claim was wrong."""
+    DP-037 (2026-08-22), pass 1: this test previously required the literal
+    "13,988". That figure was a MISLABELLED FETCHED row count pooling the
+    short and medium horizons — never a resolved short-horizon sample size —
+    so the assertion was inverted to forbid it.
+
+    DP-037 pass 2 (2026-08-22): an independent review found the copy STILL
+    overclaimed in two further ways, both now forbidden outright:
+
+      * "across the full candidate population" asserted a denominator the
+        data never supported;
+      * "shows no meaningful win-rate improvement" asserted a settled
+        negative result resting on inference that assumed independent
+        observations — an assumption repeated symbols and session-date
+        clustering violate.
+
+    Until a corrected LIVE full-population audit run actually succeeds, the
+    copy must say the prior analysis found no PROVEN lift and that the
+    methodology behind it is being re-audited. It may only be strengthened to
+    whatever level the governed classifier actually returns — never promoted
+    by hand."""
     src = inspect.getsource(daily_picks)
     start = src.index('"conviction_semantic": (')
     short_end = src.index(') if horizon == "short"', start)
     short_literal = src[start:short_end]
+
     assert "13,988" not in short_literal, (
         "user-facing conviction copy must not cite the mislabelled 13,988 "
         "figure (a pooled short+medium FETCHED count) — see DP-037"
     )
-    assert "no meaningful" in short_literal.lower() or "no meaningful win-rate" in short_literal
-    assert "tested against realized outcomes" in short_literal
+    lowered = short_literal.lower()
+    assert "full candidate population" not in lowered, (
+        "the full-population denominator claim is not yet supported by a "
+        "completed live audit run — see DP-037"
+    )
+    assert "tested across" not in lowered
+    assert "shows no meaningful" not in lowered, (
+        "a settled negative result may not be asserted while the corrected "
+        "re-audit is pending — see DP-037"
+    )
+    # The honest replacement states both halves.
+    assert "no proven conviction lift" in lowered
+    assert "re-audit" in lowered
+    assert "denominator" in lowered
+
+
+def _rendered_short_caveat() -> str:
+    """
+    The short-horizon caveat as the USER sees it.
+
+    The source literal is written as adjacent quoted fragments across several
+    lines, so a phrase can straddle two fragments and be absent from the raw
+    source text even though it is present in the rendered string. Joining the
+    fragments first is what makes a phrase assertion meaningful.
+    """
+    src = inspect.getsource(daily_picks)
+    start = src.index('"conviction_semantic": (')
+    short_end = src.index(') if horizon == "short"', start)
+    literal = src[start:short_end]
+    return "".join(re.findall(r'"((?:[^"\\]|\\.)*)"', literal.split("(", 1)[1]))
+
+
+def test_short_horizon_caveat_never_asserts_a_proven_conviction_advantage():
+    rendered = _rendered_short_caveat()
+    assert "not a proven conviction advantage" in rendered
+    assert "not a calibrated win probability" in rendered
+    # It may say there is NO proven advantage; it may never assert one exists.
+    assert not re.search(r"proven (edge|lift|advantage) (of|over)", rendered, re.I)
+    assert not re.search(r"%\s*chance", rendered, re.I)
 
 
 def test_medium_long_caveat_language_unchanged_and_distinguishable():
@@ -103,7 +155,7 @@ def test_medium_long_caveat_language_unchanged_and_distinguishable():
     else_literal = src[else_start:else_end]
     assert "not yet confirmed" in else_literal
     assert "13,988" not in else_literal
-    assert "tested against realized outcomes" not in else_literal
+    assert "re-audit" not in else_literal.lower()
 
 
 def test_neither_branch_overclaims_a_percent_chance_or_probability():

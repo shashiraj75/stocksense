@@ -2030,14 +2030,32 @@ def _generate_picks_inner(
             # caveat-honesty fix, not a gate-removal — see DP-036's
             # decision-rationale section for why removing the gate was
             # considered and deliberately not done in this pass.
+            # DP-037 (2026-08-22): an independent review found the DP-036
+            # short-horizon wording above claimed more than its evidence
+            # supported. Two specific defects, both user-facing:
+            #   * "across the full candidate population" — the denominator was
+            #     a FETCHED count that pooled short and medium horizons, never
+            #     a RESOLVED short-horizon population.
+            #   * "shows no meaningful win-rate improvement" — stated as a
+            #     settled negative result, when the inference behind it assumed
+            #     independent observations that repeated symbols and
+            #     session-date clustering violate.
+            # Until the corrected, reproducible re-audit actually completes a
+            # LIVE full-population run, this string states the honest status:
+            # the prior finding's DIRECTION is reported, its denominator and
+            # return methodology are declared under re-audit, and no settled
+            # conclusion is asserted. This text may only be strengthened by
+            # the claim level the governed classifier
+            # (`conviction_gate_backtest.classify_claim`) actually returns —
+            # never promoted by hand. See DP-037 in the Daily-Picks
+            # Implementation Register.
             "conviction_semantic": (
                 "Model Conviction (0-100 scale, not a calibrated win probability). "
-                "This threshold has been tested against realized outcomes for "
-                "short-horizon picks across the full candidate population and "
-                "shows no meaningful "
-                "win-rate improvement over lower-conviction picks — publication "
-                "filtering for this horizon is currently based on other quality "
-                "gates, not a proven conviction advantage."
+                "Prior analysis found no proven conviction lift for short-horizon "
+                "picks, but its denominator and return methodology are under "
+                "corrected reproducible re-audit — publication filtering for this "
+                "horizon is currently based on other quality gates, not a proven "
+                "conviction advantage."
             ) if horizon == "short" else (
                 "Model Conviction (0-100 scale, not a calibrated win probability). "
                 "Win-rate correlation at this threshold is not yet confirmed by a "
