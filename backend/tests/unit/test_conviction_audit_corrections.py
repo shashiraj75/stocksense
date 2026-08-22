@@ -18,7 +18,8 @@ pins a specific correction so it cannot silently regress:
   * the manifest carries every reproducibility field,
   * the CLI genuinely populates the data-integrity results,
   * every reported aggregate reconstructs from row_decisions.jsonl,
-  * a multi-cell run does not overwrite earlier cells,
+  * a closure bundle is refused unless its directory is EMPTY (one bundle ==
+    one invocation), and both markets run in ONE invocation,
   * both concrete exchange-holiday/DST cases resolve correctly,
   * UI copy cannot claim completed full-population evidence while the live
     audit is still pending.
@@ -61,9 +62,12 @@ def _result(**kw):
     res.inference_permitted = True
     res.clusters_adequate = True
     res.block_ci_pp = (2.0, 18.0)
-    res.permutation_p_two_way = 0.001
+    res.permutation_p_dual_one_way_max = 0.001
     res.methods_agree = True
     res.jackknife = {"sign_stable": True}
+    # Default the METHOD CEILING open, so each veto test isolates ONE veto.
+    # A dedicated test below pins the ceiling itself.
+    res.joint_two_way_inference_available = True
     for k, v in kw.items():
         setattr(res, k, v)
     return res
@@ -72,6 +76,32 @@ def _result(**kw):
 def test_a_fully_satisfied_result_is_proven():
     """Guard test: without it, a veto test could pass for the wrong reason."""
     assert cgb.classify_claim(_result()) == audit_contract.PROVEN
+
+
+def test_the_method_ceiling_caps_an_otherwise_proven_result_at_preliminary():
+    """
+    A1. Every p-value this audit produces is the MAXIMUM of two SEPARATE
+    one-way stratified permutation tests — a dual sensitivity check, NOT joint
+    two-way clustered inference. While that is so, PROVEN must be unreachable
+    even when every other precondition is satisfied.
+    """
+    res = _result(joint_two_way_inference_available=False)
+    assert cgb.classify_claim(res) == audit_contract.PRELIMINARY
+    assert audit_stats.MAX_CLAIM_LEVEL_WITHOUT_JOINT_INFERENCE == \
+        audit_contract.PRELIMINARY
+
+
+def test_the_real_pipeline_never_reports_joint_two_way_inference():
+    """
+    The ceiling is only meaningful if the PRODUCTION path actually sets the
+    flag False. This asserts against `analyse_comparison`, not a hand-built
+    result, so the ceiling cannot be bypassed by the code that really runs.
+    """
+    res = audit_stats.analyse_comparison("t", _flat(), draws=40,
+                                         permutation_draws=40)
+    assert res.joint_two_way_inference_available is False
+    assert res.max_claim_level == audit_contract.PRELIMINARY
+    assert cgb.classify_claim(res) != audit_contract.PROVEN
 
 
 def test_sign_unstable_jackknife_can_never_be_proven():
@@ -176,7 +206,7 @@ def test_symbol_dimension_declines_when_group_is_fixed_per_symbol():
     If a symbol is ALWAYS in the same group, the group label is perfectly
     confounded with the symbol cluster: there is no within-symbol contrast, so
     the symbol-stratified test must decline rather than invent a p-value — and
-    the conservative two-way combination must then decline too.
+    the dual one-way combination must then decline too.
     """
     rows = []
     for d in range(30):
@@ -184,19 +214,48 @@ def test_symbol_dimension_declines_when_group_is_fixed_per_symbol():
             rows.append({"group": "A" if s % 2 == 0 else "B", "is_win": s % 3 == 0,
                          "cluster_date": f"2026-07-{d + 1:02d}",
                          "symbol": f"S{s:03d}"})
-    out = audit_stats.two_way_cluster_permutation(rows, draws=30, seed=1)
+    out = audit_stats.dual_one_way_stratified_permutation_sensitivity(
+        rows, draws=30, seed=1)
     assert out["by_symbol"]["p_value"] is None
-    assert out["p_two_way"] is None, (
+    assert out["p_dual_one_way_max"] is None, (
         "a dimension that cannot be tested must not be quietly dropped")
 
 
-def test_two_way_permutation_reports_both_dimensions_and_takes_the_max():
-    out = audit_stats.two_way_cluster_permutation(_flat(), draws=60, seed=1)
+def test_dual_one_way_permutation_reports_both_dimensions_and_takes_the_max():
+    out = audit_stats.dual_one_way_stratified_permutation_sensitivity(
+        _flat(), draws=60, seed=1)
     assert out["by_date"]["p_value"] is not None
     assert out["by_symbol"]["p_value"] is not None
-    assert out["p_two_way"] == max(out["by_date"]["p_value"],
-                                   out["by_symbol"]["p_value"])
+    assert out["p_dual_one_way_max"] == max(out["by_date"]["p_value"],
+                                            out["by_symbol"]["p_value"])
     assert "MAXIMUM" in out["method"]
+
+
+def test_the_permutation_declares_itself_not_joint_two_way_inference():
+    """
+    A1. The method is named and self-describes as a DUAL ONE-WAY SENSITIVITY
+    check. It must never present itself as joint two-way clustered inference,
+    and it must carry its own claim ceiling.
+    """
+    out = audit_stats.dual_one_way_stratified_permutation_sensitivity(
+        _flat(), draws=40, seed=1)
+    assert out["joint_two_way_inference"] is False
+    assert out["max_claim_level"] == audit_contract.PRELIMINARY
+    assert "NOT a joint two-way" in out["method"]
+    # The misleading key and name are GONE, not merely deprecated.
+    assert "p_two_way" not in out
+    assert not hasattr(audit_stats, "two_way_cluster_permutation")
+
+
+def test_the_trend_test_carries_the_same_ceiling():
+    out = audit_stats.dual_one_way_trend_sensitivity(
+        [{"rank_percentile": (i % 10) / 10.0, "is_win": i % 3 == 0,
+          "cluster_date": f"d{i % 25}", "symbol": f"S{i % 30}"}
+         for i in range(600)], draws=30, seed=1)
+    assert out["joint_two_way_inference"] is False
+    assert out["max_claim_level"] == audit_contract.PRELIMINARY
+    assert "p_two_way" not in out
+    assert not hasattr(audit_stats, "two_way_trend_test")
 
 
 def test_permutation_p_value_is_never_zero():
@@ -207,9 +266,11 @@ def test_permutation_p_value_is_never_zero():
 
 
 def test_permutation_is_deterministic_given_a_seed():
-    a = audit_stats.two_way_cluster_permutation(_flat(), draws=40, seed=11)
-    b = audit_stats.two_way_cluster_permutation(_flat(), draws=40, seed=11)
-    assert a["p_two_way"] == b["p_two_way"]
+    a = audit_stats.dual_one_way_stratified_permutation_sensitivity(
+        _flat(), draws=40, seed=11)
+    b = audit_stats.dual_one_way_stratified_permutation_sensitivity(
+        _flat(), draws=40, seed=11)
+    assert a["p_dual_one_way_max"] == b["p_dual_one_way_max"]
 
 
 def test_permutation_declines_when_no_stratum_holds_both_groups():
@@ -245,31 +306,49 @@ def test_icc_is_clamped_at_zero_so_power_is_never_overstated():
     assert icc["design_effect"] >= 1.0
 
 
-def test_cluster_adjusted_mde_is_larger_than_the_independence_mde():
+def test_cluster_adjusted_mde_is_explicitly_unavailable_never_approximated():
     """
-    The whole point: a NOT_PROVEN conclusion must quote a power statement that
-    accounts for clustering. A cluster-aware MDE is ALWAYS at least as large
-    as the naive one.
+    A2. Taking the larger of two ONE-WAY design effects is not a valid
+    multiway adjustment and is not provably conservative for cross-classified
+    date x symbol dependence. No validated multiway power approximation is
+    implemented, so the cluster-adjusted MDE must be reported as UNAVAILABLE
+    — never as a number, and never by substituting the independence figure.
     """
-    out = audit_stats.cluster_adjusted_mde(500, 500, 0.55, design_effect=4.0)
-    assert out["mde_independence_pp"] is not None
-    assert out["mde_cluster_adjusted_pp"] > out["mde_independence_pp"]
-    assert out["effective_n_a"] == 125.0
-
-
-def test_cluster_adjusted_mde_refuses_to_substitute_the_naive_figure():
-    """When the design effect is unknown, no cluster-aware number is invented."""
-    out = audit_stats.cluster_adjusted_mde(500, 500, 0.55, design_effect=None)
+    out = audit_stats.mde_report(500, 500, 0.55,
+                                 design_effect_date=4.0,
+                                 design_effect_symbol=9.0)
     assert out["mde_cluster_adjusted_pp"] is None
-    assert "must not be substituted" in out["note"]
+    assert out["mde_cluster_adjusted_status"] == \
+        audit_stats.MDE_CLUSTER_ADJUSTED_UNAVAILABLE
+    # The independence MDE survives, but ONLY as a labelled optimistic bound.
+    assert out["mde_independence_pp"] is not None
+    assert "OPTIMISTIC" in out["mde_independence_label"]
+    # Design effects are retained as DESCRIPTIVE diagnostics, separately, and
+    # are never combined into one "two-way" number.
+    assert out["design_effect_date"] == 4.0
+    assert out["design_effect_symbol"] == 9.0
+    assert "DESCRIPTIVE ONLY" in out["design_effect_label"]
+    assert "UNAVAILABLE" in out["note"]
+    # The old approximating entry point is gone, not merely unused.
+    assert not hasattr(audit_stats, "cluster_adjusted_mde")
 
 
-def test_analyse_comparison_reports_the_cluster_adjusted_mde_as_the_headline():
+def test_the_headline_mde_field_reads_unavailable_rather_than_optimistic():
+    """
+    A legacy consumer reading `minimum_detectable_effect_pp` must get
+    "unavailable", never the optimistic independence number wearing a
+    cluster-aware label.
+    """
     res = audit_stats.analyse_comparison("t", _flat(), seed=2,
                                          permutation_draws=40, draws=200)
-    assert res.mde_cluster_adjusted_pp is not None
-    assert res.minimum_detectable_effect_pp == res.mde_cluster_adjusted_pp
-    assert res.mde_cluster_adjusted_pp >= res.mde_independence_pp
+    assert res.mde_cluster_adjusted_pp is None
+    assert res.minimum_detectable_effect_pp is None
+    assert res.mde_cluster_adjusted_status == \
+        audit_stats.MDE_CLUSTER_ADJUSTED_UNAVAILABLE
+    assert res.mde_independence_pp is not None
+    # Both one-way design effects survive separately; no combined field exists.
+    assert not hasattr(res, "design_effect")
+    assert res.design_effect_date is not None
 
 
 def test_date_block_bootstrap_supplies_an_interval_not_a_p_value():
@@ -482,10 +561,206 @@ def test_ranking_lift_never_rests_on_monotonicity_alone():
     out = cgb.ranking_lift(rows, audit_contract.EXECUTABLE_NEXT_OPEN,
                            seed=1, permutation_draws=40)
     assert "DESCRIPTIVE ONLY" in out["monotone_note"]
-    assert out["trend_test"]["p_two_way"] is not None
+    assert out["trend_test"]["p_dual_one_way_max"] is not None
+    assert out["trend_test"]["joint_two_way_inference"] is False
+    assert out["max_claim_level"] == audit_contract.PRELIMINARY
     assert out["claim_level"] in (audit_contract.NOT_PROVEN,
                                   audit_contract.PRELIMINARY,
                                   audit_contract.NOT_IDENTIFIABLE)
+    assert out["claim_level"] != audit_contract.PROVEN
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 5a. Extract completeness and reconciliation (B)
+# ══════════════════════════════════════════════════════════════════════════
+
+def _packed(rows):
+    return ";".join(
+        f'{r["symbol"]}~{r["sig"]}~{r["conf"]}~{r["ra"]}~{r["px"]}~'
+        f'{r["dp"]}~{r["pr"]}~{r["off"]}' for r in rows)
+
+
+def _run(run_id, market, syms, sess="2026-07-17"):
+    import hashlib
+    rows = [{"symbol": s, "sig": "B", "conf": "90", "ra": "0.5", "px": "100",
+             "dp": "0", "pr": "", "off": "-1"} for s in sorted(syms)]
+    packed = _packed(rows)
+    return {"run_id": run_id, "market": market, "horizon": "short",
+            "run_generated_at": f"{sess}T00:00:00+00:00",
+            "run_session_date": sess, "n": len(rows),
+            "md5": hashlib.md5(packed.encode()).hexdigest(), "packed": packed}
+
+
+def _reconcile(runs, *, expect_runs, expect_rows, expect_by_market):
+    """
+    The reconciliation the real full-population extract had to satisfy: every
+    eligible row appears EXACTLY ONCE, run and row totals match an
+    independently-taken database count, and India/US reconcile separately.
+    """
+    seen_runs, seen_keys, problems = set(), set(), []
+    by_market: dict[str, int] = {}
+    for r in runs:
+        if r["run_id"] in seen_runs:
+            problems.append(f"duplicate run {r['run_id']}")
+        seen_runs.add(r["run_id"])
+        toks = [t for t in r["packed"].split(";") if t]
+        if len(toks) != r["n"]:
+            problems.append(f"run {r['run_id']} truncated: {len(toks)} != {r['n']}")
+        for t in toks:
+            key = (r["market"], r["horizon"], r["run_id"], t.split("~")[0])
+            if key in seen_keys:
+                problems.append(f"duplicate row {key}")
+            seen_keys.add(key)
+        by_market[r["market"]] = by_market.get(r["market"], 0) + r["n"]
+    if len(seen_runs) != expect_runs:
+        problems.append(f"runs {len(seen_runs)} != {expect_runs}")
+    if len(seen_keys) != expect_rows:
+        problems.append(f"rows {len(seen_keys)} != {expect_rows}")
+    if by_market != expect_by_market:
+        problems.append(f"per-market {by_market} != {expect_by_market}")
+    return problems
+
+
+def test_a_complete_extract_reconciles_on_every_axis():
+    runs = [_run("a", "IN", [f"I{i}" for i in range(5)]),
+            _run("b", "IN", [f"J{i}" for i in range(3)]),
+            _run("c", "US", [f"U{i}" for i in range(4)])]
+    assert _reconcile(runs, expect_runs=3, expect_rows=12,
+                      expect_by_market={"IN": 8, "US": 4}) == []
+
+
+def test_a_missing_run_fails_reconciliation():
+    """A short extract must never be accepted as the full population."""
+    runs = [_run("a", "IN", [f"I{i}" for i in range(5)])]
+    problems = _reconcile(runs, expect_runs=3, expect_rows=12,
+                          expect_by_market={"IN": 8, "US": 4})
+    assert any("runs 1 != 3" in p for p in problems)
+    assert any("per-market" in p for p in problems)
+
+
+def test_a_duplicated_run_fails_reconciliation():
+    r = _run("a", "IN", [f"I{i}" for i in range(5)])
+    problems = _reconcile([r, dict(r)], expect_runs=2, expect_rows=10,
+                          expect_by_market={"IN": 10})
+    assert any("duplicate run" in p for p in problems)
+    assert any("duplicate row" in p for p in problems)
+
+
+def test_a_silently_truncated_run_fails_reconciliation():
+    """The declared n and the decoded row count must agree exactly."""
+    r = _run("a", "IN", [f"I{i}" for i in range(5)])
+    r["packed"] = ";".join(r["packed"].split(";")[:3])
+    problems = _reconcile([r], expect_runs=1, expect_rows=3,
+                          expect_by_market={"IN": 5})
+    assert any("truncated" in p for p in problems)
+
+
+def test_the_loader_refuses_an_extract_whose_checksum_does_not_match(tmp_path):
+    """Transport corruption must abort the audit, not be quietly audited."""
+    r = _run("a", "IN", [f"I{i}" for i in range(5)])
+    r["md5"] = "0" * 32
+    path = tmp_path / "bad_extract.json"
+    path.write_text(json.dumps({"meta": {}, "runs": [r]}))
+    with pytest.raises(cgb.PopulationSourceError, match="checksum mismatch"):
+        cgb.load_extract(path)
+
+
+def test_the_loader_refuses_an_extract_whose_row_count_disagrees(tmp_path):
+    """A run declaring more rows than it carries is a truncated population."""
+    r = _run("a", "IN", [f"I{i}" for i in range(5)])
+    r["n"] = 9
+    path = tmp_path / "short_extract.json"
+    path.write_text(json.dumps({"meta": {}, "runs": [r]}))
+    payload = cgb.load_extract(path)      # the md5 still matches the payload
+    with pytest.raises(cgb.PopulationSourceError, match="truncated population"):
+        cgb.parse_extract(payload, "IN", "short")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 5b. Documentation consistency (A5) — the register must read as ONE current
+#     truth, not an old overclaim followed by a later correction elsewhere.
+# ══════════════════════════════════════════════════════════════════════════
+
+REGISTER = (BACKEND.parent / "Documentation" / "Engineering-Handbook" /
+            "Daily-Picks" / "DAILY-PICKS-IMPLEMENTATION-REGISTER.md")
+
+# Each entry: (forbidden substring, why it is wrong now).
+# Matching is case-insensitive and whitespace-normalised so a reflow cannot
+# smuggle a stale phrase back in.
+STALE_REGISTER_PHRASES = [
+    ("six claim levels",
+     "there are SEVEN claim levels since NOT_IDENTIFIABLE was added"),
+    ("as the primary inference method",
+     "the date-blocked bootstrap supplies an INTERVAL ONLY and sets no p-value"),
+    ("real, full-population, definitive negative result",
+     "DP-036's denominator was a fetched, horizon-pooled count and its "
+     "framing has been withdrawn"),
+    ("genuine two-way cluster permutation",
+     "the method is a DUAL ONE-WAY sensitivity check, not joint two-way "
+     "inference"),
+    ("two-way clustered p-value",
+     "no joint two-way clustered p-value is computed anywhere"),
+    ("conservative but not exact",
+     "max-of-two-one-way is not provably conservative under two-way "
+     "dependence, so it may not be described that way"),
+    ("genuinely cluster-adjusted",
+     "the cluster-adjusted MDE is UNAVAILABLE; nothing may be described as "
+     "genuinely cluster-adjusted"),
+    ("fully two-way cluster-adjusted",
+     "the max-of-one-way design effect was never a two-way adjustment"),
+    ("larger of the date/symbol design effects taken",
+     "taking the larger one-way design effect was withdrawn as an invalid "
+     "two-way adjustment"),
+    ("what this entry closes",
+     "the audit is not closed by that entry; the heading overclaimed"),
+]
+
+
+def _normalised_register() -> str:
+    import re
+    return re.sub(r"\s+", " ", REGISTER.read_text(encoding="utf-8")).lower()
+
+
+@pytest.mark.parametrize("phrase,why", STALE_REGISTER_PHRASES,
+                         ids=[p[0][:40] for p in STALE_REGISTER_PHRASES])
+def test_stale_register_phrasing_is_actually_absent(phrase, why):
+    """
+    A5. These phrases were REWRITTEN, not appended to. If one reappears the
+    register once again states an overclaim in one place and its correction in
+    another, which is the specific failure this test exists to prevent.
+    """
+    assert phrase.lower() not in _normalised_register(), (
+        f"stale phrase {phrase!r} is back in the register — {why}")
+
+
+def test_the_register_still_states_the_corrected_position():
+    """
+    The negative test above is only meaningful with a positive counterpart:
+    the corrected statements must be PRESENT, not merely the stale ones absent.
+    """
+    text = _normalised_register()
+    for required in (
+        "seven** claim levels",
+        "dual one-way stratified permutation sensitivity",
+        "not joint two-way",
+        "unavailable",
+        "interval only",
+    ):
+        assert required.lower() in text, f"missing corrected statement: {required!r}"
+
+
+def test_the_stale_phrases_are_absent_from_the_audit_source_too():
+    """The code must not carry the withdrawn vocabulary either."""
+    import re
+    sources = [
+        BACKEND / "services" / "alpha_engine" / "audit_stats.py",
+        BACKEND / "scripts" / "conviction_gate_backtest.py",
+    ]
+    for src in sources:
+        text = re.sub(r"\s+", " ", src.read_text(encoding="utf-8")).lower()
+        for bad in ("two_way_cluster_permutation(", "two_way_trend_test(",
+                    "cluster_adjusted_mde(", '"p_two_way"'):
+            assert bad not in text, f"{src.name} still references {bad!r}"
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -946,35 +1221,141 @@ def test_neither_measure_is_ever_called_net_return_or_investor_pnl():
                          audit_contract.EXECUTABLE_NEXT_OPEN))
 
 
-def test_a_second_cell_does_not_overwrite_the_first(audit_run, tmp_path):
+def test_a_second_invocation_into_the_same_bundle_is_refused(audit_run, tmp_path):
     """
-    A multi-cell closure run must be ADDITIVE. Running IN after US must leave
-    the US cell intact in every bundle file.
+    A4. Multi-invocation bundles are PROHIBITED, and the prohibition is
+    enforced loudly rather than documented.
+
+    The previous contract merged additively: earlier cells survived, but the
+    run-level manifest, integrity results, price-snapshot identity and Holm
+    family correction were OVERWRITTEN with only the latest invocation's data.
+    A bundle like that reports a Holm correction covering a strict subset of
+    the tests it contains, which overstates significance. So a second
+    invocation into a directory that already holds bundle artefacts must FAIL,
+    leaving the existing bundle untouched.
     """
     bundle = audit_run["tmp"] / "bundle"
-    before = json.loads((bundle / "aggregate_summary.json").read_text())
-    assert "US/short" in before
-    us_rows_before = sum(
-        1 for line in (bundle / "row_decisions.jsonl").read_text().splitlines()
-        if json.loads(line)["market"] == "US")
+    before = (bundle / "aggregate_summary.json").read_text()
+    manifest_before = (bundle / "run_manifest.json").read_text()
 
     ep, _runs, n_syms = _synthetic_extract(tmp_path, markets=("IN",), n_runs=22)
     snap = _synthetic_snapshot(("IN",), n_syms)
     sp = tmp_path / "snap_in.json"
     snap.save(sp)
-    cgb.run_full_audit(["IN"], ["short"], source=f"extract:{ep}",
-                       out_dir=str(bundle), seed=5, permutation_draws=20,
-                       draws=100, today=_dt.date(2026, 8, 22), snapshot_in=str(sp))
+    with pytest.raises(cgb.BundleDirectoryNotEmpty) as exc:
+        cgb.run_full_audit(["IN"], ["short"], source=f"extract:{ep}",
+                           out_dir=str(bundle), seed=5, permutation_draws=20,
+                           draws=100, today=_dt.date(2026, 8, 22),
+                           snapshot_in=str(sp))
+    assert "EMPTY directory" in str(exc.value)
+    # Nothing was mutated on the way to the refusal.
+    assert (bundle / "aggregate_summary.json").read_text() == before
+    assert (bundle / "run_manifest.json").read_text() == manifest_before
 
-    after = json.loads((bundle / "aggregate_summary.json").read_text())
-    assert "US/short" in after and "IN/short" in after
-    assert after["US/short"] == before["US/short"], "the US cell was overwritten"
-    rows_after = [json.loads(l) for l in
-                  (bundle / "row_decisions.jsonl").read_text().splitlines()]
-    assert sum(1 for r in rows_after if r["market"] == "US") == us_rows_before
-    assert any(r["market"] == "IN" for r in rows_after)
-    m = json.loads((bundle / "run_manifest.json").read_text())
-    assert {"US/short", "IN/short"} <= set(m["cells"])
+
+def test_a_fresh_directory_is_accepted_and_declares_the_contract(audit_run, tmp_path):
+    """The counterpart: an EMPTY directory works, and says so in the manifest."""
+    ep, _runs, n_syms = _synthetic_extract(tmp_path, markets=("IN",), n_runs=22)
+    snap = _synthetic_snapshot(("IN",), n_syms)
+    sp = tmp_path / "snap_in2.json"
+    snap.save(sp)
+    fresh = tmp_path / "fresh_bundle"
+    cgb.run_full_audit(["IN"], ["short"], source=f"extract:{ep}",
+                       out_dir=str(fresh), seed=5, permutation_draws=20,
+                       draws=100, today=_dt.date(2026, 8, 22),
+                       snapshot_in=str(sp))
+    m = json.loads((fresh / "run_manifest.json").read_text())
+    assert m["single_invocation_bundle"] is True
+    assert m["cells"] == ["IN/short"] == m["cells_written_this_run"]
+    assert "ONE BUNDLE == ONE INVOCATION" in m["bundle_contract"]
+
+
+def test_both_markets_are_processed_in_one_invocation(tmp_path):
+    """
+    C2/E. The closure run covers India AND the US in ONE invocation. This pins
+    that a single `run_full_audit` call really produces both cells, in one
+    bundle, under one manifest and one Holm family.
+    """
+    ep, _runs, n_syms = _synthetic_extract(tmp_path, markets=("IN", "US"),
+                                           n_runs=22)
+    snap = _synthetic_snapshot(("IN", "US"), n_syms)
+    sp = tmp_path / "snap_both.json"
+    snap.save(sp)
+    out = tmp_path / "both_bundle"
+    res = cgb.run_full_audit(["IN", "US"], ["short"], source=f"extract:{ep}",
+                             out_dir=str(out), seed=5, permutation_draws=20,
+                             draws=100, today=_dt.date(2026, 8, 22),
+                             snapshot_in=str(sp))
+    m = json.loads((out / "run_manifest.json").read_text())
+    assert set(m["cells"]) == {"IN/short", "US/short"}
+    # ONE price snapshot, shared by both markets.
+    assert m["price_snapshot"]["sha256"]
+    # The Holm family spans BOTH markets and BOTH measures.
+    keys = set(res["family"])
+    for cell in ("IN/short", "US/short"):
+        for measure in (audit_contract.RESEARCH_PRIOR_CLOSE,
+                        audit_contract.EXECUTABLE_NEXT_OPEN):
+            assert any(k.startswith(f"{cell}/{measure}/") for k in keys), \
+                f"{cell}/{measure} missing from the Holm family"
+    rows = [json.loads(l) for l in
+            (out / "row_decisions.jsonl").read_text().splitlines()]
+    assert {r["market"] for r in rows} == {"IN", "US"}
+
+
+def test_bootstrap_draws_actually_reach_the_bootstrap_implementation(tmp_path):
+    """
+    A3. `--bootstrap-draws` used to be parsed and written into the manifest
+    while `run_full_audit` never passed it to `build_audit`, so every run used
+    the default no matter what the manifest said. This proves a NON-DEFAULT
+    draw count reaches the bootstrap AND that the manifest reports the value
+    truly used.
+    """
+    non_default = 137
+    assert non_default != audit_stats.DEFAULT_BOOTSTRAP_DRAWS
+
+    ep, _runs, n_syms = _synthetic_extract(tmp_path, markets=("US",), n_runs=22)
+    snap = _synthetic_snapshot(("US",), n_syms)
+    sp = tmp_path / "snap_draws.json"
+    snap.save(sp)
+    out = tmp_path / "draws_bundle"
+    res = cgb.run_full_audit(["US"], ["short"], source=f"extract:{ep}",
+                             out_dir=str(out), seed=5, permutation_draws=21,
+                             draws=non_default, today=_dt.date(2026, 8, 22),
+                             snapshot_in=str(sp))
+
+    executed = {c.get("bootstrap_draws_executed")
+                for c in cgb._walk_comparisons(res["audits"])} - {None}
+    assert executed == {non_default}, (
+        f"the bootstrap ran with {executed}, not the requested {non_default}")
+    perms = {c.get("permutation_draws_executed")
+             for c in cgb._walk_comparisons(res["audits"])} - {None}
+    assert perms == {21}
+
+    m = json.loads((out / "run_manifest.json").read_text())
+    assert m["bootstrap_draws"] == non_default
+    assert m["permutation_draws"] == 21
+    v = m["draws_propagation_verified"]
+    assert v["verified"] is True
+    assert v["bootstrap_draws_observed"] == [non_default]
+    assert v["comparisons_checked"] > 0
+
+
+def test_the_run_fails_rather_than_misreport_the_draw_count():
+    """
+    The reconciliation is fail-closed: if the executed count ever diverges
+    from the declared one, the run must abort rather than emit a manifest that
+    documents draws the audit did not perform.
+    """
+    fake = [{"market": "US", "horizon": "short", "statistics": {"m": {
+        "buy_vs_non_buy": {"bootstrap_draws_executed": 10000,
+                           "permutation_draws_executed": 2000},
+        "conviction_within_buy": {"bootstrap_draws_executed": 10000,
+                                  "permutation_draws_executed": 2000},
+        "published_vs_unpublished_buy": {"by_policy_era": {}},
+    }}}]
+    with pytest.raises(RuntimeError, match="misreport the draw counts"):
+        cgb.verify_draws_propagated(fake, bootstrap_draws=137,
+                                    permutation_draws=2000)
 
 
 def test_the_holm_family_spans_the_whole_run_not_one_invocation(audit_run):

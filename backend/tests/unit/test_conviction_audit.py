@@ -279,10 +279,11 @@ def test_method_disagreement_caps_the_claim_below_proven():
     res.block_p_value = 0.001         # blocked says signal
     res = audit_stats.reconcile_methods(res)
     assert res.methods_agree is False
-    # Disagreement caps below PROVEN. With a significant two-way permutation
-    # p-value and a sign-stable jackknife the cap lands on PRELIMINARY.
+    # Disagreement caps below PROVEN. With a significant dual one-way
+    # permutation p-value and a sign-stable jackknife the cap lands on
+    # PRELIMINARY.
     res.identifiability = audit_stats.IDENTIFIABLE
-    res.permutation_p_two_way = 0.001
+    res.permutation_p_dual_one_way_max = 0.001
     res.jackknife = {"sign_stable": True}
     assert cgb.classify_claim(res) == audit_contract.PRELIMINARY
 

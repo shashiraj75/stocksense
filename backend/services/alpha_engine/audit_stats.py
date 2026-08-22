@@ -21,16 +21,37 @@ factor. This module therefore provides:
   * `two_proportion_effect` — the effect size (difference in win rate) with a
     naive Wald interval, retained ONLY as a labelled comparison baseline so
     the audit can show how far the naive and dependence-aware answers differ.
-  * `date_block_bootstrap` — the primary inference method. Resamples whole
-    SESSION DATES with replacement, preserving within-date dependence
-    entirely. The resulting interval is the audit's headline uncertainty.
+  * `date_block_bootstrap` — resamples whole SESSION DATES with replacement,
+    preserving within-date dependence entirely. It supplies an INTERVAL ONLY
+    and deliberately sets no p-value; it is NOT the audit's inference method.
+  * `dual_one_way_stratified_permutation_sensitivity` — the source of every
+    p-value in the audit. See the hard limitation below.
   * `symbol_cluster_jackknife` — a sensitivity check that deletes one symbol
     at a time to show no single ticker drives the result.
   * `holm_correction` — Holm-Bonferroni step-down across a pre-registered
     family of comparisons.
-  * `minimum_detectable_effect` / `cluster_adequacy` — power reporting, and a
-    fail-closed rule that refuses to emit a significance claim when the number
-    of independent clusters (distinct dates) is too small to support one.
+  * `mde_report` / `cluster_adequacy` — power reporting, and a fail-closed
+    rule that refuses to emit a significance claim when the number of
+    independent clusters (distinct dates) is too small to support one.
+
+THE AUDIT HAS NO JOINT TWO-WAY CLUSTERED INFERENCE — the single most
+important limitation in this module
+---------------------------------------------------------------------------
+Every p-value here is the MAXIMUM of two SEPARATE one-way stratified
+permutation tests (one conditioning on session date, one on symbol). That is a
+DUAL SENSITIVITY CHECK, not a joint test under simultaneous date-and-symbol
+dependence, and it is not provably conservative: under cross-classified
+dependence the true joint p-value can exceed both one-way p-values. A genuine
+statement would need a multiway cluster-robust variance or a wild cluster
+bootstrap over the date x symbol structure; neither is implemented.
+
+Two consequences are ENFORCED IN CODE rather than left to the reader:
+  * PROVEN is unreachable. `MAX_CLAIM_LEVEL_WITHOUT_JOINT_INFERENCE` caps
+    every claim at PRELIMINARY and `conviction_gate_backtest.classify_claim`
+    applies the cap.
+  * There is NO cluster-adjusted MDE. `mde_report` returns it as explicitly
+    UNAVAILABLE and reports only the independence MDE, labelled as the
+    optimistic lower bound it is.
 
 Everything is deterministic given `seed`. Only numpy/scipy are used, both
 already in backend/requirements.txt — this module adds no new dependency.
@@ -54,6 +75,17 @@ MIN_CLUSTERS_FOR_INFERENCE = 20
 DEFAULT_SEED = 20260822
 DEFAULT_BOOTSTRAP_DRAWS = 10000
 
+# The highest claim level this audit's inference is capable of supporting.
+#
+# Every p-value the audit produces comes from
+# `dual_one_way_stratified_permutation_sensitivity` (or its trend analogue),
+# which is a DUAL ONE-WAY SENSITIVITY CHECK, not joint two-way clustered
+# inference. Until a genuine multiway method (multiway cluster-robust variance
+# or a wild cluster bootstrap over the date x symbol structure) is implemented
+# and validated, PROVEN is unreachable BY CONSTRUCTION, and
+# `conviction_gate_backtest.classify_claim` enforces this ceiling.
+MAX_CLAIM_LEVEL_WITHOUT_JOINT_INFERENCE = "PRELIMINARY"
+
 
 @dataclass
 class EffectResult:
@@ -68,11 +100,19 @@ class EffectResult:
     naive_ci_pp: tuple[float, float] | None = None
     naive_p_value: float | None = None
     block_ci_pp: tuple[float, float] | None = None
-    # The audit's headline p-value: the TWO-WAY (date x symbol) cluster
-    # permutation p-value. It is NOT a bootstrap tail proportion.
+    # The audit's headline p-value: the MAXIMUM of two SEPARATE one-way
+    # stratified permutation p-values (one conditioning on session date, one on
+    # symbol). It is NOT a bootstrap tail proportion, and it is NOT a joint
+    # two-way clustered p-value — see
+    # `dual_one_way_stratified_permutation_sensitivity`.
     block_p_value: float | None = None
     n_clusters: int = 0
     clusters_adequate: bool = False
+    # The draw counts ACTUALLY executed, recorded by the implementations that
+    # consumed them, so a manifest claim can be reconciled against reality
+    # rather than against the argument the CLI merely parsed.
+    bootstrap_draws_executed: int | None = None
+    permutation_draws_executed: int | None = None
     minimum_detectable_effect_pp: float | None = None
     inference_permitted: bool = False
     methods_agree: bool | None = None
@@ -83,16 +123,25 @@ class EffectResult:
     n_clusters_symbol: int = 0
     permutation_p_date: float | None = None
     permutation_p_symbol: float | None = None
-    permutation_p_two_way: float | None = None
+    # The MAXIMUM of the two one-way p-values above. Named for what it IS.
+    permutation_p_dual_one_way_max: float | None = None
+    # Explicitly recorded so no downstream reader has to infer it: this audit
+    # has NO joint two-way clustered inference. It bounds the claim ceiling.
+    joint_two_way_inference_available: bool = False
+    max_claim_level: str | None = None
     icc_date: float | None = None
     icc_symbol: float | None = None
-    design_effect: float | None = None
-    effective_n_a: float | None = None
-    effective_n_b: float | None = None
-    # Cluster-ADJUSTED MDE. The plain independence MDE is kept separately and
-    # is never presented as if it accounted for clustering.
+    # One-way design effects, kept SEPARATE and descriptive. There is
+    # deliberately no combined `design_effect`: the larger of two one-way
+    # design effects is not a valid multiway design effect (see
+    # `mde_report`).
+    design_effect_date: float | None = None
+    design_effect_symbol: float | None = None
+    # The independence MDE is an OPTIMISTIC descriptive bound only. The
+    # cluster-adjusted MDE is reported as unavailable, never approximated.
     mde_independence_pp: float | None = None
     mde_cluster_adjusted_pp: float | None = None
+    mde_cluster_adjusted_status: str | None = None
     identifiability: str | None = None
     identifiability_reasons: list[str] = field(default_factory=list)
     jackknife: dict | None = None
@@ -157,16 +206,21 @@ def date_block_bootstrap(
     seed: int = DEFAULT_SEED,
 ) -> EffectResult:
     """
-    Primary inference: resample whole SESSION DATES with replacement.
+    INTERVAL ONLY — this is NOT the audit's inference method.
 
-    Each bootstrap draw picks `n_dates` dates with replacement and recomputes
-    the win-rate difference from every row belonging to the drawn dates. This
-    preserves within-date dependence exactly (all rows on a date move
-    together), which is the dominant dependence structure in this data.
+    Resamples whole SESSION DATES with replacement: each bootstrap draw picks
+    `n_dates` dates with replacement and recomputes the win-rate difference
+    from every row belonging to the drawn dates. This preserves within-date
+    dependence exactly (all rows on a date move together) and yields a
+    percentile CONFIDENCE INTERVAL.
 
-    The two-sided p-value is the bootstrap proportion of draws whose
-    difference falls on the opposite side of zero from the observed
-    difference, doubled — a standard percentile-based approximation.
+    IT SETS NO P-VALUE. An earlier version of this audit treated the
+    date-blocked bootstrap as its primary inference and reported a bootstrap
+    tail proportion as a p-value; that is no longer done anywhere. The
+    interval this function produces is used as ONE precondition inside
+    `classify_claim` (it must exclude zero), and the p-value comes separately
+    from `dual_one_way_stratified_permutation_sensitivity`. Resampling dates
+    alone would also ignore the repeated-symbol dependence entirely.
 
     Deterministic given `seed`.
     """
@@ -188,6 +242,8 @@ def date_block_bootstrap(
         rate_a=_rate(wins_a, n_a), rate_b=_rate(wins_b, n_b),
         difference_pp=None, n_clusters=n_clusters,
     )
+    # Recorded by the code that will actually consume it, at the point of use.
+    res.bootstrap_draws_executed = draws
     if res.rate_a is None or res.rate_b is None:
         res.notes.append("empty population — no comparison possible")
         return res
@@ -234,11 +290,13 @@ def date_block_bootstrap(
     # set `block_p_value`: a bootstrap tail proportion is not a null-based
     # p-value, and presenting one as dependence-aware inference was exactly
     # the defect the independent review flagged. The headline p-value comes
-    # from `two_way_cluster_permutation`, a real randomization null.
+    # from `dual_one_way_stratified_permutation_sensitivity`, a randomization
+    # null (a DUAL ONE-WAY sensitivity statistic, not joint two-way inference).
     res.notes.append(
         "INTERVAL ONLY: date-blocked percentile CI. The p-value reported "
-        "elsewhere on this result is the two-way cluster PERMUTATION p-value, "
-        "not a bootstrap tail proportion."
+        "elsewhere on this result is the MAXIMUM of two one-way stratified "
+        "PERMUTATION p-values, not a bootstrap tail proportion and not a "
+        "joint two-way clustered p-value."
     )
 
     res.inference_permitted = bool(res.clusters_adequate)
@@ -446,7 +504,7 @@ def stratified_permutation_test(
     return out
 
 
-def two_way_cluster_permutation(
+def dual_one_way_stratified_permutation_sensitivity(
     rows: list[dict],
     *,
     date_key: str = "cluster_date",
@@ -459,40 +517,54 @@ def two_way_cluster_permutation(
     seed: int = DEFAULT_SEED,
 ) -> dict:
     """
-    Dependence-aware inference accounting for BOTH clustering dimensions.
+    DUAL ONE-WAY STRATIFIED PERMUTATION SENSITIVITY CHECK.
 
-    The data are clustered two ways at once: every row generated on a session
-    date shares that day's market move, AND every row for a ticker shares that
-    ticker's own behaviour across many runs. A delete-one-symbol jackknife
-    does NOT address this — it is a sensitivity check, not an inference
-    method — and a date-only method ignores the repeated-symbol dimension
-    entirely.
+    THIS IS NOT JOINT TWO-WAY CLUSTERED INFERENCE. Read that sentence before
+    quoting any number this function returns. It was previously named
+    `two_way_cluster_permutation` and its output was called a "two-way
+    clustered p-value"; that name was wrong and the claim it licensed was an
+    overclaim. Nothing about the arithmetic has changed — only the name and
+    the permitted conclusion, which is the point of the correction.
 
-    METHOD. Two stratified permutation tests are run (see
-    `stratified_permutation_test`), one conditioning on session date and one
-    conditioning on symbol. The reported two-way p-value is the MAXIMUM of the
-    two.
+    WHAT IT ACTUALLY DOES. It runs TWO SEPARATE one-way stratified permutation
+    tests (see `stratified_permutation_test`) — one conditioning on session
+    date, one conditioning on symbol — and reports the MAXIMUM of the two
+    p-values. Each individual test is a valid randomization test against the
+    ONE dependence structure it conditions on.
 
-    WHY THE MAXIMUM. Each test is valid against the dependence it conditions
-    on but ignores the other. Taking the larger (less significant) of the two
-    yields a conservative combined statement: a result only clears the bar if
-    it survives BOTH dependence structures. This mirrors the standard
-    practical guidance for two-way clustered inference (report the most
-    conservative of the one-way answers).
+    WHAT MAX-OF-TWO IS AND IS NOT. It is a useful DUAL SENSITIVITY statement:
+    "this result does not clear 0.05 under either dependence structure
+    considered on its own." It is NOT a p-value for the joint null under
+    simultaneous date-and-symbol dependence. In particular:
 
-    ASSUMPTIONS AND LIMITATIONS — stated because they bound what may be
-    claimed:
-      * The combination is CONSERVATIVE BUT NOT EXACT. It does not model
-        dependence that acts on date and symbol jointly (e.g. a sector-wide
-        shock hitting one subset of tickers on one date) beyond what the two
-        separate strata capture.
+      * Each component test HOLDS ONE DIMENSION FIXED AND IGNORES THE OTHER.
+        The date-stratified test still treats the many rows a single ticker
+        contributes across many dates as independent; the symbol-stratified
+        test still treats a whole session's co-moving rows as independent.
+        Neither is corrected by taking the larger of the two.
+      * Taking the maximum is NOT a proof of conservatism. Under genuine
+        two-way dependence the correct variance can exceed BOTH one-way
+        variances, so the true joint p-value can be LARGER than the max of the
+        two one-way p-values. Calling max-of-two "conservative" is an
+        assumption, not a theorem, and this audit does not make it.
+      * A joint method (multiway cluster-robust variance, or a wild cluster
+        bootstrap over the date x symbol structure) would be required to make
+        a genuine two-way statement. None is implemented here, and none is
+        claimed.
+
+    CLAIM CEILING — enforced, not merely advised. Because no joint two-way
+    inference exists, a comparison resting on this statistic may NEVER be
+    classified PROVEN. `MAX_CLAIM_LEVEL_WITHOUT_JOINT_INFERENCE` names the
+    ceiling and `conviction_gate_backtest.classify_claim` applies it.
+
+    REMAINING ASSUMPTIONS of the component tests:
       * Permuting labels within a stratum assumes the label is exchangeable
         within that stratum under the null. For BUY-vs-NON_BUY this is the
         intended null (the signal carries no information about the outcome).
       * With few date clusters the date-stratified test has limited
-        resolution; `cluster_adequacy` gates this separately and
-        `assess_identifiability` can veto the comparison outright.
-      * Both measures are GROSS of transaction costs; no cost model exists.
+        resolution; `assess_identifiability` can veto the comparison outright.
+      * Both return measures are GROSS of transaction costs and taxes; no cost
+        model exists, so neither is a net return or an investor P&L.
     """
     by_date = stratified_permutation_test(
         rows, stratum_key=date_key, group_key=group_key, group_a=group_a,
@@ -504,12 +576,16 @@ def two_way_cluster_permutation(
     return {
         "by_date": by_date,
         "by_symbol": by_symbol,
-        # Conservative combination: must survive BOTH dependence structures.
-        "p_two_way": max(ps) if len(ps) == 2 else None,
+        "p_dual_one_way_max": max(ps) if len(ps) == 2 else None,
+        "joint_two_way_inference": False,
+        "max_claim_level": MAX_CLAIM_LEVEL_WITHOUT_JOINT_INFERENCE,
+        "draws_requested": draws,
         "method": (
-            "Two-way cluster permutation: stratified label permutation "
-            "conditioning on session date, and again on symbol; the reported "
-            "p-value is the MAXIMUM of the two (conservative, not exact)."
+            "Dual one-way stratified permutation sensitivity: two SEPARATE "
+            "one-way stratified label permutations, one conditioning on "
+            "session date and one on symbol; the reported figure is the "
+            "MAXIMUM of the two one-way p-values. This is NOT a joint two-way "
+            "clustered p-value and no PROVEN claim may rest on it."
         ),
     }
 
@@ -590,38 +666,61 @@ def stratified_permutation_trend(
     return out
 
 
-def two_way_trend_test(rows, *, date_key="cluster_date", symbol_key="symbol",
-                       value_key="rank_percentile", win_key="is_win",
-                       draws: int = 2000, seed: int = DEFAULT_SEED) -> dict:
-    """Two-way (date and symbol) conservative trend test — max of the two."""
+def dual_one_way_trend_sensitivity(rows, *, date_key="cluster_date",
+                                   symbol_key="symbol",
+                                   value_key="rank_percentile", win_key="is_win",
+                                   draws: int = 2000, seed: int = DEFAULT_SEED) -> dict:
+    """
+    The trend-test analogue of `dual_one_way_stratified_permutation_sensitivity`,
+    and subject to exactly the same limitation.
+
+    THIS IS NOT JOINT TWO-WAY INFERENCE. Two SEPARATE one-way permutation
+    trend tests are run — outcomes permuted within date strata, and again
+    within symbol strata — and the MAXIMUM of the two p-values is reported.
+    Each component conditions on one dependence structure and ignores the
+    other; the maximum is a dual sensitivity statement, not a joint p-value,
+    and is not provably conservative under two-way dependence. Ranking lift
+    may therefore never be classified PROVEN on this statistic.
+    """
     d = stratified_permutation_trend(rows, stratum_key=date_key, value_key=value_key,
                                      win_key=win_key, draws=draws, seed=seed)
     s = stratified_permutation_trend(rows, stratum_key=symbol_key, value_key=value_key,
                                      win_key=win_key, draws=draws, seed=seed + 1)
     ps = [t["p_value"] for t in (d, s) if t["p_value"] is not None]
     return {"by_date": d, "by_symbol": s,
-            "p_two_way": max(ps) if len(ps) == 2 else None,
-            "method": ("Two-way permutation trend test on the point-biserial "
-                       "correlation between within-run rank percentile and "
-                       "winning; outcomes permuted within date strata and "
-                       "within symbol strata; the MAXIMUM p-value is reported.")}
+            "p_dual_one_way_max": max(ps) if len(ps) == 2 else None,
+            "joint_two_way_inference": False,
+            "max_claim_level": MAX_CLAIM_LEVEL_WITHOUT_JOINT_INFERENCE,
+            "draws_requested": draws,
+            "method": ("Dual one-way stratified permutation trend sensitivity "
+                       "on the point-biserial correlation between within-run "
+                       "rank percentile and winning; outcomes permuted within "
+                       "date strata, and separately within symbol strata; the "
+                       "MAXIMUM of the two one-way p-values is reported. NOT a "
+                       "joint two-way clustered p-value.")}
 
 
 def intracluster_correlation(rows: list[dict], *, cluster_key: str,
                              win_key: str = "is_win") -> dict:
     """
-    One-way ANOVA estimate of the intracluster correlation of the binary
-    outcome, plus the resulting DESIGN EFFECT.
+    ONE-WAY ANOVA estimate of the intracluster correlation of the binary
+    outcome, plus the resulting ONE-WAY design effect.
 
-    The design effect DEFF = 1 + (m_bar - 1) * ICC is the factor by which
-    clustering inflates the true sampling variance relative to the
-    independence assumption. Effective sample size is n / DEFF. This is what
-    makes `cluster_adjusted_mde` genuinely cluster-aware instead of an
-    independence formula wearing a cluster-aware label.
+    DEFF = 1 + (m_bar - 1) * ICC is the variance-inflation factor for a
+    ONE-WAY nested cluster design. It is reported here as a DESCRIPTIVE
+    DIAGNOSTIC — evidence that clustering along `cluster_key` is present and
+    material.
+
+    IT IS NOT USED TO ADJUST THE MDE, and it must not be. This data is
+    CROSS-CLASSIFIED (a row belongs to a date and to a symbol, and symbol
+    groups cut across date groups), so no one-way DEFF — and no combination of
+    two one-way DEFFs, including their maximum — describes the design. See
+    `mde_report`, which reports the cluster-adjusted MDE as explicitly
+    UNAVAILABLE rather than approximating it from these numbers.
 
     ICC is clamped to [0, 1]: a small negative ANOVA estimate is noise around
     zero, and treating it as negative would DEFLATE the design effect and
-    overstate power — the exact direction of error this audit must not make.
+    overstate the amount of clustering evidence in the opposite direction.
     """
     groups: dict[object, list[bool]] = {}
     for r in rows:
@@ -655,51 +754,72 @@ def intracluster_correlation(rows: list[dict], *, cluster_key: str,
     return out
 
 
-def cluster_adjusted_mde(n_a: int, n_b: int, base_rate: float,
-                         design_effect: float | None,
-                         alpha: float = 0.05, power: float = 0.80) -> dict:
+MDE_CLUSTER_ADJUSTED_UNAVAILABLE = "UNAVAILABLE_NO_MULTIWAY_POWER_APPROXIMATION"
+
+
+def mde_report(n_a: int, n_b: int, base_rate: float,
+               design_effect_date: float | None,
+               design_effect_symbol: float | None,
+               alpha: float = 0.05, power: float = 0.80) -> dict:
     """
-    Minimum detectable effect that ACTUALLY accounts for clustering.
+    Report what can honestly be said about this comparison's power.
 
-    The independence MDE is computed first, then the effective sample sizes
-    n/DEFF are substituted — which inflates the MDE by sqrt(DEFF). Both
-    numbers are returned, explicitly labelled, so a NOT_PROVEN conclusion can
-    quote a power statement that is true rather than one that merely says it
-    is cluster-adjusted.
+    THE CLUSTER-ADJUSTED MDE IS DELIBERATELY UNAVAILABLE. An earlier version
+    of this function took the LARGER of the one-way date and symbol design
+    effects, substituted n/DEFF, and labelled the result a cluster-adjusted
+    MDE. That label was wrong:
 
-    When the design effect cannot be estimated the cluster-adjusted MDE is
-    returned as None and the caller must say so — it must NEVER fall back to
-    the independence number under a cluster-aware label.
+      * DEFF = 1 + (m_bar - 1) * ICC is derived for a ONE-WAY nested cluster
+        design. Rows here are CROSS-CLASSIFIED — a row belongs to a date AND
+        to a symbol, and the symbol groups cut across the date groups — so
+        neither one-way DEFF describes this design.
+      * Taking the larger of two one-way design effects is NOT provably
+        conservative for combined two-way dependence. Under cross-classified
+        dependence the variance inflation can exceed BOTH one-way design
+        effects, so max(DEFF_date, DEFF_symbol) can UNDERSTATE the true
+        inflation and therefore understate the MDE — the opposite of the
+        safety the old label implied.
+      * No validated multiway power approximation is implemented in this
+        codebase, and inventing one unvalidated would repeat the original
+        defect in a new place.
+
+    So this function returns `mde_cluster_adjusted_pp = None` with an explicit
+    `UNAVAILABLE` status, and reports ONLY the independence MDE, labelled as
+    the OPTIMISTIC LOWER BOUND that it is: the true cluster-aware MDE is
+    larger by an unquantified factor. The two one-way design effects are
+    returned as DESCRIPTIVE DIAGNOSTICS — evidence that clustering is present
+    and material — never as a power adjustment.
+
+    Consequence for conclusions: a NOT_PROVEN result may say "this sample
+    could not detect an effect smaller than X pp even under the optimistic
+    independence assumption, and the true detection floor is higher by an
+    unquantified amount." It may NOT quote a cluster-adjusted detection floor,
+    because none exists.
     """
     plain = minimum_detectable_effect(n_a, n_b, base_rate, alpha, power)
-    out = {
+    return {
         "mde_independence_pp": plain,
-        "design_effect": design_effect,
+        "mde_independence_label": (
+            "OPTIMISTIC LOWER BOUND — assumes independent observations, which "
+            "is false here. The true detectable effect is LARGER."),
         "mde_cluster_adjusted_pp": None,
-        "effective_n_a": None,
-        "effective_n_b": None,
+        "mde_cluster_adjusted_status": MDE_CLUSTER_ADJUSTED_UNAVAILABLE,
+        "design_effect_date": design_effect_date,
+        "design_effect_symbol": design_effect_symbol,
+        "design_effect_label": (
+            "DESCRIPTIVE ONLY — one-way design effects, reported as evidence "
+            "that clustering is present. Neither, nor their maximum, is a "
+            "valid design effect for this cross-classified date x symbol "
+            "structure, and neither is used to adjust the MDE."),
         "note": (
-            "The independence MDE UNDERSTATES the detectable effect because "
-            "it ignores date and symbol clustering; only the cluster-adjusted "
-            "figure may be quoted alongside a NOT_PROVEN conclusion."
+            "Cluster-adjusted MDE is UNAVAILABLE: no validated multiway power "
+            "approximation exists for this cross-classified design, and the "
+            "max-of-one-way design effect previously used was not a valid "
+            "two-way adjustment. Only the independence MDE is reported, and "
+            "only as an optimistic lower bound; it must never be quoted as if "
+            "it accounted for clustering."
         ),
     }
-    if plain is None or design_effect is None or design_effect <= 0:
-        out["note"] += (
-            " Design effect unavailable — NO cluster-adjusted MDE could be "
-            "computed, and the independence figure must not be substituted."
-        )
-        return out
-    eff_a = n_a / design_effect
-    eff_b = n_b / design_effect
-    out["effective_n_a"] = eff_a
-    out["effective_n_b"] = eff_b
-    if eff_a < 1 or eff_b < 1 or not (0 < base_rate < 1):
-        return out
-    z_a, z_b = 1.959964, 0.8416212
-    se = math.sqrt(base_rate * (1 - base_rate) * (1 / eff_a + 1 / eff_b))
-    out["mde_cluster_adjusted_pp"] = (z_a + z_b) * se * 100.0
-    return out
 
 
 # --- Identifiability ------------------------------------------------------
@@ -806,9 +926,13 @@ def analyse_comparison(
         2. symbol jackknife  — computed HERE, BEFORE any classification, so
                                its sign-stability verdict is an INPUT to the
                                classifier rather than a footnote added after.
-        3. date-blocked interval
-        4. two-way (date x symbol) cluster permutation p-value
-        5. ICC / design effect -> cluster-adjusted MDE
+        3. date-blocked bootstrap INTERVAL (no p-value)
+        4. dual one-way stratified permutation sensitivity p-value — the
+           MAXIMUM of a date-stratified and a symbol-stratified one-way test.
+           This is NOT joint two-way inference and caps the claim level at
+           PRELIMINARY.
+        5. ICCs / one-way design effects as descriptive diagnostics; the
+           cluster-adjusted MDE is reported as explicitly UNAVAILABLE
         6. naive baseline, for the agreement check only
 
     The caller never assembles these itself, which is what prevents the
@@ -851,36 +975,39 @@ def analyse_comparison(
             "not even a direction.")
         return res
 
-    # (4) real null-based dependence-aware p-value.
-    perm = two_way_cluster_permutation(
+    # (4) dependence-aware p-value — a DUAL ONE-WAY SENSITIVITY statistic, not
+    # joint two-way clustered inference. It caps the claim level.
+    perm = dual_one_way_stratified_permutation_sensitivity(
         flat_rows, date_key=date_key, symbol_key=symbol_key,
         group_key=group_key, win_key=win_key,
         draws=permutation_draws, seed=seed)
     res.permutation_p_date = perm["by_date"]["p_value"]
     res.permutation_p_symbol = perm["by_symbol"]["p_value"]
-    res.permutation_p_two_way = perm["p_two_way"]
-    res.block_p_value = perm["p_two_way"]
+    res.permutation_p_dual_one_way_max = perm["p_dual_one_way_max"]
+    res.block_p_value = perm["p_dual_one_way_max"]
+    res.joint_two_way_inference_available = perm["joint_two_way_inference"]
+    res.max_claim_level = perm["max_claim_level"]
+    res.permutation_draws_executed = perm["by_date"]["draws"]
     res.notes.append(perm["method"])
 
-    # (5) design effect -> genuinely cluster-adjusted MDE.
+    # (5) ICCs and one-way design effects — DESCRIPTIVE diagnostics only. The
+    # cluster-adjusted MDE is explicitly unavailable; see `mde_report`.
     icc_d = intracluster_correlation(flat_rows, cluster_key=date_key, win_key=win_key)
     icc_s = intracluster_correlation(flat_rows, cluster_key=symbol_key, win_key=win_key)
     res.icc_date = icc_d.get("icc")
     res.icc_symbol = icc_s.get("icc")
-    deffs = [d for d in (icc_d.get("design_effect"), icc_s.get("design_effect"))
-             if d is not None]
-    # Conservative: take the LARGER design effect, i.e. the smaller effective
-    # sample. Averaging them would understate the MDE.
-    res.design_effect = max(deffs) if deffs else None
+    res.design_effect_date = icc_d.get("design_effect")
+    res.design_effect_symbol = icc_s.get("design_effect")
     base = ((res.rate_a or 0.0) + (res.rate_b or 0.0)) / 2
-    mde = cluster_adjusted_mde(n_a, n_b, base, res.design_effect)
+    mde = mde_report(n_a, n_b, base,
+                     res.design_effect_date, res.design_effect_symbol)
     res.mde_independence_pp = mde["mde_independence_pp"]
     res.mde_cluster_adjusted_pp = mde["mde_cluster_adjusted_pp"]
-    res.effective_n_a = mde["effective_n_a"]
-    res.effective_n_b = mde["effective_n_b"]
-    # `minimum_detectable_effect_pp` is the field older readers look at; point
-    # it at the CLUSTER-ADJUSTED number so no consumer can accidentally quote
-    # the optimistic independence figure as if it were cluster-aware.
+    res.mde_cluster_adjusted_status = mde["mde_cluster_adjusted_status"]
+    # `minimum_detectable_effect_pp` is the field older readers look at. It
+    # stays pinned to the CLUSTER-ADJUSTED number, which is now None — so a
+    # legacy consumer reads "unavailable" and can never accidentally quote the
+    # optimistic independence figure as if it were cluster-aware.
     res.minimum_detectable_effect_pp = mde["mde_cluster_adjusted_pp"]
     res.notes.append(mde["note"])
 

@@ -226,28 +226,6 @@ def format_report(stats_by_horizon: dict[str, dict[str, BucketStats]]) -> str:
 # --------------------------------------------------------------------------
 
 
-def fetch_observations(conn, market: str, horizon: str, limit: int | None = None) -> list[dict]:
-    """Read-only fetch of every (market, horizon) alpha_observations row
-    with a numeric signal_confidence, oldest first (so a --limit cap during
-    manual/testing invocation samples the earliest, most likely to be
-    resolvable rows first, not an arbitrary DB-order slice)."""
-    sql = """
-        SELECT observation_id, run_id, symbol, run_generated_at,
-               run_session_date, reference_session_date,
-               reference_price, signal_confidence, signal,
-               ranking_alpha, is_daily_pick, pick_rank
-        FROM alpha_observations
-        WHERE market = %s AND horizon = %s AND signal_confidence IS NOT NULL
-        ORDER BY reference_session_date ASC
-    """
-    if limit:
-        sql += " LIMIT %s"
-    with conn.cursor() as cur:
-        cur.execute(sql, (market, horizon, limit) if limit else (market, horizon))
-        cols = [c.name for c in cur.description]
-        return [dict(zip(cols, row)) for row in cur.fetchall()]
-
-
 def _to_date(value) -> _dt.date:
     if isinstance(value, _dt.datetime):
         return value.date()
@@ -714,24 +692,37 @@ def _win_rows(rows: list[dict], pop_a: str, pop_b: str, measure_key: str,
 
 def compare_populations(label, rows, pop_a, pop_b, measure_key, *, seed,
                         restrict: set | None = None, n_runs=None, min_runs=None,
-                        extra_reasons=None, permutation_draws: int = 2000):
+                        extra_reasons=None, permutation_draws: int = 2000,
+                        bootstrap_draws: int | None = None):
     """
     Run one A-vs-B comparison through the full governed pipeline and classify
     it. Identifiability and the symbol jackknife are computed INSIDE
     `audit_stats.analyse_comparison`, before classification, and are inputs to
     `classify_claim` — never checked afterwards.
+
+    `bootstrap_draws` is the date-blocked bootstrap draw count. It is threaded
+    all the way from the CLI to `analyse_comparison`; an earlier version
+    accepted `--bootstrap-draws`, recorded it in the manifest, and then never
+    passed it down, so the manifest documented a draw count the run had not
+    actually used. The value is echoed back on the result so the manifest can
+    be reconciled against what was really executed.
     """
     from services.alpha_engine import audit_stats
 
+    if bootstrap_draws is None:
+        bootstrap_draws = audit_stats.DEFAULT_BOOTSTRAP_DRAWS
     flat = _win_rows(rows, pop_a, pop_b, measure_key, restrict=restrict)
     res = audit_stats.analyse_comparison(
         label, flat, seed=seed, n_runs=n_runs, min_runs=min_runs,
+        draws=bootstrap_draws,
         permutation_draws=permutation_draws,
         extra_identifiability_reasons=extra_reasons)
     result = res.to_dict()
     result["population_a"] = pop_a
     result["population_b"] = pop_b
     result["measure"] = measure_key
+    result["bootstrap_draws_used"] = bootstrap_draws
+    result["permutation_draws_used"] = permutation_draws
     result["claim_level"] = classify_claim(res)
     return result
 
@@ -749,15 +740,28 @@ def classify_claim(result) -> str:
       2. SIGN-UNSTABLE JACKKNIFE IS A HARD VETO ON PROVEN. A difference that
          flips sign when a single ticker is deleted is not a robust finding,
          however small its p-value.
-      3. PROVEN requires everything simultaneously: adequate clusters, a
-         date-blocked interval excluding zero, a significant two-way cluster
-         permutation p-value, naive/dependence-aware agreement, AND jackknife
-         sign stability. Holm survival across the complete family is applied
-         by the caller and can only ever downgrade further.
+      3. THE METHOD CEILING IS A HARD CAP ON PROVEN. Every p-value this audit
+         produces is the MAXIMUM of two SEPARATE one-way stratified
+         permutation tests — a dual sensitivity check, not joint two-way
+         clustered inference (see
+         `audit_stats.dual_one_way_stratified_permutation_sensitivity`).
+         While that is so, PROVEN is unreachable BY CONSTRUCTION and the
+         strongest attainable level is PRELIMINARY. This is applied here, in
+         code, so the ceiling cannot be lost in prose.
+      4. SIGN-UNSTABLE JACKKNIFE IS A HARD VETO ON PROVEN. A difference that
+         flips sign when a single ticker is deleted is not a robust finding,
+         however small its p-value.
+      5. PROVEN would additionally require everything simultaneously: adequate
+         clusters, a date-blocked interval excluding zero, a significant
+         p-value, naive/dependence-aware agreement, AND jackknife sign
+         stability. Holm survival across the complete family is applied by the
+         caller and can only ever downgrade further.
 
     This function is the single place those caps are enforced. No caller may
     raise a level by hand.
     """
+    from services.alpha_engine import audit_stats
+
     c = _contract()
     if result.identifiability == "NOT_IDENTIFIABLE":
         return c.NOT_IDENTIFIABLE
@@ -771,7 +775,7 @@ def classify_claim(result) -> str:
         return c.PRELIMINARY if sign_stable else c.NOT_IDENTIFIABLE
     lo, hi = result.block_ci_pp
     excludes_zero = (lo > 0 and hi > 0) or (lo < 0 and hi < 0)
-    p = result.permutation_p_two_way
+    p = result.permutation_p_dual_one_way_max
     significant = p is not None and p < 0.05
     if not excludes_zero or not significant:
         return c.NOT_PROVEN
@@ -780,6 +784,11 @@ def classify_claim(result) -> str:
     if sign_stable is not True:
         # HARD VETO — a sign-unstable estimate can never be PROVEN.
         return c.PRELIMINARY
+    if not getattr(result, "joint_two_way_inference_available", False):
+        # METHOD CEILING. Everything else passed, but the inference underneath
+        # is a dual one-way sensitivity check rather than a joint two-way
+        # clustered test, so PROVEN is not available on this evidence.
+        return audit_stats.MAX_CLAIM_LEVEL_WITHOUT_JOINT_INFERENCE
     return c.PROVEN
 
 
@@ -836,7 +845,7 @@ def ranking_lift(rows: list[dict], measure_key: str, *, seed: int,
              "is_win": float(r[measure_key]) > 0.0,
              "cluster_date": r["run_session_date_iso"],
              "symbol": r["symbol"]} for r in eligible]
-    trend = audit_stats.two_way_trend_test(
+    trend = audit_stats.dual_one_way_trend_sensitivity(
         flat, draws=permutation_draws, seed=seed)
     jk = audit_stats.symbol_cluster_jackknife(
         [dict(f, group="A" if f["rank_percentile"] >= 0.5 else "B") for f in flat])
@@ -852,7 +861,7 @@ def ranking_lift(rows: list[dict], measure_key: str, *, seed: int,
         "trend_test": trend,
         "jackknife": jk,
     })
-    p = trend.get("p_two_way")
+    p = trend.get("p_dual_one_way_max")
     n_dates = len({f["cluster_date"] for f in flat})
     n_syms = len({f["symbol"] for f in flat})
     if n_dates < audit_stats.MIN_CLUSTERS_FOR_INFERENCE or \
@@ -861,12 +870,19 @@ def ranking_lift(rows: list[dict], measure_key: str, *, seed: int,
         out["reason"] = (f"inadequate clusters for a trend test "
                          f"(dates={n_dates}, symbols={n_syms})")
     elif p < 0.05 and jk.get("sign_stable") is True:
-        out["claim_level"] = c.PRELIMINARY
-        out["reason"] = ("trend is significant under the two-way permutation "
-                         "null; PRELIMINARY pending Holm correction")
+        # Capped at PRELIMINARY for the same reason every other comparison is:
+        # the underlying statistic is a dual one-way sensitivity check, not
+        # joint two-way clustered inference.
+        out["claim_level"] = audit_stats.MAX_CLAIM_LEVEL_WITHOUT_JOINT_INFERENCE
+        out["reason"] = ("trend is significant under BOTH one-way permutation "
+                         "nulls; capped at PRELIMINARY because no joint "
+                         "two-way inference exists, and pending Holm correction")
     else:
         out["claim_level"] = c.NOT_PROVEN
-        out["reason"] = "no significant rank->outcome trend under the two-way null"
+        out["reason"] = ("no significant rank->outcome trend under either "
+                         "one-way permutation null")
+    out["joint_two_way_inference_available"] = False
+    out["max_claim_level"] = audit_stats.MAX_CLAIM_LEVEL_WITHOUT_JOINT_INFERENCE
     return out
 
 
@@ -1029,7 +1045,8 @@ def match_published_unpublished(rows: list[dict], measure_key: str) -> dict:
 
 
 def published_vs_unpublished(rows, measure_key, *, seed, market, horizon,
-                             permutation_draws: int = 2000) -> dict:
+                             permutation_draws: int = 2000,
+                             bootstrap_draws: int | None = None) -> dict:
     """
     (D) What users saw, against the BUY candidates from the SAME RUN that were
     not published — estimated separately within each publication-policy era.
@@ -1054,7 +1071,8 @@ def published_vs_unpublished(rows, measure_key, *, seed, market, horizon,
             seed=seed, restrict=info["matched_keys"],
             n_runs=info["n_matched_runs"],
             min_runs=c.MIN_RUNS_PER_ERA_FOR_ESTIMATE,
-            extra_reasons=reasons, permutation_draws=permutation_draws)
+            extra_reasons=reasons, permutation_draws=permutation_draws,
+            bootstrap_draws=bootstrap_draws)
         res["policy_era"] = era
         res["n_matched_runs"] = info["n_matched_runs"]
         res["n_matched_rows"] = info["n_matched_rows"]
@@ -1471,7 +1489,8 @@ def build_decisions(rows: list[dict]) -> list[dict]:
 
 
 def build_audit(market: str, horizon: str, rows: list[dict], *, seed: int,
-                permutation_draws: int = 2000) -> dict:
+                permutation_draws: int = 2000,
+                bootstrap_draws: int | None = None) -> dict:
     """
     Full audit for one market x horizon, with an exactly-reconciling waterfall.
 
@@ -1523,16 +1542,19 @@ def build_audit(market: str, horizon: str, rows: list[dict], *, seed: int,
             "buy_vs_non_buy": compare_populations(
                 f"{market}/{horizon}/BUY-vs-NON_BUY", rows,
                 c.P_BUY, c.P_NON_BUY, measure, seed=seed, n_runs=n_dates,
-                permutation_draws=permutation_draws),
+                permutation_draws=permutation_draws,
+                bootstrap_draws=bootstrap_draws),
             # (B) the conviction gate, tested WITHIN BUY only.
             "conviction_within_buy": compare_populations(
                 f"{market}/{horizon}/BUY>=85-vs-BUY<85", rows,
                 c.P_BUY_HIGH_CONV, c.P_BUY_LOW_CONV, measure, seed=seed,
-                n_runs=n_dates, permutation_draws=permutation_draws),
+                n_runs=n_dates, permutation_draws=permutation_draws,
+                bootstrap_draws=bootstrap_draws),
             # (D) run-matched, era-pure published vs unpublished.
             "published_vs_unpublished_buy": published_vs_unpublished(
                 rows, measure, seed=seed, market=market, horizon=horizon,
-                permutation_draws=permutation_draws),
+                permutation_draws=permutation_draws,
+                bootstrap_draws=bootstrap_draws),
             # (C) does ranking add information beyond the binary BUY call?
             "ranking_lift": ranking_lift(rows, measure, seed=seed,
                                          permutation_draws=permutation_draws),
@@ -1602,7 +1624,7 @@ def collect_primary_family(audits: list[dict]) -> dict[str, float | None]:
             # out would let it clear an uncorrected bar the others must clear
             # corrected.
             family[f"{cell}/{measure}/ranking_lift_trend"] = \
-                (block["ranking_lift"].get("trend_test") or {}).get("p_two_way")
+                (block["ranking_lift"].get("trend_test") or {}).get("p_dual_one_way_max")
     return family
 
 
@@ -1780,18 +1802,44 @@ def _close(a, b, tol) -> bool:
 # --------------------------------------------------------------------------
 
 
-def write_audit_bundle(out_dir, audits: list[dict], *, manifest: dict,
-                       integrity: dict, reconstruction: dict,
-                       holm: dict, merge: bool = True):
-    """
-    Write the evidence bundle to a caller-supplied directory OUTSIDE the
-    repository, MERGING with whatever cells are already there.
+class BundleDirectoryNotEmpty(RuntimeError):
+    """Raised when an evidence bundle would be written into a non-empty directory."""
 
-    Merging is what makes a multi-cell closure run possible without one
-    invocation destroying another's results: cells are keyed by
-    "<market>/<horizon>" and only the keys this run produced are replaced.
-    `row_decisions.jsonl` is likewise rewritten with this run's cells replacing
-    only their own rows.
+
+# Files a previous invocation would have left behind. Their presence means the
+# directory already holds a bundle.
+BUNDLE_FILES = (
+    "aggregate_summary.json", "statistical_results.json", "row_decisions.jsonl",
+    "run_manifest.json", "data_integrity_results.json",
+    "reconstruction_verification.json", "multiple_testing_family.json",
+)
+
+
+def write_audit_bundle(out_dir, audits: list[dict], *, manifest: dict,
+                       integrity: dict, reconstruction: dict, holm: dict):
+    """
+    Write the evidence bundle to a caller-supplied EMPTY directory OUTSIDE the
+    repository. ONE BUNDLE == ONE INVOCATION, enforced here.
+
+    WHY MERGING WAS REMOVED. An earlier version merged additively: per-cell
+    aggregates and row decisions from previous invocations were retained, but
+    the RUN-LEVEL artefacts — the manifest, the data-integrity results, the
+    reconstruction verification, the price-snapshot identity and the Holm
+    family correction — were OVERWRITTEN with only the latest invocation's
+    data. The result was a bundle whose cells came from several runs while its
+    provenance, its integrity evidence and its multiple-testing correction
+    described just one of them. Holm in particular is meaningless that way:
+    the correction would silently cover a strict subset of the tests the
+    bundle actually contains, understating the family size and overstating
+    significance.
+
+    Two contracts could fix that: per-cell provenance, or one-invocation
+    bundles. This audit takes the second, because it is the one that cannot be
+    got subtly wrong — every closure bundle is generated from an EMPTY
+    directory in ONE invocation covering every market and measure, so the
+    manifest, integrity results and Holm family always describe exactly the
+    cells present. A non-empty target directory is a HARD FAILURE, not a
+    warning.
     """
     import json
     import pathlib
@@ -1803,16 +1851,20 @@ def write_audit_bundle(out_dir, audits: list[dict], *, manifest: dict,
         raise ValueError(
             f"refusing to write the audit bundle inside the repository "
             f"({out}); pass --audit-out pointing somewhere outside {repo_root}")
+    if out.exists():
+        existing = sorted(p.name for p in out.iterdir())
+        clash = [n for n in existing if n in BUNDLE_FILES]
+        if clash:
+            raise BundleDirectoryNotEmpty(
+                f"{out} already contains bundle artefact(s) {clash}. A closure "
+                f"bundle must be produced from an EMPTY directory in ONE "
+                f"invocation covering every market and measure, so that the "
+                f"manifest, the data-integrity results and the Holm family "
+                f"correction describe exactly the cells present. Merging a "
+                f"second invocation in would keep the earlier cells but "
+                f"overwrite run-level provenance and under-count the Holm "
+                f"family. Point --audit-out at a fresh directory.")
     out.mkdir(parents=True, exist_ok=True)
-
-    def read_json(name, default):
-        p = out / name
-        if merge and p.exists():
-            try:
-                return json.loads(p.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                return default
-        return default
 
     def dump(name, obj):
         (out / name).write_text(json.dumps(obj, indent=2, default=str), encoding="utf-8")
@@ -1820,8 +1872,8 @@ def write_audit_bundle(out_dir, audits: list[dict], *, manifest: dict,
     cells = [f'{a["market"]}/{a["horizon"]}' for a in audits]
 
     # --- aggregate summary + statistics: additive per cell ----------------
-    agg = read_json("aggregate_summary.json", {})
-    stat = read_json("statistical_results.json", {})
+    agg: dict = {}
+    stat: dict = {}
     for a in audits:
         key = f'{a["market"]}/{a["horizon"]}'
         agg[key] = {"waterfall": a["waterfall"], "missingness": a["missingness"]}
@@ -1829,32 +1881,23 @@ def write_audit_bundle(out_dir, audits: list[dict], *, manifest: dict,
     dump("aggregate_summary.json", agg)
     dump("statistical_results.json", stat)
 
-    # --- row decisions: replace only this run's cells ---------------------
-    kept: list[str] = []
+    # --- row decisions: this invocation's cells, and only those -----------
     rows_path = out / "row_decisions.jsonl"
-    if merge and rows_path.exists():
-        for line in rows_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                rec = json.loads(line)
-            except ValueError:
-                continue
-            if f'{rec.get("market")}/{rec.get("horizon")}' not in cells:
-                kept.append(line)
     with rows_path.open("w", encoding="utf-8") as fh:
-        for line in kept:
-            fh.write(line + "\n")
         for a in audits:
             for d in a["decisions"]:
                 fh.write(json.dumps(d, default=str) + "\n")
 
-    # --- manifest: additive cell list, this run's provenance --------------
-    prior = read_json("run_manifest.json", {})
-    prior_cells = [x for x in prior.get("cells", []) if x not in cells]
+    # --- manifest: this invocation's cells and provenance, nothing else ---
     manifest = dict(manifest)
-    manifest["cells"] = prior_cells + cells
+    manifest["cells"] = cells
     manifest["cells_written_this_run"] = cells
+    manifest["single_invocation_bundle"] = True
+    manifest["bundle_contract"] = (
+        "ONE BUNDLE == ONE INVOCATION. This directory was empty when the run "
+        "started, so the manifest, data-integrity results, price-snapshot "
+        "identity and Holm family correction all describe exactly the cells "
+        "listed here. Multi-invocation bundles are prohibited.")
     manifest["return_measures"] = c.RETURN_MEASURES
     manifest["populations"] = list(c.POPULATIONS)
     manifest["claim_levels"] = list(c.CLAIM_LEVELS)
@@ -1948,6 +1991,61 @@ def build_manifest(*, seed, source_meta, snapshot_info, cells, row_counts,
 # --------------------------------------------------------------------------
 
 
+def _walk_comparisons(audits: list[dict]):
+    """Yield every per-comparison result dict in a run, from every cell."""
+    for a in audits:
+        for block in a["statistics"].values():
+            for name in PRIMARY_ANALYSES:
+                yield block[name]
+            yield from block["published_vs_unpublished_buy"]["by_policy_era"].values()
+
+
+def verify_draws_propagated(audits: list[dict], *, bootstrap_draws: int,
+                            permutation_draws: int) -> dict:
+    """
+    Prove the CLI's draw counts actually reached the implementations.
+
+    Reads back `bootstrap_draws_executed` / `permutation_draws_executed`,
+    which the bootstrap and the permutation record AT THE POINT OF USE, and
+    fails the run if any executed comparison used a different count from the
+    one the manifest is about to declare. A comparison that never ran (an
+    empty population, or NOT_IDENTIFIABLE before any draw) records None and is
+    counted separately rather than treated as a mismatch.
+    """
+    boot_seen, perm_seen, checked, skipped = set(), set(), 0, 0
+    for res in _walk_comparisons(audits):
+        b = res.get("bootstrap_draws_executed")
+        p = res.get("permutation_draws_executed")
+        if b is None and p is None:
+            skipped += 1
+            continue
+        checked += 1
+        if b is not None:
+            boot_seen.add(b)
+        if p is not None:
+            perm_seen.add(p)
+    bad = []
+    if boot_seen - {bootstrap_draws}:
+        bad.append(f"bootstrap draws executed {sorted(boot_seen)} != declared "
+                   f"{bootstrap_draws}")
+    if perm_seen - {permutation_draws}:
+        bad.append(f"permutation draws executed {sorted(perm_seen)} != declared "
+                   f"{permutation_draws}")
+    if bad:
+        raise RuntimeError(
+            "manifest would misreport the draw counts actually used: "
+            + "; ".join(bad))
+    return {
+        "declared_bootstrap_draws": bootstrap_draws,
+        "declared_permutation_draws": permutation_draws,
+        "bootstrap_draws_observed": sorted(boot_seen),
+        "permutation_draws_observed": sorted(perm_seen),
+        "comparisons_checked": checked,
+        "comparisons_with_no_draws_executed": skipped,
+        "verified": True,
+    }
+
+
 def run_full_audit(markets, horizons, *, source, out_dir, seed,
                    permutation_draws=2000, draws=10000, today=None,
                    snapshot_path=None, snapshot_in=None, limit=None,
@@ -2004,7 +2102,8 @@ def run_full_audit(markets, horizons, *, source, out_dir, seed,
         market, horizon = key.split("/")
         resolve_returns(rows, market, horizon, snapshot, today=today)
         audits.append(build_audit(market, horizon, rows, seed=seed,
-                                  permutation_draws=permutation_draws))
+                                  permutation_draws=permutation_draws,
+                                  bootstrap_draws=draws))
 
     # Run-level missingness guard: applied ACROSS the whole run.
     if enforce_missingness:
@@ -2024,10 +2123,17 @@ def run_full_audit(markets, horizons, *, source, out_dir, seed,
     all_decisions = [d for a in audits for d in a["decisions"]]
     reconstruction = verify_reconstruction(all_decisions, audits)
 
+    # The manifest may only state a draw count the run ACTUALLY executed.
+    # An earlier version recorded --bootstrap-draws without ever passing it
+    # down, so the manifest documented a value the bootstrap had not used.
+    executed = verify_draws_propagated(audits, bootstrap_draws=draws,
+                                       permutation_draws=permutation_draws)
+
     manifest = build_manifest(
         seed=seed, source_meta=source_meta, snapshot_info=snapshot_info,
         cells=cells, row_counts={k: len(v) for k, v in prepared.items()},
         cutoff=cutoff, permutation_draws=permutation_draws, draws=draws)
+    manifest["draws_propagation_verified"] = executed
 
     dest = write_audit_bundle(out_dir, audits, manifest=manifest,
                               integrity=integrity, reconstruction=reconstruction,
