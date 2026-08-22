@@ -1479,12 +1479,18 @@ export default function DailyPicksPage() {
           caveat (not a hardcoded frontend claim) whenever the conviction-gated
           policy is active. DP-035 found the win-rate correlation at this
           threshold is not yet confirmed by a matching backtest for medium/long
-          horizon (thin sample). DP-036 ran a real, full-population backtest
-          (13,988 rows) against the correct gate field for SHORT horizon
-          specifically and found a definitive negative result — no meaningful
-          win-rate lift — so the backend now returns a stronger, distinguishable
-          "tested, no lift found" string for short horizon only; medium/long keep
-          DP-035's "not yet confirmed" wording unchanged. This component renders
+          horizon (thin sample). DP-036 reported a negative short-horizon
+          finding against the correct gate field.
+          DP-037 (2026-08-22) then found that finding's DENOMINATOR and RETURN
+          METHODOLOGY unsound — the row count pooled two horizons and the
+          inference assumed independent observations that repeated symbols and
+          session-date clustering violate — so the short-horizon string no
+          longer asserts a settled "tested, no lift found" result. It now
+          reports the prior direction (no PROVEN lift) while stating the
+          re-audit is in progress, and may only be strengthened to whatever
+          level the governed classifier actually returns — never by hand.
+          Medium/long keep DP-035's "not yet confirmed" wording unchanged.
+          This component renders
           whichever string the backend sends, per-horizon — no per-horizon
           branching lives here. Absent entirely for a legacy/pre-policy payload
           (publicationPolicy === null), same as the rest of this dynamic copy. */}

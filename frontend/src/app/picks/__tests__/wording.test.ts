@@ -265,8 +265,8 @@ describe("Daily Picks conviction calibration-status caveat (DP-035)", () => {
 
 // DP-036 (2026-08-18): a real, full-population walk-forward backtest
 // (backend/scripts/conviction_gate_backtest.py, run against the ACTUAL gate
-// field `alpha_observations.signal_confidence`, 13,988 rows across both
-// markets) found short horizon specifically shows no meaningful win-rate
+// field `alpha_observations.signal_confidence`) found short horizon
+// specifically shows no meaningful win-rate
 // lift at the >=85 threshold (India 51.5% -> 52.4%, US 60.7% -> 60.8% with
 // a lower average return in the >=85 bucket). This is a definitive,
 // adequately-sampled finding — stronger than DP-035's generic "unconfirmed"
@@ -286,13 +286,61 @@ describe("Daily Picks short-horizon conviction backtest caveat (DP-036)", () => 
     expect(backendSource).toContain('if horizon == "short"');
   });
 
-  it("short-horizon caveat states the finding was actually tested, with the real sample size", () => {
+  // DP-037 (2026-08-22): this assertion previously required the literal
+  // "13,988" in the backend's user-facing string. That number was a
+  // MISLABELLED FETCHED row count pooling the short and medium horizons —
+  // never a resolved short-horizon sample size — so it has been removed from
+  // the copy and the assertion is now inverted.
+  // DP-037 pass 2 (2026-08-22): an independent review found the short-horizon
+  // string still claimed MORE than its evidence supported. Two overclaims are
+  // now forbidden outright until a corrected LIVE full-population audit run
+  // actually succeeds:
+  //   * "across the full candidate population" — the denominator behind that
+  //     phrase was a FETCHED count pooling short and medium horizons.
+  //   * "shows no meaningful win-rate improvement" — asserted as a settled
+  //     negative result on inference that assumed independent observations,
+  //     which repeated symbols and session-date clustering violate.
+  // The copy must instead report the prior finding's DIRECTION while stating
+  // that its denominator and return methodology are under re-audit.
+  it("short-horizon caveat may not claim completed full-population evidence while the re-audit is pending", () => {
     const start = backendSource.indexOf('"conviction_semantic": (');
     const shortEnd = backendSource.indexOf(') if horizon == "short"', start);
     const shortLiteral = backendSource.slice(start, shortEnd);
-    expect(shortLiteral).toContain("13,988");
-    expect(shortLiteral).toContain("tested against realized outcomes");
-    expect(shortLiteral.toLowerCase()).toContain("no meaningful");
+
+    expect(shortLiteral).not.toContain("13,988");
+    // The two forbidden overclaims.
+    expect(shortLiteral.toLowerCase()).not.toContain("full candidate population");
+    expect(shortLiteral.toLowerCase()).not.toContain("tested across");
+    expect(shortLiteral.toLowerCase()).not.toContain("shows no meaningful");
+
+    // The honest replacement must say both halves: the prior direction, AND
+    // that the methodology behind it is being re-audited.
+    expect(shortLiteral.toLowerCase()).toContain("no proven conviction lift");
+    expect(shortLiteral.toLowerCase()).toContain("re-audit");
+    expect(shortLiteral.toLowerCase()).toContain("denominator");
+  });
+
+  // The Python literal is written as adjacent quoted fragments across several
+  // lines, so a phrase can straddle two fragments and be absent from the raw
+  // source text while still being present in the string the user sees.
+  // Joining the fragments first is what makes a phrase assertion meaningful.
+  const renderedShortCaveat = (): string => {
+    const start = backendSource.indexOf('"conviction_semantic": (');
+    const shortEnd = backendSource.indexOf(') if horizon == "short"', start);
+    const body = backendSource.slice(start, shortEnd).split("(").slice(1).join("(");
+    return (body.match(/"(?:[^"\\]|\\.)*"/g) ?? [])
+      .map((s) => s.slice(1, -1))
+      .join("");
+  };
+
+  it("short-horizon caveat never asserts a proven conviction advantage", () => {
+    const rendered = renderedShortCaveat();
+    // It may say there is NO proven advantage; it may never say there is one.
+    expect(rendered).toContain("not a proven conviction advantage");
+    expect(rendered.toLowerCase()).not.toMatch(/proven (edge|lift|advantage) (of|over)/);
+    // Still never a calibrated-probability claim.
+    expect(rendered).not.toMatch(/%\s*chance/i);
+    expect(rendered).toContain("not a calibrated win probability");
   });
 
   it("medium/long caveat keeps DP-035's 'not yet confirmed' wording and is textually distinct from short's", () => {

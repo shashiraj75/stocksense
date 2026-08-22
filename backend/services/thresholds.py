@@ -642,7 +642,17 @@ class DailyPicksPublicationThresholds:
     # enough resolved forward-return data to test yet — medium is thin,
     # long has ~zero resolved data until ~2026-10-13 given the horizon's
     # 60-trading-day + 90-calendar-day minimum wait and the gate's own
-    # data only going back to 2026-07-17): 13,988 rows.
+    # data only going back to 2026-07-17).
+    #
+    # DP-037 correction (2026-08-22): this finding was originally published
+    # with a "13,988 rows" sample size. That figure was MISLABELLED — it was
+    # a FETCHED row count that pooled the short and medium horizons, not a
+    # RESOLVED short-horizon sample. The sample size has therefore been
+    # removed rather than restated, and the audit tooling now reports a
+    # resolved count per market x horizon separately (never pooled). The
+    # DIRECTION of the finding below is unchanged; only the denominator
+    # claim was wrong. See DP-037 in the Daily-Picks Implementation
+    # Register and services/alpha_engine/audit_contract.py.
     #
     #   Market | <85 win rate | >=85 win rate
     #   -------|--------------|---------------

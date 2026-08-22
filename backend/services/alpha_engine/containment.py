@@ -7,9 +7,20 @@ in-zone Daily Picks underperformed manual paper trades, and identified
 several confirmed data-integrity defects in the legacy learning path:
 historical market-label contamination (fixed same-day by 536fd3d),
 ~99% raw-[0,1] values in India's stored "z-score" columns, a ~1.52x
-duplicate-inflated IC-training join, and completely empty canonical
-alpha_observations/factor_ic_history tables. None of that has been
-cleaned or retrained on yet — see the audit report for detail.
+duplicate-inflated IC-training join, and canonical
+alpha_observations/factor_ic_history tables that were unpopulated at that
+time. None of that legacy data has been cleaned or retrained on yet — see
+the audit report for detail.
+
+Status correction (2026-08-22, DP-037): `alpha_observations` is no longer
+unpopulated — it accumulates real prediction-time evidence on every Daily
+Picks run. That does NOT change anything about this containment. The table
+is an evidence/telemetry record, not a production learning feedback loop:
+no ranking code path reads it, it persists no realized outcome or label of
+any kind (outcomes are computed live at analysis time), and
+`factor_ic_history` remains unpopulated. Deliberately stated without a row
+count so it cannot go stale the way the original "completely empty" claim
+did.
 
 This module is the single on/off switch for whether the IC engine's
 live-data adaptation and the meta-model are trusted for PRODUCTION Daily
@@ -47,13 +58,21 @@ ENV_VAR = "LEARNING_ALPHA_PRODUCTION_ENABLED"
 # has accumulated and passed walk-forward validation — not before.
 LEARNING_DATASET_VERSION = "legacy-quarantined-2026-07-12"
 
+# Served live to users via /api/picks/status. Kept deliberately TIMELESS —
+# no row counts, no "currently empty" claims — because the previous wording
+# asserted the canonical tables were "completely empty" and silently became
+# false once alpha_observations started accumulating rows (DP-037).
 _CONTAINMENT_REASON = (
     "Phase 1 forensic audit (2026-07-12) found confirmed market-label "
     "contamination, ~99% raw-[0,1] values in stored India z-score columns, "
-    "a ~1.52x duplicate-inflated IC-training join, and empty canonical "
-    "alpha_observations/factor_ic_history tables. Production Daily Picks "
-    "ranking is quarantined from this legacy learning data pending a clean "
-    "canonical dataset and walk-forward validation."
+    "and a ~1.52x duplicate-inflated IC-training join in the legacy "
+    "predictions/outcomes learning path. Production Daily Picks ranking is "
+    "quarantined from that legacy learning data pending a clean canonical "
+    "dataset and walk-forward validation. The canonical alpha_observations "
+    "table records prediction-time evidence only — it is not a production "
+    "learning feedback loop: no ranking path reads it and it persists no "
+    "realized outcome. Production ranking uses fixed academic-prior IC "
+    "weights, and factor_ic_history remains unpopulated."
 )
 
 

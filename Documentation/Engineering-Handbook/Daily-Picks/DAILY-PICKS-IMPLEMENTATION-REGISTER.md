@@ -804,7 +804,13 @@ Scheduled natural-run publication behavior has been verified for both markets; f
 
 **7. Rollback.** Revert the branch's commit(s); all three changes are additive/textual (a new dataclass field, a changed string literal, one new conditionally-rendered `<p>`) — reverting restores the DP-034 gate's exact prior copy and metadata with no other side effects (no migration, no gate-value change to reverse).
 
-## DP-036 — Short-horizon conviction-gate backtest finding: real, full-population, definitive negative result (2026-08-18)
+## DP-036 — Short-horizon conviction-gate backtest finding: SUPERSEDED — the "definitive negative result" framing did not hold (2026-08-18)
+
+> ### ⚠️ READ DP-037 BEFORE USING ANYTHING IN THIS ENTRY
+>
+> This entry was originally titled as a definitive, full-population negative result. **That framing is withdrawn.** DP-037's audit established that DP-036's denominator was mislabelled (the "13,988 samples" figure was a FETCHED row count that pooled short and medium horizons, never a resolved short-horizon sample), that its return measure was a non-executable prior-session research price, and that its statistics assumed independent observations in data that is clustered by session date and by repeated symbol. Nothing here is "definitive", and the word "full-population" described a fetch, not a resolved sample.
+>
+> The *decision* DP-036 took — Option A, strengthen the caveat, change no behaviour — stands, and the 85.0 threshold and max-3 cap remain unchanged. The *evidential claims* below are superseded by DP-037 and must not be quoted.
 
 **Status: EVIDENCE-BACKED CAVEAT FIX IMPLEMENTED, TESTED, COMMITTED — NOT MERGED, NOT DEPLOYED.** Branch `fix/daily-picks-short-horizon-conviction-caveat`, based on verified `origin/main` @ `a9055647` (the same commit DP-034/DP-035 confirmed publication behavior at), with DP-035's branch (`fix/daily-picks-conviction-gate-per-horizon-evidence`, PR #72, still OPEN as of this writing) and the conviction-gate backtest tooling branch (`feature/conviction-gate-backtest-v2`, PR #73, still OPEN) merged in as prerequisites, since neither had reached `main` yet.
 
@@ -836,6 +842,350 @@ Option A was chosen. Rationale: DP-034's own original justification for reusing 
 **6. Known limitations / explicitly not done.** Option B (removing the gate for short horizon) was deliberately NOT implemented — see decision rationale above; it remains an explicit follow-up for a human to authorize with full awareness of the "more picks could newly qualify" consequence. Medium/long horizon caveats were NOT touched — they remain in DP-035's "unconfirmed, not enough data yet" state, correctly, since DP-036's backtest could not resolve enough data for either. This entry assumes PR #72 (DP-035) and PR #73 (the backtest tooling) merge before or alongside this branch — both were merged into this feature branch directly since neither had reached `main`; if either PR's content changes before merge, this branch's diff should be re-diffed against the updated `main` prior to that merge. `frontend build` (Next.js production build) was not fully re-verified in this environment for the same pre-existing reason DP-035 documented (missing local Supabase env vars); `tsc --noEmit` (the check that validates this diff's own correctness) passed clean.
 
 **7. Rollback.** Revert the branch's commit(s); the change is a single conditional string-literal split in `daily_picks.py` plus one additive dataclass field in `thresholds.py` — reverting restores DP-035's single shared caveat text for all three horizons, with no other side effects (no migration, no gate-value change to reverse).
+
+## DP-037 — Conviction-accuracy audit: reproducible measurement FOUNDATION, corrected claims, and containment-rationale accuracy fix (2026-08-22)
+
+**Status:** IMPLEMENTATION FOUNDATION IN PLACE — **FULL POPULATION EXTRACTED AND RECONCILED (51 runs / 15,412 rows), CLOSURE RUN ABORTED BY THE MISSINGNESS GUARD** — AWAITING INDEPENDENT REVIEW (draft PR; no merge or deployment authorized). See §17.
+
+> ### ⚠️ THIS ENTRY DOES NOT CLOSE THE AUDIT
+>
+> An earlier revision of this entry was written as a **closure**. It was not one, and the framing has been corrected. The measurement tooling is built, corrected, and **validated end-to-end against live production data and live market prices** — but the **primary full-population closure run has not been completed**, so **no conviction, edge, ranking or published-vs-unpublished conclusion in this entry may be treated as a measured result.** See §15 (Pass 2) for exactly what was corrected and §16 for exactly what remains.
+>
+> Concretely: nothing below is `PROVEN`. Where a claim level is stated it is the level the governed classifier returns, and levels may **only** be strengthened by re-running the pipeline — never edited by hand.
+>
+> **Pass 3 update (§17).** The full population has now been extracted and reconciled (51 runs / 15,412 rows), and the closure run over both markets was attempted — and **aborted by the missingness guard in all four market x measure cells**. No statistical result exists, so nothing here may be quoted as a measured finding. Pass 3 also established that `PROVEN` is now unreachable **by construction**: the audit has no joint two-way clustered inference, and the classifier enforces a `PRELIMINARY` ceiling in code (§17.1).
+
+> ### ⚠️ SUPERSEDED EXTERNAL REPORT — DO NOT USE
+>
+> A conviction-accuracy report was previously published as an external Claude Artifact (not part of this repository). **That report is SUPERSEDED in its entirety by this entry and must not be used, cited, quoted, or forwarded.** It contains claims this audit has since classified FALSE, UNSUPPORTED, or NOT REPRODUCIBLE. It could not be corrected in place from the session that produced this entry — the artifact is a separate publish target with no write access from here — so it must be treated as retracted at the source rather than assumed updated.
+
+**1. What this entry does — and what it does NOT close.** This entry closes **nothing** on its own: it corrects claims and builds reproducible measurement, while the audit itself remains open (see §16). DP-036 recorded a real backtest finding. A subsequent two-part audit (Prompt 1: evidence reconciliation, read-only; Prompt 2: this implementation) found that while DP-036's *direction* held, several surrounding claims were not supportable, one user-facing sample size was mislabelled, and a live containment rationale had become factually false. This entry corrects those claims and — more importantly — makes the measurement **reproducible**, so the next such finding cannot be published without its own reconciling denominator and dependence-aware interval.
+
+**2. Corrected claims.**
+
+| Claim (as previously published) | Corrected level | Correction |
+|---|---|---|
+| "US edge confirmed" | **PRELIMINARY** | Candidate-level BUY vs eligible-non-BUY is directionally positive, but the supporting p-value assumed independence — violated by repeated symbols, session-date clustering, and ~13 uncorrected comparisons with post-hoc subgrouping. Correct label: *PRELIMINARY CANDIDATE-LEVEL US SIGNAL — NOT A PROVEN DAILY PICKS EDGE.* |
+| India "indistinguishable from chance" | **FALSE (framing)** | India BUY was tested against the **eligible non-BUY population**, not against chance. Correct statement: India BUY did not outperform eligible non-BUY at the available sample size. |
+| "13,988 samples" | **FALSE** | A **FETCHED** row count that **pooled short and medium horizons** — never a resolved short-horizon sample. Removed from user-facing copy rather than restated. |
+| "look-ahead bias in the backtest" | **FALSE** | The entry price *precedes* the pick's own pre-market generation (India cron ~20:37 UTC / ~02:07 IST next day; US ~06:00 UTC), so it cannot be look-ahead. It is a **NON-EXECUTABLE PRIOR-SESSION RESEARCH PRICE** — a real but different defect, now addressed by a second, executable measure. |
+| "edge is broad across sectors" | **NOT REPRODUCIBLE** | No sector column exists in `alpha_observations` or any joined table. Sector breadth cannot be computed and must not be claimed. |
+| "edge lives entirely in the binary BUY call" | **UNSUPPORTED** | No computation behind it; ranking lift within BUY had never been measured. |
+| "negative momentum rules out trend chasing" | **UNSUPPORTED** | Exploratory observation presented as causal. |
+| First/second-half win rates 65.3% / 59.9% | **FALSE** | Recalculated ≈65.93% / 58.43%; and the "both halves clear the baseline" conclusion compared **US halves against India's baseline** — an invalid cross-market comparison, now structurally prohibited. |
+| "`alpha_observations` is completely empty" | **FALSE** | The canonical table is populated with real prediction-time evidence (live read-only check, 2026-08-22). |
+
+**3. Analytical contract (new).** `backend/services/alpha_engine/audit_contract.py` is now the single normative statement of what may be computed and claimed: markets **always** separate (no cross-market baselines — the specific error above), horizons **always** separate (never pooled — the specific 13,988 error), eight explicitly-defined populations (ALL_ELIGIBLE, BUY, NON_BUY, BUY_HIGH_CONV, BUY_LOW_CONV, PUBLISHED, UNPUBLISHED_BUY, BUY_RANK_QUANTILE), and **seven** claim levels (PROVEN / PRELIMINARY / NOT_PROVEN / **NOT_IDENTIFIABLE** / UNSUPPORTED / NOT_REPRODUCIBLE / FALSE) each with stated requirements. `NOT_IDENTIFIABLE` was added in Pass 2 (§15.2) and means *no test was run*.
+
+PROVEN would require *all* of: adequate independent clusters, a date-blocked interval excluding zero, a significant dependence-aware p-value, survival of Holm correction, agreement between the naive and dependence-aware methods, and a sign-stable symbol jackknife. **PROVEN is currently unreachable BY CONSTRUCTION** — see §15.4 and §17.1: the audit has no joint two-way clustered inference, so `audit_stats.MAX_CLAIM_LEVEL_WITHOUT_JOINT_INFERENCE` caps every claim at PRELIMINARY and `classify_claim` enforces that cap in code.
+
+**4. Research vs. executable price (the substantive methodological fix).** The audit now reports **two explicitly-labelled, both-gross-of-costs** measures side by side:
+
+- **A. `RESEARCH_PRIOR_CLOSE`** — *"PRIOR-CLOSE-TO-FUTURE-CLOSE RESEARCH RETURN — NON-EXECUTABLE."* The original method, unchanged, retained only for comparability with the superseded analysis. Never investor P&L.
+- **B. `EXECUTABLE_NEXT_OPEN`** — *"NEXT-TRADABLE-OPEN-TO-HORIZON-CLOSE GROSS BENCHMARK RETURN."* Entry is the open of the first regular session **strictly after `run_generated_at`**, resolved against the real NYSE (`XNYS`) and NSE (`XNSE`) exchange calendars — weekends, holidays and DST handled by `pandas-market-calendars` (already a dependency), never by a hardcoded offset. A horizon window that has not fully elapsed is **excluded**, never truncated or extrapolated.
+
+Neither measure models commission, spread, slippage, tax, borrow or market impact. **No cost model is implemented**, so neither may be described as net or as investor P&L.
+
+**5. Missing analyses now implemented.** BUY vs eligible-non-BUY (correctly specified against P3, not "chance"); conviction ≥85 vs <85 **within BUY only**; ranking lift via **within-run** `ranking_alpha` percentiles (raw scores are not comparable across runs) reporting monotonicity rather than a top-vs-bottom cherry-pick; published vs eligible-unpublished BUY (**Pass 1 described this as "matched on the same run/market/horizon"; it was not — no matching was implemented. Pass 2 implements the actual `run_id` + market + horizon match, excludes unmatched runs explicitly with recorded identities and reasons, and estimates each policy era separately — see §15.3**); and concentration/stability reporting (distinct symbols, distinct dates, max single-symbol and single-date share, date-pure first/second-half split against **this market's own** baseline).
+
+**6. Dependence-aware statistics.** `backend/services/alpha_engine/audit_stats.py` adds a **date-blocked bootstrap** (resamples whole session dates, preserving within-date dependence — the dominant structure in this data) supplying a **confidence INTERVAL ONLY and no p-value** (Pass 1 wrongly treated it as this audit's primary inference; §15.4 corrected that, and every p-value now comes from the permutation path instead), a **symbol-clustered jackknife** sensitivity check, **Holm** correction across the pre-registered primary family (exploratory factor/regime/momentum corrected separately and never promoted), and **minimum-detectable-effect** reporting so a null is never mistaken for evidence of no effect — reported as the *independence* MDE only, explicitly labelled an optimistic lower bound, because no cluster-adjusted MDE is available (§17.2). Deterministic given a pinned seed. A **fail-closed floor** (`MIN_CLUSTERS_FOR_INFERENCE = 20`) refuses any significance claim when independent session-date clusters are too few — which is precisely the condition the superseded US analysis was in. No new third-party dependency was added; numpy/scipy/pandas-market-calendars were already present.
+
+**7. Reproducible evidence bundle.** `--audit-out DIR` writes `run_manifest.json`, `row_decisions.jsonl` (one record per fetched observation with identity, decision, and exclusion reason), `aggregate_summary.json`, `statistical_results.json`, and `data_integrity_results.json` to a caller-supplied directory that **must be outside the repository** (enforced — the writer raises otherwise). Row counts must satisfy `fetched == included + excluded` at every stage; a mismatch raises `ReconciliationError` and exits non-zero rather than reporting an unaccounted denominator. **No new table and no migration** — file-based output only.
+
+**8. Live read-only data-integrity evidence (2026-08-22, project `doxdexwjeonzigfewfva`).** `alpha_observations` = 45,296 rows across 2 markets; `factor_ic_history` = **0 rows** (confirmed still unpopulated); **no realized-return/outcome column exists** (confirmed by full column inspection — outcomes are computed live at analysis time); `reference_price` is **100% non-null and positive** (so the existing backtest's non-use of it is a design choice, not a data gap); **0** duplicate canonical keys on `(run_id, market, horizon, symbol)`; **0** market-label routing violations (no `.NS`/`.BO` symbol labelled `US`); **0** technical z-scores outside ±10; single `feature_schema_version` and `regime_schema_version`. `alpha_observations` is confirmed **not read by any ranking code path** — the only reader is a coverage count in `api/routers/picks.py`.
+
+*Publication-policy eras (corrected in Pass 2 — see §15.3).* The conviction gate and the publication cap became effective on **different dates**, and the gate date **differs between the two markets**. An earlier revision of this entry described a single "discontinuity at 2026-08-17" with the gate arriving "from 2026-08-13"; that conflated three distinct boundaries. Re-verified per market against live short-horizon rows on 2026-08-22 (query and per-run results in the evidence bundle's `data_integrity_results.json` under `publication_gate_and_cap_by_policy_era`):
+
+| Market | `legacy` (no effective gate, cap 6) | `gate_only` (≥85 enforced, cap still 6) | `gate_plus_cap` (≥85 **and** ≤3) |
+|---|---|---|---|
+| **US** | through 2026-08-07 | **from 2026-08-10** | **from 2026-08-17** |
+| **IN** | through 2026-08-12 | **from 2026-08-13** | **from 2026-08-17** |
+
+Evidence for the gate dates: the last US run publishing a row below 85 is 2026-08-07 (`min(confidence)` 81); every US run from 2026-08-10 is compliant. The last IN run publishing below 85 is 2026-08-12 (`min(confidence)` 83); every IN run from 2026-08-13 is compliant. Evidence for the cap: published-per-run is 6 through 2026-08-14 in both markets and ≤3 from 2026-08-17 in both.
+
+These are **observed-compliance** boundaries derived from the rows themselves, not deployment timestamps read from a changelog — stated that way deliberately, because that is what the data can support. They are encoded in `audit_contract.POLICY_ERA_BOUNDARIES` and are **never pooled**: apparent "violations" in raw totals are entirely pre-policy historical rows, not integrity defects.
+
+*Consequence for analysis.* Any published-vs-unpublished comparison must be restricted to a **single** era **and** matched on `run_id`. Both current eras are additionally starved by the horizon window: a short-horizon (5-session) window entered on run session date *D* exits at *D+5*, so with a 2026-08-22 cutoff **no run on or after 2026-08-17 can resolve at all**. The `gate_plus_cap` era therefore contributes **zero resolvable rows**, and `gate_only` contributes at most 5 US / 2 IN runs — below the 8-run floor. Both are correctly classified **`NOT_IDENTIFIABLE`**, which asserts *no test was run* — explicitly **not** `NOT_PROVEN` (which would falsely imply a real test returned null) and **not** `PRELIMINARY` (which would falsely imply suggestive evidence).
+
+**9. Containment rationale correction.** `backend/services/alpha_engine/containment.py`'s `_CONTAINMENT_REASON` is served live to users via `/api/picks/status`. It claimed the canonical tables were "completely empty" — true when written, silently **false** once `alpha_observations` began accumulating rows. Replaced with **timeless** wording (deliberately citing **no row count**, so it cannot go stale the same way) stating that the table records prediction-time evidence only, is **not a production learning feedback loop**, is read by no ranking path, persists no realized outcome, that production ranking still uses **fixed academic priors**, and that `factor_ic_history` remains unpopulated. **This is a wording correction only — it does not enable learning, change ranking, or alter the containment flag.** `LEARNING_DATASET_VERSION` is unchanged.
+
+**10. Implementation — files changed.**
+- `backend/services/alpha_engine/audit_contract.py` (new) — the analytical contract, claim levels, populations, superseded-claim ledger, reconciliation assertion.
+- `backend/services/alpha_engine/audit_calendar.py` (new) — NYSE/NSE first-tradable-open and session-offset logic.
+- `backend/services/alpha_engine/audit_stats.py` (new) — date-blocked bootstrap **interval** (no p-value), **dual one-way stratified permutation sensitivity** inference and its enforced claim ceiling, per-dimension ICC/design-effect diagnostics, an **explicitly-unavailable** cluster-adjusted MDE, jackknife, identifiability assessment, Holm, fail-closed cluster floor.
+- `backend/services/alpha_engine/audit_prices.py` (**new in Pass 2**) — the batched, retrying, pinned-parameter price panel; the immutable checksummed snapshot both measures share; the missingness report and its abort thresholds.
+- `backend/tests/unit/test_conviction_audit_corrections.py` (**new in Pass 2**, 77 tests) — one per independent-review finding (§15).
+- `backend/scripts/conviction_gate_backtest.py` (extended, not rewritten) — measure A relabelled non-executable, measure B added, populations, within-run rank percentiles, the four missing analyses, concentration reporting, `--audit-out` bundle writer, `--seed`.
+- `backend/services/alpha_engine/containment.py` — stale rationale corrected (§9).
+- `backend/services/daily_picks.py` — mislabelled "13,988 samples" removed from user-facing `conviction_semantic` copy; DP-036 comment corrected. **Finding direction unchanged.**
+- `backend/services/thresholds.py` — DP-037 correction note; the mislabelled count removed. **No threshold or cap changed.**
+- `frontend/src/app/picks/page.tsx` — **comment only**, removing the stale figure. No behavioral change; the page already renders the backend's string.
+- `frontend/src/app/picks/__tests__/wording.test.ts` — assertion inverted (see §11).
+
+**11. Tests.** `backend/tests/unit/test_conviction_audit.py` (new, 34 tests) and `backend/tests/unit/test_containment_rationale_accuracy.py` (new, 10 tests) cover: first-tradable-open across weekends/holidays/DST for **both** markets; strictly-after-generation entry; complete-vs-partial windows; both measures' labelling (non-executable, gross-of-costs); populations (high-confidence SELL never enters BUY_HIGH_CONV; published/unpublished disjoint; non-finite confidence not treated as high conviction); within-run vs cross-run percentile construction; exact denominator reconciliation **raising** on a gap; NaN/±Infinity handling; bootstrap determinism under seed; fail-closed behaviour at 13 clusters; method-disagreement capping a claim below PROVEN; Holm correction and its skipping of non-inferable comparisons; the bundle writer **refusing to write inside the repository**; India/US calendar isolation; and the containment rationale's corrected wording, timelessness, unchanged flag default, and unchanged fixed-prior source. Every test is offline — **no test queries production, calls a live provider, hardcodes a live row count, or writes anything**.
+
+Two pre-existing assertions required inversion because they pinned the now-removed mislabelled figure: `test_daily_picks_short_horizon_conviction_backtest_caveat.py` and `frontend/src/app/picks/__tests__/wording.test.ts` previously asserted the copy **contained** "13,988"; they now assert it **does not**. *(This is the one frontend file touched despite frontend being out of scope for this workstream — leaving it would have left CI red against a deliberately corrected backend string. It is a test assertion, not product behavior.)*
+
+**12. Explicit non-changes — verified intact.** Daily Picks universe size; candidate count; BUY/HOLD/SELL logic; ranking logic and weights; the **85.0** conviction threshold; the **max-3-published-per-horizon** cap; learning flags; regime logic; scheduled workflows and cron; market hours; provider routing; India/US separation; Paper Trading; production database rows; Railway/Vercel config; database schema and migrations (**no migration was created** — the audit is file-based by design).
+
+**13. Known limitations.**
+- **The primary full-population closure run has NOT been completed.** Pass 2 established that it *can* be: the pipeline was executed end-to-end against **live production rows and live market prices** (§15.7), producing a checksummed bundle with 11/11 integrity checks passing and 40/40 aggregates reconstructed from the row file. That validation run covered **3 of 51** short-horizon runs (824 of 15,412 rows), so it validates the **pipeline**, not the population. **No conclusion in this entry is a measured full-population result.**
+- Both measures remain **gross of transaction costs**; a costed portfolio-vs-benchmark comparison is still not implemented. **Transaction costs and tax-aware P&L are EXPLICITLY DEFERRED to future work and were deliberately not implemented in this pass.**
+- Published-vs-unpublished is **`NOT_IDENTIFIABLE`** in both post-legacy policy eras — structurally, not merely at present sample size: the short-horizon window cannot resolve any run on or after 2026-08-17 at a 2026-08-22 cutoff (§8).
+- **Permanently NOT REPRODUCIBLE** (row-level intermediates lost; deliberately not re-manufactured): (a) the 331-row gap in a prior US-short bucketing pass; (b) the final 1-row identity inside a 1,358-vs-1,351 reconciliation — 8 of those rows *were* positively identified (all PANW, by symbol + `reference_session_date` + `run_generated_at`), but the last row's identity is unrecoverable.
+- ~~A pre-existing, unrelated collection error (`httpx2` missing locally)…~~ **RETRACTED in Pass 2 — this was never a code defect.** `httpx2` is a real, resolvable package (`backend/requirements-dev.txt` line 4, `httpx2>=2.0.0`) and is installed in the provisioned `backend/venv` at 2.5.0. In a correctly-provisioned environment the suite collects **6,851 tests with zero collection errors**. The earlier report of "80 failures and 50 collection errors" was an artifact of running pytest in an under-provisioned interpreter (the repo-root `venv/` has no `pytest` installed at all). Pass 1's claim that those failures were "byte-identical to the origin/main baseline" was therefore asserted **without a retained baseline**; Pass 2 replaces it with two saved, diffable run logs (§15.8). A second trap worth recording: taking a baseline via `git archive` produces a tree with **no `.git`**, which makes 50 `test_instrument_master_safety.py` path-guard tests fail with `could not locate this script's own repository root` — a pure environment artifact that disappears after `git init`.
+
+**14. Rollback.** Revert the branch's commits. The four new modules (`audit_contract`, `audit_calendar`, `audit_stats`, `audit_prices`) are additive and imported only by the manual audit path; the containment change is a docstring/constant edit; the copy change is a string literal. No migration, no threshold, and no gate value to reverse. Nothing in this workstream is wired into any scheduled job, API response path other than the corrected caveat string, or learning flag.
+
+---
+
+**15. PASS 2 (2026-08-22) — independent-review corrections.** An independent review of the Pass 1 implementation found that several of its *methods* did not do what their names and documentation claimed. Each finding and its correction:
+
+**15.1 Claim classification was not enforcing its own contract.** `PROVEN` was reachable without the symbol-jackknife sign-stability check, which was computed *after* classification and used only as a report footnote. The jackknife is now computed **inside** `audit_stats.analyse_comparison` and passed **into** `classify_claim` as a hard precondition: a sign-unstable estimate — one that flips direction when any single ticker is deleted — **can never be `PROVEN`**, regardless of its p-value. Pinned by `test_sign_unstable_jackknife_can_never_be_proven` and by a guard test asserting an otherwise-identical result *is* `PROVEN`, so the veto test cannot pass for the wrong reason.
+
+**15.2 `PRELIMINARY` was a dumping ground.** Anything that could not be tested — too few clusters, an empty comparison group, an immature policy era — silently became `PRELIMINARY`, which asserts *directionally suggestive evidence*. A new claim level **`NOT_IDENTIFIABLE`** now carries those cases and is excluded from `EVIDENTIAL_LEVELS`. It means **no test was run and nothing may be claimed, not even a direction** — distinct from `NOT_PROVEN`, which asserts a real, adequately-powered test returned null. `PRELIMINARY` now additionally requires a sign-stable jackknife.
+
+**15.3 Published-vs-unpublished was described as matched but was not.** Pass 1 compared the two populations globally. Pass 2 implements the actual match on `run_id` + market + horizon — a published row is only ever compared against unpublished BUY rows **from the same run**, because those are the candidates the selector actually chose between. A run contributes only if it has ≥1 **resolved** row in *both* groups; every other run is excluded with its identity, market, era, session date, per-group counts and an explicit reason recorded, and `matched + excluded == total` is asserted. Eras are estimated separately and there is **deliberately no pooled headline** (`headline: null`).
+
+**15.4 The p-value was not dependence-aware, and the MDE was not cluster-adjusted.** Pass 1's "date-blocked bootstrap" p-value was a percentile tail proportion presented as null-based inference, and its "cluster-adjusted" MDE was the plain independence formula. Pass 2 replaced both. **Pass 3 (§17) then found that Pass 2's replacements were themselves mislabelled**, and the corrected description is:
+
+- **Inference** is a **dual one-way stratified permutation sensitivity check** (`dual_one_way_stratified_permutation_sensitivity`). Group labels are permuted *within* session-date strata (holding each day's common market shock fixed) and, in a **separate** test, *within* symbol strata (holding each ticker's own behaviour fixed); the reported figure is the **maximum** of the two one-way p-values. Pass 2 named it as though it were joint two-way clustered inference and described its output as a joint clustered p-value. **It is neither: it is NOT joint two-way inference** — see §17.1. The date-blocked bootstrap is retained but supplies an **interval only** and explicitly sets no p-value. Where a dimension is untestable (e.g. group membership perfectly confounded with symbol), the combined figure is `None` rather than quietly falling back to the testable dimension.
+- **Power.** An ANOVA intracluster correlation and one-way design effect `DEFF = 1 + (m̄−1)·ICC` is computed **per dimension** and reported as a descriptive diagnostic. Pass 2 took the **larger** of the date/symbol design effects and called the resulting number a cluster-adjusted MDE; **that was not a valid two-way adjustment** and it has been withdrawn — see §17.2. No cluster-adjusted MDE is reported at all: the field carries an explicit **UNAVAILABLE** status, and only the *independence* MDE is quoted, labelled as the optimistic lower bound it is. ICC remains clamped at 0 so noise cannot deflate the reported clustering evidence.
+
+**15.5 Ranking lift rested on tie-broken-by-list-order percentiles and on monotonicity alone.** Tie handling is now **average ranks** — tied `ranking_alpha` values receive an identical, order-independent percentile — and `rank_percentile`, `rank_quantile`, `rank_tie_handling` and `rank_tied_with` are recorded on every applicable row. Quartile monotonicity is now labelled **descriptive only** and no longer sets the claim level; a **dual one-way permutation trend sensitivity test** (`dual_one_way_trend_sensitivity`) on the point-biserial correlation between rank percentile and winning does, and it consumes Holm family budget like every other primary comparison. It carries the same claim ceiling as every other comparison (§17.1): ranking lift can never be classified PROVEN on this statistic.
+
+*Ranking direction is now proven, not assumed.* Production selects picks with `sorted(…, key=ranking_alpha, reverse=True)` (`daily_picks.py`), so **higher `ranking_alpha` = better rank**. Verified against live production short-horizon published rows: `corr(pick_rank, ranking_alpha)` = **−0.63 (IN)** and **−0.65 (US)**; **110/132 (IN)** and **124/126 (US)** published rows match the tie-aware **descending** order, versus **8** and **6** matching ascending. The percentile orientation follows this verified direction.
+
+**15.6 Price acquisition did not scale and was not reproducible.** Pass 1 made one provider call **per observation** — ~15,000 calls for ~900 distinct tickers — and each return measure fetched independently, so the two measures could observe *different* prices for the same symbol and date, with nothing retained afterwards. New module `backend/services/alpha_engine/audit_prices.py` fetches **one panel, once, per unique symbol**, in controlled batches with retries and rate-limit backoff, under **explicitly pinned** provider parameters (`auto_adjust=False`, `actions=False`, `repair=False`, `threads=False`, `interval="1d"`) rather than library defaults that change between releases. Both measures read the **same frozen snapshot**, which is saved **outside the repository** and checksummed. Requests are provably a function of unique symbols and batch size, never observation count — asserted by test and confirmed live: **332 unique symbols → 7 provider requests**.
+
+*Missingness is now a guarded quantity, not a footnote.* Unresolved-price rates are broken out by market, horizon, date and comparison group, with two abort thresholds: an overall level (35%) and — the one that matters — a **between-group differential** (10 pp). Perfect arithmetic reconciliation does **not** rule out selection bias; groups going missing at materially different rates is selection between the very populations being compared, and it aborts the run even when the overall level looks comfortable.
+
+**15.7 The audit had never actually run against live data.** Pass 2 executed the corrected pipeline **end-to-end against live production rows and live market prices**, read-only:
+
+- Population read live from production Postgres (`alpha_observations`, project `doxdexwjeonzigfewfva`) over the read-only SQL endpoint, frozen to a per-run **MD5-checksummed** extract that the loader **refuses to audit** on any mismatch or row-count disagreement.
+- Prices fetched live (332 unique IN symbols, 7 batched requests, **0 provider failures**), frozen to a checksummed snapshot outside the repository.
+- Result: **824/824 rows resolved on both measures**, waterfalls reconciling exactly, **11/11 data-integrity checks executed and passed**, **40/40 aggregates independently reconstructed from `row_decisions.jsonl`**, and every comparison correctly returning `NOT_IDENTIFIABLE` at 2 date clusters — the fail-closed floor behaving exactly as designed on real data.
+
+**This validates the pipeline, not the population.** It covered **3 of 51** short-horizon runs. The remaining extraction is mechanical and resumable (verified fragments accumulate in the evidence bundle's `extract/` directory; the assembler re-verifies every checksum and records `is_full_population`).
+
+**15.8 Test and baseline evidence is now retained rather than asserted.** Two saved, diffable full-suite logs replace Pass 1's unretained "byte-identical to baseline" claim:
+
+| Run | Result |
+|---|---|
+| `origin/main` (8560f596) baseline | **6,360 passed, 366 skipped, 0 failed** |
+| this branch | **6,485 passed, 366 skipped, 0 failed** |
+
+**+125 tests, zero failures, zero regressions.** 77 of the new tests are `backend/tests/unit/test_conviction_audit_corrections.py`, one per correction above. Frontend: **855/855 across 70 files**, `tsc --noEmit` clean.
+
+**16. What remains before this entry may be called a closure.**
+1. Extract the remaining 48 of 51 short-horizon runs (IN and US) to complete the full population.
+2. Re-run the CLI over both markets in **one** invocation so the Holm family spans the complete pre-registered set.
+3. Confirm the missingness guard passes on the full population, and that reconstruction still rebuilds every aggregate.
+4. Update the user-facing `conviction_semantic` string **only** to the level the governed classifier actually returns — never by hand.
+5. Only then may this entry's framing change from *foundation* to *closure*, and only for the specific cells that resolved.
+
+**Until all five are done: no US edge, no India non-edge, no conviction non-lift, and no ranking-behaviour conclusion may be described as proven.**
+
+---
+
+**17. PASS 3 (2026-08-22) — method-honesty corrections, the completed full-population extract, and the missingness breach that BLOCKS closure.** A second independent review found that several of Pass 2's *corrections* were themselves mislabelled. Pass 3 fixes those, completes the extraction Pass 2 left at 3 of 51 runs, and attempts the closure run. **The closure run did not complete: the missingness guard aborted it, correctly.** §17.6 is the substantive result of this pass.
+
+**17.1 "Two-way cluster permutation" was not two-way clustered inference.** `two_way_cluster_permutation` ran two SEPARATE one-way stratified permutation tests — one conditioning on session date, one on symbol — and reported the maximum of the two p-values. Pass 2 documented the maximum as conservative-though-inexact. Both the name and that justification were wrong:
+
+- Each component test holds ONE dimension fixed and **ignores the other**. The date-stratified test still treats the many rows one ticker contributes across many dates as independent; the symbol-stratified test still treats a whole session's co-moving rows as independent. Taking the larger of the two corrects neither.
+- Max-of-two is **not provably conservative**. Under cross-classified dependence the correct variance can exceed BOTH one-way variances, so the true joint p-value can be **larger** than the maximum of the two one-way p-values. Describing it as conservative was an assumption presented as a property.
+
+Two remedies were available: implement genuine multiway inference (multiway cluster-robust variance, or a wild cluster bootstrap over the date × symbol structure), or name the method for what it is and cap what it may claim. **The second was taken**, because shipping an unvalidated multiway method would repeat the original defect in a new place.
+
+- The function is now `dual_one_way_stratified_permutation_sensitivity`, its result key is `p_dual_one_way_max`, and its own docstring and returned `method` string state that it is **NOT joint two-way clustered inference**. The ranking-lift analogue is `dual_one_way_trend_sensitivity`. The misleading names and the `p_two_way` key are **removed**, not deprecated.
+- The result carries `joint_two_way_inference: False` and `max_claim_level: PRELIMINARY`, and `audit_stats.MAX_CLAIM_LEVEL_WITHOUT_JOINT_INFERENCE` is applied **inside `classify_claim`**. **`PROVEN` is therefore unreachable by construction** for every comparison and for ranking lift, whatever the p-value — a ceiling in code, not a caveat in prose. Pinned by `test_the_method_ceiling_caps_an_otherwise_proven_result_at_preliminary` and by `test_the_real_pipeline_never_reports_joint_two_way_inference`, which asserts the flag against the real `analyse_comparison` path rather than a hand-built result.
+
+**17.2 The "cluster-adjusted MDE" was a one-way design effect wearing a two-way label.** Pass 2 computed a one-way ANOVA design effect `DEFF = 1 + (m̄−1)·ICC` for each of the date and symbol dimensions, took the **larger**, substituted `n/DEFF`, and called the result a cluster-adjusted MDE. `DEFF` in that form is derived for a **one-way nested** design; these rows are **cross-classified** (a row belongs to a date and to a symbol, and the symbol groups cut across the date groups), so neither one-way `DEFF` describes the design — and the maximum of two one-way design effects is **not** an upper bound on cross-classified variance inflation, so the figure could **understate** the detection floor, the opposite of the safety its label implied.
+
+No validated multiway power approximation exists in this codebase, so **none is invented**. `cluster_adjusted_mde` is replaced by `mde_report`, which returns `mde_cluster_adjusted_pp: None` with the explicit status `UNAVAILABLE_NO_MULTIWAY_POWER_APPROXIMATION`, reports only the **independence** MDE labelled *"OPTIMISTIC LOWER BOUND — assumes independent observations, which is false here"*, and keeps the two one-way design effects **separately**, labelled DESCRIPTIVE ONLY, as evidence that clustering is present rather than as a power adjustment. The legacy field `minimum_detectable_effect_pp` now reads `None`, so an old consumer gets "unavailable" and can never accidentally quote the optimistic figure as if it were cluster-aware.
+
+**17.3 `--bootstrap-draws` was parsed, recorded, and never used.** The CLI accepted `--bootstrap-draws`, `build_manifest` wrote it into `run_manifest.json`, and `run_full_audit` then called `build_audit` **without it** — so every run used the 10,000 default regardless, and the manifest documented a draw count the audit had not performed. The value is now threaded CLI → `run_full_audit` → `build_audit` → `compare_populations` / `published_vs_unpublished` → `analyse_comparison` → `date_block_bootstrap`. Both the bootstrap and the permutation record the count **at the point of use** (`bootstrap_draws_executed`, `permutation_draws_executed`), and `verify_draws_propagated` reconciles those against the declared values before the manifest is written, **raising** rather than emitting a manifest that misreports them. Pinned end-to-end by `test_bootstrap_draws_actually_reach_the_bootstrap_implementation` (a non-default count of 137) and fail-closed by `test_the_run_fails_rather_than_misreport_the_draw_count`.
+
+**17.4 Additive bundles kept old cells but overwrote run-level provenance.** `write_audit_bundle` merged per-cell aggregates and row decisions across invocations while **overwriting** the manifest, the data-integrity results, the reconstruction verification, the price-snapshot identity and the Holm family correction with only the latest invocation's data. A bundle assembled that way reports a multiple-testing correction covering a strict **subset** of the tests it contains, which understates the family size and overstates significance. Merging is **removed**: one bundle == one invocation. A target directory containing any bundle artefact now raises `BundleDirectoryNotEmpty` **before anything is written**, and the manifest records `single_invocation_bundle: true` with the contract stated in `bundle_contract`. Pinned by `test_a_second_invocation_into_the_same_bundle_is_refused` (which also asserts the existing bundle is left byte-identical), `test_a_fresh_directory_is_accepted_and_declares_the_contract`, and `test_both_markets_are_processed_in_one_invocation`.
+
+**17.5 The full population was extracted, verified, and reconciled.** Pass 2 stopped at 3 of 51 runs. The remaining 48 were extracted read-only, aggregating **server-side** to one checksummed packed record per `(run_id, market)` rather than one request per row — the approach that stalled the previous pass. Three requests returned all 48 runs.
+
+| Quantity | Extract | Fresh read-only DB count | Match |
+|---|---|---|---|
+| Short-horizon runs | **51** | 51 | ✅ |
+| Rows | **15,412** | 15,412 | ✅ |
+| India runs / rows | **27 / 8,066** | 27 / 8,066 | ✅ |
+| US runs / rows | **24 / 7,346** | 24 / 7,346 | ✅ |
+| Duplicate `(run_id, symbol)` groups | 0 | 0 | ✅ |
+| Runs with non-constant run headers | 0 | 0 | ✅ |
+| Rows generated at or after the cutoff | 0 | 0 | ✅ |
+
+Cutoff `2026-08-22T00:00:00+00:00`, applied identically to the extraction, the schema-distribution query and every integrity query. Because the live table holds **zero** rows at or after that cutoff, the population is **frozen** and cannot drift as the table grows — so the totals above are a recorded fact about this cutoff, not a hardcoded expectation. Every run's MD5 was verified **on receipt** and again at assembly; the three fragments carried over from Pass 2 were re-verified against a freshly recomputed **server-side** MD5 and matched exactly, which is also what proves the extraction formula was reproduced faithfully. Assembled extract SHA-256: `0ccca37a410cbc429f2fcb6980d0db433a53a1284f1e82c2a8a72075a9677d0a`. The difference from Pass 2's partial baseline (3 runs / 824 rows) is simply the 48 runs and 14,588 rows it never fetched; the cutoff population itself is unchanged.
+
+**Pass 2's 824-row result (India short only; +3.88 pp research vs −3.24 pp executable) remains PIPELINE-VALIDATION evidence only. It is superseded, it is not pooled with anything here, and it may not be quoted as a finding.**
+
+**17.6 THE CLOSURE RUN WAS ABORTED BY THE MISSINGNESS GUARD — this is the pass's substantive result.** India and the US were run together in ONE invocation over the full 15,412-row population, from an empty directory, at full configured draw counts (bootstrap 10,000, permutation 2,000), against one shared live price panel (883 unique symbols, 19 batched requests, **0 retries, 0 provider failures, 883/883 symbols returned**). The run reached the guard and **aborted**:
+
+| Cell | Unresolved rate | Between-group differential (limit 0.10) | Guard |
+|---|---|---|---|
+| IN / RESEARCH_PRIOR_CLOSE | 17.3% | **0.139** | ❌ |
+| IN / EXECUTABLE_NEXT_OPEN | 21.4% | **0.442** | ❌ |
+| US / RESEARCH_PRIOR_CLOSE | 12.9% | **0.198** | ❌ |
+| US / EXECUTABLE_NEXT_OPEN | 21.7% | **0.192** | ❌ |
+
+All four cells breach. The guard is behaving exactly as designed: the comparison groups do **not** go unresolved at the same rate, and that is selection between the very populations being compared, not noise. **No statistical result was produced, and none may be quoted.**
+
+*Diagnosis (read-only, over the same frozen extract and the same frozen price snapshot).* The dominant exclusion reason is `horizon_window_not_yet_complete` — 940 to 1,613 rows per cell — dwarfing genuine price gaps (5 to 119 rows). The mechanism is structural, and it is the policy-era timeline again: a short-horizon window entered on session date *D* exits at *D+5*, so the most recent runs cannot resolve at a 2026-08-22 cutoff — and those recent runs are precisely the ones under the ≥85 gate and the ≤3 cap. `BUY_HIGH_CONV` and `PUBLISHED` rows are therefore concentrated in the unresolvable tail, while `NON_BUY` rows span the whole history.
+
+Restricting to rows whose window **has** fully elapsed was probed as a candidate remedy:
+
+| Cell | Mature rows | Differential | Guard | Date clusters |
+|---|---|---|---|---|
+| US / RESEARCH_PRIOR_CLOSE | 6,406 | 0.0009 | ✅ | 20 |
+| US / EXECUTABLE_NEXT_OPEN | 5,755 | 0.0013 | ✅ | 18 |
+| IN / RESEARCH_PRIOR_CLOSE | 6,787 | **0.135** | ❌ | 23 |
+| IN / EXECUTABLE_NEXT_OPEN | 6,453 | **0.274** | ❌ | 21 |
+
+So immature windows explain the **US** breach entirely, but **not India's**: even among mature windows, India's `BUY_HIGH_CONV` group is both tiny (41 and 28 rows) and disproportionately affected by NSE price gaps (14.6% and 28.6% unresolved against 1.2% for `NON_BUY`). Several cells also fall at or below `MIN_CLUSTERS_FOR_INFERENCE = 20` date clusters once immature windows are dropped, so parts of the family would return `NOT_IDENTIFIABLE` regardless.
+
+**A mature-window population was NOT adopted in this pass.** It is a different estimand and would have to be pre-registered as one, not selected after seeing that it clears a guard the pre-registered population failed — which is the exact post-hoc-subgrouping error DP-037 exists to prevent. It is recorded here as the evidenced candidate for the next pass, together with the separate India price-coverage problem it does not solve.
+
+**17.7 User-facing copy is UNCHANGED, deliberately.** The governed classifier produced no result, so there is nothing to promote. The short-horizon `conviction_semantic` string keeps its current cautious re-audit wording. Per the contract it may only ever be changed to the level `classify_claim` actually returns — and the ceiling in §17.1 means that level can now never be `PROVEN`. `NOT_IDENTIFIABLE` must never be rendered as "no effect", and `NOT_PROVEN` must never be rendered as "does not work".
+
+**17.8 What must still happen before closure.** Items 1–2 of §16 are now **done**; items 3–5 are not, and one new item is added:
+
+1. ~~Extract the remaining 48 of 51 short-horizon runs.~~ **DONE (§17.5).**
+2. ~~Re-run the CLI over both markets in one invocation.~~ **DONE — and it aborted (§17.6).**
+3. **BLOCKED.** The missingness guard does not pass on the full population, in any of the four cells.
+4. **BLOCKED** behind 3 — no classifier output exists, so the user-facing string cannot be updated.
+5. **BLOCKED** behind 3 — this entry remains a *foundation*, not a closure.
+6. **NEW.** Decide, and pre-register, how the immature-window tail is handled, and separately address India's `BUY_HIGH_CONV` price-coverage gap. Neither may be chosen by trying options until the guard passes. → **§18: the maturity rule is now PRE-REGISTERED, and India's gap is DIAGNOSED (it is not what §17.6 assumed).**
+
+**Until item 3 clears: no US edge, no India non-edge, no conviction non-lift, and no ranking-behaviour conclusion may be described as measured, proven, or absent.**
+
+---
+
+## §18 — Pass 4: the maturity contract is pre-registered, India's price gap is diagnosed, and readiness becomes a command (2026-08-22)
+
+**Status: STILL NOT CLOSED. No statistical result was computed in this pass, and none may be quoted from it.** This pass is governance and tooling. It deliberately ran no outcome analysis at all.
+
+### 18.1 Why the full table will ALWAYS contain an immature tail
+
+A short-horizon window entered on session *D* exits at *D+5*. Every run generated within the last five sessions is therefore *necessarily* unresolvable, on every future run of the audit, forever. That tail is not a data-quality defect and it never shrinks: as new runs arrive, new immature rows arrive with them.
+
+§17.6 applied the price-missingness guard to the **whole** table, immature tail included. That guard could never have passed — not on 2026-08-22, and not on any date. It was measuring the calendar, not the data. Its 0.139 / 0.442 / 0.198 / 0.192 differentials are dominated by `horizon_window_not_yet_complete`, and the reason the differential is so large is mechanical: the ≥85 gate and the ≤3 cap are *recent* policies, so `BUY_HIGH_CONV` and `PUBLISHED` rows concentrate in exactly the recent runs that cannot have matured yet, while `NON_BUY` rows span the entire history.
+
+### 18.2 The pre-registered estimand
+
+`audit_contract` §7 now defines the primary statistical population as:
+
+> **all otherwise-eligible observations whose complete horizon exit session had FINISHED before the fixed audit price-data cutoff.**
+
+Maturity is computed by `audit_contract.horizon_maturity()` from exactly six inputs — market, `run_generated_at`, the executable entry session, the fixed horizon trading-session count, the exchange calendar, and the fixed cutoff — and from nothing else. It cannot read a signal, a conviction, a publication flag, a realized return, a price, a provider response, an observed missingness rate, or whether including a row would help a result. **That is enforced by the function's signature, not by its docstring**: there is no parameter through which any of those could arrive, so a future change that wanted one would have to widen the signature in a visible diff.
+
+**This is a PRE-registration, and the timing is the entire point.** It is being recorded *before* the next current-policy outcome set matures — i.e. before anyone can know which way the rule moves any result. §17.6 probed this exact restriction *after* seeing the guard fail, found it cleared US but not India, and correctly refused to adopt it on those terms. Registering it now, in code, under test, with no result in hand, is what converts the same rule from a post-hoc rescue into a method.
+
+Supporting guarantees, each pinned by a test in `backend/tests/unit/test_conviction_audit_maturity.py`:
+
+| Guarantee | How it is enforced |
+|---|---|
+| Outcomes cannot change eligibility | `horizon_maturity` has no outcome parameter (signature test) + behavioural test |
+| Signal / conviction / publication cannot change eligibility | Parametrised over BUY/HOLD/SELL × conviction × published — identical verdict and identical exit session |
+| Extending the cutoff only moves rows immature → mature | Monotonicity walked over 45 real calendar days |
+| The exit session uses the right exchange calendar | Asserted to be a real session on that market's own calendar, exactly *N* sessions from entry |
+| Immature rows are dropped BEFORE any outcome or provider lookup | A spy snapshot records **zero** price questions for an immature row |
+| The population cannot be re-selected until the guard passes | `run_full_audit` may only *raise* on a breach; no `except MissingnessAbort`, no retry/fallback/widen path |
+| The maturity boundary is not a CLI knob | The cutoff is a frozen module constant; `--today` is **refused** in audit mode |
+
+### 18.3 Two-stage denominator waterfall
+
+Stage A (administrative eligibility) and Stage B (price resolution, **over mature rows only**) are now separate, each reconciling exactly:
+
+```
+STAGE A   fetched = horizon_mature_at_cutoff + administratively_immature + other_contract_exclusions
+STAGE B   mature  = price_resolved + genuine_price_missingness + non_finite_or_invalid_price
+```
+
+`horizon_window_not_yet_complete` is retired as a missingness reason. Immaturity carries its own code, `administratively_immature`, it is settled in Stage A, and it **can never enter the missingness percentage**. The missingness guard now runs over the pre-registered mature cohort only — while the immature tail is still reported in full, broken down by market, run date, signal, conviction group and publication group, so the claim "it is only immaturity" is checkable rather than trusted.
+
+One new reason code exists so nothing is silently reclassified: when the exchange calendar says a window is complete but the provider's own session list walks the entry past the cutoff, that is `provider_calendar_disagrees_with_exchange_calendar` — a **provider** defect, counted in Stage B, never returned to immaturity.
+
+### 18.4 The four states, which are not interchangeable
+
+| State | Meaning | Does waiting fix it? |
+|---|---|---|
+| **IMMATURE** | The horizon window has not finished at the cutoff. The outcome **does not exist yet**. Nothing is missing. | **Yes**, on a date computable in advance. |
+| **PRICE_UNRESOLVED** | The window HAS finished — the price exists in the world — and the provider did not supply it. | **No.** Only better sourcing fixes it. |
+| **NOT_IDENTIFIABLE** | The comparison cannot be estimated from this data at all (too few clusters, an empty group, an immature era). **No test was run.** | Only by more data, and only for the count-based causes. |
+| **NOT_PROVEN** | A real, adequately-powered test WAS run and did not support the claim. | Not applicable — this is a result. |
+
+`NOT_IDENTIFIABLE` must never be rendered as "no effect", and `NOT_PROVEN` must never be rendered as "does not work". An IMMATURE row is neither: it is an appointment, not evidence.
+
+### 18.5 India's genuine price gaps — diagnosed, and NOT what §17.6 assumed
+
+Row-level report over **mature rows only**, from the frozen 2026-08-22 extract and the same frozen price panel (read-only; nothing re-extracted, nothing re-fetched), via the new `--coverage-report` command:
+
+| Cell | Mature rows | Mature unresolved | Distinct symbols | Reason |
+|---|---|---|---|---|
+| IN / RESEARCH_PRIOR_CLOSE | 6,787 | 119 (1.75%) | 118 | `exit_close_missing` ×119 |
+| IN / EXECUTABLE_NEXT_OPEN | 6,453 | 114 (1.77%) | 114 | `exit_close_missing` ×114 |
+| US / RESEARCH_PRIOR_CLOSE | 6,406 | 5 (0.08%) | 1 | `exit_close_missing` ×5 |
+| US / EXECUTABLE_NEXT_OPEN | 5,755 | 6 (0.10%) | 2 | `entry_open_missing` ×4, `exit_close_missing` ×2 |
+
+**Verified reason codes.**
+
+- **`IN_PROVIDER_LAST_SESSION_LAG` — 119 of 119 and 114 of 114 India failures.** Every single failing India row has the **same** required exit session: **2026-08-21**, the last NSE session before the cutoff. Every failing symbol's provider history ends at **2026-08-20**. In the panel, **131 of 360** India symbols carry no 2026-08-21 bar at all, while **229 do** — and every failing symbol is a subset of those 131. The US panel has 2026-08-21 for **522 of 522** symbols.
+  - This is **not** delistings, **not** mergers, **not** symbol changes, and **not** an exchange-calendar disagreement: 2026-08-21 is a genuine NSE session that 229 symbols resolved normally, and no failing symbol is absent from the panel (all have ≥ 30 sessions of history). It is **provider recency**: the panel was fetched at `2026-08-22T15:44 UTC` and yfinance had not yet published the previous NSE session for roughly a third of NSE tickers.
+  - It concentrates in `BUY_HIGH_CONV` for the same mechanical reason as §18.1 — that group is tiny (41 and 28 mature rows), so 6 and 8 failures become 14.6% and 28.6%, which is what breaches the 0.10 differential.
+- **`US_SYMBOL_HISTORY_TRUNCATED` — SKYT, 6 rows.** The provider returned only 6 sessions (2026-07-17, then 2026-08-03…2026-08-07) for `SKYT`. A genuine symbol-level gap.
+- **`US_SINGLE_SESSION_GAP` — SCCO, 1 row.** 32 sessions present, `2026-08-10` absent.
+
+**Nothing was fixed, removed or remapped.** No failing symbol was dropped, no ticker mapping was changed, and no second provider was introduced. Any of those would clear the guard by altering the population *after* seeing that the population fails — the precise move §18.2 exists to forbid. The `.NS` suffix mapping was checked and is correct for every failing symbol.
+
+**Waiting alone does NOT resolve India's gap in general** — and this pass can now say *why* precisely, rather than assuming. The 2026-08-21 lag is self-healing for that particular session, but its *cause* is not: any audit whose price panel is fetched at essentially the same instant as its cutoff gives the provider no settlement lag, and NSE coverage lags NYSE coverage. The same breach will recur at every future cutoff unless the acquisition policy changes. That is a **separate decision requiring separate approval**, and it is **NOT implemented here**:
+
+> **DEFERRED DECISION — provider settlement lag and/or an NSE source hierarchy.** Candidate: require the price panel's fetch instant to trail the cutoff by *K* settled sessions, and/or add an NSE bhavcopy fallback beneath yfinance. Any such change must specify: the source hierarchy and precedence; the adjustment policy (the audit pins `auto_adjust=False`); corporate-action treatment; reconciliation rules between sources; licensing and reliability; and **the expected effect on BOTH comparison groups**, since a fallback that improves coverage asymmetrically is itself selection. It requires explicit approval before implementation.
+
+### 18.6 Readiness is now a command, not a judgement call
+
+```
+python backend/scripts/conviction_gate_backtest.py --readiness \
+    --markets IN US --horizons short \
+    --source extract:<frozen-extract> --price-snapshot-in <frozen-panel>
+```
+
+Read-only. It computes **no returns and no statistics**. It reports the cutoff, runs by market × policy era, mature and immature row counts, mature counts for every required comparison group, the minimum runs/rows/clusters required, the earliest calendar date each comparison could possibly become identifiable, whether mature-cohort price missingness still breaches the guard, and a final `READY_FOR_CLOSURE_RUN` / `NOT_READY`.
+
+Readiness depends **only** on pre-registered counts, dates and coverage. It can never depend on an observed win rate, effect size or p-value: the record type it consumes (`audit_readiness.ReadinessRow`) has no field for one. It **fails closed** — with no price panel, coverage is `UNKNOWN` and the verdict is `NOT_READY`; "we did not look" is not evidence that coverage is fine. The published-vs-unpublished floors are the **existing** contract minimums (`MIN_RUNS_PER_ERA_FOR_ESTIMATE = 8`, `MIN_RESOLVED_PER_GROUP_FOR_ESTIMATE = 30`, `MIN_CLUSTERS_FOR_INFERENCE = 20`), carried over unchanged and deliberately **not** lowered.
+
+**Current verdict, at cutoff `2026-08-22T00:00:00+00:00`: `NOT_READY` in all four cells.**
+
+| Cell | Mature | Immature | Mature coverage | Blockers |
+|---|---|---|---|---|
+| IN / RESEARCH_PRIOR_CLOSE | 6,787 | 1,279 | ❌ breach (0.135) | published-vs-unpublished below minimums; coverage |
+| IN / EXECUTABLE_NEXT_OPEN | 6,453 | 1,613 | ❌ breach (0.274) | published-vs-unpublished below minimums; coverage |
+| US / RESEARCH_PRIOR_CLOSE | 6,406 | 940 | ✅ within guard | published-vs-unpublished below minimums |
+| US / EXECUTABLE_NEXT_OPEN | 5,755 | 1,591 | ✅ within guard | all three comparisons below minimums |
+
+The binding constraint for published-vs-unpublished is the **`gate_plus_cap` era's youth**, not price data: it holds 5 runs (IN) and 5 runs (US), of which 2 / 0 / 2 / 0 are mature — against a floor of 8 runs, 30 rows per group and 20 date clusters. Note the mature `PUBLISHED` counts of **3 and 4 rows**: this comparison is nowhere near identifiable, and the readiness command is what makes that a stated fact rather than something discovered by running an analysis and squinting at it.
+
+**On dates.** "Around 2026-09-10" is a **planning estimate only** — useful for scheduling, quotable for nothing. **The `--readiness` command is authoritative.** For `US / EXECUTABLE_NEXT_OPEN`, where existing runs alone will satisfy the count floors, the command computes **`2026-08-26`** for both `buy_vs_non_buy` and `conviction_within_buy`; for published-vs-unpublished, in every cell, it correctly returns **no date at all**, because the runs required do not exist yet and it will not invent a projection to fill the gap.
+
+### 18.7 The 2026-08-22 run produced NO statistical conclusion
+
+To be unambiguous, because an aborted run is easy to misremember as a null result: **the 2026-08-22 closure attempt aborted at the guard before any comparison was classified. It produced no win rate, no effect size, no p-value and no claim level. It is not evidence of an effect, and it is not evidence of no effect.** Pass 2's 824-row India figure likewise remains pipeline-validation evidence only, superseded and unquotable.
+
+### 18.8 User-facing copy is UNCHANGED
+
+Untouched, deliberately: no classifier output exists, so there is nothing to promote. The short-horizon `conviction_semantic` string keeps its current cautious re-audit wording. No frontend file changed in this pass.
+
+### 18.9 What must still happen
+
+1. **Provider coverage.** Approve or reject the deferred settlement-lag / NSE-source decision in §18.5. Until then India's mature-cohort guard keeps breaching.
+2. **Wait.** The `gate_plus_cap` era must accumulate enough runs for published-vs-unpublished to become identifiable. `--readiness` says when; nothing else does.
+3. **Then, and only then**, a closure run — against the pre-registered mature population, at the frozen cutoff, from an empty directory, in one invocation.
+
+**Unchanged in this pass:** universe, BUY/HOLD/SELL logic, ranking weights, the 85.0 threshold, the max-3 cap, learning flags, scheduling, provider routing, India/US separation, production rows, schema, and all user-facing copy. No migration. Read-only throughout. Transaction costs and tax-aware P&L remain explicitly deferred; both measures are gross and neither is a net return or investor P&L.
 
 ## Session protocol
 
