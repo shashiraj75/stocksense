@@ -62,6 +62,17 @@ log = logging.getLogger(__name__)
 
 TICKER_SUFFIX = {"IN": ".NS", "US": ""}
 
+
+def provider_ticker(market: str, symbol: str) -> str:
+    """
+    The exact ticker string this audit asks the provider for.
+
+    Exposed as a function so a coverage report can state the ticker it
+    actually used, rather than a reader having to re-derive it and hope the
+    derivation matches. `fetch_panel` builds its ticker the same way.
+    """
+    return f"{symbol}{TICKER_SUFFIX.get(market, '')}"
+
 # Pinned provider parameters — see the module docstring.
 PROVIDER = "yfinance"
 PROVIDER_PARAMS = {
@@ -248,7 +259,7 @@ def fetch_panel(
         suffix = TICKER_SUFFIX.get(market, "")
         for i in range(0, len(uniq), batch_size):
             batch = uniq[i:i + batch_size]
-            tickers = [s + suffix for s in batch]
+            tickers = [provider_ticker(market, s) for s in batch]
             attempt = 0
             rows = None
             while attempt <= max_retries:

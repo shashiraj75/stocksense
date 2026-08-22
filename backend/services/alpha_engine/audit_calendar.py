@@ -108,6 +108,41 @@ def next_tradable_open(market: str, after) -> tuple[_dt.date, _dt.datetime] | No
     return None
 
 
+def session_close_utc(market: str, day: _dt.date) -> _dt.datetime | None:
+    """
+    Return the UTC instant at which `day`'s regular session CLOSES on
+    `market`'s calendar, or None when `day` is not a regular session.
+
+    The horizon-maturity contract (`audit_contract.horizon_maturity`) needs
+    this: a horizon window is complete only once its exit session has
+    actually FINISHED, and "finished" is an exchange-calendar fact — the
+    session close instant — not "the exit date is before today", which is
+    ambiguous across time zones and silently wrong for a run inspected
+    mid-session in another zone.
+    """
+    sched = _schedule(market, day, day)
+    if sched.empty:
+        return None
+    return sched.iloc[0]["market_close"].to_pydatetime()
+
+
+def session_on_or_after(market: str, day: _dt.date) -> _dt.date | None:
+    """
+    The first regular session on/after `day`, from the EXCHANGE CALENDAR
+    alone.
+
+    Deliberately distinct from `PriceSnapshot.first_session_on_or_after`,
+    which answers the same question from whatever sessions a PRICE PROVIDER
+    happened to return. Maturity may never depend on provider coverage
+    (`audit_contract` section 7), so the maturity path uses this function and
+    the price path uses the snapshot.
+    """
+    sched = _schedule(market, day, day + _dt.timedelta(days=_MAX_SEARCH_DAYS))
+    if sched.empty:
+        return None
+    return sched.index[0].date()
+
+
 def session_offset(market: str, session_date: _dt.date, trading_days: int) -> _dt.date | None:
     """
     Return the session that is exactly `trading_days` regular sessions after

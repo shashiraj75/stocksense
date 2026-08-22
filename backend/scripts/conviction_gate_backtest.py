@@ -50,6 +50,22 @@ Both measures are GROSS of all transaction costs. No cost model is
 implemented here and neither measure may be described as net or as investor
 P&L.
 
+Horizon-maturity pre-registration (2026-08-22)
+---------------------------------------------
+The primary statistical population is the MATURE cohort: observations whose
+complete horizon exit session had finished before the fixed audit price-data
+cutoff. That rule lives in `audit_contract` section 7, its cutoff is a frozen
+module constant with NO command-line path, and immature rows are dropped
+before any outcome or provider lookup — so administrative immaturity can
+never be counted as price missingness. Two read-only companion modes:
+
+  `--readiness`        counts, dates and mature-cohort coverage only; emits
+                       READY_FOR_CLOSURE_RUN / NOT_READY. Computes no
+                       returns and no statistics.
+  `--coverage-report`  row-level GENUINE missingness over the mature cohort:
+                       which price is missing, on which session, for which
+                       ticker. Diagnoses; changes nothing.
+
 `--audit-out DIR` writes a full evidence bundle (run_manifest.json,
 row_decisions.jsonl, aggregate_summary.json, statistical_results.json,
 data_integrity_results.json) to a caller-supplied directory. That directory
@@ -69,6 +85,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import json
 import logging
 import sys
 from dataclasses import dataclass
@@ -285,6 +302,18 @@ def canonical_key(market: str, horizon: str, run_id, symbol: str) -> str:
 
 class PopulationSourceError(RuntimeError):
     """Raised when a population source cannot be read or fails its checksum."""
+
+
+class MaturityOverrideRefused(RuntimeError):
+    """
+    Raised when a run tries to move the horizon-maturity boundary at the
+    command line.
+
+    The pre-registered eligibility rule (audit_contract section 7) is only
+    a pre-registration if it cannot be retuned per invocation. There is
+    therefore NO CLI path to the cutoff, and `--today` — which would move it
+    indirectly — is refused in audit mode rather than quietly honoured.
+    """
 
 
 def fetch_observations(conn, market: str, horizon: str, limit: int | None = None) -> list[dict]:
@@ -1413,21 +1442,82 @@ def prepare_rows(raw: list[dict], market: str, horizon: str) -> list[dict]:
     return rows
 
 
-def resolve_returns(rows: list[dict], market: str, horizon: str, snapshot,
-                    *, today=None) -> None:
-    """Resolve BOTH measures for every row from the SAME frozen snapshot."""
+def classify_maturity(rows: list[dict], market: str, horizon: str, *,
+                      cutoff=None) -> None:
+    """
+    STAGE A — apply the PRE-REGISTERED horizon-maturity rule to every row,
+    for both measures, BEFORE any outcome or provider lookup happens.
+
+    Attaches `maturity[measure]` (an `audit_contract.MaturityDecision`) to
+    each row. Nothing in this function can see a price, a signal, a
+    conviction or a publication flag: it is handed the row only so it can
+    read `run_generated_at` and `reference_session_date`, and it passes
+    exactly those two fields plus market/horizon/cutoff to
+    `audit_contract.horizon_maturity`.
+    """
     c = _contract()
+    trading_days = HORIZON_TRADING_DAYS.get(horizon)
     for r in rows:
-        research, r_reason, r_prov = resolve_research_return(
-            r, market, horizon, snapshot, today=today)
-        exe, e_reason, e_prov = resolve_executable_return(
-            r, market, horizon, snapshot, today=today)
-        r[c.RESEARCH_PRIOR_CLOSE] = research
-        r[c.EXECUTABLE_NEXT_OPEN] = exe
-        r["research_excluded_reason"] = r_reason
-        r["executable_excluded_reason"] = e_reason
-        r["research_provenance"] = r_prov
-        r["executable_provenance"] = e_prov
+        r["maturity"] = {
+            measure: c.horizon_maturity(
+                market, measure,
+                reference_session_date=r.get("reference_session_date"),
+                run_generated_at=r.get("run_generated_at"),
+                trading_days=trading_days if trading_days is not None else 0,
+                cutoff=cutoff)
+            for measure in (c.RESEARCH_PRIOR_CLOSE, c.EXECUTABLE_NEXT_OPEN)
+        }
+
+
+def resolve_returns(rows: list[dict], market: str, horizon: str, snapshot,
+                    *, today=None, cutoff=None) -> None:
+    """
+    Resolve BOTH measures for every row from the SAME frozen snapshot.
+
+    ORDER IS LOAD-BEARING. Stage A (`classify_maturity`) runs first and an
+    ADMINISTRATIVELY IMMATURE row short-circuits here: no entry price, no
+    exit price and no provider session list is consulted for it at all. That
+    is what makes "immature rows are excluded before any outcome or provider
+    lookup" a property of the code rather than a claim about it, and it is
+    why immaturity can never contribute to the price-missingness percentage.
+    """
+    c = _contract()
+    classify_maturity(rows, market, horizon, cutoff=cutoff)
+    for r in rows:
+        for measure, value_key, reason_key, prov_key, resolver in (
+            (c.RESEARCH_PRIOR_CLOSE, c.RESEARCH_PRIOR_CLOSE,
+             "research_excluded_reason", "research_provenance",
+             resolve_research_return),
+            (c.EXECUTABLE_NEXT_OPEN, c.EXECUTABLE_NEXT_OPEN,
+             "executable_excluded_reason", "executable_provenance",
+             resolve_executable_return),
+        ):
+            decision = r["maturity"][measure]
+            if not decision.mature:
+                r[value_key] = None
+                r[reason_key] = decision.reason
+                r[prov_key] = {"measure": measure,
+                               "stage": "A_administrative_eligibility",
+                               "price_lookup_performed": False,
+                               "maturity": decision.as_dict()}
+                continue
+            value, reason, prov = resolver(r, market, horizon, snapshot,
+                                           today=today)
+            if reason == "horizon_window_not_yet_complete":
+                # Stage A already PROVED this window is complete on the
+                # exchange calendar. The only way the resolver can still
+                # disagree is that it walked forward from the PROVIDER's own
+                # first session, which is later than the exchange's — i.e.
+                # the provider's session list disagrees with the exchange
+                # calendar. That is a provider-coverage defect, so it is named
+                # as one and lands in stage B, never back in immaturity.
+                reason = "provider_calendar_disagrees_with_exchange_calendar"
+            prov["stage"] = "B_price_resolution"
+            prov["price_lookup_performed"] = True
+            prov["maturity"] = decision.as_dict()
+            r[value_key] = value
+            r[reason_key] = reason
+            r[prov_key] = prov
 
 
 def build_decisions(rows: list[dict]) -> list[dict]:
@@ -1461,6 +1551,10 @@ def build_decisions(rows: list[dict]) -> list[dict]:
             "pick_rank": r.get("pick_rank"),
             "populations": r["populations"],
             "reference_price": r.get("reference_price"),
+            # --- STAGE A: pre-registered horizon maturity -----------------
+            "maturity": {m: d.as_dict() for m, d in (r.get("maturity") or {}).items()},
+            "research_horizon_mature": _is_mature(r, c.RESEARCH_PRIOR_CLOSE),
+            "executable_horizon_mature": _is_mature(r, c.EXECUTABLE_NEXT_OPEN),
             # --- ranking fields (contract requirement) -------------------
             "ranking_alpha": r.get("ranking_alpha"),
             "rank_percentile": r.get("rank_percentile"),
@@ -1516,18 +1610,33 @@ def build_audit(market: str, horizon: str, rows: list[dict], *, seed: int,
             reason = r.get(reason_key)
             if not _finite(r.get(measure)):
                 reasons[reason or "unknown"] = reasons.get(reason or "unknown", 0) + 1
+        two_stage = c.two_stage_waterfall(
+            [{"mature": _is_mature(r, measure), "reason": r.get(reason_key)}
+             for r in rows],
+            stage_label=f"{market}/{horizon}/{measure}")
         waterfall[measure] = {
             "fetched": len(rows), "included": included, "excluded": excluded,
             "exclusion_reasons": dict(sorted(reasons.items())),
             "by_policy_era": _era_waterfall(rows, measure),
+            "two_stage": two_stage,
+            "administrative_immaturity": _immaturity_breakdown(rows, measure),
         }
+        # THE GUARD RUNS OVER THE PRE-REGISTERED MATURE COHORT ONLY.
+        # Administrative immaturity is not missingness: an immature row's
+        # outcome does not exist yet, so counting it as "unresolved" measures
+        # the calendar, not the data, and guarantees a permanent breach. The
+        # immature tail is still reported in full, immediately above.
         flat = [{
             "market": r["market"], "horizon": r["horizon"],
             "reference_session_date": r["run_session_date_iso"],
             "comparison_group": _comparison_group(r),
             "resolved": _finite(r.get(measure)),
-        } for r in rows]
+        } for r in rows if _is_mature(r, measure)]
         report = audit_prices.missingness_report(flat, resolved_key="resolved")
+        report["cohort"] = "MATURE_ELIGIBLE_ONLY"
+        report["maturity_rule_id"] = c.MATURITY_RULE_ID
+        report["cutoff_utc"] = c.AUDIT_PRICE_DATA_CUTOFF_UTC.isoformat()
+        report["administratively_immature_excluded"] = len(rows) - len(flat)
         # Recorded, not raised here: the CLI applies the guard across the
         # whole run so a single cell cannot silently pass a run-level breach.
         missingness[measure] = audit_prices.enforce_missingness(
@@ -1576,6 +1685,67 @@ def _comparison_group(row) -> str:
     if c.P_BUY_LOW_CONV in row["populations"]:
         return "BUY_LOW_CONV"
     return "NON_BUY"
+
+
+def _is_mature(row: dict, measure: str) -> bool:
+    """
+    The pre-registered stage-A verdict for one row under one measure.
+
+    Fails CLOSED: a row that was never classified is treated as immature
+    rather than silently admitted to the analysis population.
+    """
+    decision = (row.get("maturity") or {}).get(measure)
+    return bool(decision is not None and decision.mature)
+
+
+def _immaturity_breakdown(rows, measure) -> dict:
+    """
+    The administratively-immature tail, broken out by market, run date,
+    signal, conviction group and publication group.
+
+    Immature rows are excluded from the statistical population and from the
+    missingness guard, so this breakdown is how a reader checks that the
+    exclusion really is administrative rather than a selection dressed up as
+    one. If immaturity ever concentrated in one signal or one conviction
+    group for a reason OTHER than "those runs are recent", it would show
+    here — and it must, because nobody should have to take the claim on
+    trust.
+    """
+    c = _contract()
+    immature = [r for r in rows if not _is_mature(r, measure)]
+
+    def tally(fn):
+        acc: dict[str, int] = {}
+        for r in immature:
+            k = str(fn(r))
+            acc[k] = acc.get(k, 0) + 1
+        return dict(sorted(acc.items()))
+
+    return {
+        "n_immature": len(immature),
+        "n_total": len(rows),
+        "immature_rate": len(immature) / len(rows) if rows else None,
+        "by_market": tally(lambda r: r["market"]),
+        "by_run_session_date": tally(lambda r: r["run_session_date_iso"]),
+        "by_signal": tally(lambda r: r.get("signal")),
+        "by_conviction_group": tally(
+            lambda r: c.P_BUY_HIGH_CONV if c.P_BUY_HIGH_CONV in r["populations"]
+            else c.P_BUY_LOW_CONV if c.P_BUY_LOW_CONV in r["populations"]
+            else "NOT_BUY"),
+        "by_publication_group": tally(
+            lambda r: "PUBLISHED" if r.get("is_daily_pick") else "UNPUBLISHED"),
+        "by_reason": tally(
+            lambda r: (r.get("maturity") or {}).get(measure).reason
+            if (r.get("maturity") or {}).get(measure) else "unclassified"),
+        "earliest_exit_session_still_pending": min(
+            [d.exit_session.isoformat() for r in immature
+             if (d := r["maturity"][measure]).exit_session is not None] or [None]
+        ) if immature else None,
+        "latest_exit_session_still_pending": max(
+            [d.exit_session.isoformat() for r in immature
+             if (d := r["maturity"][measure]).exit_session is not None] or [None]
+        ) if immature else None,
+    }
 
 
 def _era_waterfall(rows, measure) -> dict:
@@ -2056,6 +2226,17 @@ def run_full_audit(markets, horizons, *, source, out_dir, seed,
     """
     from services.alpha_engine import audit_prices
 
+    c = _contract()
+    # `today` is a TEST-ONLY seam for synthetic fixtures, and it is NOT
+    # reachable from the command line in audit mode — `main()` refuses
+    # `--today` alongside `--audit-out` with `MaturityOverrideRefused`. A real
+    # closure run therefore always evaluates maturity against the frozen
+    # contract cutoff, and an analyst cannot retune the boundary between
+    # attempts.
+    maturity_cutoff = (
+        c.AUDIT_PRICE_DATA_CUTOFF_UTC if today is None
+        else _dt.datetime(today.year, today.month, today.day,
+                          tzinfo=_dt.timezone.utc))
     cutoff = _dt.datetime.now(_dt.timezone.utc).isoformat()
     cells, source_meta = [], {}
     prepared: dict[str, list[dict]] = {}
@@ -2100,7 +2281,11 @@ def run_full_audit(markets, horizons, *, source, out_dir, seed,
     audits = []
     for key, rows in prepared.items():
         market, horizon = key.split("/")
-        resolve_returns(rows, market, horizon, snapshot, today=today)
+        # Eligibility is pinned to `maturity_cutoff`, not the wall clock: two
+        # runs of the same frozen population on different days must produce
+        # identical eligibility.
+        resolve_returns(rows, market, horizon, snapshot,
+                        today=maturity_cutoff.date(), cutoff=maturity_cutoff)
         audits.append(build_audit(market, horizon, rows, seed=seed,
                                   permutation_draws=permutation_draws,
                                   bootstrap_draws=draws))
@@ -2143,6 +2328,177 @@ def run_full_audit(markets, horizons, *, source, out_dir, seed,
             "family": family, "holm": holm}
 
 
+def run_readiness(markets, horizons, *, source, snapshot_in=None,
+                  limit=None) -> dict:
+    """
+    READ-ONLY AUDIT-READINESS REPORT — is a closure run attemptable yet?
+
+    Computes NO returns and NO statistical results. It reports counts, dates
+    and — only when a frozen price panel is supplied — mature-cohort price
+    coverage. Nothing here can read a win rate, an effect size or a p-value:
+    the rows are projected into `audit_readiness.ReadinessRow`, which has no
+    field for any of them, before readiness sees them.
+
+    A price panel, when supplied, must be a PREVIOUSLY SAVED snapshot. This
+    command never fetches, so it can be run repeatedly at no cost and with no
+    provider dependency.
+    """
+    from services.alpha_engine import audit_prices, audit_readiness
+
+    c = _contract()
+    snapshot = audit_prices.PriceSnapshot.load(snapshot_in) if snapshot_in else None
+    report = {"generated_for": [], "cells": {},
+              "price_panel": str(snapshot_in) if snapshot_in else None}
+    statuses = []
+    for market in markets:
+        for horizon in horizons:
+            raw, _meta = load_population(source, market, horizon, limit=limit)
+            rows = prepare_rows(raw, market, horizon)
+            if snapshot is not None:
+                resolve_returns(rows, market, horizon, snapshot,
+                                today=c.AUDIT_PRICE_DATA_CUTOFF_UTC.date())
+            else:
+                classify_maturity(rows, market, horizon)
+            for measure in (c.RESEARCH_PRIOR_CLOSE, c.EXECUTABLE_NEXT_OPEN):
+                coverage = None
+                if snapshot is not None:
+                    flat = [{
+                        "market": r["market"], "horizon": r["horizon"],
+                        "reference_session_date": r["run_session_date_iso"],
+                        "comparison_group": _comparison_group(r),
+                        "resolved": _finite(r.get(measure)),
+                    } for r in rows if _is_mature(r, measure)]
+                    coverage = audit_prices.enforce_missingness(
+                        audit_prices.missingness_report(flat, resolved_key="resolved"),
+                        raise_on_breach=False)
+                ready_rows = [
+                    audit_readiness.ReadinessRow(
+                        market=r["market"], horizon=r["horizon"],
+                        run_id=str(r["run_id"]),
+                        run_session_date=_to_date(r["run_session_date"]),
+                        policy_era=r["policy_era"], symbol=r["symbol"],
+                        populations=tuple(r["populations"]),
+                        mature=_is_mature(r, measure),
+                        exit_session=r["maturity"][measure].exit_session,
+                        price_resolved=(_finite(r.get(measure))
+                                        if snapshot is not None else None),
+                    ) for r in rows]
+                cell = audit_readiness.assess(ready_rows, coverage=coverage)
+                cell["administrative_immaturity"] = _immaturity_breakdown(rows, measure)
+                key = f"{market}/{horizon}/{measure}"
+                report["cells"][key] = cell
+                report["generated_for"].append(key)
+                statuses.append(cell["status"])
+    report["status"] = (audit_readiness.READY
+                        if statuses and all(s == audit_readiness.READY for s in statuses)
+                        else audit_readiness.NOT_READY)
+    report["cutoff_utc"] = c.AUDIT_PRICE_DATA_CUTOFF_UTC.isoformat()
+    report["maturity_rule_id"] = c.MATURITY_RULE_ID
+    return report
+
+
+def run_coverage_report(markets, horizons, *, source, snapshot_in,
+                        limit=None) -> dict:
+    """
+    ROW-LEVEL GENUINE-MISSINGNESS REPORT over the MATURE cohort only.
+
+    One record per mature row whose price did not resolve, carrying the
+    identity, the group memberships, the required entry/exit sessions, which
+    side is missing, the provider ticker used, and whether the provider
+    returned ANY session at all for that symbol. This is the evidence needed
+    to attribute a coverage gap to a cause — a delisting, a symbol change, a
+    provider-calendar disagreement — rather than to guess.
+
+    It fixes nothing. It deliberately does NOT drop a failing symbol, remap a
+    ticker or reach for a second provider: any of those would clear the guard
+    by changing the population after seeing that the population fails, which
+    is the exact move the maturity pre-registration exists to forbid.
+    """
+    from services.alpha_engine import audit_prices
+
+    c = _contract()
+    snapshot = audit_prices.PriceSnapshot.load(snapshot_in)
+    out: dict = {"cutoff_utc": c.AUDIT_PRICE_DATA_CUTOFF_UTC.isoformat(),
+                 "price_panel": str(snapshot_in), "cells": {}}
+    for market in markets:
+        for horizon in horizons:
+            raw, _meta = load_population(source, market, horizon, limit=limit)
+            rows = prepare_rows(raw, market, horizon)
+            resolve_returns(rows, market, horizon, snapshot,
+                            today=c.AUDIT_PRICE_DATA_CUTOFF_UTC.date())
+            for measure, reason_key, prov_key in (
+                (c.RESEARCH_PRIOR_CLOSE, "research_excluded_reason",
+                 "research_provenance"),
+                (c.EXECUTABLE_NEXT_OPEN, "executable_excluded_reason",
+                 "executable_provenance"),
+            ):
+                failures, reason_counts, symbols = [], {}, {}
+                for r in rows:
+                    if not _is_mature(r, measure) or _finite(r.get(measure)):
+                        continue
+                    reason = r.get(reason_key) or "unknown"
+                    reason_counts[reason] = reason_counts.get(reason, 0) + 1
+                    decision = r["maturity"][measure]
+                    ticker = audit_prices.provider_ticker(market, r["symbol"])
+                    sessions = snapshot.sessions(market, r["symbol"])
+                    failures.append({
+                        "symbol": r["symbol"],
+                        "provider_ticker": ticker,
+                        "run_id": r["run_id"],
+                        "run_session_date": r["run_session_date_iso"],
+                        "run_generated_at": str(r.get("run_generated_at")),
+                        "policy_era": r["policy_era"],
+                        "signal": r.get("signal"),
+                        "signal_confidence": r.get("signal_confidence"),
+                        "conviction_group": (
+                            c.P_BUY_HIGH_CONV if c.P_BUY_HIGH_CONV in r["populations"]
+                            else c.P_BUY_LOW_CONV if c.P_BUY_LOW_CONV in r["populations"]
+                            else "NOT_BUY"),
+                        "publication_group": (
+                            "PUBLISHED" if r.get("is_daily_pick") else "UNPUBLISHED"),
+                        "required_entry_session": (
+                            decision.entry_session.isoformat()
+                            if decision.entry_session else None),
+                        "required_exit_session": (
+                            decision.exit_session.isoformat()
+                            if decision.exit_session else None),
+                        "missing_side": reason,
+                        "provider_sessions_for_symbol": len(sessions),
+                        "provider_first_session": sessions[0] if sessions else None,
+                        "provider_last_session": sessions[-1] if sessions else None,
+                        "symbol_absent_from_panel_entirely": not sessions,
+                    })
+                    slot = symbols.setdefault(r["symbol"], {
+                        "provider_ticker": ticker, "n_failures": 0,
+                        "reasons": {}, "provider_sessions": len(sessions),
+                        "provider_last_session": sessions[-1] if sessions else None,
+                        "conviction_groups": set(), "publication_groups": set(),
+                        "missing_exit_sessions": set()})
+                    slot["n_failures"] += 1
+                    slot["reasons"][reason] = slot["reasons"].get(reason, 0) + 1
+                    slot["conviction_groups"].add(failures[-1]["conviction_group"])
+                    slot["publication_groups"].add(failures[-1]["publication_group"])
+                    if decision.exit_session:
+                        slot["missing_exit_sessions"].add(
+                            decision.exit_session.isoformat())
+                by_symbol = {
+                    s: {**v,
+                        "conviction_groups": sorted(v["conviction_groups"]),
+                        "publication_groups": sorted(v["publication_groups"]),
+                        "missing_exit_sessions": sorted(v["missing_exit_sessions"])}
+                    for s, v in sorted(symbols.items(), key=lambda kv: kv[0])
+                }
+                out["cells"][f"{market}/{horizon}/{measure}"] = {
+                    "mature_rows": sum(1 for r in rows if _is_mature(r, measure)),
+                    "mature_unresolved_rows": len(failures),
+                    "reason_counts": dict(sorted(reason_counts.items())),
+                    "distinct_failing_symbols": len(symbols),
+                    "by_symbol": by_symbol,
+                    "rows": failures,
+                }
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--market", choices=MARKETS,
@@ -2168,6 +2524,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--bootstrap-draws", type=int, default=10000)
     parser.add_argument("--today", default=None,
                         help="ISO date used as 'today' for window completeness")
+    parser.add_argument("--readiness", action="store_true",
+                        help="READ-ONLY readiness report: counts, dates and "
+                             "mature-cohort coverage only. Computes no "
+                             "returns and no statistics.")
+    parser.add_argument("--coverage-report", action="store_true",
+                        help="READ-ONLY row-level report of GENUINE price "
+                             "missingness over the mature cohort. Diagnoses; "
+                             "changes nothing.")
     parser.add_argument("--allow-missingness-breach", action="store_true",
                         help="record rather than abort on a missingness breach "
                              "(for diagnosis only; never for a closure run)")
@@ -2175,8 +2539,41 @@ def main(argv: list[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
+    if args.coverage_report:
+        if not args.price_snapshot_in:
+            parser.error("--coverage-report needs --price-snapshot-in "
+                         "(it never fetches prices)")
+        markets = args.markets or ([args.market] if args.market else list(MARKETS))
+        horizons = args.horizons or ([args.horizon] if args.horizon else ["short"])
+        print(json.dumps(
+            run_coverage_report(markets, horizons, source=args.source,
+                                snapshot_in=args.price_snapshot_in,
+                                limit=args.limit),
+            indent=2, default=str))
+        return 0
+
+    if args.readiness:
+        markets = args.markets or ([args.market] if args.market else list(MARKETS))
+        horizons = args.horizons or ([args.horizon] if args.horizon else ["short"])
+        report = run_readiness(markets, horizons, source=args.source,
+                               snapshot_in=args.price_snapshot_in,
+                               limit=args.limit)
+        print(json.dumps(report, indent=2, default=str))
+        return 0 if report["status"] == "READY_FOR_CLOSURE_RUN" else 2
+
     if args.audit_out:
         from services.alpha_engine import audit_stats
+
+        if args.today:
+            # THE MATURITY BOUNDARY IS NOT A RUN-TIME ARGUMENT. `--today`
+            # would move it indirectly, and a closure run whose analyst can
+            # retune the boundary between attempts has no pre-registration at
+            # all. Advancing the cutoff is a committed source change,
+            # reviewable in git — never a flag on one invocation.
+            raise MaturityOverrideRefused(
+                "--today is refused in audit mode: horizon maturity is fixed "
+                "by audit_contract.AUDIT_PRICE_DATA_CUTOFF_UTC "
+                f"({_contract().AUDIT_PRICE_DATA_CUTOFF_UTC.isoformat()}).")
 
         seed = args.seed if args.seed is not None else audit_stats.DEFAULT_SEED
         markets = args.markets or ([args.market] if args.market else list(MARKETS))

@@ -184,6 +184,75 @@ live table; US and INDIA differ and must not be merged):
 
 A comparison restricted to an era with too few runs or too few RESOLVED rows
 is NOT_IDENTIFIABLE — never NOT_PROVEN and never PRELIMINARY.
+
+--------------------------------------------------------------------------
+7. HORIZON-MATURITY ELIGIBILITY  (PRE-REGISTERED 2026-08-22)
+--------------------------------------------------------------------------
+THE PRIMARY STATISTICAL POPULATION IS:
+
+    all otherwise-eligible observations whose COMPLETE horizon exit session
+    had FINISHED before the fixed audit price-data cutoff.
+
+This rule is registered NOW, BEFORE the next current-policy outcome set
+matures and therefore before anyone can know which way it moves a result.
+That timing is the whole point: a maturity rule chosen after seeing results
+is a selection rule wearing a methodology label, and this audit already
+declined one such rule once (the 2026-08-22 "mature-window probe" cleared the
+missingness guard for US but not India; it was PROBED and deliberately NOT
+ADOPTED for exactly this reason). Registering it here, in code, under test,
+before the results exist, is what makes it a pre-registration rather than a
+post-hoc rescue.
+
+Maturity is a function of EXACTLY six inputs, and of nothing else:
+
+    1. market                        4. the fixed horizon trading-session count
+    2. run_generated_at              5. the exchange calendar
+    3. the executable entry session  6. the fixed audit price-data cutoff
+
+Maturity MUST NOT depend on — and `horizon_maturity` is structurally
+incapable of reading — any of:
+
+    * signal, signal_confidence, conviction group,
+    * publication status (is_daily_pick, pick_rank),
+    * the realized return or any win/loss flag,
+    * whether a price provider happened to supply a price,
+    * the observed missingness rate, or whether including a row would
+      improve significance, clear a guard, or change a claim level.
+
+MONOTONICITY. Extending the cutoff may only ever move a row from immature to
+mature, never back. `horizon_maturity` is monotone in `cutoff` by
+construction (the only comparison is `exit_close_utc <= cutoff`), and
+`test_conviction_audit_maturity.py` asserts it over the real calendars.
+
+TWO DISTINCT KINDS OF ABSENCE. The audit's central prior error was conflating
+them; they are now separate stages with separate names:
+
+  ADMINISTRATIVE IMMATURITY  (`administratively_immature`)
+      The horizon window has not finished yet at the cutoff. NOTHING is wrong
+      with the row and NOTHING is missing: the outcome does not exist yet.
+      Waiting resolves it, on a date that is computable in advance. It is
+      excluded at STAGE A, before any outcome or provider lookup, and it may
+      NEVER count toward the price-missingness percentage.
+
+  GENUINE PRICE MISSINGNESS  (`entry_close_missing`, `entry_open_missing`,
+      `exit_close_missing`, `no_price_data_on_or_after_reference_date`)
+      The exit session HAS finished, so a price exists in the world, and the
+      provider did not supply it. Waiting does NOT resolve this. It is a
+      STAGE B outcome, evaluated over mature rows only, and it is what the
+      missingness guard is for.
+
+The full population table will ALWAYS contain an immature tail — every run
+generated within the last `trading_days` sessions is necessarily immature —
+so a guard computed over the full table is guaranteed to fail forever and
+measures nothing about data quality. The immature tail is still reported in
+full, broken down by market, date, signal, conviction group and publication
+group, so nobody has to take "it is only immaturity" on trust.
+
+THE CUTOFF IS FROZEN IN CODE, NOT EXPOSED AS A FLAG. `AUDIT_PRICE_DATA_CUTOFF_UTC`
+below is a module constant. It is deliberately NOT a CLI argument: a run
+whose analyst can retune the maturity boundary between attempts has no
+pre-registration at all. Advancing it is a committed, reviewable source
+change, and `--today` is REJECTED in audit mode for the same reason.
 """
 
 from __future__ import annotations
@@ -393,3 +462,260 @@ def assert_reconciles(stage: str, fetched: int, included: int, excluded: int) ->
             f"excluded={excluded} (difference {fetched - included - excluded}). "
             "The audit refuses to report an unreconciled denominator."
         )
+
+
+# ==========================================================================
+# SECTION 7 — HORIZON-MATURITY ELIGIBILITY (pre-registered 2026-08-22)
+# ==========================================================================
+
+# THE FIXED AUDIT PRICE-DATA CUTOFF.
+#
+# Frozen deliberately as a module constant and NOT as a CLI argument: see
+# section 7. It matches the instant at which the frozen 51-run / 15,412-row
+# population extract was taken, so population membership and horizon maturity
+# are evaluated against the SAME instant and no row can be in the population
+# but judged against a different clock.
+#
+# Advancing this value is a committed, reviewed source change. Because
+# `horizon_maturity` is monotone in the cutoff, advancing it can only ever
+# ADD mature rows — it can never remove one, and can never be used to drop a
+# row whose outcome has become inconvenient.
+AUDIT_PRICE_DATA_CUTOFF_UTC = _dt.datetime(2026, 8, 22, 0, 0, 0,
+                                           tzinfo=_dt.timezone.utc)
+
+# Registration provenance — asserted by the tests so the pre-registration
+# claim cannot be quietly back-dated.
+MATURITY_RULE_REGISTERED_UTC = _dt.datetime(2026, 8, 22, 0, 0, 0,
+                                            tzinfo=_dt.timezone.utc)
+MATURITY_RULE_ID = "horizon-maturity-eligibility-1.0.0"
+
+# STAGE A — administrative eligibility. Immaturity is an administrative
+# state, not a data defect, and gets its own reason code so it can never be
+# summed into a provider-missingness percentage again.
+ADMINISTRATIVELY_IMMATURE = "administratively_immature"
+
+# STAGE B — genuine price missingness. Every one of these means the exit
+# session HAS finished and the provider still did not supply a usable price.
+GENUINE_PRICE_MISSINGNESS_REASONS = frozenset({
+    "no_price_data_on_or_after_reference_date",
+    "entry_close_missing",
+    "entry_open_missing",
+    "exit_close_missing",
+    # The exchange calendar says the window is complete but the provider's
+    # own session list walks the entry forward past the cutoff. A provider
+    # coverage defect, deliberately NOT immaturity.
+    "provider_calendar_disagrees_with_exchange_calendar",
+})
+
+# STAGE B — a price was supplied but is not usable as a price.
+INVALID_PRICE_REASONS = frozenset({"non_positive_entry_price"})
+
+# Reasons that are neither immaturity nor price resolution — contract-level
+# exclusions that belong in stage A alongside immaturity.
+OTHER_CONTRACT_EXCLUSION_REASONS = frozenset({
+    "unknown_horizon",
+    "missing_run_generated_at",
+    "no_tradable_session_after_generation",
+})
+
+
+class MaturityInputError(ValueError):
+    """Raised when a maturity input is absent or unusable."""
+
+
+@dataclass(frozen=True)
+class MaturityDecision:
+    """
+    The pre-registered maturity verdict for ONE row under ONE measure.
+
+    Carries the calendar facts it was derived from so a reader can recompute
+    it by hand. It carries NO outcome, NO price, NO signal and NO publication
+    field — the type itself is the guarantee that maturity did not consult
+    them.
+    """
+
+    mature: bool
+    reason: str | None
+    entry_session: _dt.date | None
+    exit_session: _dt.date | None
+    exit_close_utc: _dt.datetime | None
+    cutoff_utc: _dt.datetime
+
+    def as_dict(self) -> dict:
+        return {
+            "mature": self.mature,
+            "reason": self.reason,
+            "entry_session": self.entry_session.isoformat() if self.entry_session else None,
+            "exit_session": self.exit_session.isoformat() if self.exit_session else None,
+            "exit_close_utc": self.exit_close_utc.isoformat() if self.exit_close_utc else None,
+            "cutoff_utc": self.cutoff_utc.isoformat(),
+        }
+
+
+def horizon_maturity(
+    market: str,
+    measure: str,
+    *,
+    reference_session_date=None,
+    run_generated_at=None,
+    trading_days: int,
+    cutoff: _dt.datetime | None = None,
+) -> MaturityDecision:
+    """
+    Is this observation's complete horizon exit session FINISHED at `cutoff`?
+
+    This function is the whole of the pre-registered eligibility rule. Its
+    signature is the enforcement mechanism: there is no parameter through
+    which a signal, a conviction, a publication flag, a realized return, a
+    price, a provider or an observed missingness rate could reach it, so it
+    cannot depend on any of them even by accident.
+
+    Both measures use the EXCHANGE calendar for the entry session — never the
+    price provider's session list — so a symbol the provider does not cover
+    is still judged mature or immature on the same terms as every other row,
+    and lands in stage B as genuine missingness rather than vanishing at
+    stage A.
+    """
+    from services.alpha_engine import audit_calendar
+
+    cutoff = cutoff or AUDIT_PRICE_DATA_CUTOFF_UTC
+    if cutoff.tzinfo is None:
+        raise MaturityInputError("cutoff must be timezone-aware")
+    if trading_days is None or trading_days < 0:
+        raise MaturityInputError(f"trading_days must be >= 0, got {trading_days!r}")
+
+    if measure == EXECUTABLE_NEXT_OPEN:
+        if run_generated_at is None:
+            return MaturityDecision(False, "missing_run_generated_at", None, None,
+                                    None, cutoff)
+        entry = audit_calendar.next_tradable_open(market, run_generated_at)
+        if entry is None:
+            return MaturityDecision(False, "no_tradable_session_after_generation",
+                                    None, None, None, cutoff)
+        entry_session = entry[0]
+    elif measure == RESEARCH_PRIOR_CLOSE:
+        if reference_session_date is None:
+            return MaturityDecision(False, "missing_reference_session_date", None,
+                                    None, None, cutoff)
+        ref = reference_session_date
+        if isinstance(ref, _dt.datetime):
+            ref = ref.date()
+        elif not isinstance(ref, _dt.date):
+            ref = _dt.date.fromisoformat(str(ref))
+        entry_session = audit_calendar.session_on_or_after(market, ref)
+        if entry_session is None:
+            return MaturityDecision(False, "no_session_on_or_after_reference_date",
+                                    None, None, None, cutoff)
+    else:
+        raise MaturityInputError(f"unknown return measure {measure!r}")
+
+    exit_session = audit_calendar.session_offset(market, entry_session, trading_days)
+    if exit_session is None:
+        # The calendar does not yet publish that many sessions ahead — the
+        # window cannot have finished.
+        return MaturityDecision(False, ADMINISTRATIVELY_IMMATURE, entry_session,
+                                None, None, cutoff)
+    exit_close = audit_calendar.session_close_utc(market, exit_session)
+    if exit_close is None:
+        return MaturityDecision(False, ADMINISTRATIVELY_IMMATURE, entry_session,
+                                exit_session, None, cutoff)
+    if exit_close <= cutoff:
+        return MaturityDecision(True, None, entry_session, exit_session,
+                                exit_close, cutoff)
+    return MaturityDecision(False, ADMINISTRATIVELY_IMMATURE, entry_session,
+                            exit_session, exit_close, cutoff)
+
+
+def classify_exclusion_stage(reason: str | None) -> str:
+    """
+    Which waterfall stage an exclusion reason belongs to.
+
+    Returns one of: "included", "administrative_immaturity",
+    "other_contract_exclusion", "genuine_price_missingness",
+    "invalid_price". Any unrecognised reason is treated as a contract
+    exclusion and named, never silently folded into missingness.
+    """
+    if reason is None:
+        return "included"
+    if reason == ADMINISTRATIVELY_IMMATURE:
+        return "administrative_immaturity"
+    if reason in GENUINE_PRICE_MISSINGNESS_REASONS:
+        return "genuine_price_missingness"
+    if reason in INVALID_PRICE_REASONS:
+        return "invalid_price"
+    return "other_contract_exclusion"
+
+
+def two_stage_waterfall(records: list[dict], *, stage_label: str) -> dict:
+    """
+    The two-stage denominator waterfall, reconciled EXACTLY at both stages.
+
+    Each record needs exactly two fields:
+      `mature`  — the pre-registered stage-A verdict (bool),
+      `reason`  — the exclusion reason, or None when the row resolved.
+
+    STAGE A (administrative eligibility)
+        fetched = mature + administratively_immature + other_contract_exclusions
+    STAGE B (price resolution, over MATURE ROWS ONLY)
+        mature  = included + genuine_price_missingness + invalid_price
+
+    Both identities are asserted through `assert_reconciles`, so a
+    denominator that does not add up raises instead of being reported.
+    """
+    fetched = len(records)
+    immature = other_a = included = missing = invalid = 0
+    reasons_a: dict[str, int] = {}
+    reasons_b: dict[str, int] = {}
+    for rec in records:
+        reason = rec.get("reason")
+        stage = classify_exclusion_stage(reason)
+        if not rec.get("mature"):
+            # Stage A owns every immature row. Its reason is recorded, but it
+            # can never reach stage B and so can never enter the missingness
+            # percentage.
+            if stage == "other_contract_exclusion":
+                other_a += 1
+                reasons_a[str(reason)] = reasons_a.get(str(reason), 0) + 1
+            else:
+                immature += 1
+                reasons_a[ADMINISTRATIVELY_IMMATURE] = (
+                    reasons_a.get(ADMINISTRATIVELY_IMMATURE, 0) + 1)
+            continue
+        if stage == "included":
+            included += 1
+        elif stage == "genuine_price_missingness":
+            missing += 1
+            reasons_b[str(reason)] = reasons_b.get(str(reason), 0) + 1
+        elif stage == "invalid_price":
+            invalid += 1
+            reasons_b[str(reason)] = reasons_b.get(str(reason), 0) + 1
+        else:
+            # A mature row excluded for a contract reason: still stage A's
+            # business conceptually, but it IS mature, so account for it in
+            # stage B's "other" bucket rather than losing it.
+            invalid += 1
+            reasons_b[str(reason)] = reasons_b.get(str(reason), 0) + 1
+
+    mature = fetched - immature - other_a
+    assert_reconciles(f"{stage_label}/stageA", fetched, mature, immature + other_a)
+    assert_reconciles(f"{stage_label}/stageB", mature, included, missing + invalid)
+    return {
+        "stage_a": {
+            "fetched": fetched,
+            "horizon_mature_at_cutoff": mature,
+            "administratively_immature": immature,
+            "other_contract_exclusions": other_a,
+            "exclusion_reasons": dict(sorted(reasons_a.items())),
+        },
+        "stage_b": {
+            "mature_eligible": mature,
+            "price_resolved": included,
+            "genuine_price_missingness": missing,
+            "non_finite_or_invalid_price": invalid,
+            "included_in_analysis": included,
+            "exclusion_reasons": dict(sorted(reasons_b.items())),
+            "genuine_missingness_rate": (missing + invalid) / mature if mature else None,
+        },
+        "cutoff_utc": AUDIT_PRICE_DATA_CUTOFF_UTC.isoformat(),
+        "maturity_rule_id": MATURITY_RULE_ID,
+    }

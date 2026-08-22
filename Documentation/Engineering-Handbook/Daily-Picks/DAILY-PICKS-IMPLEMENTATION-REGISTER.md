@@ -1059,9 +1059,133 @@ So immature windows explain the **US** breach entirely, but **not India's**: eve
 3. **BLOCKED.** The missingness guard does not pass on the full population, in any of the four cells.
 4. **BLOCKED** behind 3 — no classifier output exists, so the user-facing string cannot be updated.
 5. **BLOCKED** behind 3 — this entry remains a *foundation*, not a closure.
-6. **NEW.** Decide, and pre-register, how the immature-window tail is handled, and separately address India's `BUY_HIGH_CONV` price-coverage gap. Neither may be chosen by trying options until the guard passes.
+6. **NEW.** Decide, and pre-register, how the immature-window tail is handled, and separately address India's `BUY_HIGH_CONV` price-coverage gap. Neither may be chosen by trying options until the guard passes. → **§18: the maturity rule is now PRE-REGISTERED, and India's gap is DIAGNOSED (it is not what §17.6 assumed).**
 
 **Until item 3 clears: no US edge, no India non-edge, no conviction non-lift, and no ranking-behaviour conclusion may be described as measured, proven, or absent.**
+
+---
+
+## §18 — Pass 4: the maturity contract is pre-registered, India's price gap is diagnosed, and readiness becomes a command (2026-08-22)
+
+**Status: STILL NOT CLOSED. No statistical result was computed in this pass, and none may be quoted from it.** This pass is governance and tooling. It deliberately ran no outcome analysis at all.
+
+### 18.1 Why the full table will ALWAYS contain an immature tail
+
+A short-horizon window entered on session *D* exits at *D+5*. Every run generated within the last five sessions is therefore *necessarily* unresolvable, on every future run of the audit, forever. That tail is not a data-quality defect and it never shrinks: as new runs arrive, new immature rows arrive with them.
+
+§17.6 applied the price-missingness guard to the **whole** table, immature tail included. That guard could never have passed — not on 2026-08-22, and not on any date. It was measuring the calendar, not the data. Its 0.139 / 0.442 / 0.198 / 0.192 differentials are dominated by `horizon_window_not_yet_complete`, and the reason the differential is so large is mechanical: the ≥85 gate and the ≤3 cap are *recent* policies, so `BUY_HIGH_CONV` and `PUBLISHED` rows concentrate in exactly the recent runs that cannot have matured yet, while `NON_BUY` rows span the entire history.
+
+### 18.2 The pre-registered estimand
+
+`audit_contract` §7 now defines the primary statistical population as:
+
+> **all otherwise-eligible observations whose complete horizon exit session had FINISHED before the fixed audit price-data cutoff.**
+
+Maturity is computed by `audit_contract.horizon_maturity()` from exactly six inputs — market, `run_generated_at`, the executable entry session, the fixed horizon trading-session count, the exchange calendar, and the fixed cutoff — and from nothing else. It cannot read a signal, a conviction, a publication flag, a realized return, a price, a provider response, an observed missingness rate, or whether including a row would help a result. **That is enforced by the function's signature, not by its docstring**: there is no parameter through which any of those could arrive, so a future change that wanted one would have to widen the signature in a visible diff.
+
+**This is a PRE-registration, and the timing is the entire point.** It is being recorded *before* the next current-policy outcome set matures — i.e. before anyone can know which way the rule moves any result. §17.6 probed this exact restriction *after* seeing the guard fail, found it cleared US but not India, and correctly refused to adopt it on those terms. Registering it now, in code, under test, with no result in hand, is what converts the same rule from a post-hoc rescue into a method.
+
+Supporting guarantees, each pinned by a test in `backend/tests/unit/test_conviction_audit_maturity.py`:
+
+| Guarantee | How it is enforced |
+|---|---|
+| Outcomes cannot change eligibility | `horizon_maturity` has no outcome parameter (signature test) + behavioural test |
+| Signal / conviction / publication cannot change eligibility | Parametrised over BUY/HOLD/SELL × conviction × published — identical verdict and identical exit session |
+| Extending the cutoff only moves rows immature → mature | Monotonicity walked over 45 real calendar days |
+| The exit session uses the right exchange calendar | Asserted to be a real session on that market's own calendar, exactly *N* sessions from entry |
+| Immature rows are dropped BEFORE any outcome or provider lookup | A spy snapshot records **zero** price questions for an immature row |
+| The population cannot be re-selected until the guard passes | `run_full_audit` may only *raise* on a breach; no `except MissingnessAbort`, no retry/fallback/widen path |
+| The maturity boundary is not a CLI knob | The cutoff is a frozen module constant; `--today` is **refused** in audit mode |
+
+### 18.3 Two-stage denominator waterfall
+
+Stage A (administrative eligibility) and Stage B (price resolution, **over mature rows only**) are now separate, each reconciling exactly:
+
+```
+STAGE A   fetched = horizon_mature_at_cutoff + administratively_immature + other_contract_exclusions
+STAGE B   mature  = price_resolved + genuine_price_missingness + non_finite_or_invalid_price
+```
+
+`horizon_window_not_yet_complete` is retired as a missingness reason. Immaturity carries its own code, `administratively_immature`, it is settled in Stage A, and it **can never enter the missingness percentage**. The missingness guard now runs over the pre-registered mature cohort only — while the immature tail is still reported in full, broken down by market, run date, signal, conviction group and publication group, so the claim "it is only immaturity" is checkable rather than trusted.
+
+One new reason code exists so nothing is silently reclassified: when the exchange calendar says a window is complete but the provider's own session list walks the entry past the cutoff, that is `provider_calendar_disagrees_with_exchange_calendar` — a **provider** defect, counted in Stage B, never returned to immaturity.
+
+### 18.4 The four states, which are not interchangeable
+
+| State | Meaning | Does waiting fix it? |
+|---|---|---|
+| **IMMATURE** | The horizon window has not finished at the cutoff. The outcome **does not exist yet**. Nothing is missing. | **Yes**, on a date computable in advance. |
+| **PRICE_UNRESOLVED** | The window HAS finished — the price exists in the world — and the provider did not supply it. | **No.** Only better sourcing fixes it. |
+| **NOT_IDENTIFIABLE** | The comparison cannot be estimated from this data at all (too few clusters, an empty group, an immature era). **No test was run.** | Only by more data, and only for the count-based causes. |
+| **NOT_PROVEN** | A real, adequately-powered test WAS run and did not support the claim. | Not applicable — this is a result. |
+
+`NOT_IDENTIFIABLE` must never be rendered as "no effect", and `NOT_PROVEN` must never be rendered as "does not work". An IMMATURE row is neither: it is an appointment, not evidence.
+
+### 18.5 India's genuine price gaps — diagnosed, and NOT what §17.6 assumed
+
+Row-level report over **mature rows only**, from the frozen 2026-08-22 extract and the same frozen price panel (read-only; nothing re-extracted, nothing re-fetched), via the new `--coverage-report` command:
+
+| Cell | Mature rows | Mature unresolved | Distinct symbols | Reason |
+|---|---|---|---|---|
+| IN / RESEARCH_PRIOR_CLOSE | 6,787 | 119 (1.75%) | 118 | `exit_close_missing` ×119 |
+| IN / EXECUTABLE_NEXT_OPEN | 6,453 | 114 (1.77%) | 114 | `exit_close_missing` ×114 |
+| US / RESEARCH_PRIOR_CLOSE | 6,406 | 5 (0.08%) | 1 | `exit_close_missing` ×5 |
+| US / EXECUTABLE_NEXT_OPEN | 5,755 | 6 (0.10%) | 2 | `entry_open_missing` ×4, `exit_close_missing` ×2 |
+
+**Verified reason codes.**
+
+- **`IN_PROVIDER_LAST_SESSION_LAG` — 119 of 119 and 114 of 114 India failures.** Every single failing India row has the **same** required exit session: **2026-08-21**, the last NSE session before the cutoff. Every failing symbol's provider history ends at **2026-08-20**. In the panel, **131 of 360** India symbols carry no 2026-08-21 bar at all, while **229 do** — and every failing symbol is a subset of those 131. The US panel has 2026-08-21 for **522 of 522** symbols.
+  - This is **not** delistings, **not** mergers, **not** symbol changes, and **not** an exchange-calendar disagreement: 2026-08-21 is a genuine NSE session that 229 symbols resolved normally, and no failing symbol is absent from the panel (all have ≥ 30 sessions of history). It is **provider recency**: the panel was fetched at `2026-08-22T15:44 UTC` and yfinance had not yet published the previous NSE session for roughly a third of NSE tickers.
+  - It concentrates in `BUY_HIGH_CONV` for the same mechanical reason as §18.1 — that group is tiny (41 and 28 mature rows), so 6 and 8 failures become 14.6% and 28.6%, which is what breaches the 0.10 differential.
+- **`US_SYMBOL_HISTORY_TRUNCATED` — SKYT, 6 rows.** The provider returned only 6 sessions (2026-07-17, then 2026-08-03…2026-08-07) for `SKYT`. A genuine symbol-level gap.
+- **`US_SINGLE_SESSION_GAP` — SCCO, 1 row.** 32 sessions present, `2026-08-10` absent.
+
+**Nothing was fixed, removed or remapped.** No failing symbol was dropped, no ticker mapping was changed, and no second provider was introduced. Any of those would clear the guard by altering the population *after* seeing that the population fails — the precise move §18.2 exists to forbid. The `.NS` suffix mapping was checked and is correct for every failing symbol.
+
+**Waiting alone does NOT resolve India's gap in general** — and this pass can now say *why* precisely, rather than assuming. The 2026-08-21 lag is self-healing for that particular session, but its *cause* is not: any audit whose price panel is fetched at essentially the same instant as its cutoff gives the provider no settlement lag, and NSE coverage lags NYSE coverage. The same breach will recur at every future cutoff unless the acquisition policy changes. That is a **separate decision requiring separate approval**, and it is **NOT implemented here**:
+
+> **DEFERRED DECISION — provider settlement lag and/or an NSE source hierarchy.** Candidate: require the price panel's fetch instant to trail the cutoff by *K* settled sessions, and/or add an NSE bhavcopy fallback beneath yfinance. Any such change must specify: the source hierarchy and precedence; the adjustment policy (the audit pins `auto_adjust=False`); corporate-action treatment; reconciliation rules between sources; licensing and reliability; and **the expected effect on BOTH comparison groups**, since a fallback that improves coverage asymmetrically is itself selection. It requires explicit approval before implementation.
+
+### 18.6 Readiness is now a command, not a judgement call
+
+```
+python backend/scripts/conviction_gate_backtest.py --readiness \
+    --markets IN US --horizons short \
+    --source extract:<frozen-extract> --price-snapshot-in <frozen-panel>
+```
+
+Read-only. It computes **no returns and no statistics**. It reports the cutoff, runs by market × policy era, mature and immature row counts, mature counts for every required comparison group, the minimum runs/rows/clusters required, the earliest calendar date each comparison could possibly become identifiable, whether mature-cohort price missingness still breaches the guard, and a final `READY_FOR_CLOSURE_RUN` / `NOT_READY`.
+
+Readiness depends **only** on pre-registered counts, dates and coverage. It can never depend on an observed win rate, effect size or p-value: the record type it consumes (`audit_readiness.ReadinessRow`) has no field for one. It **fails closed** — with no price panel, coverage is `UNKNOWN` and the verdict is `NOT_READY`; "we did not look" is not evidence that coverage is fine. The published-vs-unpublished floors are the **existing** contract minimums (`MIN_RUNS_PER_ERA_FOR_ESTIMATE = 8`, `MIN_RESOLVED_PER_GROUP_FOR_ESTIMATE = 30`, `MIN_CLUSTERS_FOR_INFERENCE = 20`), carried over unchanged and deliberately **not** lowered.
+
+**Current verdict, at cutoff `2026-08-22T00:00:00+00:00`: `NOT_READY` in all four cells.**
+
+| Cell | Mature | Immature | Mature coverage | Blockers |
+|---|---|---|---|---|
+| IN / RESEARCH_PRIOR_CLOSE | 6,787 | 1,279 | ❌ breach (0.135) | published-vs-unpublished below minimums; coverage |
+| IN / EXECUTABLE_NEXT_OPEN | 6,453 | 1,613 | ❌ breach (0.274) | published-vs-unpublished below minimums; coverage |
+| US / RESEARCH_PRIOR_CLOSE | 6,406 | 940 | ✅ within guard | published-vs-unpublished below minimums |
+| US / EXECUTABLE_NEXT_OPEN | 5,755 | 1,591 | ✅ within guard | all three comparisons below minimums |
+
+The binding constraint for published-vs-unpublished is the **`gate_plus_cap` era's youth**, not price data: it holds 5 runs (IN) and 5 runs (US), of which 2 / 0 / 2 / 0 are mature — against a floor of 8 runs, 30 rows per group and 20 date clusters. Note the mature `PUBLISHED` counts of **3 and 4 rows**: this comparison is nowhere near identifiable, and the readiness command is what makes that a stated fact rather than something discovered by running an analysis and squinting at it.
+
+**On dates.** "Around 2026-09-10" is a **planning estimate only** — useful for scheduling, quotable for nothing. **The `--readiness` command is authoritative.** For `US / EXECUTABLE_NEXT_OPEN`, where existing runs alone will satisfy the count floors, the command computes **`2026-08-26`** for both `buy_vs_non_buy` and `conviction_within_buy`; for published-vs-unpublished, in every cell, it correctly returns **no date at all**, because the runs required do not exist yet and it will not invent a projection to fill the gap.
+
+### 18.7 The 2026-08-22 run produced NO statistical conclusion
+
+To be unambiguous, because an aborted run is easy to misremember as a null result: **the 2026-08-22 closure attempt aborted at the guard before any comparison was classified. It produced no win rate, no effect size, no p-value and no claim level. It is not evidence of an effect, and it is not evidence of no effect.** Pass 2's 824-row India figure likewise remains pipeline-validation evidence only, superseded and unquotable.
+
+### 18.8 User-facing copy is UNCHANGED
+
+Untouched, deliberately: no classifier output exists, so there is nothing to promote. The short-horizon `conviction_semantic` string keeps its current cautious re-audit wording. No frontend file changed in this pass.
+
+### 18.9 What must still happen
+
+1. **Provider coverage.** Approve or reject the deferred settlement-lag / NSE-source decision in §18.5. Until then India's mature-cohort guard keeps breaching.
+2. **Wait.** The `gate_plus_cap` era must accumulate enough runs for published-vs-unpublished to become identifiable. `--readiness` says when; nothing else does.
+3. **Then, and only then**, a closure run — against the pre-registered mature population, at the frozen cutoff, from an empty directory, in one invocation.
+
+**Unchanged in this pass:** universe, BUY/HOLD/SELL logic, ranking weights, the 85.0 threshold, the max-3 cap, learning flags, scheduling, provider routing, India/US separation, production rows, schema, and all user-facing copy. No migration. Read-only throughout. Transaction costs and tax-aware P&L remain explicitly deferred; both measures are gross and neither is a net return or investor P&L.
 
 ## Session protocol
 
