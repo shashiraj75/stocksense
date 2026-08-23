@@ -1608,21 +1608,33 @@ def _generate_picks_inner(
     _mem_guard = MemoryCircuitBreaker(market, job_id=job_id)
     # 2026-07-23/24 incident observability: the July 23 run was already at
     # ~75% of the container limit BEFORE any Phase 1 work (baseline drift in
-    # the long-lived shared process). Record the starting point every run so
-    # that drift is visible in healthy runs too, and — for the US run, whose
-    # SEC/yfinance-heavy pipeline is the one that actually collides with the
-    # ceiling — start from the lowest achievable baseline by clearing the
-    # safe rebuildable caches and trimming the allocator up front.
+    # the long-lived shared process, which also serves live API traffic
+    # concurrently). Record the starting point every run so that drift is
+    # visible in healthy runs too, and start from the lowest achievable
+    # baseline by clearing the safe rebuildable caches and trimming the
+    # allocator up front.
+    #
+    # 2026-08-23 IN incident: this pre-Phase-1 cleanup was originally scoped
+    # to `market == "US"` only, since only US's SEC/yfinance-heavy pipeline
+    # collided with the ceiling at the time — IN's candidate pool was still
+    # small (~50). Sprint #014 (2026-08-18) raised both markets' candidate
+    # pool to the same ~400-symbol scale, so IN now shares the identical
+    # baseline-drift exposure this guard exists to prevent. Two consecutive
+    # IN runs (job 79d351ef.../0bc0c3cd..., 2026-08-23) confirmed this
+    # directly: both aborted at Phase-1 task 30 — i.e. the market=="US"
+    # gate skipped exactly the cleanup this same comment already warned
+    # about — at 90.4% memory, without ever reaching the 72% cleanup
+    # threshold first. Fix: apply to both markets; a no-op when memory is
+    # already low or when no container limit is visible (unaffected).
     _mem_guard.observe("run_start")
-    if market == "US":
-        _mem_guard.release_memory("run_start")
-        # Fail fast if cleanup couldn't bring the container back under the
-        # abort threshold: without this, the next threshold evaluation is
-        # check() at Phase-1 task 30 — i.e. 30 expensive prediction tasks
-        # executed by a process already past its abort limit. Abort-only
-        # (never re-runs the cleanup that just executed); no-op when no
-        # container limit is visible.
-        _mem_guard.enforce_abort_threshold("run_start_post_cleanup")
+    _mem_guard.release_memory("run_start")
+    # Fail fast if cleanup couldn't bring the container back under the
+    # abort threshold: without this, the next threshold evaluation is
+    # check() at Phase-1 task 30 — i.e. 30 expensive prediction tasks
+    # executed by a process already past its abort limit. Abort-only
+    # (never re-runs the cleanup that just executed); no-op when no
+    # container limit is visible.
+    _mem_guard.enforce_abort_threshold("run_start_post_cleanup")
 
     # Learning Alpha Engine remediation, Phase 1: containment state is fixed
     # for the whole run — computed once, applied to every horizon below, and
