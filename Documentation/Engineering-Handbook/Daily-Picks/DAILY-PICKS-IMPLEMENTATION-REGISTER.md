@@ -837,6 +837,24 @@ Option A was chosen. Rationale: DP-034's own original justification for reusing 
 
 **7. Rollback.** Revert the branch's commit(s); the change is a single conditional string-literal split in `daily_picks.py` plus one additive dataclass field in `thresholds.py` — reverting restores DP-035's single shared caveat text for all three horizons, with no other side effects (no migration, no gate-value change to reverse).
 
+---
+
+## INCIDENT — first-ever IN Daily Picks memory-guard abort, run-start gate extended to IN (2026-08-23)
+
+**1. Incident timeline (UTC).** Scheduled trigger `daily_picks_in.yml` run #34 (2026-08-23 20:54 UTC) accepted (202), backend job `79d351ef-db03-4195-8f78-09f4a64a8398` aborted at 20:56:44, Phase 1, 29/1014 tasks (candidates × 3 horizons). Manual `workflow_dispatch` retry (21:29:58 UTC) accepted, job `0bc0c3cd-306f-4fe3-a88a-c6e28b0dadf5` aborted at 21:32:04, Phase 1, 29/1014 tasks — same signature, different job_id, same Railway process (no restart between attempts).
+
+**2. Root cause — a pre-existing US-only safeguard never extended to IN.** Direct log inspection: `services.memory_guard — [IN] ABORT threshold reached: 90.4% (7233003520/8000000000 bytes) at phase=phase_1 processed=30 total=1014`, with `cleanup_invoked=False malloc_trim_available=False malloc_trim_invoked=False`. `daily_picks.py`'s `_generate_picks_inner` had a pre-Phase-1 baseline cleanup (`_mem_guard.release_memory("run_start")` + `enforce_abort_threshold("run_start_post_cleanup")`), added for the 2026-07-23/24 US incident (see above) and gated `if market == "US":` — at the time IN's candidate pool was small (~50) and never collided with the 8 GB ceiling. [Sprint #014](../Releases/Sprint-014-Daily-Picks-Cap-Stratification-and-Confidence-Priority.md) (2026-08-18) raised `_N_CANDIDATES` to 400 and switched IN to the same `stock_fundamentals_cache`-sourced stratified universe as US, giving IN the identical candidate-pool scale — but the run-start gate was never revisited for that change. Result: IN runs a process already carrying baseline-drift memory (the shared, long-lived Railway process also serves live API traffic concurrently — confirmed via interleaved `/api/predictions/*`/`/api/stocks/quote` log lines during the failed runs) straight into Phase 1 with zero pre-cleanup, hitting `check()`'s first evaluation point (task 30, per the `done % 30 == 0` cadence) already past the 80% abort threshold — the exact failure mode the run-start guard's own code comment already named as the risk of skipping it.
+
+**3. Railway plan confirmed at its ceiling.** Verified directly in Railway Settings → Scale: Memory `8 GB`, Plan limit `8 GB` — no headroom to raise the limit without a paid plan upgrade (not pursued; a billing decision, not a code fix).
+
+**4. Fix.** `services/daily_picks.py`: removed the `if market == "US":` gate — `release_memory("run_start")` and `enforce_abort_threshold("run_start_post_cleanup")` now run for both markets unconditionally (no-op when memory is already low or no container limit is visible, per the function's own existing contract). No US behavior change (US already ran this path). `tests/regression/test_daily_picks_run_start_abort.py`: parametrized all four run-start tests (`test_run_aborts_immediately_when_cleanup_leaves_memory_at_81_pct`, `test_run_start_abort_happens_before_any_expensive_work`, `test_run_proceeds_normally_when_cleanup_leaves_memory_at_79_pct`, `test_run_with_no_visible_limit_never_false_aborts_at_start`) over `["US", "IN"]` — 9 tests total (was 5), all passing. Adjacent regression suites (`test_memory_guard_release.py`, `test_daily_picks_incident_isolation_and_mutation_guards.py`) re-run clean (25/25).
+
+**5. Full suite baseline check.** `pytest tests/` shows 175 pre-existing failures (duplicate ` 2.py`/` 3.py` untracked file copies in `tests/unit/`, `tests/regression/`, and elsewhere causing import collisions — a pre-existing repo-hygiene issue, confirmed via `git stash` to fail identically with or without this fix) — none in any `daily_picks`/`memory_guard` test file. Not fixed here (out of scope: unrelated to this incident).
+
+**6. Not yet naturally verified in production.** This fix has not yet been deployed/observed completing a real IN generation run — per this register's own standing protocol (item 11 above), the next scheduled or manually-triggered IN run after deployment is the natural verification point. Today's picks remain unpublished (`has_today: false` as of this incident) until that run completes.
+
+**Classification: FIX IMPLEMENTED AND TEST-VERIFIED — PRODUCTION DEPLOYMENT AND NATURAL-RUN VERIFICATION PENDING.**
+
 ## Session protocol
 
 At the beginning of every Daily Picks engineering session:
