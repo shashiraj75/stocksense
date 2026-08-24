@@ -1507,6 +1507,29 @@ def generate_picks(market: str = "IN", job_id: str | None = None) -> dict:
         if _hb_thread is not None:
             _hb_thread.join(timeout=2.0)
 
+        # 2026-08-24 sustained-high-baseline remediation: the existing
+        # memory_guard release (safe-cache clear + gc.collect + malloc_trim)
+        # only ran at the START of the NEXT run (_generate_picks_inner's
+        # run_start cleanup) — a successful run's own end only logged a
+        # read-only summary (log_summary(), no cleanup), and a run that
+        # raised skipped straight past that summary to here with no cleanup
+        # at all. Result: whatever this run's peak was (safe-cache contents
+        # plus allocator-arena fragmentation from Phase 1's DataFrames/
+        # models) stayed resident for the entire idle gap until the next
+        # scheduled/manual run picked it up — confirmed in Railway
+        # production metrics as a ~4.4-4.9GB baseline (of an 8GB limit)
+        # that never falls even when CPU is idle. Runs on EVERY terminal
+        # path (success or exception) using the identical, already-proven
+        # mechanism the run-start guard relies on; never touches job
+        # state, payload, or the already-recorded terminal status above.
+        try:
+            from services.memory_guard import MemoryCircuitBreaker
+            _end_guard = MemoryCircuitBreaker(market, job_id=job_id)
+            _end_guard.release_memory("generate_picks_end")
+            _end_guard.log_summary("generate_picks_end")
+        except Exception as exc:
+            log.warning(f"[picks] [{market}] post-run memory release failed (non-fatal): {exc}")
+
         # ── Phase 8 + Telegram: non-critical, post-persistence ────────────────
         # Runs only on success (_post_success_market set).  Isolated here so
         # any exception cannot overwrite the already-written job terminal status.
