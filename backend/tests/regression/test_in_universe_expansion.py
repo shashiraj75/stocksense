@@ -16,6 +16,8 @@ no Yahoo, no network, no live DB.
 
 from unittest.mock import patch
 
+import pytest
+
 import services.daily_picks as dp
 
 
@@ -37,10 +39,13 @@ def test_in_healthy_cache_stratifies_into_all_three_tiers():
     assert degraded is False
     assert raw == 500
     tier_counts = meta["tier_counts"]
-    assert tier_counts["large"] == 100     # rank 1-100, exactly the quota
-    assert tier_counts["mid"] == 120       # capped at quota, 150 were available
-    assert tier_counts["small"] == 120     # capped at quota, 250 were available
-    assert len(symbols) == 340             # 100 + 120 + 120 — no cross-tier backfill
+    # 2026-09: IN's mid/small quotas raised 120 -> 135 each (the +30
+    # candidate-pool increase); "large" stays rank-capped at exactly 100
+    # regardless of its (unchanged, still-moot) 160 quota value.
+    assert tier_counts["large"] == 100     # rank 1-100, quota irrelevant here
+    assert tier_counts["mid"] == 135       # capped at the new quota, 150 were available
+    assert tier_counts["small"] == 135     # capped at the new quota, 250 were available
+    assert len(symbols) == 370             # 100 + 135 + 135 — no cross-tier backfill
 
 
 def test_in_tier_boundaries_are_exact():
@@ -143,6 +148,55 @@ def test_universe_and_candidate_sizing():
 def test_tier_quota_sums_to_target_universe_size():
     assert sum(dp._TIER_QUOTA.values()) == dp._TARGET_UNIVERSE_SIZE
     assert dp._TIER_QUOTA == {"large": 160, "mid": 120, "small": 120}
+
+
+def test_in_market_uses_the_staged_370_candidate_pool_us_unaffected():
+    """2026-09: IN-only +30 candidate-pool increase (a deliberately smaller
+    first step than an initially considered +50/390 — see
+    _TARGET_UNIVERSE_SIZE_IN's own comment for why) — NOT 400 -> 430, but
+    340 -> 370. IN's "large" tier is hard-capped at SEBI rank 1-100 in
+    _assign_cap_tiers regardless of quota value, so IN's real achievable
+    universe under the ORIGINAL quota (160/120/120) was always
+    min(100, 160) + 120 + 120 = 340, never the nominal 400. The +30 is
+    delivered entirely via mid/small (120 -> 135 each); "large"'s quota is
+    left at 160 (unchanged, moot either way — never reachable past 100)."""
+    assert dp._target_universe_size_for_market("IN") == 370
+    assert dp._n_candidates_for_market("IN") == 370
+    assert dp._tier_quota_for_market("IN") == {"large": 160, "mid": 135, "small": 135}
+    # The quota dict's own sum (430) intentionally does NOT equal the
+    # target (370) — "large" contributes only 100 in practice regardless
+    # of its 160 quota value; this is the realistic achievable ceiling,
+    # not sum(quota.values()).
+    assert 100 + dp._tier_quota_for_market("IN")["mid"] + dp._tier_quota_for_market("IN")["small"] \
+        == dp._target_universe_size_for_market("IN")
+
+    # US must resolve to the exact original, unmodified values.
+    assert dp._target_universe_size_for_market("US") == dp._TARGET_UNIVERSE_SIZE == 400
+    assert dp._n_candidates_for_market("US") == dp._N_CANDIDATES == 400
+    assert dp._tier_quota_for_market("US") == dp._TIER_QUOTA == {"large": 160, "mid": 120, "small": 120}
+
+
+def test_in_mid_and_small_quotas_increased_identically_by_15():
+    """The +30 increase is split evenly across mid/small (the only two
+    tiers IN's quota can actually move) — not an arbitrary or lopsided
+    split, and "large" is deliberately untouched since raising it would be
+    a no-op given the rank-based cap."""
+    base = dp._TIER_QUOTA
+    staged = dp._tier_quota_for_market("IN")
+    assert staged["large"] == base["large"]
+    assert staged["mid"] == base["mid"] + 15
+    assert staged["small"] == base["small"] + 15
+    assert (staged["mid"] - base["mid"]) + (staged["small"] - base["small"]) == 30
+
+
+def test_us_tier_ratio_is_still_exactly_40_30_30():
+    """US's own methodology (40/30/30 large/mid/small) is completely
+    unaffected by the IN-only change — verified against the unmodified
+    base _TIER_QUOTA/_TARGET_UNIVERSE_SIZE, not the market-aware helpers,
+    so this can never accidentally pass due to IN-side changes."""
+    assert dp._TIER_QUOTA["large"] / dp._TARGET_UNIVERSE_SIZE == pytest.approx(0.40)
+    assert dp._TIER_QUOTA["mid"] / dp._TARGET_UNIVERSE_SIZE == pytest.approx(0.30)
+    assert dp._TIER_QUOTA["small"] / dp._TARGET_UNIVERSE_SIZE == pytest.approx(0.30)
 
 
 def test_medium_long_tier_quota_sums_to_six():
