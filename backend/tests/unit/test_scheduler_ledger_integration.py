@@ -348,13 +348,24 @@ class TestShortRemainsInactive:
 # ─────────────────────────────────────────────────────────────────────────
 
 class TestCadenceUnchanged:
-    def test_medium_daily_long_sunday_constants_unchanged(self):
+    def test_medium_and_long_now_share_the_weekly_saturday_cadence(self):
+        """2026-09: supersedes the prior 'medium daily / long weekly-Sunday'
+        assertion — that cadence was intentionally replaced with a single
+        consolidated weekly window (every Saturday 12:00 UTC) for both
+        horizons. This guard now protects the NEW cadence against
+        accidental drift, and explicitly proves the OLD IST-anchored daily
+        constants are gone (not just that new ones were added alongside
+        them)."""
         import inspect
         import api.main as main_module
         src = inspect.getsource(main_module._validation_schedule_loop)
-        assert "TARGET_HOUR = 6" in src
-        assert "weekday() == 6" in src
-        assert "5 * 60" in src  # 5-minute inter-universe gap preserved
+        # New cadence: UTC-anchored weekly slot, shared helper, both horizons.
+        assert "next_saturday_1200_utc" in src
+        assert 'for horizon in ("medium", "long")' in src
+        assert "5 * 60" in src  # 5-minute inter-universe/horizon gap preserved
+        # Old cadence must be fully gone, not merely superseded in effect.
+        assert "TARGET_HOUR = 6" not in src
+        assert "weekday() == 6" not in src
 
     def test_universe_ordering_unchanged(self):
         import inspect
@@ -880,13 +891,15 @@ class TestCatchupBootstrapSafety:
     def test_cadence_and_short_and_manual_behavior_unaffected_by_rollout1(self):
         """Sanity cross-check (Stage 3's non-regression list) — this
         correction touches only the catch-up bootstrap path; the
-        scheduler's own cadence constants and the short-horizon inactivity
-        invariant are untouched by it."""
+        short-horizon inactivity invariant is untouched by it. (The
+        scheduler's own cadence constants are asserted separately in
+        TestCadenceUnchanged, which as of 2026-09 protects the new weekly
+        Saturday cadence rather than the superseded daily one — this test
+        no longer duplicates that assertion, to avoid two independently
+        maintained copies of the same literal-string check.)"""
         import inspect
         import api.main as main_module
         src = inspect.getsource(main_module._validation_schedule_loop)
-        assert "TARGET_HOUR = 6" in src
-        assert "weekday() == 6" in src
         assert "5 * 60" in src
         # V-SCHED1C2B — the existing medium/long loop itself must still
         # never reference horizon="short"; automatic short now exists,
@@ -1023,18 +1036,22 @@ class TestAutoShortSchedulerStructure:
         src = inspect.getsource(main_module._short_validation_schedule_loop)
         assert "asyncio.sleep(3600)" in src
 
-    def test_medium_loop_source_is_byte_identical_to_pre_1c2b(self):
+    def test_medium_loop_source_unaffected_by_the_short_scheduler_addition(self):
         """Direct diff-style proof that _validation_schedule_loop's own
-        body was not touched by this correction — the only sanctioned
-        change anywhere near it is the ADDITION of a new, separate
-        function after it."""
+        body was not touched by the V-SCHED1C2B short-scheduler addition —
+        the only sanctioned change anywhere near it was the ADDITION of a
+        new, separate function after it. (2026-09: the literal cadence
+        constants this originally asserted — TARGET_HOUR=6, weekday()==6 —
+        were themselves later, separately, and intentionally changed by
+        the weekly-Saturday schedule migration; see TestCadenceUnchanged
+        for that guard. This test now asserts only the properties that
+        remain true regardless of which cadence is active: the settle
+        delay and the inter-run stagger.)"""
         import inspect
         import api.main as main_module
         src = inspect.getsource(main_module._validation_schedule_loop)
-        assert "TARGET_HOUR = 6" in src
         assert "await asyncio.sleep(180)" in src
         assert "5 * 60" in src
-        assert "weekday() == 6" in src
 
     def test_no_horizon_short_execution_reachable_outside_gated_functions(self):
         import inspect

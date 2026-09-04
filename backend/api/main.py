@@ -316,13 +316,27 @@ async def _short_validation_schedule_loop():
 
 async def _validation_schedule_loop():
     """
-    Run walk-forward validation on a schedule (IST = UTC+5:30):
-      - Medium horizon: daily at 06:00 IST (00:30 UTC)
-      - Long horizon:   every Sunday at 06:00 IST (00:30 UTC)
+    Run walk-forward validation on a schedule, UTC-anchored:
+      - Medium AND long horizons: every Saturday at 12:00 UTC
+        (16:00 Dubai / 17:30 IST).
     Sleeps until the next scheduled window, then fires in a thread pool
     so it never blocks the event loop.
 
-    V-SCHED1C1 — each run now goes through
+    2026-09 SES-006-governed change (explicit user approval): consolidated
+    from "medium daily at 06:00 IST + long weekly on Sunday at 06:00 IST"
+    to this single weekly Saturday 12:00 UTC window for BOTH horizons —
+    this is the "daily to weekly" schedule change. The wake/trigger cadence
+    is the ONLY thing that changed: universes (nifty100, midcap, us —
+    unmodified, including "us", whose existing pass/fail governance state
+    is untouched), the admission path, and the ledger/fencing/persistence
+    contract below are byte-for-byte identical to before. See
+    services/market_calendar.py's next_saturday_1200_utc/
+    last_saturday_1200_utc — the single shared implementation this loop,
+    _catchup_validation, and the /status endpoint's displayed next-run all
+    call, so there is exactly one definition of "the weekly slot", never
+    three independently maintained copies of the same day-of-week math.
+
+    V-SCHED1C1 — each run still goes through
     services.validation_engine.execute_admitted_validation(), the single
     shared admission path (also used by _catchup_validation and the
     authenticated manual /run route) built on the V-SCHED1B durable ledger
@@ -334,64 +348,50 @@ async def _validation_schedule_loop():
     """
     from datetime import datetime, timezone, timedelta
     import uuid
+    from services.market_calendar import next_saturday_1200_utc
     await asyncio.sleep(180)  # let server fully settle first
     log.info("[validation_scheduler] started")
     IST = timezone(timedelta(hours=5, minutes=30))
-    TARGET_HOUR = 6  # 6:00 AM IST
+    DUBAI = timezone(timedelta(hours=4))
     owner = f"scheduler-{uuid.uuid4()}"
 
     while True:
         try:
-            now_ist = datetime.now(IST)
-            # Next 06:00 IST
-            next_run = now_ist.replace(hour=TARGET_HOUR, minute=0, second=0, microsecond=0)
-            if now_ist >= next_run:
-                next_run += timedelta(days=1)
-            sleep_secs = (next_run - now_ist).total_seconds()
-            log.info(f"[validation_scheduler] next medium run at {next_run.isoformat()} IST (in {sleep_secs/3600:.1f}h)")
+            now_utc = datetime.now(timezone.utc)
+            next_run = next_saturday_1200_utc(now_utc)  # UTC-aware; the sole source of truth for the trigger instant
+            sleep_secs = (next_run - now_utc).total_seconds()
+            log.info(
+                f"[validation_scheduler] next weekly run at {next_run.isoformat()} "
+                f"({next_run.astimezone(DUBAI).strftime('%a %H:%M')} Dubai / "
+                f"{next_run.astimezone(IST).strftime('%a %H:%M')} IST) (in {sleep_secs/3600:.1f}h)"
+            )
             await asyncio.sleep(sleep_secs)
 
-            # Run medium validation for all three universes — staggered by 5 min each
+            # Run medium AND long validation for all three universes —
+            # both horizons now share the single weekly slot, staggered by
+            # 5 min between every horizon/universe pair so nothing runs
+            # concurrently on the same admission owner.
             from services.validation_engine import execute_admitted_validation
             loop = asyncio.get_event_loop()
-            slot_instant = next_run.astimezone(timezone.utc)
-            for univ in ("nifty100", "midcap", "us"):
-                try:
-                    log.info(f"[validation_scheduler] starting medium/{univ} run…")
-                    result = await loop.run_in_executor(
-                        None,
-                        lambda u=univ: execute_admitted_validation(
-                            horizon="medium", universe=u, trigger_type="scheduler", owner=owner,
-                            scheduled_slot=slot_instant, schedule_version="v1",
-                        ),
-                    )
-                    if result.get("ok"):
-                        log.info(f"[validation_scheduler] medium/{univ} complete (run_id={result.get('run_id')})")
-                    else:
-                        log.warning(f"[validation_scheduler] medium/{univ} rejected/failed — reason={result.get('reason')}")
-                except Exception as e:
-                    log.warning(f"[validation_scheduler] medium/{univ} error: {e}")
-                await asyncio.sleep(5 * 60)  # 5-min gap between universe runs
-
-            # Run long only on Sundays (weekday 6) — all three universes
-            if datetime.now(IST).weekday() == 6:
+            slot_instant = next_run  # already UTC-aware
+            for horizon in ("medium", "long"):
                 for univ in ("nifty100", "midcap", "us"):
                     try:
-                        log.info(f"[validation_scheduler] Sunday — starting long/{univ} run…")
+                        log.info(f"[validation_scheduler] starting {horizon}/{univ} run…")
                         result = await loop.run_in_executor(
                             None,
-                            lambda u=univ: execute_admitted_validation(
-                                horizon="long", universe=u, trigger_type="scheduler", owner=owner,
+                            lambda h=horizon, u=univ: execute_admitted_validation(
+                                horizon=h, universe=u, trigger_type="scheduler", owner=owner,
                                 scheduled_slot=slot_instant, schedule_version="v1",
                             ),
                         )
                         if result.get("ok"):
-                            log.info(f"[validation_scheduler] long/{univ} complete (run_id={result.get('run_id')})")
+                            log.info(f"[validation_scheduler] {horizon}/{univ} complete (run_id={result.get('run_id')})")
                         else:
-                            log.warning(f"[validation_scheduler] long/{univ} rejected/failed — reason={result.get('reason')}")
+                            log.warning(f"[validation_scheduler] {horizon}/{univ} rejected/failed — reason={result.get('reason')}")
                     except Exception as e:
-                        log.warning(f"[validation_scheduler] long/{univ} error: {e}")
-                    await asyncio.sleep(5 * 60)
+                        log.warning(f"[validation_scheduler] {horizon}/{univ} error: {e}")
+                    await asyncio.sleep(5 * 60)  # 5-min gap between horizon/universe runs
 
         except Exception as e:
             log.warning(f"[validation_scheduler] scheduler error: {e}")
@@ -638,45 +638,50 @@ async def lifespan(app: FastAPI):
     # suppress it. Coverage is deliberately NOT expanded to midcap/us/long
     # in this phase — same scope as the pre-V-SCHED1C1 catch-up.
     async def _catchup_validation():
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timezone
         import uuid
+        from services.market_calendar import last_saturday_1200_utc
         await asyncio.sleep(300)  # wait 5 min for server to fully settle
         try:
-            IST = timezone(timedelta(hours=5, minutes=30))
-            now = datetime.now(IST)
-            today_6am = now.replace(hour=6, minute=0, second=0, microsecond=0)
-            if now < today_6am:
-                return  # before today's scheduled window — nothing to catch up
+            now_utc = datetime.now(timezone.utc)
+            # 2026-09: generalized from "today's 06:00 IST slot" (daily) to
+            # "this week's Saturday 12:00 UTC slot" (weekly) — the direct
+            # analogue for the new cadence, using the same shared helper
+            # the live scheduler uses (services/market_calendar.py) so slot
+            # identity always matches between the two trigger sources.
+            this_weeks_slot = last_saturday_1200_utc(now_utc)
+            if now_utc < this_weeks_slot:
+                return  # before this week's scheduled window — nothing to catch up
             from services.validation_engine import (
                 get_or_create_schedule_slot, execute_admitted_validation, has_established_schedule_baseline,
             )
             # V-SCHED1C1-ROLLOUT1 — bootstrap safety: an empty, never-
             # activated ledger (the very first deployment of this feature,
-            # started after 06:00 IST) must NOT be treated as "a run was
-            # missed". get_or_create_schedule_slot would otherwise create
-            # today's slot on the spot and catch-up would immediately fire
-            # a validation run on first boot — there is nothing to have
-            # missed yet. Once the normal scheduler (or a genuine future
-            # catch-up) has established ANY slot for this identity, this
-            # guard is permanently satisfied and normal catch-up behavior
-            # resumes unchanged.
+            # started after this week's Saturday 12:00 UTC) must NOT be
+            # treated as "a run was missed". get_or_create_schedule_slot
+            # would otherwise create this week's slot on the spot and
+            # catch-up would immediately fire a validation run on first
+            # boot — there is nothing to have missed yet. Once the normal
+            # scheduler (or a genuine future catch-up) has established ANY
+            # slot for this identity, this guard is permanently satisfied
+            # and normal catch-up behavior resumes unchanged.
             if not has_established_schedule_baseline(horizon="medium", universe="nifty100", schedule_version="v1"):
                 log.info(
                     "[catchup] no established schedule baseline yet for medium/nifty100 — "
                     "this is the first deployment, not a missed run; skipping bootstrap "
                     "catch-up. The normal scheduler will establish the first slot at the "
-                    "next 06:00 IST window."
+                    "next Saturday 12:00 UTC window."
                 )
                 return
-            slot_instant = today_6am.astimezone(timezone.utc)
+            slot_instant = this_weeks_slot  # already UTC-aware
             slot = get_or_create_schedule_slot(
                 horizon="medium", universe="nifty100", scheduled_slot=slot_instant,
-                schedule_version="v1", now=datetime.now(timezone.utc),
+                schedule_version="v1", now=now_utc,
             )
             if slot["status"] != "due":
                 log.info(f"[catchup] medium/nifty100 slot already {slot['status']} — skipping")
                 return
-            log.info("[catchup] missed today's 6 AM validation — running now…")
+            log.info("[catchup] missed this week's Saturday 12:00 UTC validation — running now…")
             owner = f"catchup-{uuid.uuid4()}"
             loop2 = asyncio.get_running_loop()
             result = await loop2.run_in_executor(
