@@ -1,5 +1,5 @@
 "use client";
-import { useState, useRef } from "react";
+import React, { useState, useRef, useMemo } from "react";
 import Link from "next/link";
 import clsx from "clsx";
 import { ExternalLink, Check, X, ChevronDown, ChevronUp } from "lucide-react";
@@ -11,6 +11,9 @@ import { seedInitialCursor, dedupeAppend } from "@/utils/closedTradeHistoryPagin
 import { runIfNotInFlight } from "@/utils/inFlightGuard";
 import { outcomeLabel, shouldShowBreakEven } from "@/utils/paperTradeOutcome";
 import { isTradePostmortemPricePathEnabled } from "@/utils/featureFlags";
+import { groupClosedTradesByMonth, groupClosedTradesByYear } from "@/utils/groupTradesByPeriod";
+
+type GroupMode = "none" | "month" | "year";
 
 const fmt = (n: number, dec = 2, locale = "en-IN") =>
   n.toLocaleString(locale, { minimumFractionDigits: dec, maximumFractionDigits: dec });
@@ -133,6 +136,11 @@ export function ClosedTradeHorizonBlock({
   const [olderVisible, setOlderVisible] = useState(false);
   const [olderLoaded, setOlderLoaded] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  // Month/Year grouping is purely a display concern over rows already
+  // fetched/paginated above — it never affects what's fetched, only how
+  // the already-rendered rows are sectioned. Defaults to "month" (the
+  // most commonly useful grouping for reviewing recent activity).
+  const [groupMode, setGroupMode] = useState<GroupMode>("month");
 
   // The sole de-duplication key across every render source in this block
   // (latest_trades + any already-fetched older pages) — trade_id only.
@@ -188,6 +196,21 @@ export function ClosedTradeHorizonBlock({
   };
 
   const remainingCount = earlier_trade_count - olderTrades.length;
+
+  // Grouping is a pure display transform over exactly the rows already
+  // rendered without grouping (latest_trades + visible older pages) — it
+  // never fetches, sorts across pages differently, or affects pagination
+  // state. Recomputed only when the underlying visible rows or the
+  // selected mode change.
+  const visibleTrades = useMemo(
+    () => [...latest_trades, ...(olderVisible ? olderTrades : [])],
+    [latest_trades, olderVisible, olderTrades],
+  );
+  const groupedTrades = useMemo(() => {
+    if (groupMode === "month") return groupClosedTradesByMonth(visibleTrades);
+    if (groupMode === "year") return groupClosedTradesByYear(visibleTrades);
+    return [];
+  }, [groupMode, visibleTrades]);
 
   return (
     <div className={clsx("bg-dark-card border border-dark-border rounded-xl overflow-hidden border-l-4", accent)}>
@@ -252,6 +275,24 @@ export function ClosedTradeHorizonBlock({
               </span>
             </span>
           </div>
+          <div className="px-4 py-2 flex items-center gap-2 text-[11px] text-gray-500 border-b border-dark-border/60">
+            <span>Group by:</span>
+            {(["none", "month", "year"] as const).map(mode => (
+              <button
+                key={mode}
+                onClick={() => setGroupMode(mode)}
+                aria-pressed={groupMode === mode}
+                className={clsx(
+                  "px-2 py-0.5 rounded-full border transition-colors capitalize",
+                  groupMode === mode
+                    ? "border-brand-500 text-brand-400 bg-brand-500/10"
+                    : "border-dark-border text-gray-500 hover:text-gray-300",
+                )}
+              >
+                {mode === "none" ? "None" : mode}
+              </button>
+            ))}
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -267,8 +308,29 @@ export function ClosedTradeHorizonBlock({
                 </tr>
               </thead>
               <tbody>
-                {latest_trades.map(t => <ClosedTradeRow key={t.id} trade={t} />)}
-                {olderVisible && olderTrades.map(t => <ClosedTradeRow key={t.id} trade={t} />)}
+                {groupMode === "none" ? (
+                  <>
+                    {latest_trades.map(t => <ClosedTradeRow key={t.id} trade={t} />)}
+                    {olderVisible && olderTrades.map(t => <ClosedTradeRow key={t.id} trade={t} />)}
+                  </>
+                ) : (
+                  groupedTrades.map(group => (
+                    <React.Fragment key={group.key}>
+                      <tr className="bg-white/[0.03]">
+                        <td
+                          colSpan={isTradePostmortemPricePathEnabled() ? 8 : 7}
+                          className="px-4 py-1.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide"
+                        >
+                          {group.label}
+                          <span className="ml-2 font-normal normal-case text-gray-600">
+                            ({group.trades.length} trade{group.trades.length === 1 ? "" : "s"})
+                          </span>
+                        </td>
+                      </tr>
+                      {group.trades.map(t => <ClosedTradeRow key={t.id} trade={t} />)}
+                    </React.Fragment>
+                  ))
+                )}
               </tbody>
             </table>
           </div>

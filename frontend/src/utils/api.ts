@@ -693,6 +693,30 @@ export const fetchOlderClosedTrades = (
     },
   }).then((r) => r.data);
 
+export type PnlPeriod = "day" | "week" | "month" | "year";
+
+export interface PnlPeriodBucket {
+  period_start: string;
+  in_realized_pnl: number;
+  us_realized_pnl_usd: number;
+  in_trade_count: number;
+  us_trade_count: number;
+}
+
+export interface PnlByPeriodResponse {
+  period: PnlPeriod;
+  buckets: PnlPeriodBucket[];
+}
+
+// Overview P&L breakdown for the Daily/Weekly/Monthly/Yearly analysis
+// section. Only returns periods that had at least one closed trade —
+// never a dense, zero-filled calendar; the caller decides whether/how to
+// fill gaps for chart continuity.
+export const fetchPnlByPeriod = (period: PnlPeriod, limit = 30) =>
+  api.get<PnlByPeriodResponse>("/api/paper-trading/pnl-by-period", {
+    params: { period, limit },
+  }).then((r) => r.data);
+
 // Trade Postmortem Engine, Stage 2 — matches backend's EvidenceSource enum
 // exactly (services/postmortem/entry_snapshot.py). "MANUAL" is the safe
 // default when the caller doesn't know why a trade was opened; a real

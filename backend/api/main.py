@@ -138,6 +138,30 @@ async def _paper_trade_notify_loop():
         await asyncio.sleep(15 * 60)  # every 15 minutes
 
 
+async def _paper_trade_exit_monitor_loop():
+    """2026-09 root-cause fix: Auto Close trade triggering used to be
+    entirely client-side (a trade only closed while a browser tab had its
+    row mounted and polling). This loop supplies the missing server-side
+    trigger — every cycle, closes any OPEN trade_management_mode='auto'
+    trade whose live price has hit its stop-loss or target, through the
+    same authoritative close_paper_trade path the manual sell endpoint
+    uses. Shorter interval than _paper_trade_notify_loop (5 min vs 15 min)
+    since actually closing a triggered position is more time-sensitive
+    than a proximity email; _notify_auto_close_triggers (in the loop
+    above) picks up and emails about trades this loop closes, unchanged."""
+    await asyncio.sleep(200)  # distinct stagger from the notify loop's 150s
+    while True:
+        try:
+            loop = asyncio.get_event_loop()
+            from services.paper_trade_exit_monitor import run_exit_monitor_cycle
+            summary = await loop.run_in_executor(None, run_exit_monitor_cycle)
+            if summary.get("closed") or summary.get("errors"):
+                log.info(f"[paper_trade_exit_monitor] cycle summary: {summary}")
+        except Exception as e:
+            log.warning(f"[paper_trade_exit_monitor] error: {e}")
+        await asyncio.sleep(5 * 60)  # every 5 minutes
+
+
 async def _us_movers_refresh_loop():
     """
     Pre-warms the US Top Gainers/Losers cache with a full-universe scan
@@ -809,6 +833,7 @@ async def lifespan(app: FastAPI):
         picks_catchup_task = asyncio.create_task(_no_catchup())
         picks_catchup_task_us = asyncio.create_task(_no_catchup())
     trade_notify_task = asyncio.create_task(_paper_trade_notify_loop())
+    trade_exit_monitor_task = asyncio.create_task(_paper_trade_exit_monitor_loop())
     us_movers_task = asyncio.create_task(_us_movers_refresh_loop())
     price_alerts_task = asyncio.create_task(_price_alerts_check_loop())
     daily_picks_orphan_sweep_task = asyncio.create_task(_daily_picks_orphan_reconciliation_loop())
@@ -847,12 +872,13 @@ async def lifespan(app: FastAPI):
     picks_catchup_task.cancel()
     picks_catchup_task_us.cancel()
     trade_notify_task.cancel()
+    trade_exit_monitor_task.cancel()
     us_movers_task.cancel()
     price_alerts_task.cancel()
     daily_picks_orphan_sweep_task.cancel()
     for t in (task, keepalive, outcome_task, warmup_task, crumb_task, validation_task, catchup_task,
-              picks_catchup_task, picks_catchup_task_us, trade_notify_task, us_movers_task, price_alerts_task,
-              daily_picks_orphan_sweep_task):
+              picks_catchup_task, picks_catchup_task_us, trade_notify_task, trade_exit_monitor_task,
+              us_movers_task, price_alerts_task, daily_picks_orphan_sweep_task):
         try:
             await t
         except asyncio.CancelledError:
