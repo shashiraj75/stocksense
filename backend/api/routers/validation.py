@@ -204,9 +204,25 @@ async def trigger_validation(
 
 @router.get("/status")
 def get_status():
-    """Poll this endpoint to track validation run progress."""
+    """Poll this endpoint to track validation run progress.
+
+    2026-09: additive `schedule` field describing the current automated
+    medium/long cadence (weekly, Saturdays 12:00 UTC) and the next
+    scheduled run instant — computed via the same shared
+    services.market_calendar.next_saturday_1200_utc the live scheduler
+    loop and startup catch-up use (api/main.py), so this display can never
+    drift from the actual trigger. Purely additive/computed at request
+    time — never persisted, never touches _run_status's own contract."""
+    from datetime import datetime, timezone
     from services.validation_engine import get_run_status
-    return _json_response(get_run_status())
+    from services.market_calendar import next_saturday_1200_utc
+    status = dict(get_run_status())
+    next_run = next_saturday_1200_utc(datetime.now(timezone.utc))
+    status["schedule"] = {
+        "description": "Weekly — Saturdays at 12:00 UTC (16:00 Dubai)",
+        "next_run_utc": next_run.isoformat(),
+    }
+    return _json_response(status)
 
 
 @router.get("/results")

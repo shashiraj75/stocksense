@@ -670,8 +670,8 @@ describe("PR #52 security/cadence invariants unchanged", () => {
   it("retains the daily/Sunday cadence wording", async () => {
     mockApi();
     renderPage();
-    await screen.findByText(/medium-horizon results are scheduled daily/i);
-    await screen.findByText(/long-horizon results are scheduled weekly on Sunday/i);
+    await screen.findByText(/medium- and long-horizon results are scheduled Weekly — Saturdays at/i);
+    await screen.findByText(/12:00 UTC \(16:00 Dubai\)/i);
   });
 
   it("retains the 'Validation completed' timestamp label", async () => {
@@ -1341,8 +1341,8 @@ describe("V-FRESH1B — freshness disclosure", () => {
     mockApi({ results: { ...BASE_RESULTS, validation_evidence: FULL_EVIDENCE, freshness: UNKNOWN_FRESHNESS } });
     renderPage();
     await screen.findByTestId("freshness-disclosure");
-    await screen.findByText(/medium-horizon results are scheduled daily/i);
-    await screen.findByText(/long-horizon results are scheduled weekly on Sunday/i);
+    await screen.findByText(/medium- and long-horizon results are scheduled Weekly — Saturdays at/i);
+    await screen.findByText(/12:00 UTC \(16:00 Dubai\)/i);
   });
 
   it("no response is labelled fresh or stale anywhere in the rendered disclosure", async () => {
@@ -1515,8 +1515,8 @@ describe("V-SCHED1C2D — automatic short cadence and disclosure wording", () =>
     renderPage();
     fireEvent.click(screen.getByRole("button", { name: /^Short/i }));
     await screen.findByTestId("freshness-disclosure");
-    expect(screen.getByText(/medium-horizon results are scheduled daily/i)).toBeInTheDocument();
-    expect(screen.getByText(/long-horizon results are scheduled weekly on Sunday/i)).toBeInTheDocument();
+    expect(screen.getByText(/medium- and long-horizon results are scheduled Weekly — Saturdays at/i)).toBeInTheDocument();
+    expect(screen.getByText(/12:00 UTC \(16:00 Dubai\)/i)).toBeInTheDocument();
   });
 
   // ── 21-24 — no mutation surface anywhere alongside the new short wording ──

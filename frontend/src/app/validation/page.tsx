@@ -152,6 +152,11 @@ type RunStatus = {
   // job to exactly one market/universe/horizon so a US run can never be
   // rendered as a Nifty 100 run (validation job-identity fix, 2026-07).
   job?: ValidationJob | null;
+  // 2026-09: additive — describes the current automated medium/long
+  // schedule and its next trigger instant, computed backend-side from the
+  // same shared source of truth the live scheduler uses (never
+  // independently recomputed here).
+  schedule?: { description: string; next_run_utc: string };
 };
 
 type StockDataPayload = { available?: boolean; run_id?: number | null; stocks: StockResult[] };
@@ -579,8 +584,16 @@ export default function ValidationPage() {
           </div>
           <p className="text-sm text-gray-400">
             Historical accuracy of the AI model across {universeLabel}. Validation is recomputed
-            automatically — medium-horizon results are scheduled daily; long-horizon results are
-            scheduled weekly on Sunday.
+            automatically — medium- and long-horizon results are scheduled Weekly — Saturdays at
+            12:00 UTC (16:00 Dubai).
+            {status?.schedule?.next_run_utc && (
+              <>
+                {" "}Next scheduled run:{" "}
+                {new Date(status.schedule.next_run_utc).toLocaleString(undefined, {
+                  timeZone: "UTC", dateStyle: "medium", timeStyle: "short",
+                })}{" "}UTC.
+              </>
+            )}
             {horizon === "short" && (
               <>
                 {" "}

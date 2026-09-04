@@ -216,3 +216,59 @@ def parse_auto_short_universes(raw: str | None) -> tuple[str, ...]:
         if token not in seen:
             seen.append(token)
     return tuple(u for u in AUTO_SHORT_VALID_UNIVERSES if u in seen)
+
+
+# ---------------------------------------------------------------------------
+# Weekly validation schedule (medium + long horizons) — 2026-09 change from
+# "medium daily / long weekly-Sunday" (both anchored to 06:00 IST) to a
+# single consolidated weekly window: every Saturday at 12:00 UTC. Anchored
+# to UTC (not IST/Dubai) so the trigger instant never depends on which
+# display timezone a reader has in mind — IST/Dubai equivalents are for
+# logging/display only, computed FROM this UTC value, never the reverse.
+#
+# `calendar.SATURDAY` (not a bare numeric literal) is used deliberately —
+# datetime.weekday()'s Monday=0..Sunday=6 convention is easy to
+# transpose-error against a library that uses a different day-zero (e.g.
+# APScheduler's cron trigger, ISO 8601 weekday numbers, or crontab's
+# Sunday=0). This module doesn't use such a library, but naming the
+# constant removes any ambiguity for a future reader or a future library
+# migration.
+#
+# Single shared implementation: api.main's `_validation_schedule_loop` (the
+# live trigger) and `_catchup_validation` (startup catch-up), and
+# api.routers.validation's `/status` endpoint (the displayed "next run"),
+# all call these two functions — never three independently maintained
+# copies of the same day-of-week arithmetic.
+import calendar as _calendar
+
+VALIDATION_WEEKLY_SCHEDULE_HOUR_UTC = 12
+VALIDATION_WEEKLY_SCHEDULE_WEEKDAY = _calendar.SATURDAY
+
+
+def next_saturday_1200_utc(now_utc: datetime) -> datetime:
+    """The next Saturday 12:00 UTC strictly after `now_utc` (if `now_utc` is
+    already at/past this week's Saturday 12:00 UTC, returns next week's;
+    otherwise returns this week's). `now_utc` must be timezone-aware UTC."""
+    candidate = now_utc.replace(
+        hour=VALIDATION_WEEKLY_SCHEDULE_HOUR_UTC, minute=0, second=0, microsecond=0,
+    )
+    days_ahead = (VALIDATION_WEEKLY_SCHEDULE_WEEKDAY - candidate.weekday()) % 7
+    candidate += timedelta(days=days_ahead)
+    if candidate <= now_utc:
+        candidate += timedelta(days=7)
+    return candidate
+
+
+def last_saturday_1200_utc(now_utc: datetime) -> datetime:
+    """The most recent Saturday 12:00 UTC at or before `now_utc` — the
+    inverse of next_saturday_1200_utc, used by startup catch-up to identify
+    "this week's" scheduled slot regardless of which day catch-up runs on.
+    `now_utc` must be timezone-aware UTC."""
+    candidate = now_utc.replace(
+        hour=VALIDATION_WEEKLY_SCHEDULE_HOUR_UTC, minute=0, second=0, microsecond=0,
+    )
+    days_back = (candidate.weekday() - VALIDATION_WEEKLY_SCHEDULE_WEEKDAY) % 7
+    candidate -= timedelta(days=days_back)
+    if candidate > now_utc:
+        candidate -= timedelta(days=7)
+    return candidate
