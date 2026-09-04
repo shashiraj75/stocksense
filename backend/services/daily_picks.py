@@ -286,6 +286,24 @@ _US_DAILY_PICKS_HEURISTIC_FILTERED_SET: frozenset[str] = frozenset(_US_DAILY_PIC
 # limiting factor it was when Render's free tier made 50 the practical ceiling.
 _N_CANDIDATES = int(os.getenv("PICKS_CANDIDATES", 400))
 
+# 2026-09: staged candidate-pool increase, IN only, +30 over IN's actual
+# effective baseline (340 -> 370 — deliberately smaller than an initially
+# considered +50/390, after a feasibility check found IN's worst-observed
+# production peak (5.68GB, 71%) already left less than the 30%-headroom
+# target even at the CURRENT candidate count; +30 is a more conservative
+# first step, to be monitored against real production peaks before any
+# further increase). US is deliberately left at exactly 400 (unchanged
+# _N_CANDIDATES above). See _TARGET_UNIVERSE_SIZE_IN/_TIER_QUOTA_IN below
+# for the matching upstream stratification-target increase — without
+# that, this alone would be a no-op truncation, since _bulk_screen's
+# top-N selection only re-orders/truncates the already-stratified pool
+# _get_universe_by_mcap builds, it doesn't source additional symbols.
+_N_CANDIDATES_IN = int(os.getenv("PICKS_CANDIDATES_IN", 370))
+
+
+def _n_candidates_for_market(market: str) -> int:
+    return _N_CANDIDATES_IN if market == "IN" else _N_CANDIDATES
+
 
 def _phase1_chunk_size() -> int:
     """
@@ -473,6 +491,46 @@ _SCREEN_CONFIG = {
 _TARGET_UNIVERSE_SIZE = 400
 # ~40/30/30, normalized from the agreed 45/35/35 (which summed to 115, not 100).
 _TIER_QUOTA = {"large": 160, "mid": 120, "small": 120}
+
+# 2026-09: IN-only candidate-pool increase, +30 delivered via mid/small
+# quota only — NOT a proportional scale of all three tiers. IN's "large"
+# tier is capped at exactly SEBI rank 1-100 in _assign_cap_tiers above,
+# independent of _TIER_QUOTA's "large" value (160, same as US, already
+# more than the 100 that can ever be assigned) — so IN's actual effective
+# universe under the ORIGINAL quota was never 400, it was
+# min(100, 160) + min(mid_available, 120) + min(small_available, 120)
+# = 100 + 120 + 120 = 340 (confirmed by both this file's own pre-existing
+# test expectations and production logs: IN's observed universe_candidate_
+# count was consistently ~339-340, never 400). Raising "large"'s quota
+# would be a no-op (rank-capped regardless); the +30 is delivered entirely
+# by raising mid/small from 120 to 135 each: 100 + 135 + 135 = 370 = 340 +
+# 30 — a deliberately smaller first step than an initially considered +50
+# (390), chosen after a feasibility check found IN's worst-observed
+# production peak (5.68GB, 71% of the 8GB limit) already left less than
+# the 30%-headroom target even at the current 340-candidate baseline; +30
+# is meant to be watched against real production peaks (via the existing
+# generate_picks_end memory_guard logs) before any further increase.
+# _TARGET_UNIVERSE_SIZE_IN is set to the REALISTIC achievable ceiling
+# (370), not a nominal-but-unreachable higher number — the payload's own
+# universe_target_count field exists specifically to let the UI/reviewer
+# tell "aimed for X and got X" apart from a genuinely degraded run, so it
+# must never be a number a healthy run can structurally never reach. US is
+# unaffected: every call site below resolves through
+# _target_universe_size_for_market / _tier_quota_for_market, which return
+# the original _TARGET_UNIVERSE_SIZE / _TIER_QUOTA unchanged for
+# market == "US".
+_TARGET_UNIVERSE_SIZE_IN = 370
+_TIER_QUOTA_IN = {"large": 160, "mid": 135, "small": 135}
+
+
+def _target_universe_size_for_market(market: str) -> int:
+    return _TARGET_UNIVERSE_SIZE_IN if market == "IN" else _TARGET_UNIVERSE_SIZE
+
+
+def _tier_quota_for_market(market: str) -> dict[str, int]:
+    return _TIER_QUOTA_IN if market == "IN" else _TIER_QUOTA
+
+
 # Short-term Phase 5 selection priority: "best performing stock" for
 # short-term explicitly means high-conviction first, not tier diversity —
 # see _select_with_tier_quota's docstring for the medium/long counterpart.
@@ -660,7 +718,7 @@ def _get_universe_by_mcap(
         ranked = [(sym, cap) for sym, cap in ranked if sym in eligible_set]
 
     tiers = _assign_cap_tiers(market, ranked)
-    symbols, tier_counts = _stratified_sample(ranked, tiers, _TIER_QUOTA)
+    symbols, tier_counts = _stratified_sample(ranked, tiers, _tier_quota_for_market(market))
 
     log.info(
         "[picks] [%s] stratified universe: %d symbols (large=%d mid=%d small=%d) "
@@ -1709,7 +1767,7 @@ def _generate_picks_inner(
     # never falls back to the raw 12k universe. Falls back to anchor megacap
     # list (US) / Nifty 100 (IN) if all scoring fails.
     candidates, _phase0_universe_size, _universe_used, _universe_degraded, _screener_raw_count, _selection_meta = _bulk_screen(
-        market, _N_CANDIDATES, job_id=job_id
+        market, _n_candidates_for_market(market), job_id=job_id
     )
     log.info(f"[picks] [{market}] Starting deep prediction for {len(candidates)} candidates × 3 horizons …")
     # Phase 0b complete: record universe metadata and candidate count.
@@ -2164,9 +2222,10 @@ def _generate_picks_inner(
         "universe_eligible_size":     _phase0_universe_size,
         # universe_target_count: the INTENDED stratified-universe size for
         #   this market — lets the UI distinguish "we aimed for 400 and got
-        #   400" from a degraded/truncated run. Same target for both markets
-        #   since the large/mid/small stratification is symmetric now.
-        "universe_target_count":      _TARGET_UNIVERSE_SIZE,
+        #   400" from a degraded/truncated run. 2026-09: IN's target is now
+        #   370 (staged +30 increase); US remains 400 — see
+        #   _target_universe_size_for_market's own docstring/comment.
+        "universe_target_count":      _target_universe_size_for_market(market),
         # deep_prediction_candidates: symbols actually sent to full PredictionEngine.
         #   Equals min(universe_eligible_size, PICKS_CANDIDATES env-var cap).
         "deep_prediction_candidates": len(candidates),

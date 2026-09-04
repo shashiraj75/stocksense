@@ -54,11 +54,21 @@ def test_memory_guard_module_still_raises_on_abort_not_just_logs():
 # ─────────────────────────────────────────────────────────────────────────
 
 def test_candidate_universe_size_was_not_silently_reduced():
-    """_N_CANDIDATES/_TARGET_UNIVERSE_SIZE must remain 400 — the incident's
-    authorization explicitly forbids silently lowering candidate coverage
-    to make the job finish faster/lighter."""
+    """_N_CANDIDATES/_TARGET_UNIVERSE_SIZE (US) must remain 400, and IN's
+    2026-09 staged increase (effective baseline 340 -> 370 — see
+    _TARGET_UNIVERSE_SIZE_IN's own comment for why IN's real baseline was
+    always 340, never the nominal 400) must not have been silently reduced
+    back down either — the incident's authorization explicitly forbids
+    silently lowering candidate coverage to make the job finish faster/
+    lighter, for either market. US is unaffected by the IN-only increase:
+    resolving through _n_candidates_for_market/_target_universe_size_for_market
+    for market="US" must still yield exactly the original 400."""
     assert dp._N_CANDIDATES == 400
     assert dp._TARGET_UNIVERSE_SIZE == 400
+    assert dp._n_candidates_for_market("US") == 400
+    assert dp._target_universe_size_for_market("US") == 400
+    assert dp._n_candidates_for_market("IN") == 370
+    assert dp._target_universe_size_for_market("IN") == 370
 
 
 def test_phase1_still_scores_all_three_horizons_for_every_candidate():
