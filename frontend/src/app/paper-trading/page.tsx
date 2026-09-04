@@ -37,6 +37,11 @@ const ClosedTradeHorizonBlock = dynamic(
   { ssr: false },
 );
 
+const PnlByPeriodPanel = dynamic(
+  () => import("@/components/PnlByPeriodPanel").then(m => m.PnlByPeriodPanel),
+  { ssr: false },
+);
+
 const MARKETS = [
   { key: "IN" as const, label: "🇮🇳 IN", currency: "₹", locale: "en-IN" },
   { key: "US" as const, label: "🇺🇸 US", currency: "$", locale: "en-US" },
@@ -1148,6 +1153,8 @@ export default function PaperTradingPage() {
           positive={winRate !== null ? winRate >= 50 : undefined}
         />
       </div>
+
+      <PnlByPeriodPanel market={market} currency={marketCfg.currency} locale={marketCfg.locale} />
 
       {/* Disclaimer */}
       <div className="flex items-start gap-2 bg-dark-card border border-dark-border rounded-xl px-4 py-3 text-xs text-gray-500">

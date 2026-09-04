@@ -1859,6 +1859,80 @@ def get_portfolio(
     }
 
 
+_PNL_PERIOD_SQL_TRUNC = {"day": "day", "week": "week", "month": "month", "year": "year"}
+
+
+@router.get("/pnl-by-period")
+def get_pnl_by_period(
+    period: Literal["day", "week", "month", "year"] = Query("day"),
+    limit: int = Query(90, ge=1, le=366),
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    2026-09 — Overview P&L broken down by calendar period, for the
+    Daily/Weekly/Monthly/Yearly analysis view. One SQL aggregate query
+    (GROUP BY market, date_trunc(period, closed_at)), mirroring the exact
+    same realized-P&L formula _fetch_closed_trade_aggregates already uses
+    ((exit_price - entry_price) * quantity) — never a second, independently
+    maintained formula that could silently drift from the cumulative
+    total_realized_pnl/_usd figures shown elsewhere on this page. No
+    per-trade row is ever fetched or held in memory; result rows are
+    already one-per-(market, period) at the database.
+
+    `period` selects the calendar_trunc granularity via a fixed allowlist
+    (_PNL_PERIOD_SQL_TRUNC) — never interpolates the raw query parameter
+    into SQL, even though FastAPI's own Literal validation already rejects
+    any other value before this function body runs.
+
+    `limit` bounds how many most-recent periods are returned (default 90,
+    e.g. ~3 months of daily buckets or ~7 years of monthly buckets) — this
+    endpoint is for a bounded recent-activity chart/table, never a full
+    unbounded history dump.
+
+    Periods with zero closed trades are never returned (this is a sparse
+    list of periods that actually had activity, not a dense calendar) —
+    the frontend is responsible for any zero-filling it wants for chart
+    continuity.
+    """
+    trunc = _PNL_PERIOD_SQL_TRUNC[period]
+    with _conn() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT market, date_trunc('{trunc}', closed_at) AS period_start,
+                   COUNT(*) AS trade_count,
+                   COALESCE(SUM((exit_price - entry_price) * quantity), 0) AS realized_pnl
+            FROM paper_trades
+            WHERE user_id = %s AND status = 'CLOSED' AND closed_at IS NOT NULL
+            GROUP BY market, period_start
+            ORDER BY period_start DESC
+            LIMIT %s
+            """,
+            (user_id, limit * 2),  # x2 headroom: LIMIT applies per (market, period) row, not per period
+        ).fetchall()
+
+    # Merge the two markets' rows into one entry per period — the overview
+    # wants "this period's total P&L across both markets" as the primary
+    # figure, with each market's own contribution broken out alongside it.
+    by_period: dict[str, dict] = {}
+    for market, period_start, trade_count, realized_pnl in rows:
+        key = period_start.isoformat()
+        entry = by_period.setdefault(key, {
+            "period_start": key,
+            "in_realized_pnl": 0.0, "us_realized_pnl_usd": 0.0,
+            "in_trade_count": 0, "us_trade_count": 0,
+        })
+        pnl = round(float(realized_pnl), 2) if realized_pnl is not None else 0.0
+        if market == "IN":
+            entry["in_realized_pnl"] = pnl
+            entry["in_trade_count"] = trade_count
+        elif market == "US":
+            entry["us_realized_pnl_usd"] = pnl
+            entry["us_trade_count"] = trade_count
+
+    periods = sorted(by_period.values(), key=lambda e: e["period_start"], reverse=True)[:limit]
+    return {"period": period, "buckets": periods}
+
+
 @router.get("/closed-trades/older")
 def get_older_closed_trades(
     market: Literal["IN", "US"],
