@@ -1,0 +1,66 @@
+{
+  "us_long": {
+    "elapsed_seconds": 61.3,
+    "n_signal_rows": 3010,
+    "BUY": {
+      "n": 763,
+      "mean_alpha": 2.3953,
+      "t_stat": 4.11
+    },
+    "SELL": {
+      "n": 393,
+      "mean_alpha": 2.467,
+      "t_stat": 2.31
+    },
+    "top_level_buy_hit_rate_pct": 53.1,
+    "top_level_sell_hit_rate_pct": 49.6
+  },
+  "us_medium": {
+    "elapsed_seconds": 73.5,
+    "n_signal_rows": 4368,
+    "BUY": {
+      "n": 1107,
+      "mean_alpha": 0.5007,
+      "t_stat": 1.85
+    },
+    "SELL": {
+      "n": 620,
+      "mean_alpha": 1.4314,
+      "t_stat": 3.54
+    },
+    "top_level_buy_hit_rate_pct": 49.7,
+    "top_level_sell_hit_rate_pct": 44.8
+  },
+  "nifty100_long": {
+    "elapsed_seconds": 164.9,
+    "n_signal_rows": 8786,
+    "BUY": {
+      "n": 3678,
+      "mean_alpha": 4.3667,
+      "t_stat": 14.9
+    },
+    "SELL": {
+      "n": 997,
+      "mean_alpha": 3.7872,
+      "t_stat": 8.06
+    },
+    "top_level_buy_hit_rate_pct": 55.6,
+    "top_level_sell_hit_rate_pct": 42.3
+  },
+  "nifty100_medium": {
+    "elapsed_seconds": 215.0,
+    "n_signal_rows": 12911,
+    "BUY": {
+      "n": 5119,
+      "mean_alpha": 1.4127,
+      "t_stat": 12.19
+    },
+    "SELL": {
+      "n": 1691,
+      "mean_alpha": 1.2032,
+      "t_stat": 5.72
+    },
+    "top_level_buy_hit_rate_pct": 53.6,
+    "top_level_sell_hit_rate_pct": 45.2
+  }
+}

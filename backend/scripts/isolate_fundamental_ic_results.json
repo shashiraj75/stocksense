@@ -1,0 +1,46 @@
+{
+  "us_long": {
+    "elapsed_seconds": 59.2,
+    "n_test_buy": 226,
+    "tech_blend_ic": -0.0808,
+    "implied_fund_score_ic": -0.0651,
+    "full_composite_ic": -0.1214,
+    "implied_fund_score_range": [
+      49.9,
+      61.2
+    ]
+  },
+  "us_medium": {
+    "elapsed_seconds": 69.0,
+    "n_test_buy": 408,
+    "tech_blend_ic": 0.0914,
+    "implied_fund_score_ic": -0.0131,
+    "full_composite_ic": 0.0888,
+    "implied_fund_score_range": [
+      49.9,
+      61.2
+    ]
+  },
+  "nifty100_long": {
+    "elapsed_seconds": 161.5,
+    "n_test_buy": 693,
+    "tech_blend_ic": -0.0279,
+    "implied_fund_score_ic": 0.0539,
+    "full_composite_ic": 0.027,
+    "implied_fund_score_range": [
+      43.1,
+      89.2
+    ]
+  },
+  "nifty100_medium": {
+    "elapsed_seconds": 220.3,
+    "n_test_buy": 1210,
+    "tech_blend_ic": 0.015,
+    "implied_fund_score_ic": 0.0113,
+    "full_composite_ic": 0.0277,
+    "implied_fund_score_range": [
+      40.0,
+      89.2
+    ]
+  }
+}

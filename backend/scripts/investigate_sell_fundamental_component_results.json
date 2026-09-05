@@ -1,0 +1,58 @@
+{
+  "us_long": {
+    "elapsed_seconds": 60.8,
+    "n_sell_total": 393,
+    "fund_driven_sell": {
+      "n": 52,
+      "mean_alpha": 1.8911,
+      "t_stat": 0.83
+    },
+    "tech_driven_sell": {
+      "n": 341,
+      "mean_alpha": 2.5548,
+      "t_stat": 2.17
+    }
+  },
+  "us_medium": {
+    "elapsed_seconds": 71.2,
+    "n_sell_total": 620,
+    "fund_driven_sell": {
+      "n": 79,
+      "mean_alpha": 0.6723,
+      "t_stat": 0.67
+    },
+    "tech_driven_sell": {
+      "n": 541,
+      "mean_alpha": 1.5423,
+      "t_stat": 3.5
+    }
+  },
+  "nifty100_long": {
+    "elapsed_seconds": 171.7,
+    "n_sell_total": 997,
+    "fund_driven_sell": {
+      "n": 195,
+      "mean_alpha": 4.5341,
+      "t_stat": 4.02
+    },
+    "tech_driven_sell": {
+      "n": 802,
+      "mean_alpha": 3.6056,
+      "t_stat": 6.99
+    }
+  },
+  "nifty100_medium": {
+    "elapsed_seconds": 219.3,
+    "n_sell_total": 1692,
+    "fund_driven_sell": {
+      "n": 310,
+      "mean_alpha": 1.1045,
+      "t_stat": 2.23
+    },
+    "tech_driven_sell": {
+      "n": 1382,
+      "mean_alpha": 1.2236,
+      "t_stat": 5.26
+    }
+  }
+}
