@@ -2361,12 +2361,19 @@ class PredictionEngine:
         # fold that drift in so contributions sum EXACTLY to composite_r.
         contributions["rounding_adjustment"] = composite_r - sum(contributions.values())
 
+        # 2026-08-24: SELL publication disabled pending the regime-conditioning
+        # methodology fix (services/technical_indicators.py::get_signal_summary)
+        # proving out in a fresh validation run. Production evidence (2.9M+
+        # backtest signals) showed SELL calls statistically significant and
+        # backwards at US long/medium horizon (t=8.24/t=20.79 — SELL calls
+        # subsequently beat the benchmark, not underperformed it). A low
+        # composite still means weak/bearish, but is presented as HOLD, not
+        # an actionable SELL, until the corrected methodology has its own
+        # validated track record. See DAILY-PICKS-IMPLEMENTATION-REGISTER.md.
         if composite_r >= 60:
             signal = "BUY"
-        elif composite_r >= 45:
-            signal = "HOLD"
         else:
-            signal = "SELL"
+            signal = "HOLD"
 
         if signal == "BUY":
             # 2026-07-17 range recalibration: six walk-forward validation
