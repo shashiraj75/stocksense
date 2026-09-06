@@ -9,7 +9,7 @@ import yfinance as yf
 log = logging.getLogger(__name__)
 import pandas as pd
 import numpy as np
-from services.technical_indicators import compute_indicators, get_signal_summary
+from services.technical_indicators import compute_indicators, get_signal_summary, compute_momentum_score
 from services.market_hours import get_expected_latest_completed_nse_session
 from services.news_sentiment import NewsSentimentService
 from services.global_context import get_global_context
@@ -2331,6 +2331,35 @@ class PredictionEngine:
         if quality and quality.get("score") is not None:
             contributions["quality"] = (quality["score"] - 50) * 0.12
 
+        # 12-1 month momentum (±30 max when enabled) — 2026-08-24,
+        # MEDIUM HORIZON ONLY.
+        #
+        # 2026-09-06 independent corrective review of PR #83: the
+        # "out-of-sample weight sweep" that selected weight=2.0 was found
+        # to have selected that weight using the SAME 30% slice it later
+        # reported results on (development data, not an untouched test
+        # set — see the corrective-review evidence in
+        # DAILY-PICKS-IMPLEMENTATION-REGISTER.md), compounded by a
+        # baseline-reconstruction bug (subtracting a stale weight
+        # constant from an already-clamped composite) that further
+        # invalidates the specific "2.0 is best" comparison. The
+        # standalone momentum-alpha relationship (tested independently of
+        # any composite blending — see compute_momentum_score's
+        # docstring) remains credible evidence of a real, replicated
+        # effect; the CHOSEN WEIGHT and the "improves the composite"
+        # claim do not currently meet this codebase's evidence bar.
+        # Default-off pending a genuine untouched-holdout evaluation
+        # (same pattern as INTELLIGENCE_ENGINE_SHADOW_ENABLED elsewhere
+        # in this codebase) — set MOMENTUM_FACTOR_ENABLED=1 to opt in for
+        # research/staging use only; must not be enabled in production
+        # without a fresh acceptance run against data untouched by this
+        # weight selection.
+        contributions["momentum"] = 0.0
+        if (horizon == "medium" and df is not None and not df.empty
+                and os.getenv("MOMENTUM_FACTOR_ENABLED") == "1"):
+            momentum_score = compute_momentum_score(df)
+            contributions["momentum"] = (momentum_score - 50) * 2.0
+
         raw_score_unclamped = sum(contributions.values())
         raw_score = max(0, min(100, raw_score_unclamped))
         # Clamping can change the sum — capture the delta so contributions
@@ -2361,12 +2390,19 @@ class PredictionEngine:
         # fold that drift in so contributions sum EXACTLY to composite_r.
         contributions["rounding_adjustment"] = composite_r - sum(contributions.values())
 
+        # 2026-08-24: SELL publication disabled pending the regime-conditioning
+        # methodology fix (services/technical_indicators.py::get_signal_summary)
+        # proving out in a fresh validation run. Production evidence (2.9M+
+        # backtest signals) showed SELL calls statistically significant and
+        # backwards at US long/medium horizon (t=8.24/t=20.79 — SELL calls
+        # subsequently beat the benchmark, not underperformed it). A low
+        # composite still means weak/bearish, but is presented as HOLD, not
+        # an actionable SELL, until the corrected methodology has its own
+        # validated track record. See DAILY-PICKS-IMPLEMENTATION-REGISTER.md.
         if composite_r >= 60:
             signal = "BUY"
-        elif composite_r >= 45:
-            signal = "HOLD"
         else:
-            signal = "SELL"
+            signal = "HOLD"
 
         if signal == "BUY":
             # 2026-07-17 range recalibration: six walk-forward validation

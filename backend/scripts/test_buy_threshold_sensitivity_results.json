@@ -1,0 +1,166 @@
+{
+  "us_long": {
+    "elapsed_seconds": 60.0,
+    "buy_threshold": 60,
+    "buckets": {
+      "40-50": {
+        "n": 225,
+        "mean_alpha": 4.8444,
+        "t_stat": 2.76
+      },
+      "50-55": {
+        "n": 171,
+        "mean_alpha": 2.5308,
+        "t_stat": 1.22
+      },
+      "55-60": {
+        "n": 228,
+        "mean_alpha": -1.308,
+        "t_stat": -1.38
+      },
+      "60-65": {
+        "n": 129,
+        "mean_alpha": 2.0026,
+        "t_stat": 1.18
+      },
+      "65-70": {
+        "n": 90,
+        "mean_alpha": -1.3707,
+        "t_stat": -0.95
+      },
+      "70-75": {
+        "n": 0,
+        "mean_alpha": null,
+        "t_stat": null
+      },
+      "75-100": {
+        "n": 0,
+        "mean_alpha": null,
+        "t_stat": null
+      }
+    }
+  },
+  "us_medium": {
+    "elapsed_seconds": 70.9,
+    "buy_threshold": 60,
+    "buckets": {
+      "40-50": {
+        "n": 240,
+        "mean_alpha": 0.6312,
+        "t_stat": 0.95
+      },
+      "50-55": {
+        "n": 299,
+        "mean_alpha": 0.4915,
+        "t_stat": 0.72
+      },
+      "55-60": {
+        "n": 347,
+        "mean_alpha": 1.1737,
+        "t_stat": 2.11
+      },
+      "60-65": {
+        "n": 250,
+        "mean_alpha": 0.2456,
+        "t_stat": 0.39
+      },
+      "65-70": {
+        "n": 158,
+        "mean_alpha": 2.0114,
+        "t_stat": 2.25
+      },
+      "70-75": {
+        "n": 0,
+        "mean_alpha": null,
+        "t_stat": null
+      },
+      "75-100": {
+        "n": 0,
+        "mean_alpha": null,
+        "t_stat": null
+      }
+    }
+  },
+  "nifty100_long": {
+    "elapsed_seconds": 167.9,
+    "buy_threshold": 60,
+    "buckets": {
+      "40-50": {
+        "n": 731,
+        "mean_alpha": 1.9559,
+        "t_stat": 3.73
+      },
+      "50-55": {
+        "n": 492,
+        "mean_alpha": 0.1247,
+        "t_stat": 0.22
+      },
+      "55-60": {
+        "n": 477,
+        "mean_alpha": 1.4752,
+        "t_stat": 2.65
+      },
+      "60-65": {
+        "n": 386,
+        "mean_alpha": 1.9768,
+        "t_stat": 3.1
+      },
+      "65-70": {
+        "n": 202,
+        "mean_alpha": 0.9966,
+        "t_stat": 1.09
+      },
+      "70-75": {
+        "n": 73,
+        "mean_alpha": 1.2395,
+        "t_stat": 0.94
+      },
+      "75-100": {
+        "n": 32,
+        "mean_alpha": 5.1387,
+        "t_stat": 1.91
+      }
+    }
+  },
+  "nifty100_medium": {
+    "elapsed_seconds": 213.5,
+    "buy_threshold": 60,
+    "buckets": {
+      "40-50": {
+        "n": 848,
+        "mean_alpha": 1.1787,
+        "t_stat": 4.42
+      },
+      "50-55": {
+        "n": 742,
+        "mean_alpha": 0.6709,
+        "t_stat": 2.5
+      },
+      "55-60": {
+        "n": 840,
+        "mean_alpha": 0.5174,
+        "t_stat": 2.08
+      },
+      "60-65": {
+        "n": 661,
+        "mean_alpha": 0.7351,
+        "t_stat": 2.78
+      },
+      "65-70": {
+        "n": 362,
+        "mean_alpha": 0.2308,
+        "t_stat": 0.65
+      },
+      "70-75": {
+        "n": 132,
+        "mean_alpha": 0.7861,
+        "t_stat": 1.29
+      },
+      "75-100": {
+        "n": 54,
+        "mean_alpha": 1.4281,
+        "t_stat": 1.67
+      }
+    }
+  }
+}

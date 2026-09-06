@@ -1,0 +1,13 @@
+{
+  "us_medium": {
+    "elapsed_seconds": 327.2,
+    "n_signal_rows_with_alpha": 13178,
+    "n_symbols": 142,
+    "n_momentum_computed": 12333,
+    "momentum_fm": {
+      "n_dates": 125,
+      "mean_ic": 0.0463,
+      "t_stat": 2.34
+    }
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "us_long": {
+    "elapsed_seconds": 58.9,
+    "n_total_dates": 202,
+    "n_signal_rows": 3010,
+    "composite_score_fm": {
+      "n_dates": 72,
+      "mean_ic": 0.0186,
+      "t_stat": 0.69
+    },
+    "tech_blend_fm": {
+      "n_dates": 72,
+      "mean_ic": 0.0184,
+      "t_stat": 0.69
+    }
+  },
+  "us_medium": {
+    "elapsed_seconds": 70.7,
+    "n_total_dates": 104,
+    "n_signal_rows": 4368,
+    "composite_score_fm": {
+      "n_dates": 104,
+      "mean_ic": -0.0168,
+      "t_stat": -0.72
+    },
+    "tech_blend_fm": {
+      "n_dates": 104,
+      "mean_ic": -0.0171,
+      "t_stat": -0.73
+    }
+  },
+  "nifty100_long": {
+    "elapsed_seconds": 172.5,
+    "n_total_dates": 498,
+    "n_signal_rows": 8786,
+    "composite_score_fm": {
+      "n_dates": 73,
+      "mean_ic": -0.0094,
+      "t_stat": -0.49
+    },
+    "tech_blend_fm": {
+      "n_dates": 73,
+      "mean_ic": -0.018,
+      "t_stat": -1.02
+    }
+  },
+  "nifty100_medium": {
+    "elapsed_seconds": 210.8,
+    "n_total_dates": 476,
+    "n_signal_rows": 12911,
+    "composite_score_fm": {
+      "n_dates": 109,
+      "mean_ic": 0.0016,
+      "t_stat": 0.08
+    },
+    "tech_blend_fm": {
+      "n_dates": 109,
+      "mean_ic": 0.0046,
+      "t_stat": 0.23
+    }
+  }
+}

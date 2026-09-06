@@ -162,26 +162,132 @@ def _safe(val, default=0):
         return default
 
 
+MOMENTUM_LOOKBACK_DAYS = 252   # ~12 months of trading days
+MOMENTUM_SKIP_DAYS = 21        # ~1 month excluded (short-term reversal)
+
+
+def compute_momentum_score(df: pd.DataFrame) -> float:
+    """12-1 month cross-sectional momentum (Jegadeesh & Titman 1993) —
+    return from ~12 months ago to ~1 month ago; the most recent month is
+    deliberately excluded, since it is well-documented in the literature
+    to show short-term REVERSAL, opposite-signed to the 12-1 effect.
+
+    Validated 2026-08-24 via Fama-MacBeth date-neutralized cross-sectional
+    IC (the correct test — a pooled IC conflates stock-picking skill with
+    market-wide drift; this compares each stock only against its peers on
+    the same date): significant and correctly-signed at MEDIUM horizon in
+    both the US (t=2.34 and t=6.48 across two independent 150-stock
+    universe samples) and India (t=2.72, 229-stock sample) — the first
+    factor in this codebase's history to clear significance under this
+    test. Long horizon showed no effect (t=-0.13) and short horizon was
+    weak/non-significant (t=0.85) — this is deliberately NOT applied at
+    those horizons by callers (see prediction_engine.py's
+    `_composite_signal` and validation_engine.py's `_score_at`, both of
+    which gate this to `horizon == "medium"` only). See
+    Documentation/Engineering-Handbook/Daily-Picks/
+    DAILY-PICKS-IMPLEMENTATION-REGISTER.md for the full evidence and
+    scripts/test_momentum_factor*.py for the reproducible tests.
+
+    Returns a 0-100 bucketed score (50=neutral), mirroring this module's
+    other indicators' scoring convention, or 50.0 (neutral — no
+    contribution) when insufficient history exists. Bucket breakpoints
+    (>30%/>15%/<-30%/<-15%) are literature-typical starting points, not
+    yet independently calibrated against this dataset's own momentum
+    distribution — a reasonable first cut, flagged as a candidate for
+    refinement once this factor has its own live track record.
+
+    2026-09-06 correction (independent corrective review of PR #83):
+    the observation date ("today") is the LAST row of `df`, at position
+    `len(df) - 1` — NOT position `len(df)`. `close.iloc[-N]` addresses
+    position `len(df) - N`, which is `N - 1` steps before today, not `N`
+    steps before it (`iloc[-1]` is 0 steps before today, `iloc[-2]` is 1
+    step before, etc.). The original implementation used `iloc[-N]`
+    directly for both the skip and lookback offsets, silently computing
+    momentum one trading day off from its own stated definition and from
+    the research scripts' explicit `today_idx - N` arithmetic (which
+    IS the correct N-trading-days-back offset) — a research/live parity
+    gap, not merely a docstring imprecision. Fixed by computing
+    `today_idx` explicitly and indexing `today_idx - N`, matching the
+    research definition exactly. The practical effect of the prior
+    off-by-one (one trading day out of a ~252/21-day window) is expected
+    to be negligible, but was never measured, and is corrected here on
+    principle rather than assumed immaterial.
+    """
+    if len(df) < MOMENTUM_LOOKBACK_DAYS + 1:
+        return 50.0
+    close = df["Close"]
+    today_idx = len(close) - 1
+    p_recent = _safe(close.iloc[today_idx - MOMENTUM_SKIP_DAYS], None)
+    p_old = _safe(close.iloc[today_idx - MOMENTUM_LOOKBACK_DAYS], None)
+    if p_recent is None or p_old is None or p_old <= 0:
+        return 50.0
+    mom_pct = (p_recent / p_old - 1.0) * 100.0
+    score = 50.0
+    if mom_pct > 30:
+        score += 15
+    elif mom_pct > 15:
+        score += 8
+    elif mom_pct < -30:
+        score -= 15
+    elif mom_pct < -15:
+        score -= 8
+    return max(0.0, min(100.0, score))
+
+
 def get_signal_summary(df: pd.DataFrame) -> dict:
     """Derives a scored technical signal from the last row of indicators."""
     last = df.iloc[-1]
     signals = []
     score = 50  # start neutral
 
+    # --- Trend regime gate (2026-08-24 methodology remediation) ─────────────
+    # Production evidence (validation_engine.py backtest, 2.9M+ signals):
+    # SELL calls at US long/medium horizon were statistically significant
+    # and WRONG-SIGNED — stocks flagged SELL subsequently beat the benchmark
+    # by +3.98%/+1.91% on average (t=8.24/20.79). Traced to this function
+    # unconditionally summing two contradictory rule families: mean-reversion
+    # oscillators (RSI/Bollinger/StochRSI/Williams %R/CCI — "buy oversold,
+    # sell overbought") and trend-following rules (MACD/EMA/ADX — "buy
+    # strength, sell weakness"). In a trending market, "overbought" from an
+    # oscillator usually just means "still strong," not "about to reverse" —
+    # so the oscillator block was firing SELL on stocks that kept running.
+    # ADX (already computed below) is the standard trend-strength gauge;
+    # ADX > 25 means a real, developed trend is in force. Below that
+    # threshold each oscillator's full contrarian weight applies (range-
+    # bound/choppy conditions are exactly where mean-reversion has a
+    # legitimate edge); at/above it, every oscillator in this function is
+    # neutralized (score delta 0) rather than fighting the trend signal —
+    # the `signals` list still records what each oscillator technically
+    # read, tagged as suppressed, for transparency/debugging.
+    adx_regime = _safe(last.get("adx"), 0)
+    trending = adx_regime > 25
+
     # --- RSI ---
     rsi = _safe(last["rsi_14"], 50)
     if rsi < 30:
-        signals.append({"indicator": "RSI", "signal": "BUY", "reason": f"Oversold (RSI {rsi:.0f})"})
-        score += 15
+        if trending:
+            signals.append({"indicator": "RSI", "signal": "HOLD", "reason": f"Oversold (RSI {rsi:.0f}) — suppressed, strong trend in force (ADX {adx_regime:.0f})"})
+        else:
+            signals.append({"indicator": "RSI", "signal": "BUY", "reason": f"Oversold (RSI {rsi:.0f})"})
+            score += 15
     elif rsi < 45:
-        signals.append({"indicator": "RSI", "signal": "BUY", "reason": f"RSI recovering ({rsi:.0f})"})
-        score += 7
+        if trending:
+            signals.append({"indicator": "RSI", "signal": "HOLD", "reason": f"RSI recovering ({rsi:.0f}) — suppressed, strong trend in force (ADX {adx_regime:.0f})"})
+        else:
+            signals.append({"indicator": "RSI", "signal": "BUY", "reason": f"RSI recovering ({rsi:.0f})"})
+            score += 7
     elif rsi > 70:
-        signals.append({"indicator": "RSI", "signal": "SELL", "reason": f"Overbought (RSI {rsi:.0f})"})
-        score -= 15
+        if trending:
+            signals.append({"indicator": "RSI", "signal": "HOLD", "reason": f"Overbought (RSI {rsi:.0f}) — suppressed, strong trend in force (ADX {adx_regime:.0f})"})
+        else:
+            signals.append({"indicator": "RSI", "signal": "SELL", "reason": f"Overbought (RSI {rsi:.0f})"})
+            score -= 15
     elif rsi > 60:
-        signals.append({"indicator": "RSI", "signal": "SELL", "reason": f"RSI elevated ({rsi:.0f})"})
-        score -= 7
+        if trending:
+            signals.append({"indicator": "RSI", "signal": "HOLD", "reason": f"RSI elevated ({rsi:.0f}) — suppressed, strong trend in force (ADX {adx_regime:.0f})"})
+        else:
+            signals.append({"indicator": "RSI", "signal": "SELL", "reason": f"RSI elevated ({rsi:.0f})"})
+            score -= 7
 
     # --- MACD ---
     if _safe(last.get("macd_diff"), 0) > 0:
@@ -223,41 +329,65 @@ def get_signal_summary(df: pd.DataFrame) -> dict:
     else:
         signals.append({"indicator": "ADX", "signal": "HOLD", "reason": f"Weak trend / sideways (ADX {adx:.0f})"})
 
-    # --- Bollinger Bands ---
+    # --- Bollinger Bands --- (mean-reversion oscillator — trend-gated, see above)
     bb_pct = _safe(last.get("bb_pct"), 0.5)
     if bb_pct < 0.1:
-        signals.append({"indicator": "Bollinger", "signal": "BUY", "reason": "Price near lower band — oversold"})
-        score += 8
+        if trending:
+            signals.append({"indicator": "Bollinger", "signal": "HOLD", "reason": "Price near lower band — suppressed, strong trend in force"})
+        else:
+            signals.append({"indicator": "Bollinger", "signal": "BUY", "reason": "Price near lower band — oversold"})
+            score += 8
     elif bb_pct > 0.9:
-        signals.append({"indicator": "Bollinger", "signal": "SELL", "reason": "Price near upper band — overbought"})
-        score -= 8
+        if trending:
+            signals.append({"indicator": "Bollinger", "signal": "HOLD", "reason": "Price near upper band — suppressed, strong trend in force"})
+        else:
+            signals.append({"indicator": "Bollinger", "signal": "SELL", "reason": "Price near upper band — overbought"})
+            score -= 8
 
-    # --- Stochastic RSI ---
+    # --- Stochastic RSI --- (mean-reversion oscillator — trend-gated, see above)
     stoch_rsi = _safe(last.get("stoch_rsi"), 0.5)
     if stoch_rsi < 0.2:
-        signals.append({"indicator": "StochRSI", "signal": "BUY", "reason": f"StochRSI oversold ({stoch_rsi:.2f})"})
-        score += 7
+        if trending:
+            signals.append({"indicator": "StochRSI", "signal": "HOLD", "reason": f"StochRSI oversold ({stoch_rsi:.2f}) — suppressed, strong trend in force"})
+        else:
+            signals.append({"indicator": "StochRSI", "signal": "BUY", "reason": f"StochRSI oversold ({stoch_rsi:.2f})"})
+            score += 7
     elif stoch_rsi > 0.8:
-        signals.append({"indicator": "StochRSI", "signal": "SELL", "reason": f"StochRSI overbought ({stoch_rsi:.2f})"})
-        score -= 7
+        if trending:
+            signals.append({"indicator": "StochRSI", "signal": "HOLD", "reason": f"StochRSI overbought ({stoch_rsi:.2f}) — suppressed, strong trend in force"})
+        else:
+            signals.append({"indicator": "StochRSI", "signal": "SELL", "reason": f"StochRSI overbought ({stoch_rsi:.2f})"})
+            score -= 7
 
-    # --- Williams %R ---
+    # --- Williams %R --- (mean-reversion oscillator — trend-gated, see above)
     wr = _safe(last.get("williams_r"), -50)
     if wr < -80:
-        signals.append({"indicator": "Williams %R", "signal": "BUY", "reason": f"Oversold (W%R {wr:.0f})"})
-        score += 6
+        if trending:
+            signals.append({"indicator": "Williams %R", "signal": "HOLD", "reason": f"Oversold (W%R {wr:.0f}) — suppressed, strong trend in force"})
+        else:
+            signals.append({"indicator": "Williams %R", "signal": "BUY", "reason": f"Oversold (W%R {wr:.0f})"})
+            score += 6
     elif wr > -20:
-        signals.append({"indicator": "Williams %R", "signal": "SELL", "reason": f"Overbought (W%R {wr:.0f})"})
-        score -= 6
+        if trending:
+            signals.append({"indicator": "Williams %R", "signal": "HOLD", "reason": f"Overbought (W%R {wr:.0f}) — suppressed, strong trend in force"})
+        else:
+            signals.append({"indicator": "Williams %R", "signal": "SELL", "reason": f"Overbought (W%R {wr:.0f})"})
+            score -= 6
 
-    # --- CCI ---
+    # --- CCI --- (mean-reversion oscillator — trend-gated, see above)
     cci = _safe(last.get("cci"), 0)
     if cci < -100:
-        signals.append({"indicator": "CCI", "signal": "BUY", "reason": f"CCI oversold ({cci:.0f})"})
-        score += 6
+        if trending:
+            signals.append({"indicator": "CCI", "signal": "HOLD", "reason": f"CCI oversold ({cci:.0f}) — suppressed, strong trend in force"})
+        else:
+            signals.append({"indicator": "CCI", "signal": "BUY", "reason": f"CCI oversold ({cci:.0f})"})
+            score += 6
     elif cci > 100:
-        signals.append({"indicator": "CCI", "signal": "SELL", "reason": f"CCI overbought ({cci:.0f})"})
-        score -= 6
+        if trending:
+            signals.append({"indicator": "CCI", "signal": "HOLD", "reason": f"CCI overbought ({cci:.0f}) — suppressed, strong trend in force"})
+        else:
+            signals.append({"indicator": "CCI", "signal": "SELL", "reason": f"CCI overbought ({cci:.0f})"})
+            score -= 6
 
     # Clamp score
     score = max(0, min(100, score))
@@ -285,10 +415,17 @@ def get_signal_summary(df: pd.DataFrame) -> dict:
 
     # Score → signal with wider thresholds to reduce HOLD bias
     # Determined AFTER all score adjustments (candlestick + volume)
+    #
+    # 2026-08-24: SELL publication disabled pending the regime-conditioning
+    # fix above proving out in a fresh validation run. Production evidence
+    # (2.9M+ backtest signals) showed SELL calls at US long/medium horizon
+    # were statistically significant and backwards (t=8.24/t=20.79 — SELL
+    # calls beat the benchmark afterward, not underperformed it). A low
+    # score is still meaningful signal (weak/bearish setup) but is
+    # presented as HOLD rather than an actionable SELL recommendation
+    # until the corrected methodology has its own validated track record.
     if score >= 58:
         overall = "BUY"
-    elif score <= 42:
-        overall = "SELL"
     else:
         overall = "HOLD"
 

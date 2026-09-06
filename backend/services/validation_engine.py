@@ -1230,17 +1230,40 @@ def init_db():
 
 # ── Scoring (uses ONLY data at index i — no look-ahead) ──────────────────────
 
-def _score_at(df: pd.DataFrame, i: int, benchmark_close: pd.Series | None, fund_score: float, regime_adj: float) -> dict:
+def _score_at(df: pd.DataFrame, i: int, benchmark_close: pd.Series | None, fund_score: float, regime_adj: float,
+              horizon: str | None = None) -> dict:
     """
     Compute composite score at row i using only df[:i+1].
     Returns dict with composite_score and sub-scores.
+
+    `horizon`, if given, gates the 12-1 momentum term (see
+    services.technical_indicators.compute_momentum_score's docstring for
+    the full evidence) to MEDIUM horizon only — the only horizon where
+    a Fama-MacBeth cross-sectional IC test found it significant. Optional
+    (default None = no momentum contribution) so this function's
+    pre-existing direct/unit-test callers that never passed a horizon
+    keep their exact prior behavior.
     """
     row = df.iloc[i]
 
     # ── Technical score (mirrors get_signal_summary logic) ────────────────────
+    # 2026-08-24 methodology remediation: mean-reversion oscillators
+    # (RSI/BB/StochRSI/Williams-%R/CCI) are trend-gated identically to
+    # services/technical_indicators.py::get_signal_summary — see that
+    # function's docstring for the full evidence (2.9M+ signal backtest,
+    # SELL calls at US long/medium horizon statistically significant and
+    # backwards, t=8.24/20.79). `predicted` classification below still
+    # includes SELL deliberately (unlike the live-facing function, which
+    # now collapses SELL to HOLD) — this is the measurement instrument
+    # used to prove whether this fix actually corrects SELL's alpha in the
+    # next validation run; nothing acts on a SELL classification produced
+    # here.
+    adx_regime = row.get("adx", np.nan)
+    trending = bool(pd.notna(adx_regime) and adx_regime > 25)
+
     tech = 50.0
     rsi = row.get("rsi_14", np.nan)
-    if pd.notna(rsi):
+    if pd.notna(rsi) and not trending:
         if rsi < 30:    tech += 15
         elif rsi < 45:  tech += 7
         elif rsi > 70:  tech -= 15
@@ -1266,22 +1289,22 @@ def _score_at(df: pd.DataFrame, i: int, benchmark_close: pd.Series | None, fund_
         tech += 10 if adx_pos > adx_neg else -10
 
     bb_pct = row.get("bb_pct", np.nan)
-    if pd.notna(bb_pct):
+    if pd.notna(bb_pct) and not trending:
         if bb_pct < 0.1:  tech += 8
         elif bb_pct > 0.9: tech -= 8
 
     stoch_rsi = row.get("stoch_rsi", np.nan)
-    if pd.notna(stoch_rsi):
+    if pd.notna(stoch_rsi) and not trending:
         if stoch_rsi < 0.2:  tech += 7
         elif stoch_rsi > 0.8: tech -= 7
 
     wr = row.get("williams_r", np.nan)
-    if pd.notna(wr):
+    if pd.notna(wr) and not trending:
         if wr < -80:  tech += 6
         elif wr > -20: tech -= 6
 
     cci = row.get("cci", np.nan)
-    if pd.notna(cci):
+    if pd.notna(cci) and not trending:
         if cci < -100: tech += 6
         elif cci > 100: tech -= 6
 
@@ -1362,6 +1385,28 @@ def _score_at(df: pd.DataFrame, i: int, benchmark_close: pd.Series | None, fund_
     # Blend with fundamentals (fixed for the whole stock period)
     composite = composite * 0.55 + fund_score * 0.45
     composite += regime_adj
+
+    # 12-1 month momentum, additive on top (±30 max when enabled) —
+    # 2026-08-24, MEDIUM HORIZON ONLY (mirrors prediction_engine.py::
+    # _composite_signal's identical gate/weight/env-var).
+    #
+    # 2026-09-06 independent corrective review: default-off, same
+    # MOMENTUM_FACTOR_ENABLED=1 opt-in as the live path — kept in sync so
+    # this table's own composite_score/predicted values (surfaced
+    # publicly on the Validation page) never silently diverge from what
+    # live predictions actually compute. The weight=2.0 selection itself
+    # was made on development data (the "held-out" slice used to compare
+    # candidate weights had already been examined) and is not currently
+    # trusted evidence — see compute_momentum_score's docstring and
+    # DAILY-PICKS-IMPLEMENTATION-REGISTER.md. Set the env var for a
+    # dedicated research/re-validation run only. Computed from the same
+    # look-ahead-free `df[:i+1]` window every other sub-score here
+    # already uses — never the full, unsliced df.
+    if horizon == "medium" and os.getenv("MOMENTUM_FACTOR_ENABLED") == "1":
+        from services.technical_indicators import compute_momentum_score
+        momentum_score = compute_momentum_score(df.iloc[:i + 1])
+        composite += (momentum_score - 50) * 2.0
+
     composite = max(0.0, min(100.0, composite))
 
     return {
@@ -1825,7 +1870,7 @@ def _backtest_stock(
                     fund_pit_reason_i = "point-in-time fundamentals not available for market=IN (DP-026)"
 
                 # Score uses the last row of the window (= day i)
-                sc = _score_at(window, len(window) - 1, benchmark_close, fund_score_i, regime_adjs[i])
+                sc = _score_at(window, len(window) - 1, benchmark_close, fund_score_i, regime_adjs[i], horizon=horizon)
                 composite = sc["composite"]
 
                 buy_thr  = BUY_THRESHOLD[horizon]
