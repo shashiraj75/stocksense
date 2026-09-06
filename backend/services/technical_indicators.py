@@ -168,20 +168,59 @@ def get_signal_summary(df: pd.DataFrame) -> dict:
     signals = []
     score = 50  # start neutral
 
+    # --- Trend regime gate (2026-08-24, isolated PR B) ─────────────────────
+    # Production evidence (validation_engine.py backtest, 2.9M+ signals):
+    # this function unconditionally summed two contradictory rule families
+    # every call — mean-reversion oscillators (RSI/Bollinger/StochRSI/
+    # Williams %R/CCI: "buy oversold, sell overbought") and trend-following
+    # rules (MACD/EMA/ADX: "buy strength, sell weakness"). In a trending
+    # market, "overbought" from an oscillator usually just means "still
+    # strong," not "about to reverse." ADX (already computed below) is the
+    # standard trend-strength gauge; ADX > 25 means a real, developed trend
+    # is in force. Below that threshold each oscillator's full contrarian
+    # weight applies (range-bound/choppy conditions are exactly where
+    # mean-reversion has a legitimate edge); at/above it, every oscillator
+    # in this function is neutralized (score delta 0) rather than fighting
+    # the trend signal — the `signals` list still records what each
+    # oscillator technically read, tagged as suppressed, for transparency.
+    # A missing or non-finite ADX fails safe to 0 (via `_safe`'s default),
+    # which is NOT-trending — oscillators remain fully active rather than
+    # being silently suppressed just because trend-strength data happens
+    # to be unavailable.
+    #
+    # This PR intentionally does NOT touch SELL classification — see
+    # fix/equity-sell-containment for that separate, independently
+    # reviewable change. See Documentation/Engineering-Handbook/
+    # Daily-Picks/DAILY-PICKS-IMPLEMENTATION-REGISTER.md for full evidence.
+    adx_regime = _safe(last.get("adx"), 0)
+    trending = adx_regime > 25
+
     # --- RSI ---
     rsi = _safe(last["rsi_14"], 50)
     if rsi < 30:
-        signals.append({"indicator": "RSI", "signal": "BUY", "reason": f"Oversold (RSI {rsi:.0f})"})
-        score += 15
+        if trending:
+            signals.append({"indicator": "RSI", "signal": "HOLD", "reason": f"Oversold (RSI {rsi:.0f}) — suppressed, strong trend in force (ADX {adx_regime:.0f})"})
+        else:
+            signals.append({"indicator": "RSI", "signal": "BUY", "reason": f"Oversold (RSI {rsi:.0f})"})
+            score += 15
     elif rsi < 45:
-        signals.append({"indicator": "RSI", "signal": "BUY", "reason": f"RSI recovering ({rsi:.0f})"})
-        score += 7
+        if trending:
+            signals.append({"indicator": "RSI", "signal": "HOLD", "reason": f"RSI recovering ({rsi:.0f}) — suppressed, strong trend in force (ADX {adx_regime:.0f})"})
+        else:
+            signals.append({"indicator": "RSI", "signal": "BUY", "reason": f"RSI recovering ({rsi:.0f})"})
+            score += 7
     elif rsi > 70:
-        signals.append({"indicator": "RSI", "signal": "SELL", "reason": f"Overbought (RSI {rsi:.0f})"})
-        score -= 15
+        if trending:
+            signals.append({"indicator": "RSI", "signal": "HOLD", "reason": f"Overbought (RSI {rsi:.0f}) — suppressed, strong trend in force (ADX {adx_regime:.0f})"})
+        else:
+            signals.append({"indicator": "RSI", "signal": "SELL", "reason": f"Overbought (RSI {rsi:.0f})"})
+            score -= 15
     elif rsi > 60:
-        signals.append({"indicator": "RSI", "signal": "SELL", "reason": f"RSI elevated ({rsi:.0f})"})
-        score -= 7
+        if trending:
+            signals.append({"indicator": "RSI", "signal": "HOLD", "reason": f"RSI elevated ({rsi:.0f}) — suppressed, strong trend in force (ADX {adx_regime:.0f})"})
+        else:
+            signals.append({"indicator": "RSI", "signal": "SELL", "reason": f"RSI elevated ({rsi:.0f})"})
+            score -= 7
 
     # --- MACD ---
     if _safe(last.get("macd_diff"), 0) > 0:
@@ -223,41 +262,65 @@ def get_signal_summary(df: pd.DataFrame) -> dict:
     else:
         signals.append({"indicator": "ADX", "signal": "HOLD", "reason": f"Weak trend / sideways (ADX {adx:.0f})"})
 
-    # --- Bollinger Bands ---
+    # --- Bollinger Bands --- (mean-reversion oscillator — trend-gated, see above)
     bb_pct = _safe(last.get("bb_pct"), 0.5)
     if bb_pct < 0.1:
-        signals.append({"indicator": "Bollinger", "signal": "BUY", "reason": "Price near lower band — oversold"})
-        score += 8
+        if trending:
+            signals.append({"indicator": "Bollinger", "signal": "HOLD", "reason": "Price near lower band — suppressed, strong trend in force"})
+        else:
+            signals.append({"indicator": "Bollinger", "signal": "BUY", "reason": "Price near lower band — oversold"})
+            score += 8
     elif bb_pct > 0.9:
-        signals.append({"indicator": "Bollinger", "signal": "SELL", "reason": "Price near upper band — overbought"})
-        score -= 8
+        if trending:
+            signals.append({"indicator": "Bollinger", "signal": "HOLD", "reason": "Price near upper band — suppressed, strong trend in force"})
+        else:
+            signals.append({"indicator": "Bollinger", "signal": "SELL", "reason": "Price near upper band — overbought"})
+            score -= 8
 
-    # --- Stochastic RSI ---
+    # --- Stochastic RSI --- (mean-reversion oscillator — trend-gated, see above)
     stoch_rsi = _safe(last.get("stoch_rsi"), 0.5)
     if stoch_rsi < 0.2:
-        signals.append({"indicator": "StochRSI", "signal": "BUY", "reason": f"StochRSI oversold ({stoch_rsi:.2f})"})
-        score += 7
+        if trending:
+            signals.append({"indicator": "StochRSI", "signal": "HOLD", "reason": f"StochRSI oversold ({stoch_rsi:.2f}) — suppressed, strong trend in force"})
+        else:
+            signals.append({"indicator": "StochRSI", "signal": "BUY", "reason": f"StochRSI oversold ({stoch_rsi:.2f})"})
+            score += 7
     elif stoch_rsi > 0.8:
-        signals.append({"indicator": "StochRSI", "signal": "SELL", "reason": f"StochRSI overbought ({stoch_rsi:.2f})"})
-        score -= 7
+        if trending:
+            signals.append({"indicator": "StochRSI", "signal": "HOLD", "reason": f"StochRSI overbought ({stoch_rsi:.2f}) — suppressed, strong trend in force"})
+        else:
+            signals.append({"indicator": "StochRSI", "signal": "SELL", "reason": f"StochRSI overbought ({stoch_rsi:.2f})"})
+            score -= 7
 
-    # --- Williams %R ---
+    # --- Williams %R --- (mean-reversion oscillator — trend-gated, see above)
     wr = _safe(last.get("williams_r"), -50)
     if wr < -80:
-        signals.append({"indicator": "Williams %R", "signal": "BUY", "reason": f"Oversold (W%R {wr:.0f})"})
-        score += 6
+        if trending:
+            signals.append({"indicator": "Williams %R", "signal": "HOLD", "reason": f"Oversold (W%R {wr:.0f}) — suppressed, strong trend in force"})
+        else:
+            signals.append({"indicator": "Williams %R", "signal": "BUY", "reason": f"Oversold (W%R {wr:.0f})"})
+            score += 6
     elif wr > -20:
-        signals.append({"indicator": "Williams %R", "signal": "SELL", "reason": f"Overbought (W%R {wr:.0f})"})
-        score -= 6
+        if trending:
+            signals.append({"indicator": "Williams %R", "signal": "HOLD", "reason": f"Overbought (W%R {wr:.0f}) — suppressed, strong trend in force"})
+        else:
+            signals.append({"indicator": "Williams %R", "signal": "SELL", "reason": f"Overbought (W%R {wr:.0f})"})
+            score -= 6
 
-    # --- CCI ---
+    # --- CCI --- (mean-reversion oscillator — trend-gated, see above)
     cci = _safe(last.get("cci"), 0)
     if cci < -100:
-        signals.append({"indicator": "CCI", "signal": "BUY", "reason": f"CCI oversold ({cci:.0f})"})
-        score += 6
+        if trending:
+            signals.append({"indicator": "CCI", "signal": "HOLD", "reason": f"CCI oversold ({cci:.0f}) — suppressed, strong trend in force"})
+        else:
+            signals.append({"indicator": "CCI", "signal": "BUY", "reason": f"CCI oversold ({cci:.0f})"})
+            score += 6
     elif cci > 100:
-        signals.append({"indicator": "CCI", "signal": "SELL", "reason": f"CCI overbought ({cci:.0f})"})
-        score -= 6
+        if trending:
+            signals.append({"indicator": "CCI", "signal": "HOLD", "reason": f"CCI overbought ({cci:.0f}) — suppressed, strong trend in force"})
+        else:
+            signals.append({"indicator": "CCI", "signal": "SELL", "reason": f"CCI overbought ({cci:.0f})"})
+            score -= 6
 
     # Clamp score
     score = max(0, min(100, score))
