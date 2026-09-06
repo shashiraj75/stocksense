@@ -162,8 +162,26 @@ def _safe(val, default=0):
         return default
 
 
-def get_signal_summary(df: pd.DataFrame) -> dict:
-    """Derives a scored technical signal from the last row of indicators."""
+def get_signal_summary(df: pd.DataFrame, *, suppress_sell: bool = False) -> dict:
+    """Derives a scored technical signal from the last row of indicators.
+
+    `suppress_sell` (2026-09-06, PR #85 corrective follow-up — equity
+    boundary restoration): this function is shared by the equity path
+    (services/prediction_engine.py) AND the fully independent crypto path
+    (services/crypto_engine.py). The equity SELL-publication containment
+    (2026-08-24) was originally implemented by collapsing this function's
+    own `overall` label unconditionally, which also silently applied to
+    crypto's copy of the same `overall` field (crypto's own *headline*
+    `signal` was never affected — crypto_engine.py computes that
+    independently from its own composite — but its `technical.overall`
+    sub-field was). Defaults to False (this function's original,
+    pre-containment behavior — a genuine `score <= 42` still returns
+    "SELL"), so crypto's technical summary is restored exactly as it was
+    before PR #85. The two equity call sites in prediction_engine.py pass
+    `suppress_sell=True` explicitly, preserving equity containment exactly
+    as before. The underlying numeric `score` and per-indicator
+    `breakdown` are completely unaffected either way — only the `overall`
+    label changes, and only when explicitly requested."""
     last = df.iloc[-1]
     signals = []
     score = 50  # start neutral
@@ -285,9 +303,40 @@ def get_signal_summary(df: pd.DataFrame) -> dict:
 
     # Score → signal with wider thresholds to reduce HOLD bias
     # Determined AFTER all score adjustments (candlestick + volume)
+    #
+    # 2026-08-24 (isolated PR A — SELL publication containment, equities
+    # only): SELL disabled pending methodology review. Production
+    # evidence (2.9M+ backtest signals) showed SELL calls at US
+    # long/medium horizon were statistically significant and backwards
+    # (t=8.24/t=20.79 — SELL calls beat the benchmark afterward, not
+    # underperformed it). A low score is still meaningful signal (weak/
+    # bearish setup, visible in the numeric score and per-indicator
+    # breakdown) but is presented as HOLD rather than an actionable SELL
+    # recommendation until the corrected methodology has its own
+    # validated track record. Historical SELL predictions already
+    # persisted in val_signals (validation_engine.py's `predicted`
+    # classification, unaffected by this PR) remain labeled and readable
+    # as research/historical evidence — they are not deleted or
+    # relabeled, only no longer generated as an actionable live call.
+    # Scope: equities only. Crypto (services/crypto_engine.py) has its
+    # own, fully independent composite/threshold and is NOT touched by
+    # this containment — it is a separate product path with no shared
+    # presentation surface with the equity Validation page (verified
+    # 2026-09-06). Disabling crypto SELL based on equity-only research
+    # evidence would be an unjustified scope expansion.
+    #
+    # 2026-09-06 correction: the collapse below used to be unconditional,
+    # which meant crypto_engine.py's call to this SAME function (it has
+    # no other technical-summary implementation) also had its `overall`
+    # field silently collapsed — the comment above asserted crypto was
+    # untouched, but that was true only for crypto's independently
+    # computed headline `signal`, not for this shared sub-field. Now
+    # gated on `suppress_sell`, defaulting to off (restoring the original,
+    # true score<=42 -> SELL mapping) so crypto sees exactly its
+    # pre-containment behavior; the equity call sites opt in explicitly.
     if score >= 58:
         overall = "BUY"
-    elif score <= 42:
+    elif score <= 42 and not suppress_sell:
         overall = "SELL"
     else:
         overall = "HOLD"

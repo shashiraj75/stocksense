@@ -176,6 +176,13 @@ export interface Prediction {
   // Optional per Epic 008B Phase 2/3 — absent today in every production
   // response since RESEARCH_ANALYST_V2_ENABLED is disabled in Railway.
   research_report?: ResearchReport;
+  // 2026-09-06 (PR #85 corrective follow-up) — additive, distinguishes a
+  // suppressed equity SELL classification from an ordinary HOLD. Optional
+  // because a response served from a stale pre-PR-#85 cache entry (bounded
+  // by _pred_cache's 15-minute TTL) will not carry these fields; treat
+  // their absence as "unknown," never as "not suppressed."
+  equity_sell_suppressed?: boolean;
+  equity_sell_suppressed_note?: string | null;
 }
 
 export interface NewsArticle {
