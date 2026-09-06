@@ -10,6 +10,7 @@ log = logging.getLogger(__name__)
 import pandas as pd
 import numpy as np
 from services.technical_indicators import compute_indicators, get_signal_summary
+from services.momentum_factor import compute_momentum_score
 from services.market_hours import get_expected_latest_completed_nse_session
 from services.news_sentiment import NewsSentimentService
 from services.global_context import get_global_context
@@ -2330,6 +2331,31 @@ class PredictionEngine:
         contributions["quality"] = 0.0
         if quality and quality.get("score") is not None:
             contributions["quality"] = (quality["score"] - 50) * 0.12
+
+        # 12-1 month momentum — 2026-09-06 (research-corrected PR C).
+        # Uses services.momentum_factor's shared, tested indexing (the
+        # single source of truth for "N trading days before today," used
+        # identically by this function, validation_engine.py::_score_at,
+        # and every research script — see that module's docstring for
+        # the off-by-one parity gap this replaces).
+        #
+        # DEFAULT-OFF pending a genuine untouched-holdout evaluation
+        # (MOMENTUM_FACTOR_ENABLED=1 to opt in for research/staging use
+        # only, same pattern as INTELLIGENCE_ENGINE_SHADOW_ENABLED
+        # elsewhere in this codebase). An earlier "out-of-sample weight
+        # sweep" that selected weight=2.0 was found, on independent
+        # review, to have selected that weight using the same data slice
+        # it later reported results on (development data, not a held-out
+        # test set) — see DAILY-PICKS-IMPLEMENTATION-REGISTER.md. The
+        # standalone momentum-alpha relationship (tested independently of
+        # any composite blending) remains credible evidence of a real,
+        # replicated effect; the weight and the "improves the composite"
+        # claim do not currently meet this codebase's evidence bar.
+        contributions["momentum"] = 0.0
+        if (horizon == "medium" and df is not None and not df.empty
+                and os.getenv("MOMENTUM_FACTOR_ENABLED") == "1"):
+            momentum_score = compute_momentum_score(df["Close"])
+            contributions["momentum"] = (momentum_score - 50) * 2.0
 
         raw_score_unclamped = sum(contributions.values())
         raw_score = max(0, min(100, raw_score_unclamped))
