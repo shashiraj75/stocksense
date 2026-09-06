@@ -1,0 +1,74 @@
+{
+  "us_medium": {
+    "elapsed_seconds": 238.8,
+    "n_test_rows": 3954,
+    "weight_sweep": {
+      "0.2": {
+        "n_dates": 62,
+        "mean_ic": 0.0054,
+        "t_stat": 0.12
+      },
+      "0.5": {
+        "n_dates": 62,
+        "mean_ic": 0.0366,
+        "t_stat": 0.8
+      },
+      "1.0": {
+        "n_dates": 62,
+        "mean_ic": 0.0685,
+        "t_stat": 1.59
+      },
+      "1.5": {
+        "n_dates": 62,
+        "mean_ic": 0.0703,
+        "t_stat": 1.62
+      },
+      "2.0": {
+        "n_dates": 62,
+        "mean_ic": 0.0753,
+        "t_stat": 1.71
+      },
+      "3.0": {
+        "n_dates": 62,
+        "mean_ic": 0.069,
+        "t_stat": 1.5
+      }
+    }
+  },
+  "nifty100_medium": {
+    "elapsed_seconds": 361.1,
+    "n_test_rows": 6034,
+    "weight_sweep": {
+      "0.2": {
+        "n_dates": 224,
+        "mean_ic": -0.0317,
+        "t_stat": -1.18
+      },
+      "0.5": {
+        "n_dates": 224,
+        "mean_ic": 0.011,
+        "t_stat": 0.42
+      },
+      "1.0": {
+        "n_dates": 224,
+        "mean_ic": 0.0502,
+        "t_stat": 1.88
+      },
+      "1.5": {
+        "n_dates": 224,
+        "mean_ic": 0.0648,
+        "t_stat": 2.39
+      },
+      "2.0": {
+        "n_dates": 224,
+        "mean_ic": 0.0666,
+        "t_stat": 2.48
+      },
+      "3.0": {
+        "n_dates": 224,
+        "mean_ic": 0.0731,
+        "t_stat": 2.71
+      }
+    }
+  }
+}

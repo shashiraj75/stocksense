@@ -1,0 +1,46 @@
+{
+  "us_medium_seed123": {
+    "elapsed_seconds": 366.6,
+    "n_signal_rows_with_alpha": 13925,
+    "n_symbols": 145,
+    "n_momentum_computed": 13060,
+    "momentum_fm": {
+      "n_dates": 98,
+      "mean_ic": 0.1011,
+      "t_stat": 6.48
+    }
+  },
+  "us_long_seed42": {
+    "elapsed_seconds": 351.3,
+    "n_signal_rows_with_alpha": 8562,
+    "n_symbols": 140,
+    "n_momentum_computed": 8146,
+    "momentum_fm": {
+      "n_dates": 78,
+      "mean_ic": -0.0028,
+      "t_stat": -0.13
+    }
+  },
+  "us_short_seed42": {
+    "elapsed_seconds": 285.1,
+    "n_signal_rows_with_alpha": 14503,
+    "n_symbols": 142,
+    "n_momentum_computed": 12945,
+    "momentum_fm": {
+      "n_dates": 110,
+      "mean_ic": 0.0143,
+      "t_stat": 0.85
+    }
+  },
+  "nifty100_medium_broader250": {
+    "elapsed_seconds": 572.1,
+    "n_signal_rows_with_alpha": 20113,
+    "n_symbols": 229,
+    "n_momentum_computed": 18754,
+    "momentum_fm": {
+      "n_dates": 389,
+      "mean_ic": 0.0536,
+      "t_stat": 2.72
+    }
+  }
+}
