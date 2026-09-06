@@ -1549,3 +1549,40 @@ describe("V-SCHED1C2D — automatic short cadence and disclosure wording", () =>
       .not.toBeInTheDocument();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// 2026-09-06 (PR #85 corrective follow-up) — equity-scoped SELL disclosure
+// ─────────────────────────────────────────────────────────────────────────
+
+describe("equity SELL containment disclosure", () => {
+  it("scopes the disabled-SELL banner to equities, not the whole product", async () => {
+    mockApi();
+    renderPage();
+    await screen.findByText(/Equity SELL recommendations are currently disabled/i);
+    // The prior wording made an UNQUALIFIED "anywhere in the product"
+    // claim, false since crypto uses an independent model. The banner
+    // heading itself must be equity-scoped, not a bare "SELL
+    // recommendations are currently disabled" with no market qualifier.
+    expect(screen.queryByText(/^SELL recommendations are currently disabled\.$/)).not.toBeInTheDocument();
+    // The corrected banner must explicitly state crypto is unaffected.
+    await screen.findByText(/crypto recommendations use a separate, independent model and are unaffected/i);
+  });
+
+  it("does not claim SELL evidence is solely a record of past backtests", async () => {
+    mockApi();
+    renderPage();
+    await screen.findByText(/Equity SELL recommendations are currently disabled/i);
+    // "past backtests" (implying validation no longer computes SELL) must
+    // not appear; the corrected wording says validation continues to
+    // compute SELL classifications for research purposes.
+    expect(screen.queryByText(/from past backtests/i)).not.toBeInTheDocument();
+    await screen.findByText(/validation continues to compute SELL classifications for research purposes/i);
+  });
+
+  it("relabels the SELL Hit Rate stat as equity research, not a live capability", async () => {
+    mockApi({ results: { ...BASE_RESULTS, sell_hit_rate_pct: 44.4 } });
+    renderPage();
+    await screen.findByText(/Equity SELL Hit Rate \(Research\)/i);
+    expect(screen.queryByText(/^SELL Hit Rate$/)).not.toBeInTheDocument();
+  });
+});

@@ -641,6 +641,20 @@ class PredictionEngine:
                 "bhavcopy_failure_reason": _bhavcopy_failure_reason,
             },
                 "signal": signal,
+                # 2026-09-06 (PR #85 corrective follow-up): additive fields
+                # distinguishing a suppressed equity SELL from an ordinary
+                # HOLD. Determined from the ORIGINAL pre-containment
+                # threshold (score<=42, technical_indicators.py::
+                # get_signal_summary's own historical SELL cutoff) — never
+                # from `signal` itself, so a genuine BUY (score>=58) can
+                # never be mislabeled as suppressed.
+                "equity_sell_suppressed": tech_signal.get("score", 50) <= 42,
+                "equity_sell_suppressed_note": (
+                    "This setup would previously have been classified SELL. Equity SELL recommendations are "
+                    "currently disabled pending methodology review — this is a containment state, not an "
+                    "affirmative recommendation to hold the position."
+                    if tech_signal.get("score", 50) <= 42 else None
+                ),
                 "confidence": confidence,
                 "score_band": None,
                 "composite_score": tech_signal.get("score"),
@@ -964,6 +978,23 @@ class PredictionEngine:
                 "bhavcopy_failure_reason": _bhavcopy_failure_reason,
             },
             "signal": signal,
+            # 2026-09-06 (PR #85 corrective follow-up): additive fields
+            # distinguishing a suppressed equity SELL from an ordinary
+            # HOLD. Determined from the ORIGINAL pre-containment threshold
+            # (composite_score<45, this function's own historical SELL
+            # cutoff before PR #85's collapse) — never from `signal`
+            # itself, so a genuine BUY (composite_score>=60) can never be
+            # mislabeled as suppressed. Historical/backtest SELL
+            # classifications (validation_engine.py) are unaffected and
+            # continue to be produced and persisted as research evidence —
+            # this field describes only this live prediction response.
+            "equity_sell_suppressed": composite_score < 45,
+            "equity_sell_suppressed_note": (
+                "This setup would previously have been classified SELL. Equity SELL recommendations are "
+                "currently disabled pending methodology review — this is a containment state, not an "
+                "affirmative recommendation to hold the position."
+                if composite_score < 45 else None
+            ),
             "confidence": confidence,
             "score_band": score_band,
             "composite_score": composite_score,
@@ -2396,6 +2427,24 @@ class PredictionEngine:
             # production constants).
             confidence = round(max(0, min(100, (composite_r - 60) / 20 * 100)))
         elif signal == "SELL":
+            # 2026-09-06 (PR #85 corrective follow-up): DEAD BRANCH as of
+            # PR #85 — `signal` is collapsed to "BUY"/"HOLD" only (see the
+            # containment comment above this function's classification
+            # block), so `signal == "SELL"` can never be true here anymore.
+            # Documented, NOT fixed, per this task's explicit instruction
+            # not to recalibrate confidence: a composite_r that would
+            # previously have taken THIS branch now falls into the `else`
+            # (HOLD) branch below instead, and the two formulas disagree
+            # sharply — e.g. composite_r=30 previously computed
+            # confidence=75 here; it now computes confidence=6 via the
+            # HOLD formula below. This is a real, confirmed side effect of
+            # the SELL->HOLD relabeling (see
+            # test_equity_sell_suppression_metadata.py::
+            # TestConfidenceSideEffectOfRelabeling), left unresolved
+            # intentionally — recalibrating either formula is out of this
+            # task's scope and would require its own evidence-backed
+            # investigation, not a byproduct of a containment fix.
+            #
             # 2026-07-17 range recalibration, same class of bug as BUY above:
             # queried 132,354 real SELL signals across every walk-forward
             # run persisted to date — composite scores essentially never go

@@ -660,6 +660,26 @@ export default function StockPage() {
                           </div>
                           <p className="text-[11px] text-gray-400 mt-0.5">confidence</p>
 
+                          {/* 2026-09-06 (PR #85 corrective follow-up): a
+                              HOLD that would previously have been an
+                              actionable SELL must not read as an ordinary,
+                              affirmative "hold this position" call — the
+                              backend now sends equity_sell_suppressed /
+                              equity_sell_suppressed_note explicitly so this
+                              page can show the distinction, matching the
+                              same disclosure already on the Validation
+                              page. */}
+                          {prediction.signal === "HOLD" && prediction.equity_sell_suppressed && (
+                            <div className="mt-2 px-2 py-1.5 rounded-lg bg-orange-500/10 border border-orange-500/30 text-left">
+                              <p className="text-[10px] font-bold text-orange-400 uppercase tracking-wide">
+                                Suppressed SELL
+                              </p>
+                              <p className="text-[11px] text-orange-300/80 mt-0.5">
+                                {prediction.equity_sell_suppressed_note}
+                              </p>
+                            </div>
+                          )}
+
                           {/* Per-stock historical accuracy */}
                           {(() => {
                             const acc = stockAccuracy?.accuracy?.[horizon];
