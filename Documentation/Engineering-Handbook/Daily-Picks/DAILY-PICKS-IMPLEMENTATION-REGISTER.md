@@ -1033,6 +1033,41 @@ Dated corrections to prior entries in this register — historical entries above
 
 **Classification: CORRECTIVE REVIEW PARTIALLY COMPLETE — CONFIRMED DEFECTS FIXED AND TESTED (OFF-BY-ONE, DEFAULT-OFF GATING, ADX EDGE CASES) — PR SEPARATION, FROZEN RESEARCH CONTRACT, DEPENDENCE-AWARE SIGNIFICANCE TESTING, CRYPTO SCOPE GAP, AND VALIDATION-PAGE DISCLOSURE GAP REMAIN OPEN — NOT MERGED OR DEPLOYED.**
 
+---
+
+## CORRECTIVE IMPLEMENTATION — PR separation, SELL disclosure, confidence refinement, research protocol (2026-09-06, continued)
+
+Direct continuation of the CORRECTIVE REVIEW entry above, authorized to complete the previously-incomplete items.
+
+**1. Reconciliation.** `origin/main` unchanged at `bf72065a`. PR #83 head at task start (`b4608a47`) — no drift. Three clean worktrees created from `origin/main`, one per replacement PR, per instruction not to force-push or rewrite PR #83's history.
+
+**2. PR separation — completed.**
+   - **[PR B — #84](https://github.com/shashiraj75/stocksense/pull/84)**, `fix/adx-oscillator-regime-gate`: ONLY the ADX-based oscillator trend-gate. SELL classification thresholds verified completely untouched (`overall == "SELL"` still fires; explicit test proves it). Independently mergeable.
+   - **[PR A — #85](https://github.com/shashiraj75/stocksense/pull/85)**, `fix/equity-sell-containment`: ONLY the SELL-collapse, on top of un-gated (original) oscillator logic. Includes the frontend Validation-page disclosure fix (item 6 of the prior entry) and an explicit test asserting `crypto_engine.py`'s independent SELL branch remains present and unmodified (item 5, resolved: crypto confirmed to have zero shared presentation surface with the equity Validation page — containment correctly scoped to equities only). Independently mergeable.
+   - **[PR C — #86](https://github.com/shashiraj75/stocksense/pull/86)**, `research/momentum-factor-corrections`: shared `services/momentum_factor.py` module, `base_composite` direct computation, frozen `scripts/research_protocol.py`. Momentum wired in but DEFAULT-OFF. Independently mergeable.
+   - All three verified via `git diff` against their `origin/main` base to contain exactly their intended, isolated changes — confirmed no cross-contamination between the three concerns.
+   - **No dependency between A, B, and C** — each is independently mergeable in any order or combination. All three trace back to the same PR #83 evidence base, which is preserved unmodified as the original record, not closed.
+
+**3. SELL containment and disclosure — completed (PR A, #85).** Backend: SELL collapsed to HOLD at both live choke points. Frontend: Validation page now carries an explicit banner distinguishing "SELL disabled" from an affirmative HOLD, and the SELL Hit Rate stat is relabeled "(Historical Research)" with updated sub-text. `tsc --noEmit` clean. **Known gap, explicitly stated**: full browser/preview verification of the frontend change was not performed (no dev-server launch config existed in the isolated worktree; the change is a low-risk JSX/string-only addition) — flagged, not silently skipped. Cache: 15-minute TTL means no explicit flush is needed for a future rollout. Manual selling, stop-loss, and target exits were not touched by this PR (no code path in scope overlaps them) and are therefore unaffected — not independently re-tested in this pass beyond that scope confirmation.
+
+**4. Confidence-field tracing — corrected finding.** The prior entry's "resolved — confidence-field conflation concern" is corrected, not retracted outright: `_confidence_engine` does NOT take `composite_r` or momentum's contribution directly, but its `factor_agreement` component (`_agrees()` helper) uses a COMPLETELY DIFFERENT threshold per `signal` (BUY: score>=55, SELL: score<=45, HOLD: 40<=score<=60) — and `signal` DOES depend on `composite_r`. Empirically confirmed with a deterministic fixture (`test_confidence_signal_dependence.py`, committed to PR #83 directly since it corrects that PR's own prior claim): identical tech/fund/sentiment inputs (score=53 each), only `signal` toggled HOLD->BUY, `confidence_score` swings from 50 to 19 (`factor_agreement` 100->0). **Momentum's live effect on publication eligibility is therefore not purely the discrete BUY/HOLD-boundary effect previously described — it also indirectly reshapes the confidence-agreement calculation for any candidate whose classification it flips.** This is a materially larger, confirmed effect than the prior entry stated.
+
+**5. Research corrections not requiring new data — completed (PR C, #86).**
+   - Shared momentum indexing (`services/momentum_factor.py`) eliminates the research/live parity gap.
+   - Direct zero-weight baseline and candidate computation before clamping (`_score_at`'s new `base_composite` field) — replaces the confirmed-invalid subtraction-from-clamped-composite approach; proven correct even under saturation by a dedicated test.
+   - Complete-date splits and outcome-window-crossing exclusion (`scripts/research_protocol.py::split_by_unique_date`), with explicit tests proving zero date overlap and correct purging at the boundary.
+   - Weight-selection/final-evaluation separation is now structurally possible (the module supports it) but was NOT exercised against real data this pass — see item 6.
+   - Dependence-aware inference (`stationary_block_bootstrap_ci`, a stationary block bootstrap over per-date ICs) implemented and tested on synthetic data with known dependence structure — reports mean/SE/CI, not only a binary significance verdict.
+   - Explicit code/configuration/dataset provenance: `RESEARCH_PROTOCOL_STATUS` constant states the acceptance status in-code, not only in documentation.
+
+**6. Quantitative acceptance — status unchanged, now backed by a corrected protocol rather than an aspiration.** `QUANTITATIVE ACCEPTANCE PENDING — NO UNTOUCHED HOLDOUT AVAILABLE.` No new comparative empirical run against live market data was executed this pass (expensive, multi-hour, network-dependent — explicitly deferred per the task's own allowance that "corrected scripts, deterministic tests and protocol need not remain unfinished" for that reason). The universe seeds (42, 123) and the 30%-slice weight sweep from prior work are explicitly marked here as DEVELOPMENT DATA — inspected once already, therefore permanently ineligible to be relabeled as a held-out test set for this factor. A genuine acceptance run requires: fetching fresh price/outcome data, applying `split_by_unique_date` to get a frozen dev/test boundary, selecting any hyperparameters ONLY on the dev split, evaluating the frozen specification exactly once on the test split, and reporting `stationary_block_bootstrap_ci` results — not yet done.
+
+**7. Verification.** Each of the three branches' affected/broader test suites re-run clean in isolation (PR B: 265 tests; PR A: 83 tests + 7 new; PR C: 232 tests). `test_confidence_signal_dependence.py` (3 tests) added directly to PR #83. All temporary worktrees removed after use; no unrelated dirty/untracked file touched; no production data, job, or deployment affected.
+
+**8. PR #83's relationship to A/B/C, stated explicitly.** PR #83 (`fix/sell-signal-regime-conditioning`) is PRESERVED, not closed — it remains the original evidence record (all forensic analysis, the momentum discovery/replication work, and the corrective-review findings live there). #84/#85/#86 are the clean, independently-reviewable replacements for its code changes. #83 itself should not be merged; its evidence should be referenced from whichever of #84/#85/#86 a reviewer is evaluating.
+
+**Classification: PR SEPARATION COMPLETE (3 independently-mergeable draft PRs) — SELL CONTAINMENT AND DISCLOSURE COMPLETE (backend + frontend, browser verification gap stated) — CONFIDENCE INDIRECT EFFECT CONFIRMED AND CORRECTED — RESEARCH PROTOCOL AND SHARED INDEXING IMPLEMENTED AND TESTED — QUANTITATIVE ACCEPTANCE STILL EXPLICITLY PENDING (NO NEW EMPIRICAL RUN THIS PASS) — NOT MERGED OR DEPLOYED.**
+
 ## Session protocol
 
 At the beginning of every Daily Picks engineering session:
