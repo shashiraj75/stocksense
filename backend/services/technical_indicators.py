@@ -162,8 +162,26 @@ def _safe(val, default=0):
         return default
 
 
-def get_signal_summary(df: pd.DataFrame) -> dict:
-    """Derives a scored technical signal from the last row of indicators."""
+def get_signal_summary(df: pd.DataFrame, *, suppress_sell: bool = False) -> dict:
+    """Derives a scored technical signal from the last row of indicators.
+
+    `suppress_sell` (2026-09-06, PR #85 corrective follow-up — equity
+    boundary restoration): this function is shared by the equity path
+    (services/prediction_engine.py) AND the fully independent crypto path
+    (services/crypto_engine.py). The equity SELL-publication containment
+    (2026-08-24) was originally implemented by collapsing this function's
+    own `overall` label unconditionally, which also silently applied to
+    crypto's copy of the same `overall` field (crypto's own *headline*
+    `signal` was never affected — crypto_engine.py computes that
+    independently from its own composite — but its `technical.overall`
+    sub-field was). Defaults to False (this function's original,
+    pre-containment behavior — a genuine `score <= 42` still returns
+    "SELL"), so crypto's technical summary is restored exactly as it was
+    before PR #85. The two equity call sites in prediction_engine.py pass
+    `suppress_sell=True` explicitly, preserving equity containment exactly
+    as before. The underlying numeric `score` and per-indicator
+    `breakdown` are completely unaffected either way — only the `overall`
+    label changes, and only when explicitly requested."""
     last = df.iloc[-1]
     signals = []
     score = 50  # start neutral
@@ -306,8 +324,20 @@ def get_signal_summary(df: pd.DataFrame) -> dict:
     # presentation surface with the equity Validation page (verified
     # 2026-09-06). Disabling crypto SELL based on equity-only research
     # evidence would be an unjustified scope expansion.
+    #
+    # 2026-09-06 correction: the collapse below used to be unconditional,
+    # which meant crypto_engine.py's call to this SAME function (it has
+    # no other technical-summary implementation) also had its `overall`
+    # field silently collapsed — the comment above asserted crypto was
+    # untouched, but that was true only for crypto's independently
+    # computed headline `signal`, not for this shared sub-field. Now
+    # gated on `suppress_sell`, defaulting to off (restoring the original,
+    # true score<=42 -> SELL mapping) so crypto sees exactly its
+    # pre-containment behavior; the equity call sites opt in explicitly.
     if score >= 58:
         overall = "BUY"
+    elif score <= 42 and not suppress_sell:
+        overall = "SELL"
     else:
         overall = "HOLD"
 

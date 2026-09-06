@@ -579,7 +579,15 @@ class PredictionEngine:
             return err
 
         df = compute_indicators(df)
-        tech_signal = get_signal_summary(df)
+        # suppress_sell=True: equity-only SELL-publication containment
+        # (2026-08-24). Both the tracking-only branch below (which uses
+        # tech_signal["overall"] AS its published `signal`) and the main
+        # composite branch further down (which surfaces tech_signal as the
+        # `technical` field of the response) are equity paths and must
+        # keep this. Crypto (services/crypto_engine.py) calls
+        # get_signal_summary() separately with the default (False), so it
+        # is unaffected by this flag.
+        tech_signal = get_signal_summary(df, suppress_sell=True)
 
         # ── Tracking-only instruments (commodity ETFs etc.) ─────────────────────
         # No real company fundamentals exist for these on yfinance — running them

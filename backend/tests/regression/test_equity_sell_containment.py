@@ -61,10 +61,25 @@ def _bearish_df(n_rows: int = 5) -> pd.DataFrame:
 
 class TestEquitySellPublicationDisabled:
     def test_get_signal_summary_never_returns_sell_overall(self):
+        """2026-09-06 correction: get_signal_summary()'s SELL collapse is
+        now gated on `suppress_sell` (default False), because the
+        function is shared with crypto_engine.py, which must keep seeing
+        genuine SELL. The two equity call sites in prediction_engine.py
+        pass suppress_sell=True explicitly — this test exercises that
+        exact equity-scoped call shape, not the function's bare default."""
+        df = _bearish_df()
+        result = get_signal_summary(df, suppress_sell=True)
+        assert result["score"] <= 10  # deeply bearish score is still possible...
+        assert result["overall"] == "HOLD"  # ...but never surfaced as SELL, for equities
+
+    def test_get_signal_summary_default_restores_genuine_sell_for_crypto(self):
+        """The function's own default (no suppress_sell) — exactly how
+        crypto_engine.py calls it — must NOT collapse SELL. This is the
+        equity-only boundary this PR is required to preserve."""
         df = _bearish_df()
         result = get_signal_summary(df)
-        assert result["score"] <= 10  # deeply bearish score is still possible...
-        assert result["overall"] == "HOLD"  # ...but never surfaced as SELL
+        assert result["score"] <= 10
+        assert result["overall"] == "SELL"
 
     def test_get_signal_summary_still_returns_buy_for_strong_bullish_setup(self):
         rows = [_flat_ohlc_row() for _ in range(5)]
