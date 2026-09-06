@@ -285,10 +285,29 @@ def get_signal_summary(df: pd.DataFrame) -> dict:
 
     # Score → signal with wider thresholds to reduce HOLD bias
     # Determined AFTER all score adjustments (candlestick + volume)
+    #
+    # 2026-08-24 (isolated PR A — SELL publication containment, equities
+    # only): SELL disabled pending methodology review. Production
+    # evidence (2.9M+ backtest signals) showed SELL calls at US
+    # long/medium horizon were statistically significant and backwards
+    # (t=8.24/t=20.79 — SELL calls beat the benchmark afterward, not
+    # underperformed it). A low score is still meaningful signal (weak/
+    # bearish setup, visible in the numeric score and per-indicator
+    # breakdown) but is presented as HOLD rather than an actionable SELL
+    # recommendation until the corrected methodology has its own
+    # validated track record. Historical SELL predictions already
+    # persisted in val_signals (validation_engine.py's `predicted`
+    # classification, unaffected by this PR) remain labeled and readable
+    # as research/historical evidence — they are not deleted or
+    # relabeled, only no longer generated as an actionable live call.
+    # Scope: equities only. Crypto (services/crypto_engine.py) has its
+    # own, fully independent composite/threshold and is NOT touched by
+    # this containment — it is a separate product path with no shared
+    # presentation surface with the equity Validation page (verified
+    # 2026-09-06). Disabling crypto SELL based on equity-only research
+    # evidence would be an unjustified scope expansion.
     if score >= 58:
         overall = "BUY"
-    elif score <= 42:
-        overall = "SELL"
     else:
         overall = "HOLD"
 

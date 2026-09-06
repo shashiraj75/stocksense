@@ -2361,12 +2361,15 @@ class PredictionEngine:
         # fold that drift in so contributions sum EXACTLY to composite_r.
         contributions["rounding_adjustment"] = composite_r - sum(contributions.values())
 
+        # 2026-08-24 (isolated PR A — SELL publication containment,
+        # equities only): SELL disabled pending methodology review. See
+        # technical_indicators.py::get_signal_summary's identical
+        # containment comment for the full evidence and crypto-scope
+        # boundary statement.
         if composite_r >= 60:
             signal = "BUY"
-        elif composite_r >= 45:
-            signal = "HOLD"
         else:
-            signal = "SELL"
+            signal = "HOLD"
 
         if signal == "BUY":
             # 2026-07-17 range recalibration: six walk-forward validation

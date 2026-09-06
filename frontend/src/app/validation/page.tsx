@@ -606,6 +606,28 @@ export default function ValidationPage() {
         </div>
       </div>
 
+      {/* 2026-08-24: SELL publication containment disclosure. Live SELL
+          recommendations are disabled (production evidence found SELL
+          calls statistically backwards at several horizons) — every SELL
+          figure on this page is historical backtest evidence, not a
+          currently generated or currently available capability. A
+          disabled SELL recommendation is distinct from an affirmative
+          HOLD call: HOLD means the model actively read the setup as
+          range-bound/neutral; a would-be SELL setup is now presented as
+          HOLD because SELL publication itself is switched off, not
+          because the model changed its read of the stock. */}
+      <div className="bg-orange-500/10 border border-orange-500/30 rounded-xl p-4 flex items-start gap-3">
+        <AlertCircle size={18} className="text-orange-400 mt-0.5 shrink-0" />
+        <div className="text-sm text-orange-300/80">
+          <strong className="text-orange-300">SELL recommendations are currently disabled.</strong>{" "}
+          Production evidence found SELL calls statistically backwards at several horizons (stocks flagged
+          SELL subsequently beat the benchmark, not underperformed it). Every SELL-related figure below is{" "}
+          <strong>historical research evidence</strong> from past backtests — SELL is not currently generated
+          as a live recommendation anywhere in the product. A setup that would previously have been called
+          SELL is now shown as HOLD; that reflects containment, not an affirmative "hold this position" read.
+        </div>
+      </div>
+
       {/* Warning banner */}
       <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4 flex items-start gap-3">
         <AlertCircle size={18} className="text-yellow-400 mt-0.5 shrink-0" />
@@ -952,9 +974,16 @@ export default function ValidationPage() {
               color={(res.profitable_buy_pct ?? 0) >= 55 ? "text-green-400" : "text-yellow-400"}
             />
             <StatCard
-              label="SELL Hit Rate"
+              label="SELL Hit Rate (Historical Research)"
               value={res.sell_hit_rate_pct != null ? `${res.sell_hit_rate_pct}%` : null}
-              sub="% of SELL calls that underperformed"
+              // 2026-08-24: live SELL publication is disabled pending
+              // methodology review (production evidence found SELL calls
+              // statistically backwards at several horizons). This figure
+              // is retained as historical backtest evidence only — it is
+              // NOT a currently available or currently generated
+              // recommendation capability. See DAILY-PICKS-IMPLEMENTATION-
+              // REGISTER.md for the full evidence.
+              sub="% of past SELL calls that underperformed — historical evidence only; live SELL recommendations are currently disabled"
               color={
                 (res.sell_hit_rate_pct ?? 0) >= 53 ? "text-green-400" :
                 (res.sell_hit_rate_pct ?? 0) >= 45 ? "text-yellow-400" : "text-red-400"
