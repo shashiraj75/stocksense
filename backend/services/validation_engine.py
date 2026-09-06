@@ -1230,10 +1230,19 @@ def init_db():
 
 # ── Scoring (uses ONLY data at index i — no look-ahead) ──────────────────────
 
-def _score_at(df: pd.DataFrame, i: int, benchmark_close: pd.Series | None, fund_score: float, regime_adj: float) -> dict:
+def _score_at(df: pd.DataFrame, i: int, benchmark_close: pd.Series | None, fund_score: float, regime_adj: float,
+              horizon: str | None = None) -> dict:
     """
     Compute composite score at row i using only df[:i+1].
     Returns dict with composite_score and sub-scores.
+
+    `horizon`, if given, gates the 12-1 momentum term (see
+    services.technical_indicators.compute_momentum_score's docstring for
+    the full evidence) to MEDIUM horizon only — the only horizon where
+    a Fama-MacBeth cross-sectional IC test found it significant. Optional
+    (default None = no momentum contribution) so this function's
+    pre-existing direct/unit-test callers that never passed a horizon
+    keep their exact prior behavior.
     """
     row = df.iloc[i]
 
@@ -1376,6 +1385,23 @@ def _score_at(df: pd.DataFrame, i: int, benchmark_close: pd.Series | None, fund_
     # Blend with fundamentals (fixed for the whole stock period)
     composite = composite * 0.55 + fund_score * 0.45
     composite += regime_adj
+
+    # 12-1 month momentum, additive on top (±30 max) — 2026-08-24, MEDIUM
+    # HORIZON ONLY (mirrors prediction_engine.py::_composite_signal's
+    # identical gate and weight — see that call site's comment for the
+    # full out-of-sample weight-sweep evidence: weight=2.0 chosen as the
+    # best-or-near-best value in both US and India held-out tests,
+    # deliberately large since this is the only composite term with
+    # demonstrated out-of-sample skill). See services.technical_indicators
+    # .compute_momentum_score's docstring for the full Fama-MacBeth
+    # cross-sectional evidence. Computed from the same look-ahead-free
+    # `df[:i+1]` window every other sub-score here already uses — never
+    # the full, unsliced df.
+    if horizon == "medium":
+        from services.technical_indicators import compute_momentum_score
+        momentum_score = compute_momentum_score(df.iloc[:i + 1])
+        composite += (momentum_score - 50) * 2.0
+
     composite = max(0.0, min(100.0, composite))
 
     return {
@@ -1839,7 +1865,7 @@ def _backtest_stock(
                     fund_pit_reason_i = "point-in-time fundamentals not available for market=IN (DP-026)"
 
                 # Score uses the last row of the window (= day i)
-                sc = _score_at(window, len(window) - 1, benchmark_close, fund_score_i, regime_adjs[i])
+                sc = _score_at(window, len(window) - 1, benchmark_close, fund_score_i, regime_adjs[i], horizon=horizon)
                 composite = sc["composite"]
 
                 buy_thr  = BUY_THRESHOLD[horizon]

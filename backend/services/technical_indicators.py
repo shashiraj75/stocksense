@@ -162,6 +162,60 @@ def _safe(val, default=0):
         return default
 
 
+MOMENTUM_LOOKBACK_DAYS = 252   # ~12 months of trading days
+MOMENTUM_SKIP_DAYS = 21        # ~1 month excluded (short-term reversal)
+
+
+def compute_momentum_score(df: pd.DataFrame) -> float:
+    """12-1 month cross-sectional momentum (Jegadeesh & Titman 1993) —
+    return from ~12 months ago to ~1 month ago; the most recent month is
+    deliberately excluded, since it is well-documented in the literature
+    to show short-term REVERSAL, opposite-signed to the 12-1 effect.
+
+    Validated 2026-08-24 via Fama-MacBeth date-neutralized cross-sectional
+    IC (the correct test — a pooled IC conflates stock-picking skill with
+    market-wide drift; this compares each stock only against its peers on
+    the same date): significant and correctly-signed at MEDIUM horizon in
+    both the US (t=2.34 and t=6.48 across two independent 150-stock
+    universe samples) and India (t=2.72, 229-stock sample) — the first
+    factor in this codebase's history to clear significance under this
+    test. Long horizon showed no effect (t=-0.13) and short horizon was
+    weak/non-significant (t=0.85) — this is deliberately NOT applied at
+    those horizons by callers (see prediction_engine.py's
+    `_composite_signal` and validation_engine.py's `_score_at`, both of
+    which gate this to `horizon == "medium"` only). See
+    Documentation/Engineering-Handbook/Daily-Picks/
+    DAILY-PICKS-IMPLEMENTATION-REGISTER.md for the full evidence and
+    scripts/test_momentum_factor*.py for the reproducible tests.
+
+    Returns a 0-100 bucketed score (50=neutral), mirroring this module's
+    other indicators' scoring convention, or 50.0 (neutral — no
+    contribution) when insufficient history exists. Bucket breakpoints
+    (>30%/>15%/<-30%/<-15%) are literature-typical starting points, not
+    yet independently calibrated against this dataset's own momentum
+    distribution — a reasonable first cut, flagged as a candidate for
+    refinement once this factor has its own live track record.
+    """
+    if len(df) < MOMENTUM_LOOKBACK_DAYS + 1:
+        return 50.0
+    close = df["Close"]
+    p_recent = _safe(close.iloc[-MOMENTUM_SKIP_DAYS], None)
+    p_old = _safe(close.iloc[-MOMENTUM_LOOKBACK_DAYS], None)
+    if p_recent is None or p_old is None or p_old <= 0:
+        return 50.0
+    mom_pct = (p_recent / p_old - 1.0) * 100.0
+    score = 50.0
+    if mom_pct > 30:
+        score += 15
+    elif mom_pct > 15:
+        score += 8
+    elif mom_pct < -30:
+        score -= 15
+    elif mom_pct < -15:
+        score -= 8
+    return max(0.0, min(100.0, score))
+
+
 def get_signal_summary(df: pd.DataFrame) -> dict:
     """Derives a scored technical signal from the last row of indicators."""
     last = df.iloc[-1]
