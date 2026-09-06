@@ -2331,33 +2331,32 @@ class PredictionEngine:
         if quality and quality.get("score") is not None:
             contributions["quality"] = (quality["score"] - 50) * 0.12
 
-        # 12-1 month momentum (±30 max, see weight rationale below) —
-        # 2026-08-24, MEDIUM HORIZON ONLY.
-        # Fama-MacBeth cross-sectional IC test (the correct methodology —
-        # see compute_momentum_score's docstring) found this factor
-        # significant and correctly-signed at medium horizon in both US
-        # (t=2.34/6.48 across two independent samples) and India (t=2.72)
-        # — the first factor in this codebase's history to clear
-        # significance under that test. Long horizon showed no effect
-        # (t=-0.13) and short was weak (t=0.85); deliberately not applied
-        # at those horizons rather than assumed to generalize.
-        # Weight=2.0 chosen via an out-of-sample weight sweep (2026-08-24,
-        # scripts/validate_momentum_out_of_sample.py, time-based 70/30
-        # split, held-out test only): the initial conservative 0.20
-        # (max +-3 contribution) under-weighted the ONE factor in this
-        # codebase's history proven to have real cross-sectional skill —
-        # sweeping 0.20 through 3.0 found 2.0 the best-or-near-best value
-        # in BOTH markets: India cleared significance at t=2.48 (vs
-        # t=-1.18, actually anti-predictive, at the original 0.20), and
-        # US reached its peak (t=1.71, up from t=0.12) at the same
-        # weight — chosen over India's own further-improving 3.0 to avoid
-        # fitting to one market's tail. Max contribution at this weight is
-        # +-30 (score range 35-65), making this one of the composite's
-        # largest single terms — deliberately, since it is the only term
-        # with demonstrated out-of-sample skill; the others were
-        # independently shown to carry ~zero (fama_macbeth_ic_test.py).
+        # 12-1 month momentum (±30 max when enabled) — 2026-08-24,
+        # MEDIUM HORIZON ONLY.
+        #
+        # 2026-09-06 independent corrective review of PR #83: the
+        # "out-of-sample weight sweep" that selected weight=2.0 was found
+        # to have selected that weight using the SAME 30% slice it later
+        # reported results on (development data, not an untouched test
+        # set — see the corrective-review evidence in
+        # DAILY-PICKS-IMPLEMENTATION-REGISTER.md), compounded by a
+        # baseline-reconstruction bug (subtracting a stale weight
+        # constant from an already-clamped composite) that further
+        # invalidates the specific "2.0 is best" comparison. The
+        # standalone momentum-alpha relationship (tested independently of
+        # any composite blending — see compute_momentum_score's
+        # docstring) remains credible evidence of a real, replicated
+        # effect; the CHOSEN WEIGHT and the "improves the composite"
+        # claim do not currently meet this codebase's evidence bar.
+        # Default-off pending a genuine untouched-holdout evaluation
+        # (same pattern as INTELLIGENCE_ENGINE_SHADOW_ENABLED elsewhere
+        # in this codebase) — set MOMENTUM_FACTOR_ENABLED=1 to opt in for
+        # research/staging use only; must not be enabled in production
+        # without a fresh acceptance run against data untouched by this
+        # weight selection.
         contributions["momentum"] = 0.0
-        if horizon == "medium" and df is not None and not df.empty:
+        if (horizon == "medium" and df is not None and not df.empty
+                and os.getenv("MOMENTUM_FACTOR_ENABLED") == "1"):
             momentum_score = compute_momentum_score(df)
             contributions["momentum"] = (momentum_score - 50) * 2.0
 

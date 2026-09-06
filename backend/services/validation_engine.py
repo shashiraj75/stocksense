@@ -1386,18 +1386,23 @@ def _score_at(df: pd.DataFrame, i: int, benchmark_close: pd.Series | None, fund_
     composite = composite * 0.55 + fund_score * 0.45
     composite += regime_adj
 
-    # 12-1 month momentum, additive on top (±30 max) — 2026-08-24, MEDIUM
-    # HORIZON ONLY (mirrors prediction_engine.py::_composite_signal's
-    # identical gate and weight — see that call site's comment for the
-    # full out-of-sample weight-sweep evidence: weight=2.0 chosen as the
-    # best-or-near-best value in both US and India held-out tests,
-    # deliberately large since this is the only composite term with
-    # demonstrated out-of-sample skill). See services.technical_indicators
-    # .compute_momentum_score's docstring for the full Fama-MacBeth
-    # cross-sectional evidence. Computed from the same look-ahead-free
-    # `df[:i+1]` window every other sub-score here already uses — never
-    # the full, unsliced df.
-    if horizon == "medium":
+    # 12-1 month momentum, additive on top (±30 max when enabled) —
+    # 2026-08-24, MEDIUM HORIZON ONLY (mirrors prediction_engine.py::
+    # _composite_signal's identical gate/weight/env-var).
+    #
+    # 2026-09-06 independent corrective review: default-off, same
+    # MOMENTUM_FACTOR_ENABLED=1 opt-in as the live path — kept in sync so
+    # this table's own composite_score/predicted values (surfaced
+    # publicly on the Validation page) never silently diverge from what
+    # live predictions actually compute. The weight=2.0 selection itself
+    # was made on development data (the "held-out" slice used to compare
+    # candidate weights had already been examined) and is not currently
+    # trusted evidence — see compute_momentum_score's docstring and
+    # DAILY-PICKS-IMPLEMENTATION-REGISTER.md. Set the env var for a
+    # dedicated research/re-validation run only. Computed from the same
+    # look-ahead-free `df[:i+1]` window every other sub-score here
+    # already uses — never the full, unsliced df.
+    if horizon == "medium" and os.getenv("MOMENTUM_FACTOR_ENABLED") == "1":
         from services.technical_indicators import compute_momentum_score
         momentum_score = compute_momentum_score(df.iloc[:i + 1])
         composite += (momentum_score - 50) * 2.0

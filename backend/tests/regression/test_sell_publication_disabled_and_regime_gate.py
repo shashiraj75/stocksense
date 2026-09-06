@@ -112,6 +112,39 @@ class TestOscillatorRegimeGate:
         assert rsi_entries[0]["signal"] == "SELL"
         assert result["score"] == 65  # baseline 80 (trend-following only) - 15, unsuppressed
 
+    def test_adx_exactly_25_is_not_trending(self):
+        """The gate is strict '> 25', not '>= 25' — ADX exactly at the
+        boundary must NOT suppress oscillators (2026-09-06 corrective
+        review: boundary explicitly covered, not just above/below)."""
+        df = _build_df({"rsi_14": 75.0, "adx": 25.0})
+        result = get_signal_summary(df)
+        rsi_entries = [s for s in result["breakdown"] if s["indicator"] == "RSI"]
+        assert rsi_entries[0]["signal"] == "SELL"  # unsuppressed at the boundary
+        assert result["score"] == 65
+
+    def test_adx_just_above_25_is_trending(self):
+        df = _build_df({"rsi_14": 75.0, "adx": 25.01, "adx_pos": 40.0, "adx_neg": 5.0})
+        result = get_signal_summary(df)
+        rsi_entries = [s for s in result["breakdown"] if s["indicator"] == "RSI"]
+        assert rsi_entries[0]["signal"] == "HOLD"  # suppressed just past the boundary
+
+    def test_missing_adx_defaults_to_not_trending(self):
+        """A missing ADX column must fail safe to the NOT-trending branch
+        (oscillators remain fully active, their pre-existing behavior) —
+        never silently suppress a real reading just because trend-strength
+        data happens to be unavailable."""
+        df = _build_df({"rsi_14": 75.0})
+        df = df.drop(columns=["adx"])
+        result = get_signal_summary(df)
+        rsi_entries = [s for s in result["breakdown"] if s["indicator"] == "RSI"]
+        assert rsi_entries[0]["signal"] == "SELL"
+
+    def test_nan_adx_defaults_to_not_trending(self):
+        df = _build_df({"rsi_14": 75.0, "adx": float("nan")})
+        result = get_signal_summary(df)
+        rsi_entries = [s for s in result["breakdown"] if s["indicator"] == "RSI"]
+        assert rsi_entries[0]["signal"] == "SELL"
+
     @pytest.mark.parametrize("col,trending_val,ranging_val", [
         ("bb_pct", 0.95, 0.95),
         ("stoch_rsi", 0.9, 0.9),

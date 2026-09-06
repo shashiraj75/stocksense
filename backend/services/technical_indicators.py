@@ -195,12 +195,30 @@ def compute_momentum_score(df: pd.DataFrame) -> float:
     yet independently calibrated against this dataset's own momentum
     distribution — a reasonable first cut, flagged as a candidate for
     refinement once this factor has its own live track record.
+
+    2026-09-06 correction (independent corrective review of PR #83):
+    the observation date ("today") is the LAST row of `df`, at position
+    `len(df) - 1` — NOT position `len(df)`. `close.iloc[-N]` addresses
+    position `len(df) - N`, which is `N - 1` steps before today, not `N`
+    steps before it (`iloc[-1]` is 0 steps before today, `iloc[-2]` is 1
+    step before, etc.). The original implementation used `iloc[-N]`
+    directly for both the skip and lookback offsets, silently computing
+    momentum one trading day off from its own stated definition and from
+    the research scripts' explicit `today_idx - N` arithmetic (which
+    IS the correct N-trading-days-back offset) — a research/live parity
+    gap, not merely a docstring imprecision. Fixed by computing
+    `today_idx` explicitly and indexing `today_idx - N`, matching the
+    research definition exactly. The practical effect of the prior
+    off-by-one (one trading day out of a ~252/21-day window) is expected
+    to be negligible, but was never measured, and is corrected here on
+    principle rather than assumed immaterial.
     """
     if len(df) < MOMENTUM_LOOKBACK_DAYS + 1:
         return 50.0
     close = df["Close"]
-    p_recent = _safe(close.iloc[-MOMENTUM_SKIP_DAYS], None)
-    p_old = _safe(close.iloc[-MOMENTUM_LOOKBACK_DAYS], None)
+    today_idx = len(close) - 1
+    p_recent = _safe(close.iloc[today_idx - MOMENTUM_SKIP_DAYS], None)
+    p_old = _safe(close.iloc[today_idx - MOMENTUM_LOOKBACK_DAYS], None)
     if p_recent is None or p_old is None or p_old <= 0:
         return 50.0
     mom_pct = (p_recent / p_old - 1.0) * 100.0
